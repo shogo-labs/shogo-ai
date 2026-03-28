@@ -96,16 +96,33 @@ export function CanvasThemeProvider({
   }, [projectSettings])
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef = useRef<{ cs: CanvasColorScheme; themes: Record<string, string> } | null>(null)
+  const flushingRef = useRef(false)
   const latestRef = useRef({ colorScheme, surfaceThemes })
   latestRef.current = { colorScheme, surfaceThemes }
 
+  const flushPersist = useCallback(async () => {
+    if (!onUpdateSettings || flushingRef.current) return
+    const pending = pendingRef.current
+    if (!pending) return
+    pendingRef.current = null
+    flushingRef.current = true
+    try {
+      await onUpdateSettings({ canvasColorScheme: pending.cs, canvasSurfaceThemes: pending.themes })
+    } catch {
+      // Silently ignore concurrent-update errors from domain stores
+    } finally {
+      flushingRef.current = false
+      if (pendingRef.current) flushPersist()
+    }
+  }, [onUpdateSettings])
+
   const persistToDb = useCallback((cs: CanvasColorScheme, themes: Record<string, string>) => {
     if (!onUpdateSettings) return
+    pendingRef.current = { cs, themes }
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      onUpdateSettings({ canvasColorScheme: cs, canvasSurfaceThemes: themes })
-    }, 500)
-  }, [onUpdateSettings])
+    debounceRef.current = setTimeout(flushPersist, 500)
+  }, [onUpdateSettings, flushPersist])
 
   const setColorScheme = useCallback((scheme: CanvasColorScheme) => {
     setColorSchemeRaw(scheme)
@@ -147,18 +164,20 @@ export function CanvasThemeProvider({
     })
   }, [surfaceIds, persistToDb])
 
-  // Set theme for the currently active surface
+  // Set theme for the currently active surface (or global fallback for code-mode)
   const setThemeId = useCallback((id: string) => {
-    if (!activeSurfaceId) return
+    const key = activeSurfaceId || '__global'
     setSurfaceThemesRaw((prev) => {
-      const next = { ...prev, [activeSurfaceId]: id }
+      const next = { ...prev, [key]: id }
       persistToDb(latestRef.current.colorScheme, next)
       return next
     })
   }, [activeSurfaceId, persistToDb])
 
-  // Derive themeId for the active surface
-  const themeId = (activeSurfaceId && surfaceThemes[activeSurfaceId]) || defaultThemeId
+  // Derive themeId for the active surface (with global fallback for code-mode)
+  const themeId = (activeSurfaceId && surfaceThemes[activeSurfaceId])
+    || surfaceThemes.__global
+    || defaultThemeId
 
   const { colorScheme: systemScheme } = useColorScheme()
   const { theme: appTheme } = useTheme()

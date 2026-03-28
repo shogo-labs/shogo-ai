@@ -37,7 +37,10 @@ import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
+import { CanvasCodeStreamParser } from './canvas-code-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
+import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES } from './canvas-v2-prompt'
+import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
@@ -134,6 +137,8 @@ export interface GatewayConfig {
   memoryEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
+  /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
+  canvasMode?: 'json' | 'code'
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update
@@ -204,6 +209,10 @@ export class AgentGateway {
   } | null = null
   /** Manages the per-workspace skill server process (.shogo/server/) */
   private skillServerManager: SkillServerManager
+  /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
+  private get canvasFileWatcher(): CanvasFileWatcher {
+    return CanvasFileWatcher.getInstance(this.workspaceDir)
+  }
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -346,7 +355,8 @@ export class AgentGateway {
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
       maxSessionMessages: 30,
-      activeMode: 'none',
+      activeMode: 'canvas',
+      canvasMode: 'code',
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
@@ -1044,6 +1054,9 @@ export class AgentGateway {
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
+      canvasFileWatcher: this.config.canvasMode === 'code'
+        ? this.canvasFileWatcher
+        : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1114,6 +1127,9 @@ export class AgentGateway {
     }
     if (this.config.memoryEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
+    }
+    if (this.config.canvasMode === 'code') {
+      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_') || t.name === 'canvas_lint')
     }
 
     // Interaction mode tool restrictions
@@ -1255,6 +1271,7 @@ export class AgentGateway {
     // Canvas streaming: track active parsers and which tool calls already
     // sent their tool-input-start via the streaming path.
     const canvasParsers = new Map<string, CanvasStreamParser>()
+    const canvasCodeParsers = new Map<string, CanvasCodeStreamParser>()
     const streamedToolCalls = new Set<string>()
 
     try {
@@ -1329,6 +1346,23 @@ export class AgentGateway {
             })
             canvasParsers.set(toolCallId, parser)
           }
+          if ((toolName === 'write_file' || toolName === 'edit_file') && this.config.canvasMode === 'code') {
+            const watcher = this.canvasFileWatcher
+            const codeParser = new CanvasCodeStreamParser(
+              toolName as 'write_file' | 'edit_file',
+              {
+                onPreview: (surfaceId, code) => {
+                  const title = surfaceId.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+                  watcher.broadcast({ type: 'renderCode', surfaceId, title, code })
+                },
+                getCurrentCode: (surfaceId) => {
+                  const init = watcher.getInitEvent()
+                  return init.surfaces?.find(s => s.surfaceId === surfaceId)?.code
+                },
+              },
+            )
+            canvasCodeParsers.set(toolCallId, codeParser)
+          }
         },
         onToolCallDelta: (toolName, delta, toolCallId) => {
           if (uiWriter) {
@@ -1338,9 +1372,18 @@ export class AgentGateway {
           if (parser) {
             parser.feed(delta)
           }
+          const codeParser = canvasCodeParsers.get(toolCallId)
+          if (codeParser) {
+            codeParser.feed(delta)
+          }
         },
         onToolCallEnd: (_toolName, toolCallId) => {
           canvasParsers.delete(toolCallId)
+          const codeParser = canvasCodeParsers.get(toolCallId)
+          if (codeParser) {
+            codeParser.flush()
+            canvasCodeParsers.delete(toolCallId)
+          }
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
           if (uiWriter && uiTextId) {
@@ -1600,7 +1643,21 @@ export class AgentGateway {
     const activeMode = this.config.activeMode || 'none'
     // Inject mode-specific prompt sections
     if (activeMode === 'canvas') {
-      parts.push(`\n## Canvas Mode — Declarative Agent Display
+      if (this.config.canvasMode === 'code') {
+        parts.push(`\n## Canvas Mode — React Code Display
+
+You are in canvas code mode. Write React code to \`canvas/*.js\` files using \`write_file\`, \`edit_file\`, \`delete_file\`. Each file is a separate tab rendered instantly in the canvas panel.
+
+**Your workflow in canvas code mode:**
+1. Understand what the user wants to display or build
+2. If the app needs persistent data, create a skill server by writing \`.shogo/server/schema.prisma\`
+3. Write canvas code that fetches from the skill server and renders the UI
+4. Use \`edit_file\` to update existing canvas files, \`delete_file\` to remove tabs
+
+**IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
+`)
+      } else {
+        parts.push(`\n## Canvas Mode — Declarative Agent Display
 
 You are in canvas mode. You have all canvas tools available directly — use them to build and update canvas surfaces.
 
@@ -1619,6 +1676,7 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
+      }
     } else if (activeMode === 'none') {
       parts.push(`\n## Visual Mode Available
 
@@ -1638,8 +1696,15 @@ Examples:
 
     // Mode-specific tool guides
     if (activeMode === 'canvas') {
-      parts.push(BASIC_CANVAS_TOOLS_GUIDE)
-      parts.push(BASIC_CANVAS_EXAMPLES)
+      if (this.config.canvasMode === 'code') {
+        parts.push(this.promptOverrides.get('canvas_v2_guide') ?? CANVAS_V2_GUIDE)
+        parts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
+        parts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
+        parts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
+      } else {
+        parts.push(BASIC_CANVAS_TOOLS_GUIDE)
+        parts.push(BASIC_CANVAS_EXAMPLES)
+      }
     }
     // General coding guide (edit_file, exec safety, code quality) — always included
     parts.push(CODE_AGENT_GENERAL_GUIDE)

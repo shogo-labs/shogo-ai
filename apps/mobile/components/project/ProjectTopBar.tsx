@@ -296,7 +296,7 @@ export function ProjectTopBar({
   if (!isWide) {
     return (
       <View
-        className="h-10 bg-background/95 flex-row items-center px-2 border-b border-border web:sticky web:top-0"
+        className="h-10 bg-background/95 flex-row items-center px-2 web:sticky web:top-0"
         style={
           Platform.OS === 'web'
             ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
@@ -457,7 +457,7 @@ export function ProjectTopBar({
   // ── Wide layout: two-zone bar ──────────────────────────────────────────
   return (
     <View
-      className="h-10 bg-background/95 flex-row items-center border-b border-border web:sticky web:top-0"
+      className="h-10 bg-background/95 flex-row items-center web:sticky web:top-0"
       style={
         Platform.OS === 'web'
           ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
@@ -466,7 +466,7 @@ export function ProjectTopBar({
     >
       {/* ── Left zone: aligned with chat panel (480px) ── */}
       <View
-        className="h-full flex-row items-center px-2 shrink-0 border-r border-border"
+        className="h-full flex-row items-center px-2 shrink-0"
         style={{ width: isChatCollapsed ? undefined : chatPanelWidth }}
       >
         <View className="flex-row items-center gap-0.5 flex-shrink-0">

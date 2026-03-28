@@ -2285,9 +2285,10 @@ export const ChatPanel = observer(function ChatPanel({
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
-            contentContainerClassName={
-              isNativePhoneLayout ? "px-2 pt-2 pb-28" : "p-2"
-            }
+            contentContainerClassName={cn(
+              isNativePhoneLayout ? "px-2 pt-2 pb-28" : "p-2",
+              "max-w-3xl w-full self-center",
+            )}
             keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
@@ -2579,7 +2580,7 @@ export const ChatPanel = observer(function ChatPanel({
           )}
 
           {/* Input */}
-          <View className="bg-transparent">
+          <View className="bg-transparent max-w-3xl w-full self-center">
             <ChatInput
               onSubmit={handleInputSubmit}
               disabled={!currentSessionId}

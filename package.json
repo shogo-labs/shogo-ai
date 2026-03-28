@@ -9,18 +9,15 @@
     "apps/mobile"
   ],
   "scripts": {
-    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "build": "turbo build",
-    "dev": "turbo dev",
-    "test": "turbo test",
-    "lint": "turbo lint",
-    "typecheck": "turbo typecheck",
+    "prepare": "git config core.hooksPath .githooks || exit 0",
+    "build": "bun run --cwd packages/sdk build && concurrently \"bun run --cwd packages/canvas-runtime build\" \"bun run --cwd packages/agent-runtime build\" \"bun run --cwd packages/project-runtime build\"",
+    "build:sdk": "bun run --cwd packages/sdk build",
     "web:dev": "cd apps/mobile && npx expo start --web",
     "mobile:dev": "bun run --cwd apps/mobile expo start --go",
     "web:build": "cd apps/mobile && npx expo export --platform web",
-    "api:dev": "PREWARM_CLAUDE_CODE=false bun --watch apps/api/src/entry.ts",
+    "api:dev": "bun scripts/watch-api.ts",
     "api:start": "bun apps/api/src/server.ts",
-    "dev:all": "mkdir -p logs && concurrently -n api,web -c green,magenta \"bun run api:dev 2>&1 | tee logs/api.log\" \"bun run web:dev 2>&1 | tee logs/web.log\"",
+    "dev:all": "concurrently --kill-others -n api,web -c green,magenta \"bun run api:dev\" \"bun run web:dev\"",
     "dev:backend": "mkdir -p logs && bun run api:dev 2>&1 | tee logs/api.log",
     "dev:start": "./scripts/docker-dev-start.sh",
     "dev:infra": "./scripts/docker-dev-start.sh --infra",
@@ -36,7 +33,7 @@
     "db:push": "npx prisma db push",
     "db:studio": "npx prisma studio",
     "db:generate": "npx prisma generate",
-    "db:generate:all": "SHOGO_LOCAL_MODE=false DATABASE_URL=${DATABASE_URL:-postgres://localhost/prisma-generate} npx prisma generate && SHOGO_LOCAL_MODE=true DATABASE_URL=${DATABASE_URL:-file:./dev.db} npx prisma generate && ln -sfn prisma-pg apps/api/src/generated/prisma",
+    "db:generate:all": "bun scripts/db-generate-all.ts",
     "db:reset": "npx prisma migrate reset",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
@@ -57,7 +54,7 @@
     "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
     "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
     "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
-    "postinstall": "([ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true) && bun run db:generate:all"
+    "postinstall": "bun scripts/postinstall.ts"
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.29.0",
@@ -81,7 +78,6 @@
     "pg": "^8.20.0",
     "prisma": "^7.3.0",
     "react-native-worklets": "^0.7.4",
-    "turbo": "^2.6.3",
     "typescript": "^6.0.2"
   },
   "dependencies": {

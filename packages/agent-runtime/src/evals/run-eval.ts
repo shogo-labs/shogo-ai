@@ -15,8 +15,9 @@
 
 import { spawn, type Subprocess } from 'bun'
 import { execSync } from 'child_process'
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, realpathSync, appendFileSync, readdirSync } from 'fs'
 import { resolve, join, dirname } from 'path'
+import { tmpdir } from 'os'
 
 // Load .env.local from repo root so workers inherit API keys
 const REPO_ROOT_EARLY = resolve(import.meta.dir, '../../../..')
@@ -55,10 +56,13 @@ import { RESPONSE_TRANSFORM_EVALS } from './test-cases-response-transforms'
 import { modeSwitchingEvals } from './test-cases-mode-switching'
 import { CODE_AGENT_EVALS } from './test-cases-code-agent'
 import { CODE_AGENT_V2_EVALS } from './test-cases-code-agent-v2'
+import { CANVAS_V2_EVALS } from './test-cases-canvas-v2'
 import { CLI_ROUTING_EVALS } from './test-cases-cli-routing'
 import { SKILL_SYSTEM_EVALS } from './test-cases-skill-system'
 import { SKILL_SERVER_EVALS } from './test-cases-skill-server'
 import { SKILL_SERVER_TEMPLATE_EVALS } from './test-cases-skill-server-templates'
+import { EDIT_FILE_EVALS } from './test-cases-edit-file'
+import { CANVAS_V2_LINT_EVALS } from './test-cases-canvas-v2-lint'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -118,13 +122,16 @@ function getEvals(track: string): AgentEval[] {
     case 'mode-switching': return modeSwitchingEvals
     case 'code-agent': return CODE_AGENT_EVALS
     case 'code-agent-v2': return CODE_AGENT_V2_EVALS
+    case 'canvas-v2': return CANVAS_V2_EVALS
+    case 'canvas-v2-lint': return CANVAS_V2_LINT_EVALS
     case 'cli-routing': return CLI_ROUTING_EVALS
     case 'skill-system': return SKILL_SYSTEM_EVALS
     case 'skill-server': return SKILL_SERVER_EVALS
     case 'skill-server-templates': return SKILL_SERVER_TEMPLATE_EVALS
-    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...modeSwitchingEvals, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS]
+    case 'edit-file': return EDIT_FILE_EVALS
+    case 'all': return [...CANVAS_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...modeSwitchingEvals, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...EDIT_FILE_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, edit-file, all`)
       process.exit(1)
   }
 }
@@ -143,17 +150,27 @@ interface Worker {
 
 async function startWorker(id: number): Promise<Worker> {
   const port = BASE_PORT + id
-  const dir = `/tmp/agent-eval-worker-${id}`
-
-  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  resetWorkspaceDefaults(dir)
+  const dir = resolve(tmpdir(), `agent-eval-worker-${id}`)
 
   console.log(`  Starting worker ${id} on port ${port}...`)
 
+  // Kill any stale process on this port BEFORE cleaning the directory
   try {
-    execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
+    if (process.platform === 'win32') {
+      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
+    } else {
+      execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
+    }
   } catch {}
   await Bun.sleep(500)
+
+  // Now safe to clean the directory (stale processes killed)
+  try {
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+  } catch (e: any) {
+    console.warn(`  [Worker ${id}] Initial cleanup warning: ${e.message}`)
+  }
+  resetWorkspaceDefaults(dir)
 
   const proc = spawn({
     cmd: ['bun', 'run', AGENT_RUNTIME_SERVER],
@@ -165,10 +182,9 @@ async function startWorker(id: number): Promise<Worker> {
       PROJECT_DIR: dir,
       PROJECT_ID: `eval-worker-${id}`,
       AGENT_MODEL: modelArg,
-      NODE_OPTIONS: '--max-old-space-size=512',
     },
-    stdout: 'ignore',
-    stderr: 'ignore',
+    stdout: 'inherit',
+    stderr: 'inherit',
   })
 
   if (proc.exitCode !== null) {
@@ -202,7 +218,13 @@ async function startWorker(id: number): Promise<Worker> {
 
 function stopWorker(w: Worker) {
   w.process?.kill()
-  try { execSync(`lsof -ti:${w.port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' }) } catch {}
+  try {
+    if (process.platform === 'win32') {
+      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${w.port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
+    } else {
+      execSync(`lsof -ti:${w.port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
+    }
+  } catch {}
   if (existsSync(w.dir)) rmSync(w.dir, { recursive: true, force: true })
 }
 
@@ -216,11 +238,37 @@ async function runEvalOnWorker(
   index: number,
   total: number,
 ): Promise<EvalResult> {
-  // Clean workspace between evals and re-seed base personality
-  try { execSync(`rm -rf ${worker.dir}/* 2>/dev/null || true`, { stdio: 'pipe' }) } catch {}
+  // Check worker process health before starting
+  if (worker.process?.exitCode !== null) {
+    throw new Error(`Worker ${worker.id} process died with code ${worker.process?.exitCode} before eval started`)
+  }
+
+  // Force GC between evals to prevent memory pressure crashes in Bun
+  try { Bun.gc(true) } catch {}
+
+  if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
+
+  // Clean workspace between evals — delete eval-generated content but skip
+  // locked files (SQLite DB, etc.) that the worker process holds open.
+  // On Windows, rmSync on the whole dir fails with EBUSY.
+  if (existsSync(worker.dir)) {
+    const safeDirs = ['canvas', 'files', '.shogo/server']
+    for (const sub of safeDirs) {
+      const p = join(worker.dir, sub)
+      try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}
+    }
+    try {
+      for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
+        if (entry.isFile()) {
+          try { rmSync(join(worker.dir, entry.name), { force: true }) } catch {}
+        }
+      }
+    } catch {}
+  }
   resetWorkspaceDefaults(worker.dir)
 
-  // Seed any eval-specific workspace files (e.g. pre-populated MEMORY.md)
+  if (verboseFlag) console.log(`      [setup] Seeding workspace files...`)
+
   if (ev.workspaceFiles) {
     for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
       const absPath = join(worker.dir, relPath)
@@ -229,22 +277,48 @@ async function runEvalOnWorker(
     }
   }
 
-  // Reset the gateway's conversation session so previous evals don't pollute context
+  // Override the model via the channels/connect endpoint which updates config
+  // and hot-reloads the gateway (PATCH /agent/config only patches top-level fields).
+  const resolvedModel = MODEL_MAP[modelArg] || modelArg
+  const defaultModel = 'claude-sonnet-4-6'
+  if (resolvedModel !== defaultModel) {
+    try {
+      await fetch(`http://localhost:${worker.port}/agent/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: { provider: 'anthropic', name: resolvedModel } }),
+      })
+      if (verboseFlag) console.log(`      [setup] Model set to ${resolvedModel}`)
+    } catch (e: any) {
+      console.warn(`      [setup] Model override failed: ${e.message}`)
+    }
+  } else {
+    if (verboseFlag) console.log(`      [setup] Using default model: ${defaultModel}`)
+  }
+
+  if (verboseFlag) console.log(`      [setup] Resetting session...`)
+
   try {
     await fetch(`http://localhost:${worker.port}/agent/session/reset`, { method: 'POST' })
-  } catch {}
+  } catch (e: any) {
+    console.warn(`      [setup] Session reset failed: ${e.message}`)
+  }
 
-  // Pre-set visual mode (canvas evals need canvas mode for the system prompt guide)
   const initialMode = ev.initialMode || (ev.category === 'canvas' ? 'canvas' : 'none')
+  if (verboseFlag) console.log(`      [setup] Setting mode to ${initialMode}...`)
+
   try {
     await fetch(`http://localhost:${worker.port}/agent/mode`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: initialMode }),
     })
-  } catch {}
+  } catch (e: any) {
+    console.warn(`      [setup] Mode set failed: ${e.message}`)
+  }
 
-  // Install tool mocks for deterministic, fast tool execution
+  if (verboseFlag) console.log(`      [setup] Installing tool mocks...`)
+
   try {
     const mockPayload = buildMockPayload(ev.toolMocks)
     await fetch(`http://localhost:${worker.port}/agent/tool-mocks`, {
@@ -252,7 +326,11 @@ async function runEvalOnWorker(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mocks: mockPayload }),
     })
-  } catch {}
+  } catch (e: any) {
+    console.warn(`      [setup] Mock install failed: ${e.message}`)
+  }
+
+  if (verboseFlag) console.log(`      [setup] Sending eval prompt...`)
 
   const startTime = Date.now()
   console.log(`[${index + 1}/${total}] Worker ${worker.id}: ${ev.name}`)
@@ -311,9 +389,17 @@ function cleanup() {
   globalWorkers = []
 }
 
-process.on('SIGINT', () => { cleanup(); process.exit(130) })
-process.on('SIGTERM', () => { cleanup(); process.exit(143) })
-process.on('uncaughtException', (err) => { console.error('UNCAUGHT:', err); cleanup(); process.exit(1) })
+function crashLog(label: string, err: any) {
+  const msg = `[${new Date().toISOString()}] ${label}: ${err?.stack || err?.message || err}\n`
+  console.error(msg)
+  try { appendFileSync(join(tmpdir(), 'agent-eval-crash.log'), msg) } catch {}
+}
+
+process.on('SIGINT', () => { crashLog('SIGINT', 'interrupted'); cleanup(); process.exit(130) })
+process.on('SIGTERM', () => { crashLog('SIGTERM', 'terminated'); cleanup(); process.exit(143) })
+process.on('uncaughtException', (err) => { crashLog('UNCAUGHT EXCEPTION', err); cleanup(); process.exit(1) })
+process.on('unhandledRejection', (reason) => { crashLog('UNHANDLED REJECTION', reason); cleanup(); process.exit(1) })
+process.on('exit', (code) => { if (code !== 0 && code !== 130 && code !== 143) crashLog('EXIT', `code=${code}`) })
 
 // ---------------------------------------------------------------------------
 // Main
@@ -371,20 +457,30 @@ async function main() {
   const results: EvalResult[] = []
   const evalQueue = [...evals]
   const running = new Map<number, Promise<void>>()
+  const partialPath = resolve(tmpdir(), `agent-eval-partial-${modelArg}-${trackArg}.json`)
 
-  while (evalQueue.length > 0 || running.size > 0) {
-    for (const worker of workers) {
-      if (!worker.busy && evalQueue.length > 0) {
-        const ev = evalQueue.shift()!
-        const idx = evals.length - evalQueue.length - 1
-        worker.busy = true
-        const p = runEvalOnWorker(worker, ev, idx, evals.length)
-          .then(r => { results.push(r); worker.busy = false; running.delete(worker.id) })
-          .catch(() => { worker.busy = false; running.delete(worker.id) })
-        running.set(worker.id, p)
-      }
+  // Run evals sequentially, restarting worker between evals to avoid
+  // Bun native crashes from accumulated state / resource leaks on Windows.
+  for (let i = 0; i < evals.length; i++) {
+    const ev = evals[i]
+    const worker = workers[i % workers.length]
+
+    // Restart the worker process between evals to prevent native crashes
+    if (i > 0) {
+      if (verboseFlag) console.log(`      [lifecycle] Restarting worker ${worker.id}...`)
+      stopWorker(worker)
+      await Bun.sleep(1_000)
+      const fresh = await startWorker(worker.id)
+      Object.assign(worker, fresh)
     }
-    if (running.size > 0) await Promise.race([...running.values()])
+
+    try {
+      const result = await runEvalOnWorker(worker, ev, i, evals.length)
+      results.push(result)
+      try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
+    } catch (err: any) {
+      console.error(`[Worker ${worker.id}] Eval failed: ${err?.message || err}`)
+    }
   }
 
   const totalTime = (Date.now() - overallStart) / 1000
@@ -505,7 +601,7 @@ async function main() {
 
   // Save results
   const timestamp = Date.now()
-  const outputPath = `/tmp/agent-eval-results-${modelArg}-${trackArg}-${timestamp}.json`
+  const outputPath = resolve(tmpdir(), `agent-eval-results-${modelArg}-${trackArg}-${timestamp}.json`)
   const exportData: EvalSuiteResult = {
     name: `agent-runtime-${trackArg}`,
     timestamp: new Date().toISOString(),

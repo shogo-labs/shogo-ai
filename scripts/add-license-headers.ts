@@ -32,7 +32,6 @@ ${COPYRIGHT_LINE}
 const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
-  ".turbo",
   ".next",
   ".expo",
   ".bun",

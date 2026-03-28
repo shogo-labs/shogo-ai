@@ -5083,7 +5083,7 @@ app.get('/download', async (c) => {
     // Use tar to create a gzipped archive, excluding non-source dirs
     const excludes = [
       'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+      '.output', '.nuxt', '.bun', '.vite'
     ]
     const excludeArgs = excludes.flatMap(dir => ['--exclude', dir])
 
