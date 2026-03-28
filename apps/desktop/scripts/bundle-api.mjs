@@ -43,6 +43,7 @@ const ITEMS_TO_CLEAN = [
   'prisma',
   'templates',
   'runtime-template',
+  'canvas-runtime',
   'scripts',
   'package.json',
   'bun.lock',
@@ -110,7 +111,7 @@ function main() {
 
   for (let i = 0; i < ENTRY_POINTS.length; i++) {
     const { name, input, output } = ENTRY_POINTS[i]
-    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 4}] Bundling ${name}...`)
+    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 5}] Bundling ${name}...`)
 
     const inputPath = path.join(REPO_ROOT, input)
     const tempDir = path.join(bundleDir, `_tmp_${name}`)
@@ -146,7 +147,7 @@ function main() {
   const stepOffset = ENTRY_POINTS.length
 
   // --- Prisma schema ---
-  console.log(`[${stepOffset + 1}/${stepOffset + 4}] Copying Prisma schema...`)
+  console.log(`[${stepOffset + 1}/${stepOffset + 7}] Copying Prisma schema...`)
   const prismaDir = path.join(RESOURCES_DIR, 'prisma')
   fs.mkdirSync(prismaDir, { recursive: true })
   const localSchema = path.join(REPO_ROOT, 'prisma', 'schema.local.prisma')
@@ -155,7 +156,7 @@ function main() {
   }
 
   // --- Config files ---
-  console.log(`[${stepOffset + 2}/${stepOffset + 4}] Copying config files...`)
+  console.log(`[${stepOffset + 2}/${stepOffset + 7}] Copying config files...`)
   const prismaConfig = path.join(REPO_ROOT, 'prisma.config.local.ts')
   if (fs.existsSync(prismaConfig)) {
     fs.copyFileSync(prismaConfig, path.join(RESOURCES_DIR, 'prisma.config.local.ts'))
@@ -163,7 +164,7 @@ function main() {
   }
 
   // --- Install external packages ---
-  console.log(`[${stepOffset + 3}/${stepOffset + 4}] Installing external packages...`)
+  console.log(`[${stepOffset + 3}/${stepOffset + 7}] Installing external packages...`)
   const externalPkg = {
     name: 'shogo-desktop-bundle',
     private: true,
@@ -199,8 +200,34 @@ function main() {
     })
   }
 
+  // --- Build & copy canvas-runtime (Vite SPA for Canvas v2 code mode) ---
+  console.log(`[${stepOffset + 4}/${stepOffset + 7}] Building canvas-runtime...`)
+  const canvasRuntimeDir = path.join(REPO_ROOT, 'packages', 'canvas-runtime')
+  const canvasRuntimeDest = path.join(RESOURCES_DIR, 'canvas-runtime')
+  if (fs.existsSync(canvasRuntimeDir)) {
+    try {
+      execSync('bun run build', { cwd: canvasRuntimeDir, stdio: 'inherit' })
+      const distDir = path.join(canvasRuntimeDir, 'dist')
+      if (fs.existsSync(distDir)) {
+        fs.cpSync(distDir, canvasRuntimeDest, { recursive: true })
+        const globalsDts = path.join(canvasRuntimeDir, 'src', 'canvas-globals.d.ts')
+        if (fs.existsSync(globalsDts)) {
+          fs.copyFileSync(globalsDts, path.join(canvasRuntimeDest, 'canvas-globals.d.ts'))
+        }
+        console.log('  ✓ Built and copied canvas-runtime')
+      } else {
+        console.warn('  ⚠ canvas-runtime dist not found after build')
+      }
+    } catch (err) {
+      console.error('  ✗ Failed to build canvas-runtime:', err.message)
+      process.exit(1)
+    }
+  } else {
+    console.warn('  ⚠ canvas-runtime package not found at', canvasRuntimeDir)
+  }
+
   // --- Copy runtime template (Vite scaffold for new projects) ---
-  console.log(`[${stepOffset + 4}/${stepOffset + 6}] Copying runtime template...`)
+  console.log(`[${stepOffset + 5}/${stepOffset + 7}] Copying runtime template...`)
   const runtimeTemplateSource = path.join(REPO_ROOT, 'templates', 'runtime-template')
   const runtimeTemplateDest = path.join(RESOURCES_DIR, 'runtime-template')
   if (fs.existsSync(runtimeTemplateSource)) {
@@ -214,7 +241,7 @@ function main() {
   }
 
   // --- Copy agent templates ---
-  console.log(`[${stepOffset + 5}/${stepOffset + 6}] Copying agent templates...`)
+  console.log(`[${stepOffset + 6}/${stepOffset + 7}] Copying agent templates...`)
   const templatesSource = path.join(REPO_ROOT, 'packages', 'agent-runtime', 'templates')
   const templatesDest = path.join(RESOURCES_DIR, 'templates')
   if (fs.existsSync(templatesSource)) {
@@ -226,7 +253,7 @@ function main() {
   }
 
   // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
-  console.log(`[${stepOffset + 6}/${stepOffset + 6}] Patching claude-agent-sdk...`)
+  console.log(`[${stepOffset + 7}/${stepOffset + 7}] Patching claude-agent-sdk...`)
   const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
   if (fs.existsSync(patchScript)) {
     try {

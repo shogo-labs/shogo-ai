@@ -20,7 +20,7 @@ let _canvasGlobalsDts: string | null = null
 
 function getCanvasGlobalsDts(): string {
   if (_canvasGlobalsDts !== null) return _canvasGlobalsDts
-  const dtsPath = resolve(__dirname, '../../canvas-runtime/src/canvas-globals.d.ts')
+  const dtsPath = process.env.CANVAS_GLOBALS_DTS || resolve(__dirname, '../../canvas-runtime/src/canvas-globals.d.ts')
   try {
     _canvasGlobalsDts = readFileSync(dtsPath, 'utf-8')
   } catch {
