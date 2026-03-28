@@ -88,9 +88,11 @@ RUN npx expo export --platform web
 RUN node scripts/inject-analytics.js
 
 # Upload source maps to Sentry (inject debug IDs, upload, then strip maps)
+# Upload is non-fatal: a Sentry misconfiguration should not block a deploy.
 RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
       sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      sentry-cli sourcemaps upload --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
+      (sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist \
+        || echo "Warning: Sentry sourcemaps upload failed — continuing build") && \
       find ./dist -name '*.map' -delete; \
     fi
 
