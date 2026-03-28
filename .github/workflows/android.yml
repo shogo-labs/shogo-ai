@@ -192,12 +192,15 @@ jobs:
 
       - name: Publish OTA update
         working-directory: apps/mobile
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
         run: |
+          # Use only the subject line to avoid shell injection from backticks/newlines
+          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
           eas update \
             --branch ${{ needs.check-fingerprint.outputs.environment }} \
-            --message "${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}" \
+            --message "$SUBJECT" \
             --non-interactive
-        env:
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
 
