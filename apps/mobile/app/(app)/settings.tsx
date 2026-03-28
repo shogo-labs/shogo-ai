@@ -7,7 +7,6 @@
  * - Workspace: Name, avatar, danger zone
  * - People: Workspace members
  * - Account: Profile, email, preferences
- * - Billing: Plan & credits
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -24,24 +23,16 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import { useRouter, useLocalSearchParams } from 'expo-router'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
   Building2,
   Users,
-  CreditCard,
   Shield,
   User,
   ExternalLink,
-  Loader2,
   Trash2,
   ChevronDown,
-  ChevronRight,
-  Check,
-  Sparkles,
-  MapPin,
-  BookOpen,
   X,
   Search,
   UserPlus,
@@ -63,22 +54,8 @@ import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
-import { getRewardfulReferral } from '../../lib/rewardful'
-import { trackInitiateCheckout } from '../../lib/tracking'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
-import {
-  PRO_TIERS,
-  BUSINESS_TIERS,
-  PRO_FEATURES,
-  BUSINESS_FEATURES,
-  ENTERPRISE_FEATURES,
-  BASE_TIER_CREDITS,
-  getTotalCreditsForPlan as getBillingCreditsTotal,
-  formatCredits,
-} from '../../lib/billing-config'
-import { TierSelector } from '../../components/billing/TierSelector'
-import { FeatureList } from '../../components/billing/FeatureList'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import {
   type AnalyticsPeriod,
@@ -100,17 +77,15 @@ import {
   Input,
   Badge,
   Separator,
-  Switch,
-  Progress,
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'security' | 'analytics'
+type TabId = 'workspace' | 'people' | 'account' | 'security' | 'analytics'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'security', 'analytics']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'analytics']
 
 interface NavItem {
   id: TabId
@@ -122,7 +97,6 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
-  { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
 ]
 
@@ -215,9 +189,6 @@ function SettingsSidebar({
   const workspaceItems: SidebarItem[] = [
     { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
-    ...(showBilling
-      ? [{ id: 'billing' as TabId, label: 'Billing' }]
-      : []),
     ...(showBilling
       ? [{ id: 'analytics' as TabId, label: 'Analytics' }]
       : []),
@@ -900,337 +871,6 @@ function AccountTab() {
     </View>
   )
 }
-
-// ============================================================================
-// BILLING TAB — Lovable-style layout
-// ============================================================================
-
-const BillingTab = observer(function BillingTab() {
-  const { user } = useAuth()
-  const actions = useDomainActions()
-  const currentWorkspace = useActiveWorkspace()
-  const toast = useToast()
-
-  const {
-    subscription,
-    effectiveBalance,
-    isLoading: isBillingLoading,
-  } = useBillingData(currentWorkspace?.id)
-
-  const [selectedProTier, setSelectedProTier] = useState(0)
-  const [selectedBusinessTier, setSelectedBusinessTier] = useState(0)
-  const [proAnnual, setProAnnual] = useState(false)
-  const [businessAnnual, setBusinessAnnual] = useState(false)
-  const [isCheckoutLoading, setIsCheckoutLoading] = useState<string | null>(null)
-  const [isPortalLoading, setIsPortalLoading] = useState(false)
-
-  const planLabel = subscription
-    ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
-    : 'Free'
-
-  const creditsTotal = getBillingCreditsTotal(subscription?.planId)
-  const creditsRemaining = effectiveBalance?.total ?? creditsTotal
-
-  const proTier = PRO_TIERS[selectedProTier]
-  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
-
-  const handleCheckout = useCallback(
-    async (planType: 'pro' | 'business', credits: number, annual: boolean) => {
-      if (!currentWorkspace?.id) return
-      setIsCheckoutLoading(planType)
-      try {
-        const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
-        trackInitiateCheckout({ planId, billingInterval: annual ? 'annual' : 'monthly', workspaceId: currentWorkspace?.id })
-        const data = await actions.createCheckoutSession({
-          workspaceId: currentWorkspace.id,
-          planId,
-          billingInterval: annual ? 'annual' : 'monthly',
-          userEmail: user?.email,
-          referralId: getRewardfulReferral(),
-        })
-        if (data.url) {
-          if (Platform.OS === 'web') {
-            window.location.href = data.url
-          } else {
-            Linking.openURL(data.url)
-          }
-        }
-      } catch (e) {
-        console.warn('Checkout failed:', e)
-        toast.show({
-          placement: 'top',
-          duration: 5000,
-          render: ({ id }: { id: string }) => (
-            <Toast nativeID={id} variant="outline" action="error">
-              <ToastTitle>Checkout failed</ToastTitle>
-              <ToastDescription>
-                Something went wrong. Please try again or contact support.
-              </ToastDescription>
-            </Toast>
-          ),
-        })
-      } finally {
-        setIsCheckoutLoading(null)
-      }
-    },
-    [actions, currentWorkspace?.id, user?.email],
-  )
-
-  const handleManageSubscription = useCallback(async () => {
-    if (!currentWorkspace?.id) return
-    setIsPortalLoading(true)
-    try {
-      const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
-      const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
-      if (data?.url) {
-        if (Platform.OS === 'web') {
-          window.location.href = data.url
-        } else {
-          Linking.openURL(data.url)
-        }
-      } else {
-        const msg = data?.error?.message || 'No portal URL returned. Please try again.'
-        console.warn('Portal session returned no URL:', data)
-        toast.show({
-          placement: 'top',
-          duration: 5000,
-          render: ({ id }: { id: string }) => (
-            <Toast nativeID={id} variant="outline" action="error">
-              <ToastTitle>Unable to open billing portal</ToastTitle>
-              <ToastDescription>{msg}</ToastDescription>
-            </Toast>
-          ),
-        })
-      }
-    } catch (e: any) {
-      console.warn('Portal session failed:', e)
-      toast.show({
-        placement: 'top',
-        duration: 5000,
-        render: ({ id }) => (
-          <Toast nativeID={id} variant="outline" action="error">
-            <ToastTitle>Unable to open billing portal</ToastTitle>
-            <ToastDescription>
-              Something went wrong. Please try again or contact support.
-            </ToastDescription>
-          </Toast>
-        ),
-      })
-    } finally {
-      setIsPortalLoading(false)
-    }
-  }, [actions, currentWorkspace?.id])
-
-  if (isBillingLoading) {
-    return (
-      <View className="items-center justify-center py-20">
-        <ActivityIndicator />
-        <Text className="mt-2 text-sm text-muted-foreground">Loading billing...</Text>
-      </View>
-    )
-  }
-
-  return (
-    <View className="gap-8">
-      {/* Header */}
-      <View>
-        <Text className="text-xl font-semibold text-foreground">Billing</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Manage your subscription plan and credit balance.
-        </Text>
-      </View>
-
-      {/* Current plan + Credits remaining — side-by-side on desktop */}
-      <View className="gap-4 md:flex-row">
-        <Card className="md:flex-1">
-          <CardContent className="p-5 gap-4">
-            <View className="flex-row items-center gap-3">
-              <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-                <Sparkles size={20} className="text-primary" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-sm font-semibold text-foreground">
-                  You're on {planLabel} Plan
-                </Text>
-                <Text className="text-sm text-muted-foreground">Upgrade anytime</Text>
-              </View>
-            </View>
-            <Button
-              variant="outline"
-              size="sm"
-              onPress={handleManageSubscription}
-              disabled={isPortalLoading}
-              className="self-start"
-            >
-              {isPortalLoading ? 'Loading...' : 'Manage'}
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card className="md:flex-1">
-          <CardContent className="p-5 gap-3">
-            <View className="flex-row justify-between items-center">
-              <Text className="text-sm text-muted-foreground">Credits remaining</Text>
-              <Text className="text-sm font-medium text-foreground">
-                {formatCredits(creditsRemaining)} of {creditsTotal}
-              </Text>
-            </View>
-            <Progress
-              value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
-              className="h-2"
-            />
-            <View className="gap-1.5">
-              <View className="flex-row items-center gap-2">
-                <View className="h-2 w-2 rounded-full bg-primary" />
-                <Text className="text-xs text-muted-foreground">Daily credits used first</Text>
-              </View>
-              <View className="flex-row items-center gap-2">
-                <Check size={12} className="text-foreground" />
-                <Text className="text-xs text-muted-foreground">
-                  Daily credits reset at midnight UTC
-                </Text>
-              </View>
-            </View>
-          </CardContent>
-        </Card>
-      </View>
-
-      {/* Plan cards — 3 columns on desktop, stacked on mobile */}
-      <View className="gap-6 md:flex-row md:items-stretch">
-        {/* Pro */}
-        <Card className="md:flex-1 md:w-0">
-          <CardContent className="p-5 gap-4">
-            <Text className="text-lg font-semibold text-foreground">Pro</Text>
-            <Text className="text-sm text-muted-foreground">
-              Designed for fast-moving teams building together in real time.
-            </Text>
-            <View>
-              <View className="flex-row items-baseline gap-1">
-                <Text className="text-3xl font-bold text-foreground">
-                  ${proAnnual ? Math.round(proTier.annual / 12) : proTier.monthly}
-                </Text>
-                <Text className="text-sm text-muted-foreground">per month</Text>
-              </View>
-              <Text className="text-sm text-muted-foreground">
-                shared across unlimited users
-              </Text>
-            </View>
-            <View className="flex-row items-center gap-2">
-              <Switch checked={proAnnual} onCheckedChange={setProAnnual} />
-              <Text className="text-sm text-foreground">Annual</Text>
-            </View>
-            <Button
-              onPress={() => handleCheckout('pro', proTier.credits, proAnnual)}
-              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('pro')}
-            >
-              {isCheckoutLoading === 'pro'
-                ? 'Loading...'
-                : subscription?.planId?.startsWith('pro')
-                  ? 'Current Plan'
-                  : 'Upgrade'}
-            </Button>
-            <TierSelector
-              tiers={PRO_TIERS}
-              selectedIndex={selectedProTier}
-              onSelect={setSelectedProTier}
-              suffix=" / month"
-            />
-            <View className="gap-2">
-              <Text className="text-sm text-muted-foreground">
-                All features in Free, plus:
-              </Text>
-              <FeatureList features={PRO_FEATURES} />
-            </View>
-          </CardContent>
-        </Card>
-
-        {/* Business */}
-        <Card className="md:flex-1 md:w-0">
-          <CardContent className="p-5 gap-4">
-            <Text className="text-lg font-semibold text-foreground">Business</Text>
-            <Text className="text-sm text-muted-foreground">
-              Advanced controls and power features for growing departments
-            </Text>
-            <View>
-              <View className="flex-row items-baseline gap-1">
-                <Text className="text-3xl font-bold text-foreground">
-                  ${businessAnnual ? Math.round(businessTier.annual / 12) : businessTier.monthly}
-                </Text>
-                <Text className="text-sm text-muted-foreground">per month</Text>
-              </View>
-              <Text className="text-sm text-muted-foreground">
-                shared across unlimited users
-              </Text>
-            </View>
-            <View className="flex-row items-center gap-2">
-              <Switch checked={businessAnnual} onCheckedChange={setBusinessAnnual} />
-              <Text className="text-sm text-foreground">Annual</Text>
-            </View>
-            <Button
-              variant="outline"
-              onPress={() => handleCheckout('business', businessTier.credits, businessAnnual)}
-              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('business')}
-            >
-              {isCheckoutLoading === 'business'
-                ? 'Loading...'
-                : subscription?.planId?.startsWith('business')
-                  ? 'Current Plan'
-                  : 'Upgrade'}
-            </Button>
-            <TierSelector
-              tiers={BUSINESS_TIERS}
-              selectedIndex={selectedBusinessTier}
-              onSelect={setSelectedBusinessTier}
-              suffix=" / month"
-            />
-            <View className="gap-2">
-              <Text className="text-sm text-muted-foreground">
-                All features in Pro, plus:
-              </Text>
-              <FeatureList features={BUSINESS_FEATURES} />
-            </View>
-          </CardContent>
-        </Card>
-
-        {/* Enterprise */}
-        <Card className="md:flex-1 md:w-0">
-          <CardContent className="p-5 gap-4 flex-1">
-            <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
-            <Text className="text-sm text-muted-foreground">
-              Built for large orgs needing flexibility, scale, and governance.
-            </Text>
-            <View>
-              <Text className="text-3xl font-bold text-foreground">Custom</Text>
-              <Text className="text-sm text-muted-foreground">Flexible plans</Text>
-            </View>
-            {/* Spacer to align CTA with Pro/Business Upgrade buttons (they have an Annual toggle row here) */}
-            <View className="h-6" />
-            <Button
-              variant="outline"
-              onPress={() => {
-                const mailto = 'mailto:sales@shogo.ai'
-                if (Platform.OS === 'web') {
-                  window.open(mailto, '_blank')
-                } else {
-                  Linking.openURL(mailto)
-                }
-              }}
-            >
-              Book a demo
-            </Button>
-            <View className="flex-1" />
-            <View className="gap-2">
-              <Text className="text-sm text-muted-foreground">
-                All features in Business, plus:
-              </Text>
-              <FeatureList features={ENTERPRISE_FEATURES} />
-            </View>
-          </CardContent>
-        </Card>
-      </View>
-    </View>
-  )
-})
 
 // ============================================================================
 // PEOPLE TAB — Lovable-style workspace member management
@@ -2443,7 +2083,6 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'workspace' && <WorkspaceSettingsTab />}
       {activeTab === 'people' && !isLocal && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
-      {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'analytics' && !isLocal && <WorkspaceAnalyticsTab />}
     </>
@@ -2467,8 +2106,13 @@ export default observer(function SettingsPage() {
   )
 
   useEffect(() => {
+    if (params.tab === 'billing') {
+      router.replace('/(app)/billing' as any)
+    }
+  }, [params.tab, router])
+
+  useEffect(() => {
     const isLocal = localMode || !features.billing
-    if (activeTab === 'billing' && !features.billing) setActiveTab('workspace')
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
     if (activeTab === 'analytics' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])

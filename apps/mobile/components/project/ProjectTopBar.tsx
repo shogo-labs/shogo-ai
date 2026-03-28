@@ -907,7 +907,7 @@ function ProjectMenuView({
                   <View className="flex-row items-center justify-between">
                     <Text className="text-sm font-medium text-foreground">Credits</Text>
                     <Pressable
-                      onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
+                      onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
                       className="flex-row items-center gap-1"
                     >
                       <Text className="text-sm font-medium text-foreground">
@@ -926,7 +926,7 @@ function ProjectMenuView({
                   <View className="flex-row items-center justify-between gap-2">
                     <Text className="text-sm font-medium text-foreground shrink-0">Credits</Text>
                     <Pressable
-                      onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
+                      onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
                       className="flex-row items-center gap-1 min-w-0 flex-1 justify-end"
                     >
                       <Text

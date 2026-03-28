@@ -5186,7 +5186,7 @@ app.post('/api/webhooks/stripe', async (c) => {
                   workspaceName: workspace!.name,
                   planName: planLabel,
                   billingInterval: billingInterval === 'annual' ? 'Annual' : 'Monthly',
-                  dashboardUrl: `${baseUrl}/settings?tab=billing`,
+                  dashboardUrl: `${baseUrl}/billing`,
                 }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
               }
             } catch (emailErr: any) {
@@ -5247,7 +5247,7 @@ app.post('/api/webhooks/stripe', async (c) => {
                   planName: planLabel,
                   amount: ((invoice.amount_due || 0) / 100).toFixed(2),
                   currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
-                  retryUrl: `${baseUrl}/settings?tab=billing`,
+                  retryUrl: `${baseUrl}/billing`,
                 }).catch((err) => console.error('[Webhook] payment-failed email failed:', err))
               }
             }
