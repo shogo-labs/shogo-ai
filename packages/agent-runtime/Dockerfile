@@ -49,7 +49,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY packages/sdk ./packages/sdk
 COPY packages/canvas-runtime ./packages/canvas-runtime
 
-RUN bun run --cwd packages/canvas-runtime build
+RUN bun run --cwd packages/sdk build && \
+    bun run --cwd packages/canvas-runtime build
 
 # =============================================================================
 # Stage 1: builder — install all deps, copy source
