@@ -69,8 +69,13 @@ function evalInline(compiled: string, scope: CanvasScope): React.FC {
   }
 }
 
+function reportCanvasError(surfaceId: string, phase: 'compile' | 'runtime', error: string) {
+  sendToParent({ type: 'canvas-error', surfaceId, phase, error })
+}
+
 function createAgentComponent(
   rawCode: string,
+  surfaceId: string,
   surfaceData: Record<string, unknown>,
   onAction: (name: string, context?: Record<string, unknown>) => void,
 ): React.FC {
@@ -82,6 +87,7 @@ function createAgentComponent(
     return isModule ? evalModule(compiled, scope) : evalInline(compiled, scope)
   } catch (err) {
     const errorMsg = String(err)
+    reportCanvasError(surfaceId, 'compile', errorMsg)
     return function ErrorComponent() {
       return (
         <div className="p-4 text-red-500 font-mono text-sm">
@@ -90,6 +96,33 @@ function createAgentComponent(
         </div>
       )
     }
+  }
+}
+
+class CanvasErrorBoundary extends React.Component<
+  { surfaceId: string; children: React.ReactNode },
+  { error: string | null }
+> {
+  state = { error: null as string | null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error: String(error) }
+  }
+
+  componentDidCatch(error: Error) {
+    reportCanvasError(this.props.surfaceId, 'runtime', String(error))
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-4 text-red-500 font-mono text-sm">
+          <p className="font-bold">Runtime Error</p>
+          <pre className="mt-2 whitespace-pre-wrap">{this.state.error}</pre>
+        </div>
+      )
+    }
+    return this.props.children
   }
 }
 
@@ -337,11 +370,15 @@ function CanvasApp() {
 
 function SurfaceRenderer({ surface, onAction }: { surface: SurfaceState; onAction: (name: string, context?: Record<string, unknown>) => void }) {
   const Component = React.useMemo(
-    () => createAgentComponent(surface.code, surface.data, onAction),
-    [surface.code, surface.data, onAction],
+    () => createAgentComponent(surface.code, surface.surfaceId, surface.data, onAction),
+    [surface.code, surface.surfaceId, surface.data, onAction],
   )
 
-  return <Component />
+  return (
+    <CanvasErrorBoundary key={surface.surfaceId + ':' + surface.code} surfaceId={surface.surfaceId}>
+      <Component />
+    </CanvasErrorBoundary>
+  )
 }
 
 // ---------------------------------------------------------------------------

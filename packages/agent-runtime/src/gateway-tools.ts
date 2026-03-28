@@ -11,7 +11,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
-import { join, resolve, extname } from 'path'
+import { join, resolve, extname, dirname } from 'path'
 import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
@@ -33,6 +33,9 @@ import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl } from './internal-api'
+import { typecheckCanvasCode, type CanvasLintResult } from './canvas-code-validator'
+
+const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
   CANVAS_COMPONENT_SCHEMA,
   BASIC_CANVAS_COMPONENT_SCHEMA,
@@ -288,8 +291,8 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         append?: boolean
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-      const dir = resolved.substring(0, resolved.lastIndexOf('/'))
-      if (dir) mkdirSync(dir, { recursive: true })
+      const dir = dirname(resolved)
+      if (dir && dir !== resolved) mkdirSync(dir, { recursive: true })
 
       if (append) {
         const existing = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
@@ -298,7 +301,21 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         writeFileSync(resolved, content, 'utf-8')
       }
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-      return textResult({ ok: true, path: filePath, bytes: content.length })
+
+      const result: Record<string, any> = { ok: true, path: filePath, bytes: content.length }
+      if (ctx.canvasFileWatcher && CANVAS_CODE_RE.test(filePath)) {
+        const lint = typecheckCanvasCode(content, filePath)
+        result.canvas_lint = lint.ok
+          ? { ok: true }
+          : {
+              ok: false,
+              errors: lint.diagnostics
+                .filter(d => d.severity === 'error')
+                .map(d => `Line ${d.line}: ${d.message}`),
+              hint: 'Fix these TypeScript errors and edit the file again.',
+            }
+      }
+      return textResult(result)
     },
   }
 }
@@ -351,7 +368,21 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         : content.replace(old_string, new_string)
       writeFileSync(resolved, updated, 'utf-8')
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-      return textResult({ ok: true, path: filePath, replacements: replace_all ? occurrences : 1 })
+
+      const result: Record<string, any> = { ok: true, path: filePath, replacements: replace_all ? occurrences : 1 }
+      if (ctx.canvasFileWatcher && CANVAS_CODE_RE.test(filePath)) {
+        const lint = typecheckCanvasCode(updated, filePath)
+        result.canvas_lint = lint.ok
+          ? { ok: true }
+          : {
+              ok: false,
+              errors: lint.diagnostics
+                .filter(d => d.severity === 'error')
+                .map(d => `Line ${d.line}: ${d.message}`),
+              hint: 'Fix these TypeScript errors and edit the file again.',
+            }
+      }
+      return textResult(result)
     },
   }
 }
@@ -4621,6 +4652,69 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Canvas Lint Tool (on-demand type-checking for canvas code files)
+// ---------------------------------------------------------------------------
+
+function createCanvasLintTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'canvas_lint',
+    description:
+      'Type-check canvas code files for errors. ' +
+      'Runs TypeScript analysis on canvas/*.js files to catch undefined references, syntax errors, and type mismatches. ' +
+      'Use after completing multi-file changes or to verify all surfaces are error-free. ' +
+      'Omit path to check all canvas code files.',
+    label: 'Canvas Lint',
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ description: 'Specific canvas file to check (e.g. canvas/weather.js). Omit to check all.' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path: filePath } = params as { path?: string }
+      const results: Array<{ path: string; lint: CanvasLintResult }> = []
+
+      if (filePath) {
+        const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+        if (!existsSync(resolved)) {
+          return textResult({ error: `File not found: ${filePath}` })
+        }
+        const content = readFileSync(resolved, 'utf-8')
+        results.push({ path: filePath, lint: typecheckCanvasCode(content, filePath) })
+      } else {
+        const canvasDir = join(ctx.workspaceDir, 'canvas')
+        if (existsSync(canvasDir)) {
+          for (const entry of readdirSync(canvasDir)) {
+            if (/\.(js|jsx|ts|tsx)$/.test(entry) && !entry.endsWith('.data.json')) {
+              const relPath = `canvas/${entry}`
+              const absPath = join(canvasDir, entry)
+              const content = readFileSync(absPath, 'utf-8')
+              results.push({ path: relPath, lint: typecheckCanvasCode(content, relPath) })
+            }
+          }
+        }
+      }
+
+      if (results.length === 0) {
+        return textResult({ ok: true, message: 'No canvas code files found.' })
+      }
+
+      const allOk = results.every(r => r.lint.ok)
+      const summary = results.map(r => ({
+        path: r.path,
+        ok: r.lint.ok,
+        errors: r.lint.diagnostics
+          .filter(d => d.severity === 'error')
+          .map(d => `Line ${d.line}: ${d.message}`),
+      }))
+
+      return textResult({
+        ok: allOk,
+        files: summary,
+        ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run canvas_lint again to verify.' }),
+      })
+    },
+  }
+}
+
 /** All gateway tools (unified set for all agents) */
 export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -4663,6 +4757,7 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     createCanvasApiBindTool(ctx),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
+    createCanvasLintTool(ctx),
     // APP_MODE_DISABLED: createTemplateListTool(), createTemplateCopyTool(ctx),
     createPersonalityUpdateTool(ctx),
     createToolSearchTool(ctx),

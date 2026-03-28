@@ -75,13 +75,16 @@ export async function sendTurn(
 
       if (!res.ok) {
         clearTimeout(timeout)
+        const errBody = await res.text().catch(() => '(no body)')
+        if (config.verbose) console.log(`      [sendTurn] HTTP ${res.status}: ${errBody.slice(0, 200)}`)
         if ((res.status >= 500 || res.status === 429) && attempt < MAX_RETRIES) {
           await Bun.sleep(RETRY_DELAY * attempt)
           continue
         }
-        throw new Error(`Agent API returned ${res.status}`)
+        throw new Error(`Agent API returned ${res.status}: ${errBody.slice(0, 200)}`)
       }
 
+      if (config.verbose) console.log(`      [sendTurn] Response OK, parsing SSE...`)
       const result = await parseSSEStream(res, config.verbose)
       clearTimeout(timeout)
       return result
@@ -128,11 +131,13 @@ async function parseSSEStream(
   const decoder = new TextDecoder()
   let buffer = ''
 
+  let chunkCount = 0
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
+      chunkCount++
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
@@ -213,6 +218,10 @@ async function parseSSEStream(
     }
   } finally {
     reader.releaseLock()
+  }
+
+  if (verbose) {
+    console.log(`      [SSE] Complete: ${toolCalls.length} tools, ${stepCount} steps`)
   }
 
   return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
