@@ -25,11 +25,9 @@ export type EvalCategory =
   | 'tool-system'
   | 'tool-routing'
   | 'template'
-  | 'mode-switching'
   | 'code-agent'
   | 'canvas-v2'
   | 'edit-file'
-  | 'cross-mode'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 

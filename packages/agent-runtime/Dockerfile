@@ -27,6 +27,7 @@ COPY tsconfig.base.json ./
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/domain-stores/package.json ./packages/domain-stores/
 COPY packages/shared-app/package.json ./packages/shared-app/
@@ -47,7 +48,12 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
+COPY packages/sdk ./packages/sdk
+COPY packages/canvas-runtime ./packages/canvas-runtime
 COPY templates/runtime-template ./templates/runtime-template
+
+# Build canvas-runtime static assets (served by agent-runtime at /canvas/)
+RUN bun run --cwd packages/canvas-runtime build
 
 # Fetch external Claude Code skills from skill-registry.json
 RUN apk add --no-cache git && \
@@ -69,6 +75,7 @@ COPY tsconfig.base.json ./
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/domain-stores/package.json ./packages/domain-stores/
 COPY packages/shared-app/package.json ./packages/shared-app/
@@ -97,6 +104,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/dist ./packages/canvas-runtime/dist
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
@@ -104,6 +112,7 @@ COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons for bun resolution
 COPY --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
+COPY --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
 COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/

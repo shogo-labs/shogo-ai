@@ -579,9 +579,7 @@ export default observer(function ProjectLayout() {
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
 
-  const handleModeSwitch = useCallback(async (mode: 'canvas' | 'app' | 'none', _reason: string) => {
-    // APP_MODE_DISABLED: ignore 'app' mode switches
-    if (mode === 'app') return
+  const handleManualModeChange = useCallback(async (mode: 'canvas' | 'none') => {
     const enableCanvas = mode === 'canvas'
 
     await updateProjectSettings({ activeMode: mode, canvasEnabled: enableCanvas })
@@ -597,12 +595,10 @@ export default observer(function ProjectLayout() {
           body: JSON.stringify({ activeMode: mode, canvasEnabled: enableCanvas }),
         })
       } catch (err) {
-        console.error('[ProjectLayout] Failed to push mode switch config to runtime:', err)
+        console.error('[ProjectLayout] Failed to push mode config to runtime:', err)
       }
     }
 
-    // Chat-only agent: return to the chat column on narrow layouts (Capabilities used to rely on
-    // the previewTab effect for this; standalone-panel fix needs an explicit navigation).
     if (!enableCanvas) {
       setActiveTab('chat')
       setPreviewTab('chat-fullscreen')
@@ -612,16 +608,10 @@ export default observer(function ProjectLayout() {
       enableCanvas &&
       activeMode === 'none'
     ) {
-      // Chat-only → Canvas from Capabilities: show chat with Canvas (dynamic-app) selected next.
-      // (Skip if already canvas — avoids kicking out on a redundant Canvas tap.)
       setActiveTab('chat')
       setPreviewTab('dynamic-app')
     }
   }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
-
-  const handleManualModeChange = useCallback((mode: 'canvas' | 'none') => {
-    handleModeSwitch(mode, 'User selected agent type')
-  }, [handleModeSwitch])
 
   const handleBuildPlan = useCallback((plan: any, agentMode: any) => {
     setBuildPlanRequest({ plan, agentMode, nonce: Date.now() })
@@ -770,10 +760,6 @@ export default observer(function ProjectLayout() {
       pendingToolInstalls.length > 0
     )
 
-  /** Native phone + narrow layout: float only on Chat tab (not Canvas / Files / Terminal / …). Web, tablet, and wide layouts unchanged. */
-  const showIntegrationsCardUi =
-    showIntegrationsCard && (!nativePhone || isWide || activeTab === 'chat')
-
   // Loading state
   if (isLoading || !project) {
     return (
@@ -802,7 +788,6 @@ export default observer(function ProjectLayout() {
       initialFiles={capturedInitialFiles}
       billingData={features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}
-      onModeSwitch={handleModeSwitch}
       onMessagesChange={setChatMessages}
       buildPlanRequest={buildPlanRequest}
       className="flex-1"
@@ -1020,7 +1005,7 @@ export default observer(function ProjectLayout() {
           </View>
 
           {/* Floating integrations card */}
-          {showIntegrationsCardUi && (
+          {showIntegrationsCard && (
             <View
               className={cn(
                 'absolute z-30',
@@ -1201,7 +1186,7 @@ function CanvasPanel({
   // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
   if (canvasMode === 'code') {
     return (
-      <View className="flex-1 p-2 pt-0">
+      <View className="flex-1 p-2okay, t pt-0">
         <View className="flex-1 overflow-hidden rounded-2xl">
           <CanvasWebView agentUrl={agentUrl} />
         </View>

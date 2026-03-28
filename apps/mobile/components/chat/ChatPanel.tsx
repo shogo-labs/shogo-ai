@@ -238,8 +238,6 @@ export interface ChatPanelProps {
   projectType?: string
   /** Called with canvas preview components streamed through the chat channel */
   onCanvasPreview?: (surfaceId: string, components: any[]) => void
-  /** Called when the agent switches visual mode via switch_mode tool */
-  onModeSwitch?: (mode: "canvas" | "app" | "none", reason: string) => void
   /** Legacy domain stores (platformFeatures, componentBuilder) — optional on mobile */
   legacyDomains?: {
     platformFeatures?: any
@@ -574,7 +572,6 @@ export const ChatPanel = observer(function ChatPanel({
   onCreateTheme,
   projectType,
   onCanvasPreview,
-  onModeSwitch,
   legacyDomains,
   billingData,
   onMessagesChange,
@@ -1201,12 +1198,6 @@ export const ChatPanel = observer(function ChatPanel({
       if (dataPart.type === "data-canvas-preview") {
         const { surfaceId, components } = (dataPart as any).data
         onCanvasPreview?.(surfaceId, components)
-      }
-
-      if (dataPart.type === "data-mode-switch") {
-        const { mode, reason } = (dataPart as any).data as { mode: "canvas" | "app" | "none"; reason: string }
-        console.log("[ChatPanel:ModeSwitch]", mode, reason)
-        onModeSwitch?.(mode, reason)
       }
 
       if ((dataPart as any).type === "data-plan") {

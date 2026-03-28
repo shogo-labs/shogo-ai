@@ -28,7 +28,7 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createTools, createHeartbeatTools, textResult, type ModeSwitchHandler } from './gateway-tools'
+import { createTools, createHeartbeatTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -1074,32 +1074,9 @@ export class AgentGateway {
       },
     }
 
-    const modeHandler = {
-      onModeSwitch: (mode: VisualMode, reason: string) => {
-        this.setActiveMode(mode)
-        const enableCanvas = mode === 'canvas'
-        // Persist to config.json (same path as loadConfig: root or .shogo/)
-        const configPath =
-          resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json') ?? join(this.workspaceDir, 'config.json')
-        try {
-          const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf-8')) : {}
-          config.activeMode = mode
-          config.canvasEnabled = enableCanvas
-          writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
-        } catch { /* non-fatal */ }
-        this.reloadConfig()
-        // Emit SSE event for UI mode switching
-        if (uiWriter) {
-          uiWriter.write({ type: 'data-mode-switch', data: { mode, reason } })
-        }
-      },
-      getAllowedModes: () => this.getAllowedModes(),
-      getActiveMode: () => this.getActiveMode(),
-    }
-
     const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
-      : createTools(toolContext, modeHandler)
+      : createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
@@ -1677,22 +1654,9 @@ When integrations are connected, use \`tool_search\` to discover available actio
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
       }
-    } else if (activeMode === 'none') {
-      parts.push(`\n## Visual Mode Available
-
-You have a visual mode for surfacing your work to the user. You have ALL tools available in every mode — canvas tools, code tools, file tools, etc.
-
-**Canvas** (switch_mode → "canvas") — Your visual display panel with live data binding. Declarative components (metrics, charts, tables, lists) show your work output, monitoring results, and status. Canvas supports live data from integrations via \`canvas_api_bind\`. Use canvas tools directly.
-
-Examples:
-- "Show me what you found" → canvas
-- "Build a monitoring dashboard" → canvas
-- "Display the daily digest" → canvas
-`)
     }
-    // Mode context injection
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
-    parts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**. Use switch_mode to change.\n`)
+    parts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
 
     // Mode-specific tool guides
     if (activeMode === 'canvas') {

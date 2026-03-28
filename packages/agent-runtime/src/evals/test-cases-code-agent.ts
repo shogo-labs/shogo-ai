@@ -4,10 +4,10 @@
  * Code Agent E2E Eval Test Cases
  *
  * Validates the full code_agent pipeline end-to-end:
- *   Pi agent → switch_mode('app') → code_agent delegation → Claude Code SDK
+ *   Pi agent → code_agent delegation → Claude Code SDK
  *
  * These evals exercise the real Claude Code SDK (no mocking) and validate:
- *   - Pi-level behavior: switch_mode called, code_agent called, no write_file
+ *   - Pi-level behavior: code_agent called, no write_file
  *   - code_agent output: success=true, filesChanged non-empty
  *   - Claude Code internal tool calls: template.list, template.copy, Write, Bash
  *
@@ -98,15 +98,6 @@ export const CODE_AGENT_EVALS: AgentEval[] = [
     initialMode: 'none',
     input: 'Create a simple hello world web page with an index.html file that says "Hello World" in a heading.',
     validationCriteria: [
-      {
-        id: 'switches-to-app',
-        description: 'Agent switches to app mode before delegating',
-        points: 2,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'switch_mode') && r.toolCalls.some(
-          t => t.name === 'switch_mode' && JSON.stringify(t.input).includes('app'),
-        ),
-      },
       {
         id: 'delegates-to-code-agent',
         description: 'Agent delegates to code_agent',
