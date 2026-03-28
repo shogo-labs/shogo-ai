@@ -211,6 +211,12 @@ spec:
                   name: api-secrets
                   key: OPENAI_API_KEY
                   optional: true
+            - name: SERPER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SERPER_API_KEY
+                  optional: true
             - name: GOOGLE_API_KEY
               valueFrom:
                 secretKeyRef:
