@@ -144,6 +144,7 @@ apps/desktop/resources/prisma/
 apps/desktop/resources/scripts/
 apps/desktop/resources/templates/
 apps/desktop/resources/runtime-template/
+apps/desktop/resources/canvas-runtime/
 apps/desktop/resources/seed.db
 apps/desktop/resources/package.json
 apps/desktop/resources/bun.lock

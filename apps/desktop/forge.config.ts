@@ -38,6 +38,7 @@ const config: ForgeConfig = {
       './resources/node_modules',
       './resources/templates',
       './resources/runtime-template',
+      './resources/canvas-runtime',
       './resources/seed.db',
       './resources/package.json',
       './prisma',

@@ -262,6 +262,7 @@ function setupSessionHandlers(): void {
         [
           "default-src 'self' shogo:",
           `connect-src 'self' shogo: ${apiOrigin} http://localhost:* ws://localhost:*`,
+          `frame-src 'self' shogo: ${apiOrigin} http://localhost:*`,
           "script-src 'self' shogo: 'unsafe-inline' 'unsafe-eval'",
           "style-src 'self' shogo: 'unsafe-inline'",
           "img-src 'self' shogo: data: blob: https:",

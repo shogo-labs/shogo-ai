@@ -202,6 +202,8 @@ export async function startLocalServer(): Promise<void> {
     PREWARM_CLAUDE_CODE: 'false',
     AGENT_RUNTIME_ENTRY: path.join(bundleDir, 'agent-runtime.js'),
     MCP_SERVER_PATH: path.join(bundleDir, 'mcp-server.js'),
+    CANVAS_RUNTIME_DIST: path.join(projectRoot, 'canvas-runtime'),
+    CANVAS_GLOBALS_DTS: path.join(projectRoot, 'canvas-runtime', 'canvas-globals.d.ts'),
   }
 
   ensureDatabase()

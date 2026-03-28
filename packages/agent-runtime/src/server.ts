@@ -2551,8 +2551,8 @@ app.post('/agent/canvas/action', async (c) => {
   }
 })
 
-// Canvas runtime static files
-const CANVAS_RUNTIME_DIST = resolve(__dirname, '../../canvas-runtime/dist')
+// Canvas runtime static files – allow override via env for bundled desktop builds
+const CANVAS_RUNTIME_DIST = process.env.CANVAS_RUNTIME_DIST || resolve(__dirname, '../../canvas-runtime/dist')
 
 app.get('/canvas/*', (c) => {
   const urlPath = new URL(c.req.url).pathname
