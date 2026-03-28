@@ -14,6 +14,7 @@ import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasWebViewProps {
   agentUrl: string | null
+  onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
 }
 
 interface CanvasEvent {
@@ -94,11 +95,23 @@ function postCanvasAction(
   }).catch(() => {})
 }
 
+function postCanvasError(
+  agentUrl: string,
+  payload: { surfaceId: string; phase: string; error: string },
+) {
+  fetch(`${agentUrl}/agent/canvas/error`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  }).catch(() => {})
+}
+
 // ---------------------------------------------------------------------------
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl }: CanvasWebViewProps) {
+export function CanvasWebView({ agentUrl, onCanvasError }: CanvasWebViewProps) {
   const canvasUrl = agentUrl ? `${agentUrl}/canvas/` : null
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
@@ -124,10 +137,10 @@ export function CanvasWebView({ agentUrl }: CanvasWebViewProps) {
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} />
+    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} onCanvasError={onCanvasError} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} />
+  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} onCanvasError={onCanvasError} />
 }
 
 // ---------------------------------------------------------------------------
@@ -145,9 +158,10 @@ interface BridgeProps {
   agentUrl: string
   sse: ReturnType<typeof useCanvasSSE>
   themeMessage: ThemeMessage | null
+  onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
 }
 
-function CanvasIframe({ url, agentUrl, sse, themeMessage }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, sse, themeMessage, onCanvasError }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
 
@@ -190,12 +204,15 @@ function CanvasIframe({ url, agentUrl, sse, themeMessage }: BridgeProps) {
           name: msg.name,
           context: msg.context,
         })
+      } else if (msg.type === 'canvas-error') {
+        postCanvasError(agentUrl, { surfaceId: msg.surfaceId as string, phase: msg.phase as string, error: msg.error as string })
+        onCanvasError?.(msg.surfaceId as string, msg.phase as 'compile' | 'runtime', msg.error as string)
       }
     }
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [agentUrl, sse, sendToIframe, themeMessage])
+  }, [agentUrl, sse, sendToIframe, themeMessage, onCanvasError])
 
   return (
     <View style={styles.container}>
@@ -218,7 +235,7 @@ function CanvasIframe({ url, agentUrl, sse, themeMessage }: BridgeProps) {
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
-function CanvasNativeWebView({ url, agentUrl, sse, themeMessage }: BridgeProps) {
+function CanvasNativeWebView({ url, agentUrl, sse, themeMessage, onCanvasError }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
@@ -260,9 +277,12 @@ function CanvasNativeWebView({ url, agentUrl, sse, themeMessage }: BridgeProps) 
           name: msg.name,
           context: msg.context,
         })
+      } else if (msg.type === 'canvas-error') {
+        postCanvasError(agentUrl, { surfaceId: msg.surfaceId as string, phase: msg.phase as string, error: msg.error as string })
+        onCanvasError?.(msg.surfaceId as string, msg.phase as 'compile' | 'runtime', msg.error as string)
       }
     } catch {}
-  }, [agentUrl, sse, sendToWebView, themeMessage])
+  }, [agentUrl, sse, sendToWebView, themeMessage, onCanvasError])
 
   return (
     <View style={styles.container}>

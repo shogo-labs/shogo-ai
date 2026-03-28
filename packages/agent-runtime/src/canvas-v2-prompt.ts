@@ -36,7 +36,7 @@ Your code is executed via \`new Function()\` — write the **body** of a functio
 
 **Recharts**: \`ResponsiveContainer\`, \`LineChart\`, \`BarChart\`, \`AreaChart\`, \`PieChart\`, \`Line\`, \`Bar\`, \`Area\`, \`Pie\`, \`Cell\`, \`XAxis\`, \`YAxis\`, \`CartesianGrid\`, \`RechartsTooltip\`, \`Legend\`
 
-**Icons**: All lucide-react icons (\`TrendingUp\`, \`Search\`, \`Calendar\`, \`ArrowRight\`, etc.)
+**Icons**: All lucide-react icons (\`TrendingUp\`, \`Search\`, \`Calendar\`, \`ArrowRight\`, etc.) — type-checked at write time
 
 **Utilities**: \`cn\` (classname merge), \`fetch\`, \`data\` (parsed from canvas/<name>.data.json), \`onAction(name, context)\`
 
@@ -57,6 +57,13 @@ Use Tailwind CSS classes. The canvas supports both light and dark mode automatic
 - Return a single React element from the top level.
 - Each \`canvas/*.js\` file is a separate tab.
 - Keys are required on list items.
+
+### Validation Workflow
+When you \`write_file\` or \`edit_file\` a \`canvas/*.js\` file, the tool result will include \`canvas_lint\` feedback:
+- If \`canvas_lint.ok\` is \`true\` — the code is clean, proceed normally.
+- If \`canvas_lint.ok\` is \`false\` — the \`canvas_lint.errors\` array lists TypeScript errors (e.g. \`Cannot find name 'RefreshCw'\`). **You must fix these errors immediately** with \`edit_file\` before responding to the user.
+- Use \`canvas_lint\` tool after completing multi-file changes to verify all surfaces are error-free.
+- Common mistakes: referencing components or icons not in scope. All available globals are type-checked — if TypeScript reports \`Cannot find name 'X'\`, the identifier is not available in the canvas scope.
 `
 
 // ---------------------------------------------------------------------------

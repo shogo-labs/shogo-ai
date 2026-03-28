@@ -1129,7 +1129,7 @@ export class AgentGateway {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
     }
     if (this.config.canvasMode === 'code') {
-      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
+      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_') || t.name === 'canvas_lint')
     }
 
     // Interaction mode tool restrictions

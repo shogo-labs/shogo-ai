@@ -2502,6 +2502,39 @@ app.get('/agent/canvas/stream', (c) => {
   })
 })
 
+const canvasRuntimeErrors: Array<{ surfaceId: string; phase: string; error: string; timestamp: number }> = []
+const MAX_CANVAS_ERRORS = 20
+
+app.post('/agent/canvas/error', async (c) => {
+  try {
+    const body = await c.req.json() as { surfaceId?: string; phase?: string; error?: string }
+    if (!body.error) return c.json({ error: 'Missing error field' }, 400)
+
+    canvasRuntimeErrors.push({
+      surfaceId: body.surfaceId || 'unknown',
+      phase: body.phase || 'unknown',
+      error: body.error,
+      timestamp: Date.now(),
+    })
+    if (canvasRuntimeErrors.length > MAX_CANVAS_ERRORS) {
+      canvasRuntimeErrors.splice(0, canvasRuntimeErrors.length - MAX_CANVAS_ERRORS)
+    }
+
+    console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}: ${body.error.slice(0, 200)}`)
+    return c.json({ ok: true })
+  } catch {
+    return c.json({ error: 'Invalid request body' }, 400)
+  }
+})
+
+export function getCanvasRuntimeErrors() {
+  return canvasRuntimeErrors
+}
+
+export function clearCanvasRuntimeErrors() {
+  canvasRuntimeErrors.length = 0
+}
+
 app.post('/agent/canvas/action', async (c) => {
   try {
     const body = await c.req.json() as { surfaceId?: string; name?: string; context?: Record<string, unknown> }
