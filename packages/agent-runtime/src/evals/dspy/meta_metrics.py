@@ -19,7 +19,7 @@ ALL_VALID_TOOLS = {
     "exec", "read_file", "write_file", "edit_file", "delete_file",
     "glob", "grep", "ls", "web", "browser",
     "memory_read", "memory_search",
-    "send_message", "cron", "canvas_lint",
+    "send_message", "cron", "read_lints",
     "identity_set", "skill_create",
 }
 

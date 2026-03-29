@@ -34,7 +34,7 @@ import {
   configureAIProxy,
 } from '@shogo/shared-runtime'
 import { buildAgentSystemPrompt } from './system-prompt'
-import { seedWorkspaceDefaults, seedWorkspaceFromTemplate } from './workspace-defaults'
+import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
@@ -147,6 +147,7 @@ function ensureWorkspaceFiles(): void {
   }
 
   seedWorkspaceDefaults(WORKSPACE_DIR)
+  seedLSPConfig(WORKSPACE_DIR)
   logTiming('Workspace defaults seeded')
 
   // Migrate legacy APP layout: if package.json exists at workspace root (no AGENTS.md),

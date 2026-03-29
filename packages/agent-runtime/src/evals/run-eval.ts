@@ -37,7 +37,7 @@ for (const envFile of ['.env.local', '.env']) {
   }
 }
 import { runEval } from './runner'
-import { resetWorkspaceDefaults } from '../workspace-defaults'
+import { resetWorkspaceDefaults, seedLSPConfig } from '../workspace-defaults'
 import { encodeSecurityPolicy } from '../permission-engine'
 import { CANVAS_EVALS } from './test-cases-canvas'
 import { COMPLEX_EVALS } from './test-cases-complex'
@@ -264,15 +264,17 @@ async function runEvalOnWorker(
       const p = join(worker.dir, sub)
       try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}
     }
+    const keepFiles = new Set(['sessions.db', 'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json'])
     try {
       for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
-        if (entry.isFile() && !entry.name.startsWith('sessions.db')) {
+        if (entry.isFile() && !keepFiles.has(entry.name)) {
           try { rmSync(join(worker.dir, entry.name), { force: true }) } catch {}
         }
       }
     } catch {}
   }
   resetWorkspaceDefaults(worker.dir)
+  seedLSPConfig(worker.dir)
 
   if (verboseFlag) console.log(`      [setup] Seeding workspace files...`)
 

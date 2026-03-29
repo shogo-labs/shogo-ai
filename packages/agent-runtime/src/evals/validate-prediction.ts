@@ -413,7 +413,7 @@ function validateSkill(input: Record<string, unknown>): ValidationResult {
     'exec', 'read_file', 'write_file', 'edit_file', 'delete_file',
     'glob', 'grep', 'ls', 'web', 'browser',
     'memory_read', 'memory_search',
-    'send_message', 'cron', 'canvas_lint',
+    'send_message', 'cron', 'read_lints',
   ])
   const tools = requiredTools.split(',').map(t => t.trim()).filter(Boolean)
   const allValid = tools.every(t => VALID_TOOLS.has(t))
@@ -448,7 +448,7 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
     'exec', 'read_file', 'write_file', 'edit_file', 'delete_file',
     'glob', 'grep', 'ls', 'web', 'browser',
     'memory_read', 'memory_search',
-    'send_message', 'cron', 'canvas_lint',
+    'send_message', 'cron', 'read_lints',
   ])
 
   const tools = plannedSequence.split(',').map(t => t.trim()).filter(Boolean)

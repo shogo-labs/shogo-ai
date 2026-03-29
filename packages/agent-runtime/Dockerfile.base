@@ -38,7 +38,7 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/rep
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code typescript-language-server typescript pyright
 
 ENV SHELL=/bin/bash
 

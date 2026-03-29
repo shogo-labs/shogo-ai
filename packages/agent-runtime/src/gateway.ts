@@ -19,7 +19,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
@@ -43,6 +44,7 @@ import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
+import { WorkspaceLSPManager } from '@shogo/shared-runtime'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import type { FilePart } from './file-attachment-utils'
@@ -239,6 +241,8 @@ export class AgentGateway {
   private evalLabel: string | null = null
   /** Manages the per-workspace skill server process (.shogo/server/) */
   private skillServerManager: SkillServerManager
+  /** Multi-language LSP manager for read_lints diagnostics */
+  private lspManager: WorkspaceLSPManager | null = null
   /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
   private get canvasFileWatcher(): CanvasFileWatcher {
     return CanvasFileWatcher.getInstance(this.workspaceDir)
@@ -513,13 +517,41 @@ export class AgentGateway {
       })
     )
 
+    // Start LSP for canvas code diagnostics (fire-and-forget — don't block startup)
+    if (this.config.canvasMode === 'code') {
+      this.startLSP().catch(err => {
+        console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
+      })
+    }
+
     console.log('[AgentGateway] Started successfully')
     this.emitLog('Agent gateway started')
+  }
+
+  private async startLSP(): Promise<void> {
+    try {
+      const thisDir = dirname(fileURLToPath(import.meta.url))
+      const tsBin = join(thisDir, '..', 'node_modules', '.bin', 'typescript-language-server')
+      const pyBin = join(thisDir, '..', 'node_modules', '.bin', 'pyright')
+      this.lspManager = new WorkspaceLSPManager({
+        projectDir: this.workspaceDir,
+        tsServerBin: existsSync(tsBin) ? tsBin : undefined,
+        pyrightBin: existsSync(pyBin) ? pyBin : undefined,
+      })
+      await this.lspManager.startAll()
+      console.log(`${this.logPrefix} LSP ready for workspace: ${this.workspaceDir}`)
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} LSP init failed:`, err.message)
+      this.lspManager = null
+    }
   }
 
   async stop(): Promise<void> {
     console.log('[AgentGateway] Stopping...')
     this.running = false
+
+    this.lspManager?.stop()
+    this.lspManager = null
 
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
@@ -1097,6 +1129,7 @@ export class AgentGateway {
       canvasFileWatcher: this.config.canvasMode === 'code'
         ? this.canvasFileWatcher
         : undefined,
+      lspManager: this.lspManager ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1146,7 +1179,7 @@ export class AgentGateway {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
     }
     if (this.config.canvasMode === 'code') {
-      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_') || t.name === 'canvas_lint')
+      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
     }
 
     // Interaction mode tool restrictions

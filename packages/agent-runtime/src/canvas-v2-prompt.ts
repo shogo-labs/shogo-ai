@@ -54,10 +54,10 @@ Use Tailwind CSS classes. The canvas supports both light and dark mode automatic
 - Keys are required on list items.
 
 ### Validation Workflow
-When you \`write_file\` or \`edit_file\` a \`canvas/*.ts\` file, the tool result will include \`canvas_lint\` feedback:
-- If \`canvas_lint.ok\` is \`true\` — the code is clean, proceed normally.
-- If \`canvas_lint.ok\` is \`false\` — the \`canvas_lint.errors\` array lists TypeScript errors (e.g. \`Cannot find name 'RefreshCw'\`). **You must fix these errors immediately** with \`edit_file\` before responding to the user.
-- Use \`canvas_lint\` tool after completing multi-file changes to verify all surfaces are error-free.
+After writing or editing a \`canvas/*.ts\` file, **always** call \`read_lints\` to check for TypeScript errors:
+- If \`read_lints\` returns \`ok: true\` — the code is clean, proceed normally.
+- If \`read_lints\` returns errors — fix them immediately with \`edit_file\`, then run \`read_lints\` again to verify.
+- Use \`read_lints\` after completing multi-file changes to verify all surfaces are error-free.
 - Common mistakes: referencing components or icons not in scope. All available globals are type-checked — if TypeScript reports \`Cannot find name 'X'\`, the identifier is not available in the canvas scope.
 `
 
