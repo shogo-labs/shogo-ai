@@ -16,6 +16,7 @@
 
 import { spawn, type Subprocess } from 'bun'
 import { execSync } from 'child_process'
+import { createServer } from 'net'
 import {
   mkdirSync, rmSync, existsSync, writeFileSync, readFileSync,
   readdirSync, appendFileSync, statSync, cpSync,
@@ -81,7 +82,7 @@ const PRICING: Record<string, { input: number; output: number; cacheRead: number
   sonnet: { input: 0.000003,  output: 0.000015,   cacheRead: 0.0000003,  cacheWrite: 0.00000375 },
 }
 
-let nextPort = 7200
+let nextPort = 7200 + Math.floor(Math.random() * 500) // randomize start to avoid collisions with prior runs
 const AGENT_RUNTIME_SERVER = resolve(REPO_ROOT, 'packages/agent-runtime/src/server.ts')
 
 // ---------------------------------------------------------------------------
@@ -150,42 +151,68 @@ interface Worker {
   process: Subprocess | null
 }
 
-function isPortFree(port: number): boolean {
+/**
+ * Find a free port by letting the OS assign one (port 0), then close and
+ * return the assigned port. This avoids the TOCTOU race where our bind
+ * test releases the port and Bun can't rebind it due to TIME_WAIT.
+ *
+ * We space ports apart using nextPort as a minimum to avoid clustering.
+ */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', (err) => reject(err))
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      const port = typeof addr === 'object' && addr ? addr.port : 0
+      server.close(() => {
+        if (port > 0) {
+          nextPort = Math.max(nextPort, port + 1)
+          resolve(port)
+        } else {
+          reject(new Error('OS assigned port 0'))
+        }
+      })
+    })
+  })
+}
+
+/**
+ * Kill any leftover bun/node processes listening on ports in our range.
+ */
+function aggressiveCleanup(): void {
+  console.log('Cleaning up lingering processes...')
   try {
     if (process.platform === 'win32') {
-      const out = execSync(
-        `powershell -Command "(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue).Count"`,
-        { stdio: 'pipe', encoding: 'utf-8' },
-      ).trim()
-      return out === '0' || out === ''
+      // Kill any bun.exe processes that aren't us
+      const myPid = process.pid
+      try {
+        const out = execSync(
+          'powershell -Command "Get-Process bun -ErrorAction SilentlyContinue | Select-Object Id | ForEach-Object { $_.Id }"',
+          { encoding: 'utf-8', timeout: 10_000, stdio: 'pipe' },
+        ).trim()
+        for (const line of out.split('\n')) {
+          const pid = parseInt(line.trim())
+          if (pid && pid !== myPid) {
+            try { process.kill(pid, 'SIGTERM') } catch {}
+          }
+        }
+      } catch {}
     } else {
-      execSync(`lsof -ti:${port}`, { stdio: 'pipe' })
-      return false
+      // On Unix, kill processes in our port range
+      for (let port = 7200; port < 7800; port++) {
+        try {
+          const pid = execSync(`lsof -ti:${port}`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+          if (pid) { try { process.kill(parseInt(pid), 'SIGTERM') } catch {} }
+        } catch {}
+      }
     }
-  } catch {
-    return true
-  }
-}
-
-async function waitForPort(port: number, timeoutMs = 15_000): Promise<void> {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    if (isPortFree(port)) return
-    await Bun.sleep(1_000)
-  }
-  console.warn(`  Port ${port} still in use after ${timeoutMs}ms, proceeding anyway`)
-}
-
-function findFreePort(): number {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const port = nextPort++
-    if (isPortFree(port)) return port
-  }
-  throw new Error('Could not find a free port after 100 attempts')
+  } catch {}
+  // Brief pause for OS to release sockets
 }
 
 async function startWorker(id: number, workspaceDir?: string): Promise<Worker> {
-  const port = findFreePort()
+  const port = await findFreePort()
   const dir = workspaceDir || resolve(tmpdir(), `swe-bench-worker-${id}`)
 
   console.log(`  Starting worker ${id} on port ${port}...`)
@@ -275,6 +302,20 @@ function prepWorkspace(workerId: number, instance: SWEBenchInstance): string {
     stdio: 'pipe',
   })
 
+  // Pre-install repo dependencies so the agent doesn't waste iterations on pip install
+  try {
+    if (verboseFlag) console.log(`      [prep] Installing dependencies...`)
+    execSync('pip install -e . 2>&1', {
+      cwd: workDir,
+      timeout: 180_000,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      maxBuffer: 5 * 1024 * 1024,
+    })
+  } catch (err: any) {
+    if (verboseFlag) console.log(`      [prep] pip install failed (non-fatal): ${err.message?.slice(0, 100)}`)
+  }
+
   return workDir
 }
 
@@ -282,32 +323,88 @@ function prepWorkspace(workerId: number, instance: SWEBenchInstance): string {
 // Patch extraction — git diff after agent edits
 // ---------------------------------------------------------------------------
 
-function extractPatch(repoDir: string): string {
+const JUNK_FILE_PATTERNS = [
+  'debug_*.py', 'test_*.py', 'reproduce_*.py', 'check_*.py',
+  'verify_*.py', 'tmp_*.py', 'temp_*.py',
+]
+
+const SHOGO_WORKSPACE_FILES = [
+  '.mcp.json', 'AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md',
+  'MEMORY.md', 'TOOLS.md', 'CLAUDE.md', 'BOOT.md',
+]
+
+const GIT_TIMEOUT = 120_000
+const GIT_MAX_BUFFER = 10 * 1024 * 1024
+
+function cleanupJunkFiles(repoDir: string): void {
   try {
-    const tracked = execSync('git diff', {
-      cwd: repoDir,
-      timeout: 30_000,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      maxBuffer: 10 * 1024 * 1024,
-    }).trim()
-
-    if (tracked) return tracked
-
-    // If no tracked changes, check if there are new source files
+    const globs = JUNK_FILE_PATTERNS.map(p => `'${p}'`).join(' ')
+    execSync(`git checkout -- ${globs}`, {
+      cwd: repoDir, timeout: 10_000, stdio: 'pipe',
+    })
+  } catch {}
+  // Remove untracked junk files
+  try {
+    for (const pattern of JUNK_FILE_PATTERNS) {
+      execSync(`git clean -f -- ${pattern}`, {
+        cwd: repoDir, timeout: 10_000, stdio: 'pipe',
+      })
+    }
+  } catch {}
+  // Remove Shogo workspace files that the gateway creates on startup
+  for (const file of SHOGO_WORKSPACE_FILES) {
     try {
-      execSync('git add -A', { cwd: repoDir, timeout: 30_000, stdio: 'pipe' })
-      const staged = execSync('git diff --cached', {
-        cwd: repoDir, timeout: 30_000, encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 10 * 1024 * 1024,
-      }).trim()
-      execSync('git reset HEAD', { cwd: repoDir, timeout: 30_000, stdio: 'pipe' })
-      return staged
-    } catch { return '' }
-  } catch (err: any) {
-    console.warn(`      [patch] git diff failed: ${err.message}`)
-    return ''
+      execSync(`git checkout -- "${file}"`, { cwd: repoDir, timeout: 5_000, stdio: 'pipe' })
+    } catch {}
+    try {
+      execSync(`git clean -f -- "${file}"`, { cwd: repoDir, timeout: 5_000, stdio: 'pipe' })
+    } catch {}
   }
+  // Remove .shogo/ directory and memory/ directory
+  for (const dir of ['.shogo', 'memory']) {
+    try {
+      execSync(`git clean -fd -- "${dir}"`, { cwd: repoDir, timeout: 5_000, stdio: 'pipe' })
+    } catch {}
+  }
+}
+
+function extractPatch(repoDir: string, maxRetries = 2): string {
+  cleanupJunkFiles(repoDir)
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const tracked = execSync('git diff', {
+        cwd: repoDir,
+        timeout: GIT_TIMEOUT,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: GIT_MAX_BUFFER,
+      }).trim()
+
+      if (tracked) return tracked
+
+      // If no tracked changes, check if there are new source files
+      try {
+        execSync('git add -A', { cwd: repoDir, timeout: GIT_TIMEOUT, stdio: 'pipe' })
+        const staged = execSync('git diff --cached', {
+          cwd: repoDir, timeout: GIT_TIMEOUT, encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: GIT_MAX_BUFFER,
+        }).trim()
+        execSync('git reset HEAD', { cwd: repoDir, timeout: GIT_TIMEOUT, stdio: 'pipe' })
+        return staged
+      } catch { return '' }
+    } catch (err: any) {
+      console.warn(`      [patch] git diff attempt ${attempt}/${maxRetries} failed: ${err.message}`)
+      if (attempt < maxRetries) {
+        // Brief pause before retry
+        const { execSync: syncExec } = require('child_process')
+        try { syncExec('sleep 2 || timeout /t 2 >nul', { timeout: 5_000, stdio: 'pipe' }) } catch {}
+      }
+    }
+  }
+
+  console.warn(`      [patch] all ${maxRetries} attempts failed`)
+  return ''
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +550,9 @@ process.on('exit', (code) => { if (code !== 0 && code !== 130 && code !== 143) c
 // ---------------------------------------------------------------------------
 
 async function main() {
+  aggressiveCleanup()
+  await Bun.sleep(2_000) // let OS release sockets
+
   console.log('')
   console.log('='.repeat(60))
   console.log('SWE-BENCH LITE BENCHMARK')
@@ -467,8 +567,11 @@ async function main() {
   const instances = loadInstances()
   let filtered = instances
   if (filterArg) {
-    const f = filterArg.toLowerCase()
-    filtered = instances.filter(i => i.instance_id.toLowerCase().includes(f))
+    const patterns = filterArg.toLowerCase().split(',').map(s => s.trim()).filter(Boolean)
+    filtered = instances.filter(i => {
+      const id = i.instance_id.toLowerCase()
+      return patterns.some(p => id.includes(p))
+    })
   }
 
   const uniqueRepos = [...new Set(filtered.map(i => i.repo))]

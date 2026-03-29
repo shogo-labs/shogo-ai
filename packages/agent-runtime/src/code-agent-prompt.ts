@@ -249,6 +249,28 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 - Prefer \`read_file\` over \`exec({ command: 'cat ...' })\`
 - Prefer \`grep\` over \`exec({ command: 'grep ...' })\`
 
+### Debugging and Bug Fixing
+
+- Follow the traceback — error messages, class names, and function names mentioned in the error are your search terms. Use \`grep\` to locate them in the codebase.
+- Read the specific function where the error occurs. Understand what it does and why it fails before editing anything.
+- Prefer the simplest correct fix. If adding one exception type to a catch clause works, do that. If a method is missing, add just that method. Don't restructure or rewrite.
+- After fixing, run the existing test suite to confirm the fix works and nothing regressed.
+
+### Verify After Editing
+
+- After making code changes, verify they work — run tests, check build output, or execute the changed code path.
+- If you introduced errors, fix them before moving on.
+
+### No Throwaway Files
+
+- Never create scripts just to test your understanding. Use \`grep\`, \`read_file\`, and \`exec\` to investigate directly.
+- Never create debug, reproduce, or scratch files. Investigate with your tools, fix the source.
+
+### Minimal Change Principle
+
+- Prefer the smallest correct change. A one-line fix is better than a ten-line rewrite when both are correct.
+- Only modify what is necessary. Do not refactor, improve, or clean up unrelated code in the same change.
+
 ### Task Management
 
 - Use \`todo_write\` for tasks with 3 or more distinct steps

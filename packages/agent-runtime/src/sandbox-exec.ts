@@ -16,6 +16,48 @@ import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { SandboxConfig } from './types'
 
+// ---------------------------------------------------------------------------
+// Windows shell resolution — use Git Bash when available so Unix commands
+// (head, tail, grep, find, cat, wc, xargs, pipes …) work transparently.
+// ---------------------------------------------------------------------------
+
+let _resolvedShell: string | undefined | false = false // false = not yet resolved
+
+function resolveShell(): string | undefined {
+  if (_resolvedShell !== false) return _resolvedShell || undefined
+
+  if (process.platform !== 'win32') {
+    _resolvedShell = undefined
+    return undefined
+  }
+
+  const candidates = [
+    join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+    join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
+  ]
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      _resolvedShell = candidate
+      return candidate
+    }
+  }
+
+  // Last resort: check PATH
+  try {
+    const result = execSync('where.exe bash', { encoding: 'utf-8', timeout: 5_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+    const firstLine = result.split('\n')[0]?.trim()
+    if (firstLine && existsSync(firstLine)) {
+      _resolvedShell = firstLine
+      return firstLine
+    }
+  } catch {}
+
+  _resolvedShell = undefined
+  return undefined
+}
+
 // Project-scoped env vars that are safe for the agent to read.
 // These are derived per-project (HMAC of projectId + signing secret),
 // so even if the agent reads them, the blast radius is zero.
@@ -240,6 +282,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
 }
 
 function nativeExec(command: string, cwd: string, timeout?: number): SandboxExecResult {
+  const shell = resolveShell()
   try {
     const stdout = execSync(command, {
       cwd,
@@ -247,6 +290,7 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
       env: { ...getSanitizedEnv(), ...loadWorkspaceEnv(cwd) },
+      ...(shell ? { shell } : {}),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: false }
   } catch (err: any) {

@@ -53,9 +53,9 @@ export interface PruningConfig {
 }
 
 const DEFAULT_PRUNING: PruningConfig = {
-  keepLastTurns: 3,
-  softTrimMaxChars: 4000,
-  hardClearAfterTurns: 8,
+  keepLastTurns: 4,
+  softTrimMaxChars: 8000,
+  hardClearAfterTurns: 12,
 }
 
 // ---------------------------------------------------------------------------
@@ -470,8 +470,17 @@ export class SessionManager {
     const parts: string[] = []
     for (const msg of messages) {
       const text = this.extractText(msg)
-      if (text) {
-        const trimmed = text.length > 200 ? text.substring(0, 200) + '...' : text
+      if (!text) continue
+
+      if (msg.role === 'toolResult') {
+        // Tool results: keep error messages in full, truncate success output
+        const isError = /error|failed|not found/i.test(text.substring(0, 200))
+        const limit = isError ? 800 : 300
+        const trimmed = text.length > limit ? text.substring(0, limit) + '...' : text
+        parts.push(`toolResult: ${trimmed}`)
+      } else {
+        const limit = msg.role === 'user' ? 600 : 400
+        const trimmed = text.length > limit ? text.substring(0, limit) + '...' : text
         parts.push(`${msg.role}: ${trimmed}`)
       }
     }
