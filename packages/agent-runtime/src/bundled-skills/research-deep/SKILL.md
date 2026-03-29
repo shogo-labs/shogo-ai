@@ -3,7 +3,7 @@ name: research-deep
 version: 2.0.0
 description: Deep research on a topic — search multiple sources, build a canvas dashboard with findings
 trigger: "research|look up|find out about|deep dive|analyze|compare"
-tools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write]
+tools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, write_file]
 ---
 
 # Deep Research
@@ -18,7 +18,7 @@ When triggered, perform thorough multi-source research and present on canvas:
    - "Key Takeaways" card at top with bullet points
    - Table of articles/sources (title, source, summary, link)
    - Topic breakdown (categories or comparison table)
-5. **Persist** — Save findings to memory for future reference via `memory_write`
+5. **Persist** — Save findings to MEMORY.md for future reference via `write_file`
 
 Use canvas_api_schema to define an Article model (title, source, summary, url, category) so the user can mark articles as read.
 

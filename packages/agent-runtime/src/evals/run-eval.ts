@@ -52,7 +52,7 @@ import { FILE_UPLOAD_EVALS } from './test-cases-file-upload'
 import { REAL_DATA_EVALS } from './test-cases-real-data'
 import { TRIP_PLANNER_EVALS } from './test-cases-trip-planner'
 import { TEMPLATE_EVALS } from './test-cases-template'
-import { RESPONSE_TRANSFORM_EVALS } from './test-cases-response-transforms'
+import { DATA_PROCESSING_EVALS } from './test-cases-data-processing'
 import { CODE_AGENT_EVALS } from './test-cases-code-agent'
 import { CODE_AGENT_V2_EVALS } from './test-cases-code-agent-v2'
 import { CANVAS_V2_EVALS } from './test-cases-canvas-v2'
@@ -61,6 +61,7 @@ import { SKILL_SYSTEM_EVALS } from './test-cases-skill-system'
 import { SKILL_SERVER_EVALS } from './test-cases-skill-server'
 import { SKILL_SERVER_TEMPLATE_EVALS } from './test-cases-skill-server-templates'
 import { EDIT_FILE_EVALS } from './test-cases-edit-file'
+import { CHANNEL_CONNECT_EVALS } from './test-cases-channel-connect'
 import { CANVAS_V2_LINT_EVALS } from './test-cases-canvas-v2-lint'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
@@ -92,6 +93,7 @@ const MODEL_MAP: Record<string, string> = {
 }
 
 const BASE_PORT = 6400
+const SKILL_SERVER_BASE_PORT = 4100
 const REPO_ROOT = resolve(import.meta.dir, '../../../..')
 const AGENT_RUNTIME_SERVER = resolve(REPO_ROOT, 'packages/agent-runtime/src/server.ts')
 
@@ -117,7 +119,7 @@ function getEvals(track: string): AgentEval[] {
     case 'real-data': return REAL_DATA_EVALS
     case 'trip-planner': return TRIP_PLANNER_EVALS
     case 'template': return TEMPLATE_EVALS
-    case 'response-transform': return RESPONSE_TRANSFORM_EVALS
+    case 'data-processing': return DATA_PROCESSING_EVALS
     case 'code-agent': return CODE_AGENT_EVALS
     case 'code-agent-v2': return CODE_AGENT_V2_EVALS
     case 'canvas-v2': return CANVAS_V2_EVALS
@@ -127,9 +129,10 @@ function getEvals(track: string): AgentEval[] {
     case 'skill-server': return SKILL_SERVER_EVALS
     case 'skill-server-templates': return SKILL_SERVER_TEMPLATE_EVALS
     case 'edit-file': return EDIT_FILE_EVALS
-    case 'all': return [...CANVAS_EVALS, ...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...EDIT_FILE_EVALS]
+    case 'channel-connect': return CHANNEL_CONNECT_EVALS
+    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, edit-file, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, edit-file, channel-connect, all`)
       process.exit(1)
   }
 }
@@ -152,12 +155,14 @@ async function startWorker(id: number): Promise<Worker> {
 
   console.log(`  Starting worker ${id} on port ${port}...`)
 
-  // Kill any stale process on this port BEFORE cleaning the directory
+  const skillServerPort = SKILL_SERVER_BASE_PORT + id
+
+  // Kill any stale process on agent and skill server ports BEFORE cleaning the directory
   try {
     if (process.platform === 'win32') {
-      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
+      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${port},${skillServerPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
     } else {
-      execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
+      execSync(`lsof -ti:${port} -ti:${skillServerPort} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
     }
   } catch {}
   await Bun.sleep(500)
@@ -175,6 +180,7 @@ async function startWorker(id: number): Promise<Worker> {
     env: {
       ...process.env,
       PORT: String(port),
+      SKILL_SERVER_PORT: String(skillServerPort),
       WORKSPACE_DIR: dir,
       AGENT_DIR: dir,
       PROJECT_DIR: dir,
@@ -216,11 +222,12 @@ async function startWorker(id: number): Promise<Worker> {
 
 function stopWorker(w: Worker) {
   w.process?.kill()
+  const skillPort = SKILL_SERVER_BASE_PORT + w.id
   try {
     if (process.platform === 'win32') {
-      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${w.port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
+      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${w.port},${skillPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
     } else {
-      execSync(`lsof -ti:${w.port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
+      execSync(`lsof -ti:${w.port} -ti:${skillPort} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
     }
   } catch {}
   if (existsSync(w.dir)) rmSync(w.dir, { recursive: true, force: true })
@@ -257,7 +264,7 @@ async function runEvalOnWorker(
     }
     try {
       for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
-        if (entry.isFile()) {
+        if (entry.isFile() && !entry.name.startsWith('sessions.db')) {
           try { rmSync(join(worker.dir, entry.name), { force: true }) } catch {}
         }
       }
@@ -296,8 +303,13 @@ async function runEvalOnWorker(
 
   if (verboseFlag) console.log(`      [setup] Resetting session...`)
 
+  const evalLabel = `E${index + 1}:${ev.name.replace(/^[^:]*:\s*/, '').toLowerCase().replace(/\s+/g, '-').substring(0, 30)}`
   try {
-    await fetch(`http://localhost:${worker.port}/agent/session/reset`, { method: 'POST' })
+    await fetch(`http://localhost:${worker.port}/agent/session/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ evalLabel }),
+    })
   } catch (e: any) {
     console.warn(`      [setup] Session reset failed: ${e.message}`)
   }
@@ -331,7 +343,7 @@ async function runEvalOnWorker(
   if (verboseFlag) console.log(`      [setup] Sending eval prompt...`)
 
   const startTime = Date.now()
-  console.log(`[${index + 1}/${total}] Worker ${worker.id}: ${ev.name}`)
+  console.log(`[${evalLabel}] Worker ${worker.id}: ${ev.name}`)
 
   try {
     const result = await runEval(ev, {
@@ -346,10 +358,10 @@ async function runEvalOnWorker(
     const tokInfo = result.metrics.tokens.total > 0
       ? ` [${result.metrics.tokens.input}+${result.metrics.tokens.output} tok]`
       : ''
-    console.log(`[${index + 1}/${total}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
+    console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
     return result
   } catch (err: any) {
-    console.error(`[${index + 1}/${total}] ERROR ${ev.name}: ${err.message}`)
+    console.error(`[${evalLabel}] ERROR ${ev.name}: ${err.message}`)
     return {
       eval: ev,
       passed: false,
@@ -453,33 +465,35 @@ async function main() {
 
   const overallStart = Date.now()
   const results: EvalResult[] = []
-  const evalQueue = [...evals]
-  const running = new Map<number, Promise<void>>()
   const partialPath = resolve(tmpdir(), `agent-eval-partial-${modelArg}-${trackArg}.json`)
 
-  // Run evals sequentially, restarting worker between evals to avoid
-  // Bun native crashes from accumulated state / resource leaks on Windows.
-  for (let i = 0; i < evals.length; i++) {
-    const ev = evals[i]
-    const worker = workers[i % workers.length]
+  // Parallel work-pool: each worker pulls the next eval from the queue
+  let nextIndex = 0
+  async function workerLoop(worker: Worker) {
+    while (nextIndex < evals.length) {
+      const i = nextIndex++
+      const ev = evals[i]
 
-    // Restart the worker process between evals to prevent native crashes
-    if (i > 0) {
-      if (verboseFlag) console.log(`      [lifecycle] Restarting worker ${worker.id}...`)
-      stopWorker(worker)
-      await Bun.sleep(1_000)
-      const fresh = await startWorker(worker.id)
-      Object.assign(worker, fresh)
-    }
+      // Recycle worker between evals to prevent accumulated state issues
+      if (i >= workers.length) {
+        if (verboseFlag) console.log(`      [lifecycle] Restarting worker ${worker.id}...`)
+        stopWorker(worker)
+        await Bun.sleep(500)
+        const fresh = await startWorker(worker.id)
+        Object.assign(worker, fresh)
+      }
 
-    try {
-      const result = await runEvalOnWorker(worker, ev, i, evals.length)
-      results.push(result)
-      try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
-    } catch (err: any) {
-      console.error(`[Worker ${worker.id}] Eval failed: ${err?.message || err}`)
+      try {
+        const result = await runEvalOnWorker(worker, ev, i, evals.length)
+        results.push(result)
+        try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
+      } catch (err: any) {
+        console.error(`[Worker ${worker.id}] Eval failed: ${err?.message || err}`)
+      }
     }
   }
+
+  await Promise.all(workers.map(w => workerLoop(w)))
 
   const totalTime = (Date.now() - overallStart) / 1000
 

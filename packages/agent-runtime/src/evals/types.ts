@@ -28,6 +28,7 @@ export type EvalCategory =
   | 'code-agent'
   | 'canvas-v2'
   | 'edit-file'
+  | 'channel-connect'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 

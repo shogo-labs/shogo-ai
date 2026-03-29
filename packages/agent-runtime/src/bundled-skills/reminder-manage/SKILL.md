@@ -3,7 +3,7 @@ name: reminder-manage
 version: 2.0.0
 description: Set and manage reminders — store in memory, check on heartbeat, notify when due
 trigger: "remind me|set reminder|reminder|don't forget|remember to|alarm|due"
-tools: [memory_read, memory_write, send_message]
+tools: [memory_read, write_file, send_message]
 ---
 
 # Reminder Management
@@ -14,7 +14,7 @@ Manage reminders stored in agent memory:
    - What to remember
    - When (specific time, relative time, or recurring)
    - Priority (high for urgent, normal for standard)
-   - Store via `memory_write` with key like "reminder_[timestamp]"
+   - Store via `write_file` to MEMORY.md
 2. **Check reminders** — On every heartbeat:
    - Read all reminders from memory
    - Check which ones are due (compare to current time)

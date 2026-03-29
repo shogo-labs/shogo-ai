@@ -3,7 +3,7 @@ name: revenue-snapshot
 version: 2.0.0
 description: Pull revenue metrics from Stripe and build a financial dashboard on canvas
 trigger: "revenue|mrr|payments|balance|stripe|financial|how much"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_bind, memory_write]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_bind, write_file]
 ---
 
 # Revenue Snapshot

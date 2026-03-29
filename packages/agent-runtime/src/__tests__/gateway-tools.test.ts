@@ -144,21 +144,6 @@ describe('gateway-tools', () => {
     })
   })
 
-  describe('memory_write', () => {
-    test('writes to MEMORY.md', async () => {
-      await exec(createCtx(), 'memory_write', { file: 'MEMORY.md', content: '# Memory\nNew fact', append: false })
-      expect(readFileSync(join(TEST_DIR, 'MEMORY.md'), 'utf-8')).toBe('# Memory\nNew fact')
-    })
-
-    test('appends to daily log', async () => {
-      mkdirSync(join(TEST_DIR, 'memory'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'memory', '2026-02-18.md'), 'existing')
-      await exec(createCtx(), 'memory_write', { file: '2026-02-18', content: '\nnew entry' })
-      const content = readFileSync(join(TEST_DIR, 'memory', '2026-02-18.md'), 'utf-8')
-      expect(content).toContain('existing')
-      expect(content).toContain('new entry')
-    })
-  })
 
   describe('send_message', () => {
     test('sends via a connected channel', async () => {

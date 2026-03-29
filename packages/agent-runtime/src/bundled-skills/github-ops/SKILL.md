@@ -3,7 +3,7 @@ name: github-ops
 version: 2.0.0
 description: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on canvas
 trigger: "check github|repo status|ci status|pr review|open prs|pull requests"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, write_file, send_message]
 ---
 
 # GitHub Ops

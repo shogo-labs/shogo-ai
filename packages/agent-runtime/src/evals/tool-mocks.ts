@@ -2915,40 +2915,108 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
   },
 }
 
+
 // ---------------------------------------------------------------------------
-// Fixture: Response Transform — Large GitHub Issues (truncated)
-// Returns 80k+ response that will trigger truncation
+// Fixture: Data Processing — Massive GitHub issues (~1M chars)
+// Agent must use skill server to ingest/trim data
 // ---------------------------------------------------------------------------
 
-function generateLargeIssuesMock(): any {
-  const items = Array.from({ length: 200 }, (_, i) => ({
+function generateMassiveIssuesMock(): any {
+  const titles = ['Fix SSO login flow', 'Memory leak in WS handler', 'Add dark mode toggle', 'Upgrade React to v19', 'Fix pagination in search results',
+    'Refactor auth middleware', 'Add rate limiting', 'Fix CORS headers', 'Improve error messages', 'Add WebSocket reconnection']
+  const labelNames = ['bug', 'enhancement', 'documentation', 'performance', 'security', 'ux', 'infra', 'deps', 'breaking', 'good-first-issue']
+  const items = Array.from({ length: 500 }, (_, i) => ({
     number: i + 1,
-    title: ['Fix SSO login flow', 'Memory leak in WS handler', 'Add dark mode toggle', 'Upgrade React to v19', 'Fix pagination in search results'][i % 5],
+    title: titles[i % titles.length],
     state: i % 4 === 0 ? 'closed' : 'open',
-    body: `This is a detailed issue description for issue ${i + 1}. `.repeat(30),
-    labels: [
-      { id: 100 + i, name: ['bug', 'enhancement', 'documentation', 'performance', 'security'][i % 5], color: 'fc2929' },
-      { id: 200 + i, name: ['priority:high', 'priority:medium', 'priority:low'][i % 3], color: '0e8a16' },
-    ],
-    assignee: { login: `user${i % 5}`, id: 1000 + i, avatar_url: `https://avatars.githubusercontent.com/u/${1000 + i}?v=4`, type: 'User' },
-    milestone: i % 3 === 0 ? { number: 1, title: 'v2.0', description: 'Major release with breaking changes' } : null,
+    body: `This is a detailed issue description for issue ${i + 1}. It contains important context about the problem, reproduction steps, expected behavior, and various technical details that make the response very large. `.repeat(80),
+    labels: Array.from({ length: 3 }, (_, j) => ({
+      id: 100 * j + i, name: labelNames[(i + j) % labelNames.length], color: 'fc2929',
+      description: `Label description for ${labelNames[(i + j) % labelNames.length]} category with extra metadata.`,
+    })),
+    assignee: { login: `user${i % 10}`, id: 1000 + i, avatar_url: `https://avatars.githubusercontent.com/u/${1000 + i}?v=4`, type: 'User', site_admin: false, gravatar_id: '', html_url: `https://github.com/user${i % 10}` },
+    assignees: Array.from({ length: 3 }, (_, j) => ({ login: `user${(i + j) % 10}`, id: 1000 + i + j, avatar_url: `https://avatars.githubusercontent.com/u/${1000 + i + j}?v=4`, type: 'User' })),
+    milestone: { number: (i % 3) + 1, title: `v${2 + (i % 3)}.0`, description: 'Major release with breaking changes and new features planned for Q2', state: 'open', open_issues: 42, closed_issues: 18 },
     created_at: `2026-0${1 + (i % 3)}-${String(1 + (i % 28)).padStart(2, '0')}T10:00:00Z`,
     updated_at: '2026-03-01T14:30:00Z',
-    comments: i * 2,
+    closed_at: i % 4 === 0 ? '2026-03-01T15:00:00Z' : null,
+    comments: Math.floor(Math.random() * 200),
     html_url: `https://github.com/acme/app/issues/${i + 1}`,
-    reactions: { '+1': i % 10, '-1': 0, laugh: 0, hooray: i % 5, confused: 0, heart: i % 3, rocket: i % 7, eyes: i % 4 },
+    events_url: `https://api.github.com/repos/acme/app/issues/${i + 1}/events`,
+    comments_url: `https://api.github.com/repos/acme/app/issues/${i + 1}/comments`,
+    labels_url: `https://api.github.com/repos/acme/app/issues/${i + 1}/labels{/name}`,
+    reactions: { '+1': i % 10, '-1': i % 3, laugh: i % 7, hooray: i % 5, confused: i % 2, heart: i % 3, rocket: i % 7, eyes: i % 4, url: `https://api.github.com/repos/acme/app/issues/${i + 1}/reactions`, total_count: i * 2 },
+    timeline_url: `https://api.github.com/repos/acme/app/issues/${i + 1}/timeline`,
+    repository_url: 'https://api.github.com/repos/acme/app',
     pull_request: null,
     locked: false,
     author_association: 'MEMBER',
+    active_lock_reason: null,
+    state_reason: i % 4 === 0 ? 'completed' : null,
+    performed_via_github_app: null,
   }))
 
   return {
-    data: { items, total_count: 200 },
+    data: { items, total_count: 500 },
     successful: true,
+    _meta: { showing: 500, totalItems: 500 },
+    _truncated: true,
+    _originalSize: '~1.2M characters',
   }
 }
 
-export const RESPONSE_TRANSFORM_LARGE_ISSUES_MOCKS: ToolMockMap = {
+function generateMassiveCalendarMock(): any {
+  const summaries = ['Team Standup', 'Product Review', '1:1 with Manager', 'Sprint Planning', 'Design Review',
+    'All Hands', 'Customer Call', 'Retrospective', 'Architecture Review', 'Interview']
+  const items = Array.from({ length: 400 }, (_, i) => ({
+    id: `event_${i}`,
+    summary: summaries[i % summaries.length],
+    description: `Detailed event description for event ${i}. Agenda items include: review of Q2 goals, discussion of blockers, team updates, and action items from last meeting. Attendees should prepare status updates and any concerns to raise. `.repeat(60),
+    start: { dateTime: `2026-03-${String(1 + (i % 28)).padStart(2, '0')}T${9 + (i % 8)}:00:00-08:00`, timeZone: 'America/Los_Angeles' },
+    end: { dateTime: `2026-03-${String(1 + (i % 28)).padStart(2, '0')}T${10 + (i % 8)}:00:00-08:00`, timeZone: 'America/Los_Angeles' },
+    location: ['Conference Room A', 'Conference Room B', 'Zoom', 'Google Meet', null][i % 5],
+    organizer: { email: `organizer${i % 5}@example.com`, displayName: `Organizer ${i % 5}`, self: i % 5 === 0 },
+    attendees: Array.from({ length: 8 }, (_, j) => ({
+      email: `attendee${j}@example.com`,
+      displayName: `Attendee ${j}`,
+      responseStatus: ['accepted', 'needsAction', 'declined', 'tentative'][j % 4],
+      organizer: j === 0,
+      self: j === 1,
+      optional: j > 5,
+    })),
+    creator: { email: 'me@example.com', self: true },
+    htmlLink: `https://calendar.google.com/event?eid=${i}`,
+    status: 'confirmed',
+    iCalUID: `event_${i}@google.com`,
+    etag: `"${3000000 + i}"`,
+    kind: 'calendar#event',
+    created: `2026-02-${String(1 + (i % 28)).padStart(2, '0')}T10:00:00.000Z`,
+    updated: '2026-03-20T14:30:00.000Z',
+    sequence: 0,
+    reminders: { useDefault: true, overrides: [{ method: 'email', minutes: 30 }, { method: 'popup', minutes: 10 }] },
+    conferenceData: { entryPoints: [{ entryPointType: 'video', uri: `https://meet.google.com/abc-${i}`, label: `meet.google.com/abc-${i}` }], conferenceSolution: { name: 'Google Meet', key: { type: 'hangoutsMeet' } } },
+    hangoutLink: `https://meet.google.com/abc-${i}`,
+    recurringEventId: i % 3 === 0 ? `recurring_${i % 10}` : undefined,
+    originalStartTime: i % 3 === 0 ? { dateTime: `2026-03-01T${9 + (i % 8)}:00:00-08:00` } : undefined,
+    extendedProperties: { private: { notes: `Internal notes for event ${i}` } },
+  }))
+
+  return {
+    data: {
+      items,
+      nextPageToken: 'abc123xyz',
+      kind: 'calendar#events',
+      summary: 'user@example.com',
+      timeZone: 'America/Los_Angeles',
+      accessRole: 'owner',
+    },
+    successful: true,
+    _truncated: true,
+    _originalSize: '~1.1M characters',
+  }
+}
+
+export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
   tool_search: {
     type: 'static',
     paramKeys: ['query'],
@@ -2977,23 +3045,32 @@ export const RESPONSE_TRANSFORM_LARGE_ISSUES_MOCKS: ToolMockMap = {
     type: 'static',
     paramKeys: ['repo', 'state', 'per_page'],
     hidden: true,
-    response: generateLargeIssuesMock(),
+    response: generateMassiveIssuesMock(),
   },
-  binding_transform: {
+  write_file: {
     type: 'static',
-    paramKeys: ['action', 'tool', 'transform', 'description'],
-    response: {
-      ok: true,
-      message: 'Transform registered. Next call will use it automatically.',
-    },
+    paramKeys: ['path', 'content'],
+    response: { ok: true, message: 'File written successfully.' },
+  },
+  exec: {
+    type: 'static',
+    paramKeys: ['command'],
+    response: { stdout: 'Done. 500 records ingested.', stderr: '', exitCode: 0 },
   },
 }
 
-// ---------------------------------------------------------------------------
-// Fixture: Response Transform — Pre-loaded transform (calendar)
-// ---------------------------------------------------------------------------
-
-export const RESPONSE_TRANSFORM_PRELOADED_MOCKS: ToolMockMap = {
+export const DATA_PROCESSING_LARGE_CALENDAR_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'static',
+    paramKeys: ['query'],
+    response: {
+      query: 'google calendar',
+      results: [
+        { name: 'googlecalendar', description: 'Google Calendar — manage events, calendars', source: 'composio' },
+      ],
+      message: 'Found 1 integration(s).',
+    },
+  },
   tool_install: {
     type: 'static',
     paramKeys: ['name'],
@@ -3011,66 +3088,30 @@ export const RESPONSE_TRANSFORM_PRELOADED_MOCKS: ToolMockMap = {
     type: 'static',
     paramKeys: ['time_min', 'time_max'],
     hidden: true,
-    response: {
-      data: {
-        items: Array.from({ length: 80 }, (_, i) => ({
-          id: `event_${i}`,
-          summary: ['Team Standup', 'Product Review', '1:1 with Manager', 'Sprint Planning', 'Design Review'][i % 5],
-          description: `Detailed event description for event ${i}. `.repeat(20),
-          start: { dateTime: `2026-03-0${1 + (i % 7)}T${9 + (i % 8)}:00:00-08:00` },
-          end: { dateTime: `2026-03-0${1 + (i % 7)}T${10 + (i % 8)}:00:00-08:00` },
-          location: i % 3 === 0 ? 'Conference Room A' : null,
-          organizer: { email: `organizer${i % 3}@example.com`, displayName: `Organizer ${i % 3}` },
-          attendees: Array.from({ length: 5 }, (_, j) => ({
-            email: `attendee${j}@example.com`,
-            displayName: `Attendee ${j}`,
-            responseStatus: ['accepted', 'needsAction', 'declined'][j % 3],
-          })),
-          creator: { email: 'me@example.com', self: true },
-          htmlLink: `https://calendar.google.com/event?eid=${i}`,
-          status: 'confirmed',
-          reminders: { useDefault: true },
-        })),
-        nextPageToken: 'abc123',
-        kind: 'calendar#events',
-      },
-      successful: true,
-    },
+    response: generateMassiveCalendarMock(),
+  },
+  write_file: {
+    type: 'static',
+    paramKeys: ['path', 'content'],
+    response: { ok: true, message: 'File written successfully.' },
+  },
+  exec: {
+    type: 'static',
+    paramKeys: ['command'],
+    response: { stdout: 'Done. 400 records ingested.', stderr: '', exitCode: 0 },
   },
 }
 
-// ---------------------------------------------------------------------------
-// Fixture: Response Transform — Broken transform fallback
-// ---------------------------------------------------------------------------
-
-export const RESPONSE_TRANSFORM_FALLBACK_MOCKS: ToolMockMap = {
-  tool_install: {
+export const DATA_PROCESSING_TOP_N_MOCKS: ToolMockMap = {
+  ...DATA_PROCESSING_LARGE_ISSUES_MOCKS,
+  web: {
     type: 'static',
-    paramKeys: ['name'],
+    paramKeys: ['url', 'query'],
     response: {
-      ok: true,
-      server: 'composio',
-      integration: 'github',
-      toolCount: 2,
-      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE'],
-      authStatus: 'active',
-      message: 'Installed github with 2 tool(s). Auth is active.',
-    },
-  },
-  GITHUB_LIST_ISSUES: {
-    type: 'static',
-    paramKeys: ['repo', 'state'],
-    hidden: true,
-    response: {
-      data: {
-        items: [
-          { number: 1, title: 'Fix login bug', state: 'open', body: 'Login fails on Safari' },
-          { number: 2, title: 'Add dark mode', state: 'open', body: 'Users want dark mode' },
-          { number: 3, title: 'Memory leak', state: 'closed', body: 'WS handler leaks memory' },
-        ],
-        total_count: 3,
-      },
-      successful: true,
+      content: JSON.stringify(Array.from({ length: 10 }, (_, i) => ({
+        id: `issue_${i}`, number: (i + 1) * 10, title: `High-comment issue #${(i + 1) * 10}`, comments: 200 - i * 15, state: 'open',
+      }))),
+      status: 200,
     },
   },
 }
@@ -3160,7 +3201,7 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
       {
         match: { path: '.shogo/skills/github-ops/SKILL.md' },
         response: {
-          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on canvas\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, memory_write, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via tool_search.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build canvas** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
+          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on canvas\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via tool_search.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build canvas** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
           path: '.shogo/skills/github-ops/SKILL.md',
           size: 612,
         },
@@ -3221,7 +3262,7 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
       {
         match: { path: '.shogo/skills/health-check/SKILL.md' },
         response: {
-          content: '---\nname: health-check\nversion: 2.0.0\ndescription: Run health checks on web services and APIs\ntrigger: "health check|site status|is it down|uptime"\ntools: [web, canvas_create, canvas_update, memory_write, send_message]\n---\n\n# Health Check\n\nRun health checks on configured endpoints:\n\n1. **Load config** — Read endpoint list from memory (key: health_check_endpoints)\n2. **Check** — For each endpoint, call web({ url }) and record status code and response time\n3. **Build canvas** — Dashboard with: status badge per service, response time chart, uptime percentage\n4. **Alert** — For any non-200 status: send_message with details\n5. **Persist** — Log results to memory for trend tracking',
+          content: '---\nname: health-check\nversion: 2.0.0\ndescription: Run health checks on web services and APIs\ntrigger: "health check|site status|is it down|uptime"\ntools: [web, canvas_create, canvas_update, send_message]\n---\n\n# Health Check\n\nRun health checks on configured endpoints:\n\n1. **Load config** — Read endpoint list from memory (key: health_check_endpoints)\n2. **Check** — For each endpoint, call web({ url }) and record status code and response time\n3. **Build canvas** — Dashboard with: status badge per service, response time chart, uptime percentage\n4. **Alert** — For any non-200 status: send_message with details\n5. **Persist** — Log results to memory for trend tracking',
           path: '.shogo/skills/health-check/SKILL.md',
           size: 520,
         },

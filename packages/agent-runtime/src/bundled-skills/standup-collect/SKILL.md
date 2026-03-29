@@ -3,7 +3,7 @@ name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team
 trigger: "standup|daily update|what did|yesterday|today plan|blockers"
-tools: [send_message, memory_read, memory_write, canvas_create, canvas_update]
+tools: [send_message, memory_read, write_file, canvas_create, canvas_update]
 ---
 
 # Standup Collection

@@ -146,6 +146,16 @@ describe('SkillServerManager', () => {
     }
   })
 
+  test('SKILL_SERVER_PORT env overrides config.port', () => {
+    process.env.SKILL_SERVER_PORT = '5555'
+    try {
+      const manager = new SkillServerManager({ workspaceDir: workDir, port: 9999 })
+      expect(manager.port).toBe(5555)
+    } finally {
+      delete process.env.SKILL_SERVER_PORT
+    }
+  })
+
   test('port defaults to 4100 when no env or config', () => {
     delete process.env.SKILL_SERVER_PORT
     const manager = new SkillServerManager({ workspaceDir: workDir })

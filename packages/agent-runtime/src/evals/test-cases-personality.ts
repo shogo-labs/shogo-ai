@@ -3,43 +3,63 @@
 /**
  * Personality & Identity Eval Test Cases
  *
- * Tests the agent's ability to self-update its personality files
- * (SOUL.md, IDENTITY.md, AGENTS.md) via the personality_update tool.
+ * Tests the agent's ability to self-update its workspace personality files
+ * (SOUL.md, IDENTITY.md, AGENTS.md) via read_file + edit_file, following
+ * the WORKSPACE_FILES_GUIDE pattern: read defaults first, then edit in place.
  */
 
 import type { AgentEval } from './types'
-import { usedTool } from './eval-helpers'
+import { usedTool, toolCallArgsContain } from './eval-helpers'
+
+function readBeforeEdit(r: { toolCalls: { name: string; input: Record<string, unknown> }[] }): boolean {
+  const readIdx = r.toolCalls.findIndex(t => t.name === 'read_file')
+  const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
+  return readIdx !== -1 && editIdx !== -1 && readIdx < editIdx
+}
+
+function editedFile(r: { toolCalls: { name: string; input: Record<string, unknown> }[] }, filename: string): boolean {
+  return r.toolCalls
+    .filter(t => t.name === 'edit_file')
+    .some(t => {
+      const path = String(t.input?.path ?? '')
+      return path === filename || path.endsWith(`/${filename}`)
+    })
+}
 
 export const PERSONALITY_EVALS: AgentEval[] = [
   {
     id: 'personality-tone-correction',
-    name: 'Personality: Adjust tone when corrected',
+    name: 'Personality: Adjust tone via workspace edit',
     category: 'personality',
     level: 2,
     input: 'From now on, I need you to be more formal and professional. No casual language — this is for a client-facing project.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-personality-update',
-        description: 'Used personality_update to modify behavior',
-        points: 40,
+        id: 'used-edit-file',
+        description: 'Used edit_file to modify a workspace personality file',
+        points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'personality_update'),
+        validate: (r) => usedTool(r, 'edit_file'),
+      },
+      {
+        id: 'read-before-edit',
+        description: 'Read the file before editing (read_file then edit_file)',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => readBeforeEdit(r),
       },
       {
         id: 'targeted-soul-md',
-        description: 'Updated SOUL.md (personality/tone file)',
+        description: 'Edited SOUL.md (the tone/voice file)',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const call = r.toolCalls.find(t => t.name === 'personality_update')
-          return call?.input?.file === 'SOUL.md'
-        },
+        validate: (r) => editedFile(r, 'SOUL.md'),
       },
       {
         id: 'mentions-formal',
-        description: 'Update content references formal/professional tone',
-        points: 20,
+        description: 'Edit content references formal/professional tone',
+        points: 15,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
@@ -49,7 +69,7 @@ export const PERSONALITY_EVALS: AgentEval[] = [
       {
         id: 'confirms-update',
         description: 'Agent confirms the personality was updated',
-        points: 20,
+        points: 15,
         phase: 'execution',
         validate: (r) => {
           const text = r.responseText.toLowerCase()
@@ -57,22 +77,23 @@ export const PERSONALITY_EVALS: AgentEval[] = [
         },
       },
     ],
+    antiPatterns: ['personality_update'],
   },
 
   {
     id: 'personality-no-update-trivial',
-    name: 'Personality: Don\'t update for one-off request',
+    name: 'Personality: Don\'t edit workspace for one-off request',
     category: 'personality',
     level: 2,
     input: 'Can you explain this in simpler terms? What is quantum computing?',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'no-personality-update',
-        description: 'Did NOT use personality_update for a one-off simplification request',
+        id: 'no-edit-file',
+        description: 'Did NOT use edit_file for a one-off simplification request',
         points: 60,
         phase: 'intention',
-        validate: (r) => !usedTool(r, 'personality_update'),
+        validate: (r) => !usedTool(r, 'edit_file'),
       },
       {
         id: 'answered-question',
@@ -89,96 +110,106 @@ export const PERSONALITY_EVALS: AgentEval[] = [
 
   {
     id: 'personality-set-identity',
-    name: 'Personality: Set agent name and role',
+    name: 'Personality: Set agent name and role via workspace edit',
     category: 'personality',
     level: 2,
     input: 'I\'d like you to go by "Atlas" and focus on climate science research going forward.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-personality-update',
-        description: 'Used personality_update tool',
-        points: 30,
+        id: 'used-edit-file',
+        description: 'Used edit_file to update identity',
+        points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'personality_update'),
+        validate: (r) => usedTool(r, 'edit_file'),
+      },
+      {
+        id: 'read-before-edit',
+        description: 'Read the file before editing',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => readBeforeEdit(r),
       },
       {
         id: 'targeted-identity',
-        description: 'Updated IDENTITY.md',
+        description: 'Edited IDENTITY.md',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const call = r.toolCalls.find(t => t.name === 'personality_update')
-          return call?.input?.file === 'IDENTITY.md'
-        },
+        validate: (r) => editedFile(r, 'IDENTITY.md'),
       },
       {
         id: 'has-name',
-        description: 'Content includes the name Atlas',
-        points: 25,
+        description: 'Edit content includes the name Atlas',
+        points: 20,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('Atlas'),
+        validate: (r) => toolCallArgsContain(r, 'edit_file', 'Atlas'),
       },
       {
         id: 'has-role',
-        description: 'Content includes research/climate role',
-        points: 25,
+        description: 'Edit content references climate/research role',
+        points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'edit_file')).toLowerCase()
           return json.includes('research') || json.includes('climate')
         },
       },
     ],
+    antiPatterns: ['personality_update'],
   },
 
-  // ---- Set Domain Expertise (Odin AI agent templates) ----
   {
     id: 'personality-domain-expertise',
-    name: 'Personality: Set domain expertise',
+    name: 'Personality: Set domain expertise via workspace edit',
     category: 'personality',
     level: 2,
     input: 'You\'re my DevOps guy now. I need you thinking about infra costs, security, and deployment reliability in everything we do.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-personality-update',
-        description: 'Used personality_update to set domain expertise',
-        points: 35,
+        id: 'used-edit-file',
+        description: 'Used edit_file to set domain expertise',
+        points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'personality_update'),
+        validate: (r) => usedTool(r, 'edit_file'),
+      },
+      {
+        id: 'read-before-edit',
+        description: 'Read the file before editing',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => readBeforeEdit(r),
       },
       {
         id: 'targeted-soul-or-agents',
-        description: 'Updated SOUL.md or AGENTS.md',
+        description: 'Edited SOUL.md or AGENTS.md',
         points: 15,
         phase: 'execution',
-        validate: (r) => {
-          const call = r.toolCalls.find(t => t.name === 'personality_update')
-          const file = (call?.input?.file as string) || ''
-          return file === 'SOUL.md' || file === 'AGENTS.md'
-        },
+        validate: (r) => editedFile(r, 'SOUL.md') || editedFile(r, 'AGENTS.md'),
       },
       {
         id: 'has-devops-role',
-        description: 'Content references DevOps or infrastructure',
+        description: 'Edit content references DevOps or infrastructure',
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'edit_file')).toLowerCase()
           return json.includes('devops') || json.includes('infrastructure')
         },
       },
       {
         id: 'has-security-concern',
-        description: 'Content references security implications',
+        description: 'Edit content references security',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('security'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'edit_file')).toLowerCase()
+          return json.includes('security')
+        },
       },
       {
         id: 'confirms-update',
-        description: 'Agent confirms the personality was updated',
+        description: 'Agent confirms the update',
         points: 15,
         phase: 'execution',
         validate: (r) => {
@@ -187,82 +218,86 @@ export const PERSONALITY_EVALS: AgentEval[] = [
         },
       },
     ],
+    antiPatterns: ['personality_update'],
   },
 
-  // ---- Set Communication Boundaries (OpenClaw safety defaults) ----
   {
     id: 'personality-set-boundaries',
-    name: 'Personality: Set safety boundaries',
+    name: 'Personality: Set safety boundaries via workspace edit',
     category: 'personality',
     level: 2,
     input: 'Hey, new rules: never run shell commands without asking me, stay away from production databases, and always suggest a dry-run before anything destructive.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-personality-update',
-        description: 'Used personality_update to set boundaries',
-        points: 30,
+        id: 'used-edit-file',
+        description: 'Used edit_file to set boundaries',
+        points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'personality_update'),
+        validate: (r) => usedTool(r, 'edit_file'),
+      },
+      {
+        id: 'read-before-edit',
+        description: 'Read file before editing',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => readBeforeEdit(r),
       },
       {
         id: 'targeted-agents-md',
-        description: 'Updated AGENTS.md (guidelines/rules file)',
-        points: 20,
+        description: 'Edited AGENTS.md (rules file)',
+        points: 15,
         phase: 'execution',
-        validate: (r) => {
-          const call = r.toolCalls.find(t => t.name === 'personality_update')
-          return (call?.input?.file as string) === 'AGENTS.md'
-        },
+        validate: (r) => editedFile(r, 'AGENTS.md'),
       },
       {
         id: 'has-shell-boundary',
-        description: 'Content mentions shell command restriction',
+        description: 'Edit content mentions shell command restriction',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'edit_file')).toLowerCase()
           return json.includes('shell') || json.includes('command')
         },
       },
       {
         id: 'has-production-boundary',
-        description: 'Content mentions production database restriction',
+        description: 'Edit content mentions production database restriction',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'edit_file')).toLowerCase()
           return json.includes('production') && json.includes('database')
         },
       },
       {
         id: 'has-dryrun-boundary',
-        description: 'Content mentions dry-run before destructive ops',
+        description: 'Edit content mentions dry-run before destructive ops',
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'edit_file')).toLowerCase()
           return json.includes('dry-run') || json.includes('dry run') || json.includes('destructive')
         },
       },
     ],
+    antiPatterns: ['personality_update'],
   },
 
-  // ---- Don't Update for Style Request (negative case) ----
   {
     id: 'personality-no-update-style',
-    name: 'Personality: Don\'t update for one-off style request',
+    name: 'Personality: Don\'t edit workspace for one-off style request',
     category: 'personality',
     level: 2,
     input: 'Can you rewrite this in bullet points instead? Here\'s the text: The quarterly results show growth in three areas: revenue increased 15%, customer base grew by 8,000 users, and average deal size rose to $2,400.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'no-personality-update',
-        description: 'Did NOT use personality_update for a one-off formatting request',
+        id: 'no-edit-file',
+        description: 'Did NOT use edit_file for a one-off formatting request',
         points: 55,
         phase: 'intention',
-        validate: (r) => !usedTool(r, 'personality_update'),
+        validate: (r) => !usedTool(r, 'edit_file'),
       },
       {
         id: 'reformatted-text',

@@ -410,10 +410,10 @@ function validateSkill(input: Record<string, unknown>): ValidationResult {
 
   // Tools are valid
   const VALID_TOOLS = new Set([
-    'exec', 'read_file', 'write_file', 'web',
-    'memory_read', 'memory_write', 'memory_search',
-    'browser', 'send_message', 'cron',
-    'canvas_create', 'canvas_update', 'canvas_data',
+    'exec', 'read_file', 'write_file', 'edit_file', 'delete_file',
+    'glob', 'grep', 'ls', 'web', 'browser',
+    'memory_read', 'memory_search',
+    'send_message', 'cron', 'canvas_lint',
   ])
   const tools = requiredTools.split(',').map(t => t.trim()).filter(Boolean)
   const allValid = tools.every(t => VALID_TOOLS.has(t))
@@ -445,14 +445,10 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
   const canBatch = Boolean(input.can_batch)
 
   const VALID_TOOLS = new Set([
-    'exec', 'read_file', 'write_file', 'web',
-    'memory_read', 'memory_write', 'memory_search',
-    'browser', 'send_message', 'cron',
-    'canvas_create', 'canvas_update', 'canvas_data',
-    'canvas_delete', 'canvas_action_wait', 'canvas_components',
-    'canvas_trigger_action', 'canvas_inspect',
-    'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
-    'personality_update',
+    'exec', 'read_file', 'write_file', 'edit_file', 'delete_file',
+    'glob', 'grep', 'ls', 'web', 'browser',
+    'memory_read', 'memory_search',
+    'send_message', 'cron', 'canvas_lint',
   ])
 
   const tools = plannedSequence.split(',').map(t => t.trim()).filter(Boolean)
@@ -465,23 +461,8 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
     detail: invalidTools.length > 0 ? `invalid: ${invalidTools.join(', ')}` : `${tools.length} valid tools`,
   })
 
-  // Ordering constraints: canvas_create before canvas_update/canvas_data
-  if (tools.includes('canvas_update') || tools.includes('canvas_data')) {
-    const createIdx = tools.indexOf('canvas_create')
-    const updateIdx = tools.indexOf('canvas_update')
-    const dataIdx = tools.indexOf('canvas_data')
-    const orderOk = createIdx >= 0 && (updateIdx < 0 || createIdx < updateIdx) && (dataIdx < 0 || createIdx < dataIdx)
-    checks.push({ name: 'canvas_order_correct', pass: orderOk, detail: 'canvas_create before update/data' })
-  }
-
-  // canvas_api_schema before canvas_api_seed/canvas_api_query
-  if (tools.includes('canvas_api_seed') || tools.includes('canvas_api_query')) {
-    const schemaIdx = tools.indexOf('canvas_api_schema')
-    const seedIdx = tools.indexOf('canvas_api_seed')
-    const queryIdx = tools.indexOf('canvas_api_query')
-    const orderOk = schemaIdx >= 0 && (seedIdx < 0 || schemaIdx < seedIdx) && (queryIdx < 0 || schemaIdx < queryIdx)
-    checks.push({ name: 'api_order_correct', pass: orderOk, detail: 'canvas_api_schema before seed/query' })
-  }
+  // Ordering: write_file (schema) should come before write_file (canvas) when both present
+  // This is a soft check — multiple write_file calls are expected in v2 code mode
 
   // Reasonable iteration count
   if (tools.length > 0) {
@@ -491,9 +472,9 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
 
   // Batch flag makes sense (independent tools can batch, dependent ones can't)
   if (tools.length > 1) {
-    const hasDeps = tools.includes('canvas_create') && (tools.includes('canvas_update') || tools.includes('canvas_data'))
-    if (hasDeps && canBatch) {
-      checks.push({ name: 'batch_decision', pass: false, detail: 'marked batchable but has dependencies' })
+    const hasWriteAndEdit = tools.includes('write_file') && tools.includes('edit_file')
+    if (hasWriteAndEdit && canBatch) {
+      checks.push({ name: 'batch_decision', pass: false, detail: 'marked batchable but edit_file depends on write_file' })
     } else {
       checks.push({ name: 'batch_decision', pass: true })
     }
@@ -535,38 +516,6 @@ function validateMemoryWrite(input: Record<string, unknown>): ValidationResult {
   // Target file is valid format (MEMORY.md or YYYY-MM-DD)
   const validTarget = targetFile === 'MEMORY.md' || /^\d{4}-\d{2}-\d{2}$/.test(targetFile)
   checks.push({ name: 'target_file_valid', pass: validTarget, detail: targetFile })
-
-  const score = scoreChecks(checks)
-  return { valid: errors.length === 0, score, checks, errors }
-}
-
-// ---------------------------------------------------------------------------
-// Personality Update Validation
-// ---------------------------------------------------------------------------
-
-function validatePersonalityUpdate(input: Record<string, unknown>): ValidationResult {
-  const checks: Check[] = []
-  const errors: string[] = []
-
-  const shouldUpdate = Boolean(input.should_update)
-
-  if (!shouldUpdate) {
-    checks.push({ name: 'correctly_no_update', pass: true })
-    return { valid: true, score: scoreChecks(checks), checks, errors }
-  }
-
-  const file = String(input.file || '')
-  const section = String(input.section || '')
-  const newContent = String(input.new_content || '')
-
-  const validFiles = ['SOUL.md', 'AGENTS.md', 'IDENTITY.md']
-  checks.push({ name: 'valid_file', pass: validFiles.includes(file), detail: file })
-  checks.push({ name: 'has_section', pass: section.length > 0, detail: section })
-  checks.push({ name: 'has_new_content', pass: newContent.trim().length > 0 })
-
-  if (!validFiles.includes(file)) errors.push(`Invalid file: "${file}"`)
-  if (!section) errors.push('Missing section name')
-  if (!newContent.trim()) errors.push('Missing new content')
 
   const score = scoreChecks(checks)
   return { valid: errors.length === 0, score, checks, errors }
@@ -615,9 +564,6 @@ async function main() {
       break
     case 'memory_write':
       result = validateMemoryWrite(input)
-      break
-    case 'personality_update':
-      result = validatePersonalityUpdate(input)
       break
     default:
       result = { valid: false, score: 0, checks: [], errors: [`Unknown track: ${track}`] }

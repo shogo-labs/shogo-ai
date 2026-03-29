@@ -3,7 +3,7 @@ name: slack-forward
 version: 1.0.0
 description: Format and forward email alerts to configured Slack channels with rich formatting
 trigger: "forward to slack|slack alert|notify slack|send to slack|post to slack"
-tools: [tool_search, tool_install, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, memory_read, write_file, send_message]
 ---
 
 # Slack Forward

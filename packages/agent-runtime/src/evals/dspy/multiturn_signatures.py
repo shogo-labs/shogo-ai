@@ -18,7 +18,7 @@ class ConversationPlanner(dspy.Signature):
     conversation_history_summary: str = dspy.InputField(desc="Compacted summary of prior turns")
     available_tools: str = dspy.InputField(
         desc="Tool names and descriptions: exec, read_file, write_file, web, "
-             "memory_read, memory_write, memory_search, browser, send_message, cron, "
+             "memory_read, memory_search, browser, send_message, cron, "
              "canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, "
              "canvas_components, canvas_api_schema, canvas_api_seed, canvas_api_query"
     )

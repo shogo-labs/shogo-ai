@@ -3250,10 +3250,10 @@ export const CANVAS_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'did-work',
-        description: 'Used tools to research or produce campaign content (web, write_file, tool_search, tool_install, memory_write)',
+        description: 'Used tools to research or produce campaign content (web, write_file, tool_search, tool_install)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web') || usedTool(r, 'write_file') || usedTool(r, 'memory_write') || usedTool(r, 'tool_search') || usedTool(r, 'tool_install'),
+        validate: (r) => usedTool(r, 'web') || usedTool(r, 'write_file') || usedTool(r, 'tool_search') || usedTool(r, 'tool_install'),
       },
       {
         id: 'response-has-campaign-details',
@@ -3314,11 +3314,11 @@ export const CANVAS_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'produced-content',
-        description: 'Used write_file or memory_write or response contains actual email content',
+        description: 'Used write_file or response contains actual email content',
         points: 25,
         phase: 'intention',
         validate: (r) => {
-          const wroteFile = usedTool(r, 'write_file') || usedTool(r, 'memory_write')
+          const wroteFile = usedTool(r, 'write_file')
           const hasEmailContent = r.responseText.toLowerCase().includes('subject') &&
             (r.responseText.toLowerCase().includes('welcome') || r.responseText.toLowerCase().includes('onboard'))
           return wroteFile || hasEmailContent
@@ -3682,13 +3682,13 @@ export const CANVAS_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'did-work',
-        description: 'Produced report content in final turn (write_file, web, memory_write, tool_search, or canvas_data)',
+        description: 'Produced report content in final turn (write_file, web, tool_search, or canvas_data)',
         points: 30,
         phase: 'intention',
         validate: (r) => {
           return r.finalTurnToolCalls.some(t =>
             t.name === 'write_file' || t.name === 'web' ||
-            t.name === 'memory_write' || t.name === 'tool_search' ||
+            t.name === 'tool_search' ||
             t.name === 'canvas_data'
           )
         },
@@ -3754,7 +3754,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'produced-content',
-        description: 'Response or write_file/memory_write contains blog content about remote work',
+        description: 'Response or write_file contains blog content about remote work',
         points: 30,
         phase: 'intention',
         validate: (r) => {

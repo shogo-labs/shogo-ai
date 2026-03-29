@@ -85,7 +85,7 @@ These examples show the correct pattern when a user asks you to CREATE something
 - Canvas shows: READ-ONLY summary — campaign name, ad groups, keywords, bid strategy, budget, ad copy
 - Surface: \`campaign-summary\`
 - Needs API: No (display only — the agent already did the work)
-- Tools: web, write_file, memory_write, canvas_create, canvas_data, canvas_update
+- Tools: web, write_file, canvas_create, canvas_data, canvas_update
 - Components: Column, Row, Text, Badge, Grid, Metric, Card, Table
 - WRONG approach: Building a "Campaign Builder" form with text fields and dropdowns for the user to fill in
 
@@ -94,7 +94,7 @@ These examples show the correct pattern when a user asks you to CREATE something
 - Canvas shows: READ-ONLY display of all 3 templates side by side for review
 - Surface: \`onboarding-emails\`
 - Needs API: No (display only)
-- Tools: write_file, memory_write, canvas_create, canvas_data, canvas_update
+- Tools: write_file, canvas_create, canvas_data, canvas_update
 - Components: Column, Row, Text, Badge, Card, Tabs, TabPanel
 - WRONG approach: Building an "Email Template Editor" with editable text fields
 
@@ -109,19 +109,23 @@ These examples show the correct pattern when a user asks you to CREATE something
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 
+To save memory, use \`write_file\` on MEMORY.md (append with \`edit_file\`) or \`memory/YYYY-MM-DD.md\` daily logs.
 
-**Skip memory write when:**
+**Skip memory save when:**
 - "Agent executed BOOT.md: wrote status file, recorded startup to memory" → Skip (The agent executed BOOT)
 - "Agent read deploy.log, wrote summary to deploy-report.md" → Skip (This is a mechanical task: reading a log file and writing a summary report)`
 
 export const OPTIMIZED_PERSONALITY_GUIDE = `### Self-Update Decision Examples
 
+ALWAYS use \`read_file\` then \`edit_file\` on the workspace file (SOUL.md, AGENTS.md, or IDENTITY.md). Never write personality changes to MEMORY.md — memory is for facts and logs, not configuration.
+
 **Update personality when:**
-- "User said: 'You're being too casual. Please be more formal and professional.'" → Update SOUL.md section "Communication Style"
-- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → Update SOUL.md section "Boundaries"
+- "User said: 'You're being too casual. Please be more formal and professional.'" → \`read_file\` SOUL.md, then \`edit_file\` to update "Communication Style" section
+- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → \`read_file\` SOUL.md, then \`edit_file\` to add to "Boundaries" section
+- "User said: 'Call me Atlas and focus on climate research'" → \`read_file\` IDENTITY.md, then \`edit_file\` to set name and focus
 
 **Don't update when:**
-- "User said: 'What's the weather like?' Agent responded with weather info." → No update (This is a trivial, one-off conversation about weather)`
+- "User said: 'What's the weather like?' Agent responded with weather info." → No update (trivial, one-off conversation)`
 
 export const OPTIMIZED_TOOL_PLANNING_GUIDE = `## Tool Planning
 
@@ -160,7 +164,7 @@ dietary restrictions, etc.), you MUST track and enforce them throughout the conv
 ### Required Behavior
 
 1. **Extract constraints early**: When the user provides constraints (e.g., "$5,000 budget",
-   "10 days", "vegetarian only"), write them to MEMORY.md immediately using memory_write
+   "10 days", "vegetarian only"), write them to MEMORY.md immediately using write_file
    so they persist across turns.
 
 2. **Validate before presenting**: Before recommending any item from tool results (search
@@ -269,7 +273,7 @@ Or use the skill MCP tools: \`skill_list\`, \`skill_create\`, \`skill_edit\`, \`
 name: my-skill
 description: What the skill does
 trigger: "phrase one|phrase two|/regex pattern/"
-tools: [web, memory_read, memory_write]
+tools: [web, memory_read, write_file]
 setup: pip install -r requirements.txt
 runtime: python3
 ---
@@ -423,9 +427,10 @@ call it in the same turn. Never stop after install to wait for user action — t
 installation is complete and the tools are ready. If the install returns ok: true,
 proceed directly to calling the newly available tools.
 
-Similarly: when asked to remember something, ALWAYS call memory_write. When asked to
-update your personality/role, ALWAYS call personality_update. Do not just acknowledge
-the request in text — execute the corresponding tool call.
+Similarly: when asked to remember something, ALWAYS use write_file to save to MEMORY.md. When asked to
+update your personality/role, ALWAYS use read_file + edit_file on the relevant workspace
+file (SOUL.md, AGENTS.md, or IDENTITY.md). Do not just acknowledge the request in text —
+execute the corresponding tool call.
 
 ### IMPORTANT: Always Save Skills After Successful Integrations
 

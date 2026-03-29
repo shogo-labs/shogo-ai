@@ -29,8 +29,8 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'The "Research Assistant" template has been installed. Can you describe what\'s been set up and walk me through how to customize it or connect my own tools?',
     workspaceFiles: {
       ...getTemplateFiles('research-analyst'),
-      '.shogo/skills/research-deep/SKILL.md': '---\nname: research-deep\nversion: 2.0.0\ndescription: Deep research on a topic\ntrigger: "research|look up|find out about"\ntools: [web, canvas_create, canvas_update, memory_write]\n---\n# Deep Research\nPerform multi-source research and present on canvas.',
-      '.shogo/skills/topic-tracker/SKILL.md': '---\nname: topic-tracker\nversion: 2.0.0\ndescription: Track topics over time\ntrigger: "daily digest|morning briefing"\ntools: [web, memory_read, memory_write, canvas_create]\n---\n# Topic Tracker\nCompile daily digest of tracked topics.',
+      '.shogo/skills/research-deep/SKILL.md': '---\nname: research-deep\nversion: 2.0.0\ndescription: Deep research on a topic\ntrigger: "research|look up|find out about"\ntools: [web, canvas_create, canvas_update]\n---\n# Deep Research\nPerform multi-source research and present on canvas.',
+      '.shogo/skills/topic-tracker/SKILL.md': '---\nname: topic-tracker\nversion: 2.0.0\ndescription: Track topics over time\ntrigger: "daily digest|morning briefing"\ntools: [web, memory_read, canvas_create]\n---\n# Topic Tracker\nCompile daily digest of tracked topics.',
     },
     maxScore: 100,
     validationCriteria: [
@@ -163,7 +163,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'Research the latest developments in AI agent frameworks — compare LangGraph, CrewAI, and AutoGen.',
     workspaceFiles: {
       ...getTemplateFiles('research-analyst'),
-      '.shogo/skills/research-deep/SKILL.md': '---\nname: research-deep\nversion: 2.0.0\ndescription: Deep research on a topic\ntrigger: "research|look up|find out about|deep dive|analyze|compare"\ntools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write]\n---\n# Deep Research\nWhen triggered:\n1. Search multiple sources\n2. Synthesize findings\n3. Build canvas dashboard\n4. Save to memory',
+      '.shogo/skills/research-deep/SKILL.md': '---\nname: research-deep\nversion: 2.0.0\ndescription: Deep research on a topic\ntrigger: "research|look up|find out about|deep dive|analyze|compare"\ntools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, write_file]\n---\n# Deep Research\nWhen triggered:\n1. Search multiple sources\n2. Synthesize findings\n3. Build canvas dashboard\n4. Save to memory',
     },
     maxScore: 100,
     validationCriteria: [
@@ -193,10 +193,10 @@ export const TEMPLATE_EVALS: AgentEval[] = [
       },
       {
         id: 'uses-memory',
-        description: 'Agent saved findings to memory',
+        description: 'Agent saved findings to memory via write_file',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
     ],
   },
@@ -210,7 +210,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'Check the status of my repos — are there any open PRs or CI failures?',
     workspaceFiles: {
       ...getTemplateFiles('devops-hub'),
-      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]\n---\n# GitHub Ops\n1. Search for GitHub integration (tool_search). If not installed: tool_install({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update canvas dashboard\n4. Alert on stale PRs',
+      '.shogo/skills/github-ops/SKILL.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, send_message]\n---\n# GitHub Ops\n1. Search for GitHub integration (tool_search). If not installed: tool_install({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update canvas dashboard\n4. Alert on stale PRs',
     },
     maxScore: 100,
     validationCriteria: [
@@ -263,8 +263,8 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'Our API is returning 500 errors and users are complaining. Can you investigate?',
     workspaceFiles: {
       ...getTemplateFiles('operations-monitor'),
-      '.shogo/skills/health-check/SKILL.md': '---\nname: health-check\nversion: 2.0.0\ndescription: Check service health endpoints\ntrigger: "health check|service status|is it up"\ntools: [web, canvas_create, canvas_update, memory_write, send_message]\n---\n# Health Check\n1. Check health endpoints\n2. Build status page\n3. Alert on failures',
-      '.shogo/skills/incident-triage/SKILL.md': '---\nname: incident-triage\nversion: 2.0.0\ndescription: Investigate production incidents\ntrigger: "incident|something broke|production issue|outage|error spike"\ntools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_write, send_message]\n---\n# Incident Triage\n1. Check Sentry, GitHub, Datadog\n2. Correlate timing\n3. Build incident timeline canvas',
+      '.shogo/skills/health-check/SKILL.md': '---\nname: health-check\nversion: 2.0.0\ndescription: Check service health endpoints\ntrigger: "health check|service status|is it up"\ntools: [web, canvas_create, canvas_update, send_message]\n---\n# Health Check\n1. Check health endpoints\n2. Build status page\n3. Alert on failures',
+      '.shogo/skills/incident-triage/SKILL.md': '---\nname: incident-triage\nversion: 2.0.0\ndescription: Investigate production incidents\ntrigger: "incident|something broke|production issue|outage|error spike"\ntools: [tool_search, tool_install, web, canvas_create, canvas_update, send_message]\n---\n# Incident Triage\n1. Check Sentry, GitHub, Datadog\n2. Correlate timing\n3. Build incident timeline canvas',
     },
     maxScore: 100,
     validationCriteria: [
@@ -315,7 +315,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'I want to track these daily habits: meditate 10 minutes, read for 30 minutes, and exercise.',
     workspaceFiles: {
       ...getTemplateFiles('personal-assistant'),
-      '.shogo/skills/habit-track/SKILL.md': '---\nname: habit-track\nversion: 2.0.0\ndescription: Track daily habits on a canvas kanban board with streaks\ntrigger: "habit|track habit|log habit|check habits|my habits|streak|add habit"\ntools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write]\n---\n# Habit Tracker\n1. Use canvas_api_schema for habit CRUD\n2. Build kanban board\n3. Track streaks',
+      '.shogo/skills/habit-track/SKILL.md': '---\nname: habit-track\nversion: 2.0.0\ndescription: Track daily habits on a canvas kanban board with streaks\ntrigger: "habit|track habit|log habit|check habits|my habits|streak|add habit"\ntools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read]\n---\n# Habit Tracker\n1. Use canvas_api_schema for habit CRUD\n2. Build kanban board\n3. Track streaks',
     },
     maxScore: 100,
     validationCriteria: [
@@ -366,7 +366,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     workspaceFiles: {
       ...getTemplateFiles('support-ops'),
       '.shogo/skills/ticket-triage/SKILL.md': '---\nname: ticket-triage\nversion: 2.0.0\ndescription: Triage support tickets\ntrigger: "triage tickets|support tickets"\ntools: [tool_search, tool_install, canvas_create]\n---\n# Ticket Triage\nPull and triage support tickets.',
-      '.shogo/skills/escalation-alert/SKILL.md': '---\nname: escalation-alert\nversion: 2.0.0\ndescription: Escalate urgent issues\ntrigger: "escalate|urgent|p0"\ntools: [send_message, memory_write]\n---\n# Escalation Alert\nEscalate critical issues to team.',
+      '.shogo/skills/escalation-alert/SKILL.md': '---\nname: escalation-alert\nversion: 2.0.0\ndescription: Escalate urgent issues\ntrigger: "escalate|urgent|p0"\ntools: [send_message]\n---\n# Escalation Alert\nEscalate critical issues to team.',
     },
     maxScore: 100,
     validationCriteria: [

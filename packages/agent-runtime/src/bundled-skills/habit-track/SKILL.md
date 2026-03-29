@@ -3,7 +3,7 @@ name: habit-track
 version: 2.0.0
 description: Track daily habits on a canvas kanban board with streaks
 trigger: "habit|track habit|log habit|check habits|my habits|streak|add habit"
-tools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write]
+tools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, write_file]
 ---
 
 # Habit Tracker

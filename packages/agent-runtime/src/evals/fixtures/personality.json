@@ -2,146 +2,116 @@
   "_meta": {
     "track": "personality",
     "generated": true,
-    "generated_at": "2026-02-22T03:21:56.375Z",
+    "generated_at": "2026-03-28T23:32:15.231Z",
     "description": "Agent template selection + personality self-update examples — extracted from agent-templates.ts",
     "sources": [
       "packages/agent-runtime/src/agent-templates.ts"
     ],
-    "template_count": 22
+    "template_count": 17
   },
   "constants": {
     "available_templates": [
       {
+        "id": "incident-response",
+        "name": "Incident Response",
+        "description": "Detect, investigate, and escalate production incidents fast. Correlates errors and deploys into a timeline and routes urgent alerts to the right people instantly.",
+        "category": "operations"
+      },
+      {
+        "id": "meeting-intelligence",
+        "name": "Meeting Intelligence",
+        "description": "Walk into every meeting fully prepared and leave with clear action items. Researches attendees beforehand and generates structured summaries with follow-ups afterward.",
+        "category": "personal"
+      },
+      {
+        "id": "engineering-pulse",
+        "name": "Engineering Pulse",
+        "description": "Track team velocity, code activity, and sprint progress in one place. Combines commit insights, PR monitoring, and developer activity into actionable dashboards for engineering managers.",
+        "category": "development"
+      },
+      {
+        "id": "sales-revenue",
+        "name": "Sales & Revenue",
+        "description": "Pipeline management, deal tracking, client onboarding, revenue dashboards, and Stripe integration with multi-surface sales views.",
+        "category": "sales"
+      },
+      {
+        "id": "revenue-finance",
+        "name": "Revenue & Finance Ops",
+        "description": "Keep your financial health visible and your invoices under control. Pulls live Stripe metrics into a dashboard and automates invoice tracking and overdue follow-ups.",
+        "category": "business"
+      },
+      {
+        "id": "support-ops",
+        "name": "Support Operations",
+        "description": "Ticket triage, incident management, SLA monitoring, email-to-Slack alerting, and escalation automation with multi-surface ops dashboards.",
+        "category": "operations"
+      },
+      {
+        "id": "research-tracking",
+        "name": "Research & Topic Tracking",
+        "description": "Go deep on any topic and stay current as it evolves. Aggregates findings from multiple sources into a structured canvas and delivers daily digests of new developments.",
+        "category": "research"
+      },
+      {
+        "id": "project-manager",
+        "name": "Project Manager",
+        "description": "Kanban board, sprint planning, standup collection, and team velocity tracking with multi-surface project dashboards.",
+        "category": "development"
+      },
+      {
+        "id": "research-analyst",
+        "name": "Research Analyst",
+        "description": "Deep web research, topic tracking, market monitoring, competitive intelligence, and synthesized analysis across multiple research surfaces.",
+        "category": "research"
+      },
+      {
+        "id": "marketing-command-center",
+        "name": "Marketing Command Center",
+        "description": "Full-stack marketing agent with SEO audits, CRO optimization, content writing, social scheduling, competitor monitoring, and growth strategy — all in multi-surface dashboards.",
+        "category": "marketing"
+      },
+      {
         "id": "personal-assistant",
         "name": "Personal Assistant",
-        "description": "A general-purpose personal assistant for task management, reminders, and daily productivity.",
+        "description": "Daily planner, meeting prep, habit tracking, journaling, travel planning, and expense management — your unified personal productivity hub.",
         "category": "personal"
       },
       {
-        "id": "email-triage",
-        "name": "Email Triage Assistant",
-        "description": "Monitors your inbox, categorizes emails by priority, and drafts responses for routine messages.",
-        "category": "personal"
-      },
-      {
-        "id": "daily-standup",
-        "name": "Daily Standup Bot",
-        "description": "Collects standup updates, summarizes yesterday's work, and tracks blockers across the team.",
-        "category": "personal"
-      },
-      {
-        "id": "habit-tracker",
-        "name": "Habit Tracker",
-        "description": "Tracks daily habits, sends check-in reminders, and reports streaks and progress over time.",
-        "category": "personal"
-      },
-      {
-        "id": "meeting-notes",
-        "name": "Meeting Notes Agent",
-        "description": "Prepares meeting agendas from calendar events and produces structured meeting summaries with action items.",
-        "category": "personal"
-      },
-      {
-        "id": "github-monitor",
-        "name": "GitHub Monitor",
-        "description": "Watches GitHub repositories for new issues, PRs, CI failures, and security alerts.",
+        "id": "devops-hub",
+        "name": "DevOps Hub",
+        "description": "Engineering command center with PR triage, code review, CI/CD monitoring, release management, standup generation, and team velocity metrics across multiple dashboards.",
         "category": "development"
       },
       {
-        "id": "pr-reviewer",
-        "name": "PR Reviewer",
-        "description": "Automatically reviews pull requests — checks code quality, test coverage, and provides feedback.",
+        "id": "code-quality",
+        "name": "Code Review & Quality",
+        "description": "Automate pull request reviews with AI-powered code quality analysis and inline feedback. Keep your codebase healthy without slowing down your team.",
         "category": "development"
       },
       {
-        "id": "ci-monitor",
-        "name": "CI/CD Monitor",
-        "description": "Monitors CI/CD pipelines, alerts on failures, and provides build status summaries.",
-        "category": "development"
-      },
-      {
-        "id": "dependency-updater",
-        "name": "Dependency Updater",
-        "description": "Scans projects for outdated dependencies, checks changelogs, and recommends updates.",
-        "category": "development"
-      },
-      {
-        "id": "bug-triage",
-        "name": "Bug Triage Agent",
-        "description": "Categorizes new bug reports, assigns priority, and routes issues to the right team members.",
-        "category": "development"
-      },
-      {
-        "id": "social-media-monitor",
-        "name": "Social Media Monitor",
-        "description": "Tracks brand mentions, competitor activity, and trending topics across social platforms.",
+        "id": "hr-recruiting",
+        "name": "HR & Recruiting",
+        "description": "Hiring pipeline management, candidate tracking, interview scheduling, and recruiting metrics with multi-surface talent dashboards.",
         "category": "business"
       },
       {
-        "id": "lead-qualifier",
-        "name": "Lead Qualifier",
-        "description": "Scores incoming leads based on criteria, enriches with company data, and routes to sales team.",
-        "category": "business"
-      },
-      {
-        "id": "content-calendar",
-        "name": "Content Calendar",
-        "description": "Plans content schedules, suggests topics based on trends, and tracks publication deadlines.",
-        "category": "business"
-      },
-      {
-        "id": "customer-feedback",
-        "name": "Customer Feedback Digest",
-        "description": "Aggregates customer feedback from multiple sources, identifies themes, and generates weekly reports.",
-        "category": "business"
-      },
-      {
-        "id": "research-agent",
-        "name": "Research Agent",
-        "description": "Performs deep web research on topics, synthesizes findings, and provides daily briefings.",
-        "category": "research"
-      },
-      {
-        "id": "news-digest",
-        "name": "News Digest",
-        "description": "Delivers daily briefings on topics you care about, curated from multiple news sources.",
-        "category": "research"
-      },
-      {
-        "id": "competitive-intel",
-        "name": "Competitive Intelligence",
-        "description": "Tracks competitor websites, product changes, pricing updates, and public announcements.",
-        "category": "research"
-      },
-      {
-        "id": "academic-scanner",
-        "name": "Academic Paper Scanner",
-        "description": "Finds new research papers in your field from arXiv, Google Scholar, and other academic sources.",
-        "category": "research"
-      },
-      {
-        "id": "system-monitor",
-        "name": "System Monitor",
-        "description": "Monitors server health, disk/CPU/memory usage, and alerts on infrastructure issues.",
+        "id": "comms-monitoring",
+        "name": "Communications Monitoring",
+        "description": "Stay on top of critical signals across email and Slack without constant manual checking. Monitors mentions, keywords, and key senders, then forwards alerts with rich formatting.",
         "category": "operations"
       },
       {
-        "id": "log-analyzer",
-        "name": "Log Analyzer",
-        "description": "Reads application logs, detects anomalies, and alerts on error patterns.",
+        "id": "operations-monitor",
+        "name": "Operations Monitor",
+        "description": "API health monitoring, service status pages, Slack mention tracking, and alert management with real-time ops dashboards.",
         "category": "operations"
       },
       {
-        "id": "cost-tracker",
-        "name": "Cloud Cost Tracker",
-        "description": "Monitors AWS/GCP/Azure spending, alerts on budget overruns, and suggests cost optimizations.",
+        "id": "standup-automation",
+        "name": "Standup Automation",
+        "description": "Eliminate manual standup overhead by auto-generating summaries from GitHub and Slack activity, and compiling team updates into a single digest.",
         "category": "operations"
-      },
-      {
-        "id": "slack-bot",
-        "name": "Slack Team Bot",
-        "description": "A friendly team assistant for Slack — answers questions, summarizes threads, and facilitates collaboration.",
-        "category": "business"
       }
     ]
   },
@@ -158,10 +128,10 @@
       "optimal_iterations": 1
     },
     {
-      "id": "code-reviewer-semantic",
-      "source_template": "code-reviewer",
-      "user_description": "Help me review pull requests and catch bugs",
-      "expected_template_id": "code-reviewer",
+      "id": "github-ops-semantic",
+      "source_template": "github-ops",
+      "user_description": "Help me review pull requests and monitor CI failures",
+      "expected_template_id": "github-ops",
       "expected_confidence_min": 0.7,
       "agent_type": "development",
       "expected_soul_has_boundaries": true,
@@ -169,10 +139,10 @@
       "optimal_iterations": 1
     },
     {
-      "id": "github-monitor-match",
-      "source_template": "github-monitor",
+      "id": "github-ops-match",
+      "source_template": "github-ops",
       "user_description": "Monitor my GitHub repos for new issues and CI failures",
-      "expected_template_id": "github-monitor",
+      "expected_template_id": "github-ops",
       "expected_confidence_min": 0.8,
       "agent_type": "development",
       "expected_soul_has_boundaries": true,
@@ -180,10 +150,10 @@
       "optimal_iterations": 1
     },
     {
-      "id": "meal-planner-semantic",
-      "source_template": "meal-planner",
-      "user_description": "I need help tracking what I eat and planning meals",
-      "expected_template_id": "meal-planner",
+      "id": "meeting-prep-semantic",
+      "source_template": "meeting-prep",
+      "user_description": "I need help preparing for my meetings and tracking action items",
+      "expected_template_id": "meeting-prep",
       "expected_confidence_min": 0.7,
       "agent_type": "personal",
       "expected_soul_has_boundaries": true,
@@ -202,10 +172,10 @@
       "optimal_iterations": 1
     },
     {
-      "id": "research-agent-match",
-      "source_template": "research-agent",
+      "id": "research-assistant-match",
+      "source_template": "research-assistant",
       "user_description": "I need a research agent for web research and daily briefings",
-      "expected_template_id": "research-agent",
+      "expected_template_id": "research-assistant",
       "expected_confidence_min": 0.8,
       "agent_type": "research",
       "expected_soul_has_boundaries": true,
@@ -213,10 +183,10 @@
       "optimal_iterations": 1
     },
     {
-      "id": "system-monitor-ambiguous",
-      "source_template": "system-monitor",
+      "id": "incident-commander-ambiguous",
+      "source_template": "incident-commander",
       "user_description": "Help me keep my servers running smoothly",
-      "expected_template_id": "system-monitor",
+      "expected_template_id": "incident-commander",
       "expected_confidence_min": 0.5,
       "agent_type": "operations",
       "expected_soul_has_boundaries": true,
@@ -224,10 +194,10 @@
       "optimal_iterations": 1
     },
     {
-      "id": "customer-support-semantic",
-      "source_template": "customer-support",
-      "user_description": "I want an agent to help triage and respond to customer tickets",
-      "expected_template_id": "customer-support",
+      "id": "support-desk-semantic",
+      "source_template": "support-desk",
+      "user_description": "I want an agent to help triage and respond to support tickets",
+      "expected_template_id": "support-desk",
       "expected_confidence_min": 0.7,
       "agent_type": "business",
       "expected_soul_has_boundaries": true,

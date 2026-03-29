@@ -3,7 +3,7 @@ name: commit-insights
 version: 1.0.0
 description: Analyze git commit patterns, PR cycle times, code churn, and team velocity for engineering managers
 trigger: "commit insights|engineering metrics|team velocity|pr cycle time|code churn|engineering health|team stats"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write, send_message, web]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, write_file, send_message, web]
 ---
 
 # Commit Insights

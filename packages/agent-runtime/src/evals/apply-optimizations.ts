@@ -229,7 +229,7 @@ function formatCanvasV2Examples(demos: Record<string, any>[]): string {
     const backend = d.needs_backend ? `Schema: ${d.prisma_models || d.prisma_schema || 'yes'}` : 'No backend'
     return `**Example ${i + 1}:** "${d.user_request}"
 - ${backend}
-- Canvas: ${d.canvas_files || d.canvas_filename || 'canvas/app.js'}
+- Canvas: ${d.canvas_files || d.canvas_filename || 'canvas/app.ts'}
 - Tools: ${d.tool_sequence}
 - Patterns: ${d.react_patterns || 'useState'}`
   })

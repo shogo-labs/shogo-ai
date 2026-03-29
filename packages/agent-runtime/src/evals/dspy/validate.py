@@ -22,7 +22,7 @@ def run_validation(track: str, prediction_data: dict, timeout: int = 30) -> dict
 
     Args:
         track: Validation type — one of 'canvas', 'skill_create',
-               'multiturn_plan', 'memory_write', 'personality_update'
+               'multiturn_plan'
         prediction_data: Dict of prediction fields to validate
         timeout: Subprocess timeout in seconds
 
@@ -106,26 +106,5 @@ def validate_multiturn_plan(prediction) -> dict:
     })
 
 
-def validate_memory_write(prediction) -> dict:
-    """Validate a memory write prediction."""
-    should_write = getattr(prediction, "should_write", False)
-    if isinstance(should_write, str):
-        should_write = should_write.lower() in ("true", "yes", "1")
-    return run_validation("memory_write", {
-        "should_write": should_write,
-        "content": getattr(prediction, "content", ""),
-        "target_file": getattr(prediction, "target_file", ""),
-    })
 
 
-def validate_personality_update(prediction) -> dict:
-    """Validate a personality update prediction."""
-    should_update = getattr(prediction, "should_update", False)
-    if isinstance(should_update, str):
-        should_update = should_update.lower() in ("true", "yes", "1")
-    return run_validation("personality_update", {
-        "should_update": should_update,
-        "file": getattr(prediction, "file", ""),
-        "section": getattr(prediction, "section", ""),
-        "new_content": getattr(prediction, "new_content", ""),
-    })

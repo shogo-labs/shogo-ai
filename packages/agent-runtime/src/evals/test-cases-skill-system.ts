@@ -179,7 +179,7 @@ name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team
 trigger: "standup|daily update|what did|yesterday|today plan|blockers"
-tools: [send_message, memory_read, memory_write, canvas_create, canvas_update]
+tools: [send_message, memory_read, canvas_create, canvas_update]
 ---
 
 # Standup Collection
@@ -292,7 +292,7 @@ name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team
 trigger: "standup|daily update|what did|yesterday|today plan|blockers"
-tools: [send_message, memory_read, memory_write, canvas_create, canvas_update]
+tools: [send_message, memory_read, canvas_create, canvas_update]
 ---
 
 # Standup Collection
@@ -449,7 +449,7 @@ name: reminder-manage
 version: 2.0.0
 description: Set and manage reminders — store in memory, check on heartbeat, notify when due
 trigger: "remind me|set reminder|reminder|don't forget|remember to|alarm|due"
-tools: [memory_read, memory_write, send_message]
+tools: [memory_read, send_message]
 ---
 
 # Reminder Management
@@ -460,7 +460,7 @@ name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team
 trigger: "standup|daily update|what did|yesterday|today plan|blockers"
-tools: [send_message, memory_read, memory_write]
+tools: [send_message, memory_read]
 ---
 
 # Standup Collection

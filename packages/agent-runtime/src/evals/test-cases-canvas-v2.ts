@@ -4,7 +4,7 @@
  * Canvas V2 (Code Mode) Eval Test Cases — Full-Stack
  *
  * Tests the agent's ability to build fully-connected apps using:
- * - write_file/edit_file/delete_file for canvas/*.js React code
+ * - write_file/edit_file/delete_file for canvas/*.ts React code
  * - .shogo/server/schema.prisma for Prisma-backed REST backend
  * - fetch() in canvas code to connect frontend to skill server
  *
@@ -58,7 +58,7 @@ function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.js$/)) return false
+    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -77,7 +77,7 @@ function allCanvasCode(r: EvalResult): string {
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => {
       const path = String((t.input as any).path ?? '')
-      return path.match(/^canvas\/[^/]+\.js$/)
+      return path.match(/^canvas\/[^/]+\.ts$/)
     })
     .map(t => String((t.input as any).content ?? ''))
     .join('\n')
@@ -98,7 +98,7 @@ function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'edit_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.js$/)) return false
+    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -107,7 +107,7 @@ function deletedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'delete_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.js$/)) return false
+    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -117,7 +117,7 @@ function canvasFileCount(r: EvalResult): number {
   for (const t of r.toolCalls) {
     if (t.name !== 'write_file') continue
     const path = String((t.input as any).path ?? '')
-    if (path.match(/^canvas\/[^/]+\.js$/)) paths.add(path)
+    if (path.match(/^canvas\/[^/]+\.ts$/)) paths.add(path)
   }
   return paths.size
 }
@@ -416,7 +416,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -480,7 +480,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -558,7 +558,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -634,7 +634,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -702,7 +702,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'The dashboard needs a chart showing the weekly trend. Add a line chart to it.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.js': PRESEEDED_DASHBOARD_JS,
+      'canvas/dashboard.ts': PRESEEDED_DASHBOARD_JS,
     },
     initialMode: 'canvas',
     maxScore: 100,
@@ -742,7 +742,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'targeted-dashboard',
-        description: 'Wrote to canvas/dashboard.js specifically',
+        description: 'Wrote to canvas/dashboard.ts specifically',
         points: 15,
         phase: 'execution',
         validate: (r) => editedCanvasFile(r, /dashboard/) || wroteCanvasFile(r, /dashboard/),
@@ -766,8 +766,8 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Remove the settings page, I don\'t need it anymore.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.js': PRESEEDED_DASHBOARD_JS,
-      'canvas/settings.js': PRESEEDED_SETTINGS_JS,
+      'canvas/dashboard.ts': PRESEEDED_DASHBOARD_JS,
+      'canvas/settings.ts': PRESEEDED_SETTINGS_JS,
     },
     initialMode: 'canvas',
     maxScore: 100,
@@ -788,14 +788,14 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'deleted-settings',
-        description: 'Deleted canvas/settings.js specifically',
+        description: 'Deleted canvas/settings.ts specifically',
         points: 25,
         phase: 'execution',
         validate: (r) => deletedCanvasFile(r, /settings/),
       },
       {
         id: 'kept-dashboard',
-        description: 'Did NOT delete canvas/dashboard.js',
+        description: 'Did NOT delete canvas/dashboard.ts',
         points: 20,
         phase: 'execution',
         validate: (r) => !deletedCanvasFile(r, /dashboard/),
@@ -843,7 +843,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),

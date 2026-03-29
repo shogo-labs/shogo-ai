@@ -3,7 +3,7 @@ name: incident-triage
 version: 2.0.0
 description: Investigate production incidents — correlate errors, deploys, and metrics into a timeline
 trigger: "incident|something broke|production issue|outage|error spike|investigate|postmortem"
-tools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_write, send_message]
+tools: [tool_search, tool_install, web, canvas_create, canvas_update, write_file, send_message]
 ---
 
 # Incident Triage

@@ -77,7 +77,7 @@ export class SkillServerManager {
   constructor(config: SkillServerManagerConfig) {
     this.workspaceDir = config.workspaceDir
     const envPort = parseInt(process.env.SKILL_SERVER_PORT ?? '', 10)
-    this._port = config.port ?? (envPort > 0 ? envPort : DEFAULT_PORT)
+    this._port = envPort > 0 ? envPort : (config.port ?? DEFAULT_PORT)
     this.serverDir = join(this.workspaceDir, '.shogo', 'server')
     this.healthCheckRetries = config.healthCheckRetries ?? DEFAULT_HEALTH_CHECK_RETRIES
     this.healthCheckIntervalMs = config.healthCheckIntervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL_MS

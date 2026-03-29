@@ -24,7 +24,7 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/reposito
     curl bash git tar gzip \
     'nodejs>22' npm \
     chromium nss freetype harfbuzz ca-certificates ttf-freefont \
-    aws-cli
+    aws-cli ripgrep
 
 # CLI tools: gh (GitHub), glab (GitLab), stripe
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories && \

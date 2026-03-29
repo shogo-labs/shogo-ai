@@ -65,7 +65,7 @@ export interface ToolContext {
   fileIndexEngine?: FileIndexEngine
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
-  /** Canvas v2 file watcher — notified when canvas/*.js files are written/edited/deleted */
+  /** Canvas v2 file watcher — notified when canvas/*.{ts,js} files are written/edited/deleted */
   canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
   permissionEngine?: PermissionEngine
@@ -234,8 +234,9 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
-    description: 'Write content to a file in the agent workspace. Creates parent directories as needed. ' +
-      'Prefer edit_file for modifying existing files — only use write_file for creating new files or when the entire file content needs replacing.',
+    description: 'Create a NEW file in the agent workspace. Creates parent directories as needed. ' +
+      'WARNING: Do NOT use write_file to modify existing files (especially canvas/*.ts) — use edit_file instead. ' +
+      'write_file overwrites the entire file which risks losing code. Only use for creating brand-new files.',
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -286,11 +287,11 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'edit_file',
     description:
-      'Make targeted edits to a file using search and replace. ' +
+      'REQUIRED tool for modifying existing files — always use this instead of write_file for changes. ' +
+      'Makes targeted search-and-replace edits without rewriting the whole file. ' +
       'The old_string must match exactly and uniquely in the file (unless replace_all is true). ' +
-      'Prefer this over write_file for modifying existing files. ' +
-      'The edit WILL FAIL if old_string is not unique — include 3-5 surrounding lines for uniqueness. ' +
-      'If it fails, read the file first to get more context, then retry with a longer old_string. ' +
+      'Include 3-5 surrounding lines in old_string for uniqueness. ' +
+      'If it fails, read the file first to get the exact text, then retry with a longer old_string. ' +
       'Use replace_all: true for renaming a variable or string throughout a file.',
     label: 'Edit File',
     parameters: Type.Object({
@@ -1141,41 +1142,6 @@ function createMemoryReadTool(ctx: ToolContext): AgentTool {
         return textResult({ content: '', exists: false })
       }
       return textResult({ content: readFileSync(filePath, 'utf-8'), exists: true })
-    },
-  }
-}
-
-function createMemoryWriteTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'memory_write',
-    description: 'Write to agent memory. Appends a timestamped entry to MEMORY.md or a daily log.',
-    label: 'Write Memory',
-    parameters: Type.Object({
-      file: Type.String({ description: '"MEMORY.md" or a date string (YYYY-MM-DD)' }),
-      content: Type.String({ description: 'Content to write' }),
-      append: Type.Optional(Type.Boolean({ description: 'Append instead of overwrite (default: true)' })),
-    }),
-    execute: async (_toolCallId, params) => {
-      const { file, content, append } = params as { file: string; content: string; append?: boolean }
-      let filePath: string
-
-      if (file === 'MEMORY.md') {
-        filePath = join(ctx.workspaceDir, 'MEMORY.md')
-      } else {
-        const memDir = join(ctx.workspaceDir, 'memory')
-        mkdirSync(memDir, { recursive: true })
-        filePath = join(memDir, `${file}.md`)
-      }
-
-      const shouldAppend = append !== false
-      if (shouldAppend && existsSync(filePath)) {
-        const existing = readFileSync(filePath, 'utf-8')
-        writeFileSync(filePath, existing + '\n' + content, 'utf-8')
-      } else {
-        writeFileSync(filePath, content, 'utf-8')
-      }
-
-      return textResult({ ok: true, file, bytes: content.length })
     },
   }
 }
@@ -2672,138 +2638,6 @@ Modes:
 }
 
 // ---------------------------------------------------------------------------
-// Personality Self-Update Tool
-// ---------------------------------------------------------------------------
-
-const _personalitySessionCounts = new Map<string, number>()
-
-/** @internal Test-only: reset the personality update session counters */
-export function _resetPersonalitySessionCounts(): void {
-  _personalitySessionCounts.clear()
-}
-
-function createPersonalityUpdateTool(ctx: ToolContext): AgentTool {
-  const ALLOWED_FILES = ['SOUL.md', 'AGENTS.md', 'IDENTITY.md'] as const
-  const MAX_UPDATES_PER_SESSION = 1
-  const MAX_UPDATES_PER_DAY = 3
-
-  return {
-    name: 'personality_update',
-    description:
-      `Update your own personality/behavior markdown files to improve future interactions.
-Use this when the user explicitly corrects your tone, style, or boundaries, or when
-you discover a lasting preference. Do NOT use for one-off requests.
-
-Allowed files: SOUL.md (personality, tone, boundaries), AGENTS.md (high-level instructions), IDENTITY.md (name, role).
-Updates are section-level: specify the heading to update and its new content.
-Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day.`,
-    label: 'Update Personality',
-    parameters: Type.Object({
-      file: Type.Union(ALLOWED_FILES.map(f => Type.Literal(f)), {
-        description: 'Which personality file to update',
-      }),
-      section: Type.String({ description: 'Section heading to update (e.g. "Communication Style")' }),
-      content: Type.String({ description: 'New markdown content for that section' }),
-      reasoning: Type.String({ description: 'Why this update improves your behavior' }),
-    }),
-    execute: async (_toolCallId, params) => {
-      const { file, section, content, reasoning } = params as {
-        file: string
-        section: string
-        content: string
-        reasoning: string
-      }
-
-      if (!ALLOWED_FILES.includes(file as typeof ALLOWED_FILES[number])) {
-        return textResult({ ok: false, error: `File must be one of: ${ALLOWED_FILES.join(', ')}` })
-      }
-
-      if (!section || !content || !content.trim()) {
-        return textResult({ ok: false, error: 'Both section and content are required' })
-      }
-
-      // Rate limiting
-      const sessionKey = ctx.sessionId || 'default'
-      const sessionCount = _personalitySessionCounts.get(sessionKey) || 0
-      if (sessionCount >= MAX_UPDATES_PER_SESSION) {
-        return textResult({
-          ok: false,
-          error: `Rate limit: max ${MAX_UPDATES_PER_SESSION} personality update(s) per session`,
-        })
-      }
-
-      // Daily rate limit via changelog
-      const today = new Date().toISOString().slice(0, 10)
-      const memoryDir = join(ctx.workspaceDir, 'memory')
-      const dailyLogPath = join(memoryDir, `${today}.md`)
-      let dailyCount = 0
-      if (existsSync(dailyLogPath)) {
-        const dailyContent = readFileSync(dailyLogPath, 'utf-8')
-        dailyCount = (dailyContent.match(/\[personality-update\]/g) || []).length
-      }
-      if (dailyCount >= MAX_UPDATES_PER_DAY) {
-        return textResult({
-          ok: false,
-          error: `Rate limit: max ${MAX_UPDATES_PER_DAY} personality updates per day`,
-        })
-      }
-
-      const filePath = join(ctx.workspaceDir, file)
-      if (!existsSync(filePath)) {
-        return textResult({ ok: false, error: `File not found: ${file}` })
-      }
-
-      const currentContent = readFileSync(filePath, 'utf-8')
-
-      // Preserve Boundaries section — never allow removal
-      if (file === 'SOUL.md') {
-        const hasBoundaries = currentContent.toLowerCase().includes('## boundaries')
-        const newHasBoundaries = content.toLowerCase().includes('boundaries') || section.toLowerCase() !== 'boundaries'
-        if (hasBoundaries && section.toLowerCase() === 'boundaries' && !content.trim()) {
-          return textResult({ ok: false, error: 'Cannot remove the Boundaries section from SOUL.md' })
-        }
-      }
-
-      // Apply section-level update
-      const sectionPattern = new RegExp(
-        `(## ${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`,
-        'i'
-      )
-      let updatedContent: string
-      if (sectionPattern.test(currentContent)) {
-        updatedContent = currentContent.replace(sectionPattern, `## ${section}\n${content}\n`)
-      } else {
-        updatedContent = currentContent.trimEnd() + `\n\n## ${section}\n${content}\n`
-      }
-
-      writeFileSync(filePath, updatedContent, 'utf-8')
-
-      // Log to changelog in daily memory
-      if (!existsSync(memoryDir)) mkdirSync(memoryDir, { recursive: true })
-      const timestamp = new Date().toISOString()
-      const logEntry = `\n[personality-update] ${timestamp} | ${file} > ${section} | ${reasoning}\n`
-      if (existsSync(dailyLogPath)) {
-        const existing = readFileSync(dailyLogPath, 'utf-8')
-        writeFileSync(dailyLogPath, existing + logEntry, 'utf-8')
-      } else {
-        writeFileSync(dailyLogPath, `# ${today}\n${logEntry}`, 'utf-8')
-      }
-
-      // Increment session counter
-      _personalitySessionCounts.set(sessionKey, sessionCount + 1)
-
-      return textResult({
-        ok: true,
-        file,
-        section,
-        reasoning,
-        message: `Updated ${file} section "${section}". Logged to daily memory.`,
-      })
-    },
-  }
-}
-
-// ---------------------------------------------------------------------------
 // MCP Discovery Tools
 // ---------------------------------------------------------------------------
 
@@ -3779,12 +3613,11 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
     'mcp_playwright_browser_click', 'mcp_playwright_browser_type',
     'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
   ],
-  memory: ['memory_read', 'memory_write', 'memory_search'],
+  memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
-  personality: ['personality_update'],
   tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
 }
@@ -3793,11 +3626,10 @@ export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
-  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
+  'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
   'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
-  'personality_update',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
 ] as const
@@ -3956,190 +3788,110 @@ function createSearchFilesTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
-// Binding Transform Tool
-// ---------------------------------------------------------------------------
-
-function createBindingTransformTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'binding_transform',
-    description: `Create, test, list, or remove TypeScript transform functions for tool responses.
-
-When a tool (e.g. GITHUB_LIST_ISSUES) returns a large response that gets truncated, you can register a transform function that extracts only the fields you need. The transform runs automatically on every subsequent call to that tool, BEFORE truncation.
-
-ACTIONS:
-
-create — Register a transform for a tool. Write a pure function "(data) => ..." that takes the raw response object and returns just what you need:
-  binding_transform({ action: "create", tool: "GITHUB_LIST_ISSUES", transform: "(data) => ({ issues: data.data.items.map(i => ({ number: i.number, title: i.title, state: i.state })), total: data.data.total_count })", description: "Extract issue summaries" })
-
-test — Dry-run the transform against the last cached response to see size reduction:
-  binding_transform({ action: "test", tool: "GITHUB_LIST_ISSUES" })
-
-list — List all registered transforms:
-  binding_transform({ action: "list" })
-
-remove — Remove a transform:
-  binding_transform({ action: "remove", tool: "GITHUB_LIST_ISSUES" })
-
-WORKFLOW: Call a tool → see truncated response → create a transform → re-call the tool → get clean compact response.
-
-TRANSFORM RULES:
-- Must be a pure arrow function: (data) => { ... }
-- Has access to: JSON, Math, Date, Array, Object, String, Number, Boolean, Map, Set, RegExp
-- No access to: require, import, process, fetch, eval, Bun, globalThis
-- 2-second timeout — no infinite loops
-- If a transform errors at runtime, it falls back to the raw (truncated) response gracefully`,
-    label: 'Transform Tool Responses',
-    parameters: Type.Object({
-      action: Type.Union([
-        Type.Literal('create'),
-        Type.Literal('test'),
-        Type.Literal('list'),
-        Type.Literal('remove'),
-      ], { description: 'Action to perform' }),
-      tool: Type.Optional(Type.String({ description: 'Tool slug (e.g. "GITHUB_LIST_ISSUES"). Required for create/test/remove.' })),
-      transform: Type.Optional(Type.String({ description: 'Transform function body for create action. Must be a pure arrow function: (data) => { ... }' })),
-      description: Type.Optional(Type.String({ description: 'Human-readable description of what the transform does (for create action)' })),
-      sampleData: Type.Optional(Type.Any({ description: 'Optional sample data to test the transform against (for test action). If omitted, uses the last cached response.' })),
-    }),
-    execute: async (_toolCallId, params) => {
-      const { action, tool, transform, description, sampleData } = params as {
-        action: 'create' | 'test' | 'list' | 'remove'
-        tool?: string
-        transform?: string
-        description?: string
-        sampleData?: unknown
-      }
-
-      const { getTransformRegistry } = await import('./response-transforms')
-      const registry = getTransformRegistry()
-      const transformsDir = join(ctx.workspaceDir, 'transforms')
-
-      switch (action) {
-        case 'create': {
-          if (!tool) return textResult({ error: 'Missing required parameter: tool' })
-          if (!transform) return textResult({ error: 'Missing required parameter: transform' })
-
-          try {
-            registry.register(tool, transform, description || '')
-
-            // Persist to disk
-            registry.persistToDisk(transformsDir)
-
-            // If we have a cached response, show a size preview
-            const cached = registry.getCachedResponse(tool)
-            if (cached) {
-              try {
-                const transformed = await registry.execute(tool, cached)
-                const originalSize = JSON.stringify(cached).length
-                const transformedSize = JSON.stringify(transformed).length
-                return textResult({
-                  ok: true,
-                  tool,
-                  description: description || '',
-                  sizePreview: {
-                    originalChars: originalSize,
-                    transformedChars: transformedSize,
-                    reductionRatio: Math.round((originalSize / Math.max(transformedSize, 1)) * 10) / 10,
-                    percentReduced: Math.round((1 - transformedSize / Math.max(originalSize, 1)) * 100),
-                  },
-                  message: `Transform registered for "${tool}". Next call will use it automatically.`,
-                })
-              } catch {
-                // Transform registered but preview failed — still ok
-              }
-            }
-
-            return textResult({
-              ok: true,
-              tool,
-              description: description || '',
-              message: `Transform registered for "${tool}". Next call to this tool will apply it automatically.`,
-            })
-          } catch (err: any) {
-            return textResult({ error: `Failed to register transform: ${err.message}` })
-          }
-        }
-
-        case 'test': {
-          if (!tool) return textResult({ error: 'Missing required parameter: tool' })
-
-          const testData = sampleData ?? registry.getCachedResponse(tool)
-          if (!testData) {
-            return textResult({
-              error: `No cached response for "${tool}". Call the tool first, or provide sampleData.`,
-            })
-          }
-
-          const existing = registry.get(tool)
-          if (!existing) {
-            return textResult({
-              error: `No transform registered for "${tool}". Use action "create" first.`,
-            })
-          }
-
-          try {
-            const transformed = await registry.execute(tool, testData)
-            const originalSize = JSON.stringify(testData).length
-            const transformedSize = JSON.stringify(transformed).length
-            const preview = JSON.stringify(transformed, null, 2)
-            const previewTruncated = preview.length > 2000
-              ? preview.substring(0, 2000) + '\n... [preview truncated]'
-              : preview
-
-            return textResult({
-              ok: true,
-              tool,
-              inputSize: originalSize,
-              outputSize: transformedSize,
-              reductionRatio: Math.round((originalSize / Math.max(transformedSize, 1)) * 10) / 10,
-              percentReduced: Math.round((1 - transformedSize / Math.max(originalSize, 1)) * 100),
-              preview: previewTruncated,
-            })
-          } catch (err: any) {
-            return textResult({
-              error: `Transform test failed: ${err.message}. Fix the transform and try again.`,
-            })
-          }
-        }
-
-        case 'list': {
-          const transforms = registry.list()
-          return textResult({
-            ok: true,
-            count: transforms.length,
-            transforms: transforms.map(t => ({
-              tool: t.toolSlug,
-              description: t.description,
-              createdAt: new Date(t.createdAt).toISOString(),
-            })),
-          })
-        }
-
-        case 'remove': {
-          if (!tool) return textResult({ error: 'Missing required parameter: tool' })
-
-          const removed = registry.remove(tool)
-          if (removed) {
-            registry.removeFromDisk(transformsDir, tool)
-          }
-          return textResult({
-            ok: removed,
-            message: removed
-              ? `Transform for "${tool}" removed. Future calls will use raw responses.`
-              : `No transform found for "${tool}".`,
-          })
-        }
-
-        default:
-          return textResult({ error: `Unknown action: ${action}` })
-      }
-    },
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Channel Connect Tool
 // ---------------------------------------------------------------------------
+
+const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: string }> = {
+  telegram: {
+    requiredKeys: ['botToken'],
+    guide: [
+      '## Telegram Setup',
+      '1. Open Telegram and message @BotFather',
+      '2. Send /newbot and follow the prompts to create a bot',
+      '3. Copy the bot token (looks like 123456:ABC-DEF...)',
+      '4. Connect: channel_connect({ type: "telegram", config: { botToken: "YOUR_TOKEN" } })',
+    ].join('\n'),
+  },
+  discord: {
+    requiredKeys: ['botToken', 'guildId'],
+    guide: [
+      '## Discord Setup',
+      '1. Go to https://discord.com/developers/applications and create a New Application',
+      '2. Go to Bot tab → click "Add Bot" → copy the bot token',
+      '3. Go to Bot tab → enable "Message Content Intent" under Privileged Gateway Intents',
+      '4. Go to OAuth2 → URL Generator → select "bot" scope + "Send Messages" + "Read Messages" permissions',
+      '5. Open the generated URL to invite the bot to your server',
+      '6. Get the guild (server) ID: enable Developer Mode in Discord settings, right-click the server → Copy Server ID',
+      '7. Connect: channel_connect({ type: "discord", config: { botToken: "YOUR_TOKEN", guildId: "SERVER_ID" } })',
+    ].join('\n'),
+  },
+  slack: {
+    requiredKeys: ['botToken', 'appToken'],
+    guide: [
+      '## Slack Setup',
+      '1. Go to https://api.slack.com/apps and click "Create New App" → "From scratch"',
+      '2. Under OAuth & Permissions, add these Bot Token Scopes: chat:write, channels:history, channels:read, groups:history, im:history, mpim:history',
+      '3. Install the app to your workspace → copy the Bot User OAuth Token (xoxb-...)',
+      '4. Under Basic Information → App-Level Tokens → "Generate Token" with connections:write scope → copy the token (xapp-...)',
+      '5. Under Socket Mode → enable Socket Mode',
+      '6. Under Event Subscriptions → enable events → subscribe to: message.channels, message.groups, message.im, message.mpim',
+      '7. Connect: channel_connect({ type: "slack", config: { botToken: "xoxb-...", appToken: "xapp-..." } })',
+    ].join('\n'),
+  },
+  email: {
+    requiredKeys: ['imapHost', 'smtpHost', 'username', 'password'],
+    guide: [
+      '## Email Setup',
+      '1. Get IMAP and SMTP credentials from your email provider',
+      '   - Gmail: use imap.gmail.com / smtp.gmail.com, enable "App Passwords" in Google Account settings',
+      '   - Outlook: use outlook.office365.com for both IMAP and SMTP',
+      '   - Custom: check your provider\'s IMAP/SMTP settings',
+      '2. Connect: channel_connect({ type: "email", config: { imapHost: "imap.gmail.com", smtpHost: "smtp.gmail.com", username: "you@gmail.com", password: "YOUR_APP_PASSWORD" } })',
+    ].join('\n'),
+  },
+  whatsapp: {
+    requiredKeys: ['accessToken', 'phoneNumberId', 'verifyToken'],
+    guide: [
+      '## WhatsApp Setup',
+      '1. Go to https://developers.facebook.com and create or select an app',
+      '2. Add the WhatsApp product to your app',
+      '3. Under WhatsApp → API Setup → copy the Temporary Access Token and Phone Number ID',
+      '4. Choose a verify token (any string you make up) — you\'ll use it to verify the webhook',
+      '5. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_TOKEN", phoneNumberId: "YOUR_PHONE_ID", verifyToken: "YOUR_VERIFY_TOKEN" } })',
+      '6. After connecting, configure the webhook URL in Meta Developer Portal → WhatsApp → Configuration → Callback URL',
+    ].join('\n'),
+  },
+  webhook: {
+    requiredKeys: [],
+    guide: [
+      '## Webhook / HTTP Setup',
+      'No external accounts needed. Optionally provide a shared secret for authentication.',
+      '',
+      'Connect: channel_connect({ type: "webhook", config: { secret: "your-shared-secret" } })',
+      '',
+      'Once connected, external services can POST to /agent/channels/webhook/incoming with:',
+      '  - Header: Authorization: Bearer your-shared-secret',
+      '  - Body: { "message": "...", "channelId": "default", "mode": "sync" }',
+      '',
+      'Works with Zapier, Make, n8n, or any HTTP-capable service.',
+    ].join('\n'),
+  },
+  teams: {
+    requiredKeys: ['appId', 'appPassword'],
+    guide: [
+      '## Microsoft Teams Setup',
+      '1. Go to Azure Portal → Azure Bot Service → create a new Bot resource',
+      '2. Note the Microsoft App ID and create a client secret (App Password)',
+      '3. Set the messaging endpoint to: <agent-url>/agent/channels/teams/messages',
+      '4. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_SECRET", botName: "My Agent" } })',
+      '5. Install the bot in Teams via the Teams Admin Center or a Teams App manifest',
+    ].join('\n'),
+  },
+  webchat: {
+    requiredKeys: [],
+    guide: [
+      '## WebChat Widget Setup',
+      'No external accounts needed. All config fields are optional.',
+      '',
+      'Connect: channel_connect({ type: "webchat", config: { title: "Chat with us", welcomeMessage: "Hi! How can I help?", primaryColor: "#6366f1", position: "bottom-right" } })',
+      'Or with no config: channel_connect({ type: "webchat", config: {} })',
+      '',
+      'After connecting, give the user the embed snippet to paste on their website.',
+      'The widget appears as a chat bubble — visitors can chat with the agent directly.',
+      'Optional config: title, subtitle, welcomeMessage, primaryColor (hex), position ("bottom-right" or "bottom-left"), avatarUrl, allowedOrigins.',
+    ].join('\n'),
+  },
+}
 
 function createChannelConnectTool(ctx: ToolContext): AgentTool {
   return {
@@ -4203,6 +3955,17 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams', 'webchat']
       if (!validTypes.includes(type)) {
         return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
+      }
+
+      const channelGuide = CHANNEL_SETUP_GUIDES[type]
+      if (channelGuide) {
+        const missingKeys = channelGuide.requiredKeys.filter(k => !channelConfig[k])
+        if (missingKeys.length > 0) {
+          return textResult({
+            error: `Missing required config: ${missingKeys.join(', ')}`,
+            setup_guide: channelGuide.guide,
+          })
+        }
       }
 
       if (type === 'webchat' && !channelConfig.widgetSecret) {
@@ -4272,6 +4035,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           return textResult({
             ok: true,
             message: `${type} channel saved to config but failed to hot-connect: ${err.message}. Restart the agent to connect.`,
+            setup_guide: channelGuide?.guide,
           })
         }
       }
@@ -4279,6 +4043,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       return textResult({
         ok: true,
         message: `${type} channel configured. Restart the agent to connect.`,
+        setup_guide: channelGuide?.guide,
       })
     },
   }
@@ -4619,12 +4384,12 @@ function createCanvasLintTool(ctx: ToolContext): AgentTool {
     name: 'canvas_lint',
     description:
       'Type-check canvas code files for errors. ' +
-      'Runs TypeScript analysis on canvas/*.js files to catch undefined references, syntax errors, and type mismatches. ' +
+      'Runs TypeScript analysis on canvas/*.ts files to catch undefined references, syntax errors, and type mismatches. ' +
       'Use after completing multi-file changes or to verify all surfaces are error-free. ' +
       'Omit path to check all canvas code files.',
     label: 'Canvas Lint',
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: 'Specific canvas file to check (e.g. canvas/weather.js). Omit to check all.' })),
+      path: Type.Optional(Type.String({ description: 'Specific canvas file to check (e.g. canvas/weather.ts). Omit to check all.' })),
     }),
     execute: async (_toolCallId, params) => {
       const { path: filePath } = params as { path?: string }
@@ -4692,7 +4457,6 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createWebTool(), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
-    createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
     createTodoWriteTool(ctx),
     createAskUserTool(ctx),
@@ -4717,14 +4481,12 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCanvasInspectTool(),
     createCanvasLintTool(ctx),
     // APP_MODE_DISABLED: createTemplateListTool(), createTemplateCopyTool(ctx),
-    createPersonalityUpdateTool(ctx),
     createToolSearchTool(ctx),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
     createMcpSearchTool(),
     createMcpInstallTool(ctx),
     createMcpUninstallTool(ctx),
-    createBindingTransformTool(ctx),
     g(createGenerateImageTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
@@ -4757,7 +4519,6 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
     g(createWebTool(), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
-    createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),

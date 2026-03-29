@@ -19,8 +19,6 @@ from validate import (
     validate_canvas,
     validate_skill_creation,
     validate_multiturn_plan,
-    validate_memory_write,
-    validate_personality_update,
 )
 
 
@@ -69,26 +67,6 @@ def skill_create_e2e_quality(example: dspy.Example, prediction: dspy.Prediction,
 def multiturn_plan_e2e_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
     """Validate the planned tool sequence: ordering constraints, valid tools, batching."""
     result = validate_multiturn_plan(prediction)
-    return result.get("score", 0.0)
-
-
-# ---------------------------------------------------------------------------
-# Memory Write E2E (harness-based, original)
-# ---------------------------------------------------------------------------
-
-def memory_write_e2e_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
-    """Validate memory write output: content, target file, conciseness."""
-    result = validate_memory_write(prediction)
-    return result.get("score", 0.0)
-
-
-# ---------------------------------------------------------------------------
-# Personality Update E2E (harness-based, original)
-# ---------------------------------------------------------------------------
-
-def personality_update_e2e_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
-    """Validate personality update: file choice, section, content."""
-    result = validate_personality_update(prediction)
     return result.get("score", 0.0)
 
 
@@ -313,7 +291,6 @@ SUBTRACK_INPUT_FIELDS = {
     "e2e": "user_request",
     "retrieval": "user_message",
     "write": "conversation_summary",
-    "write_e2e": "conversation_summary",
     "match": "user_message",
     "create": "user_description",
     "create_e2e": "user_description",
@@ -331,7 +308,7 @@ CONTEXT_WRAPPERS = {
     "conversation_summary": (
         "The following is a summary of a recent conversation I had with a user. "
         "Based on what happened, please take any appropriate follow-up actions "
-        "(e.g. saving important facts to memory, updating personality, etc.):\n\n{value}"
+        "(e.g. saving important facts to memory, editing workspace files, etc.):\n\n{value}"
     ),
     "messages_text": (
         "Here is the full conversation so far. Please summarize the key points, "

@@ -141,25 +141,53 @@ export interface GatewayConfig {
   canvasMode?: 'json' | 'code'
 }
 
-const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update
+const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
 
-You have a \`personality_update\` tool that lets you improve your own behavior files.
+When the user changes your personality, tone, role, name, or boundaries, you MUST:
+1. \`read_file\` the target file first
+2. \`edit_file\` to make a **targeted** change to the relevant section
 
-### When to Use
+**NEVER** use \`write_file\` to overwrite the entire file — always use \`edit_file\` to change only the relevant section.
+**NEVER** write personality/role/boundary changes to MEMORY.md — memory is for facts and conversation logs only.
+
+### Which File to Edit
+- **SOUL.md** — Tone, communication style, and boundaries (e.g. "be more formal", "never run shell commands")
+- **AGENTS.md** — Role definition, operating instructions, and capabilities (e.g. "you're my DevOps guy", safety rules)
+- **IDENTITY.md** — Name, avatar, emoji, and tagline (e.g. "call me Atlas")
+
+### Example
+
+User: "Be more formal and professional from now on"
+
+\`\`\`
+read_file({ path: "SOUL.md" })
+edit_file({
+  path: "SOUL.md",
+  old_string: "## Tone\\n- Direct and helpful, not verbose",
+  new_string: "## Tone\\n- Formal and professional at all times"
+})
+\`\`\`
+
+User: "Call me Atlas and focus on climate science"
+
+\`\`\`
+read_file({ path: "IDENTITY.md" })
+edit_file({
+  path: "IDENTITY.md",
+  old_string: "- **Name:** Shogo",
+  new_string: "- **Name:** Atlas"
+})
+\`\`\`
+
+### When to Update
 - User explicitly corrects your tone, style, or boundaries (e.g. "be more formal")
 - User establishes a new, lasting boundary (e.g. "don't suggest code changes")
-- You discover a persistent user preference that should shape future interactions
+- User assigns a new name, role, or domain focus
 
-### When NOT to Use
+### When NOT to Update
 - One-off requests or trivial conversation
-- Information already present in your SOUL.md
+- Information already present in the file
 - Temporary context that doesn't reflect a lasting change
-
-### How It Works
-- Specify the file (SOUL.md, AGENTS.md, or IDENTITY.md), the section heading, and the new content
-- Include a reasoning field explaining why the update improves your behavior
-- The Boundaries section in SOUL.md can never be removed, only appended to
-- All updates are logged to daily memory with [personality-update] tag
 
 `
 
@@ -207,6 +235,8 @@ export class AgentGateway {
     iterations: number
     toolCallCount: number
   } | null = null
+  /** Optional label for eval tracing — included in log prefix when set */
+  private evalLabel: string | null = null
   /** Manages the per-workspace skill server process (.shogo/server/) */
   private skillServerManager: SkillServerManager
   /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
@@ -246,6 +276,16 @@ export class AgentGateway {
 
   setUserTimezone(tz: string): void {
     this.userTimezone = tz
+  }
+
+  /** Set an eval label for log tracing (used by eval runner) */
+  setEvalLabel(label: string | null): void {
+    this.evalLabel = label
+  }
+
+  /** Log prefix — includes eval label when set for traceability */
+  private get logPrefix(): string {
+    return this.evalLabel ? `[AgentGateway][${this.evalLabel}]` : '[AgentGateway]'
   }
 
   /** Set the SSE writer callback so the permission engine can push approval requests to the UI */
@@ -1266,7 +1306,7 @@ export class AgentGateway {
         streamFn: this._streamFn,
         thinkingLevel: 'medium',
         onToolCall: (name, input) => {
-          console.log(`[AgentGateway] Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
+          console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
         onThinkingStart: () => {
           if (uiWriter) {
@@ -1471,14 +1511,14 @@ export class AgentGateway {
 
       if (result.loopBreak) {
         console.warn(
-          `[AgentGateway] Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
+          `${this.logPrefix} Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
         )
       }
 
       const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
       if (result.toolCalls.length > 0) {
         console.log(
-          `[AgentGateway] Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${totalInput}+${result.outputTokens} tokens (${result.cacheReadTokens} cached)`
+          `${this.logPrefix} Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${totalInput}+${result.outputTokens} tokens (${result.cacheReadTokens} cached)`
         )
       }
 
@@ -1486,7 +1526,7 @@ export class AgentGateway {
         const msg = result.error.message || 'An unexpected error occurred'
         const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
         console.error(
-          `[AgentGateway] Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
+          `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
         )
         chunker?.dispose()
         if (uiWriter) {
@@ -1499,7 +1539,7 @@ export class AgentGateway {
         }
       } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
         console.error(
-          `[AgentGateway] Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
+          `${this.logPrefix} Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
         )
         if (uiWriter) {
           uiWriter.write({
@@ -1517,7 +1557,7 @@ export class AgentGateway {
         const compactResult = await this.sessionManager.compact(sessionId)
         if (compactResult) {
           console.log(
-            `[AgentGateway] Session ${sessionId} compacted: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
+            `${this.logPrefix} Session ${sessionId} compacted: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
         }
       }
@@ -1526,10 +1566,10 @@ export class AgentGateway {
 
       if (result.text) return result.text
       if (isHeartbeat) return 'HEARTBEAT_OK'
-      console.warn(`[AgentGateway] Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
+      console.warn(`${this.logPrefix} Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
       return 'Sorry, I was unable to generate a response. Please try again.'
     } catch (error: any) {
-      console.error('[AgentGateway] Agent turn failed:', error.message, error.stack?.split('\n').slice(0, 3).join('\n'))
+      console.error(`${this.logPrefix} Agent turn failed:`, error.message, error.stack?.split('\n').slice(0, 3).join('\n'))
       chunker?.dispose()
       if (uiWriter) {
         const msg = error.message || 'An unexpected error occurred'
@@ -1612,6 +1652,11 @@ export class AgentGateway {
       parts.push(uploadedFilesContext)
     }
 
+    const workspaceTree = this.buildWorkspaceTreeContext()
+    if (workspaceTree) {
+      parts.push(workspaceTree)
+    }
+
     const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
     const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
     const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
@@ -1623,7 +1668,7 @@ export class AgentGateway {
       if (this.config.canvasMode === 'code') {
         parts.push(`\n## Canvas Mode — React Code Display
 
-You are in canvas code mode. Write React code to \`canvas/*.js\` files using \`write_file\`, \`edit_file\`, \`delete_file\`. Each file is a separate tab rendered instantly in the canvas panel.
+You are in canvas code mode. Write TypeScript React code to \`canvas/*.ts\` files using \`write_file\`, \`edit_file\`, \`delete_file\`. Each file is a separate tab rendered instantly in the canvas panel. Always use \`.ts\` extensions.
 
 **Your workflow in canvas code mode:**
 1. Understand what the user wants to display or build
@@ -1905,6 +1950,60 @@ When integrations are connected, use \`tool_search\` to discover available actio
       // Ignore permission or other errors
     }
     return results
+  }
+
+  /**
+   * Build a concise workspace file tree so the agent knows what files already
+   * exist before deciding to create vs edit. Focuses on user-visible files —
+   * skips .shogo internals, node_modules, etc.
+   */
+  private buildWorkspaceTreeContext(): string | null {
+    try {
+      const lines: string[] = []
+      const SKIP = new Set(['.shogo', 'node_modules', '.git', '.cache', '.next', 'dist', 'build', 'files'])
+      const MAX_FILES = 80
+
+      const walk = (dir: string, prefix: string, depth: number) => {
+        if (depth > 4 || lines.length >= MAX_FILES) return
+        let entries: import('fs').Dirent[]
+        try {
+          entries = readdirSync(dir, { withFileTypes: true })
+        } catch { return }
+
+        entries.sort((a, b) => {
+          if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+
+        for (const entry of entries) {
+          if (lines.length >= MAX_FILES) break
+          if (entry.name.startsWith('.') && depth === 0 && entry.name !== '.shogo') continue
+          if (SKIP.has(entry.name)) continue
+
+          const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+          if (entry.isDirectory()) {
+            lines.push(`${relPath}/`)
+            walk(join(dir, entry.name), relPath, depth + 1)
+          } else {
+            lines.push(relPath)
+          }
+        }
+      }
+
+      walk(this.workspaceDir, '', 0)
+      if (lines.length === 0) return null
+
+      return [
+        '## Workspace Files',
+        '',
+        'Current files in the workspace (use `read_file` before editing existing files):',
+        '```',
+        ...lines,
+        '```',
+      ].join('\n')
+    } catch {
+      return null
+    }
   }
 
   // ---------------------------------------------------------------------------
