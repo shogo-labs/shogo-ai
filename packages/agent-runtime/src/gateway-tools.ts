@@ -125,7 +125,7 @@ export function textResult(data: any): AgentToolResult<any> {
   }
 }
 
-const MAX_EXEC_OUTPUT_CHARS = 8000
+const MAX_EXEC_OUTPUT_CHARS = 16000
 
 function truncateExecOutput(text: string): string {
   if (!text || text.length <= MAX_EXEC_OUTPUT_CHARS) return text
@@ -278,6 +278,58 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
 // Edit File Tool (search_replace)
 // ---------------------------------------------------------------------------
 
+function fuzzyFindInContent(content: string, needle: string): { index: number; match: string } | null {
+  // 1. Try exact match first
+  const exactIdx = content.indexOf(needle)
+  if (exactIdx !== -1) return { index: exactIdx, match: needle }
+
+  // 2. Try normalizing line endings (\r\n vs \n)
+  const normalizedNeedle = needle.replace(/\r\n/g, '\n')
+  const normalizedContent = content.replace(/\r\n/g, '\n')
+  const normIdx = normalizedContent.indexOf(normalizedNeedle)
+  if (normIdx !== -1) {
+    const actualSlice = content.substring(normIdx, normIdx + normalizedNeedle.length + 20)
+    const lines = needle.split('\n')
+    let rebuilt = ''
+    let pos = normIdx
+    for (let i = 0; i < lines.length; i++) {
+      const lineLen = lines[i].length
+      rebuilt += content.substring(pos, pos + lineLen)
+      pos += lineLen
+      if (i < lines.length - 1) {
+        if (content[pos] === '\r' && content[pos + 1] === '\n') { rebuilt += '\r\n'; pos += 2 }
+        else if (content[pos] === '\n') { rebuilt += '\n'; pos += 1 }
+      }
+    }
+    if (content.includes(rebuilt)) return { index: content.indexOf(rebuilt), match: rebuilt }
+    return { index: normIdx, match: normalizedNeedle }
+  }
+
+  // 3. Try whitespace-flexible matching (collapse runs of whitespace)
+  const collapseWS = (s: string) => s.replace(/[ \t]+/g, ' ').replace(/\r\n/g, '\n')
+  const collapsedNeedle = collapseWS(needle)
+  const collapsedContent = collapseWS(content)
+  const wsIdx = collapsedContent.indexOf(collapsedNeedle)
+  if (wsIdx !== -1) {
+    // Map back to original positions: find the needle lines in the original content
+    const needleLines = needle.split('\n').map(l => l.trim())
+    const contentLines = content.split('\n')
+    for (let i = 0; i <= contentLines.length - needleLines.length; i++) {
+      let matched = true
+      for (let j = 0; j < needleLines.length; j++) {
+        if (contentLines[i + j].trim() !== needleLines[j]) { matched = false; break }
+      }
+      if (matched) {
+        const startPos = content.split('\n').slice(0, i).join('\n').length + (i > 0 ? 1 : 0)
+        const matchStr = contentLines.slice(i, i + needleLines.length).join('\n')
+        return { index: startPos, match: matchStr }
+      }
+    }
+  }
+
+  return null
+}
+
 function createEditFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'edit_file',
@@ -307,27 +359,63 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `File not found: ${filePath}` })
       }
       const content = readFileSync(resolved, 'utf-8')
-      const occurrences = content.split(old_string).length - 1
-      if (occurrences === 0) {
-        return textResult({ error: `old_string not found in ${filePath}` })
+
+      // Exact match path (fast)
+      const exactOccurrences = content.split(old_string).length - 1
+      if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
+        const updated = replace_all
+          ? content.split(old_string).join(new_string)
+          : content.replace(old_string, new_string)
+        writeFileSync(resolved, updated, 'utf-8')
+        ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
+        if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+          ctx.lspManager.notifyFileChanged(resolved, updated)
+        }
+        return textResult({ ok: true, path: filePath, replacements: replace_all ? exactOccurrences : 1 })
       }
-      if (occurrences > 1 && !replace_all) {
+
+      if (exactOccurrences > 1 && !replace_all) {
         return textResult({
-          error: `old_string found ${occurrences} times in ${filePath}. ` +
+          error: `old_string found ${exactOccurrences} times in ${filePath}. ` +
             'Provide more context to make it unique, or set replace_all: true.',
         })
       }
-      const updated = replace_all
-        ? content.split(old_string).join(new_string)
-        : content.replace(old_string, new_string)
-      writeFileSync(resolved, updated, 'utf-8')
-      ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
-      if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
-        ctx.lspManager.notifyFileChanged(resolved, updated)
+      // Fuzzy match path — try whitespace/line-ending normalization
+      if (!replace_all) {
+        const fuzzy = fuzzyFindInContent(content, old_string)
+        if (fuzzy) {
+          const updated = content.substring(0, fuzzy.index) + new_string + content.substring(fuzzy.index + fuzzy.match.length)
+          writeFileSync(resolved, updated, 'utf-8')
+          ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
+          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+            ctx.lspManager.notifyFileChanged(resolved, updated)
+          }
+          return textResult({ ok: true, path: filePath, replacements: 1, note: 'Matched with whitespace normalization' })
+        }
       }
 
-      return textResult({ ok: true, path: filePath, replacements: replace_all ? occurrences : 1 })
+      // Provide helpful context on failure
+      const lines = content.split('\n')
+      const needleFirst = old_string.split('\n')[0]?.trim()
+      const nearbyLines: string[] = []
+      if (needleFirst) {
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(needleFirst)) {
+            const start = Math.max(0, i - 1)
+            const end = Math.min(lines.length, i + 3)
+            nearbyLines.push(`Lines ${start + 1}-${end}: ${lines.slice(start, end).join('\n')}`)
+            if (nearbyLines.length >= 2) break
+          }
+        }
+      }
+
+      return textResult({
+        error: `old_string not found in ${filePath}`,
+        hint: nearbyLines.length > 0
+          ? `Similar content found near:\n${nearbyLines.join('\n---\n')}`
+          : 'No similar content found. Try reading the file first to get the exact text.',
+      })
     },
   }
 }

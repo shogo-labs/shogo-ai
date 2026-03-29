@@ -36,9 +36,9 @@ interface ToolCallEntry {
 }
 
 const DEFAULT_CONFIG: LoopDetectorConfig = {
-  maxIdenticalCalls: 3,
-  maxIdenticalOutputs: 3,
-  cycleWindowSize: 6,
+  maxIdenticalCalls: 4,
+  maxIdenticalOutputs: 4,
+  cycleWindowSize: 10,
   minCycleLength: 2,
 }
 
@@ -149,6 +149,9 @@ export class LoopDetector {
 
   /**
    * Check for repeating cycles (e.g. A→B→A→B or A→B→C→A→B→C).
+   * Uses tool name + input + output as the key so that cycles where the
+   * output is changing (e.g. edit→test→edit→test with different test results)
+   * are treated as progress, not loops.
    */
   private checkCycles(): LoopDetectorResult {
     const { cycleWindowSize, minCycleLength } = this.config
@@ -157,7 +160,7 @@ export class LoopDetector {
     }
 
     const window = this.history.slice(-cycleWindowSize)
-    const keys = window.map((e) => `${e.name}:${e.inputHash}`)
+    const keys = window.map((e) => `${e.name}:${e.inputHash}:${e.outputHash}`)
 
     for (let cycleLen = minCycleLength; cycleLen <= Math.floor(keys.length / 2); cycleLen++) {
       const cycle = keys.slice(0, cycleLen)
