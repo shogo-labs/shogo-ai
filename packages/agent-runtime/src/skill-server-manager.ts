@@ -198,8 +198,9 @@ export class SkillServerManager {
     this.crashCount = 0
     this.restarting = true
     await this.killProcess()
-    this.restarting = false
+    await this.waitForPortRelease()
     await this.spawnServer()
+    this.restarting = false
   }
 
   /**
@@ -384,13 +385,16 @@ export class SkillServerManager {
     })
 
     const healthy = await this.waitForHealthy()
-    if (healthy) {
+    if (healthy && this.serverProcess === proc && !proc.killed) {
       this._phase = 'healthy'
       this.crashCount = 0
       console.log(`[${LOG_PREFIX}] Server healthy on port ${this._port}`)
-    } else {
+    } else if (!healthy) {
       this._phase = 'crashed'
       console.error(`[${LOG_PREFIX}] Server failed health check after ${this.healthCheckRetries} retries`)
+    } else {
+      console.error(`[${LOG_PREFIX}] Server process exited before health check completed`)
+      this._phase = 'crashed'
     }
   }
 
@@ -407,6 +411,19 @@ export class SkillServerManager {
       }
     }
     return false
+  }
+
+  private async waitForPortRelease(timeoutMs = 3000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      try {
+        await fetch(`${this.url}/health`, { signal: AbortSignal.timeout(500) })
+        await sleep(200)
+      } catch {
+        return
+      }
+    }
+    console.warn(`[${LOG_PREFIX}] Port ${this._port} still occupied after ${timeoutMs}ms`)
   }
 
   private handleCrash(): void {
@@ -502,7 +519,7 @@ export class SkillServerManager {
 
     try {
       this.generatedWatcher = watch(watchDir, { recursive: true }, (_event, _filename) => {
-        if (this.intentionalStop || this._phase === 'stopped' || this._phase === 'generating') return
+        if (this._phase !== 'healthy') return
 
         if (this.restartTimer) {
           clearTimeout(this.restartTimer)
@@ -510,6 +527,7 @@ export class SkillServerManager {
 
         this.restartTimer = setTimeout(async () => {
           this.restartTimer = null
+          if (this._phase !== 'healthy') return
           console.log(`[${LOG_PREFIX}] Generated files changed, restarting...`)
           await this.restart()
         }, RESTART_DEBOUNCE_MS)

@@ -12,6 +12,8 @@
  *   - Cursor agent prompting patterns (edit mastery, code quality, task planning)
  */
 
+const SKILL_PORT = process.env.SKILL_SERVER_PORT || '4100'
+
 export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_GENERAL_GUIDE }
 // APP_MODE_DISABLED: CODE_AGENT_ENVIRONMENT_GUIDE and CODE_AGENT_APP_BUILDING_GUIDE no longer exported
 
@@ -249,7 +251,7 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 - Commands have a 30-second timeout — long-running commands will be killed
 - Prefer \`read_file\` over \`exec({ command: 'cat ...' })\`
 - Prefer \`grep\` over \`exec({ command: 'grep ...' })\`
-- Prefer \`web\` over \`exec curl\` for skill server API calls (e.g. \`web({ url: "http://localhost:4100/api/items", method: "POST", body: {...} })\`)
+- Prefer \`web\` over \`exec curl\` for skill server API calls (e.g. \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`)
 - For external APIs and developer CLIs (\`gh api\`, \`aws\`, \`curl\` to third-party URLs), \`exec\` is fine
 
 ### Debugging and Bug Fixing

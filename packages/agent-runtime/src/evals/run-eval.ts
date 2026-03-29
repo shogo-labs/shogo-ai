@@ -70,6 +70,7 @@ import { CODING_DISCIPLINE_EVALS } from './test-cases-coding-discipline'
 import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
+import { runRuntimeChecks } from './runtime-checks'
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -282,6 +283,8 @@ function archiveWorkspaceAsTemplate(
         points: `${c.pointsEarned}/${c.criterion.points}`,
       })),
     },
+    runtime: result.runtimeChecks || null,
+    runtimeWarnings: result.runtimeWarnings || [],
   }
   writeFileSync(join(destDir, 'template.json'), JSON.stringify(templateJson, null, 2))
 
@@ -451,6 +454,75 @@ async function runEvalOnWorker(
       ? ` [${result.metrics.tokens.input}+${result.metrics.tokens.output} tok]`
       : ''
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
+
+    if (result.score > 0) {
+      const skillServerPort = SKILL_SERVER_BASE_PORT + worker.id
+      const runtimeResults = await runRuntimeChecks({
+        workspaceDir: worker.dir,
+        skillServerPort,
+        evalId: ev.id,
+        verbose: verboseFlag,
+      })
+      if (runtimeResults) {
+        result.runtimeChecks = runtimeResults
+        result.runtimeWarnings = result.runtimeWarnings || []
+
+        // --- Runtime scoring: add bonus criteria to the score ---
+        const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] = [
+          {
+            id: 'runtime-server-healthy',
+            desc: 'Skill server boots and responds to /health',
+            pts: 2,
+            passed: runtimeResults.serverHealthy === true,
+          },
+          {
+            id: 'runtime-crud-functional',
+            desc: 'Can list and create records via API',
+            pts: 2,
+            passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
+          },
+          {
+            id: 'runtime-canvas-port',
+            desc: 'Canvas references the correct skill server port',
+            pts: 1,
+            passed: runtimeResults.canvasPortCorrect === true,
+            skip: runtimeResults.canvasPortCorrect === null,
+          },
+        ]
+
+        let runtimeBonus = 0
+        let runtimeMaxBonus = 0
+        for (const rc of runtimeCriteria) {
+          if (rc.skip) continue
+          runtimeMaxBonus += rc.pts
+          const earned = rc.passed ? rc.pts : 0
+          runtimeBonus += earned
+          result.criteriaResults.push({
+            criterion: { id: rc.id, description: rc.desc, points: rc.pts, phase: 'execution', validate: () => rc.passed },
+            passed: rc.passed,
+            pointsEarned: earned,
+          })
+        }
+
+        result.score += runtimeBonus
+        result.maxScore += runtimeMaxBonus
+        result.percentage = result.maxScore > 0 ? (result.score / result.maxScore) * 100 : 0
+        result.passed = result.percentage >= 70 && result.triggeredAntiPatterns.length === 0
+
+        if (!runtimeResults.serverHealthy) {
+          result.runtimeWarnings.push('Skill server health check failed')
+        }
+        if (runtimeResults.canvasPortCorrect === false) {
+          result.runtimeWarnings.push('Canvas references wrong skill server port')
+        }
+
+        const warns = result.runtimeWarnings.length
+        if (warns > 0) {
+          console.log(`[${evalLabel}] Runtime: ${warns} warning(s) — ${result.runtimeWarnings.join(', ')}`)
+        }
+        console.log(`[${evalLabel}] Runtime score: +${runtimeBonus}/${runtimeMaxBonus} → ${result.score}/${result.maxScore} (${result.percentage.toFixed(1)}%) ${result.passed ? 'PASS' : 'FAIL'}`)
+      }
+    }
 
     if (saveWorkspacesFlag) {
       const archivePath = archiveWorkspaceAsTemplate(ev, result, worker.dir, runTimestamp)

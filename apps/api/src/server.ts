@@ -50,6 +50,7 @@ import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
+import { evalOutputRoutes } from './routes/eval-outputs'
 import { apiKeyRoutes } from './routes/api-keys'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -1233,6 +1234,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
+
+// Eval output listing + import — for local dev/testing
+app.route('/api', evalOutputRoutes())
 
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())

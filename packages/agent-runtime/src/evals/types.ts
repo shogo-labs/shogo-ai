@@ -85,6 +85,19 @@ export interface ToolCallRecord {
   error?: boolean
 }
 
+export interface RuntimeCheckResults {
+  /** Whether the skill server /health endpoint responded with { ok: true }. null = no skill server. */
+  serverHealthy: boolean | null
+  healthEndpoint: boolean
+  /** Whether GET /api/{model} returned { ok: true, items: [...] } for all models. */
+  canListModels: boolean
+  /** Whether POST /api/{model} succeeded for at least one model. */
+  canCreateRecord: boolean
+  /** Whether canvas code references the correct skill server port. null = no canvas. */
+  canvasPortCorrect: boolean | null
+  errors: string[]
+}
+
 export interface EvalResult {
   eval: AgentEval
   passed: boolean
@@ -111,6 +124,9 @@ export interface EvalResult {
     intention: { score: number; maxScore: number; percentage: number }
     execution: { score: number; maxScore: number; percentage: number }
   }
+  /** Post-eval runtime validation results. Adds bonus criteria to score. */
+  runtimeChecks?: RuntimeCheckResults
+  runtimeWarnings?: string[]
 }
 
 export interface CriterionResult {

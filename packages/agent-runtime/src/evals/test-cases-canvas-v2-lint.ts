@@ -30,10 +30,10 @@ const SKILL_SERVER_MOCKS: ToolMockMap = {
   web: {
     type: 'pattern',
     patterns: [
-      { match: { url: 'localhost:4100', method: 'POST' }, response: JSON.stringify({ id: 'new-1', createdAt: '2026-03-26T00:00:00Z' }) },
-      { match: { url: 'localhost:4100', method: 'PATCH' }, response: JSON.stringify({ id: 'new-1', updatedAt: '2026-03-26T00:00:00Z' }) },
-      { match: { url: 'localhost:4100', method: 'DELETE' }, response: JSON.stringify({ deleted: true }) },
-      { match: { url: 'localhost:4100' }, response: JSON.stringify([]) },
+      { match: { url: '/api/', method: 'POST' }, response: JSON.stringify({ id: 'new-1', createdAt: '2026-03-26T00:00:00Z' }) },
+      { match: { url: '/api/', method: 'PATCH' }, response: JSON.stringify({ id: 'new-1', updatedAt: '2026-03-26T00:00:00Z' }) },
+      { match: { url: '/api/', method: 'DELETE' }, response: JSON.stringify({ deleted: true }) },
+      { match: { url: '/api/' }, response: JSON.stringify([]) },
     ],
     default: JSON.stringify([]),
   },
@@ -109,7 +109,7 @@ function schemaContainsModel(r: EvalResult, modelName: string): boolean {
 
 function canvasCodeFetches(r: EvalResult): boolean {
   const code = allCanvasCode(r).toLowerCase()
-  return code.includes('fetch(') && (code.includes('localhost:4100') || code.includes('/api/'))
+  return code.includes('fetch(') && (code.includes('localhost:') || code.includes('/api/'))
 }
 
 // ---------------------------------------------------------------------------

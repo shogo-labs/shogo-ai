@@ -371,8 +371,6 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         files.push({
           path: `${dir}/server.${ext}`,
           content: generateServer({
-            routesPath: './src/generated',
-            dbPath: './src/lib/db',
             ...output.serverConfig,
           }),
           skipIfExists: true, // Don't overwrite user customizations

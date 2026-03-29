@@ -116,7 +116,7 @@ function postedToSkillServer(r: EvalResult, pathFragment?: string): boolean {
 /** True if canvas code uses fetch() to call the skill server API. */
 function canvasFetchesFromApi(r: EvalResult): boolean {
   const code = allCanvasCode(r)
-  return code.includes('fetch(') && (code.includes('localhost:4100') || code.includes('/api/'))
+  return code.includes('fetch(') && (code.includes('localhost:') || code.includes('/api/'))
 }
 
 function wroteSkillFile(r: EvalResult, ...keywords: string[]): boolean {
@@ -169,7 +169,6 @@ function makeSkillServerMocks(models: string[], sampleData: Record<string, any[]
   }
 
   return {
-    exec: { type: 'static', response: { stdout: '', stderr: '', exitCode: 0 } },
     web: {
       type: 'pattern',
       patterns: [
@@ -214,27 +213,6 @@ const CI_ANALYZER_MOCKS: ToolMockMap = {
     WorkflowRun: [{ name: 'CI', status: 'failure', category: 'test_failure' }],
     FlakyTest: [{ testName: 'test-unit', failureCount: 5 }],
   }),
-  tool_search: {
-    type: 'static',
-    description: 'Search for tools by capability or keyword.',
-    paramKeys: ['query', 'limit'],
-    response: { query: 'github', results: [], message: 'No managed integrations found for "github". For developer tools like GitHub, use the CLI (e.g. `gh`) directly via exec.' },
-  },
-  tool_install: {
-    type: 'static',
-    description: 'Install a tool.',
-    paramKeys: ['name'],
-    response: { ok: false, error: 'No managed integration available for "github". Use the gh CLI instead.' },
-  },
-  exec: {
-    type: 'pattern',
-    description: 'Execute shell commands.',
-    paramKeys: ['command'],
-    patterns: [
-      { match: { command: 'gh' }, response: { stdout: JSON.stringify({ total_count: CI_GITHUB_WORKFLOW_RUNS.length, workflow_runs: CI_GITHUB_WORKFLOW_RUNS }), stderr: '', exitCode: 0 } },
-    ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
 }
 
 const CI_ANALYZER_EVAL: AgentEval = {
@@ -243,11 +221,14 @@ const CI_ANALYZER_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
-  input: "Our CI pipeline on GitHub has been really flaky this week. I already connected my GitHub account. Can you pull the recent failed workflow runs, figure out what's going wrong (are they test failures? build errors? timeouts?), and give me a breakdown so I can see which tests are the flakiest and what the overall failure trend looks like? I want to be able to re-run this analysis whenever things get bad again.",
+  input: "Our CI pipeline on GitHub has been really flaky this week. I exported the recent workflow runs to github_workflow_runs.json in the workspace. Can you analyze the data, figure out what's going wrong (are they test failures? build errors? timeouts?), and give me a breakdown so I can see which tests are the flakiest and what the overall failure trend looks like? Store the analysis in a skill server and build me a canvas dashboard. I want to be able to re-run this analysis whenever things get bad again.",
+  workspaceFiles: {
+    'github_workflow_runs.json': JSON.stringify({ total_count: CI_GITHUB_WORKFLOW_RUNS.length, workflow_runs: CI_GITHUB_WORKFLOW_RUNS }, null, 2),
+  },
   maxScore: 30,
   toolMocks: CI_ANALYZER_MOCKS,
   validationCriteria: [
-    { id: 'used-gh-cli', description: 'Used gh CLI via exec to fetch GitHub data', points: 4, phase: 'intention', validate: (r) => usedGhCli(r) },
+    { id: 'read-data', description: 'Read the exported GitHub workflow data', points: 4, phase: 'intention', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github_workflow')) },
     { id: 'wrote-schema', description: 'Wrote schema.prisma with at least 2 models', points: 4, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 2) },
     { id: 'schema-fields', description: 'Schema contains failure-related fields', points: 3, phase: 'execution', validate: (r) => schemaContainsFields(r, 'status') && (schemaContainsFields(r, 'category') || schemaContainsFields(r, 'type') || schemaContainsFields(r, 'conclusion')) },
     { id: 'posted-data', description: 'POSTed categorized data to skill server', points: 4, phase: 'execution', validate: (r) => postedToSkillServer(r) },
@@ -573,15 +554,6 @@ const DATA_PIPELINE_MOCKS: ToolMockMap = {
   ...makeSkillServerMocks(['SalesSummary'], {
     SalesSummary: [{ region: 'North America', product: 'Widget Pro', totalRevenue: 15000, rowCount: 1 }],
   }),
-  exec: {
-    type: 'pattern',
-    patterns: [
-      { match: { command: 'python process_sales' }, response: { stdout: 'Processed 44 rows. Total revenue: $847,500.00', stderr: '', exitCode: 0 } },
-      { match: { command: 'shogo generate' }, response: { stdout: '✅ Generated 3 files for 1 model', stderr: '', exitCode: 0 } },
-      { match: { command: 'prisma' }, response: { stdout: '🚀 Database in sync.', stderr: '', exitCode: 0 } },
-    ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
 }
 
 const DATA_PIPELINE_EVAL: AgentEval = {
@@ -708,15 +680,6 @@ const BRIEFING_MOCKS: ToolMockMap = {
   ...makeSkillServerMocks(['BriefingItem'], {
     BriefingItem: [{ category: 'engineering', title: 'SSO login shipped', source: 'github' }],
   }),
-  exec: {
-    type: 'pattern',
-    description: 'Execute shell commands.',
-    paramKeys: ['command'],
-    patterns: [
-      { match: { command: 'gh' }, response: { stdout: JSON.stringify(NOISY_GITHUB_ACTIVITY), stderr: '', exitCode: 0 } },
-    ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
   tool_search: {
     type: 'pattern',
     description: 'Search for tools.',
@@ -750,13 +713,16 @@ const BRIEFING_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
-  input: "I have a board meeting tomorrow morning and I need to get up to speed fast. Can you pull together what's been happening this past week? I need to know what our dev team shipped, any important investor or partner communications, and what customers have been saying. Give me something I can quickly review tonight, and set it up so I can generate this again before the next board meeting.",
+  input: "I have a board meeting tomorrow morning and I need to get up to speed fast. Can you pull together what's been happening this past week? I exported our recent GitHub activity to github_activity.json in the workspace. Use Gmail for investor/partner communications and Slack for customer and team chatter. I need to know what our dev team shipped, any important investor or partner communications, and what customers have been saying. Store everything in a skill server so I can regenerate this before the next board meeting, and build me a canvas briefing I can quickly review tonight.",
+  workspaceFiles: {
+    'github_activity.json': JSON.stringify(NOISY_GITHUB_ACTIVITY, null, 2),
+  },
   maxScore: 30,
   toolMocks: BRIEFING_MOCKS,
   validationCriteria: [
-    { id: 'used-gh-cli', description: 'Used gh CLI via exec to fetch GitHub data', points: 2, phase: 'intention', validate: (r) => usedGhCli(r) },
+    { id: 'read-github-data', description: 'Read the exported GitHub activity data', points: 2, phase: 'intention', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github_activity')) },
     { id: 'installed-email-slack', description: 'Installed Gmail and/or Slack via tool_install', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') || installedIntegration(r, 'slack') },
-    { id: 'called-all-three', description: 'Used gh CLI + Gmail + Slack integrations', points: 4, phase: 'execution', validate: (r) => usedGhCli(r) && usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
+    { id: 'used-all-three', description: 'Read GitHub file + used Gmail + Slack integrations', points: 4, phase: 'execution', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github')) && usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
     { id: 'wrote-schema', description: 'Wrote schema for briefing data', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },
     { id: 'posted-filtered', description: 'POSTed filtered/categorized data to skill server', points: 3, phase: 'execution', validate: (r) => postedToSkillServer(r) },
     { id: 'organized-by-category', description: 'Response organizes by category (dev/investors/customers)', points: 4, phase: 'execution', validate: (r) => { const t = r.responseText.toLowerCase(); const cats = [t.includes('engineer') || t.includes('ship') || t.includes('dev'), t.includes('investor') || t.includes('board') || t.includes('fund'), t.includes('customer') || t.includes('support') || t.includes('churn')]; return cats.filter(Boolean).length >= 2 } },

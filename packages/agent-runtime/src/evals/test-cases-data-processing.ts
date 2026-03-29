@@ -263,9 +263,9 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) =>
           responseContains(r, 'top 10', 'top ten', 'most commented') ||
-          toolCallArgsContain(r, 'web', 'localhost:4100') ||
+          toolCallArgsContain(r, 'web', '/api/') ||
           toolCallArgsContain(r, 'exec', 'sort') ||
-          toolCallArgsContain(r, 'exec', 'localhost:4100'),
+          toolCallArgsContain(r, 'exec', '/api/'),
       },
       {
         id: 'response-has-results',

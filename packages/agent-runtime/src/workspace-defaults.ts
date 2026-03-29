@@ -199,6 +199,8 @@ export default defineConfig({
 })
 `
 
+const SKILL_SERVER_PORT = Number(process.env.SKILL_SERVER_PORT) || 4100
+
 const SKILL_SERVER_CONFIG = JSON.stringify(
   {
     schema: './schema.prisma',
@@ -213,7 +215,7 @@ const SKILL_SERVER_CONFIG = JSON.stringify(
         serverConfig: {
           routesPath: './generated',
           dbPath: './db',
-          port: 4100,
+          port: SKILL_SERVER_PORT,
           skipStatic: true,
         },
       },
