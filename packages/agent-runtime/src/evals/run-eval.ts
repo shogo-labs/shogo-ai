@@ -11,11 +11,12 @@
  *   bun run src/evals/run-eval.ts --track canvas --model haiku
  *   bun run src/evals/run-eval.ts --track all --model sonnet --workers 2
  *   bun run src/evals/run-eval.ts --track canvas --filter weather
+ *   bun run src/evals/run-eval.ts --track skill-server-advanced --save-workspaces
  */
 
 import { spawn, type Subprocess } from 'bun'
 import { execSync } from 'child_process'
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, realpathSync, appendFileSync, readdirSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, realpathSync, appendFileSync, readdirSync, cpSync } from 'fs'
 import { resolve, join, dirname } from 'path'
 import { tmpdir } from 'os'
 
@@ -64,6 +65,9 @@ import { SKILL_SERVER_TEMPLATE_EVALS } from './test-cases-skill-server-templates
 import { EDIT_FILE_EVALS } from './test-cases-edit-file'
 import { CHANNEL_CONNECT_EVALS } from './test-cases-channel-connect'
 import { CANVAS_V2_LINT_EVALS } from './test-cases-canvas-v2-lint'
+import { BUG_FIX_EVALS } from './test-cases-bug-fix'
+import { CODING_DISCIPLINE_EVALS } from './test-cases-coding-discipline'
+import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -93,6 +97,7 @@ const MODEL_MAP: Record<string, string> = {
   sonnet: 'claude-sonnet-4-5',
 }
 
+const saveWorkspacesFlag = args.includes('--save-workspaces')
 const BASE_PORT = 6400
 const SKILL_SERVER_BASE_PORT = 4100
 const REPO_ROOT = resolve(import.meta.dir, '../../../..')
@@ -131,9 +136,12 @@ function getEvals(track: string): AgentEval[] {
     case 'skill-server-templates': return SKILL_SERVER_TEMPLATE_EVALS
     case 'edit-file': return EDIT_FILE_EVALS
     case 'channel-connect': return CHANNEL_CONNECT_EVALS
-    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS]
+    case 'bug-fix': return BUG_FIX_EVALS
+    case 'coding-discipline': return CODING_DISCIPLINE_EVALS
+    case 'skill-server-advanced': return SKILL_SERVER_ADVANCED_EVALS
+    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, edit-file, channel-connect, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, all`)
       process.exit(1)
   }
 }
@@ -236,6 +244,85 @@ function stopWorker(w: Worker) {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace archiving (template-compatible format)
+// ---------------------------------------------------------------------------
+
+const EVAL_OUTPUTS_DIR = resolve(REPO_ROOT, 'packages/agent-runtime/eval-outputs')
+
+function archiveWorkspaceAsTemplate(
+  ev: AgentEval,
+  result: EvalResult,
+  workspaceDir: string,
+  runTimestamp: string,
+): string | null {
+  if (!existsSync(workspaceDir)) return null
+
+  const destDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${runTimestamp}`, ev.id)
+  mkdirSync(destDir, { recursive: true })
+
+  const templateJson = {
+    id: ev.id,
+    name: ev.name,
+    description: `Eval output for "${ev.name}" (${ev.category}, level ${ev.level})`,
+    category: ev.category,
+    icon: result.passed ? '✅' : '❌',
+    tags: [...(ev.tags || []), 'eval-output', trackArg],
+    eval: {
+      score: result.score,
+      maxScore: result.maxScore,
+      percentage: result.percentage,
+      passed: result.passed,
+      durationMs: result.timing.durationMs,
+      model: MODEL_MAP[modelArg] || modelArg,
+      timestamp: new Date().toISOString(),
+      criteria: result.criteriaResults.map(c => ({
+        id: c.criterion.id,
+        description: c.criterion.description,
+        passed: c.passed,
+        points: `${c.pointsEarned}/${c.criterion.points}`,
+      })),
+    },
+  }
+  writeFileSync(join(destDir, 'template.json'), JSON.stringify(templateJson, null, 2))
+
+  const shogSrc = join(workspaceDir, '.shogo')
+  if (existsSync(shogSrc)) {
+    cpSync(shogSrc, join(destDir, '.shogo'), { recursive: true })
+  }
+
+  const canvasSrc = join(workspaceDir, 'canvas')
+  if (existsSync(canvasSrc)) {
+    cpSync(canvasSrc, join(destDir, 'canvas'), { recursive: true })
+  }
+
+  const canvasState = join(workspaceDir, '.canvas-state.json')
+  if (existsSync(canvasState)) {
+    cpSync(canvasState, join(destDir, '.canvas-state.json'))
+  }
+
+  const memorySrc = join(workspaceDir, 'memory')
+  if (existsSync(memorySrc)) {
+    cpSync(memorySrc, join(destDir, 'memory'), { recursive: true })
+  }
+
+  const filesSrc = join(workspaceDir, 'files')
+  if (existsSync(filesSrc)) {
+    cpSync(filesSrc, join(destDir, 'files'), { recursive: true })
+  }
+
+  for (const fname of readdirSync(workspaceDir, { withFileTypes: true })) {
+    if (!fname.isFile()) continue
+    const skip = new Set(['sessions.db', 'sessions.db-wal', 'sessions.db-shm', 'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json'])
+    if (skip.has(fname.name)) continue
+    try {
+      cpSync(join(workspaceDir, fname.name), join(destDir, fname.name))
+    } catch {}
+  }
+
+  return destDir
+}
+
+// ---------------------------------------------------------------------------
 // Eval execution on a worker
 // ---------------------------------------------------------------------------
 
@@ -244,6 +331,7 @@ async function runEvalOnWorker(
   ev: AgentEval,
   index: number,
   total: number,
+  runTimestamp: string,
 ): Promise<EvalResult> {
   // Check worker process health before starting
   if (worker.process?.exitCode !== null) {
@@ -363,6 +451,15 @@ async function runEvalOnWorker(
       ? ` [${result.metrics.tokens.input}+${result.metrics.tokens.output} tok]`
       : ''
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
+
+    if (saveWorkspacesFlag) {
+      const archivePath = archiveWorkspaceAsTemplate(ev, result, worker.dir, runTimestamp)
+      if (archivePath) {
+        result.workspaceDir = archivePath
+        console.log(`[${evalLabel}] Workspace saved: ${archivePath}`)
+      }
+    }
+
     return result
   } catch (err: any) {
     console.error(`[${evalLabel}] ERROR ${ev.name}: ${err.message}`)
@@ -427,6 +524,7 @@ async function main() {
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Workers: ${workersArg}`)
+  if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
   let evals = getEvals(trackArg)
@@ -468,8 +566,16 @@ async function main() {
   console.log('-'.repeat(60))
 
   const overallStart = Date.now()
+  const runTimestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const results: EvalResult[] = []
   const partialPath = resolve(tmpdir(), `agent-eval-partial-${modelArg}-${trackArg}.json`)
+
+  if (saveWorkspacesFlag) {
+    const outputDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${runTimestamp}`)
+    mkdirSync(outputDir, { recursive: true })
+    console.log(`  Workspaces will be saved to: ${outputDir}`)
+    console.log('')
+  }
 
   // Parallel work-pool: each worker pulls the next eval from the queue
   let nextIndex = 0
@@ -488,7 +594,7 @@ async function main() {
       }
 
       try {
-        const result = await runEvalOnWorker(worker, ev, i, evals.length)
+        const result = await runEvalOnWorker(worker, ev, i, evals.length, runTimestamp)
         results.push(result)
         try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
       } catch (err: any) {
@@ -645,6 +751,24 @@ async function main() {
   writeFileSync(outputPath, JSON.stringify(exportData, null, 2))
   console.log('')
   console.log(`Results saved: ${outputPath}`)
+
+  if (saveWorkspacesFlag) {
+    const outputDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${runTimestamp}`)
+    console.log('')
+    console.log('SAVED WORKSPACES (template format)')
+    console.log('-'.repeat(60))
+    console.log(`  Directory: ${outputDir}`)
+    for (const r of results) {
+      if (r.workspaceDir) {
+        const status = r.passed ? 'PASS' : 'FAIL'
+        console.log(`  ${status} ${r.eval.id} → ${r.workspaceDir}`)
+      }
+    }
+    console.log('')
+    console.log('  To load as a template, copy any eval directory into:')
+    console.log(`  ${resolve(REPO_ROOT, 'packages/agent-runtime/templates/')}`)
+  }
+
   console.log('='.repeat(60))
 
   process.exit(failed > 0 ? 1 : 0)

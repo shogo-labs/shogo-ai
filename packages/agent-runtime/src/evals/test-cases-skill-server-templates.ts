@@ -59,14 +59,21 @@ function schemaUsesPrisma7(r: import('./types').EvalResult): boolean {
   return hasNoUrl && hasPrismaClient
 }
 
-function usedCanvas(r: import('./types').EvalResult): boolean {
-  return usedTool(r, 'canvas_update') || usedTool(r, 'canvas_create')
+function wroteCanvasFile(r: import('./types').EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    const path = String((t.input as any).path ?? '')
+    return /^canvas\/[^/]+\.ts$/.test(path)
+  })
 }
 
-function canvasHasComponent(r: import('./types').EvalResult, component: string): boolean {
-  const updateCalls = r.toolCalls.filter((t) => t.name === 'canvas_update')
-  const json = JSON.stringify(updateCalls.map((t) => t.input))
-  return json.includes(`"${component}"`)
+function allCanvasCode(r: import('./types').EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => /^canvas\/[^/]+\.ts$/.test(String((t.input as any).path ?? '')))
+    .map(t => String((t.input as any).content ?? ''))
+    .join('\n')
+    .toLowerCase()
 }
 
 function calledApiEndpoint(r: import('./types').EvalResult, path: string, method?: string): boolean {
@@ -219,21 +226,21 @@ const SALES_PIPELINE_EVAL: AgentEval = {
       description: 'Created a canvas dashboard',
       points: 15,
       phase: 'execution',
-      validate: (r) => usedCanvas(r),
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'dashboard-has-metrics',
       description: 'Dashboard includes Metric components (pipeline value, deal count, etc.)',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Metric'),
+      validate: (r) => allCanvasCode(r).includes('metric') || allCanvasCode(r).includes('total') || allCanvasCode(r).includes('count'),
     },
     {
       id: 'dashboard-has-table',
       description: 'Dashboard includes a Table or DataList for deals',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Table') || canvasHasComponent(r, 'DataList'),
+      validate: (r) => { const c = allCanvasCode(r); return c.includes('table') || c.includes('list') || c.includes('<tr') || c.includes('map(') },
     },
     {
       id: 'response-mentions-pipeline',
@@ -326,21 +333,21 @@ const SUPPORT_TICKET_EVAL: AgentEval = {
       description: 'Created a canvas ops dashboard',
       points: 15,
       phase: 'execution',
-      validate: (r) => usedCanvas(r),
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'dashboard-has-metrics',
       description: 'Dashboard includes Metric components (P0 count, open tickets, etc.)',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Metric'),
+      validate: (r) => allCanvasCode(r).includes('metric') || allCanvasCode(r).includes('total') || allCanvasCode(r).includes('count'),
     },
     {
       id: 'dashboard-has-table',
       description: 'Dashboard includes a tickets table',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Table') || canvasHasComponent(r, 'DataList'),
+      validate: (r) => { const c = allCanvasCode(r); return c.includes('table') || c.includes('list') || c.includes('<tr') || c.includes('map(') },
     },
     {
       id: 'response-mentions-priority',
@@ -447,21 +454,21 @@ const RECRUITING_EVAL: AgentEval = {
       description: 'Created a canvas recruiting dashboard',
       points: 15,
       phase: 'execution',
-      validate: (r) => usedCanvas(r),
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'dashboard-has-metrics',
       description: 'Dashboard includes metrics (candidate counts, pipeline stats)',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Metric'),
+      validate: (r) => allCanvasCode(r).includes('metric') || allCanvasCode(r).includes('total') || allCanvasCode(r).includes('count'),
     },
     {
       id: 'dashboard-has-table',
       description: 'Dashboard includes a candidate table',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Table') || canvasHasComponent(r, 'DataList'),
+      validate: (r) => { const c = allCanvasCode(r); return c.includes('table') || c.includes('list') || c.includes('<tr') || c.includes('map(') },
     },
     {
       id: 'wrote-skill-file',
@@ -563,21 +570,21 @@ const SPRINT_BOARD_EVAL: AgentEval = {
       description: 'Created a canvas sprint dashboard',
       points: 15,
       phase: 'execution',
-      validate: (r) => usedCanvas(r),
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'dashboard-has-metrics',
       description: 'Dashboard includes sprint metrics (points, progress)',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Metric'),
+      validate: (r) => allCanvasCode(r).includes('metric') || allCanvasCode(r).includes('total') || allCanvasCode(r).includes('count'),
     },
     {
       id: 'dashboard-has-table',
       description: 'Dashboard includes a task board or table',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Table') || canvasHasComponent(r, 'DataList'),
+      validate: (r) => { const c = allCanvasCode(r); return c.includes('table') || c.includes('list') || c.includes('<tr') || c.includes('map(') },
     },
     {
       id: 'wrote-skill-file',
@@ -670,21 +677,21 @@ const CONTENT_CALENDAR_EVAL: AgentEval = {
       description: 'Created a canvas content dashboard',
       points: 15,
       phase: 'execution',
-      validate: (r) => usedCanvas(r),
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'dashboard-has-metrics',
       description: 'Dashboard includes publishing metrics',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Metric'),
+      validate: (r) => allCanvasCode(r).includes('metric') || allCanvasCode(r).includes('total') || allCanvasCode(r).includes('count'),
     },
     {
       id: 'dashboard-has-table',
       description: 'Dashboard includes a content table or calendar view',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Table') || canvasHasComponent(r, 'DataList'),
+      validate: (r) => { const c = allCanvasCode(r); return c.includes('table') || c.includes('list') || c.includes('<tr') || c.includes('map(') },
     },
     {
       id: 'wrote-skill-file',
@@ -794,21 +801,21 @@ const EXPENSE_TRACKER_EVAL: AgentEval = {
       description: 'Created a canvas expense dashboard',
       points: 15,
       phase: 'execution',
-      validate: (r) => usedCanvas(r),
+      validate: (r) => wroteCanvasFile(r),
     },
     {
       id: 'dashboard-has-metrics',
       description: 'Dashboard includes spend metrics',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Metric'),
+      validate: (r) => allCanvasCode(r).includes('metric') || allCanvasCode(r).includes('total') || allCanvasCode(r).includes('count'),
     },
     {
       id: 'dashboard-has-table',
       description: 'Dashboard includes an expense table',
       points: 10,
       phase: 'execution',
-      validate: (r) => canvasHasComponent(r, 'Table') || canvasHasComponent(r, 'DataList'),
+      validate: (r) => { const c = allCanvasCode(r); return c.includes('table') || c.includes('list') || c.includes('<tr') || c.includes('map(') },
     },
     {
       id: 'wrote-skill-file',
