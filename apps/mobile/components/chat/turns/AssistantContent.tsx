@@ -28,6 +28,8 @@ import { MarkdownText } from "../MarkdownText"
 import { GenerateImageWidget } from "./GenerateImageWidget"
 import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
+import { WriteFileWidget } from "./WriteFileWidget"
+import { EditFileWidget } from "./EditFileWidget"
 
 export interface AssistantContentProps {
   message: UIMessage
@@ -382,6 +384,28 @@ export function AssistantContent({
           if (part.tool.toolName === "exec" || part.tool.toolName === "Bash") {
             return (
               <ExecWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={expandedTools.has(part.id)}
+                onToggle={() => toggleTool(part.id)}
+              />
+            )
+          }
+
+          if (part.tool.toolName === "write_file" || part.tool.toolName === "Write") {
+            return (
+              <WriteFileWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={expandedTools.has(part.id)}
+                onToggle={() => toggleTool(part.id)}
+              />
+            )
+          }
+
+          if (part.tool.toolName === "edit_file" || part.tool.toolName === "Edit" || part.tool.toolName === "StrReplace") {
+            return (
+              <EditFileWidget
                 key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
