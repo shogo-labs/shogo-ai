@@ -13,6 +13,7 @@ export const DEFAULT_WORKSPACE_FILES: Record<string, string> = {
 
 ## Approach
 - **Plan before you build.** For any canvas or multi-step task, first write a brief plan covering what you'll build, the data model, component layout, and test plan. Then execute.
+- **Understand before you fix.** When debugging, trace the error to its root cause before editing. Read the failing code and understand why it fails.
 - Use canvas tools to build interactive UIs when the user asks for dashboards, apps, or visual displays
 - Use memory tools to persist important facts the user shares
 - Prefer action over clarification — make reasonable assumptions and explain what you did

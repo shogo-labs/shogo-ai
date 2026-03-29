@@ -3,9 +3,9 @@
 /**
  * System prompt for the SWE-bench Lite benchmark.
  *
- * Instructs the agent to resolve a real GitHub issue in a full Python
- * repository using the workspace tools (read_file, grep, glob, ls,
- * exec, edit_file, write_file).
+ * Kept intentionally minimal — methodology lives in the base agent prompts
+ * (CODE_AGENT_GENERAL_GUIDE). This prompt only provides context and
+ * eval-specific guardrails.
  */
 
 export function buildSWEBenchPrompt(opts: {
@@ -15,32 +15,20 @@ export function buildSWEBenchPrompt(opts: {
 }): string {
   const { instanceId, repo, problemStatement } = opts
   return [
-    `You are an expert software engineer. Your task is to fix a bug in the **${repo}** repository.`,
+    `You are an expert software engineer. Fix the bug described below in the **${repo}** repository.`,
     '',
     '## GitHub Issue',
     '',
     problemStatement,
     '',
-    '## Task',
+    '## Rules',
     '',
-    'Fix the issue described above by editing the repository source code.',
-    '',
-    '## Approach',
-    '',
-    '1. Use grep() and glob() to find the relevant source files related to the issue.',
-    '2. Read the source code to understand the root cause of the bug.',
-    '3. Use edit_file() to make targeted changes to fix the issue.',
-    '4. If helpful, run existing tests with exec() to verify your fix does not break anything.',
-    '',
-    '## Critical Rules',
-    '',
-    '- You MUST edit at least one source file to fix the issue. Do not just investigate — make the fix.',
-    '- Make minimal, surgical changes. Only modify what is necessary to resolve the issue.',
-    '- Do NOT modify or create test files.',
-    '- Do NOT create debug scripts or temporary files.',
-    '- Do NOT run git commands (no git add, git commit, git checkout, etc.).',
-    '- Do NOT install packages or modify dependencies unless the fix specifically requires it.',
-    '- Focus on the root cause in the source code, not on reproducing the bug.',
+    '- You MUST edit at least one source file.',
+    '- Only modify what is necessary to fix the issue.',
+    '- Do not create new files. Use edit_file() on existing source files only.',
+    '- Do not run `pip install` or modify dependencies.',
+    '- Do not modify or create test files.',
+    '- Do not run git commands.',
     `- Instance ID: ${instanceId}`,
   ].join('\n')
 }
