@@ -503,6 +503,44 @@ export class AgentGateway {
     this.sessionManager.setPersistence(this.sessionPersistence)
     await this.sessionManager.restoreSessions()
 
+    // Wire up LLM-powered summarization for context compaction
+    this.sessionManager.setSummarizeFn(async (messages) => {
+      const { resolveModel: rm, resolveApiKey: rak } = await import('./pi-adapter')
+      const { runAgentLoop: summarizeLoop } = await import('./agent-loop')
+      const provider = this.config.model.provider
+      const apiKey = rak(provider)
+      if (!apiKey) throw new Error('No API key for summarization')
+
+      const messageTexts = messages.map(m => {
+        if (m.role === 'user') {
+          const content = typeof m.content === 'string' ? m.content : (m.content as any[]).filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
+          return `User: ${content.substring(0, 500)}`
+        }
+        if (m.role === 'assistant') {
+          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
+          return `Assistant: ${text.substring(0, 500)}`
+        }
+        if (m.role === 'toolResult') {
+          const text = m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join(' ')
+          return `Tool result: ${text.substring(0, 200)}`
+        }
+        return ''
+      }).filter(Boolean).join('\n')
+
+      const result = await summarizeLoop({
+        provider,
+        model: 'claude-haiku-4-5',
+        system: 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.',
+        history: [],
+        prompt: messageTexts.substring(0, 12000),
+        tools: [],
+        maxIterations: 1,
+        loopDetection: false,
+        thinkingLevel: 'off',
+      })
+      return result.text || '(summary unavailable)'
+    })
+
     // Start session pruning
     this.sessionManager.startPruning()
 
@@ -1337,7 +1375,7 @@ export class AgentGateway {
         maxIterations: parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10),
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
-        thinkingLevel: 'medium',
+        thinkingLevel: (process.env.AGENT_THINKING_LEVEL as any) || 'medium',
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
