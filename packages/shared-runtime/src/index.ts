@@ -87,3 +87,14 @@ export {
   buildRuntimeEnv,
   type RuntimeTypeConfig,
 } from './runtime-types'
+
+export {
+  TSLanguageServer,
+  LSPServerManager,
+  lspManager,
+  WorkspaceLSPManager,
+  type LSPMessage,
+  type LSPDiagnostic,
+  type TSLanguageServerOptions,
+  type WorkspaceLSPManagerOptions,
+} from './lsp-service'

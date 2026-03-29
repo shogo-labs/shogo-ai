@@ -138,6 +138,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=canvas-build /app/packages/canvas-runtime/dist ./packages/canvas-runtime/dist
+COPY --chown=appuser:appgroup --from=canvas-build /app/packages/canvas-runtime/src/canvas-globals.d.ts ./packages/canvas-runtime/src/canvas-globals.d.ts
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./

@@ -688,8 +688,9 @@ export function assertWithinWorkspace(workspaceDir: string, filePath: string): s
     throw new Error(`Path outside workspace: ${filePath}`)
   }
   if (existsSync(resolved)) {
+    const realWorkspace = realpathSync(workspaceDir)
     const real = realpathSync(resolved)
-    if (!real.startsWith(workspaceDir)) {
+    if (!real.startsWith(realWorkspace) && !real.startsWith(workspaceDir)) {
       throw new Error(`Symlink target outside workspace: ${filePath}`)
     }
   }

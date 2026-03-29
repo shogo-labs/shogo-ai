@@ -33,7 +33,6 @@ import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl } from './internal-api'
-import { typecheckCanvasCode, type CanvasLintResult } from './canvas-code-validator'
 
 const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
@@ -83,6 +82,8 @@ export interface ToolContext {
     quietHoursEnd?: string | null
     quietHoursTimezone?: string | null
   }) => Promise<void>
+  /** Multi-language LSP manager for read_lints diagnostics */
+  lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -261,20 +262,14 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       }
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
-      const result: Record<string, any> = { ok: true, path: filePath, bytes: content.length }
-      if (ctx.canvasFileWatcher && CANVAS_CODE_RE.test(filePath)) {
-        const lint = typecheckCanvasCode(content, filePath)
-        result.canvas_lint = lint.ok
-          ? { ok: true }
-          : {
-              ok: false,
-              errors: lint.diagnostics
-                .filter(d => d.severity === 'error')
-                .map(d => `Line ${d.line}: ${d.message}`),
-              hint: 'Fix these TypeScript errors and edit the file again.',
-            }
+      if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+        const finalContent = append
+          ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
+          : content
+        ctx.lspManager.notifyFileChanged(resolved, finalContent)
       }
-      return textResult(result)
+
+      return textResult({ ok: true, path: filePath, bytes: content.length })
     },
   }
 }
@@ -328,20 +323,11 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       writeFileSync(resolved, updated, 'utf-8')
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
-      const result: Record<string, any> = { ok: true, path: filePath, replacements: replace_all ? occurrences : 1 }
-      if (ctx.canvasFileWatcher && CANVAS_CODE_RE.test(filePath)) {
-        const lint = typecheckCanvasCode(updated, filePath)
-        result.canvas_lint = lint.ok
-          ? { ok: true }
-          : {
-              ok: false,
-              errors: lint.diagnostics
-                .filter(d => d.severity === 'error')
-                .map(d => `Line ${d.line}: ${d.message}`),
-              hint: 'Fix these TypeScript errors and edit the file again.',
-            }
+      if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+        ctx.lspManager.notifyFileChanged(resolved, updated)
       }
-      return textResult(result)
+
+      return textResult({ ok: true, path: filePath, replacements: replace_all ? occurrences : 1 })
     },
   }
 }
@@ -3600,8 +3586,8 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
-  filesystem: ['read_file', 'write_file', 'edit_file'],
-  files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file', 'edit_file'],
+  filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
+  files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file', 'edit_file', 'read_lints'],
   search: ['glob', 'grep'],
   planning: ['todo_write'],
   web: ['web'],
@@ -3628,7 +3614,7 @@ export const ALL_TOOL_NAMES = [
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
-  'canvas_inspect',
+  'canvas_inspect', 'read_lints',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
@@ -4376,63 +4362,99 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
-// Canvas Lint Tool (on-demand type-checking for canvas code files)
+// Read Lints Tool (LSP-backed diagnostics for any TypeScript file)
 // ---------------------------------------------------------------------------
 
-function createCanvasLintTool(ctx: ToolContext): AgentTool {
+function createReadLintsTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'canvas_lint',
+    name: 'read_lints',
     description:
-      'Type-check canvas code files for errors. ' +
-      'Runs TypeScript analysis on canvas/*.ts files to catch undefined references, syntax errors, and type mismatches. ' +
-      'Use after completing multi-file changes or to verify all surfaces are error-free. ' +
-      'Omit path to check all canvas code files.',
-    label: 'Canvas Lint',
+      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues). ' +
+      'Returns diagnostics from language servers. Supports .ts, .tsx, .js, .jsx, and .py files. ' +
+      'Use after writing or editing code files to catch mistakes. ' +
+      'Omit path to check all open files.',
+    label: 'Read Lints',
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: 'Specific canvas file to check (e.g. canvas/weather.ts). Omit to check all.' })),
+      path: Type.Optional(Type.String({ description: 'File to check (e.g. canvas/dashboard.ts or scripts/main.py). Omit to check all tracked files.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { path: filePath } = params as { path?: string }
-      const results: Array<{ path: string; lint: CanvasLintResult }> = []
+      const lsp = ctx.lspManager
+      if (!lsp || !lsp.isRunning()) {
+        return textResult({ ok: false, error: 'Language server not available. Try again shortly.' })
+      }
 
-      if (filePath) {
-        const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
-        if (!existsSync(resolved)) {
-          return textResult({ error: `File not found: ${filePath}` })
-        }
-        const content = readFileSync(resolved, 'utf-8')
-        results.push({ path: filePath, lint: typecheckCanvasCode(content, filePath) })
-      } else {
-        const canvasDir = join(ctx.workspaceDir, 'canvas')
-        if (existsSync(canvasDir)) {
-          for (const entry of readdirSync(canvasDir)) {
-            if (/\.(js|jsx|ts|tsx)$/.test(entry) && !entry.endsWith('.data.json')) {
-              const relPath = `canvas/${entry}`
-              const absPath = join(canvasDir, entry)
-              const content = readFileSync(absPath, 'utf-8')
-              results.push({ path: relPath, lint: typecheckCanvasCode(content, relPath) })
-            }
+      const { path: filePath } = params as { path?: string }
+
+      const targetUri = filePath
+        ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}`
+        : undefined
+
+      // Wait for LSP diagnostics to stabilize. The LSP lazily loads
+      // canvas-globals.d.ts (420KB) so early reads may show false
+      // "Cannot find name" errors for known canvas globals.
+      const CANVAS_GLOBALS = new Set(['useState', 'useEffect', 'useMemo', 'useCallback', 'useRef', 'useReducer', 'h', 'Fragment'])
+      let allDiags: Map<string, any[]>
+
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      allDiags = await lsp.getDiagnosticsAsync(targetUri)
+
+      const hasDiagsForTarget = targetUri ? allDiags.has(targetUri) : allDiags.size > 0
+      if (hasDiagsForTarget) {
+        const hasGlobalErrors = [...allDiags.values()].some(diags =>
+          diags.some((d: any) =>
+            d.severity === 1 && CANVAS_GLOBALS.has((d.message.match(/^Cannot find name '(\w+)'\.$/) ?? [])[1]),
+          ),
+        )
+        if (hasGlobalErrors) {
+          const retryDelays = [1500, 2000, 3000, 5000]
+          for (const delay of retryDelays) {
+            await new Promise(resolve => setTimeout(resolve, delay))
+            allDiags = await lsp.getDiagnosticsAsync(targetUri)
+            const stillHasErrors = [...allDiags.values()].some(diags =>
+              diags.some((d: any) =>
+                d.severity === 1 && CANVAS_GLOBALS.has((d.message.match(/^Cannot find name '(\w+)'\.$/) ?? [])[1]),
+              ),
+            )
+            if (!stillHasErrors) break
           }
         }
       }
 
-      if (results.length === 0) {
-        return textResult({ ok: true, message: 'No canvas code files found.' })
+      if (allDiags.size === 0) {
+        return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
       }
 
-      const allOk = results.every(r => r.lint.ok)
-      const summary = results.map(r => ({
-        path: r.path,
-        ok: r.lint.ok,
-        errors: r.lint.diagnostics
-          .filter(d => d.severity === 'error')
-          .map(d => `Line ${d.line}: ${d.message}`),
-      }))
+      const TS_RETURN_OUTSIDE_FN = 1108
+      const workspacePrefix = `file://${ctx.workspaceDir}/`
+      let totalErrors = 0
+      const files: Array<{ path: string; ok: boolean; errors: string[] }> = []
 
+      for (const [uri, diags] of allDiags) {
+        const relPath = uri.startsWith(workspacePrefix) ? uri.slice(workspacePrefix.length) : uri
+        if (relPath.endsWith('.d.ts') || relPath.endsWith('.pyi')) continue
+
+        const errors = diags
+          .filter(d => (d.severity ?? 1) === 1)
+          .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
+          .map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
+
+        if (errors.length > 0) {
+          totalErrors += errors.length
+          files.push({ path: relPath, ok: false, errors })
+        } else {
+          files.push({ path: relPath, ok: true, errors: [] })
+        }
+      }
+
+      if (files.length === 0) {
+        return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
+      }
+
+      const allOk = totalErrors === 0
       return textResult({
         ok: allOk,
-        files: summary,
-        ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run canvas_lint again to verify.' }),
+        files,
+        ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run read_lints again to verify.' }),
       })
     },
   }
@@ -4479,7 +4501,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCanvasApiBindTool(ctx),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
-    createCanvasLintTool(ctx),
+    createReadLintsTool(ctx),
     // APP_MODE_DISABLED: createTemplateListTool(), createTemplateCopyTool(ctx),
     createToolSearchTool(ctx),
     createToolInstallTool(ctx),

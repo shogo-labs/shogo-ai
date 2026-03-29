@@ -54,6 +54,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/nodemailer": "^7.0.10"
+    "@types/nodemailer": "^7.0.10",
+    "pyright": "^1.1.400",
+    "typescript-language-server": "^5.1.3"
   }
 }

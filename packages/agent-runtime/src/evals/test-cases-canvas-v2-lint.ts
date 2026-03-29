@@ -113,58 +113,44 @@ function canvasCodeFetches(r: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Lint-specific validation helpers
+// Lint-specific validation helpers (read_lints-based)
 // ---------------------------------------------------------------------------
 
-function lastCanvasWriteIsClean(r: EvalResult): boolean {
-  const canvasWrites = r.toolCalls
-    .filter(t => (t.name === 'write_file' || t.name === 'edit_file')
-      && CANVAS_CODE_RE.test(String((t.input as any).path ?? '')))
-  if (canvasWrites.length === 0) return false
-  const last = canvasWrites[canvasWrites.length - 1]
+function usedReadLints(r: EvalResult): boolean {
+  return r.toolCalls.some(t => t.name === 'read_lints')
+}
+
+function lastReadLintsClean(r: EvalResult): boolean {
+  const lintCalls = r.toolCalls.filter(t => t.name === 'read_lints')
+  if (lintCalls.length === 0) return false
+  const last = lintCalls[lintCalls.length - 1]
   try {
-    const output = typeof last.output === 'string' ? JSON.parse(last.output) : last.output
-    return output?.canvas_lint?.ok === true
-  } catch {
-    return false
-  }
+    const out = typeof last.output === 'string' ? JSON.parse(last.output) : last.output
+    return out?.ok === true
+  } catch { return false }
 }
 
 function selfCorrectedIfNeeded(r: EvalResult): boolean {
-  const canvasWrites = r.toolCalls
-    .filter(t => (t.name === 'write_file' || t.name === 'edit_file')
-      && CANVAS_CODE_RE.test(String((t.input as any).path ?? '')))
-  const firstWithErrors = canvasWrites.findIndex(t => {
+  const lintCalls = r.toolCalls.filter(t => t.name === 'read_lints')
+  const firstWithErrors = lintCalls.findIndex(t => {
     try {
       const out = typeof t.output === 'string' ? JSON.parse(t.output) : t.output
-      return out?.canvas_lint?.ok === false
+      return out?.ok === false
     } catch { return false }
   })
   if (firstWithErrors === -1) return true
-  return canvasWrites.slice(firstWithErrors + 1).some(t => {
+  return lintCalls.slice(firstWithErrors + 1).some(t => {
     try {
       const out = typeof t.output === 'string' ? JSON.parse(t.output) : t.output
-      return out?.canvas_lint?.ok === true
+      return out?.ok === true
     } catch { return false }
   })
 }
 
-function usedCanvasLint(r: EvalResult): boolean {
-  return r.toolCalls.some(t => t.name === 'canvas_lint')
-}
-
-function allCanvasWritesClean(r: EvalResult): boolean {
-  const canvasWrites = r.toolCalls
-    .filter(t => (t.name === 'write_file' || t.name === 'edit_file')
-      && CANVAS_CODE_RE.test(String((t.input as any).path ?? '')))
-  if (canvasWrites.length === 0) return false
-  return canvasWrites.every(t => {
-    try {
-      const out = typeof t.output === 'string' ? JSON.parse(t.output) : t.output
-      return out?.canvas_lint?.ok !== false
-    } catch { return true }
-  })
-}
+// Aliases for backward-compatible naming in eval criteria
+const lastCanvasWriteIsClean = lastReadLintsClean
+const usedCanvasLint = usedReadLints
+const allCanvasWritesClean = lastReadLintsClean
 
 function countDistinctIconRefs(r: EvalResult): number {
   const code = allCanvasCode(r)
@@ -557,16 +543,16 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
           const firstEditIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
           if (firstEditIdx === -1) return false
           return r.toolCalls.slice(0, firstEditIdx).some(t =>
-            t.name === 'read_file' || t.name === 'grep' || t.name === 'canvas_lint'
+            t.name === 'read_file' || t.name === 'grep' || t.name === 'read_lints'
           )
         },
       },
       {
-        id: 'used-canvas-lint',
-        description: 'Called canvas_lint at some point',
+        id: 'used-read-lints',
+        description: 'Called read_lints at some point',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedCanvasLint(r),
+        validate: (r) => usedReadLints(r),
       },
       {
         id: 'fixed-icon-name',
@@ -699,11 +685,11 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         validate: (r) => allCanvasWritesClean(r),
       },
       {
-        id: 'used-canvas-lint',
-        description: 'Used canvas_lint at least once (proactive check)',
+        id: 'used-read-lints',
+        description: 'Used read_lints at least once (proactive check)',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedCanvasLint(r),
+        validate: (r) => usedReadLints(r),
       },
       {
         id: 'reasonable-tools',
@@ -907,7 +893,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
           )
           if (firstEditIdx === -1) return false
           return r.toolCalls.slice(0, firstEditIdx).some(t =>
-            t.name === 'read_file' || t.name === 'grep' || t.name === 'canvas_lint'
+            t.name === 'read_file' || t.name === 'grep' || t.name === 'read_lints'
           )
         },
       },

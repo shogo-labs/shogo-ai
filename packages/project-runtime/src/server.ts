@@ -6374,7 +6374,7 @@ app.post('/database/stop', (c) => {
 // LSP (Language Server Protocol) WebSocket Endpoint
 // =============================================================================
 
-import { lspManager } from './lsp-service'
+import { lspManager } from '@shogo/shared-runtime'
 import type { ServerWebSocket } from 'bun'
 
 // Track active LSP WebSocket connections

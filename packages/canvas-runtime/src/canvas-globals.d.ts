@@ -3,7 +3,7 @@
 //
 // Ambient type declarations for the canvas runtime scope.
 // These match the globals injected by buildFlatScope() in globals.ts.
-// Used by the agent-runtime's canvas-code-validator to type-check canvas code.
+// Used by the agent-runtime's LSP-based linting to type-check canvas code.
 //
 // IMPORTANT: Keep in sync with globals.ts buildFlatScope().
 // Lucide icon declarations are appended by the generate script.
