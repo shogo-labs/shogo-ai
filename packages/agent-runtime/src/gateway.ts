@@ -1301,7 +1301,7 @@ export class AgentGateway {
         prompt,
         images,
         tools,
-        maxIterations: 50,
+        maxIterations: parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10),
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         thinkingLevel: 'medium',
