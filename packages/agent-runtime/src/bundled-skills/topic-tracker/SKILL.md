@@ -3,7 +3,7 @@ name: topic-tracker
 version: 2.0.0
 description: Track topics over time — daily digest of new developments from web sources
 trigger: "daily digest|morning briefing|what's new|topic update|news update"
-tools: [web, memory_read, memory_write, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed]
+tools: [web, memory_read, write_file, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed]
 ---
 
 # Topic Tracker

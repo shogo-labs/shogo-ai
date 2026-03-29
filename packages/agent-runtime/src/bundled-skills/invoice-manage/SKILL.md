@@ -3,7 +3,7 @@ name: invoice-manage
 version: 2.0.0
 description: Manage invoices — create, track status, and follow up on overdue payments
 trigger: "invoice|create invoice|overdue|billing|send invoice|invoice status"
-tools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]
+tools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, write_file, send_message]
 ---
 
 # Invoice Management

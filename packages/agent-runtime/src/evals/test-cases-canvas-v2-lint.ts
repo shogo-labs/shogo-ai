@@ -55,7 +55,7 @@ function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.js$/)) return false
+    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -65,7 +65,7 @@ function allCanvasCode(r: EvalResult): string {
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => {
       const path = String((t.input as any).path ?? '')
-      return path.match(/^canvas\/[^/]+\.js$/)
+      return path.match(/^canvas\/[^/]+\.ts$/)
     })
     .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
     .join('\n')
@@ -85,7 +85,7 @@ function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'edit_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.js$/)) return false
+    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -95,7 +95,7 @@ function canvasFileCount(r: EvalResult): number {
   for (const t of r.toolCalls) {
     if (t.name !== 'write_file') continue
     const path = String((t.input as any).path ?? '')
-    if (path.match(/^canvas\/[^/]+\.js$/)) paths.add(path)
+    if (path.match(/^canvas\/[^/]+\.ts$/)) paths.add(path)
   }
   return paths.size
 }
@@ -314,7 +314,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 15,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -375,7 +375,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -450,7 +450,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -542,7 +542,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     input: 'The dashboard preview is broken. Fix whatever is wrong with it.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.js': BROKEN_DASHBOARD_JS,
+      'canvas/dashboard.ts': BROKEN_DASHBOARD_JS,
     },
     initialMode: 'canvas',
     antiPatterns: LINT_ANTI_PATTERNS,
@@ -738,7 +738,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -809,7 +809,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.js file',
+        description: 'Wrote canvas/*.ts file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -883,7 +883,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     input: 'Add a download button to the tracker that exports data as CSV. Use a download icon.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/tracker.js': WORKING_TRACKER_JS,
+      'canvas/tracker.ts': WORKING_TRACKER_JS,
     },
     initialMode: 'canvas',
     antiPatterns: LINT_ANTI_PATTERNS,

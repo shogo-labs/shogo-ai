@@ -190,7 +190,7 @@ defineTool({
 })
 
 const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron']
-const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web', 'web_fetch', 'web_search', 'memory_read', 'memory_write', 'send_message', 'cron']
+const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web', 'web_fetch', 'web_search', 'memory_read', 'send_message', 'cron']
 const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
@@ -198,7 +198,7 @@ const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   web_fetch: ['web'],
   web_search: ['web'],
   browser: ['browser', 'web'],
-  memory: ['memory_read', 'memory_write'],
+  memory: ['memory_read'],
   messaging: ['send_message'],
   cron: ['cron'],
 }
@@ -756,44 +756,6 @@ defineTool({
   },
 })
 
-defineTool({
-  name: 'memory_write',
-  description: 'Write to agent memory (MEMORY.md or daily logs)',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      file: { type: 'string', description: '"MEMORY.md" or a date' },
-      content: { type: 'string', description: 'Content to write' },
-      append: { type: 'boolean', description: 'Append instead of overwrite' },
-    },
-    required: ['file', 'content'],
-  },
-  handler: async (input) => {
-    const file = input.file as string
-    let filepath: string
-
-    try {
-      if (file === 'MEMORY.md') {
-        filepath = safePath(AGENT_DIR, 'MEMORY.md')
-      } else {
-        const memoryDir = join(AGENT_DIR, 'memory')
-        mkdirSync(memoryDir, { recursive: true })
-        filepath = safePath(memoryDir, `${file}.md`)
-      }
-    } catch {
-      return { error: `Invalid memory file name: "${file}"` }
-    }
-
-    if (input.append && existsSync(filepath)) {
-      const existing = readFileSync(filepath, 'utf-8')
-      writeFileSync(filepath, existing + '\n' + (input.content as string), 'utf-8')
-    } else {
-      writeFileSync(filepath, input.content as string, 'utf-8')
-    }
-
-    return { ok: true, file: filepath }
-  },
-})
 
 defineTool({
   name: 'memory_search',

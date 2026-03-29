@@ -3,7 +3,7 @@ name: sprint-board
 version: 2.0.0
 description: Build and manage a sprint board canvas with kanban columns and velocity tracking
 trigger: "sprint|kanban|board|tasks|backlog|velocity|add task|move task"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, canvas_api_bind, memory_write]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, canvas_api_bind, write_file]
 ---
 
 # Sprint Board

@@ -20,11 +20,11 @@ export const MEMORY_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to store the preference',
+        id: 'used-write-file',
+        description: 'Used write_file to store the preference in MEMORY.md',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'wrote-color',
@@ -104,10 +104,10 @@ export const MEMORY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'did-not-write-memory',
-        description: 'Did NOT use memory_write for a one-off question',
+        description: 'Did NOT use write_file for a one-off question',
         points: 50,
         phase: 'intention',
-        validate: (r) => !usedTool(r, 'memory_write'),
+        validate: (r) => !usedTool(r, 'write_file'),
       },
       {
         id: 'answered-question',
@@ -132,11 +132,11 @@ export const MEMORY_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to persist project context',
+        id: 'used-write-file',
+        description: 'Used write_file to persist project context to MEMORY.md',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'wrote-project-name',
@@ -188,11 +188,11 @@ export const MEMORY_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to persist routing rules',
+        id: 'used-write-file',
+        description: 'Used write_file to persist routing rules to MEMORY.md',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'wrote-urgent-channel',
@@ -245,10 +245,10 @@ export const MEMORY_EVALS: AgentEval[] = [
       },
       {
         id: 'did-not-write-memory',
-        description: 'Did NOT use memory_write for ephemeral conversion',
+        description: 'Did NOT use write_file for ephemeral conversion',
         points: 30,
         phase: 'intention',
-        validate: (r) => !usedTool(r, 'memory_write'),
+        validate: (r) => !usedTool(r, 'write_file'),
       },
       {
         id: 'response-has-amount',

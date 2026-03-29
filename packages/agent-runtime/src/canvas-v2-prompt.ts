@@ -21,7 +21,7 @@
 
 export const CANVAS_V2_GUIDE = `## Canvas Code Reference
 
-Write React code to \`canvas/*.js\` and it renders instantly in the canvas panel.
+Write TypeScript React code to \`canvas/*.ts\` and it renders instantly in the canvas panel. Always use \`.ts\` extensions for canvas files.
 Each file = a tab. Use \`write_file\` to create, \`edit_file\` to update, \`delete_file\` to remove.
 
 Your code is executed via \`new Function()\` — write the **body** of a function that returns a React element. Do NOT use \`export\`, \`import\`, or JSX. Use \`h()\` (alias for \`React.createElement\`).
@@ -38,14 +38,9 @@ Your code is executed via \`new Function()\` — write the **body** of a functio
 
 **Icons**: All lucide-react icons (\`TrendingUp\`, \`Search\`, \`Calendar\`, \`ArrowRight\`, etc.) — type-checked at write time
 
-**Utilities**: \`cn\` (classname merge), \`fetch\`, \`data\` (parsed from canvas/<name>.data.json), \`onAction(name, context)\`
+**Utilities**: \`cn\` (classname merge), \`fetch\`, \`onAction(name, context)\`
 
 **SDK**: \`createClient\`, \`HttpClient\`, \`OptimisticStore\` from @shogo-ai/sdk
-
-### Data
-
-Write JSON to \`canvas/<name>.data.json\` — available as \`data\` in your code.
-Or use \`fetch()\` inside \`useEffect\` to load data from any API.
 
 ### Style
 
@@ -55,11 +50,11 @@ Use Tailwind CSS classes. The canvas supports both light and dark mode automatic
 - Do NOT use \`export\`, \`import\`, \`const\`, \`let\`, or arrow functions — use \`var\` and \`function\` expressions for full compatibility with \`new Function()\`.
 - Use \`h()\` instead of JSX.
 - Return a single React element from the top level.
-- Each \`canvas/*.js\` file is a separate tab.
+- Each \`canvas/*.ts\` file is a separate tab.
 - Keys are required on list items.
 
 ### Validation Workflow
-When you \`write_file\` or \`edit_file\` a \`canvas/*.js\` file, the tool result will include \`canvas_lint\` feedback:
+When you \`write_file\` or \`edit_file\` a \`canvas/*.ts\` file, the tool result will include \`canvas_lint\` feedback:
 - If \`canvas_lint.ok\` is \`true\` — the code is clean, proceed normally.
 - If \`canvas_lint.ok\` is \`false\` — the \`canvas_lint.errors\` array lists TypeScript errors (e.g. \`Cannot find name 'RefreshCw'\`). **You must fix these errors immediately** with \`edit_file\` before responding to the user.
 - Use \`canvas_lint\` tool after completing multi-file changes to verify all surfaces are error-free.
@@ -143,8 +138,7 @@ function addLead(name, email) {
 ### Full-stack workflow
 
 1. Write \`.shogo/server/schema.prisma\` with your models
-2. Write \`canvas/app.js\` with UI that fetches from the skill server
-3. Optionally write \`canvas/app.data.json\` for static config
+2. Write \`canvas/app.ts\` with UI that fetches from the skill server
 
 The skill server starts automatically when the schema is saved. Canvas code can immediately \`fetch()\` from it.
 `
@@ -237,7 +231,6 @@ function deleteItem(id) {
 
 - Use \`useState\` for UI state (form inputs, toggles, selected tab)
 - Use \`useState\` + \`useEffect\` + \`fetch\` for server data
-- Use \`canvas/*.data.json\` (\`data\` global) for static configuration that doesn't change at runtime
 `
 
 // ---------------------------------------------------------------------------
@@ -252,7 +245,7 @@ export const CANVAS_V2_EXAMPLES = `## Canvas Examples
 User: "Show me our key metrics — 1,500 users, $45K revenue, 342 sessions"
 
 \`\`\`
-write_file({ path: "canvas/dashboard.js", content: \`
+write_file({ path: "canvas/dashboard.ts", content: \`
   var metrics = [
     { label: 'Users', value: '1,500', trend: '+12%' },
     { label: 'Revenue', value: '$45K', trend: '+8%' },
@@ -296,7 +289,7 @@ model Lead {
 
 Step 2 — Create the UI:
 \`\`\`
-write_file({ path: "canvas/leads.js", content: \`
+write_file({ path: "canvas/leads.ts", content: \`
   var _d = useState([])
   var leads = _d[0], setLeads = _d[1]
   var _l = useState(true)
@@ -379,7 +372,7 @@ write_file({ path: "canvas/leads.js", content: \`
 User: "Build me a counter with increment and decrement buttons"
 
 \`\`\`
-write_file({ path: "canvas/counter.js", content: \`
+write_file({ path: "canvas/counter.ts", content: \`
   var _s = useState(0)
   var count = _s[0], setCount = _s[1]
   return h('div', { className: 'flex flex-col items-center gap-4 p-8' }, [
@@ -393,12 +386,31 @@ write_file({ path: "canvas/counter.js", content: \`
 \`})
 \`\`\`
 
-### Example 4: Multi-surface app with shared backend
+### Example 4: Edit an existing canvas file (ALWAYS use edit_file, NOT write_file)
+
+User: "Change the revenue metric to $45K and add a new 'Conversion' metric"
+
+The file \`canvas/dashboard.ts\` already exists. **Read it first, then use edit_file:**
+
+\`\`\`
+read_file({ path: "canvas/dashboard.ts" })
+// -> returns the current file content
+
+edit_file({
+  path: "canvas/dashboard.ts",
+  old_string: "  { label: 'Revenue', value: '$32K', trend: '+8%' },\\n  { label: 'Sessions', value: 890, trend: '+5%' },\\n]",
+  new_string: "  { label: 'Revenue', value: '$45K', trend: '+8%' },\\n  { label: 'Sessions', value: 890, trend: '+5%' },\\n  { label: 'Conversion', value: '3.2%', trend: '+0.5%' },\\n]"
+})
+\`\`\`
+
+**IMPORTANT:** When a canvas file already exists, ALWAYS use \`edit_file\` with the exact \`old_string\` from the file. NEVER use \`write_file\` to overwrite the entire file — that risks losing code and is harder to review.
+
+### Example 5: Multi-surface app with shared backend
 
 User: "Build a dashboard tab and a settings tab"
 
 \`\`\`
-write_file({ path: "canvas/dashboard.js", content: \`
+write_file({ path: "canvas/dashboard.ts", content: \`
   return h('div', { className: 'flex flex-col gap-6 p-2' }, [
     h('h2', { key: 'title', className: 'text-2xl font-semibold' }, 'Dashboard'),
     h(Row, { key: 'metrics', gap: 'md' }, [
@@ -407,7 +419,7 @@ write_file({ path: "canvas/dashboard.js", content: \`
     ]),
   ])
 \`})
-write_file({ path: "canvas/settings.js", content: \`
+write_file({ path: "canvas/settings.ts", content: \`
   var _d = useState(false)
   var darkMode = _d[0], setDarkMode = _d[1]
   var _n = useState(true)

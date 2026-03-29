@@ -3,7 +3,7 @@ name: meeting-prep-v2
 version: 2.0.0
 description: Prepare for meetings — pull calendar events, research attendees, build prep canvas
 trigger: "prep for meeting|meeting prep|prepare for|brief me on|upcoming meetings|what meetings"
-tools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_read, memory_write]
+tools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_read, write_file]
 ---
 
 # Meeting Prep

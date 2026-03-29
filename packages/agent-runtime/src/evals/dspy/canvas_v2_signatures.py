@@ -28,9 +28,9 @@ class CanvasV2Planning(dspy.Signature):
 
     needs_backend: bool = dspy.OutputField(desc="True if app needs skill server (persistent CRUD data)")
     prisma_models: str = dspy.OutputField(desc="Comma-separated Prisma model names, or 'none'")
-    canvas_files: str = dspy.OutputField(desc="Comma-separated canvas/*.js filenames")
+    canvas_files: str = dspy.OutputField(desc="Comma-separated canvas/*.ts filenames")
     tool_sequence: str = dspy.OutputField(
-        desc="Ordered tool calls, e.g. 'write_file (schema.prisma), write_file (canvas/app.js)'"
+        desc="Ordered tool calls, e.g. 'write_file (schema.prisma), write_file (canvas/app.ts)'"
     )
     react_patterns: str = dspy.OutputField(
         desc="React patterns used: useState, useEffect, fetch, loading state, form, optimistic update"
@@ -91,8 +91,7 @@ class CanvasV2E2E(dspy.Signature):
     Produces everything needed to build and verify the app:
     1. Whether a backend is needed
     2. The Prisma schema (if backend)
-    3. The canvas/*.js file content
-    4. Optional canvas/*.data.json content
+    3. The canvas/*.ts file content
     """
     user_request: str = dspy.InputField(desc="User's request for a canvas UI")
     available_components: str = dspy.InputField(
@@ -104,12 +103,9 @@ class CanvasV2E2E(dspy.Signature):
     prisma_schema: str = dspy.OutputField(
         desc="Complete schema.prisma content, or empty string if no backend"
     )
-    canvas_filename: str = dspy.OutputField(desc="Primary canvas filename, e.g. 'canvas/leads.js'")
+    canvas_filename: str = dspy.OutputField(desc="Primary canvas filename, e.g. 'canvas/leads.ts'")
     canvas_code: str = dspy.OutputField(
-        desc="Complete canvas/*.js file content using h(), var, function patterns"
-    )
-    data_json: str = dspy.OutputField(
-        desc="canvas/*.data.json content if needed, or empty string"
+        desc="Complete canvas/*.ts file content using h(), var, function patterns"
     )
     tool_sequence: str = dspy.OutputField(desc="Ordered tool calls used to build the app")
     reasoning: str = dspy.OutputField(desc="Design rationale")

@@ -2,7 +2,7 @@
   "_meta": {
     "track": "memory",
     "generated": true,
-    "generated_at": "2026-02-22T03:21:56.375Z",
+    "generated_at": "2026-03-28T23:32:15.231Z",
     "description": "Memory write/retrieval decision examples — extracted from e2e-scenarios.test.ts",
     "sources": [
       "packages/agent-runtime/src/__tests__/e2e-scenarios.test.ts"
@@ -16,7 +16,7 @@
       "conversation_summary": "Agent executed BOOT.md: wrote status file, recorded startup to memory",
       "tools_used": [
         "write_file",
-        "memory_write"
+        "write_file"
       ],
       "current_memory": "# Memory\n",
       "has_session_context": false,

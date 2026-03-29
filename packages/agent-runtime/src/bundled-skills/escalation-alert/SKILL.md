@@ -3,7 +3,7 @@ name: escalation-alert
 version: 2.0.0
 description: Escalate urgent issues to the team via connected channels
 trigger: "escalate|urgent|p0|p1|critical issue|alert team|notify team"
-tools: [send_message, memory_read, memory_write]
+tools: [send_message, memory_read, write_file]
 ---
 
 # Escalation Alert

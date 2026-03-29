@@ -2,7 +2,7 @@
   "_meta": {
     "track": "multiturn",
     "generated": true,
-    "generated_at": "2026-02-22T03:21:56.376Z",
+    "generated_at": "2026-03-28T23:32:15.232Z",
     "description": "Multi-turn conversation planning + session summarization — extracted from e2e-scenarios.test.ts",
     "sources": [
       "packages/agent-runtime/src/__tests__/e2e-scenarios.test.ts",
@@ -10,7 +10,7 @@
     ]
   },
   "constants": {
-    "available_tools": "exec, read_file, write_file, web, browser, memory_read, memory_write, memory_search, send_message, cron, canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, canvas_components, canvas_trigger_action, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, personality_update"
+    "available_tools": "exec, read_file, write_file, edit_file, glob, grep, ls, web, browser, list_files, delete_file, search_files, todo_write, ask_user, notify_user_error, skill, memory_read, memory_search, send_message, channel_connect, channel_disconnect, channel_list, cron, canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, tool_search, tool_install, tool_uninstall, mcp_search, mcp_install, mcp_uninstall"
   },
   "examples": [
     {
@@ -60,51 +60,44 @@
     {
       "id": "task-tracker-build",
       "type": "plan",
-      "source_test": "full lifecycle: create surface → apply schema → seed → query",
+      "source_test": "agent writes schema.prisma then canvas/*.ts with CRUD UI",
       "user_message": "Build me a task tracker where I can add, complete, and delete tasks",
       "conversation_history_summary": "",
       "expected_tool_sequence": [
-        "canvas_create",
-        "canvas_api_schema",
-        "canvas_api_seed",
-        "canvas_api_query",
-        "canvas_update"
+        "write_file",
+        "write_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
-      "optimal_tool_calls": 5,
+      "optimal_tool_calls": 2,
       "optimal_iterations": 1
     },
     {
       "id": "flight-search-interactive",
       "type": "plan",
-      "source_test": "agent creates a flight search UI and waits for user selection",
+      "source_test": "agent writes a canvas file with interactive flight search UI",
       "user_message": "Find flights from SFO to JFK and let me pick one",
       "conversation_history_summary": "",
       "expected_tool_sequence": [
-        "canvas_create",
-        "canvas_update",
-        "canvas_action_wait"
+        "write_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
-      "optimal_tool_calls": 3,
+      "optimal_tool_calls": 1,
       "optimal_iterations": 1
     },
     {
       "id": "weather-visual",
       "type": "plan",
-      "source_test": "agent creates a surface, adds components, and populates data via tool calls",
+      "source_test": "agent writes a canvas file with weather display",
       "user_message": "What's the weather like today? Show it visually",
       "conversation_history_summary": "",
       "expected_tool_sequence": [
-        "canvas_create",
-        "canvas_update",
-        "canvas_data"
+        "write_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
-      "optimal_tool_calls": 3,
+      "optimal_tool_calls": 1,
       "optimal_iterations": 1
     },
     {
@@ -142,7 +135,7 @@
       "conversation_history_summary": "",
       "expected_tool_sequence": [
         "web",
-        "memory_write"
+        "write_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
@@ -200,14 +193,12 @@
       "user_message": "Now make my contact list a full CRUD app — add an API backend and seed with 3 contacts",
       "conversation_history_summary": "User previously built a simple contact list canvas with name, email, phone",
       "expected_tool_sequence": [
-        "canvas_api_schema",
-        "canvas_api_seed",
-        "canvas_api_query",
-        "canvas_update"
+        "write_file",
+        "edit_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
-      "optimal_tool_calls": 4,
+      "optimal_tool_calls": 2,
       "optimal_iterations": 1
     },
     {
@@ -217,13 +208,11 @@
       "user_message": "Build me a KPI dashboard canvas using the metrics I told you about",
       "conversation_history_summary": "User previously said: 'Remember our team tracks these KPIs: MRR, churn rate, NPS score, and active users.'",
       "expected_tool_sequence": [
-        "canvas_create",
-        "canvas_update",
-        "canvas_data"
+        "write_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
-      "optimal_tool_calls": 3,
+      "optimal_tool_calls": 1,
       "optimal_iterations": 1
     },
     {
@@ -233,14 +222,12 @@
       "user_message": "Log this in memory as an active incident, then show me an incident status canvas with severity badge",
       "conversation_history_summary": "User reported: 'Critical ticket — Production database is down, from customer Acme Corp'",
       "expected_tool_sequence": [
-        "memory_write",
-        "canvas_create",
-        "canvas_update",
-        "canvas_data"
+        "write_file",
+        "write_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": false,
-      "optimal_tool_calls": 4,
+      "optimal_tool_calls": 2,
       "optimal_iterations": 1
     },
     {
@@ -250,7 +237,7 @@
       "user_message": "Add an Alert component at the top warning that we're at 85% of budget, yellow/warning severity",
       "conversation_history_summary": "User previously built an expense dashboard with metrics and a category Chart",
       "expected_tool_sequence": [
-        "canvas_update"
+        "edit_file"
       ],
       "expected_iterations": 1,
       "expected_can_batch": true,

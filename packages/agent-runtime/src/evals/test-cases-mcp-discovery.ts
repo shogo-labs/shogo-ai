@@ -503,10 +503,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-memory',
-        description: 'Used memory_write to record the new role',
+        description: 'Used write_file to record the new role to memory',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'memory-mentions-role',
@@ -514,7 +514,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const memCall = r.toolCalls.find(t => t.name === 'memory_write')
+          const memCall = r.toolCalls.find(t => t.name === 'write_file')
           if (!memCall) return false
           const json = JSON.stringify(memCall.input).toLowerCase()
           return json.includes('linear') || json.includes('project management') || json.includes('project manager')

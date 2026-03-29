@@ -258,7 +258,7 @@ function checkAntiPattern(
     const canvasCalls = toolCalls.filter(t => t.name.startsWith('canvas_'))
     const workCalls = toolCalls.filter(t =>
       !t.name.startsWith('canvas_') &&
-      t.name !== 'memory_read' && t.name !== 'memory_write' &&
+      t.name !== 'memory_read' &&
       t.name !== 'memory_search'
     )
     return canvasCalls.length > 3 && workCalls.length < 2

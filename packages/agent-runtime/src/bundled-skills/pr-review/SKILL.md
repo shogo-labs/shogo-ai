@@ -3,7 +3,7 @@ name: pr-review
 version: 2.0.0
 description: Review a specific pull request — fetch diff, analyze code quality, post feedback
 trigger: "review pr|review pull request|check pr|code review|review #"
-tools: [tool_search, tool_install, memory_read, memory_write, canvas_create, canvas_update]
+tools: [tool_search, tool_install, memory_read, write_file, canvas_create, canvas_update]
 ---
 
 # PR Review

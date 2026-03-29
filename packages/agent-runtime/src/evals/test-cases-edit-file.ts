@@ -4,7 +4,7 @@
  * edit_file Focused Eval Test Cases — Canvas V2 Agent
  *
  * Tests the v2 agent's ability to use the edit_file tool correctly
- * on canvas/*.js files, targeting three key failure modes in production:
+ * on canvas/*.ts files, targeting three key failure modes in production:
  *
  * 1. old_string not found — agent sends text that doesn't match the file
  * 2. Sequential edits — 2nd edit breaks because file changed from 1st
@@ -444,7 +444,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Change the heading from "Welcome" to "Dashboard".',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/page.js': CANVAS_PAGE,
+      'canvas/page.ts': CANVAS_PAGE,
     },
     maxScore: 100,
     validationCriteria: [
@@ -504,7 +504,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Add a Badge showing "Active" next to the "Team Dashboard" title.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/team.js': CANVAS_TEAM,
+      'canvas/team.ts': CANVAS_TEAM,
     },
     maxScore: 100,
     validationCriteria: [
@@ -570,7 +570,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Rename the function "loadData" to "fetchItems" AND change the API endpoint from \'/api/data\' to \'/api/items\'.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/items.js': CANVAS_ITEMS,
+      'canvas/items.ts': CANVAS_ITEMS,
     },
     maxScore: 100,
     validationCriteria: [
@@ -635,7 +635,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Update the settings: change appName from \'MyApp\' to \'Dashboard\', change version from \'1.0.0\' to \'2.0.0\', and change theme from \'light\' to \'dark\'.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/settings.js': CANVAS_SETTINGS,
+      'canvas/settings.ts': CANVAS_SETTINGS,
     },
     maxScore: 100,
     validationCriteria: [
@@ -697,7 +697,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Change the placeholder text for the email input from "Enter your email" to "you@company.com". Do NOT change the name or phone placeholders.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/form.js': CANVAS_FORM,
+      'canvas/form.ts': CANVAS_FORM,
     },
     maxScore: 100,
     validationCriteria: [
@@ -767,13 +767,13 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'The dashboard shows 1,200 users but we hit 1,500 this morning. Update the Users metric and also add a new "Churn Rate" metric showing 2.4%.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.js': CANVAS_DASHBOARD,
+      'canvas/dashboard.ts': CANVAS_DASHBOARD,
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-edit-file',
-        description: 'Used edit_file on canvas/dashboard.js',
+        description: 'Used edit_file on canvas/dashboard.ts',
         points: 20,
         phase: 'intention',
         validate: (r) => r.toolCalls.some(t =>
@@ -838,7 +838,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Change the MAX_RETRIES constant from 3 to 5.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/admin.js': LARGE_CANVAS_ADMIN,
+      'canvas/admin.ts': LARGE_CANVAS_ADMIN,
     },
     maxScore: 100,
     validationCriteria: [
@@ -908,7 +908,7 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Make three changes to the user card: change the avatar size from "sm" to "lg", change the role badge variant from "outline" to "secondary", and add an onClick handler to the Card that logs the user id.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/user-card.js': CANVAS_USER_CARD,
+      'canvas/user-card.ts': CANVAS_USER_CARD,
     },
     maxScore: 100,
     validationCriteria: [
@@ -986,13 +986,13 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Update the todo list: change the title from "My Tasks" to "Task Manager", add a subtitle saying "Stay organized" below the title, and change the empty state from "No items" to "All caught up!".',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/todos.js': CANVAS_TODOS,
+      'canvas/todos.ts': CANVAS_TODOS,
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-edit-file',
-        description: 'Used edit_file on canvas/todos.js',
+        description: 'Used edit_file on canvas/todos.ts',
         points: 15,
         phase: 'intention',
         validate: (r) => r.toolCalls.some(t =>
@@ -1048,13 +1048,13 @@ export const EDIT_FILE_EVALS: AgentEval[] = [
     input: 'Update the lead tracker: change the table header from "All Leads" to "Pipeline", add a "Last Contact" column header to the table, and change the "Add" button text to "New Lead".',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/leads.js': CANVAS_LEADS,
+      'canvas/leads.ts': CANVAS_LEADS,
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-edit-file',
-        description: 'Used edit_file on canvas/leads.js',
+        description: 'Used edit_file on canvas/leads.ts',
         points: 15,
         phase: 'intention',
         validate: (r) => r.toolCalls.some(t =>

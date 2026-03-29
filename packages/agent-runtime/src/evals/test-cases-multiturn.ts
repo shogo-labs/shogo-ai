@@ -275,11 +275,11 @@ export const MULTITURN_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to log the incident',
+        id: 'used-write-file',
+        description: 'Used write_file to log the incident to memory',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'used-canvas-create',

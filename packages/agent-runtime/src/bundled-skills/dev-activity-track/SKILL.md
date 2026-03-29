@@ -3,7 +3,7 @@ name: dev-activity-track
 version: 1.0.0
 description: Fetch GitHub developer activity (commits, PRs, reviews) and build an activity dashboard
 trigger: "dev activity|developer activity|team activity|who committed|activity dashboard|daily activity"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, write_file, send_message]
 ---
 
 # Developer Activity Tracker

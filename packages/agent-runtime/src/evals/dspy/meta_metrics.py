@@ -16,13 +16,11 @@ import dspy
 
 
 ALL_VALID_TOOLS = {
-    "exec", "read_file", "write_file", "web",
-    "memory_read", "memory_write", "memory_search",
-    "browser", "send_message", "cron",
-    "canvas_create", "canvas_update", "canvas_data",
-    "canvas_delete", "canvas_action_wait", "canvas_components",
-    "canvas_api_schema", "canvas_api_seed", "canvas_api_query",
-    "personality_update", "identity_set", "skill_create",
+    "exec", "read_file", "write_file", "edit_file", "delete_file",
+    "glob", "grep", "ls", "web", "browser",
+    "memory_read", "memory_search",
+    "send_message", "cron", "canvas_lint",
+    "identity_set", "skill_create",
 }
 
 

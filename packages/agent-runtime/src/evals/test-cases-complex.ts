@@ -65,11 +65,11 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => toolCallCount(r, 'canvas_create') >= 2,
       },
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to store findings',
+        id: 'used-write-file',
+        description: 'Used write_file to store findings to memory',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'has-all-companies',
@@ -236,11 +236,11 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to log the daily brief',
+        id: 'used-write-file',
+        description: 'Used write_file to log the daily brief to memory',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'used-canvas-create',
@@ -468,11 +468,11 @@ export const COMPLEX_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write to log triage action',
+        id: 'used-write-file',
+        description: 'Used write_file to log triage action to memory',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'reasonable-tool-count',
@@ -541,11 +541,11 @@ export const COMPLEX_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'used-memory-write',
-        description: 'Used memory_write for prep notes',
+        id: 'used-write-file',
+        description: 'Used write_file for prep notes in memory',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'used-canvas-update',
@@ -649,11 +649,11 @@ export const COMPLEX_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'used-memory-write',
-        description: 'Logged revenue snapshot to memory',
+        id: 'used-write-file',
+        description: 'Logged revenue snapshot to memory via write_file',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'memory_write'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'reasonable-tool-count',

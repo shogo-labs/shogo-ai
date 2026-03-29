@@ -256,10 +256,9 @@ describe('E2E: BOOT.md with tool execution', () => {
         path: 'status/boot.txt',
         content: `Agent started at ${bootTime}`,
       }, id: 'toolu_1' }]),
-      buildToolUseResponse([{ name: 'memory_write', arguments: {
-        file: 'MEMORY.md',
+      buildToolUseResponse([{ name: 'write_file', arguments: {
+        path: 'MEMORY.md',
         content: `\n- Agent booted at ${bootTime}`,
-        append: true,
       }, id: 'toolu_2' }]),
       buildTextResponse('Startup complete. Status written and memory updated.'),
     ])

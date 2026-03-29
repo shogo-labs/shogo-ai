@@ -27,11 +27,10 @@ const CORE_GATEWAY_TOOLS = new Set([
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
   'todo_write', 'ask_user', 'skill',
-  'memory_read', 'memory_write', 'memory_search',
+  'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
   'canvas_inspect', 'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
-  'personality_update',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
 ])

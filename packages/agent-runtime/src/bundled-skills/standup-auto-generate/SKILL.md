@@ -3,7 +3,7 @@ name: standup-auto-generate
 version: 1.0.0
 description: Auto-generate daily standup summaries from GitHub commits, PRs, and Slack activity
 trigger: "generate standup|auto standup|standup summary|what did the team do|morning summary|daily summary"
-tools: [tool_search, tool_install, canvas_create, canvas_update, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, canvas_create, canvas_update, memory_read, write_file, send_message]
 ---
 
 # Automatic Standup Generator

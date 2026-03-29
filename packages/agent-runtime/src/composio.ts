@@ -14,7 +14,7 @@ import { Composio } from '@composio/core'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import type { MCPClientManager } from './mcp-client'
 import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
-import { getTransformRegistry, smartTruncateJson } from './response-transforms'
+import { smartTruncateJson } from './response-transforms'
 
 /** Stored composio user ID for SDK auth and tool execution scoping */
 let storedComposioUserId: string | null = null
@@ -396,30 +396,12 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
           return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
         }
 
-        const registry = getTransformRegistry()
-        registry.cacheResponse(schema.slug, result.data)
-
-        let outputData: unknown = result.data
-        let transformApplied: string | null = null
-        const transformMeta = registry.get(schema.slug)
-        if (transformMeta) {
-          try {
-            outputData = await registry.execute(schema.slug, result.data)
-            transformApplied = transformMeta.description
-          } catch (err: any) {
-            console.warn(`[Composio] Transform for ${schema.slug} failed, using raw: ${err.message}`)
-            outputData = result.data
-          }
-        }
-
         const MAX_CHARS = 25000
-        const { result: raw, truncated } = smartTruncateJson(outputData, MAX_CHARS)
+        const { result: raw, truncated } = smartTruncateJson(result.data, MAX_CHARS)
 
         let annotation = ''
-        if (transformApplied) {
-          annotation = `\n\n[Transform active: "${transformApplied}". Use binding_transform({ action: "list" }) to view or binding_transform({ action: "create", tool: "${schema.slug}", ... }) to modify.]`
-        } else if (truncated) {
-          annotation = `\n\n[Response was truncated. Use binding_transform to create a transform that extracts only the fields you need. Example: binding_transform({ action: "create", tool: "${schema.slug}", transform: "(data) => ({ ... })", description: "..." })]`
+        if (truncated) {
+          annotation = `\n\n[Response was truncated from ${JSON.stringify(result.data).length} to ${raw.length} chars. For large datasets, use the skill server pattern: create a Prisma schema in .shogo/server/schema.prisma, ingest the data via a script, then query and display with canvas code.]`
         }
 
         return textResult(raw + annotation)

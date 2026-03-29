@@ -495,7 +495,7 @@ const HAS_IMPORT = /\bimport\s+/
 
 export function typecheckCanvasCode(
   code: string,
-  fileName = 'canvas/surface.js',
+  fileName = 'canvas/surface.ts',
 ): CanvasLintResult {
   const canvasGlobals = getCanvasGlobalsDts()
   if (!canvasGlobals) {

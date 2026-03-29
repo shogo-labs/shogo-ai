@@ -3,7 +3,7 @@ name: meeting-notes-v2
 version: 2.0.0
 description: Generate structured meeting summaries with action items and follow-ups
 trigger: "meeting notes|meeting summary|summarize meeting|action items|what happened in"
-tools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]
+tools: [canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, write_file, send_message]
 ---
 
 # Meeting Notes

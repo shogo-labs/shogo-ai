@@ -3,7 +3,7 @@ name: health-check
 version: 2.0.0
 description: Check service health endpoints and build a status page canvas
 trigger: "health check|service status|is it up|uptime|check endpoints|status page"
-tools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]
+tools: [web, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, write_file, send_message]
 ---
 
 # Health Check

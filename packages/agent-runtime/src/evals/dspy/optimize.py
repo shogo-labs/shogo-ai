@@ -93,14 +93,12 @@ def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
         from memory_dataset import get_memory_dataset
         from memory_metrics import memory_write_quality, memory_retrieval_quality
         from memory_signatures import MemoryWriteDecision, MemoryRetrieval
-        from e2e_metrics import memory_write_e2e_quality
 
         data = get_memory_dataset()
         subtracks = []
         if "write" in data:
             train, test = data["write"]
             subtracks.append(SubTrack("write", MemoryWriteDecision, memory_write_quality, train, test))
-            subtracks.append(SubTrack("write_e2e", MemoryWriteDecision, memory_write_e2e_quality, train, test))
         if "retrieval" in data:
             train, test = data["retrieval"]
             subtracks.append(SubTrack("retrieval", MemoryRetrieval, memory_retrieval_quality, train, test))
@@ -110,7 +108,6 @@ def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
         from personality_dataset import get_personality_dataset
         from personality_metrics import personality_selection_quality, personality_self_update_quality
         from personality_signatures import AgentTemplateSelection, PersonalitySelfUpdate
-        from e2e_metrics import personality_update_e2e_quality
 
         data = get_personality_dataset()
         subtracks = []
@@ -120,7 +117,6 @@ def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
         if "self_update" in data:
             train, test = data["self_update"]
             subtracks.append(SubTrack("self_update", PersonalitySelfUpdate, personality_self_update_quality, train, test))
-            subtracks.append(SubTrack("self_update_e2e", PersonalitySelfUpdate, personality_update_e2e_quality, train, test))
         return subtracks
 
     elif track_name == "skill":

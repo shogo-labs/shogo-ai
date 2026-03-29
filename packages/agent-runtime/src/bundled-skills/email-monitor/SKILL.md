@@ -3,7 +3,7 @@ name: email-monitor
 version: 1.0.0
 description: Monitor Gmail for emails from specific senders and extract key information for alerting
 trigger: "check email|new emails|email alert|email from|monitor inbox|email monitor"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, memory_write, send_message]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_read, write_file, send_message]
 ---
 
 # Email Monitor
