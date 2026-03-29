@@ -14,6 +14,8 @@
  *   canvas_v2_examples       → CANVAS_V2_EXAMPLES
  */
 
+const SKILL_PORT = process.env.SKILL_SERVER_PORT || '4100'
+
 // ---------------------------------------------------------------------------
 // Section 1: Core Canvas Code Guide
 // Override key: canvas_v2_guide
@@ -95,7 +97,9 @@ model Lead {
 }
 \`\`\`
 
-That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:4100\`. Each model gets full CRUD at \`/api/{model-name-plural}\`:
+That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
+
+Each model gets full CRUD at \`/api/{model-name-plural}\`:
 
 - \`GET /api/leads\` — list all
 - \`GET /api/leads/:id\` — get one
@@ -103,9 +107,15 @@ That's it — **everything else is automatic**: dependency install, code generat
 - \`PATCH /api/leads/:id\` — update (JSON body)
 - \`DELETE /api/leads/:id\` — delete
 
+API responses are JSON-wrapped — always unwrap before using:
+- List: \`{ ok: true, items: [...] }\` — use \`res.items\`
+- Get/Create/Update: \`{ ok: true, data: {...} }\` — use \`res.data\`
+- Delete: \`{ ok: true }\`
+- Error: \`{ error: { code, message } }\`
+
 ### Fetching from canvas code
 
-Use \`fetch()\` in a \`useEffect\` to load data from the skill server:
+Use \`fetch()\` in a \`useEffect\` to load data from the skill server. Always unwrap the \`items\` array from the response:
 
 \`\`\`
 var _s = useState([])
@@ -114,31 +124,35 @@ var _l = useState(true)
 var loading = _l[0], setLoading = _l[1]
 
 useEffect(function() {
-  fetch('http://localhost:4100/api/leads')
+  fetch('http://localhost:${SKILL_PORT}/api/leads')
     .then(function(r) { return r.json() })
-    .then(function(data) { setLeads(data); setLoading(false) })
+    .then(function(res) { setLeads(res.items); setLoading(false) })
     .catch(function() { setLoading(false) })
 }, [])
 \`\`\`
 
 ### Creating records from canvas
 
+Unwrap \`res.data\` from the create response:
+
 \`\`\`
 function addLead(name, email) {
-  fetch('http://localhost:4100/api/leads', {
+  fetch('http://localhost:${SKILL_PORT}/api/leads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: name, email: email, status: 'new' })
   })
   .then(function(r) { return r.json() })
-  .then(function(newLead) { setLeads(function(prev) { return prev.concat([newLead]) }) })
+  .then(function(res) { setLeads(function(prev) { return prev.concat([res.data]) }) })
 }
 \`\`\`
 
 ### Full-stack workflow
 
 1. Write \`.shogo/server/schema.prisma\` with your models
-2. Write \`canvas/app.ts\` with UI that fetches from the skill server
+2. Seed initial data using the web tool: \`web({ url: "http://localhost:${SKILL_PORT}/api/leads", method: "POST", body: { name: "Acme Corp", email: "hello@acme.com" } })\`
+3. Write \`canvas/app.ts\` with UI that fetches from the skill server
+4. If building a reusable template, save a skill file: \`write_file({ path: "skills/lead-tracking.md", content: "..." })\`
 
 The skill server starts automatically when the schema is saved. Canvas code can immediately \`fetch()\` from it.
 `
@@ -161,12 +175,12 @@ var _e = useState(null)
 var error = _e[0], setError = _e[1]
 
 useEffect(function() {
-  fetch('http://localhost:4100/api/items')
+  fetch('http://localhost:${SKILL_PORT}/api/items')
     .then(function(r) {
       if (!r.ok) throw new Error('Failed to load')
       return r.json()
     })
-    .then(function(data) { setItems(data); setLoading(false) })
+    .then(function(res) { setItems(res.items); setLoading(false) })
     .catch(function(err) { setError(err.message); setLoading(false) })
 }, [])
 
@@ -188,14 +202,14 @@ var name = _n[0], setName = _n[1]
 
 function handleSubmit() {
   if (!name.trim()) return
-  fetch('http://localhost:4100/api/items', {
+  fetch('http://localhost:${SKILL_PORT}/api/items', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: name })
   })
   .then(function(r) { return r.json() })
-  .then(function(item) {
-    setItems(function(prev) { return prev.concat([item]) })
+  .then(function(res) {
+    setItems(function(prev) { return prev.concat([res.data]) })
     setName('')
   })
 }
@@ -223,7 +237,7 @@ items.map(function(item) {
 \`\`\`
 function deleteItem(id) {
   setItems(function(prev) { return prev.filter(function(i) { return i.id !== id }) })
-  fetch('http://localhost:4100/api/items/' + id, { method: 'DELETE' })
+  fetch('http://localhost:${SKILL_PORT}/api/items/' + id, { method: 'DELETE' })
 }
 \`\`\`
 
@@ -299,11 +313,11 @@ write_file({ path: "canvas/leads.ts", content: \`
   var _e = useState('')
   var email = _e[0], setEmail = _e[1]
 
-  var API = 'http://localhost:4100/api/leads'
+  var API = 'http://localhost:${SKILL_PORT}/api/leads'
 
   useEffect(function() {
     fetch(API).then(function(r) { return r.json() })
-      .then(function(data) { setLeads(data); setLoading(false) })
+      .then(function(res) { setLeads(res.items); setLoading(false) })
       .catch(function() { setLoading(false) })
   }, [])
 
@@ -315,8 +329,8 @@ write_file({ path: "canvas/leads.ts", content: \`
       body: JSON.stringify({ name: name, email: email })
     })
     .then(function(r) { return r.json() })
-    .then(function(lead) {
-      setLeads(function(prev) { return prev.concat([lead]) })
+    .then(function(res) {
+      setLeads(function(prev) { return prev.concat([res.data]) })
       setName(''); setEmail('')
     })
   }

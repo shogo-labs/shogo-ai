@@ -260,13 +260,13 @@ function setupSessionHandlers(): void {
     if (!isCloudMode) {
       headers['Content-Security-Policy'] = [
         [
-          "default-src 'self' shogo:",
-          `connect-src 'self' shogo: ${apiOrigin} http://localhost:* ws://localhost:*`,
+          "default-src 'self' shogo: https: http:",
+          `connect-src *`,
           `frame-src 'self' shogo: ${apiOrigin} http://localhost:*`,
           "script-src 'self' shogo: 'unsafe-inline' 'unsafe-eval'",
           "style-src 'self' shogo: 'unsafe-inline'",
-          "img-src 'self' shogo: data: blob: https:",
-          "font-src 'self' shogo: data:",
+          "img-src * data: blob:",
+          "font-src 'self' shogo: data: https:",
         ].join('; ')
       ]
     }

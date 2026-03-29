@@ -181,7 +181,6 @@ async function parseSSEStream(
               toolInputs[data.toolCallId] = ''
               toolNames[data.toolCallId] = data.toolName || 'unknown'
               toolStartTimes[data.toolCallId] = Date.now()
-              if (verbose) console.log(`      Tool started: ${data.toolName}`)
               break
             case 'tool-input-delta':
               if (data.toolCallId in toolInputs) {
@@ -190,6 +189,10 @@ async function parseSSEStream(
               break
             case 'tool-input-available': {
               const name = data.toolName || toolNames[data.toolCallId] || 'unknown'
+              if (verbose) {
+                const inputStr = JSON.stringify(data.input || {})
+                console.log(`      Tool call: ${name}(${inputStr.length > 200 ? inputStr.slice(0, 200) + '…' : inputStr})`)
+              }
               toolCalls.push({
                 name,
                 input: data.input || {},
@@ -207,6 +210,12 @@ async function parseSSEStream(
                   toolCalls[i].output = output
                   toolCalls[i].durationMs = startT ? Date.now() - startT : undefined
                   toolCalls[i].error = isError || false
+                  if (verbose) {
+                    const dur = toolCalls[i].durationMs ? ` (${toolCalls[i].durationMs}ms)` : ''
+                    const outputStr = JSON.stringify(output)
+                    const prefix = isError ? 'Tool error' : 'Tool response'
+                    console.log(`      ${prefix}: ${toolCalls[i].name}${dur} → ${outputStr.length > 200 ? outputStr.slice(0, 200) + '…' : outputStr}`)
+                  }
                   break
                 }
               }

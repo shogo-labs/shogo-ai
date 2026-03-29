@@ -367,6 +367,24 @@ export const api = {
     return res.data?.templates ?? []
   },
 
+  // ─── Eval Outputs ─────────────────────────────────────────
+
+  async getEvalOutputs(http: HttpClient) {
+    const res = await http.get<{ runs: EvalOutputRun[] }>('/api/eval-outputs')
+    return res.data?.runs ?? []
+  },
+
+  async importEvalAsProject(
+    http: HttpClient,
+    params: { evalOutputPath: string; workspaceId: string; userId: string; name?: string },
+  ) {
+    const res = await http.post<{ project: { id: string; name: string; description: string } }>(
+      '/api/eval-outputs/import',
+      params,
+    )
+    return res.data?.project ?? null
+  },
+
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
@@ -457,4 +475,22 @@ export interface AppTemplateSummary {
     backend?: string
     [key: string]: string | undefined
   }
+}
+
+export interface EvalOutputEntry {
+  id: string
+  name: string
+  description: string
+  icon: string
+  passed: boolean
+  score: { earned: number; max: number; percentage: number }
+  tags: string[]
+  path: string
+}
+
+export interface EvalOutputRun {
+  track: string
+  timestamp: string
+  dirName: string
+  entries: EvalOutputEntry[]
 }

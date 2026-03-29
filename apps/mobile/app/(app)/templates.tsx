@@ -9,6 +9,7 @@ import {
   Alert,
   Platform,
   ScrollView,
+  Modal,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -19,11 +20,11 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
+import { api, getOnboardingMessage, type AgentTemplateSummary, type EvalOutputRun, type EvalOutputEntry } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePostHogSafe } from '../../contexts/posthog'
-import { LayoutGrid } from 'lucide-react-native'
+import { LayoutGrid, Download, X } from 'lucide-react-native'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
@@ -74,6 +75,10 @@ export default observer(function TemplatesPage() {
   const [loading, setLoading] = useState(true)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [activeFilter, setActiveFilter] = useState('all')
+  const [importModalVisible, setImportModalVisible] = useState(false)
+  const [evalRuns, setEvalRuns] = useState<EvalOutputRun[]>([])
+  const [loadingEvals, setLoadingEvals] = useState(false)
+  const [importingPath, setImportingPath] = useState<string | null>(null)
 
   const currentWorkspace = useActiveWorkspace()
 
@@ -141,6 +146,56 @@ export default observer(function TemplatesPage() {
 
   // APP_MODE_DISABLED: handleAppTemplatePress removed
 
+  const openImportModal = useCallback(async () => {
+    setImportModalVisible(true)
+    setLoadingEvals(true)
+    try {
+      const runs = await api.getEvalOutputs(http)
+      setEvalRuns(runs)
+    } catch (err) {
+      console.error('[TemplatesPage] Failed to fetch eval outputs:', err)
+    } finally {
+      setLoadingEvals(false)
+    }
+  }, [http])
+
+  const handleImportEval = useCallback(
+    async (entry: EvalOutputEntry) => {
+      if (!user?.id || !currentWorkspace?.id) {
+        Alert.alert('Error', 'No user session or workspace available')
+        return
+      }
+      setImportingPath(entry.path)
+      try {
+        const project = await api.importEvalAsProject(http, {
+          evalOutputPath: entry.path,
+          workspaceId: currentWorkspace.id,
+          userId: user.id,
+          name: entry.name,
+        })
+        if (project?.id) {
+          projects.loadAll()
+          trackEvent(posthog, EVENTS.PROJECT_CREATED, {
+            source: 'eval-import',
+            eval_id: entry.id,
+            eval_name: entry.name,
+          })
+          setImportModalVisible(false)
+          router.push({
+            pathname: '/(app)/projects/[id]',
+            params: { id: project.id },
+          })
+        }
+      } catch (error) {
+        console.error('[TemplatesPage] Failed to import eval:', error)
+        Alert.alert('Error', 'Failed to import eval output as project')
+      } finally {
+        setImportingPath(null)
+      }
+    },
+    [user?.id, currentWorkspace?.id, http, projects, router, posthog]
+  )
+
   // Deduplicate agent templates (API may return duplicates, causing React key collisions)
   const uniqueAgentTemplates = useMemo(() => {
     const seen = new Set<string>()
@@ -187,6 +242,13 @@ export default observer(function TemplatesPage() {
           >
             Production-ready agents from the Shogo team
           </Text>
+          <Pressable
+            onPress={openImportModal}
+            className="mt-4 flex-row items-center gap-2 px-4 py-2 rounded-lg border border-border bg-card"
+          >
+            <Download size={16} className="text-foreground" />
+            <Text className="text-sm font-medium text-foreground">Import Template</Text>
+          </Pressable>
         </View>
 
         {/* Filter tabs */}
@@ -275,6 +337,78 @@ export default observer(function TemplatesPage() {
           )}
         </View>
       </ScrollView>
+
+      {/* Import from Eval Output modal */}
+      <Modal
+        visible={importModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setImportModalVisible(false)}
+      >
+        <View className="flex-1 bg-background">
+          <View className="flex-row items-center justify-between px-6 pt-6 pb-4 border-b border-border">
+            <Text className="text-lg font-bold text-foreground">Import from Eval Output</Text>
+            <Pressable onPress={() => setImportModalVisible(false)} className="p-2">
+              <X size={20} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          <ScrollView className="flex-1 px-6 pt-4" contentContainerStyle={{ paddingBottom: 40 }}>
+            {loadingEvals ? (
+              <View className="items-center py-16">
+                <ActivityIndicator size="large" className="text-muted-foreground" />
+              </View>
+            ) : evalRuns.length === 0 ? (
+              <View className="items-center py-16">
+                <Text className="text-muted-foreground text-sm text-center">
+                  No eval outputs found.{'\n'}Run evals with --save-workspaces to generate outputs.
+                </Text>
+              </View>
+            ) : (
+              evalRuns.map((run) => (
+                <View key={run.dirName} className="mb-6">
+                  <Text className="text-sm font-semibold text-foreground mb-1">{run.track}</Text>
+                  <Text className="text-xs text-muted-foreground mb-3">{run.timestamp}</Text>
+                  {run.entries.map((entry) => (
+                    <View
+                      key={entry.path}
+                      className="flex-row items-center justify-between p-3 mb-2 rounded-lg border border-border bg-card"
+                    >
+                      <View className="flex-1 mr-3">
+                        <View className="flex-row items-center gap-2 mb-1">
+                          <Text style={{ fontSize: 16 }}>{entry.icon}</Text>
+                          <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                            {entry.name}
+                          </Text>
+                        </View>
+                        <Text className="text-xs text-muted-foreground" numberOfLines={2}>
+                          {entry.description}
+                        </Text>
+                        <Text className="text-xs text-muted-foreground mt-1">
+                          Score: {entry.score.earned}/{entry.score.max} ({Math.round(entry.score.percentage)}%)
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => handleImportEval(entry)}
+                        disabled={importingPath !== null}
+                        className={cn(
+                          'px-3 py-1.5 rounded-md',
+                          importingPath === entry.path ? 'bg-muted' : 'bg-primary',
+                        )}
+                      >
+                        {importingPath === entry.path ? (
+                          <ActivityIndicator size="small" className="text-primary-foreground" />
+                        ) : (
+                          <Text className="text-xs font-medium text-primary-foreground">Import</Text>
+                        )}
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   )
 })

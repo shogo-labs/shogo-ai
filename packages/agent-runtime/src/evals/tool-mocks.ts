@@ -34,14 +34,6 @@ const DEFAULT_WEB_FETCH: ToolMockSpec = {
   },
 }
 
-const DEFAULT_EXEC: ToolMockSpec = {
-  type: 'static',
-  response: {
-    stdout: '',
-    stderr: '',
-    exitCode: 0,
-  },
-}
 
 const DEFAULT_SEND_MESSAGE: ToolMockSpec = {
   type: 'static',
@@ -2817,7 +2809,6 @@ export const LUXURY_BALI_TRIP_PLANNER_MOCKS: ToolMockMap = {
  */
 const BUILTIN_MOCKS: ToolMockMap = {
   web: DEFAULT_WEB_FETCH,
-  exec: DEFAULT_EXEC,
   send_message: DEFAULT_SEND_MESSAGE,
   browser: { type: 'static', response: { ok: true, snapshot: '<html>Mock browser snapshot</html>' } },
 }

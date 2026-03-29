@@ -8,6 +8,8 @@
  * identity, skills, heartbeat, channels, and memory setup.
  */
 
+const SKILL_PORT = process.env.SKILL_SERVER_PORT || '4100'
+
 export function buildAgentSystemPrompt(
   workspaceDir: string,
   agentStatusContext?: string
@@ -317,7 +319,7 @@ Use the **skill server** to store, query, and display large datasets:
 write_file({ path: ".shogo/server/schema.prisma", content: "datasource db {\\n  provider = \\"sqlite\\"\\n}\\ngenerator client {\\n  provider = \\"prisma-client\\"\\n  output   = \\"./generated/prisma\\"\\n}\\nmodel Issue {\\n  id        String @id @default(cuid())\\n  number    Int\\n  title     String\\n  state     String\\n  labels    String\\n  comments  Int    @default(0)\\n  createdAt DateTime @default(now())\\n}" })
 \`\`\`
 
-2. **The server starts automatically** — Full CRUD is available at \`http://localhost:4100/api/{model-name-plural}\`:
+2. **The server starts automatically** — Full CRUD is available at \`http://localhost:${SKILL_PORT}/api/{model-name-plural}\`:
    - \`GET /api/issues\` — list all
    - \`POST /api/issues\` — create (JSON body)
    - \`GET /api/issues/:id\` — get one
@@ -326,12 +328,12 @@ write_file({ path: ".shogo/server/schema.prisma", content: "datasource db {\\n  
 
 3. **Ingest the data** — Write a script to extract relevant fields and POST them:
 \`\`\`
-write_file({ path: "scripts/ingest.ts", content: "const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));\\nconst items = (data.data?.items || data.items || []);\\nfor (const item of items) {\\n  await fetch('http://localhost:4100/api/issues', {\\n    method: 'POST',\\n    headers: { 'Content-Type': 'application/json' },\\n    body: JSON.stringify({ number: item.number, title: item.title, state: item.state, labels: (item.labels||[]).map(l=>l.name).join(','), comments: item.comments||0 })\\n  });\\n}" })
+write_file({ path: "scripts/ingest.ts", content: "const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));\\nconst items = (data.data?.items || data.items || []);\\nfor (const item of items) {\\n  await fetch('http://localhost:${SKILL_PORT}/api/issues', {\\n    method: 'POST',\\n    headers: { 'Content-Type': 'application/json' },\\n    body: JSON.stringify({ number: item.number, title: item.title, state: item.state, labels: (item.labels||[]).map(l=>l.name).join(','), comments: item.comments||0 })\\n  });\\n}" })
 \`\`\`
 
 4. **Display with canvas code** — Write \`canvas/*.ts\` to fetch from the skill server and render:
 \`\`\`
-write_file({ path: "canvas/issues.ts", content: "var _d = useState([]); var items = _d[0], setItems = _d[1];\\nuseEffect(function() { fetch('http://localhost:4100/api/issues').then(r=>r.json()).then(setItems) }, []);\\nreturn h('div', {className:'p-2'}, items.map(function(i) { return h(Card, {key:i.id}, h(CardContent,{},i.title)) }))" })
+write_file({ path: "canvas/issues.ts", content: "var _d = useState([]); var items = _d[0], setItems = _d[1];\\nuseEffect(function() { fetch('http://localhost:${SKILL_PORT}/api/issues').then(r=>r.json()).then(function(res) { setItems(res.items) }) }, []);\\nreturn h('div', {className:'p-2'}, items.map(function(i) { return h(Card, {key:i.id}, h(CardContent,{},i.title)) }))" })
 \`\`\`
 
 ### Default Behavior — Always Use the Skill Server for Data
@@ -343,7 +345,7 @@ The skill server is the **default** persistence layer. Use it whenever you have 
 - User-provided data → POST to skill server → canvas fetches from API
 - Processed/computed results → POST to skill server → canvas fetches from API
 
-**NEVER hardcode data into canvas files.** Canvas code should always \`fetch()\` from \`http://localhost:4100/api/...\` endpoints.
+**NEVER hardcode data into canvas files.** Canvas code should always \`fetch()\` from \`http://localhost:${SKILL_PORT}/api/...\` endpoints.
 
 `
 
@@ -365,7 +367,7 @@ export const TOOL_USAGE = `## Tool Usage
 Write TypeScript React code to \`canvas/*.ts\` — each file is a tab rendered in the canvas panel. Always use \`.ts\` extensions. Use \`write_file\` to create, \`edit_file\` to update, \`delete_file\` to remove.
 
 **Skill Server (Backend)**
-Write a Prisma schema to \`.shogo/server/schema.prisma\` and the server starts automatically with CRUD at \`http://localhost:4100/api/{model-name-plural}\`. Canvas code fetches from it via \`fetch()\`.
+Write a Prisma schema to \`.shogo/server/schema.prisma\` and the server starts automatically with CRUD at \`http://localhost:${SKILL_PORT}/api/{model-name-plural}\`. Canvas code fetches from it via \`fetch()\`.
 
 **Memory**
 - **memory_read** — Read from MEMORY.md or daily logs
