@@ -85,6 +85,7 @@
     "react-native-web": "~0.21.0",
     "react-native-webview": "^13.16.0",
     "react-stately": "^3.39.0",
+    "shiki": "^4.0.2",
     "streamdown": "^2.3.0",
     "tailwind-merge": "^3.4.0",
     "tailwind-variants": "^0.1.20"
