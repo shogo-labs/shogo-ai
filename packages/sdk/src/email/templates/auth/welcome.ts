@@ -17,7 +17,7 @@ export const welcomeTemplate: EmailTemplate<{
       Thanks for signing up. You now have access to build, deploy, and
       collaborate on AI-powered apps — all from one place.
     </p>
-    <a href="{{loginUrl}}" class="email-btn">Get Started</a>
+    <a href="{{loginUrl}}" class="email-btn" style="color:#ffffff;text-decoration:none;">Get Started</a>
     <hr class="email-divider">
     <p class="email-muted">
       If you have any questions, just reply to this email — we're happy to help.

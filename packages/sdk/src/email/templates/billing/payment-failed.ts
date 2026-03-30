@@ -24,7 +24,7 @@ export const paymentFailedTemplate: EmailTemplate<{
       Please update your payment method to keep your plan active and avoid
       any interruption to your workspace.
     </p>
-    <a href="{{retryUrl}}" class="email-btn-danger">Update Payment Method</a>
+    <a href="{{retryUrl}}" class="email-btn-danger" style="color:#ffffff;text-decoration:none;">Update Payment Method</a>
     <hr class="email-divider">
     <p class="email-muted">
       If you believe this is a mistake, please reply to this email or

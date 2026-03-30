@@ -35,7 +35,7 @@ export const planUpgradedTemplate: EmailTemplate<{
       </tr>
     </table>
     <br>
-    <a href="{{dashboardUrl}}" class="email-btn">Go to Dashboard</a>
+    <a href="{{dashboardUrl}}" class="email-btn" style="color:#ffffff;text-decoration:none;">Go to Dashboard</a>
     <hr class="email-divider">
     <p class="email-muted">
       Manage your subscription anytime from Settings &rarr; Plans &amp; Credits.

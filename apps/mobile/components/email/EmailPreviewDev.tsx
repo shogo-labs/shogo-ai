@@ -6,16 +6,10 @@
  * Follows the same sidebar-picker pattern as DynamicAppDevPreview.
  */
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { View, Pressable, ScrollView, Platform } from 'react-native'
 import { Text } from '@/components/ui/text'
-import {
-  shogoTemplates,
-  interpolate,
-  EMAIL_CONSTANTS,
-  DARK_STYLE_OVERRIDES,
-  type EmailTemplate,
-} from '@shogo-ai/sdk/email'
+import type { EmailTemplate } from '@shogo-ai/sdk/email'
 
 const SAMPLE_DATA: Record<string, Record<string, unknown>> = {
   welcome: {
@@ -161,19 +155,50 @@ function formatTemplateName(name: string): string {
 }
 
 export function EmailPreviewDev() {
-  const [activeTemplate, setActiveTemplate] = useState<string>(shogoTemplates[0]?.name ?? 'welcome')
-  const [darkMode, setDarkMode] = useState(false)
-  const categories = useMemo(() => categorize(shogoTemplates as EmailTemplate[]), [])
+  const [sdkMod, setSdkMod] = useState<{
+    shogoTemplates: EmailTemplate[]
+    interpolate: (t: string, d: Record<string, unknown>) => string
+    DARK_STYLE_OVERRIDES: string
+  } | null>(null)
 
-  const selected = (shogoTemplates as EmailTemplate[]).find((t) => t.name === activeTemplate)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const mod = await import('@shogo-ai/sdk/email')
+      if (!cancelled) {
+        setSdkMod({
+          shogoTemplates: (mod.shogoTemplates ?? []) as EmailTemplate[],
+          interpolate: mod.interpolate,
+          DARK_STYLE_OVERRIDES: mod.DARK_STYLE_OVERRIDES,
+        })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const templates = sdkMod?.shogoTemplates ?? []
+  const [activeTemplate, setActiveTemplate] = useState<string>('welcome')
+  const [darkMode, setDarkMode] = useState(false)
+  const categories = useMemo(() => categorize(templates), [templates])
+
+  const selected = templates.find((t) => t.name === activeTemplate)
   const sampleData = SAMPLE_DATA[activeTemplate] ?? { appName: 'Shogo', currentYear: new Date().getFullYear() }
 
-  const renderedSubject = selected ? interpolate(selected.subject, { ...selected.defaults, ...sampleData }) : ''
-  let renderedHtml = selected ? interpolate(selected.html, { ...selected.defaults, ...sampleData }) : ''
+  const interp = sdkMod?.interpolate ?? ((t: string) => t)
+  const renderedSubject = selected ? interp(selected.subject, { ...selected.defaults, ...sampleData }) : ''
+  let renderedHtml = selected ? interp(selected.html, { ...selected.defaults, ...sampleData }) : ''
 
-  if (darkMode && renderedHtml) {
-    const forceDarkCSS = `<style>${DARK_STYLE_OVERRIDES}</style>`
+  if (darkMode && renderedHtml && sdkMod?.DARK_STYLE_OVERRIDES) {
+    const forceDarkCSS = `<style>${sdkMod.DARK_STYLE_OVERRIDES}</style>`
     renderedHtml = renderedHtml.replace('</head>', `${forceDarkCSS}</head>`)
+  }
+
+  if (!sdkMod) {
+    return (
+      <View className="flex-1 items-center justify-center bg-background">
+        <Text className="text-sm text-muted-foreground">Loading email templates…</Text>
+      </View>
+    )
   }
 
   return (
@@ -183,7 +208,7 @@ export function EmailPreviewDev() {
         <View className="px-4 py-3 border-b border-border">
           <Text className="text-base font-semibold text-foreground">Email Preview</Text>
           <Text className="text-xs text-muted-foreground mt-0.5">
-            {shogoTemplates.length} templates
+            {templates.length} templates
           </Text>
         </View>
         <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
