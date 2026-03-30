@@ -265,7 +265,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
 
   try {
     const stdout = execSync(dockerArgs.join(' '), {
-      timeout: opts.timeout || 30000,
+      timeout: opts.timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
       env: getSanitizedEnv(),
@@ -286,7 +286,7 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
   try {
     const stdout = execSync(command, {
       cwd,
-      timeout: timeout || 30000,
+      timeout: timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
       env: { ...getSanitizedEnv(), ...loadWorkspaceEnv(cwd) },

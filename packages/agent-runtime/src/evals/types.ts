@@ -29,6 +29,11 @@ export type EvalCategory =
   | 'canvas-v2'
   | 'edit-file'
   | 'channel-connect'
+  | 'gaia'
+  | 'webarena'
+  | 'tau2-bench'
+  | 'terminal-bench'
+  | 'feature-bench'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 

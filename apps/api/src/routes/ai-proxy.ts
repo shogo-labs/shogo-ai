@@ -151,6 +151,11 @@ const MODEL_REGISTRY: Record<string, ModelConfig> = {
     apiModel: 'gpt-5.4',
     displayName: 'GPT-5.4',
   },
+  'gpt-5.4-mini': {
+    provider: 'openai',
+    apiModel: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 Mini',
+  },
   'gpt-5-mini': {
     provider: 'openai',
     apiModel: 'gpt-5-mini',
@@ -310,7 +315,7 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: model, isLocal: true }
   }
   if (model === 'basic') {
-    return { resolvedModel: 'claude-haiku-4-5', isLocal: false }
+    return { resolvedModel: 'gpt-5.4-mini', isLocal: false }
   }
   if (model === 'advanced') {
     return { resolvedModel: 'claude-sonnet-4-6', isLocal: false }

@@ -25,6 +25,7 @@ import {
 } from './subagent'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
+import { CodeIndexEngine } from './code-index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
@@ -62,6 +63,8 @@ export interface ToolContext {
   disconnectChannel?: (type: string) => Promise<void>
   /** Lazily-initialized file index engine for RAG over workspace files */
   fileIndexEngine?: FileIndexEngine
+  /** Lazily-initialized code index engine for semantic search over workspace source code */
+  codeIndexEngine?: CodeIndexEngine
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
   /** Canvas v2 file watcher — notified when canvas/*.{ts,js} files are written/edited/deleted */
@@ -144,7 +147,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
     description:
-      'Run a shell command in the agent workspace. Commands are executed synchronously with a 30s timeout. Destructive commands are blocked. ' +
+      'Run a shell command in the agent workspace. Destructive commands are blocked. ' +
       'Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. ' +
       'Never use interactive flags (-i). Prefer read_file over cat/head/tail, and grep tool over exec("grep ..."). ' +
       'Pre-installed CLIs: gh (GitHub), glab (GitLab), aws, stripe, oci. ' +
@@ -152,10 +155,10 @@ function createExecTool(ctx: ToolContext): AgentTool {
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
-      timeout: Type.Optional(Type.Number({ description: 'Timeout in milliseconds (default: 30000)' })),
+      timeout: Type.Optional(Type.Number({ description: 'Timeout in milliseconds (default: 300000)' })),
     }),
     execute: async (toolCallId, params) => {
-      const { command, timeout = 30000 } = params as { command: string; timeout?: number }
+      const { command, timeout = 300_000 } = params as { command: string; timeout?: number }
 
       if (isBlockedCommand(command)) {
         return textResult({ error: `Blocked command: ${command}` })
@@ -194,22 +197,42 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
-      offset: Type.Optional(Type.Number({ description: 'Line number to start reading from (1-based)' })),
+      offset: Type.Optional(Type.Union([
+        Type.Number({ description: 'Line number to start reading from (1-based)' }),
+        Type.Array(Type.Number(), { description: 'Tuple [start, end] line range' }),
+      ])),
       limit: Type.Optional(Type.Number({ description: 'Number of lines to read' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { path: filePath, offset, limit } = params as {
-        path: string; offset?: number; limit?: number
+      let { path: filePath, offset, limit } = params as {
+        path: string; offset?: number | number[]; limit?: number
+      }
+      if (Array.isArray(offset)) {
+        const sorted = [...offset].sort((a, b) => a - b)
+        if (!limit) limit = sorted[sorted.length - 1] - sorted[0]
+        offset = sorted[0]
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
         return textResult({ error: `File not found: ${filePath}` })
       }
+      try {
+        const stat = statSync(resolved)
+        if (stat.isDirectory()) {
+          const entries = lsDir(resolved, ctx.workspaceDir, false, 0, 1)
+          return textResult({
+            note: `"${filePath}" is a directory, not a file. Listing its contents instead. Use ls for directories.`,
+            path: filePath,
+            entries,
+            count: entries.length,
+          })
+        }
+      } catch { /* proceed to read */ }
       const fullContent = readFileSync(resolved, 'utf-8')
 
       if (offset !== undefined || limit !== undefined) {
         const lines = fullContent.split('\n')
-        const startLine = Math.max(0, (offset ?? 1) - 1)
+        const startLine = Math.max(0, ((offset as number) ?? 1) - 1)
         const endLine = limit !== undefined ? startLine + limit : lines.length
         const sliced = lines.slice(startLine, endLine)
         const numberedLines = sliced.map((line, i) => `${startLine + i + 1}|${line}`)
@@ -283,12 +306,18 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
   const exactIdx = content.indexOf(needle)
   if (exactIdx !== -1) return { index: exactIdx, match: needle }
 
-  // 2. Try normalizing line endings (\r\n vs \n)
+  // 2. Try unescaping JSON-escaped quotes (model sometimes emits \\\" instead of ")
+  const unescaped = needle.replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\\/g, '\\')
+  if (unescaped !== needle) {
+    const unescIdx = content.indexOf(unescaped)
+    if (unescIdx !== -1) return { index: unescIdx, match: unescaped }
+  }
+
+  // 3. Try normalizing line endings (\r\n vs \n)
   const normalizedNeedle = needle.replace(/\r\n/g, '\n')
   const normalizedContent = content.replace(/\r\n/g, '\n')
   const normIdx = normalizedContent.indexOf(normalizedNeedle)
   if (normIdx !== -1) {
-    const actualSlice = content.substring(normIdx, normIdx + normalizedNeedle.length + 20)
     const lines = needle.split('\n')
     let rebuilt = ''
     let pos = normIdx
@@ -305,13 +334,27 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
     return { index: normIdx, match: normalizedNeedle }
   }
 
-  // 3. Try whitespace-flexible matching (collapse runs of whitespace)
+  // 4. Try stripping trailing whitespace per line
+  const stripTrailing = (s: string) => s.split('\n').map(l => l.trimEnd()).join('\n')
+  const strippedNeedle = stripTrailing(normalizedNeedle)
+  const strippedContent = stripTrailing(normalizedContent)
+  const stripIdx = strippedContent.indexOf(strippedNeedle)
+  if (stripIdx !== -1) {
+    const contentLines = content.split('\n')
+    const needleLineCount = needle.split('\n').length
+    const strippedLines = strippedContent.substring(0, stripIdx).split('\n')
+    const startLineIdx = strippedLines.length - 1
+    const startPos = content.split('\n').slice(0, startLineIdx).join('\n').length + (startLineIdx > 0 ? 1 : 0)
+    const matchStr = contentLines.slice(startLineIdx, startLineIdx + needleLineCount).join('\n')
+    return { index: startPos, match: matchStr }
+  }
+
+  // 5. Try whitespace-flexible matching (collapse runs of whitespace, trim lines)
   const collapseWS = (s: string) => s.replace(/[ \t]+/g, ' ').replace(/\r\n/g, '\n')
   const collapsedNeedle = collapseWS(needle)
   const collapsedContent = collapseWS(content)
   const wsIdx = collapsedContent.indexOf(collapsedNeedle)
   if (wsIdx !== -1) {
-    // Map back to original positions: find the needle lines in the original content
     const needleLines = needle.split('\n').map(l => l.trim())
     const contentLines = content.split('\n')
     for (let i = 0; i <= contentLines.length - needleLines.length; i++) {
@@ -503,10 +546,11 @@ function createGrepTool(ctx: ToolContext): AgentTool {
         ? assertWithinWorkspace(ctx.workspaceDir, searchPath)
         : ctx.workspaceDir
 
-      const args = ['rg', '--json', '-e', pattern, '--max-count', String(max_results)]
+      const sq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
+      const args = ['rg', '--json', '-e', sq(pattern), '--max-count', String(max_results)]
       if (context_lines > 0) args.push('-C', String(context_lines))
-      if (include) args.push('--glob', include)
-      args.push('--', targetPath)
+      if (include) args.push('--glob', sq(include))
+      args.push('--', sq(targetPath))
 
       const rgResult = sandboxExec({
         command: args.join(' '),
@@ -611,18 +655,29 @@ function createLsTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Cannot stat: ${err.message}` })
       }
 
-      const entries = lsDir(targetDir, ctx.workspaceDir, recursive, 0, 3)
-      return textResult({ path: dirPath || '/', entries, count: entries.length })
+      const MAX_ENTRIES = 200
+      const allEntries = lsDir(targetDir, ctx.workspaceDir, recursive, 0, 3)
+      const truncated = allEntries.length > MAX_ENTRIES
+      const entries = truncated ? allEntries.slice(0, MAX_ENTRIES) : allEntries
+      const result: Record<string, any> = { path: dirPath || '/', entries, count: entries.length }
+      if (truncated) {
+        result.truncated = true
+        result.totalEntries = allEntries.length
+        result.note = `Showing first ${MAX_ENTRIES} of ${allEntries.length} entries. Use a more specific path or glob to narrow results.`
+      }
+      return textResult(result)
     },
   }
 }
+
+const LS_SKIP_DIRS = new Set(['node_modules', '__pycache__', '.git', '.hg', '.svn', '.tox', '.nox', '.mypy_cache', '.pytest_cache', '.eggs', '*.egg-info'])
 
 function lsDir(dir: string, rootDir: string, recursive: boolean, depth: number, maxDepth: number): any[] {
   const results: any[] = []
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.') && depth === 0 && entry.name !== '.claude') continue
-      if (entry.name === 'node_modules') continue
+      if (LS_SKIP_DIRS.has(entry.name) || entry.name.endsWith('.egg-info')) continue
       const absPath = join(dir, entry.name)
       const relPath = absPath.slice(resolve(rootDir).length + 1)
       try {
@@ -822,13 +877,23 @@ function createNotifyUserErrorTool(): AgentTool {
 const BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const WEB_FETCH_TIMEOUT_MS = 30_000
 
-function stripHtmlToText(html: string): string {
+function cleanPlainText(text: string): string {
+  return text
+    .replace(/[\u200B-\u200F\u2028\u2029\uFEFF]/g, '')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/[^\S\n]*\n/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+}
+
+function stripHtmlRegex(html: string): string {
   let text = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<nav[\s\S]*?<\/nav>/gi, '')
     .replace(/<footer[\s\S]*?<\/footer>/gi, '')
     .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<aside[\s\S]*?<\/aside>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/?(p|div|h[1-6]|li|tr|blockquote)[^>]*>/gi, '\n')
@@ -839,10 +904,21 @@ function stripHtmlToText(html: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  return text
+  return cleanPlainText(text)
+}
+
+async function stripHtmlToText(html: string): Promise<string> {
+  try {
+    const { Readability } = await import('@mozilla/readability')
+    const { parseHTML } = await import('linkedom')
+    const { document } = parseHTML(html)
+    const reader = new Readability(document as any)
+    const article = reader.parse()
+    if (article?.textContent) {
+      return cleanPlainText(article.textContent)
+    }
+  } catch {}
+  return stripHtmlRegex(html)
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,6 +1090,55 @@ function detectGoogleUrl(url: string): GoogleUrlRoute | null {
 const MIN_USEFUL_CONTENT_LENGTH = 200
 
 // ---------------------------------------------------------------------------
+// Web response cache (Redis-backed, enabled by WEB_CACHE_REDIS_URL env var)
+// ---------------------------------------------------------------------------
+
+import Redis from 'ioredis'
+
+const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
+const WEB_CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
+
+let _webCacheRedis: Redis | null = null
+function getWebCacheRedis(): Redis | null {
+  if (!WEB_CACHE_REDIS_URL) return null
+  if (!_webCacheRedis) {
+    _webCacheRedis = new Redis(WEB_CACHE_REDIS_URL, {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 3000,
+      lazyConnect: true,
+    })
+    _webCacheRedis.connect().catch(() => {})
+  }
+  return _webCacheRedis
+}
+
+function webCacheKey(prefix: string, input: string): string | null {
+  if (!WEB_CACHE_REDIS_URL) return null
+  const hash = Bun.hash(input).toString(36)
+  return `web-cache:${prefix}:${hash}`
+}
+
+async function webCacheGet<T>(key: string | null): Promise<T | null> {
+  if (!key) return null
+  try {
+    const redis = getWebCacheRedis()
+    if (!redis) return null
+    const raw = await redis.get(key)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return null
+}
+
+async function webCachePut(key: string | null, value: unknown): Promise<void> {
+  if (!key) return
+  try {
+    const redis = getWebCacheRedis()
+    if (!redis) return
+    await redis.set(key, JSON.stringify(value), 'EX', WEB_CACHE_TTL)
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
 // Unified Web Tool (fetch + search + smart Google routing)
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1147,12 @@ async function serperSearch(
   searchType: string,
   opts: { num?: number; gl?: string; hl?: string } = {},
 ): Promise<AgentToolResult<any>> {
+  const { num = 10, gl = 'us', hl = 'en' } = opts
+
+  const cacheKey = webCacheKey('search', JSON.stringify({ query, searchType, num, gl, hl }))
+  const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
+  if (cached) return cached
+
   const directKey = process.env.SERPER_API_KEY
   const proxyUrl = process.env.TOOLS_PROXY_URL
   const proxyToken = process.env.AI_PROXY_TOKEN
@@ -1034,7 +1165,6 @@ async function serperSearch(
     })
   }
 
-  const { num = 10, gl = 'us', hl = 'en' } = opts
   const endpoint = directKey
     ? (SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search)
     : `${proxyUrl}/serper/${searchType || 'search'}`
@@ -1058,19 +1188,25 @@ async function serperSearch(
     const data = (await response.json()) as SerperResponse
     const formatted = formatSerperResults(data, searchType)
 
-    return textResult({
+    const result = textResult({
       results: formatted,
       raw: data,
       query,
       searchType,
       creditsUsed: data.credits,
     })
+    await webCachePut(cacheKey, result)
+    return result
   } catch (err: any) {
     return textResult({ error: `Web search failed: ${err.message}`, query })
   }
 }
 
 async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<any>> {
+  const cacheKey = webCacheKey('fetch', JSON.stringify({ url, maxChars }))
+  const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
+  if (cached) return cached
+
   const headers: Record<string, string> = {
     'User-Agent': BROWSER_USER_AGENT,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
@@ -1104,17 +1240,38 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
       }
 
       const contentType = response.headers.get('content-type') || ''
+
+      if (contentType.includes('application/pdf') || url.endsWith('.pdf')) {
+        try {
+          const { extractText, getDocumentProxy } = await import('unpdf')
+          const arrayBuf = await response.arrayBuffer()
+          const pdf = await getDocumentProxy(new Uint8Array(arrayBuf))
+          const { text: pdfText } = await extractText(pdf, { mergePages: true })
+          const cleaned = cleanPlainText(pdfText)
+          const truncated = cleaned.length > maxChars
+            ? cleaned.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
+            : cleaned
+          const result = textResult({ content: truncated, status: response.status, bytes: truncated.length, url, type: 'pdf' })
+          await webCachePut(cacheKey, result)
+          return result
+        } catch (pdfErr: any) {
+          return textResult({ error: `Failed to extract text from PDF: ${pdfErr.message}`, url })
+        }
+      }
+
       let text = await response.text()
 
       if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
-        text = stripHtmlToText(text)
+        text = await stripHtmlToText(text)
       }
 
       if (text.length > maxChars) {
         text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
       }
 
-      return textResult({ content: text, status: response.status, bytes: text.length, url })
+      const result = textResult({ content: text, status: response.status, bytes: text.length, url })
+      await webCachePut(cacheKey, result)
+      return result
     } catch (err: any) {
       if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
         await new Promise(r => setTimeout(r, 500))
@@ -1291,7 +1448,7 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
   return {
     name: 'browser',
     description:
-      'Control a headless browser. Actions: navigate (go to URL), click (CSS selector), fill (type into input), extract (get elements by selector), text (full page text), screenshot (capture page), evaluate (run JS), select (dropdown option), scroll (scroll page), wait_for (wait for element), close.',
+      'Control a headless browser. Actions: navigate (go to URL), click (CSS selector), fill (type into input), extract (get elements by selector), text (full page text), screenshot (capture visible page as image — you will SEE the image), evaluate (run JS), select (dropdown option), scroll (scroll page), wait_for (wait for element), close. To visually analyze an image file, navigate to its file:// URL then screenshot — the image will be returned to you directly for visual inspection.',
     label: 'Browser',
     parameters: Type.Object({
       action: Type.Union([
@@ -1357,16 +1514,24 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ elements: elements.slice(0, 50), count: elements.length, url: p.url() })
           }
           case 'text': {
-            const text = await p.evaluate(() => document.body.innerText)
-            const truncated = typeof text === 'string' && text.length > 50000
-              ? text.substring(0, 50000) + '\n[Truncated]'
-              : text
+            const rawText = await p.evaluate(() => document.body.innerText)
+            const cleaned = typeof rawText === 'string' ? cleanPlainText(rawText) : rawText
+            const truncated = typeof cleaned === 'string' && cleaned.length > 50000
+              ? cleaned.substring(0, 50000) + '\n[Truncated]'
+              : cleaned
             return textResult({ content: truncated, url: p.url(), title: await p.title() })
           }
           case 'screenshot': {
             const screenshotPath = join(ctx.workspaceDir, 'screenshot.png')
-            await p.screenshot({ path: screenshotPath, fullPage: false })
-            return textResult({ ok: true, path: 'screenshot.png', url: p.url() })
+            const buffer = await p.screenshot({ path: screenshotPath, fullPage: false })
+            const base64 = Buffer.from(buffer).toString('base64')
+            return {
+              content: [
+                { type: 'image' as const, data: base64, mimeType: 'image/png' },
+                { type: 'text' as const, text: JSON.stringify({ ok: true, path: 'screenshot.png', url: p.url() }) },
+              ],
+              details: { ok: true, path: 'screenshot.png', url: p.url() },
+            }
           }
           case 'evaluate': {
             if (!value) return textResult({ error: 'value (JS code) is required for evaluate' })
@@ -3676,7 +3841,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file', 'edit_file', 'read_lints'],
-  search: ['glob', 'grep'],
+  search: ['glob', 'grep', 'file_search'],
   planning: ['todo_write'],
   web: ['web'],
   web_fetch: ['web'],
@@ -3694,11 +3859,12 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
+  audio: ['transcribe_audio'],
 }
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search_files',
+  'list_files', 'delete_file', 'search_files', 'file_search',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
@@ -3706,6 +3872,7 @@ export const ALL_TOOL_NAMES = [
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
+  'transcribe_audio',
 ] as const
 
 /**
@@ -3845,6 +4012,54 @@ function createSearchFilesTool(ctx: ToolContext): AgentTool {
       }
       const engine = getOrCreateFileIndex(ctx)
       const results = await engine.search(query, limit, path_filter)
+      return textResult({
+        query,
+        results: results.map(r => ({
+          path: r.path,
+          chunk: r.chunk,
+          score: Math.round(r.score * 1000) / 1000,
+          lines: `${r.lineStart}-${r.lineEnd}`,
+          matchType: r.matchType,
+        })),
+        count: results.length,
+        stats: engine.getStats(),
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Code Search Tool (workspace-wide semantic search)
+// ---------------------------------------------------------------------------
+
+function getOrCreateCodeIndex(ctx: ToolContext): CodeIndexEngine {
+  if (!ctx.codeIndexEngine) {
+    ctx.codeIndexEngine = new CodeIndexEngine(ctx.workspaceDir)
+  }
+  return ctx.codeIndexEngine
+}
+
+function createCodeSearchTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'file_search',
+    description:
+      'Semantic search across all files in the workspace. Finds code by meaning, not just exact text. ' +
+      'Use for questions like "where is X implemented?", "find tests for Y", "what module handles Z?". ' +
+      'Returns ranked code chunks with file paths and line numbers. ' +
+      'Prefer this over grep when exploring unfamiliar code or searching by concept rather than exact string.',
+    label: 'File Search',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Natural language search query' }),
+      limit: Type.Optional(Type.Number({ description: 'Max results (default: 10)' })),
+      path_filter: Type.Optional(Type.String({ description: 'Restrict to files matching this substring (e.g. "test", "src/rules")' })),
+      file_extensions: Type.Optional(Type.Array(Type.String(), { description: 'Restrict to these extensions (e.g. [".py", ".ts"])' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { query, limit = 10, path_filter, file_extensions } = params as {
+        query: string; limit?: number; path_filter?: string; file_extensions?: string[]
+      }
+      const engine = getOrCreateCodeIndex(ctx)
+      const results = await engine.search(query, limit, path_filter, file_extensions)
       return textResult({
         query,
         results: results.map(r => ({
@@ -4119,6 +4334,86 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         message: `${type} channel configured. Restart the agent to connect.`,
         setup_guide: channelGuide?.guide,
       })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio Transcription Tool (OpenAI Whisper)
+// ---------------------------------------------------------------------------
+
+function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'transcribe_audio',
+    description:
+      'Transcribe an audio file to text using OpenAI Whisper. ' +
+      'Supports mp3, mp4, mpeg, mpga, m4a, wav, and webm formats. ' +
+      'Provide a path to an audio file in the workspace.',
+    label: 'Transcribe Audio',
+    parameters: Type.Object({
+      path: Type.String({ description: 'Path to the audio file in the workspace (e.g. "recording.mp3")' }),
+      language: Type.Optional(Type.String({ description: 'ISO-639-1 language code (e.g. "en", "es", "fr"). Auto-detected if omitted.' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path: filePath, language } = params as { path: string; language?: string }
+
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      if (!existsSync(resolved)) {
+        return textResult({ error: `Audio file not found: ${filePath}` })
+      }
+
+      const proxyUrl = ctx.aiProxyUrl || process.env.AI_PROXY_URL
+      const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
+      const directKey = process.env.OPENAI_API_KEY
+
+      const apiBase = proxyUrl ? proxyUrl.replace(/\/v1$/, '') : 'https://api.openai.com'
+      const apiKey = proxyToken || directKey
+      if (!apiKey) {
+        return textResult({ error: 'Audio transcription not available: no OpenAI API key configured.' })
+      }
+
+      try {
+        const audioBuffer = readFileSync(resolved)
+        const ext = extname(resolved).toLowerCase()
+        const mimeMap: Record<string, string> = {
+          '.mp3': 'audio/mpeg', '.mp4': 'audio/mp4', '.mpeg': 'audio/mpeg',
+          '.mpga': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav',
+          '.webm': 'audio/webm', '.ogg': 'audio/ogg',
+        }
+        const mimeType = mimeMap[ext] || 'audio/mpeg'
+
+        const formData = new FormData()
+        formData.append('file', new Blob([audioBuffer], { type: mimeType }), `audio${ext || '.mp3'}`)
+        formData.append('model', 'whisper-1')
+        formData.append('response_format', 'verbose_json')
+        if (language) formData.append('language', language)
+
+        const response = await fetch(`${apiBase}/v1/audio/transcriptions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${apiKey}` },
+          body: formData,
+          signal: AbortSignal.timeout(120_000),
+        })
+
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '')
+          return textResult({ error: `Whisper API error (${response.status}): ${errBody.slice(0, 500)}` })
+        }
+
+        const result = await response.json() as {
+          text: string; language?: string; duration?: number;
+          segments?: Array<{ start: number; end: number; text: string }>
+        }
+
+        return textResult({
+          text: result.text,
+          language: result.language,
+          duration_seconds: result.duration,
+          segments: result.segments?.map(s => ({ start: s.start, end: s.end, text: s.text })),
+        })
+      } catch (err: any) {
+        return textResult({ error: `Audio transcription failed: ${err.message}` })
+      }
     },
   }
 }
@@ -4564,6 +4859,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createListFilesTool(ctx), 'file_read'),
     g(createDeleteFileTool(ctx), 'file_delete'),
     g(createSearchFilesTool(ctx), 'file_read'),
+    g(createCodeSearchTool(ctx), 'file_read'),
     g(createWebTool(), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
@@ -4598,6 +4894,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createMcpInstallTool(ctx),
     createMcpUninstallTool(ctx),
     g(createGenerateImageTool(ctx), 'network'),
+    g(createTranscribeAudioTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
     // createCreatePlanTool(ctx), // disabled: plan mode tool removed from agent

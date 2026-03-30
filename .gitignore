@@ -169,3 +169,12 @@ load-tests/venv/
 *.p12
 *.pfx
 shogo.db
+
+# SWE-bench data and repo caches
+.swe-bench/
+
+# External benchmark data and caches
+.gaia/
+.webarena/
+.terminal-bench/
+.feature-bench/

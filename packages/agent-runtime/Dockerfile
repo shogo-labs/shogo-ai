@@ -19,7 +19,7 @@ ARG BASE_IMAGE=shogo-runtime-base:latest
 # =============================================================================
 # Canvas-runtime produces platform-independent HTML/CSS/JS, so we build it
 # without QEMU to avoid the massive slowdown of running Vite under emulation.
-FROM --platform=$BUILDPLATFORM oven/bun:1.3-alpine AS canvas-build
+FROM --platform=$BUILDPLATFORM oven/bun:1.3-debian AS canvas-build
 
 WORKDIR /app
 
@@ -55,7 +55,7 @@ RUN bun run --cwd packages/sdk build && \
 # =============================================================================
 # Stage 1: builder — install all deps, copy source
 # =============================================================================
-FROM oven/bun:1.3-alpine AS builder
+FROM oven/bun:1.3-debian AS builder
 
 WORKDIR /app
 
@@ -89,16 +89,16 @@ COPY packages/agent-runtime ./packages/agent-runtime
 COPY templates/runtime-template ./templates/runtime-template
 
 # Fetch external Claude Code skills from skill-registry.json
-RUN apk add --no-cache git && \
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
     bun run scripts/fetch-external-skills.ts && \
-    apk del git
+    apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 RUN rm -rf packages/*/node_modules apps/*/node_modules
 
 # =============================================================================
 # Stage 2: deps — full node_modules with workspace links
 # =============================================================================
-FROM oven/bun:1.3-alpine AS deps
+FROM oven/bun:1.3-debian AS deps
 
 WORKDIR /app
 

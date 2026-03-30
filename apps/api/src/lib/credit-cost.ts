@@ -10,18 +10,20 @@
  * dollar cost using separate input/output token pricing per model tier.
  *
  * Model costs (per 1M tokens):
- * - Haiku:  $0.80 input / $4.00 output
- * - Sonnet: $3.00 input / $15.00 output
- * - Opus:   $15.00 input / $75.00 output
+ * - Haiku:       $0.80 input / $4.00 output
+ * - GPT-5.4-Mini: $1.10 input / $4.40 output
+ * - Sonnet:      $3.00 input / $15.00 output
+ * - Opus:        $15.00 input / $75.00 output
  */
 
 export const CREDIT_DOLLAR_VALUE = 0.10
 export const MIN_CREDIT_COST = 0.2
 
 export const MODEL_DOLLAR_COSTS = {
-  haiku:  { inputPerMillion: 0.80, outputPerMillion: 4.00 },
-  sonnet: { inputPerMillion: 3.00, outputPerMillion: 15.00 },
-  opus:   { inputPerMillion: 15.00, outputPerMillion: 75.00 },
+  haiku:          { inputPerMillion: 0.80, outputPerMillion: 4.00 },
+  'gpt-5.4-mini': { inputPerMillion: 1.10, outputPerMillion: 4.40 },
+  sonnet:         { inputPerMillion: 3.00, outputPerMillion: 15.00 },
+  opus:           { inputPerMillion: 15.00, outputPerMillion: 75.00 },
 } as const
 
 export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
@@ -50,6 +52,7 @@ const MODEL_TIER_MAP: Record<string, ModelTier> = {
   'claude-haiku': 'economy',
   'claude-3-haiku-20240307': 'economy',
   'gpt-5.4': 'premium',
+  'gpt-5.4-mini': 'economy',
   'o3': 'premium',
   'o1': 'premium',
   'gpt-5-mini': 'standard',
@@ -79,7 +82,7 @@ export function getModelTier(model: string): ModelTier {
  * Map agent mode to model name for credit calculation.
  */
 export function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return 'haiku'
+  if (agentMode === 'basic') return 'gpt-5.4-mini'
   return 'sonnet'
 }
 
@@ -88,6 +91,7 @@ export function agentModeToModel(agentMode?: AgentMode): ModelName {
  */
 export function proxyModelToBillingModel(proxyModel: string): ModelName {
   const lower = proxyModel.toLowerCase()
+  if (lower === 'gpt-5.4-mini') return 'gpt-5.4-mini'
   if (lower.includes('opus') || lower === 'gpt-5.4' || lower === 'o3') return 'opus'
   if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'haiku'
   return 'sonnet'

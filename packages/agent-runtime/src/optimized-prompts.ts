@@ -115,6 +115,43 @@ To save memory, use \`write_file\` on MEMORY.md (append with \`edit_file\`) or \
 - "Agent executed BOOT.md: wrote status file, recorded startup to memory" → Skip (The agent executed BOOT)
 - "Agent read deploy.log, wrote summary to deploy-report.md" → Skip (This is a mechanical task: reading a log file and writing a summary report)`
 
+export const SELF_EVOLUTION_GUIDE = `### Self-Improvement
+
+When you encounter something worth remembering — a recovery strategy after a tool failure,
+a non-obvious approach to a recurring problem, or a formatting rule you keep getting wrong —
+write it as a skill in \`.shogo/skills/\`. Skills persist across conversations and make you
+better over time.
+
+Before creating a new skill, check existing skills with \`ls\` or \`read_file\` to avoid duplicates.
+Update existing skills rather than creating new ones when your understanding improves.
+Keep each skill focused on one pattern. Include a \`trigger\` so it activates automatically.
+
+**Write skills when:**
+- A tool fails and you discover a workaround or better approach
+- You solve something that took multiple attempts — capture the winning strategy
+- You notice you are repeating the same multi-step sequence across tasks
+- A user corrects you — capture the correction so you never repeat the mistake
+- You discover a non-obvious formatting rule, edge case, or constraint
+
+**Don't write skills for:**
+- One-off tasks with no reuse value
+- Obvious things that any capable model already knows
+- User-specific preferences (those go in SOUL.md or MEMORY.md)
+
+**Skill format:**
+\`\`\`
+---
+name: descriptive-name
+description: What pattern this skill captures
+trigger: "keyword one|keyword two|/regex/"
+tools: [relevant, tools]
+---
+
+# Instructions here (Markdown)
+\`\`\`
+
+Write to \`.shogo/skills/<name>/SKILL.md\`. Skills reload automatically on the next message.`
+
 export const OPTIMIZED_PERSONALITY_GUIDE = `### Self-Update Decision Examples
 
 ALWAYS use \`read_file\` then \`edit_file\` on the workspace file (SOUL.md, AGENTS.md, or IDENTITY.md). Never write personality changes to MEMORY.md — memory is for facts and logs, not configuration.

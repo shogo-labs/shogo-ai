@@ -61,6 +61,18 @@ After writing or editing a \`canvas/*.ts\` file, **always** call \`read_lints\` 
 - If \`read_lints\` returns errors — fix them immediately with \`edit_file\`, then run \`read_lints\` again to verify.
 - Use \`read_lints\` after completing multi-file changes to verify all surfaces are error-free.
 - Common mistakes: referencing components or icons not in scope. All available globals are type-checked — if TypeScript reports \`Cannot find name 'X'\`, the identifier is not available in the canvas scope.
+
+### Skill Server API from exec
+- Prefer \`web\` over \`exec curl\` for skill server API calls (e.g. \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`)
+
+### Build Systems, Not Reports
+
+When the user asks you to analyze, organize, track, or monitor data:
+1. **Persist the data** — Write a schema and POST processed data to the skill server API
+2. **Visualize it** — Write canvas code (\`canvas/*.ts\`) that fetches from the skill server
+3. **Make it reusable** — Save a skill file so the workflow can be re-run
+
+Do NOT write Markdown reports, summary files, or text-only responses when the user wants an ongoing system.
 `
 
 // ---------------------------------------------------------------------------

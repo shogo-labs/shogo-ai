@@ -1,0 +1,54 @@
+# WebArena self-hosted environments for benchmark evaluation.
+#
+# Start:   docker compose -f packages/agent-runtime/src/evals/webarena/docker-compose.yml up -d
+# Stop:    docker compose -f packages/agent-runtime/src/evals/webarena/docker-compose.yml down
+# Reset:   docker compose -f packages/agent-runtime/src/evals/webarena/docker-compose.yml down -v && docker compose up -d
+#
+# Memory requirements: ~16GB total across all services.
+# For lighter runs, comment out services you don't need.
+#
+# Official images from: https://github.com/web-arena-x/webarena
+
+services:
+  shopping:
+    image: ghcr.io/web-arena-x/webarena-shopping:latest
+    ports:
+      - "7770:80"
+    restart: unless-stopped
+
+  shopping-admin:
+    image: ghcr.io/web-arena-x/webarena-shopping-admin:latest
+    ports:
+      - "7780:80"
+    restart: unless-stopped
+
+  cms:
+    image: ghcr.io/web-arena-x/webarena-cms:latest
+    ports:
+      - "7790:80"
+    restart: unless-stopped
+
+  reddit:
+    image: ghcr.io/web-arena-x/webarena-reddit:latest
+    ports:
+      - "7800:80"
+    restart: unless-stopped
+
+  gitlab:
+    image: ghcr.io/web-arena-x/webarena-gitlab:latest
+    ports:
+      - "7810:8023"
+    shm_size: 256m
+    restart: unless-stopped
+
+  map:
+    image: ghcr.io/web-arena-x/webarena-map:latest
+    ports:
+      - "7820:3000"
+    restart: unless-stopped
+
+  wikipedia:
+    image: ghcr.io/web-arena-x/webarena-wikipedia:latest
+    ports:
+      - "7830:80"
+    restart: unless-stopped

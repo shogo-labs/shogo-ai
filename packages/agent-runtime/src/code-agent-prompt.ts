@@ -112,7 +112,7 @@ const CODE_AGENT_CODING_GUIDE = `## Mandatory Coding Workflow
 
 Follow this sequence for EVERY code change:
 
-1. **Explore first** — Use \`ls\`, \`glob\`, \`grep\` to understand the project structure and existing patterns before touching anything.
+1. **Explore first** — Use \`ls\`, \`glob\`, \`grep\`, and \`file_search\` to understand the project structure and existing patterns before touching anything.
 2. **Read before edit** — You MUST use \`read_file\` or \`grep\` on a file before editing it. Never edit blind.
 3. **Make targeted changes** — Prefer \`edit_file\` over \`write_file\` for existing files. Only use \`write_file\` for brand-new files.
 4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .build.log' })\`
@@ -248,15 +248,45 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 - Quote file paths containing spaces with double quotes
 - Use \`&&\` to chain dependent commands, \`;\` for independent ones
 - Never run interactive commands (no \`-i\` flags, no \`git rebase -i\`)
-- Commands have a 30-second timeout — long-running commands will be killed
 - Prefer \`read_file\` over \`exec({ command: 'cat ...' })\`
 - Prefer \`grep\` over \`exec({ command: 'grep ...' })\`
-- Prefer \`web\` over \`exec curl\` for skill server API calls (e.g. \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`)
 - For external APIs and developer CLIs (\`gh api\`, \`aws\`, \`curl\` to third-party URLs), \`exec\` is fine
+
+### Explore First
+
+- Before editing any code, understand the project structure. Use \`ls\`, \`glob\`, \`grep\`, and \`file_search\` to find relevant files.
+- Identify the test framework and test locations early — look for \`pytest.ini\`, \`setup.py\`, \`tox.ini\`, \`Makefile\`, or a \`tests/\` directory.
+- Read the files involved in the bug or feature before making changes.
+
+### file_search — Semantic Code Search
+
+\`file_search\` finds code by **meaning**, not just exact text. The workspace is automatically indexed on startup.
+
+**When to use file_search:**
+- Exploring an unfamiliar codebase ("where is authentication handled?", "find the database connection logic")
+- Searching by concept rather than exact string ("error handling for API requests", "input validation")
+- Finding implementations, tests, or related code when you don't know the exact function/class names
+- Understanding how a feature works across multiple files
+
+**When NOT to use file_search (use grep instead):**
+- You know the exact symbol name (class, function, variable) — use \`grep\` for exact text matches
+- You need to find a specific string literal or error message — use \`grep\`
+- You want to count occurrences or find all references of a known identifier — use \`grep\`
+
+**Examples:**
+\`\`\`
+file_search({ query: "where are database migrations handled?" })
+file_search({ query: "how does the authentication middleware work?" })
+file_search({ query: "test cases for the parser", path_filter: "test" })
+file_search({ query: "error handling", file_extensions: [".py"] })
+\`\`\`
+
+**Strategy:** Start broad, then narrow. If results point to a specific directory, use \`path_filter\` to focus. Follow up with \`read_file\` to see full context of promising results.
 
 ### Debugging and Bug Fixing
 
 - Follow the traceback — error messages, class names, and function names mentioned in the error are your search terms. Use \`grep\` to locate them in the codebase.
+- Read the failing test or test file to understand expected behavior — tests often describe the correct behavior more precisely than the issue description.
 - Read the specific function where the error occurs. Understand what it does and why it fails before editing anything.
 - Form a hypothesis about the root cause before editing. Validate it by reading the relevant code and understanding the data flow. Only edit once you understand why the bug occurs.
 - Prefer the simplest correct fix. If adding one exception type to a catch clause works, do that. If a method is missing, add just that method. Don't restructure or rewrite.
@@ -280,15 +310,6 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 
 - Prefer the smallest correct change. A one-line fix is better than a ten-line rewrite when both are correct.
 - Only modify what is necessary. Do not refactor, improve, or clean up unrelated code in the same change.
-
-### Build Systems, Not Reports
-
-When the user asks you to analyze, organize, track, or monitor data:
-1. **Persist the data** — Write a schema and POST processed data to the skill server API
-2. **Visualize it** — Write canvas code (\`canvas/*.ts\`) that fetches from the skill server
-3. **Make it reusable** — Save a skill file so the workflow can be re-run
-
-Do NOT write Markdown reports, summary files, or text-only responses when the user wants an ongoing system.
 
 ### Task Management
 
@@ -374,7 +395,7 @@ These files are auto-generated by \`bunx shogo generate\`:
 
 Follow this sequence for EVERY code change:
 
-1. **Explore first** — Use \`ls\`, \`glob\`, \`grep\` to understand the project structure before touching anything.
+1. **Explore first** — Use \`ls\`, \`glob\`, \`grep\`, and \`file_search\` to understand the project structure before touching anything.
 2. **Read before edit** — You MUST use \`read_file\` or \`grep\` on a file before editing it.
 3. **Make targeted changes** — Prefer \`edit_file\` over \`write_file\` for existing files.
 4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .build.log' })\`

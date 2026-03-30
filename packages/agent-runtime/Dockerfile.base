@@ -1,51 +1,65 @@
 # syntax=docker/dockerfile:1.4
 # =============================================================================
-# Base Runtime Image
+# Base Runtime Image (Debian slim)
 # =============================================================================
-# Slow-changing layer: system packages, Claude Code CLI, and MCP server
-# packages. Rebuilt only when these change.
+# Slow-changing layer: system packages, CLI tools, and MCP server packages.
+# Rebuilt only when these change.
 #
-# Build: DOCKER_BUILDKIT=1 docker build -t runtime-base -f packages/agent-runtime/Dockerfile.base .
-# Architecture: linux/arm64 (A4 Flex nodes)
+# Build: DOCKER_BUILDKIT=1 docker build -t shogo-runtime-base -f packages/agent-runtime/Dockerfile.base .
 # =============================================================================
 
-# APP_MODE_DISABLED: Stage 1 (template-deps) removed — app template building
-# and archiving no longer needed. See APP_MODE_DISABLED.md for restoration.
-
-# =============================================================================
-# Base — system packages, CLI tools, MCP servers
-# =============================================================================
-FROM oven/bun:1.3-alpine
+FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/repositories && \
-    apk add --no-cache \
-    curl bash git tar gzip \
-    'nodejs>22' npm \
-    chromium nss freetype harfbuzz ca-certificates ttf-freefont \
-    aws-cli ripgrep
-
-# CLI tools: gh (GitHub), glab (GitLab), stripe
-RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories && \
-    apk add --no-cache github-cli glab python3 py3-pip && \
+# System packages + Node 24 + Bun 1.3
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl bash git tar gzip ca-certificates gnupg unzip \
+    chromium nss-plugin-pem fonts-freefont-ttf \
+    ffmpeg imagemagick ripgrep \
+    build-essential && \
+    # Node 24 via nodesource
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    # Bun 1.3
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.11" && \
+    # AWS CLI v2 (dpkg returns arm64, AWS expects aarch64)
+    ARCH="$(uname -m)" && \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o /tmp/awscli.zip && \
+    unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/aws /tmp/awscli.zip && \
+    # GitHub CLI
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && apt-get install -y --no-install-recommends gh && \
+    # Stripe CLI
     STRIPE_VER=$(curl -fsSL https://api.github.com/repos/stripe/stripe-cli/releases/latest \
       | grep '"tag_name"' | head -1 | cut -d'"' -f4) && \
-    STRIPE_ARCH="$(uname -m | sed 's/aarch64/arm64/')" && \
+    STRIPE_ARCH="$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/x86_64/')" && \
     curl -fsSL "https://github.com/stripe/stripe-cli/releases/download/${STRIPE_VER}/stripe_${STRIPE_VER#v}_linux_${STRIPE_ARCH}.tar.gz" \
-      | tar -xz -C /usr/local/bin stripe
+      | tar -xz -C /usr/local/bin stripe && \
+    # Cleanup
+    apt-get purge -y gnupg unzip && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 RUN npm install -g @anthropic-ai/claude-code typescript-language-server typescript pyright
 
+# Pre-install common Python packages (system python, no venv needed on Debian slim)
+# Using manylinux wheels = instant installs, no compilation
+RUN pip install --no-cache-dir \
+      openpyxl Pillow python-pptx pydub pandas numpy scipy PyPDF2
+
 ENV SHELL=/bin/bash
 
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
+RUN groupadd -g 1001 appgroup && \
+    useradd -u 1001 -g appgroup -m -s /bin/bash appuser
 
-# Pre-install popular MCP server packages (all cloud-compatible catalog entries)
+# Pre-install popular MCP server packages
 RUN mkdir -p /app/mcp-packages && \
     cd /app/mcp-packages && \
     npm init -y --silent 2>/dev/null && \
@@ -69,7 +83,8 @@ RUN mkdir -p /app/mcp-packages && \
       @sentry/mcp-server@latest \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
 
-# APP_MODE_DISABLED: template archive COPY removed
-
 RUN mkdir -p /app/workspace /app/workspace/project /app/.schemas /app/.claude && \
-    chown -R appuser:appgroup /app /usr/local/lib/node_modules
+    chown -R appuser:appgroup /app && \
+    chown -R appuser:appgroup /usr/local/lib/python3.12 && \
+    (chown -R appuser:appgroup /usr/local/lib/node_modules 2>/dev/null || true) && \
+    (chown -R appuser:appgroup /usr/lib/node_modules 2>/dev/null || true)
