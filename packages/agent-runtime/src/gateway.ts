@@ -76,13 +76,15 @@ function hasErrorInResult(result: unknown): boolean {
 }
 
 /**
- * Infer the LLM provider from a model ID string when a session override
- * changes the model away from the default config. Agent-mode aliases
- * ('basic', 'advanced') keep the config provider since the AI proxy
- * handles resolution for those.
+ * Infer the LLM provider from a model ID string. Agent-mode aliases
+ * ('basic', 'advanced') are resolved to the correct provider so
+ * pi-agent-core uses the right transport (Anthropic vs OpenAI API).
+ * The proxy handles the actual model name resolution — the runtime
+ * just picks the right provider endpoint.
  */
 function inferProviderFromModel(modelId: string, configProvider: string): string {
-  if (modelId === 'basic' || modelId === 'advanced') return configProvider
+  if (modelId === 'basic') return 'openai'
+  if (modelId === 'advanced') return 'anthropic'
   if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3') || modelId.startsWith('o4')) return 'openai'
   if (modelId.startsWith('claude')) return 'anthropic'
   if (modelId.startsWith('gemini')) return 'google'
