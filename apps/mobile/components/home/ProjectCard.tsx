@@ -182,33 +182,62 @@ export function ProjectCard({
       </View>
 
       {/* Info */}
-      <View className={compact ? 'px-3 py-2.5' : 'px-4 py-3.5'}>
-        <View className="flex-row items-center gap-2.5">
-          {renderLeading?.()}
-          <View className="flex-1 min-w-0">
-            <Text
-              className={cn(
-                'font-semibold text-card-foreground',
-                compact ? 'text-[13px]' : 'text-[15px]',
-              )}
-              numberOfLines={1}
-            >
-              {name || 'Untitled'}
-            </Text>
-            {subtitle ? (
+      <View className={compact ? 'px-3 py-3' : 'px-4 py-3.5'}>
+        {compact && (renderLeading || renderTrailing) ? (
+          <View className="gap-2">
+            <View className="flex-row items-start gap-2">
+              <View className="flex-1 min-w-0">
+                <Text
+                  className="font-semibold text-[14px] leading-[18px] text-card-foreground"
+                  numberOfLines={2}
+                >
+                  {name || 'Untitled'}
+                </Text>
+              </View>
+              {renderTrailing?.()}
+            </View>
+            <View className="flex-row items-center gap-2 min-w-0">
+              {renderLeading?.()}
+              <View className="flex-1 min-w-0">
+                {subtitle ? (
+                  <Text
+                    className="text-[11px] leading-[16px] text-muted-foreground"
+                    numberOfLines={2}
+                  >
+                    {subtitle}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        ) : (
+          <View className="flex-row items-center gap-2.5">
+            {renderLeading?.()}
+            <View className="flex-1 min-w-0">
               <Text
                 className={cn(
-                  'mt-0.5 leading-[18px] text-muted-foreground',
-                  compact ? 'text-[11px]' : 'text-[13px]',
+                  'font-semibold text-card-foreground',
+                  compact ? 'text-[14px] leading-[18px]' : 'text-[15px]',
                 )}
-                numberOfLines={compact ? 1 : 2}
+                numberOfLines={compact ? 2 : 1}
               >
-                {subtitle}
+                {name || 'Untitled'}
               </Text>
-            ) : null}
+              {subtitle ? (
+                <Text
+                  className={cn(
+                    'mt-0.5 leading-[18px] text-muted-foreground',
+                    compact ? 'text-[11px]' : 'text-[13px]',
+                  )}
+                  numberOfLines={compact ? 2 : 2}
+                >
+                  {subtitle}
+                </Text>
+              ) : null}
+            </View>
+            {renderTrailing?.()}
           </View>
-          {renderTrailing?.()}
-        </View>
+        )}
       </View>
     </Pressable>
   )
