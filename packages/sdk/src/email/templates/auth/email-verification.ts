@@ -17,7 +17,7 @@ export const emailVerificationTemplate: EmailTemplate<{
       Please confirm your email address by clicking the button below.
       This helps us keep your account secure.
     </p>
-    <a href="{{verifyUrl}}" class="email-btn">Verify Email</a>
+    <a href="{{verifyUrl}}" class="email-btn" style="color:#ffffff;text-decoration:none;">Verify Email</a>
     <hr class="email-divider">
     <p class="email-muted">This link expires in {{expiresIn}}.</p>
     <p class="email-muted">
