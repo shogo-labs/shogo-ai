@@ -83,6 +83,7 @@ export function ProjectCard({
 }: ProjectCardProps) {
   const color = getProjectAccentColor(name)
   const initial = name?.charAt(0)?.toUpperCase() || 'P'
+  const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
 
   const subtitle = description || (updatedAt
     ? `Edited ${formatDistanceAgo(updatedAt)}`
@@ -94,17 +95,27 @@ export function ProjectCard({
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
+      android_ripple={
+        Platform.OS === 'android'
+          ? { color: 'rgba(255,255,255,0.08)', foreground: true }
+          : undefined
+      }
       className={cn(
         'rounded-2xl overflow-hidden border border-border bg-card',
         isSelected && 'border-2 border-primary',
         className,
       )}
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s, transform 0.2s',
-      } as any : {}}
+      style={(state) => [
+        Platform.OS === 'web'
+          ? ({
+              boxShadow: isDark
+                ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
+                : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+              transition: 'box-shadow 0.2s, transform 0.2s',
+            } as any)
+          : null,
+        isNativeMobile && state.pressed ? { opacity: 0.93 } : null,
+      ]}
     >
       {/* Header */}
       <View
@@ -158,15 +169,19 @@ export function ProjectCard({
         {onStarToggle && (
           <Pressable
             onPress={onStarToggle}
+            hitSlop={isNativeMobile ? { top: 10, bottom: 10, left: 10, right: 10 } : undefined}
             className={cn(
-              'absolute top-2 right-2 p-1.5 rounded-md',
+              'absolute top-1.5 right-1.5 rounded-lg items-center justify-center',
               isStarred ? 'bg-yellow-500/20' : 'bg-background/60',
+              isNativeMobile ? 'p-2 min-w-[40px] min-h-[40px]' : 'p-1.5',
             )}
           >
             <Star
-              size={14}
-              style={{ color: isStarred ? '#eab308' : undefined }}
-              className={isStarred ? undefined : 'text-muted-foreground/50'}
+              size={isNativeMobile ? 16 : 14}
+              style={{
+                color: isStarred ? '#eab308' : isNativeMobile ? '#94a3b8' : undefined,
+              }}
+              className={isStarred || isNativeMobile ? undefined : 'text-muted-foreground/50'}
               fill={isStarred ? '#eab308' : 'transparent'}
             />
           </Pressable>

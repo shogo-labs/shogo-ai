@@ -845,11 +845,21 @@ export default observer(function AllProjectsPage() {
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
+                    hitSlop={
+                      Platform.OS === 'ios' || Platform.OS === 'android'
+                        ? { top: 6, bottom: 6, left: 6, right: 6 }
+                        : undefined
+                    }
                     onPress={(e) => {
                       e.stopPropagation()
                       setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
                     }}
-                    className="w-6 h-6 items-center justify-center"
+                    className={cn(
+                      'items-center justify-center rounded-lg active:bg-muted/80',
+                      Platform.OS === 'ios' || Platform.OS === 'android'
+                        ? 'w-11 h-11'
+                        : 'w-6 h-6',
+                    )}
                   >
                     <MoreHorizontal size={16} className="text-muted-foreground" />
                   </Pressable>
