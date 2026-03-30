@@ -14,6 +14,7 @@ import {
   Pressable,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native'
 import {
   Cpu,
@@ -178,6 +179,15 @@ export function getModelDisplayName(model: string): string {
 // Components
 // =============================================================================
 
+// On native, conditionally toggling NativeWind's `shadow-*` classes triggers a
+// CSS-interop race condition that crashes with "Couldn't find a navigation context".
+// Use an inline style for the shadow on native to avoid the issue.
+const periodActiveNativeShadow = Platform.select({
+  ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 1 },
+  android: { elevation: 1 },
+  default: undefined,
+})
+
 export function PeriodSelector({
   value,
   onChange,
@@ -187,25 +197,29 @@ export function PeriodSelector({
 }) {
   return (
     <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-      {(Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]).map((period) => (
-        <Pressable
-          key={period}
-          onPress={() => onChange(period)}
-          className={cn(
-            'px-3 py-1.5 rounded-md',
-            value === period ? 'bg-background shadow-sm' : ''
-          )}
-        >
-          <Text
+      {(Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]).map((period) => {
+        const isActive = value === period
+        return (
+          <Pressable
+            key={period}
+            onPress={() => onChange(period)}
             className={cn(
-              'text-xs font-medium',
-              value === period ? 'text-foreground' : 'text-muted-foreground'
+              'px-3 py-1.5 rounded-md',
+              isActive ? 'bg-background' : ''
             )}
+            style={isActive ? periodActiveNativeShadow : undefined}
           >
-            {PERIOD_LABELS[period]}
-          </Text>
-        </Pressable>
-      ))}
+            <Text
+              className={cn(
+                'text-xs font-medium',
+                isActive ? 'text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              {PERIOD_LABELS[period]}
+            </Text>
+          </Pressable>
+        )
+      })}
     </View>
   )
 }
