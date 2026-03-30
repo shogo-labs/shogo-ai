@@ -183,7 +183,7 @@ Use these **exact names** in the \`tools\` field:
 | \`channel_connect\` | Connect a messaging channel |
 | \`cron\` | Manage scheduled jobs |
 
-**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep, \`planning\` → todo_write, \`memory\` → memory_read + memory_search, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
+**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep + file_search, \`planning\` → todo_write, \`memory\` → memory_read + memory_search, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
 
 ### Skills with Scripts
 
@@ -359,7 +359,8 @@ export const TOOL_USAGE = `## Tool Usage
 - **edit_file** — Make targeted search-and-replace edits to a file. Prefer over write_file for modifying existing files.
 - **delete_file** — Delete a file
 - **glob** — Find files matching a glob pattern (e.g. \`**/*.ts\`)
-- **grep** — Search for regex patterns in file contents across the workspace
+- **grep** — Search for regex patterns in file contents across the workspace (use for exact text/symbol matches)
+- **file_search** — Semantic search across all workspace files. Finds code by meaning, not just exact text. Use for exploring unfamiliar code, searching by concept ("where is auth handled?", "find database migration logic"), or when you don't know the exact symbol name. Prefer \`grep\` for exact strings; prefer \`file_search\` for conceptual queries.
 - **ls** — List files and directories at any workspace path
 - **exec** — Run shell commands
 

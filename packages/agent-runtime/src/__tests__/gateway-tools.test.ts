@@ -122,6 +122,166 @@ describe('gateway-tools', () => {
     })
   })
 
+  describe('edit_file', () => {
+    test('exact match replacement', async () => {
+      writeFileSync(join(TEST_DIR, 'code.py'), 'def hello():\n    return "world"\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'code.py',
+        old_string: 'return "world"',
+        new_string: 'return "universe"',
+      })
+      expect(result.ok).toBe(true)
+      expect(result.replacements).toBe(1)
+      expect(readFileSync(join(TEST_DIR, 'code.py'), 'utf-8')).toContain('return "universe"')
+    })
+
+    test('replace_all replaces multiple occurrences', async () => {
+      writeFileSync(join(TEST_DIR, 'multi.py'), 'foo = 1\nbar = foo\nbaz = foo\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'multi.py',
+        old_string: 'foo',
+        new_string: 'qux',
+        replace_all: true,
+      })
+      expect(result.ok).toBe(true)
+      expect(result.replacements).toBe(3)
+      const content = readFileSync(join(TEST_DIR, 'multi.py'), 'utf-8')
+      expect(content).not.toContain('foo')
+      expect(content.split('qux').length - 1).toBe(3)
+    })
+
+    test('errors when old_string not unique and replace_all not set', async () => {
+      writeFileSync(join(TEST_DIR, 'dup.py'), 'x = 1\nx = 2\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'dup.py',
+        old_string: 'x = ',
+        new_string: 'y = ',
+      })
+      expect(result.error).toContain('found 2 times')
+    })
+
+    test('errors when old_string equals new_string', async () => {
+      writeFileSync(join(TEST_DIR, 'same.py'), 'hello\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'same.py',
+        old_string: 'hello',
+        new_string: 'hello',
+      })
+      expect(result.error).toContain('must differ')
+    })
+
+    test('errors for missing file', async () => {
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'nonexistent.py',
+        old_string: 'a',
+        new_string: 'b',
+      })
+      expect(result.error).toContain('not found')
+    })
+
+    test('fuzzy match: handles escaped quotes (\\\" → ")', async () => {
+      writeFileSync(join(TEST_DIR, 'quotes.py'), 'msg = "hello world"\nprint(msg)\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'quotes.py',
+        old_string: 'msg = \\"hello world\\"',
+        new_string: 'msg = "goodbye world"',
+      })
+      expect(result.ok).toBe(true)
+      expect(readFileSync(join(TEST_DIR, 'quotes.py'), 'utf-8')).toContain('msg = "goodbye world"')
+    })
+
+    test('fuzzy match: handles triple escaped quotes (doc strings)', async () => {
+      writeFileSync(join(TEST_DIR, 'docstr.py'), '"""Defines the Foo class.\n\nThis does stuff.\n"""\nimport os\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'docstr.py',
+        old_string: '\\"\\"\\"Defines the Foo class.\n\nThis does stuff.\n\\"\\"\\"',
+        new_string: '"""Defines the Bar class.\n\nThis does other stuff.\n"""',
+      })
+      expect(result.ok).toBe(true)
+      expect(readFileSync(join(TEST_DIR, 'docstr.py'), 'utf-8')).toContain('Defines the Bar class')
+    })
+
+    test('fuzzy match: trailing whitespace differences', async () => {
+      writeFileSync(join(TEST_DIR, 'ws.py'), 'def foo():  \n    pass\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'ws.py',
+        old_string: 'def foo():\n    pass',
+        new_string: 'def bar():\n    pass',
+      })
+      expect(result.ok).toBe(true)
+      expect(readFileSync(join(TEST_DIR, 'ws.py'), 'utf-8')).toContain('def bar()')
+    })
+
+    test('fuzzy match: tab vs space indentation', async () => {
+      writeFileSync(join(TEST_DIR, 'indent.py'), '\tif x:\n\t\treturn True\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'indent.py',
+        old_string: '    if x:\n        return True',
+        new_string: '    if y:\n        return False',
+      })
+      expect(result.ok).toBe(true)
+      expect(readFileSync(join(TEST_DIR, 'indent.py'), 'utf-8')).toContain('return False')
+    })
+
+    test('fuzzy match: CRLF vs LF line endings', async () => {
+      writeFileSync(join(TEST_DIR, 'crlf.py'), 'line1\r\nline2\r\nline3\r\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'crlf.py',
+        old_string: 'line1\nline2',
+        new_string: 'lineA\nlineB',
+      })
+      expect(result.ok).toBe(true)
+      const content = readFileSync(join(TEST_DIR, 'crlf.py'), 'utf-8')
+      expect(content).toContain('lineA')
+      expect(content).toContain('lineB')
+    })
+
+    test('returns hint when no match found', async () => {
+      writeFileSync(join(TEST_DIR, 'hint.py'), 'def hello():\n    return 42\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'hint.py',
+        old_string: 'def goodbye():\n    return 99',
+        new_string: 'def goodbye():\n    return 100',
+      })
+      expect(result.error).toContain('old_string not found')
+    })
+
+    test('multiline exact replacement', async () => {
+      writeFileSync(join(TEST_DIR, 'multi.txt'), 'aaa\nbbb\nccc\nddd\n')
+      const result = await exec(createCtx(), 'edit_file', {
+        path: 'multi.txt',
+        old_string: 'bbb\nccc',
+        new_string: 'BBB\nCCC',
+      })
+      expect(result.ok).toBe(true)
+      expect(readFileSync(join(TEST_DIR, 'multi.txt'), 'utf-8')).toBe('aaa\nBBB\nCCC\nddd\n')
+    })
+  })
+
+  describe('read_file on directory', () => {
+    test('returns directory listing instead of EISDIR error', async () => {
+      mkdirSync(join(TEST_DIR, 'mydir'), { recursive: true })
+      writeFileSync(join(TEST_DIR, 'mydir', 'a.txt'), 'content')
+      writeFileSync(join(TEST_DIR, 'mydir', 'b.txt'), 'content')
+      const result = await exec(createCtx(), 'read_file', { path: 'mydir' })
+      expect(result.note).toContain('directory')
+      expect(result.entries).toBeDefined()
+      expect(result.count).toBe(2)
+    })
+  })
+
+  describe('ls truncation', () => {
+    test('truncates results when exceeding max entries', async () => {
+      for (let i = 0; i < 250; i++) {
+        writeFileSync(join(TEST_DIR, `file_${String(i).padStart(3, '0')}.txt`), `content ${i}`)
+      }
+      const result = await exec(createCtx(), 'ls', { path: '.', recursive: false })
+      expect(result.count).toBe(200)
+      expect(result.truncated).toBe(true)
+      expect(result.totalEntries).toBe(250)
+    })
+  })
+
   describe('memory_read', () => {
     test('reads MEMORY.md', async () => {
       writeFileSync(join(TEST_DIR, 'MEMORY.md'), '# Memory\nSome facts')

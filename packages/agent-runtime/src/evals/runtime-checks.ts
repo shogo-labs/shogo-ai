@@ -111,12 +111,14 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<{ o
 export interface RuntimeCheckOptions {
   workspaceDir: string
   skillServerPort: number
+  canvasExpectedPort?: number
   evalId: string
   verbose?: boolean
 }
 
 export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<RuntimeCheckResults | null> {
-  const { workspaceDir, skillServerPort, evalId, verbose } = opts
+  const { workspaceDir, skillServerPort, canvasExpectedPort, evalId, verbose } = opts
+  const canvasPort = canvasExpectedPort ?? skillServerPort
   const schemaPath = join(workspaceDir, '.shogo/server/schema.prisma')
 
   if (!existsSync(schemaPath)) {
@@ -177,9 +179,9 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
         const content = readFileSync(filePath, 'utf-8')
         for (const match of content.matchAll(portPattern)) {
           const usedPort = parseInt(match[1], 10)
-          if (usedPort !== skillServerPort && usedPort >= 4100 && usedPort <= 4200) {
+          if (usedPort !== canvasPort && usedPort >= 4100 && usedPort <= 4200) {
             canvasPortCorrect = false
-            errors.push(`Canvas ${filePath} references port ${usedPort}, but skill server is on ${skillServerPort}`)
+            errors.push(`Canvas ${filePath} references port ${usedPort}, but skill server is on ${canvasPort}`)
           }
         }
       } catch {}

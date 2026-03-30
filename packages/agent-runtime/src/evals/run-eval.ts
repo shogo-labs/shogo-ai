@@ -4,42 +4,48 @@
 /**
  * Agent Runtime Eval Runner
  *
- * Spins up real agent-runtime server(s) and runs evals against them.
- * Spins up real servers and runs evals against agent-runtime.
+ * Spins up real agent-runtime instances and runs evals against them.
+ * By default uses Docker containers; pass --local to spawn local bun processes
+ * instead (faster iteration, no image rebuild needed).
  *
  * Usage:
  *   bun run src/evals/run-eval.ts --track canvas --model haiku
+ *   bun run src/evals/run-eval.ts --track canvas --model haiku --local
  *   bun run src/evals/run-eval.ts --track all --model sonnet --workers 2
  *   bun run src/evals/run-eval.ts --track canvas --filter weather
  *   bun run src/evals/run-eval.ts --track skill-server-advanced --save-workspaces
+ *   bun run src/evals/run-eval.ts --track canvas --model haiku --build
  */
 
-import { spawn, type Subprocess } from 'bun'
-import { execSync } from 'child_process'
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, realpathSync, appendFileSync, readdirSync, cpSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'fs'
 import { resolve, join, dirname } from 'path'
 import { tmpdir } from 'os'
 
-// Load .env.local from repo root so workers inherit API keys
-const REPO_ROOT_EARLY = resolve(import.meta.dir, '../../../..')
-for (const envFile of ['.env.local', '.env']) {
-  const envPath = resolve(REPO_ROOT_EARLY, envFile)
-  if (existsSync(envPath)) {
-    for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx < 0) continue
-      const key = trimmed.slice(0, eqIdx)
-      const val = trimmed.slice(eqIdx + 1)
-      if (!process.env[key]) process.env[key] = val
-    }
-    break
-  }
-}
+import {
+  type DockerWorker,
+  type DockerWorkerConfig,
+  evalWorkerConfig,
+  loadEnvFromDisk,
+  getArg,
+  MODEL_MAP,
+  PRICING,
+  REPO_ROOT,
+  DEFAULT_RUNTIME_IMAGE,
+  writeDockerEnvFile,
+  cleanupDockerEnvFile,
+  ensureDockerImage,
+  startDockerWorker,
+  stopDockerWorker,
+  isWorkerHealthy,
+  configureWorkerForTask,
+  registerCleanupHandlers,
+} from './docker-worker'
+import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
+
+loadEnvFromDisk(REPO_ROOT)
+
 import { runEval } from './runner'
 import { resetWorkspaceDefaults, seedLSPConfig } from '../workspace-defaults'
-import { encodeSecurityPolicy } from '../permission-engine'
 import { CANVAS_EVALS } from './test-cases-canvas'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
@@ -78,37 +84,20 @@ import { runRuntimeChecks } from './runtime-checks'
 
 const args = process.argv.slice(2)
 
-function getArg(name: string, defaultValue?: string): string | undefined {
-  const eqArg = args.find(a => a.startsWith(`--${name}=`))
-  if (eqArg) return eqArg.split('=')[1]
-  const idx = args.indexOf(`--${name}`)
-  if (idx !== -1 && args[idx + 1] && !args[idx + 1].startsWith('--')) return args[idx + 1]
-  return defaultValue
-}
-
-const trackArg = getArg('track', 'all')!
-const modelArg = getArg('model', 'haiku')!
-const workersArg = parseInt(getArg('workers', '1')!)
-const filterArg = getArg('filter')
-const tagsArg = getArg('tags')
+const trackArg = getArg(args, 'track', 'all')!
+const modelArg = getArg(args, 'model', 'haiku')!
+const workersArg = parseInt(getArg(args, 'workers', '1')!)
+const filterArg = getArg(args, 'filter')
+const tagsArg = getArg(args, 'tags')
+const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'general' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
-
-const MODEL_MAP: Record<string, string> = {
-  haiku: 'claude-haiku-4-5',
-  sonnet: 'claude-sonnet-4-5',
-}
-
+const buildFlag = args.includes('--build')
+const localFlag = args.includes('--local')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
+
 const BASE_PORT = 6400
 const SKILL_SERVER_BASE_PORT = 4100
-const REPO_ROOT = resolve(import.meta.dir, '../../../..')
-const AGENT_RUNTIME_SERVER = resolve(REPO_ROOT, 'packages/agent-runtime/src/server.ts')
-
-// Pricing per token (USD) — cache reads are 90% cheaper, cache writes 25% more
-const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  haiku: { input: 0.0000008, output: 0.000004, cacheRead: 0.00000008, cacheWrite: 0.000001 },
-  sonnet: { input: 0.000003, output: 0.000015, cacheRead: 0.0000003, cacheWrite: 0.00000375 },
-}
+const CONTAINER_SKILL_PORT = 4100
 
 function getEvals(track: string): AgentEval[] {
   switch (track) {
@@ -145,103 +134,6 @@ function getEvals(track: string): AgentEval[] {
       console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, all`)
       process.exit(1)
   }
-}
-
-// ---------------------------------------------------------------------------
-// Worker management
-// ---------------------------------------------------------------------------
-
-interface Worker {
-  id: number
-  port: number
-  dir: string
-  process: Subprocess | null
-  busy: boolean
-}
-
-async function startWorker(id: number): Promise<Worker> {
-  const port = BASE_PORT + id
-  const dir = resolve(tmpdir(), `agent-eval-worker-${id}`)
-
-  console.log(`  Starting worker ${id} on port ${port}...`)
-
-  const skillServerPort = SKILL_SERVER_BASE_PORT + id
-
-  // Kill any stale process on agent and skill server ports BEFORE cleaning the directory
-  try {
-    if (process.platform === 'win32') {
-      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${port},${skillServerPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
-    } else {
-      execSync(`lsof -ti:${port} -ti:${skillServerPort} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
-    }
-  } catch {}
-  await Bun.sleep(500)
-
-  // Now safe to clean the directory (stale processes killed)
-  try {
-    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  } catch (e: any) {
-    console.warn(`  [Worker ${id}] Initial cleanup warning: ${e.message}`)
-  }
-  resetWorkspaceDefaults(dir)
-
-  const proc = spawn({
-    cmd: ['bun', 'run', AGENT_RUNTIME_SERVER],
-    env: {
-      ...process.env,
-      PORT: String(port),
-      SKILL_SERVER_PORT: String(skillServerPort),
-      WORKSPACE_DIR: dir,
-      AGENT_DIR: dir,
-      PROJECT_DIR: dir,
-      PROJECT_ID: `eval-worker-${id}`,
-      AGENT_MODEL: modelArg,
-      SECURITY_POLICY: encodeSecurityPolicy({ mode: 'full_autonomy' }),
-    },
-    stdout: 'inherit',
-    stderr: 'inherit',
-  })
-
-  if (proc.exitCode !== null) {
-    throw new Error(`Worker ${id} exited immediately with code ${proc.exitCode}`)
-  }
-
-  const maxWait = 45_000
-  const start = Date.now()
-  let delay = 500
-
-  while (Date.now() - start < maxWait) {
-    try {
-      const ctl = new AbortController()
-      const t = setTimeout(() => ctl.abort(), 3_000)
-      const res = await fetch(`http://localhost:${port}/health`, { signal: ctl.signal })
-      clearTimeout(t)
-      if (res.ok) {
-        console.log(`  Worker ${id} ready on port ${port} (${Date.now() - start}ms)`)
-        return { id, port, dir, process: proc, busy: false }
-      }
-    } catch {
-      if (proc.exitCode !== null) throw new Error(`Worker ${id} died with code ${proc.exitCode}`)
-    }
-    await Bun.sleep(delay)
-    delay = Math.min(delay * 1.2, 2_000)
-  }
-
-  proc.kill()
-  throw new Error(`Worker ${id} failed to start within ${maxWait}ms`)
-}
-
-function stopWorker(w: Worker) {
-  w.process?.kill()
-  const skillPort = SKILL_SERVER_BASE_PORT + w.id
-  try {
-    if (process.platform === 'win32') {
-      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${w.port},${skillPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
-    } else {
-      execSync(`lsof -ti:${w.port} -ti:${skillPort} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
-    }
-  } catch {}
-  if (existsSync(w.dir)) rmSync(w.dir, { recursive: true, force: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -330,17 +222,12 @@ function archiveWorkspaceAsTemplate(
 // ---------------------------------------------------------------------------
 
 async function runEvalOnWorker(
-  worker: Worker,
+  worker: DockerWorker,
   ev: AgentEval,
   index: number,
   total: number,
   runTimestamp: string,
 ): Promise<EvalResult> {
-  // Check worker process health before starting
-  if (worker.process?.exitCode !== null) {
-    throw new Error(`Worker ${worker.id} process died with code ${worker.process?.exitCode} before eval started`)
-  }
-
   // Force GC between evals to prevent memory pressure crashes in Bun
   try { Bun.gc(true) } catch {}
 
@@ -348,7 +235,6 @@ async function runEvalOnWorker(
 
   // Clean workspace between evals — delete eval-generated content but skip
   // locked files (SQLite DB, etc.) that the worker process holds open.
-  // On Windows, rmSync on the whole dir fails with EBUSY.
   if (existsSync(worker.dir)) {
     const safeDirs = ['canvas', 'files', '.shogo/server']
     for (const sub of safeDirs) {
@@ -377,63 +263,17 @@ async function runEvalOnWorker(
     }
   }
 
-  // Override the model via the channels/connect endpoint which updates config
-  // and hot-reloads the gateway (PATCH /agent/config only patches top-level fields).
-  const resolvedModel = MODEL_MAP[modelArg] || modelArg
-  const defaultModel = 'claude-sonnet-4-6'
-  if (resolvedModel !== defaultModel) {
-    try {
-      await fetch(`http://localhost:${worker.port}/agent/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider: 'anthropic', name: resolvedModel } }),
-      })
-      if (verboseFlag) console.log(`      [setup] Model set to ${resolvedModel}`)
-    } catch (e: any) {
-      console.warn(`      [setup] Model override failed: ${e.message}`)
-    }
-  } else {
-    if (verboseFlag) console.log(`      [setup] Using default model: ${defaultModel}`)
-  }
-
-  if (verboseFlag) console.log(`      [setup] Resetting session...`)
-
   const evalLabel = `E${index + 1}:${ev.name.replace(/^[^:]*:\s*/, '').toLowerCase().replace(/\s+/g, '-').substring(0, 30)}`
-  try {
-    await fetch(`http://localhost:${worker.port}/agent/session/reset`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ evalLabel }),
-    })
-  } catch (e: any) {
-    console.warn(`      [setup] Session reset failed: ${e.message}`)
-  }
-
   const initialMode = ev.initialMode || (ev.category === 'canvas' ? 'canvas' : 'none')
-  if (verboseFlag) console.log(`      [setup] Setting mode to ${initialMode}...`)
 
-  try {
-    await fetch(`http://localhost:${worker.port}/agent/mode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: initialMode }),
-    })
-  } catch (e: any) {
-    console.warn(`      [setup] Mode set failed: ${e.message}`)
-  }
-
-  if (verboseFlag) console.log(`      [setup] Installing tool mocks...`)
-
-  try {
-    const mockPayload = buildMockPayload(ev.toolMocks)
-    await fetch(`http://localhost:${worker.port}/agent/tool-mocks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mocks: mockPayload }),
-    })
-  } catch (e: any) {
-    console.warn(`      [setup] Mock install failed: ${e.message}`)
-  }
+  await configureWorkerForTask(worker, {
+    model: modelArg,
+    mode: initialMode,
+    promptProfile: promptProfileArg,
+    evalLabel,
+    mocks: buildMockPayload(ev.toolMocks),
+    verbose: verboseFlag,
+  })
 
   if (verboseFlag) console.log(`      [setup] Sending eval prompt...`)
 
@@ -456,10 +296,12 @@ async function runEvalOnWorker(
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
 
     if (result.score > 0) {
-      const skillServerPort = SKILL_SERVER_BASE_PORT + worker.id
+      const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
+      const canvasExpected = localFlag ? hostSkillPort : CONTAINER_SKILL_PORT
       const runtimeResults = await runRuntimeChecks({
         workspaceDir: worker.dir,
-        skillServerPort,
+        skillServerPort: hostSkillPort,
+        canvasExpectedPort: canvasExpected,
         evalId: ev.id,
         verbose: verboseFlag,
       })
@@ -467,7 +309,6 @@ async function runEvalOnWorker(
         result.runtimeChecks = runtimeResults
         result.runtimeWarnings = result.runtimeWarnings || []
 
-        // --- Runtime scoring: add bonus criteria to the score ---
         const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] = [
           {
             id: 'runtime-server-healthy',
@@ -564,25 +405,10 @@ async function runEvalOnWorker(
 // Cleanup
 // ---------------------------------------------------------------------------
 
-let globalWorkers: Worker[] = []
+let globalWorkers: DockerWorker[] = []
+const stopWorker = localFlag ? stopLocalWorker : stopDockerWorker
 
-function cleanup() {
-  console.log('\nCleaning up workers...')
-  globalWorkers.forEach(stopWorker)
-  globalWorkers = []
-}
-
-function crashLog(label: string, err: any) {
-  const msg = `[${new Date().toISOString()}] ${label}: ${err?.stack || err?.message || err}\n`
-  console.error(msg)
-  try { appendFileSync(join(tmpdir(), 'agent-eval-crash.log'), msg) } catch {}
-}
-
-process.on('SIGINT', () => { crashLog('SIGINT', 'interrupted'); cleanup(); process.exit(130) })
-process.on('SIGTERM', () => { crashLog('SIGTERM', 'terminated'); cleanup(); process.exit(143) })
-process.on('uncaughtException', (err) => { crashLog('UNCAUGHT EXCEPTION', err); cleanup(); process.exit(1) })
-process.on('unhandledRejection', (reason) => { crashLog('UNHANDLED REJECTION', reason); cleanup(); process.exit(1) })
-process.on('exit', (code) => { if (code !== 0 && code !== 130 && code !== 143) crashLog('EXIT', `code=${code}`) })
+registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorker })
 
 // ---------------------------------------------------------------------------
 // Main
@@ -591,11 +417,12 @@ process.on('exit', (code) => { if (code !== 0 && code !== 130 && code !== 143) c
 async function main() {
   console.log('')
   console.log('='.repeat(60))
-  console.log('AGENT RUNTIME EVAL')
+  console.log(`AGENT RUNTIME EVAL (${localFlag ? 'Local' : 'Docker'})`)
   console.log('='.repeat(60))
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Workers: ${workersArg}`)
+  console.log(`  Mode:    ${localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -617,19 +444,49 @@ async function main() {
     process.exit(1)
   }
 
+  // Docker-specific setup (skipped in local mode)
+  let dockerWorkerConfig: DockerWorkerConfig | undefined
+  let localWorkerConfig: LocalWorkerConfig | undefined
+
+  if (localFlag) {
+    localWorkerConfig = {
+      containerPrefix: 'eval-worker',
+      baseHostPort: BASE_PORT,
+      skillServerBasePort: SKILL_SERVER_BASE_PORT,
+      model: modelArg,
+      verbose: verboseFlag,
+    }
+  } else {
+    const image = DEFAULT_RUNTIME_IMAGE
+    await ensureDockerImage(image, { build: buildFlag })
+    writeDockerEnvFile()
+    dockerWorkerConfig = evalWorkerConfig({
+      image,
+      containerPrefix: 'eval-worker',
+      baseHostPort: BASE_PORT,
+      extraPortMappings: [{ hostBase: SKILL_SERVER_BASE_PORT, container: CONTAINER_SKILL_PORT }],
+      model: modelArg,
+      verbose: verboseFlag,
+    })
+  }
+
   // Start workers
   console.log('Starting workers...')
-  const workers: Worker[] = []
+  const workers: DockerWorker[] = []
   try {
     for (let i = 0; i < workersArg; i++) {
-      const w = await startWorker(i)
+      const w = localFlag
+        ? await startLocalWorker(i, localWorkerConfig!)
+        : await startDockerWorker(i, dockerWorkerConfig!)
       workers.push(w)
       globalWorkers.push(w)
       if (i < workersArg - 1) await Bun.sleep(1_000)
     }
   } catch (err: any) {
     console.error(`Failed to start workers: ${err.message}`)
-    cleanup()
+    globalWorkers.forEach(stopWorker)
+    globalWorkers = []
+    if (!localFlag) cleanupDockerEnvFile()
     process.exit(1)
   }
 
@@ -649,19 +506,22 @@ async function main() {
     console.log('')
   }
 
-  // Parallel work-pool: each worker pulls the next eval from the queue
+  // Parallel work-pool: each worker pulls the next eval from the queue.
+  // Containers are reused across evals; only restart if health check fails.
   let nextIndex = 0
-  async function workerLoop(worker: Worker) {
+  async function workerLoop(worker: DockerWorker) {
     while (nextIndex < evals.length) {
       const i = nextIndex++
       const ev = evals[i]
 
-      // Recycle worker between evals to prevent accumulated state issues
-      if (i >= workers.length) {
-        if (verboseFlag) console.log(`      [lifecycle] Restarting worker ${worker.id}...`)
+      // Check worker health — restart if it died
+      if (!(await isWorkerHealthy(worker))) {
+        if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
         stopWorker(worker)
         await Bun.sleep(500)
-        const fresh = await startWorker(worker.id)
+        const fresh = localFlag
+          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
+          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
         Object.assign(worker, fresh)
       }
 
@@ -684,6 +544,7 @@ async function main() {
   console.log('Stopping workers...')
   workers.forEach(stopWorker)
   globalWorkers = []
+  if (!localFlag) cleanupDockerEnvFile()
 
   // Summary
   const passed = results.filter(r => r.passed).length
@@ -848,6 +709,8 @@ async function main() {
 
 main().catch(err => {
   console.error('Fatal:', err)
-  cleanup()
+  globalWorkers.forEach(stopWorker)
+  globalWorkers = []
+  if (!localFlag) cleanupDockerEnvFile()
   process.exit(1)
 })

@@ -57,6 +57,7 @@ import {
   OPTIMIZED_SKILL_MATCHING_GUIDE,
   OPTIMIZED_MCP_DISCOVERY_GUIDE,
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
+  SELF_EVOLUTION_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 
@@ -72,6 +73,32 @@ function extractToolkitName(name: string): string {
 function hasErrorInResult(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false
   return 'error' in (result as any)
+}
+
+/**
+ * Infer the LLM provider from a model ID string when a session override
+ * changes the model away from the default config. Agent-mode aliases
+ * ('basic', 'advanced') keep the config provider since the AI proxy
+ * handles resolution for those.
+ */
+function inferProviderFromModel(modelId: string, configProvider: string): string {
+  if (modelId === 'basic' || modelId === 'advanced') return configProvider
+  if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3') || modelId.startsWith('o4')) return 'openai'
+  if (modelId.startsWith('claude')) return 'anthropic'
+  if (modelId.startsWith('gemini')) return 'google'
+  return configProvider
+}
+
+/**
+ * Resolve the thinking/reasoning level for a turn. The 'basic' agent mode
+ * uses gpt-5.4-mini which benefits from xhigh reasoning effort.
+ */
+function resolveThinkingLevel(modelOverride?: string): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  const envLevel = process.env.AGENT_THINKING_LEVEL as any
+  if (modelOverride === 'basic') {
+    return (process.env.AGENT_BASIC_THINKING_LEVEL as any) || 'xhigh'
+  }
+  return envLevel || 'medium'
 }
 
 const AUTH_ERROR_PATTERNS = [
@@ -141,6 +168,8 @@ export interface GatewayConfig {
   canvasEnabled?: boolean
   /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
   canvasMode?: 'json' | 'code'
+  /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
+  promptProfile?: 'full' | 'swe' | 'general'
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
@@ -243,6 +272,8 @@ export class AgentGateway {
   private skillServerManager: SkillServerManager
   /** Multi-language LSP manager for read_lints diagnostics */
   private lspManager: WorkspaceLSPManager | null = null
+  /** Shared code index engine for workspace-wide semantic search */
+  private codeIndexEngine: import('./code-index-engine').CodeIndexEngine | null = null
   /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
   private get canvasFileWatcher(): CanvasFileWatcher {
     return CanvasFileWatcher.getInstance(this.workspaceDir)
@@ -560,6 +591,16 @@ export class AgentGateway {
       this.startLSP().catch(err => {
         console.warn(`${this.logPrefix} LSP startup failed (non-fatal):`, err.message)
       })
+    }
+
+    // Pre-warm code index for workspace-wide semantic search (fire-and-forget)
+    try {
+      const { CodeIndexEngine } = require('./code-index-engine')
+      const engine = new CodeIndexEngine(this.workspaceDir)
+      this.codeIndexEngine = engine
+      engine.reindexBackground()
+    } catch (err: any) {
+      console.warn(`${this.logPrefix} Code index pre-warm failed (non-fatal):`, err.message)
     }
 
     console.log('[AgentGateway] Started successfully')
@@ -1135,7 +1176,7 @@ export class AgentGateway {
 
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelId = session.modelOverride || this.config.model.name
-    const provider = this.config.model.provider
+    const provider = inferProviderFromModel(modelId, this.config.model.provider)
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
     // When there's no uiWriter (cron, heartbeat, channel, webhook turns),
@@ -1168,6 +1209,7 @@ export class AgentGateway {
         ? this.canvasFileWatcher
         : undefined,
       lspManager: this.lspManager ?? undefined,
+      codeIndexEngine: this.codeIndexEngine ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1225,7 +1267,7 @@ export class AgentGateway {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search_files',
+        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search_files', 'file_search',
         'web', 'browser',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
@@ -1375,7 +1417,7 @@ export class AgentGateway {
         maxIterations: parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10),
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
-        thinkingLevel: (process.env.AGENT_THINKING_LEVEL as any) || 'medium',
+        thinkingLevel: resolveThinkingLevel(session.modelOverride),
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
@@ -1659,7 +1701,75 @@ export class AgentGateway {
     }
   }
 
+  private buildSWEPrompt(): string {
+    const parts: string[] = []
+
+    const now = new Date()
+    parts.push([
+      '## Current Context',
+      `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+      `- Year: ${now.getFullYear()}`,
+      `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      `- Working directory: \`${this.workspaceDir}\``,
+      '',
+      'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+    ].join('\n'))
+
+    const workspaceTree = this.buildWorkspaceTreeContext()
+    if (workspaceTree) {
+      parts.push(workspaceTree)
+    }
+
+    parts.push(CODE_AGENT_GENERAL_GUIDE)
+
+    return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * General prompt profile for non-SWE benchmarks (GAIA, WebArena, Terminal-Bench).
+   * Includes workspace context, coding guide, and skills — but skips personality,
+   * canvas, templates, memory, and other Shogo-specific sections.
+   */
+  private buildGeneralPrompt(): string {
+    const parts: string[] = []
+
+    const now = new Date()
+    parts.push([
+      '## Current Context',
+      `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+      `- Year: ${now.getFullYear()}`,
+      `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      `- Working directory: \`${this.workspaceDir}\``,
+      '',
+      'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+    ].join('\n'))
+
+    const workspaceTree = this.buildWorkspaceTreeContext()
+    if (workspaceTree) {
+      parts.push(workspaceTree)
+    }
+
+    parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(SELF_EVOLUTION_GUIDE)
+
+    if (this.skills.length > 0) {
+      const skillsSection = buildSkillsPromptSection(this.skills)
+      if (skillsSection) {
+        parts.push(skillsSection)
+      }
+    }
+
+    return parts.join('\n\n---\n\n')
+  }
+
   private loadBootstrapContext(): string {
+    if (this.config.promptProfile === 'swe') {
+      return this.buildSWEPrompt()
+    }
+    if (this.config.promptProfile === 'general') {
+      return this.buildGeneralPrompt()
+    }
+
     const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
     const parts: string[] = []
 
@@ -1709,7 +1819,9 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      `- Working directory: \`${this.workspaceDir}\``,
       '',
+      'All file paths are relative to the working directory.',
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
     ].join('\n'))
 
@@ -1796,6 +1908,7 @@ When integrations are connected, use \`tool_search\` to discover available actio
     if (this.config.memoryEnabled !== false) {
       parts.push(memoryGuide)
     }
+    parts.push(SELF_EVOLUTION_GUIDE)
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 

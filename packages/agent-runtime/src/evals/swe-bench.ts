@@ -12,43 +12,38 @@
  *   bun run src/evals/swe-bench.ts --model haiku --split dev
  *   bun run src/evals/swe-bench.ts --model haiku --split dev --workers 2 --verbose
  *   bun run src/evals/swe-bench.ts --model haiku --split dev --filter django --verbose
+ *   bun run src/evals/swe-bench.ts --model haiku --split dev --build
  */
 
-import { spawn, type Subprocess } from 'bun'
 import { execSync } from 'child_process'
-import { createServer } from 'net'
-import {
-  mkdirSync, rmSync, existsSync, writeFileSync, readFileSync,
-  readdirSync, appendFileSync, statSync, cpSync,
-} from 'fs'
-import { resolve, join, basename } from 'path'
+import { writeFileSync, appendFileSync } from 'fs'
+import { resolve } from 'path'
 import { tmpdir } from 'os'
 
+import {
+  type DockerWorker,
+  type DockerWorkerConfig,
+  evalWorkerConfig,
+  loadEnvFromDisk,
+  getArg,
+  MODEL_MAP,
+  REPO_ROOT,
+  DEFAULT_RUNTIME_IMAGE,
+  writeDockerEnvFile,
+  cleanupDockerEnvFile,
+  ensureDockerImage,
+  startDockerWorker,
+  stopDockerWorker,
+  configureWorkerForTask,
+  registerCleanupHandlers,
+} from './docker-worker'
+
+loadEnvFromDisk(REPO_ROOT)
+
 import { sendTurn, type EvalRunnerConfig, type ParsedAgentResponse } from './runner'
-import { resetWorkspaceDefaults } from '../workspace-defaults'
-import { encodeSecurityPolicy } from '../permission-engine'
 import { buildSWEBenchPrompt } from './swe-bench-prompt'
-
-// ---------------------------------------------------------------------------
-// Load .env.local from repo root so workers inherit API keys
-// ---------------------------------------------------------------------------
-
-const REPO_ROOT = resolve(import.meta.dir, '../../../..')
-for (const envFile of ['.env.local', '.env']) {
-  const envPath = resolve(REPO_ROOT, envFile)
-  if (existsSync(envPath)) {
-    for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx < 0) continue
-      const key = trimmed.slice(0, eqIdx)
-      const val = trimmed.slice(eqIdx + 1)
-      if (!process.env[key]) process.env[key] = val
-    }
-    break
-  }
-}
+import { loadJsonl, computeCost, printCostSummary, savePartialResults, cleanupPartialFile, printErrorSummary, shogoModelName } from './bench-utils'
+import { ensureRepoCache as ensureRepoCacheShared, prepWorkspace as prepWorkspaceShared, extractPatch as extractPatchShared } from './patch-bench-utils'
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -56,34 +51,16 @@ for (const envFile of ['.env.local', '.env']) {
 
 const args = process.argv.slice(2)
 
-function getArg(name: string, defaultValue?: string): string | undefined {
-  const eqArg = args.find(a => a.startsWith(`--${name}=`))
-  if (eqArg) return eqArg.split('=')[1]
-  const idx = args.indexOf(`--${name}`)
-  if (idx !== -1 && args[idx + 1] && !args[idx + 1].startsWith('--')) return args[idx + 1]
-  return defaultValue
-}
-
-const modelArg = getArg('model', 'haiku')!
-const splitArg = getArg('split', 'dev')!
-const workersArg = parseInt(getArg('workers', '1')!)
-const filterArg = getArg('filter')
-const dataDir = getArg('data', 'C:\\dev\\swe-bench-data')!
-const repoCache = getArg('repos', 'C:\\dev\\swe-bench-repos')!
+const modelArg = getArg(args, 'model', 'haiku')!
+const splitArg = getArg(args, 'split', 'dev')!
+const workersArg = parseInt(getArg(args, 'workers', '1')!)
+const filterArg = getArg(args, 'filter')
+const dataDir = getArg(args, 'data', resolve(REPO_ROOT, '.swe-bench/data'))!
+const repoCache = getArg(args, 'repos', resolve(REPO_ROOT, '.swe-bench/repos'))!
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
+const buildFlag = args.includes('--build')
 
-const MODEL_MAP: Record<string, string> = {
-  haiku: 'claude-haiku-4-5',
-  sonnet: 'claude-sonnet-4-5',
-}
-
-const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  haiku:  { input: 0.0000008, output: 0.000004,  cacheRead: 0.00000008, cacheWrite: 0.000001 },
-  sonnet: { input: 0.000003,  output: 0.000015,   cacheRead: 0.0000003,  cacheWrite: 0.00000375 },
-}
-
-let nextPort = 7200 + Math.floor(Math.random() * 500) // randomize start to avoid collisions with prior runs
-const AGENT_RUNTIME_SERVER = resolve(REPO_ROOT, 'packages/agent-runtime/src/server.ts')
+const BASE_PORT = 7200
 
 // ---------------------------------------------------------------------------
 // SWE-bench instance type
@@ -108,17 +85,7 @@ interface SWEBenchInstance {
 
 function loadInstances(): SWEBenchInstance[] {
   const jsonlPath = resolve(dataDir, `swe-bench-lite-${splitArg}.jsonl`)
-
-  if (!existsSync(jsonlPath)) {
-    console.error(`Dataset not found: ${jsonlPath}`)
-    console.error(`Download it first with the HuggingFace API or place it at the expected path.`)
-    process.exit(1)
-  }
-
-  let raw = readFileSync(jsonlPath, 'utf-8')
-  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
-  const lines = raw.split('\n').filter(l => l.trim())
-  return lines.map(line => JSON.parse(line) as SWEBenchInstance)
+  return loadJsonl<SWEBenchInstance>(jsonlPath, `Download it first with the HuggingFace API or place it at the expected path.`)
 }
 
 // ---------------------------------------------------------------------------
@@ -126,154 +93,7 @@ function loadInstances(): SWEBenchInstance[] {
 // ---------------------------------------------------------------------------
 
 function ensureRepoCache(repo: string): string {
-  const safeName = repo.replace('/', '__')
-  const bareDir = resolve(repoCache, safeName)
-
-  if (existsSync(bareDir)) return bareDir
-
-  console.log(`  Cloning ${repo} (bare) into cache...`)
-  mkdirSync(repoCache, { recursive: true })
-  execSync(`git clone --bare "https://github.com/${repo}.git" "${bareDir}"`, {
-    timeout: 600_000,
-    stdio: 'inherit',
-  })
-  return bareDir
-}
-
-// ---------------------------------------------------------------------------
-// Worker management (reused from aider-bench with dynamic ports)
-// ---------------------------------------------------------------------------
-
-interface Worker {
-  id: number
-  port: number
-  dir: string
-  process: Subprocess | null
-}
-
-/**
- * Find a free port by letting the OS assign one (port 0), then close and
- * return the assigned port. This avoids the TOCTOU race where our bind
- * test releases the port and Bun can't rebind it due to TIME_WAIT.
- *
- * We space ports apart using nextPort as a minimum to avoid clustering.
- */
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.once('error', (err) => reject(err))
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address()
-      const port = typeof addr === 'object' && addr ? addr.port : 0
-      server.close(() => {
-        if (port > 0) {
-          nextPort = Math.max(nextPort, port + 1)
-          resolve(port)
-        } else {
-          reject(new Error('OS assigned port 0'))
-        }
-      })
-    })
-  })
-}
-
-/**
- * Kill any leftover bun/node processes listening on ports in our range.
- */
-function aggressiveCleanup(): void {
-  console.log('Cleaning up lingering processes...')
-  try {
-    if (process.platform === 'win32') {
-      // Kill any bun.exe processes that aren't us
-      const myPid = process.pid
-      try {
-        const out = execSync(
-          'powershell -Command "Get-Process bun -ErrorAction SilentlyContinue | Select-Object Id | ForEach-Object { $_.Id }"',
-          { encoding: 'utf-8', timeout: 10_000, stdio: 'pipe' },
-        ).trim()
-        for (const line of out.split('\n')) {
-          const pid = parseInt(line.trim())
-          if (pid && pid !== myPid) {
-            try { process.kill(pid, 'SIGTERM') } catch {}
-          }
-        }
-      } catch {}
-    } else {
-      // On Unix, kill processes in our port range
-      for (let port = 7200; port < 7800; port++) {
-        try {
-          const pid = execSync(`lsof -ti:${port}`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
-          if (pid) { try { process.kill(parseInt(pid), 'SIGTERM') } catch {} }
-        } catch {}
-      }
-    }
-  } catch {}
-  // Brief pause for OS to release sockets
-}
-
-async function startWorker(id: number, workspaceDir?: string): Promise<Worker> {
-  const port = await findFreePort()
-  const dir = workspaceDir || resolve(tmpdir(), `swe-bench-worker-${id}`)
-
-  console.log(`  Starting worker ${id} on port ${port}...`)
-
-  mkdirSync(dir, { recursive: true })
-
-  const proc = spawn({
-    cmd: ['bun', 'run', AGENT_RUNTIME_SERVER],
-    env: {
-      ...process.env,
-      PORT: String(port),
-      WORKSPACE_DIR: dir,
-      AGENT_DIR: dir,
-      PROJECT_DIR: dir,
-      PROJECT_ID: `swe-bench-worker-${id}`,
-      AGENT_MODEL: modelArg,
-      AGENT_MAX_ITERATIONS: '200',
-      SECURITY_POLICY: encodeSecurityPolicy({ mode: 'full_autonomy' }),
-    },
-    stdout: 'inherit',
-    stderr: 'inherit',
-  })
-
-  if (proc.exitCode !== null) {
-    throw new Error(`Worker ${id} exited immediately with code ${proc.exitCode}`)
-  }
-
-  const maxWait = 45_000
-  const start = Date.now()
-  let delay = 500
-
-  while (Date.now() - start < maxWait) {
-    try {
-      const ctl = new AbortController()
-      const t = setTimeout(() => ctl.abort(), 3_000)
-      const res = await fetch(`http://localhost:${port}/health`, { signal: ctl.signal })
-      clearTimeout(t)
-      if (res.ok) {
-        console.log(`  Worker ${id} ready on port ${port} (${Date.now() - start}ms)`)
-        return { id, port, dir, process: proc }
-      }
-    } catch {
-      if (proc.exitCode !== null) throw new Error(`Worker ${id} died with code ${proc.exitCode}`)
-    }
-    await Bun.sleep(delay)
-    delay = Math.min(delay * 1.2, 2_000)
-  }
-
-  proc.kill()
-  throw new Error(`Worker ${id} failed to start within ${maxWait}ms`)
-}
-
-function stopWorker(w: Worker) {
-  w.process?.kill()
-  try {
-    if (process.platform === 'win32') {
-      execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${w.port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { stdio: 'pipe' })
-    } else {
-      execSync(`lsof -ti:${w.port} | xargs kill -9 2>/dev/null || true`, { stdio: 'pipe' })
-    }
-  } catch {}
+  return ensureRepoCacheShared(repo, repoCache)
 }
 
 // ---------------------------------------------------------------------------
@@ -281,42 +101,14 @@ function stopWorker(w: Worker) {
 // ---------------------------------------------------------------------------
 
 function prepWorkspace(workerId: number, instance: SWEBenchInstance): string {
-  const workDir = resolve(tmpdir(), `swe-bench-worker-${workerId}`)
-
-  if (existsSync(workDir)) {
-    try { rmSync(workDir, { recursive: true, force: true }) } catch {}
-  }
-
-  const bareDir = ensureRepoCache(instance.repo)
-
-  if (verboseFlag) console.log(`      [prep] Cloning from cache at ${instance.base_commit.slice(0, 8)}...`)
-
-  execSync(`git clone "${bareDir}" "${workDir}"`, {
-    timeout: 120_000,
-    stdio: 'pipe',
+  return prepWorkspaceShared({
+    workerId,
+    repo: instance.repo,
+    baseCommit: instance.base_commit,
+    repoCache,
+    workspaceRoot: resolve(REPO_ROOT, '.swe-bench/workspaces'),
+    verbose: verboseFlag,
   })
-
-  execSync(`git checkout ${instance.base_commit}`, {
-    cwd: workDir,
-    timeout: 30_000,
-    stdio: 'pipe',
-  })
-
-  // Pre-install repo dependencies so the agent doesn't waste iterations on pip install
-  try {
-    if (verboseFlag) console.log(`      [prep] Installing dependencies...`)
-    execSync('pip install -e . 2>&1', {
-      cwd: workDir,
-      timeout: 180_000,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-      maxBuffer: 5 * 1024 * 1024,
-    })
-  } catch (err: any) {
-    if (verboseFlag) console.log(`      [prep] pip install failed (non-fatal): ${err.message?.slice(0, 100)}`)
-  }
-
-  return workDir
 }
 
 // ---------------------------------------------------------------------------
@@ -328,83 +120,8 @@ const JUNK_FILE_PATTERNS = [
   'verify_*.py', 'tmp_*.py', 'temp_*.py',
 ]
 
-const SHOGO_WORKSPACE_FILES = [
-  '.mcp.json', 'AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md',
-  'MEMORY.md', 'TOOLS.md', 'CLAUDE.md', 'BOOT.md',
-]
-
-const GIT_TIMEOUT = 120_000
-const GIT_MAX_BUFFER = 10 * 1024 * 1024
-
-function cleanupJunkFiles(repoDir: string): void {
-  try {
-    const globs = JUNK_FILE_PATTERNS.map(p => `'${p}'`).join(' ')
-    execSync(`git checkout -- ${globs}`, {
-      cwd: repoDir, timeout: 10_000, stdio: 'pipe',
-    })
-  } catch {}
-  // Remove untracked junk files
-  try {
-    for (const pattern of JUNK_FILE_PATTERNS) {
-      execSync(`git clean -f -- ${pattern}`, {
-        cwd: repoDir, timeout: 10_000, stdio: 'pipe',
-      })
-    }
-  } catch {}
-  // Remove Shogo workspace files that the gateway creates on startup
-  for (const file of SHOGO_WORKSPACE_FILES) {
-    try {
-      execSync(`git checkout -- "${file}"`, { cwd: repoDir, timeout: 5_000, stdio: 'pipe' })
-    } catch {}
-    try {
-      execSync(`git clean -f -- "${file}"`, { cwd: repoDir, timeout: 5_000, stdio: 'pipe' })
-    } catch {}
-  }
-  // Remove .shogo/ directory and memory/ directory
-  for (const dir of ['.shogo', 'memory']) {
-    try {
-      execSync(`git clean -fd -- "${dir}"`, { cwd: repoDir, timeout: 5_000, stdio: 'pipe' })
-    } catch {}
-  }
-}
-
-function extractPatch(repoDir: string, maxRetries = 2): string {
-  cleanupJunkFiles(repoDir)
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const tracked = execSync('git diff', {
-        cwd: repoDir,
-        timeout: GIT_TIMEOUT,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        maxBuffer: GIT_MAX_BUFFER,
-      }).trim()
-
-      if (tracked) return tracked
-
-      // If no tracked changes, check if there are new source files
-      try {
-        execSync('git add -A', { cwd: repoDir, timeout: GIT_TIMEOUT, stdio: 'pipe' })
-        const staged = execSync('git diff --cached', {
-          cwd: repoDir, timeout: GIT_TIMEOUT, encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: GIT_MAX_BUFFER,
-        }).trim()
-        execSync('git reset HEAD', { cwd: repoDir, timeout: GIT_TIMEOUT, stdio: 'pipe' })
-        return staged
-      } catch { return '' }
-    } catch (err: any) {
-      console.warn(`      [patch] git diff attempt ${attempt}/${maxRetries} failed: ${err.message}`)
-      if (attempt < maxRetries) {
-        // Brief pause before retry
-        const { execSync: syncExec } = require('child_process')
-        try { syncExec('sleep 2 || timeout /t 2 >nul', { timeout: 5_000, stdio: 'pipe' }) } catch {}
-      }
-    }
-  }
-
-  console.warn(`      [patch] all ${maxRetries} attempts failed`)
-  return ''
+function extractPatch(repoDir: string): string {
+  return extractPatchShared(repoDir, { junkPatterns: JUNK_FILE_PATTERNS })
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +146,7 @@ interface InstanceResult {
 // ---------------------------------------------------------------------------
 
 async function runInstance(
-  worker: Worker,
+  worker: DockerWorker,
   instance: SWEBenchInstance,
   index: number,
   total: number,
@@ -438,30 +155,17 @@ async function runInstance(
 
   try { Bun.gc(true) } catch {}
 
-  const resolvedModel = MODEL_MAP[modelArg] || modelArg
-  const defaultModel = 'claude-sonnet-4-6'
-  if (resolvedModel !== defaultModel) {
-    try {
-      await fetch(`http://localhost:${worker.port}/agent/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider: 'anthropic', name: resolvedModel } }),
-      })
-    } catch (e: any) {
-      console.warn(`      [setup] Model override failed: ${e.message}`)
-    }
-  }
+  await configureWorkerForTask(worker, {
+    model: modelArg,
+    mode: 'none',
+    promptProfile: 'swe',
+    evalLabel: undefined,
+    verbose: verboseFlag,
+  })
 
+  // Session reset without evalLabel
   try {
     await fetch(`http://localhost:${worker.port}/agent/session/reset`, { method: 'POST' })
-  } catch {}
-
-  try {
-    await fetch(`http://localhost:${worker.port}/agent/mode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'none' }),
-    })
   } catch {}
 
   const prompt = buildSWEBenchPrompt({
@@ -525,37 +229,18 @@ async function runInstance(
 // Cleanup & signal handling
 // ---------------------------------------------------------------------------
 
-let globalWorkers: Worker[] = []
+let globalWorkers: DockerWorker[] = []
 
-function cleanup() {
-  console.log('\nCleaning up workers...')
-  globalWorkers.forEach(stopWorker)
-  globalWorkers = []
-}
-
-function crashLog(label: string, err: any) {
-  const msg = `[${new Date().toISOString()}] ${label}: ${err?.stack || err?.message || err}\n`
-  console.error(msg)
-  try { appendFileSync(join(tmpdir(), 'swe-bench-crash.log'), msg) } catch {}
-}
-
-process.on('SIGINT',  () => { crashLog('SIGINT', 'interrupted'); cleanup(); process.exit(130) })
-process.on('SIGTERM', () => { crashLog('SIGTERM', 'terminated'); cleanup(); process.exit(143) })
-process.on('uncaughtException',  (err) => { crashLog('UNCAUGHT EXCEPTION', err); cleanup(); process.exit(1) })
-process.on('unhandledRejection', (reason) => { crashLog('UNHANDLED REJECTION', reason); cleanup(); process.exit(1) })
-process.on('exit', (code) => { if (code !== 0 && code !== 130 && code !== 143) crashLog('EXIT', `code=${code}`) })
+registerCleanupHandlers(() => globalWorkers, 'swe-bench-crash.log')
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
-  aggressiveCleanup()
-  await Bun.sleep(2_000) // let OS release sockets
-
   console.log('')
   console.log('='.repeat(60))
-  console.log('SWE-BENCH LITE BENCHMARK')
+  console.log('SWE-BENCH LITE BENCHMARK (Docker)')
   console.log('='.repeat(60))
   console.log(`  Model:     ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Split:     ${splitArg}`)
@@ -592,6 +277,13 @@ async function main() {
   }
   console.log('')
 
+  // Ensure Docker image exists (or build it)
+  const image = DEFAULT_RUNTIME_IMAGE
+  await ensureDockerImage(image, { build: buildFlag })
+
+  // Write env file once for all workers
+  writeDockerEnvFile()
+
   const numWorkers = Math.min(workersArg, filtered.length)
 
   console.log('')
@@ -606,19 +298,72 @@ async function main() {
   let completed = 0
 
   function savePartial() {
-    try {
-      const partial = results.filter(Boolean)
-      writeFileSync(partialPath, JSON.stringify(partial, null, 2))
-    } catch {}
+    savePartialResults(partialPath, results)
   }
 
-  async function startWorkerForInstance(workerId: number, instance: SWEBenchInstance, maxRetries = 3): Promise<Worker> {
+  const workerConfig = evalWorkerConfig({
+    image,
+    containerPrefix: 'swe-bench-worker',
+    baseHostPort: BASE_PORT,
+    model: modelArg,
+    verbose: verboseFlag,
+    maxIterations: 200,
+    envOverrides: { PIP_BREAK_SYSTEM_PACKAGES: '1' },
+    entrypoint: 'cd /app/packages/agent-runtime && exec bun run src/server.ts',
+  })
+
+  function dockerPipExec(worker: DockerWorker, script: string, label: string, timeoutMs = 120_000, retries = 2): boolean {
+    const cmd = `docker exec -u root -e PIP_BREAK_SYSTEM_PACKAGES=1 "${worker.containerName}" bash -c 'set -o pipefail; ${script}'`
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const out = execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', timeout: timeoutMs }).trim()
+        if (verboseFlag && out) {
+          const last = out.split('\n').pop()
+          if (last) console.log(`      [deps] ${label}: ${last}`)
+        }
+        return true
+      } catch (err: any) {
+        const msg = err.message?.slice(0, 120) || 'unknown'
+        if (attempt < retries) {
+          if (verboseFlag) console.warn(`      [deps] ${label} attempt ${attempt} failed, retrying: ${msg}`)
+        } else {
+          console.warn(`      [deps] ${label} failed (non-fatal): ${msg}`)
+        }
+      }
+    }
+    return false
+  }
+
+  function installRepoDeps(worker: DockerWorker): void {
+    // 1. Try full editable install first (gets all deps); fall back to --no-deps if it OOMs/times out
+    const fullOk = dockerPipExec(worker,
+      'pip install -e /app/workspace -q 2>&1 | tail -3',
+      'editable install', 90_000, 1)
+    if (!fullOk) {
+      dockerPipExec(worker,
+        'pip install --no-deps -e /app/workspace -q 2>&1 | tail -3',
+        'editable install (no-deps fallback)', 60_000)
+    }
+
+    // 2. Install requirements files (lighter, more critical for test runs)
+    dockerPipExec(worker,
+      'found=0; for f in /app/workspace/requirements*.txt /app/workspace/test-requirements*.txt; do [ -f "$f" ] && pip install -r "$f" -q 2>&1 | tail -1 && found=1; done; [ "$found" = 1 ] || true',
+      'requirements', 120_000)
+
+    // 3. Ensure pytest is available
+    dockerPipExec(worker,
+      'pip install pytest -q 2>&1 | tail -1',
+      'pytest', 60_000)
+  }
+
+  async function startWorkerForInstance(workerId: number, instance: SWEBenchInstance, maxRetries = 3): Promise<DockerWorker> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         if (verboseFlag) console.log(`      [prep] Setting up workspace for ${instance.instance_id}...`)
         const workDir = prepWorkspace(workerId, instance)
-        const worker = await startWorker(workerId, workDir)
+        const worker = await startDockerWorker(workerId, workerConfig, { workspaceDir: workDir })
         globalWorkers = [...globalWorkers.filter(w => w.id !== workerId), worker]
+        installRepoDeps(worker)
         return worker
       } catch (err: any) {
         console.warn(`  [worker ${workerId}] Start attempt ${attempt}/${maxRetries} failed: ${err.message}`)
@@ -636,7 +381,7 @@ async function main() {
 
       const instance = filtered[idx]
 
-      let worker: Worker
+      let worker: DockerWorker
       try {
         worker = await startWorkerForInstance(workerId, instance)
       } catch (err: any) {
@@ -668,7 +413,7 @@ async function main() {
         completed++
         savePartial()
       } finally {
-        stopWorker(worker)
+        stopDockerWorker(worker)
       }
     }
   }
@@ -682,7 +427,9 @@ async function main() {
   // Stop workers
   console.log('')
   console.log('Stopping workers...')
-  cleanup()
+  globalWorkers.forEach(stopDockerWorker)
+  globalWorkers = []
+  cleanupDockerEnvFile()
 
   // ---------------------------------------------------------------------------
   // Summary & predictions output
@@ -692,16 +439,7 @@ async function main() {
   const withPatch = finalResults.filter(r => r.model_patch.length > 0).length
   const withError = finalResults.filter(r => r.error).length
 
-  const totalInput = finalResults.reduce((s, r) => s + r.inputTokens, 0)
-  const totalOutput = finalResults.reduce((s, r) => s + r.outputTokens, 0)
-  const totalCacheRead = finalResults.reduce((s, r) => s + r.cacheReadTokens, 0)
-  const totalCacheWrite = finalResults.reduce((s, r) => s + r.cacheWriteTokens, 0)
-  const pricing = PRICING[modelArg] || PRICING.haiku
-  const totalCost =
-    totalInput * pricing.input +
-    totalOutput * pricing.output +
-    totalCacheRead * pricing.cacheRead +
-    totalCacheWrite * pricing.cacheWrite
+  const cost = computeCost(finalResults, modelArg)
 
   console.log('')
   console.log('='.repeat(60))
@@ -716,15 +454,7 @@ async function main() {
   console.log(`  Errors:       ${withError}`)
   console.log('')
 
-  console.log('COST')
-  console.log('-'.repeat(40))
-  console.log(`  Input tokens:       ${totalInput.toLocaleString()}`)
-  console.log(`  Output tokens:      ${totalOutput.toLocaleString()}`)
-  console.log(`  Cache read tokens:  ${totalCacheRead.toLocaleString()}`)
-  console.log(`  Cache write tokens: ${totalCacheWrite.toLocaleString()}`)
-  console.log(`  Total cost:         $${totalCost.toFixed(4)}`)
-  console.log(`  Cost/instance:      $${(totalCost / finalResults.length).toFixed(4)}`)
-  console.log(`  Duration:           ${totalTime.toFixed(1)}s`)
+  printCostSummary(cost, totalTime)
   console.log('')
 
   // Write predictions JSONL (SWE-bench format)
@@ -732,7 +462,7 @@ async function main() {
     dataDir,
     `predictions-${modelArg}-${splitArg}-${Date.now()}.jsonl`,
   )
-  const modelName = `shogo-${MODEL_MAP[modelArg] || modelArg}`
+  const modelName = shogoModelName(modelArg)
   for (const r of finalResults) {
     const prediction = {
       instance_id: r.instance_id,
@@ -757,22 +487,13 @@ async function main() {
     summary: {
       total: finalResults.length,
       withPatch, withError,
-      totalCost: '$' + totalCost.toFixed(2),
+      totalCost: '$' + cost.totalCost.toFixed(2),
       totalDurationS: Math.round(totalTime),
     },
   }, null, 2))
   console.log(`Detailed results saved to: ${detailedPath}`)
 
-  // Errors
-  const errors = finalResults.filter(r => r.error)
-  if (errors.length > 0) {
-    console.log('')
-    console.log('ERRORS')
-    console.log('-'.repeat(40))
-    for (const e of errors) {
-      console.log(`  ${e.instance_id}: ${e.error!.slice(0, 80)}`)
-    }
-  }
+  printErrorSummary(finalResults.filter(r => r.error).map(r => ({ id: r.instance_id, error: r.error! })))
 
   console.log('')
   console.log('Next step: evaluate predictions with the SWE-bench harness:')
@@ -781,12 +502,13 @@ async function main() {
   console.log(`    --predictions_path "${predictionsPath}" \\`)
   console.log(`    --max_workers 4 --run_id ${modelName} --split ${splitArg}`)
 
-  // Clean up partial file
-  try { if (existsSync(partialPath)) rmSync(partialPath) } catch {}
+  cleanupPartialFile(partialPath)
 }
 
 main().catch(err => {
-  crashLog('MAIN', err)
-  cleanup()
+  console.error('Fatal:', err)
+  globalWorkers.forEach(stopDockerWorker)
+  globalWorkers = []
+  cleanupDockerEnvFile()
   process.exit(1)
 })
