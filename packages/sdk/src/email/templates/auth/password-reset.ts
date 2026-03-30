@@ -17,7 +17,7 @@ export const passwordResetTemplate: EmailTemplate<{
       We received a request to reset the password for your account.
       Click the button below to choose a new one:
     </p>
-    <a href="{{resetUrl}}" class="email-btn">Reset Password</a>
+    <a href="{{resetUrl}}" class="email-btn" style="color:#ffffff;text-decoration:none;">Reset Password</a>
     <hr class="email-divider">
     <p class="email-muted">This link expires in {{expiresIn}}.</p>
     <p class="email-muted">
