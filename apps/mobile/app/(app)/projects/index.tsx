@@ -703,7 +703,13 @@ export default observer(function AllProjectsPage() {
             onPress={handleCreateProject}
             className="flex-1 m-1.5 rounded-2xl border-2 border-dashed border-border overflow-hidden"
           >
-            <View className="flex-1 items-center justify-center" style={{ minHeight: 180 }}>
+            <View
+              className="flex-1 items-center justify-center"
+              style={{
+                minHeight:
+                  Platform.OS === 'ios' || Platform.OS === 'android' ? 168 : 180,
+              }}
+            >
               <View className="w-12 h-12 rounded-full bg-muted items-center justify-center mb-2">
                 <Plus size={24} className="text-muted-foreground" />
               </View>
@@ -803,6 +809,7 @@ export default observer(function AllProjectsPage() {
             isSelected={isSelected}
             isStarred={isStarred}
             selectMode={selectMode}
+            compact={Platform.OS === 'ios' || Platform.OS === 'android'}
             className="flex-1 m-1.5"
             onPress={() => {
               if (selectMode) {
