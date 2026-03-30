@@ -219,6 +219,7 @@ export default observer(function AllProjectsPage() {
   const actions = useDomainActions()
   const toast = useToast()
   const { width } = useWindowDimensions()
+  const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
 
   type VisibilityFilter = 'any' | 'public' | 'private'
   type StatusFilter = 'any' | 'draft' | 'active' | 'archived'
@@ -246,8 +247,8 @@ export default observer(function AllProjectsPage() {
   const [renameFolderValue, setRenameFolderValue] = useState('')
   const [singleDeleteFolder, setSingleDeleteFolder] = useState<Folder | null>(null)
 
-  // Determine grid columns based on screen width
-  const numColumns = viewMode === 'grid' ? 3 : 1
+  // Native phones: 2 columns for readable titles and touch targets; web keeps 3-up grid.
+  const numColumns = viewMode === 'grid' ? (isNativeMobile ? 2 : 3) : 1
 
   // Find current workspace
   const workspaces = store?.workspaceCollection?.all ?? []
