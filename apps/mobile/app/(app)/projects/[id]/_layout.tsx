@@ -761,6 +761,29 @@ export default observer(function ProjectLayout() {
       pendingToolInstalls.length > 0
     )
 
+  const narrowOnCanvas = !isWide && activeTab === 'canvas'
+  /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
+  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
+
+  /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
+  const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
+  useEffect(() => {
+    if (!showNativeNarrowChatFab) {
+      setNarrowCanvasKeyboardInset(0)
+      return
+    }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const subShow = Keyboard.addListener(showEvt, (e) => {
+      setNarrowCanvasKeyboardInset(e.endCoordinates.height)
+    })
+    const subHide = Keyboard.addListener(hideEvt, () => setNarrowCanvasKeyboardInset(0))
+    return () => {
+      subShow.remove()
+      subHide.remove()
+    }
+  }, [showNativeNarrowChatFab])
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -820,28 +843,6 @@ export default observer(function ProjectLayout() {
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
-  const narrowOnCanvas = !isWide && activeTab === 'canvas'
-  /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
-  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
-
-  /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
-  const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
-  useEffect(() => {
-    if (!showNativeNarrowChatFab) {
-      setNarrowCanvasKeyboardInset(0)
-      return
-    }
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
-    const subShow = Keyboard.addListener(showEvt, (e) => {
-      setNarrowCanvasKeyboardInset(e.endCoordinates.height)
-    })
-    const subHide = Keyboard.addListener(hideEvt, () => setNarrowCanvasKeyboardInset(0))
-    return () => {
-      subShow.remove()
-      subHide.remove()
-    }
-  }, [showNativeNarrowChatFab])
 
   const topBarSharedProps = {
     projectName: project.name,
