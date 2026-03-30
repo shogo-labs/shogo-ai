@@ -25,6 +25,7 @@ import {
   ScrollView,
   Platform,
   BackHandler,
+  Keyboard,
 } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
@@ -823,6 +824,25 @@ export default observer(function ProjectLayout() {
   /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
   const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
 
+  /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
+  const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
+  useEffect(() => {
+    if (!showNativeNarrowChatFab) {
+      setNarrowCanvasKeyboardInset(0)
+      return
+    }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const subShow = Keyboard.addListener(showEvt, (e) => {
+      setNarrowCanvasKeyboardInset(e.endCoordinates.height)
+    })
+    const subHide = Keyboard.addListener(hideEvt, () => setNarrowCanvasKeyboardInset(0))
+    return () => {
+      subShow.remove()
+      subHide.remove()
+    }
+  }, [showNativeNarrowChatFab])
+
   const topBarSharedProps = {
     projectName: project.name,
     projectId: projectId!,
@@ -955,6 +975,11 @@ export default observer(function ProjectLayout() {
                 edges={['bottom']}
                 className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
                 pointerEvents="box-none"
+                style={
+                  narrowCanvasKeyboardInset > 0
+                    ? { marginBottom: narrowCanvasKeyboardInset }
+                    : undefined
+                }
               >
                 <Pressable
                   onPress={() => {
