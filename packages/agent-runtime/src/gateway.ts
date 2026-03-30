@@ -1179,6 +1179,7 @@ export class AgentGateway {
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelId = session.modelOverride || this.config.model.name
     const provider = inferProviderFromModel(modelId, this.config.model.provider)
+    console.log(`${this.logPrefix} LLM turn: model=${modelId} provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
     // When there's no uiWriter (cron, heartbeat, channel, webhook turns),

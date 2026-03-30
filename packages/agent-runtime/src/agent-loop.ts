@@ -263,10 +263,23 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // throws directly. When the provider fails but pi-agent-core swallows the
   // error (e.g. stream function throws), agent.prompt() resolves with 0
   // output — detect that as an implicit error so callers can show a message.
+  //
+  // Also extract error messages from pi-agent-core (it catches stream errors
+  // internally and appends error messages instead of re-throwing).
+  const coreErrorMsg = newMessages.find((m: any) => m.errorMessage)
+  const coreError = (coreErrorMsg as any)?.errorMessage
   const implicitError =
     !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
-      ? new Error('Agent produced no output — possible provider error')
+      ? new Error(
+          coreError
+            ? `Provider error: ${coreError}`
+            : 'Agent produced no output — possible provider error'
+        )
       : undefined
+
+  if (coreError) {
+    console.error(`[AgentLoop] Provider error from pi-agent-core: ${coreError}`)
+  }
 
   const result: AgentLoopResult = {
     text: loopBreak
