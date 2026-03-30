@@ -567,16 +567,34 @@ export function migrateCanvasToCode(workspaceDir: string): MigrationResult {
   }
 
   const configPath = join(absDir, 'config.json')
+  const shogoConfigPath = join(absDir, '.shogo', 'config.json')
+  let configUpdated = false
+
   if (existsSync(configPath)) {
     try {
       const config = JSON.parse(readFileSync(configPath, 'utf-8'))
       config.canvasMode = 'code'
       writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
       files.push(configPath)
+      configUpdated = true
     } catch {
       warnings.push('Failed to parse config.json — canvasMode not updated')
     }
-  } else {
+  }
+
+  if (existsSync(shogoConfigPath)) {
+    try {
+      const config = JSON.parse(readFileSync(shogoConfigPath, 'utf-8'))
+      config.canvasMode = 'code'
+      writeFileSync(shogoConfigPath, JSON.stringify(config, null, 2) + '\n')
+      files.push(shogoConfigPath)
+      configUpdated = true
+    } catch {
+      warnings.push('Failed to parse .shogo/config.json — canvasMode not updated')
+    }
+  }
+
+  if (!configUpdated) {
     warnings.push('No config.json found — canvasMode not updated')
   }
 
@@ -601,15 +619,16 @@ export function migrateAll(parentDir: string): void {
 
     total++
 
-    const configPath = join(wsDir, 'config.json')
-    if (existsSync(configPath)) {
+    const configPaths = [join(wsDir, 'config.json'), join(wsDir, '.shogo', 'config.json')]
+    const alreadyCode = configPaths.some(cp => {
+      if (!existsSync(cp)) return false
       try {
-        const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        if (config.canvasMode === 'code') {
-          console.log(`  skip  ${entry.name} (already code mode)`)
-          continue
-        }
-      } catch { /* proceed anyway */ }
+        return JSON.parse(readFileSync(cp, 'utf-8')).canvasMode === 'code'
+      } catch { return false }
+    })
+    if (alreadyCode) {
+      console.log(`  skip  ${entry.name} (already code mode)`)
+      continue
     }
 
     try {

@@ -88,3 +88,12 @@ export function getTemplateCanvasStatePath(templateId: string): string | null {
   const fp = join(TEMPLATES_BASE, templateId, '.canvas-state.json')
   return existsSync(fp) ? fp : null
 }
+
+/**
+ * Get the path to a template's canvas/ code directory for direct copying.
+ * Returns null if the template has no canvas code directory.
+ */
+export function getTemplateCanvasCodeDir(templateId: string): string | null {
+  const dir = join(TEMPLATES_BASE, templateId, 'canvas')
+  return existsSync(dir) ? dir : null
+}
