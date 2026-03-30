@@ -315,7 +315,7 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: model, isLocal: true }
   }
   if (model === 'basic') {
-    return { resolvedModel: 'gpt-5.4-mini', isLocal: false }
+    return { resolvedModel: 'claude-haiku-4-5-20251001', isLocal: false }
   }
   if (model === 'advanced') {
     return { resolvedModel: 'claude-sonnet-4-6', isLocal: false }
