@@ -20,9 +20,9 @@ export interface AIProxyConfig {
 
 /**
  * Keys that are stripped from child environments whenever the proxy is active,
- * ensuring Claude Code never falls back to a raw platform API key.
+ * ensuring the runtime never falls back to raw platform API keys.
  */
-const PROXY_SHADOW_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'] as const
+const PROXY_SHADOW_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'] as const
 
 /**
  * Configure AI proxy.
@@ -64,9 +64,11 @@ export function configureAIProxy(options?: {
   }
 
   // AI_PROXY_URL is like: http://api-server/api/ai/v1
-  // Anthropic base URL should be: http://api-server/api/ai/anthropic
+  // Anthropic base URL: http://api-server/api/ai/anthropic
+  // OpenAI base URL:    http://api-server/api/ai/v1 (SDK appends /chat/completions)
   const anthropicProxyBase = proxyUrl.replace(/\/v1$/, '/anthropic')
-  console.log(`[${prefix}] AI Proxy enabled: Claude Code → ${anthropicProxyBase}`)
+  const openaiProxyBase = proxyUrl
+  console.log(`[${prefix}] AI Proxy enabled: Anthropic → ${anthropicProxyBase}, OpenAI → ${openaiProxyBase}`)
   console.log(`[${prefix}] Proxy token: ${proxyToken.slice(0, 20)}...`)
 
   return {
@@ -74,6 +76,8 @@ export function configureAIProxy(options?: {
     env: {
       ANTHROPIC_BASE_URL: anthropicProxyBase,
       ANTHROPIC_API_KEY: proxyToken,
+      OPENAI_BASE_URL: openaiProxyBase,
+      OPENAI_API_KEY: proxyToken,
     },
   }
 }
