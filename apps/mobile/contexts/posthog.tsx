@@ -22,7 +22,11 @@ export function PostHogProvider({ children }: { children: ReactNode }) {
       }}
       autocapture={{
         captureScreens: false,
-        captureTouches: !isWeb,
+        // Touch autocapture walks the tree and can call React Navigation hooks. React
+        // Navigation v7 (used by Expo Router) only allows those inside a screen; taps
+        // on nested UI then throw "Couldn't find a navigation context". Screen views
+        // are tracked manually via posthog.screen(pathname) in (app)/_layout.tsx.
+        captureTouches: false,
       }}
     >
       {children}
