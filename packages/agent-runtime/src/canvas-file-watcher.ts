@@ -27,6 +27,10 @@ function isCodeFile(fileName: string): boolean {
   return CODE_EXTENSIONS.some(ext => fileName.endsWith(ext))
 }
 
+function isInternalFile(surfaceId: string): boolean {
+  return surfaceId.startsWith('__')
+}
+
 export interface CanvasEvent {
   type: 'init' | 'renderCode' | 'dataUpdate' | 'removeSurface'
   surfaceId?: string
@@ -66,7 +70,7 @@ export class CanvasFileWatcher {
     for (const file of files) {
       const fullPath = join(canvasDir, file)
       const surfaceId = getCodeSurfaceId(file)
-      if (surfaceId && !file.includes('/')) {
+      if (surfaceId && !file.includes('/') && !isInternalFile(surfaceId)) {
         try {
           const code = readFileSync(fullPath, 'utf-8')
           this.surfaceCode.set(surfaceId, code)
@@ -98,7 +102,7 @@ export class CanvasFileWatcher {
 
     if (isCodeFile(fileName) && !fileName.includes('/')) {
       const surfaceId = getCodeSurfaceId(fileName)
-      if (!surfaceId) return
+      if (!surfaceId || isInternalFile(surfaceId)) return
       try {
         const code = readFileSync(absolutePath, 'utf-8')
         this.surfaceCode.set(surfaceId, code)
@@ -128,7 +132,7 @@ export class CanvasFileWatcher {
 
     if (isCodeFile(fileName) && !fileName.includes('/')) {
       const surfaceId = getCodeSurfaceId(fileName)
-      if (!surfaceId) return
+      if (!surfaceId || isInternalFile(surfaceId)) return
       this.surfaceCode.delete(surfaceId)
       this.surfaceTitles.delete(surfaceId)
       this.broadcast({ type: 'removeSurface', surfaceId })

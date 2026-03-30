@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync } from 'node
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AGENT_TEMPLATES, getAgentTemplateById, getTemplateSummaries, getTemplatesByCategory } from '../agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath } from '../template-loader'
+import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir } from '../template-loader'
 import { seedWorkspaceFromTemplate } from '../workspace-defaults'
 
 const ALL_TEMPLATE_IDS = [
@@ -125,6 +125,36 @@ describe('template directory structure', () => {
     }
   })
 
+  test('migrated templates have canvas/ code directory with .tsx files', () => {
+    const withCanvas = [
+      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
+      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
+      'operations-monitor',
+    ]
+    for (const id of withCanvas) {
+      const dir = getTemplateCanvasCodeDir(id)
+      expect(dir).not.toBeNull()
+      expect(existsSync(dir!)).toBe(true)
+      const files = readdirSync(dir!)
+      const tsxFiles = files.filter(f => f.endsWith('.tsx'))
+      expect(tsxFiles.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('migrated templates have canvasMode: code in .shogo/config.json', () => {
+    const withCanvas = [
+      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
+      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
+      'operations-monitor',
+    ]
+    for (const id of withCanvas) {
+      const shogoDir = getTemplateShogoDir(id)
+      expect(shogoDir).not.toBeNull()
+      const config = JSON.parse(readFileSync(join(shogoDir!, 'config.json'), 'utf-8'))
+      expect(config.canvasMode).toBe('code')
+    }
+  })
+
   test('canvas state surfaces have required fields', () => {
     for (const id of ALL_TEMPLATE_IDS) {
       const path = getTemplateCanvasStatePath(id)
@@ -186,6 +216,22 @@ describe('workspace seeding', () => {
       const data = JSON.parse(readFileSync(canvasPath, 'utf-8'))
       expect(data.surfaces).toBeDefined()
       expect(Object.keys(data.surfaces).length).toBeGreaterThan(0)
+    }
+  })
+
+  test('copies canvas code directory when available', () => {
+    const withCanvas = [
+      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
+      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
+      'operations-monitor',
+    ]
+    for (const id of withCanvas) {
+      const dir = join(tempRoot, `seed-${id}`)
+      const canvasDir = join(dir, 'canvas')
+      expect(existsSync(canvasDir)).toBe(true)
+      const files = readdirSync(canvasDir)
+      const tsxFiles = files.filter(f => f.endsWith('.tsx'))
+      expect(tsxFiles.length).toBeGreaterThan(0)
     }
   })
 
