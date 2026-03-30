@@ -219,6 +219,7 @@ export default observer(function AllProjectsPage() {
   const actions = useDomainActions()
   const toast = useToast()
   const { width } = useWindowDimensions()
+  const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
 
   type VisibilityFilter = 'any' | 'public' | 'private'
   type StatusFilter = 'any' | 'draft' | 'active' | 'archived'
@@ -246,8 +247,8 @@ export default observer(function AllProjectsPage() {
   const [renameFolderValue, setRenameFolderValue] = useState('')
   const [singleDeleteFolder, setSingleDeleteFolder] = useState<Folder | null>(null)
 
-  // Determine grid columns based on screen width
-  const numColumns = viewMode === 'grid' ? 3 : 1
+  // Native phones: 2 columns for readable titles and touch targets; web keeps 3-up grid.
+  const numColumns = viewMode === 'grid' ? (isNativeMobile ? 2 : 3) : 1
 
   // Find current workspace
   const workspaces = store?.workspaceCollection?.all ?? []
@@ -702,7 +703,13 @@ export default observer(function AllProjectsPage() {
             onPress={handleCreateProject}
             className="flex-1 m-1.5 rounded-2xl border-2 border-dashed border-border overflow-hidden"
           >
-            <View className="flex-1 items-center justify-center" style={{ minHeight: 180 }}>
+            <View
+              className="flex-1 items-center justify-center"
+              style={{
+                minHeight:
+                  Platform.OS === 'ios' || Platform.OS === 'android' ? 168 : 180,
+              }}
+            >
               <View className="w-12 h-12 rounded-full bg-muted items-center justify-center mb-2">
                 <Plus size={24} className="text-muted-foreground" />
               </View>
@@ -802,6 +809,7 @@ export default observer(function AllProjectsPage() {
             isSelected={isSelected}
             isStarred={isStarred}
             selectMode={selectMode}
+            compact={Platform.OS === 'ios' || Platform.OS === 'android'}
             className="flex-1 m-1.5"
             onPress={() => {
               if (selectMode) {
@@ -845,11 +853,21 @@ export default observer(function AllProjectsPage() {
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
+                    hitSlop={
+                      Platform.OS === 'ios' || Platform.OS === 'android'
+                        ? { top: 6, bottom: 6, left: 6, right: 6 }
+                        : undefined
+                    }
                     onPress={(e) => {
                       e.stopPropagation()
                       setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
                     }}
-                    className="w-6 h-6 items-center justify-center"
+                    className={cn(
+                      'items-center justify-center rounded-lg active:bg-muted/80',
+                      Platform.OS === 'ios' || Platform.OS === 'android'
+                        ? 'w-11 h-11'
+                        : 'w-6 h-6',
+                    )}
                   >
                     <MoreHorizontal size={16} className="text-muted-foreground" />
                   </Pressable>

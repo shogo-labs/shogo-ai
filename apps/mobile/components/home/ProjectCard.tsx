@@ -83,6 +83,7 @@ export function ProjectCard({
 }: ProjectCardProps) {
   const color = getProjectAccentColor(name)
   const initial = name?.charAt(0)?.toUpperCase() || 'P'
+  const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
 
   const subtitle = description || (updatedAt
     ? `Edited ${formatDistanceAgo(updatedAt)}`
@@ -94,17 +95,27 @@ export function ProjectCard({
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
+      android_ripple={
+        Platform.OS === 'android'
+          ? { color: 'rgba(255,255,255,0.08)', foreground: true }
+          : undefined
+      }
       className={cn(
         'rounded-2xl overflow-hidden border border-border bg-card',
         isSelected && 'border-2 border-primary',
         className,
       )}
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s, transform 0.2s',
-      } as any : {}}
+      style={(state) => [
+        Platform.OS === 'web'
+          ? ({
+              boxShadow: isDark
+                ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
+                : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+              transition: 'box-shadow 0.2s, transform 0.2s',
+            } as any)
+          : null,
+        isNativeMobile && state.pressed ? { opacity: 0.93 } : null,
+      ]}
     >
       {/* Header */}
       <View
@@ -158,15 +169,19 @@ export function ProjectCard({
         {onStarToggle && (
           <Pressable
             onPress={onStarToggle}
+            hitSlop={isNativeMobile ? { top: 10, bottom: 10, left: 10, right: 10 } : undefined}
             className={cn(
-              'absolute top-2 right-2 p-1.5 rounded-md',
+              'absolute top-1.5 right-1.5 rounded-lg items-center justify-center',
               isStarred ? 'bg-yellow-500/20' : 'bg-background/60',
+              isNativeMobile ? 'p-2 min-w-[40px] min-h-[40px]' : 'p-1.5',
             )}
           >
             <Star
-              size={14}
-              style={{ color: isStarred ? '#eab308' : undefined }}
-              className={isStarred ? undefined : 'text-muted-foreground/50'}
+              size={isNativeMobile ? 16 : 14}
+              style={{
+                color: isStarred ? '#eab308' : isNativeMobile ? '#94a3b8' : undefined,
+              }}
+              className={isStarred || isNativeMobile ? undefined : 'text-muted-foreground/50'}
               fill={isStarred ? '#eab308' : 'transparent'}
             />
           </Pressable>
@@ -182,33 +197,62 @@ export function ProjectCard({
       </View>
 
       {/* Info */}
-      <View className={compact ? 'px-3 py-2.5' : 'px-4 py-3.5'}>
-        <View className="flex-row items-center gap-2.5">
-          {renderLeading?.()}
-          <View className="flex-1 min-w-0">
-            <Text
-              className={cn(
-                'font-semibold text-card-foreground',
-                compact ? 'text-[13px]' : 'text-[15px]',
-              )}
-              numberOfLines={1}
-            >
-              {name || 'Untitled'}
-            </Text>
-            {subtitle ? (
+      <View className={compact ? 'px-3 py-3' : 'px-4 py-3.5'}>
+        {compact && (renderLeading || renderTrailing) ? (
+          <View className="gap-2">
+            <View className="flex-row items-start gap-2">
+              <View className="flex-1 min-w-0">
+                <Text
+                  className="font-semibold text-[14px] leading-[18px] text-card-foreground"
+                  numberOfLines={2}
+                >
+                  {name || 'Untitled'}
+                </Text>
+              </View>
+              {renderTrailing?.()}
+            </View>
+            <View className="flex-row items-center gap-2 min-w-0">
+              {renderLeading?.()}
+              <View className="flex-1 min-w-0">
+                {subtitle ? (
+                  <Text
+                    className="text-[11px] leading-[16px] text-muted-foreground"
+                    numberOfLines={2}
+                  >
+                    {subtitle}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        ) : (
+          <View className="flex-row items-center gap-2.5">
+            {renderLeading?.()}
+            <View className="flex-1 min-w-0">
               <Text
                 className={cn(
-                  'mt-0.5 leading-[18px] text-muted-foreground',
-                  compact ? 'text-[11px]' : 'text-[13px]',
+                  'font-semibold text-card-foreground',
+                  compact ? 'text-[14px] leading-[18px]' : 'text-[15px]',
                 )}
-                numberOfLines={compact ? 1 : 2}
+                numberOfLines={compact ? 2 : 1}
               >
-                {subtitle}
+                {name || 'Untitled'}
               </Text>
-            ) : null}
+              {subtitle ? (
+                <Text
+                  className={cn(
+                    'mt-0.5 leading-[18px] text-muted-foreground',
+                    compact ? 'text-[11px]' : 'text-[13px]',
+                  )}
+                  numberOfLines={compact ? 2 : 2}
+                >
+                  {subtitle}
+                </Text>
+              ) : null}
+            </View>
+            {renderTrailing?.()}
           </View>
-          {renderTrailing?.()}
-        </View>
+        )}
       </View>
     </Pressable>
   )
