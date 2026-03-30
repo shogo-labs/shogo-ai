@@ -87,6 +87,9 @@ type TabId = 'workspace' | 'people' | 'account' | 'security' | 'analytics'
 
 const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'analytics']
 
+/** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
+const SETTINGS_WIDE_BREAKPOINT = 768
+
 interface NavItem {
   id: TabId
   label: string
@@ -270,6 +273,8 @@ function SettingsSidebar({
 // ============================================================================
 
 const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
+  const { width } = useWindowDimensions()
+  const isWideNameSection = width >= SETTINGS_WIDE_BREAKPOINT
   const router = useRouter()
   const store = useDomain() as IDomainStore
   const actions = useDomainActions()
@@ -367,27 +372,71 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 
       <Card>
         <CardContent className="p-0">
-          {/* Name */}
-          <View className="px-6 py-5 flex-row items-start justify-between">
-            <View className="flex-[0.45] mr-4 pt-1">
+          {/* Name — stacked on narrow viewports; side-by-side on tablet/desktop */}
+          {isWideNameSection ? (
+            <View className="px-6 py-5 flex-row items-start justify-between">
+              <View className="flex-[0.45] mr-4 pt-1">
+                <Text className="text-base font-semibold text-foreground">
+                  Name
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  Your full workspace name, as visible to others.
+                </Text>
+              </View>
+              <View className="flex-[0.55]">
+                <View className="flex-row gap-2 items-start">
+                  <View className="flex-1">
+                    <Input
+                      value={name}
+                      onChangeText={(t) => {
+                        setName(t)
+                        setSaveStatus('idle')
+                      }}
+                    />
+                  </View>
+                  <Button
+                    onPress={handleSave}
+                    disabled={!hasChanges || !isValid || isSaving}
+                    size="sm"
+                  >
+                    {isSaving ? 'Saving...' : 'Save'}
+                  </Button>
+                </View>
+                <Text className="text-xs text-muted-foreground mt-1.5 text-right">
+                  {name.length} / 60 characters
+                </Text>
+                {saveStatus === 'saved' && (
+                  <Text className="text-xs text-green-600 mt-1">
+                    Changes saved successfully!
+                  </Text>
+                )}
+                {saveStatus === 'error' && (
+                  <Text className="text-xs text-destructive mt-1">
+                    Failed to save changes. Please try again.
+                  </Text>
+                )}
+              </View>
+            </View>
+          ) : (
+            <View className="px-6 py-5">
               <Text className="text-base font-semibold text-foreground">
                 Name
               </Text>
               <Text className="text-sm text-muted-foreground mt-0.5">
                 Your full workspace name, as visible to others.
               </Text>
-            </View>
-            <View className="flex-[0.55]">
-              <View className="flex-row gap-2 items-start">
-                <View className="flex-1">
-                  <Input
-                    value={name}
-                    onChangeText={(t) => {
-                      setName(t)
-                      setSaveStatus('idle')
-                    }}
-                  />
-                </View>
+              <Input
+                className="mt-3 w-full min-w-0"
+                value={name}
+                onChangeText={(t) => {
+                  setName(t)
+                  setSaveStatus('idle')
+                }}
+              />
+              <Text className="text-xs text-muted-foreground mt-1.5">
+                {name.length} / 60 characters
+              </Text>
+              <View className="mt-3 flex-row justify-end">
                 <Button
                   onPress={handleSave}
                   disabled={!hasChanges || !isValid || isSaving}
@@ -396,21 +445,18 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                   {isSaving ? 'Saving...' : 'Save'}
                 </Button>
               </View>
-              <Text className="text-xs text-muted-foreground mt-1.5 text-right">
-                {name.length} / 60 characters
-              </Text>
               {saveStatus === 'saved' && (
-                <Text className="text-xs text-green-600 mt-1">
+                <Text className="text-xs text-green-600 mt-2">
                   Changes saved successfully!
                 </Text>
               )}
               {saveStatus === 'error' && (
-                <Text className="text-xs text-destructive mt-1">
+                <Text className="text-xs text-destructive mt-2">
                   Failed to save changes. Please try again.
                 </Text>
               )}
             </View>
-          </View>
+          )}
         </CardContent>
       </Card>
 
@@ -895,11 +941,9 @@ const ROLE_COLORS: Record<string, string> = {
 type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
 type SortDir = 'asc' | 'desc'
 
-const PEOPLE_MOBILE_BREAKPOINT = 768
-
 const PeopleTab = observer(function PeopleTab() {
   const { width } = useWindowDimensions()
-  const isMobilePeopleLayout = width < PEOPLE_MOBILE_BREAKPOINT
+  const isMobilePeopleLayout = width < SETTINGS_WIDE_BREAKPOINT
 
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
@@ -1755,7 +1799,7 @@ function InviteMembersModal({
   actions: ReturnType<typeof useDomainActions>
 }) {
   const { width, height } = useWindowDimensions()
-  const compactInviteModal = width < PEOPLE_MOBILE_BREAKPOINT
+  const compactInviteModal = width < SETTINGS_WIDE_BREAKPOINT
 
   const workspaces = useWorkspaceCollection()
   const [emailInput, setEmailInput] = useState('')
@@ -2093,7 +2137,7 @@ export default observer(function SettingsPage() {
   const router = useRouter()
   const params = useLocalSearchParams<{ tab?: string }>()
   const { width } = useWindowDimensions()
-  const isWide = width >= 768
+  const isWide = width >= SETTINGS_WIDE_BREAKPOINT
   const { user } = useAuth()
   const currentWorkspace = useActiveWorkspace()
   const { features, localMode } = usePlatformConfig()
