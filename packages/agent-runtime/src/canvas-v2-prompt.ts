@@ -471,6 +471,53 @@ write_file({ path: "canvas/settings.ts", content: \`
 `
 
 // ---------------------------------------------------------------------------
+// Section 5: Brief canvas reference for non-canvas modes
+// Included when activeMode !== 'canvas' so the agent knows the correct
+// conventions if it writes canvas/ files from chat or agent mode.
+// ---------------------------------------------------------------------------
+
+export const CANVAS_FILE_REFERENCE = `## Canvas Files Reference
+
+Files in \`canvas/\` render as tabs in the canvas panel. Two authoring styles are supported:
+
+### Inline mode (\`.ts\`, recommended)
+Write the **body** of a function — no \`import\`, no \`export\`, no JSX. Use \`h()\` (createElement) and \`var\`.
+All React hooks (\`useState\`, \`useEffect\`, …), shadcn/ui components, Recharts, lucide-react icons, \`cn()\`, and \`fetch()\` are available as globals.
+
+\`\`\`
+write_file({ path: "canvas/dashboard.ts", content: "var _s = useState('overview')\\nreturn h('div', {className:'p-4'}, h(Card, {}, h(CardContent, {}, 'Hello')))" })
+\`\`\`
+
+### Module mode (\`.tsx\`)
+Use standard \`import\`/\`export default\` with JSX. Only the modules listed below are available — **any other import will fail at runtime** with \`Module not found\`.
+
+**Available imports:**
+- \`react\` — React, useState, useEffect, useMemo, useCallback, useRef, useReducer
+- \`recharts\` — LineChart, BarChart, AreaChart, PieChart, ResponsiveContainer, etc.
+- \`lucide-react\` — all icons
+- \`@/lib/cn\` — cn (classname merge)
+- \`@/components/ui/*\` — card, button, badge, input, label, textarea, checkbox, switch, select, tabs, table, dialog, alert, accordion, progress, separator, scroll-area, skeleton, tooltip, avatar, dropdown-menu, sheet, popover
+- \`@/components/canvas/*\` — layout, display, data, extended
+- \`@/canvas/data\` — bound canvas data
+- \`@/canvas/actions\` — onAction dispatcher
+- \`@shogo-ai/sdk\` — createClient, HttpClient, OptimisticStore
+
+**There is NO \`@/canvas\` module.** Use \`@/canvas/data\` or \`@/canvas/actions\` instead.
+
+\`\`\`tsx
+import React, { useState } from 'react';
+import { Card, CardContent } from '@/components/ui/card';
+export default function Dashboard() {
+  const [tab, setTab] = useState('overview');
+  return <div className="p-4"><Card><CardContent>Hello</CardContent></Card></div>;
+}
+\`\`\`
+
+### Validation
+After writing or editing canvas files, call \`read_lints\` to check for errors and fix immediately.
+`
+
+// ---------------------------------------------------------------------------
 // Legacy compat — re-export combined prompt for any code still importing
 // CANVAS_V2_PROMPT. New code should use the 4 individual sections.
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { CanvasCodeStreamParser } from './canvas-code-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
-import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES } from './canvas-v2-prompt'
+import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES, CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -152,7 +152,7 @@ export interface GatewayConfig {
   mcpServers?: Record<string, MCPServerConfig>
   /** Remote MCP servers (HTTP/StreamableHTTP) to connect on gateway start */
   remoteMcpServers?: Record<string, RemoteMCPServerConfig>
-  /** Active visual mode: canvas, app, or none (default: 'none') */
+  /** Active visual mode: canvas, app, or none (default: 'canvas') */
   activeMode?: VisualMode
   /** Modes this project is allowed to use (default: all modes for paid, ['canvas','none'] for basic) */
   allowedModes?: VisualMode[]
@@ -1847,7 +1847,7 @@ export class AgentGateway {
     const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
     const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
 
-    const activeMode = this.config.activeMode || 'none'
+    const activeMode = this.config.activeMode || 'canvas'
     // Inject mode-specific prompt sections
     if (activeMode === 'canvas') {
       if (this.config.canvasMode === 'code') {
@@ -1899,6 +1899,10 @@ When integrations are connected, use \`tool_search\` to discover available actio
         parts.push(BASIC_CANVAS_TOOLS_GUIDE)
         parts.push(BASIC_CANVAS_EXAMPLES)
       }
+    } else {
+      // Non-canvas modes: include a brief canvas file reference so the agent
+      // knows the correct conventions if it writes to canvas/ files.
+      parts.push(CANVAS_FILE_REFERENCE)
     }
     // General coding guide (edit_file, exec safety, code quality) — always included
     parts.push(CODE_AGENT_GENERAL_GUIDE)
@@ -2389,7 +2393,7 @@ When integrations are connected, use \`tool_search\` to discover available actio
   }
 
   getActiveMode(): VisualMode {
-    return this.config.activeMode || 'none'
+    return this.config.activeMode || 'canvas'
   }
 
   setActiveMode(mode: VisualMode): void {

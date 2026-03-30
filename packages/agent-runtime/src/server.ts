@@ -33,7 +33,6 @@ import {
   initializePostgresBackup,
   configureAIProxy,
 } from '@shogo/shared-runtime'
-import { buildAgentSystemPrompt } from './system-prompt'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
@@ -180,7 +179,7 @@ function ensureWorkspaceFiles(): void {
 // AI proxy is configured by the shared framework (state.aiProxy)
 
 // =============================================================================
-// Write CLAUDE.md for Claude Code to load
+// Write agent config files (.mcp.json)
 // =============================================================================
 
 function verifyMcpServerPath(): boolean {
@@ -192,11 +191,6 @@ function verifyMcpServerPath(): boolean {
 }
 
 function writeAgentConfigFiles(): void {
-  const claudeMdPath = resolve(WORKSPACE_DIR, 'CLAUDE.md')
-  const systemPromptContent = buildAgentSystemPrompt(WORKSPACE_DIR)
-  writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
-  logTiming('Wrote CLAUDE.md')
-
   const mcpServerValid = verifyMcpServerPath()
   if (!mcpServerValid) {
     logTiming('WARNING: MCP server path invalid — builder will use Write/Edit fallback')
@@ -730,7 +724,7 @@ app.get('/agent/chat/history', async (c) => {
     }
   }
 
-  const activeMode = agentGateway?.getActiveMode() || 'none'
+  const activeMode = agentGateway?.getActiveMode() || 'canvas'
   return c.json({ messages: simplified, activeMode })
 })
 
@@ -1093,7 +1087,7 @@ app.post('/agent/session/reset', async (c) => {
   const sm = agentGateway.getSessionManager()
   sm.clearHistory('chat')
   agentGateway.reloadConfig()
-  agentGateway.setActiveMode('none')
+  agentGateway.setActiveMode('canvas')
   agentGateway.setEvalLabel(body.evalLabel ?? null)
   await agentGateway.getMCPClientManager().stopAll()
   return c.json({ ok: true })
@@ -2667,7 +2661,7 @@ async function initializeEssentials(): Promise<void> {
   initDynamicAppManager(canvasStatePath)
   logTiming('Canvas state manager initialized')
 
-  // Write CLAUDE.md and .mcp.json (function logs timing internally)
+  // Write .mcp.json (function logs timing internally)
   writeAgentConfigFiles()
   logTiming('Essentials complete')
 

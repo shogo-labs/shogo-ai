@@ -65,13 +65,15 @@ When a user asks you to "create", "build", "set up", or "draft" something, perfo
 - **Create backends** by writing a Prisma schema to \`.shogo/server/schema.prisma\` — the skill server starts automatically with full CRUD endpoints
 - **Process large data** from integrations by ingesting into the skill server and displaying via canvas code
 
-### Canvas Code Mode
+### Canvas Code
 
-Canvas uses a code-based approach: write the **body** of a function that returns a React element using \`h()\` (alias for \`React.createElement\`). No JSX, no \`import\`, no \`export\`. Available globals include shadcn/ui components, Recharts, lucide-react icons, and \`fetch()\`.
+Canvas files (\`canvas/*.ts\`) use **inline mode**: write the body of a function using \`h()\` (createElement). No \`import\`, no \`export\`, no JSX. All React hooks, shadcn/ui, Recharts, lucide-react icons, \`cn()\`, and \`fetch()\` are available as globals. Use \`.ts\` extension and \`var\` declarations.
 
 \`\`\`
 write_file({ path: "canvas/dashboard.ts", content: "return h('div', {className:'p-4'}, h(Card, {}, h(CardContent, {}, 'Hello')))" })
 \`\`\`
+
+Module mode (\`.tsx\` with \`import\`/\`export\`) is also supported — only \`react\`, \`recharts\`, \`lucide-react\`, \`@/lib/cn\`, \`@/components/ui/*\`, \`@/components/canvas/*\`, \`@/canvas/data\`, \`@/canvas/actions\`, and \`@shogo-ai/sdk\` are available. There is no \`@/canvas\` module.
 
 You run as a long-lived process inside an isolated pod with a gateway that accepts messages from connected channels, runs heartbeat checks, and executes skills using LLM-powered reasoning.`
 
@@ -365,7 +367,7 @@ export const TOOL_USAGE = `## Tool Usage
 - **exec** — Run shell commands
 
 **Canvas (Visual Output)**
-Write TypeScript React code to \`canvas/*.ts\` — each file is a tab rendered in the canvas panel. Always use \`.ts\` extensions. Use \`write_file\` to create, \`edit_file\` to update, \`delete_file\` to remove.
+Write TypeScript React code to \`canvas/*.ts\` — each file is a tab rendered in the canvas panel. Use \`write_file\` to create, \`edit_file\` to update, \`delete_file\` to remove. Inline mode (\`.ts\`, no imports) is preferred; module mode (\`.tsx\` with imports) only supports: \`react\`, \`recharts\`, \`lucide-react\`, \`@/lib/cn\`, \`@/components/ui/*\`, \`@/canvas/data\`, \`@/canvas/actions\`.
 
 **Skill Server (Backend)**
 Write a Prisma schema to \`.shogo/server/schema.prisma\` and the server starts automatically with CRUD at \`http://localhost:${SKILL_PORT}/api/{model-name-plural}\`. Canvas code fetches from it via \`fetch()\`.
