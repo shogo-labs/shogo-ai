@@ -393,21 +393,22 @@ export default observer(function BillingPage() {
         </View>
       </View>
 
-      {/* Plan Cards */}
-      <View className="gap-6 md:flex-row md:items-start">
+      {/* Plan Cards — md row: equal-height columns; tier slot reserves space so CTAs align */}
+      <View className="gap-6 md:flex-row md:items-stretch">
         {/* Basic Plan */}
-        <View className="md:flex-1 md:w-0">
-          <Card>
-            <CardContent className="p-5 gap-5">
+        <View className="md:flex-1 md:w-0 flex flex-col">
+          <View className="hidden md:block md:min-h-8" />
+          <Card className="md:flex-1 flex flex-col">
+            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Sparkles size={20} className="text-green-500" />
                 <Text className="text-lg font-semibold text-foreground">Basic</Text>
               </View>
-              <Text className="text-sm text-muted-foreground">
+              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
                 More credits with the fast AI model for individuals getting started.
               </Text>
 
-              <View>
+              <View className="md:min-h-[100px]">
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
                     {regionalPricing
@@ -423,6 +424,8 @@ export default observer(function BillingPage() {
                 )}
               </View>
 
+              <View className="hidden md:block md:min-h-[76px]" />
+
               <Pressable
                 onPress={() => handleCheckout('basic' as any, BASIC_TIER.credits)}
                 disabled={isCheckoutLoading}
@@ -433,7 +436,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="gap-2">
+              <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {BASIC_TIER.credits} credits / month
                 </Text>
@@ -447,18 +450,19 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Pro Plan */}
-        <View className="md:flex-1 md:w-0">
-          <Card>
-            <CardContent className="p-5 gap-5">
+        <View className="md:flex-1 md:w-0 flex flex-col">
+          <View className="hidden md:block md:min-h-8" />
+          <Card className="md:flex-1 flex flex-col">
+            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Zap size={20} className="text-blue-500" />
                 <Text className="text-lg font-semibold text-foreground">Pro</Text>
               </View>
-              <Text className="text-sm text-muted-foreground">
+              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
                 Designed for fast-moving teams building together in real time.
               </Text>
 
-              <View>
+              <View className="md:min-h-[100px]">
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
                     {regionalPricing
@@ -475,7 +479,7 @@ export default observer(function BillingPage() {
                 </Text>
               </View>
 
-              <View>
+              <View className="md:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
                   Monthly credits
                 </Text>
@@ -496,7 +500,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="gap-2">
+              <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {proTier.credits.toLocaleString()} credits / month
                 </Text>
@@ -510,23 +514,23 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Business Plan */}
-        <View className="md:flex-1 md:w-0">
-          <View className="items-center" style={{ marginBottom: -12, zIndex: 1 }}>
+        <View className="md:flex-1 md:w-0 flex flex-col">
+          <View className="min-h-8 items-center justify-center px-1">
             <Badge className="bg-primary">
               <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
             </Badge>
           </View>
-          <Card className="border-primary">
-            <CardContent className="p-5 gap-5 pt-6">
+          <Card className="md:flex-1 flex flex-col border-primary">
+            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Building2 size={20} className="text-purple-500" />
                 <Text className="text-lg font-semibold text-foreground">Business</Text>
               </View>
-              <Text className="text-sm text-muted-foreground">
+              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
                 Advanced controls and power features for growing departments
               </Text>
 
-              <View>
+              <View className="md:min-h-[100px]">
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
                     {regionalPricing
@@ -543,7 +547,7 @@ export default observer(function BillingPage() {
                 </Text>
               </View>
 
-              <View>
+              <View className="md:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
                   Monthly credits
                 </Text>
@@ -564,7 +568,7 @@ export default observer(function BillingPage() {
                 </Text>
               </Pressable>
 
-              <View className="gap-2">
+              <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
                   {businessTier.credits.toLocaleString()} credits / month
                 </Text>
@@ -575,21 +579,24 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Enterprise Plan */}
-        <View className="md:flex-1 md:w-0">
-          <Card>
-            <CardContent className="p-5 gap-5">
+        <View className="md:flex-1 md:w-0 flex flex-col">
+          <View className="hidden md:block md:min-h-8" />
+          <Card className="md:flex-1 flex flex-col">
+            <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2">
                 <Crown size={20} className="text-amber-500" />
                 <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
               </View>
-              <Text className="text-sm text-muted-foreground">
+              <Text className="md:min-h-[44px] text-sm text-muted-foreground">
                 Built for large orgs needing flexibility, scale, and governance.
               </Text>
 
-              <View>
+              <View className="md:min-h-[100px]">
                 <Text className="text-4xl font-bold text-foreground">Custom</Text>
                 <Text className="text-sm text-muted-foreground">Flexible plans</Text>
               </View>
+
+              <View className="hidden md:block md:min-h-[76px]" />
 
               <Pressable
                 onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
@@ -598,7 +605,9 @@ export default observer(function BillingPage() {
                 <Text className="text-sm font-medium text-foreground">Book a demo</Text>
               </Pressable>
 
-              <FeatureList features={ENTERPRISE_FEATURES} />
+              <View className="md:flex-1">
+                <FeatureList features={ENTERPRISE_FEATURES} />
+              </View>
             </CardContent>
           </Card>
         </View>
