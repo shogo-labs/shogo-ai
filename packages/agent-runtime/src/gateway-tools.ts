@@ -136,7 +136,7 @@ function truncateExecOutput(text: string): string {
   const tailSize = MAX_EXEC_OUTPUT_CHARS - headSize
   const head = text.substring(0, headSize)
   const tail = text.substring(text.length - tailSize)
-  return `${head}\n\n... [${text.length - MAX_EXEC_OUTPUT_CHARS} chars truncated] ...\n\n${tail}`
+  return `${head}\n\n... [${text.length - MAX_EXEC_OUTPUT_CHARS} chars truncated — use head/tail/grep for more targeted output] ...\n\n${tail}`
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
       if (lineCount > 500) {
         result.totalLines = lineCount
-        result.note = `Large file (${lineCount} lines). Consider using offset/limit for partial reads to conserve context.`
+        result.note = `Large file (${lineCount} lines). Use offset/limit to read specific sections, or grep to find the code you need. Reading the whole file wastes context.`
       }
       return textResult(result)
     },
@@ -580,7 +580,12 @@ function createGrepTool(ctx: ToolContext): AgentTool {
             }
           } catch { /* skip malformed lines */ }
         }
-        return textResult({ pattern, matches, count: matches.length })
+        const grepResult: Record<string, any> = { pattern, matches, count: matches.length }
+        if (matches.length >= max_results) {
+          grepResult.truncated = true
+          grepResult.note = `Showing first ${max_results} matches. Use a more specific pattern or include filter to narrow results.`
+        }
+        return textResult(grepResult)
       } else {
         try {
           const regex = new RegExp(pattern, 'gm')
@@ -612,7 +617,12 @@ function createGrepTool(ctx: ToolContext): AgentTool {
               }
             } catch { /* skip unreadable files */ }
           }
-          return textResult({ pattern, matches, count: matches.length, fallback: true })
+          const fallbackResult: Record<string, any> = { pattern, matches, count: matches.length, fallback: true }
+          if (matches.length >= max_results) {
+            fallbackResult.truncated = true
+            fallbackResult.note = `Showing first ${max_results} matches. Use a more specific pattern or include filter to narrow results.`
+          }
+          return textResult(fallbackResult)
         } catch (err: any) {
           return textResult({ error: `Grep failed: ${err.message}` })
         }
@@ -922,6 +932,92 @@ async function stripHtmlToText(html: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Wikipedia: Parsoid HTML → Markdown via Turndown
+// ---------------------------------------------------------------------------
+
+const WIKIPEDIA_URL_RE = /^https?:\/\/([a-z]{2,})\.wikipedia\.org\/wiki\/(.+)/i
+
+function parseWikipediaUrl(url: string): { lang: string; title: string } | null {
+  const m = url.match(WIKIPEDIA_URL_RE)
+  if (!m) return null
+  const rawTitle = m[2].split('#')[0].split('?')[0]
+  return { lang: m[1], title: decodeURIComponent(rawTitle) }
+}
+
+async function fetchWikipediaAsMarkdown(lang: string, title: string, maxChars: number): Promise<string> {
+  const TurndownService = (await import('turndown')).default
+  const { gfm } = await import('turndown-plugin-gfm') as { gfm: (s: any) => void }
+
+  const apiTitle = encodeURIComponent(title.replace(/ /g, '_'))
+  const apiUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/html/${apiTitle}`
+
+  const resp = await fetch(apiUrl, {
+    headers: {
+      'Accept': 'text/html; charset=utf-8; profile="https://www.mediawiki.org/wiki/Specs/HTML/2.8.0"',
+      'User-Agent': 'ShogoAgent/1.0 (https://shogo.dev; russell@shogo.dev)',
+    },
+    signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+    redirect: 'follow',
+  })
+
+  if (!resp.ok) return ''
+
+  const html = await resp.text()
+
+  const { parseHTML } = await import('linkedom')
+  const { document } = parseHTML(html)
+
+  const removeSelectors = [
+    'style', 'link[rel="stylesheet"]',
+    '.mw-ref', 'sup.reference',
+    '.navbox', '.sisternav', '.portal',
+    '.mw-editsection',
+    '.mw-empty-elt',
+    '.noprint',
+    '.mw-authority-control',
+    '.ambox', '.tmbox', '.ombox', '.cmbox', '.fmbox',   // maintenance/warning boxes
+    '.hatnote',                                          // disambiguation notes
+    '.mw-indicators',                                    // page status indicators
+    '.catlinks',                                         // category links footer
+    'figure[typeof*="mw:File"]',                         // images (drop entirely for text focus)
+    'img',                                               // stray images
+  ]
+  for (const sel of removeSelectors) {
+    document.querySelectorAll(sel).forEach((el: any) => el.remove())
+  }
+
+  // Convert internal wiki links to plain text (remove href noise)
+  document.querySelectorAll('a[rel="mw:WikiLink"]').forEach((el: any) => {
+    const span = document.createElement('span')
+    span.textContent = el.textContent
+    el.replaceWith(span)
+  })
+
+  const turndown = new TurndownService({
+    headingStyle: 'atx',
+    codeBlockStyle: 'fenced',
+    bulletListMarker: '-',
+  })
+  turndown.use(gfm)
+  turndown.remove('style')
+  turndown.remove('img')
+
+  let markdown = turndown.turndown(document.toString())
+
+  // Clean up excessive whitespace
+  markdown = markdown
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\s+$/gm, '')
+    .trim()
+
+  if (markdown.length > maxChars) {
+    markdown = markdown.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
+  }
+
+  return markdown
+}
+
+// ---------------------------------------------------------------------------
 // Serper.dev Web Search
 // ---------------------------------------------------------------------------
 
@@ -1206,6 +1302,20 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
   const cacheKey = webCacheKey('fetch', JSON.stringify({ url, maxChars }))
   const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
   if (cached) return cached
+
+  // Wikipedia: use Parsoid REST API → Markdown for much better structured content
+  const wiki = parseWikipediaUrl(url)
+  if (wiki) {
+    try {
+      const markdown = await fetchWikipediaAsMarkdown(wiki.lang, wiki.title, maxChars)
+      if (markdown.length > 100) {
+        const result = textResult({ content: markdown, status: 200, bytes: markdown.length, url, type: 'wikipedia-markdown' })
+        await webCachePut(cacheKey, result)
+        return result
+      }
+    } catch {}
+    // Fall through to normal fetch if Wikipedia API fails
+  }
 
   const headers: Record<string, string> = {
     'User-Agent': BROWSER_USER_AGENT,

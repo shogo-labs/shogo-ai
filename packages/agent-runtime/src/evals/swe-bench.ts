@@ -13,6 +13,7 @@
  *   bun run src/evals/swe-bench.ts --model haiku --split dev --workers 2 --verbose
  *   bun run src/evals/swe-bench.ts --model haiku --split dev --filter django --verbose
  *   bun run src/evals/swe-bench.ts --model haiku --split dev --build
+ *   bun run src/evals/swe-bench.ts --model gpt54mini --split dev --dataset full --workers 4
  */
 
 import { execSync } from 'child_process'
@@ -53,6 +54,7 @@ const args = process.argv.slice(2)
 
 const modelArg = getArg(args, 'model', 'haiku')!
 const splitArg = getArg(args, 'split', 'dev')!
+const datasetArg = getArg(args, 'dataset', 'lite')!  // 'lite' or 'full'
 const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const filterArg = getArg(args, 'filter')
 const dataDir = getArg(args, 'data', resolve(REPO_ROOT, '.swe-bench/data'))!
@@ -84,7 +86,8 @@ interface SWEBenchInstance {
 // ---------------------------------------------------------------------------
 
 function loadInstances(): SWEBenchInstance[] {
-  const jsonlPath = resolve(dataDir, `swe-bench-lite-${splitArg}.jsonl`)
+  const prefix = datasetArg === 'full' ? 'swe-bench' : 'swe-bench-lite'
+  const jsonlPath = resolve(dataDir, `${prefix}-${splitArg}.jsonl`)
   return loadJsonl<SWEBenchInstance>(jsonlPath, `Download it first with the HuggingFace API or place it at the expected path.`)
 }
 
@@ -240,9 +243,11 @@ registerCleanupHandlers(() => globalWorkers, 'swe-bench-crash.log')
 async function main() {
   console.log('')
   console.log('='.repeat(60))
-  console.log('SWE-BENCH LITE BENCHMARK (Docker)')
+  const datasetLabel = datasetArg === 'full' ? 'SWE-BENCH' : 'SWE-BENCH LITE'
+  console.log(`${datasetLabel} BENCHMARK (Docker)`)
   console.log('='.repeat(60))
   console.log(`  Model:     ${MODEL_MAP[modelArg] || modelArg}`)
+  console.log(`  Dataset:   ${datasetLabel}`)
   console.log(`  Split:     ${splitArg}`)
   console.log(`  Workers:   ${workersArg}`)
   console.log(`  Data:      ${dataDir}`)
@@ -443,9 +448,10 @@ async function main() {
 
   console.log('')
   console.log('='.repeat(60))
-  console.log('SWE-BENCH LITE RESULTS')
+  console.log(`${datasetLabel} RESULTS`)
   console.log('='.repeat(60))
   console.log(`  Model:        ${MODEL_MAP[modelArg] || modelArg}`)
+  console.log(`  Dataset:      ${datasetLabel}`)
   console.log(`  Split:        ${splitArg}`)
   console.log(`  Workers:      ${numWorkers}`)
   console.log(`  Total:        ${finalResults.length}`)

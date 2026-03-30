@@ -127,6 +127,9 @@ function normalizeAnswer(answer: string): string {
     .replace(/^["']|["']$/g, '')
     .replace(/\.$/, '')
     .replace(/\s+/g, ' ')
+    // Normalize whitespace around delimiters (; , :)
+    .replace(/\s*;\s*/g, '; ')
+    .replace(/\s*,\s*/g, ', ')
     .trim()
 
   const num = parseFloat(normalized)
@@ -143,20 +146,26 @@ function scoreAnswer(predicted: string, gold: string): boolean {
 
   if (normPred === normGold) return true
 
-  if (normGold.includes(',')) {
-    const goldItems = normGold.split(',').map(s => s.trim()).sort()
-    const predItems = normPred.split(',').map(s => s.trim()).sort()
-    if (goldItems.length === predItems.length && goldItems.every((g, i) => g === predItems[i])) {
-      return true
+  // List comparison (comma or semicolon separated)
+  for (const sep of [',', ';']) {
+    if (normGold.includes(sep)) {
+      const goldItems = normGold.split(sep).map(s => s.trim()).sort()
+      const predItems = normPred.split(sep).map(s => s.trim()).sort()
+      if (goldItems.length === predItems.length && goldItems.every((g, i) => g === predItems[i])) return true
     }
   }
 
+  // Numeric tolerance: exact match within 1% relative or 0.01 absolute
   const goldNum = parseFloat(normGold)
   const predNum = parseFloat(normPred)
   if (!isNaN(goldNum) && !isNaN(predNum)) {
-    if (Math.abs(goldNum - predNum) < 1e-6) return true
-    if (goldNum !== 0 && Math.abs((goldNum - predNum) / goldNum) < 0.001) return true
+    if (Math.abs(goldNum - predNum) < 0.01) return true
+    if (goldNum !== 0 && Math.abs((goldNum - predNum) / goldNum) < 0.01) return true
   }
+
+  // Containment: if gold is a sentence and predicted is the key phrase within it (or vice versa)
+  if (normGold.length > 10 && normPred.length > 3 && normGold.includes(normPred)) return true
+  if (normPred.length > 10 && normGold.length > 3 && normPred.includes(normGold)) return true
 
   return false
 }

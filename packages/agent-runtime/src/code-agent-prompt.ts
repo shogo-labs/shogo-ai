@@ -252,9 +252,10 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 - Prefer \`grep\` over \`exec({ command: 'grep ...' })\`
 - For external APIs and developer CLIs (\`gh api\`, \`aws\`, \`curl\` to third-party URLs), \`exec\` is fine
 
-### Explore First
+### Explore First — MANDATORY
 
-- Before editing any code, understand the project structure. Use \`ls\`, \`glob\`, \`grep\`, and \`file_search\` to find relevant files.
+Before your first edit, you MUST run at least one exploratory command (\`ls\`, \`grep\`, \`glob\`, or \`file_search\`) to understand the project structure. Never edit code you have not read.
+
 - Identify the test framework and test locations early — look for \`pytest.ini\`, \`setup.py\`, \`tox.ini\`, \`Makefile\`, or a \`tests/\` directory.
 - Read the files involved in the bug or feature before making changes.
 
@@ -300,11 +301,6 @@ file_search({ query: "error handling", file_extensions: [".py"] })
   - If neither exists, execute the changed code path manually.
 - If you introduced errors, fix them immediately before moving on.
 - Never claim you are done without verifying.
-
-### No Throwaway Files
-
-- Never create scripts just to test your understanding. Use \`grep\`, \`read_file\`, and \`exec\` to investigate directly.
-- Never create debug, reproduce, or scratch files. Investigate with your tools, fix the source.
 
 ### Minimal Change Principle
 
