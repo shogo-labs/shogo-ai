@@ -20,7 +20,7 @@ export const projectInviteTemplate: EmailTemplate<{
       <strong>{{projectName}}</strong> project as
       <span class="email-badge">{{role}}</span>.
     </p>
-    <a href="{{acceptUrl}}" class="email-btn">Accept Invitation</a>
+    <a href="{{acceptUrl}}" class="email-btn" style="color:#ffffff;text-decoration:none;">Accept Invitation</a>
     <hr class="email-divider">
     <p class="email-muted">
       If you weren't expecting this, you can safely ignore this email.
