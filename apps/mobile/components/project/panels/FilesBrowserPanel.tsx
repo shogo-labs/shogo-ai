@@ -287,29 +287,27 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const [showNewDialog, setShowNewDialog] = useState<'file' | 'folder' | null>(null)
   const [newName, setNewName] = useState('')
   const [newItemParentDir, setNewItemParentDir] = useState<string | null>(null)
-  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0)
+  /** Native: keyboard height for layout. Android: also shifts the new-file dialog (absolute; adjustResize still overlaps it). iOS: pads the panel so search, editor, and bottom actions stay above the keyboard. */
+  const [nativeKeyboardHeight, setNativeKeyboardHeight] = useState(0)
 
   const hasChanges = content !== savedContent
 
-  // Android's soft keyboard overlaps absolutely-positioned elements even with
-  // adjustResize, so we track the keyboard height and shift the dialog up manually.
-  // Not needed on iOS (KeyboardAvoidingView / adjustPan handle it) or web.
   useEffect(() => {
-    if (Platform.OS !== 'android' || !showNewDialog) {
-      setAndroidKeyboardHeight(0)
+    if (Platform.OS === 'web' || !visible) {
+      setNativeKeyboardHeight(0)
       return
     }
-    const onShow = Keyboard.addListener('keyboardDidShow', (e) =>
-      setAndroidKeyboardHeight(e.endCoordinates.height),
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const onShow = Keyboard.addListener(showEvt, (e) =>
+      setNativeKeyboardHeight(e.endCoordinates.height),
     )
-    const onHide = Keyboard.addListener('keyboardDidHide', () =>
-      setAndroidKeyboardHeight(0),
-    )
+    const onHide = Keyboard.addListener(hideEvt, () => setNativeKeyboardHeight(0))
     return () => {
       onShow.remove()
       onHide.remove()
     }
-  }, [showNewDialog])
+  }, [visible])
 
   // -------------------------------------------------------------------------
   // Data Loading
@@ -668,7 +666,14 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const showEditor = !isNarrow || showEditorOnNarrow
 
   return (
-    <View className="absolute inset-0 flex-row">
+    <View
+      className="absolute inset-0 flex-row"
+      style={
+        Platform.OS === 'ios' && nativeKeyboardHeight > 0
+          ? { paddingBottom: nativeKeyboardHeight }
+          : undefined
+      }
+    >
       {/* Sidebar */}
       <View
         className={cn(
@@ -884,7 +889,9 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         {showNewDialog && (
           <View
             className="absolute left-2 right-2 bg-background border border-border rounded-lg p-3 shadow-lg z-10"
-            style={{ bottom: NEW_DIALOG_BOTTOM + androidKeyboardHeight }}
+            style={{
+              bottom: NEW_DIALOG_BOTTOM + (Platform.OS === 'android' ? nativeKeyboardHeight : 0),
+            }}
           >
             <Text className="text-xs font-medium text-foreground mb-2">
               {newItemParentDir
