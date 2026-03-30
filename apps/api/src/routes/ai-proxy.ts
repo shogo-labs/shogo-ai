@@ -1789,6 +1789,66 @@ export function aiProxyRoutes() {
         }
       }
 
+      // ── Cloud routing: OpenAI models (convert Anthropic → OpenAI format) ──
+      const resolvedModelConfig = resolveModel(resolvedModel)
+      if (resolvedModelConfig && resolvedModelConfig.provider === 'openai') {
+        const openaiApiKey = process.env.OPENAI_API_KEY
+        if (!openaiApiKey) {
+          return c.json(
+            { type: 'error', error: { type: 'api_error', message: 'OpenAI provider is not configured on this server.' } },
+            503
+          )
+        }
+
+        const openaiMessages = convertAnthropicRequestToOpenAIMessages(parsed)
+        const openaiBody: any = {
+          model: resolvedModel,
+          messages: openaiMessages,
+          stream: isStream,
+        }
+        if (parsed.max_tokens) openaiBody.max_completion_tokens = parsed.max_tokens
+        if (parsed.temperature !== undefined) openaiBody.temperature = parsed.temperature
+        if (parsed.tools) {
+          openaiBody.tools = parsed.tools.map((t: any) => ({
+            type: 'function',
+            function: { name: t.name, description: t.description, parameters: t.input_schema },
+          }))
+        }
+
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${openaiApiKey}`,
+          },
+          body: JSON.stringify(openaiBody),
+        })
+        if (!response.ok) {
+          const errorText = await response.text()
+          return c.json(
+            { type: 'error', error: { type: 'api_error', message: `OpenAI error (${response.status}): ${errorText}` } },
+            response.status as any
+          )
+        }
+
+        if (isStream) {
+          const anthropicStream = convertOpenAIStreamToAnthropicStream(response.body!, resolvedModel)
+          return new Response(anthropicStream, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'X-Proxy-Provider': 'openai',
+              'X-Proxy-Model': resolvedModel,
+            },
+          })
+        } else {
+          const openaiResult = await response.json() as any
+          recordUsage(tokenPayload, resolvedModel, openaiResult.usage?.prompt_tokens || 0, openaiResult.usage?.completion_tokens || 0)
+          const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
+          return c.json(anthropicResult)
+        }
+      }
+
       // ── Cloud routing: forward to Anthropic API ──
       const anthropicApiKey = process.env.ANTHROPIC_API_KEY
       if (!anthropicApiKey) {
