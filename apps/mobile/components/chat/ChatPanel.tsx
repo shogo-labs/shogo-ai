@@ -1722,21 +1722,28 @@ export const ChatPanel = observer(function ChatPanel({
 
     isLoadingOlderRef.current = true
 
-    const currentMsgs = studioChat.chatMessageCollection.all
-      .filter((msg: any) => msg.sessionId === currentSessionId)
-    const currentCount = currentMsgs.length
+    const existingMobxIds = new Set(
+      studioChat.chatMessageCollection.all
+        .filter((msg: any) => msg.sessionId === currentSessionId)
+        .map((msg: any) => msg.id)
+    )
 
     try {
       await studioChat.chatMessageCollection.loadPage(
         { sessionId: currentSessionId },
-        { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
+        { limit: MESSAGE_PAGE_SIZE, offset: existingMobxIds.size },
       )
 
-      const allLoaded = studioChat.chatMessageCollection.all
-        .filter((msg: any) => msg.sessionId === currentSessionId)
+      const newlyLoaded = studioChat.chatMessageCollection.all
+        .filter((msg: any) => msg.sessionId === currentSessionId && !existingMobxIds.has(msg.id))
         .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
 
-      const aiMessages = allLoaded.map((msg: any) => {
+      if (newlyLoaded.length === 0) {
+        isLoadingOlderRef.current = false
+        return
+      }
+
+      const olderMessages = newlyLoaded.map((msg: any) => {
         const baseMessage: any = {
           id: msg.id,
           role: msg.role as "user" | "assistant",
@@ -1752,7 +1759,7 @@ export const ChatPanel = observer(function ChatPanel({
         return baseMessage
       })
 
-      setMessages(aiMessages)
+      setMessages((currentMessages) => [...olderMessages, ...currentMessages])
     } catch (err) {
       console.error("[ChatPanel] Failed to load older messages:", err)
     } finally {
