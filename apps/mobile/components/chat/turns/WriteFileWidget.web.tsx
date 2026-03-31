@@ -130,14 +130,18 @@ export function WriteFileWidget({
       {/* Header */}
       <Pressable
         onPress={handleToggle}
-        className="w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-900 dark:bg-gray-950"
+        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-900 dark:bg-gray-950"
       >
-        {isExpanded ? (
-          <ChevronDown className="w-2.5 h-2.5 text-gray-500" />
-        ) : (
-          <ChevronRight className="w-2.5 h-2.5 text-gray-500" />
-        )}
-        <FilePlus2 className="w-3 h-3 text-emerald-500" size={12} />
+        <View className="group-hover:hidden">
+          <FilePlus2 className="w-3 h-3 text-emerald-500" size={12} />
+        </View>
+        <View className="hidden group-hover:flex">
+          {isExpanded ? (
+            <ChevronDown className="w-3 h-3 text-gray-500" size={12} />
+          ) : (
+            <ChevronRight className="w-3 h-3 text-gray-500" size={12} />
+          )}
+        </View>
 
         <View className="bg-gray-800 rounded px-1 py-0.5">
           <Text className="text-[8px] font-medium text-gray-400 uppercase tracking-wide">

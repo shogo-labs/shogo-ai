@@ -91,16 +91,20 @@ export function ExecWidget({
       <Pressable
         onPress={handleToggle}
         className={cn(
-          "w-full flex-row items-center gap-1.5 py-1.5 px-2",
+          "group w-full flex-row items-center gap-1.5 py-1.5 px-2",
           "bg-gray-900 dark:bg-gray-950",
         )}
       >
-        {isExpanded ? (
-          <ChevronDown className="w-2.5 h-2.5 text-gray-500" />
-        ) : (
-          <ChevronRight className="w-2.5 h-2.5 text-gray-500" />
-        )}
-        <Terminal className="w-3 h-3 text-emerald-500" size={12} />
+        <View className="group-hover:hidden">
+          <Terminal className="w-3 h-3 text-emerald-500" size={12} />
+        </View>
+        <View className="hidden group-hover:flex">
+          {isExpanded ? (
+            <ChevronDown className="w-3 h-3 text-gray-500" size={12} />
+          ) : (
+            <ChevronRight className="w-3 h-3 text-gray-500" size={12} />
+          )}
+        </View>
         <Text className="flex-1 font-mono text-[10px] text-gray-300" numberOfLines={1}>
           <Text className="text-emerald-400">$</Text> {displayCmd}
         </Text>
