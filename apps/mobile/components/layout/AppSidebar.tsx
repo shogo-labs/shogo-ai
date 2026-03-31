@@ -1317,14 +1317,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-            <NavItem
-              icon={Key}
-              label="API Keys"
-              href="/(app)/api-keys"
-              active={isRouteActive(pathname, '/(app)/api-keys')}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
+            {!localMode && (
+              <NavItem
+                icon={Key}
+                label="API Keys"
+                href="/(app)/api-keys"
+                active={isRouteActive(pathname, '/(app)/api-keys')}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            )}
             <NavItem
               icon={ExternalLink}
               label="Docs"

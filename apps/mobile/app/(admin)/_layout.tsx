@@ -22,6 +22,7 @@ import {
   BarChart3,
   Server,
   Settings,
+  BrainCircuit,
   ArrowLeft,
   Shield,
   Menu,
@@ -46,10 +47,14 @@ const BASE_NAV_ITEMS = [
 
 const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' }
 
-const LOCAL_NAV_ITEMS = [
+const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
-  { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' },
+] as const
+
+const LOCAL_SETTINGS_ITEMS = [
+  { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
+  { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
 
 function useAdminCheck() {
@@ -153,7 +158,7 @@ function AdminSidebar({
   const router = useRouter()
   const pathname = usePathname()
   const { features, localMode } = usePlatformConfig()
-  const NAV_ITEMS = localMode ? LOCAL_NAV_ITEMS : features.billing ? BASE_NAV_ITEMS : [...BASE_NAV_ITEMS, LOCAL_NAV_ITEM]
+  const NAV_ITEMS = localMode ? LOCAL_MAIN_ITEMS : features.billing ? BASE_NAV_ITEMS : [...BASE_NAV_ITEMS, LOCAL_NAV_ITEM]
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)
@@ -221,6 +226,44 @@ function AdminSidebar({
             </Pressable>
           )
         })}
+
+        {localMode && (
+          <>
+            <View className="mx-3 mt-4 mb-2 border-t border-border" />
+            <Text className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Settings
+            </Text>
+            {LOCAL_SETTINGS_ITEMS.map((item) => {
+              const Icon = item.icon
+              const active = isNavActive(pathname, item.href)
+              return (
+                <Pressable
+                  key={item.href}
+                  onPress={() => handleNav(item.href)}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.label}
+                  className={cn(
+                    'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
+                    active ? 'bg-primary/10' : 'active:bg-muted/50'
+                  )}
+                >
+                  <Icon
+                    size={18}
+                    className={active ? 'text-primary' : 'text-muted-foreground'}
+                  />
+                  <Text
+                    className={cn(
+                      'text-sm font-medium flex-1',
+                      active ? 'text-primary' : 'text-foreground'
+                    )}
+                  >
+                    {item.label}
+                  </Text>
+                </Pressable>
+              )
+            })}
+          </>
+        )}
       </View>
 
       {/* Footer */}
@@ -294,6 +337,8 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
+  if (pathname.includes('general')) return 'General'
+  if (pathname.includes('settings')) return 'AI Settings'
   return 'Dashboard'
 }
 

@@ -263,6 +263,10 @@ export function startInstanceTunnel() {
   connect()
 }
 
+export function isTunnelConnected(): boolean {
+  return ws !== null && ws.readyState === WebSocket.OPEN
+}
+
 export function stopInstanceTunnel() {
   stopped = true
   if (reconnectTimer) {
