@@ -274,7 +274,7 @@ export default observer(function BillingPage() {
     >
       {/* Header */}
       <View className="flex-row items-center gap-3 mb-6">
-        <Pressable onPress={() => router.back()}>
+        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)')}>
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
         <View className="flex-1">
