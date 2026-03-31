@@ -127,17 +127,17 @@
         "opt1": {
           "id": "opt1",
           "component": "Text",
-          "text": "\"Connect my Google Calendar\" for daily schedule"
+          "text": "• \"Connect my Google Calendar\" for daily schedule"
         },
         "opt2": {
           "id": "opt2",
           "component": "Text",
-          "text": "\"Track exercise and reading habits\" for habit tracking"
+          "text": "• \"Track exercise and reading habits\" for habit tracking"
         },
         "opt3": {
           "id": "opt3",
           "component": "Text",
-          "text": "\"Remind me to...\" for reminders and tasks"
+          "text": "• \"Remind me to...\" for reminders and tasks"
         }
       },
       "dataModel": {

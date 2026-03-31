@@ -621,30 +621,71 @@ export const ChatPanel = observer(function ChatPanel({
   const MESSAGE_PAGE_SIZE = 10
   const isNative = Platform.OS !== "web"
   const STICK_BOTTOM_PX = 16
+  const scrollViewLayoutHeightRef = useRef(0)
+  const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
     [isNative]
   )
 
-  const scrollToBottomIfFollowing = useCallback(
+  const getSpacerHeight = useCallback(() => {
+    return isStreamingRef.current ? scrollViewLayoutHeightRef.current : 0
+  }, [])
+
+  const scrollToContentBottom = useCallback(
     (animated = false) => {
-      if (shouldFollowBottom()) {
+      const spacerH = getSpacerHeight()
+      const contentH = contentHeightBeforeLoadRef.current
+      const viewH = scrollViewLayoutHeightRef.current
+      if (spacerH > 0 && contentH > 0 && viewH > 0) {
+        const targetY = Math.max(0, contentH - spacerH - viewH)
+        scrollViewRef.current?.scrollTo({ y: targetY, animated })
+      } else {
         scrollViewRef.current?.scrollToEnd({ animated })
       }
     },
-    [shouldFollowBottom]
+    [getSpacerHeight]
+  )
+
+  const scrollToBottomIfFollowing = useCallback(
+    (animated = false) => {
+      if (shouldFollowBottom()) {
+        scrollToContentBottom(animated)
+      }
+    },
+    [shouldFollowBottom, scrollToContentBottom]
+  )
+
+  const debouncedScrollFollow = useCallback(
+    (contentH: number, animated = true) => {
+      if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
+      pendingScrollRef.current = setTimeout(() => {
+        if (!shouldFollowBottom()) return
+        const spacerH = getSpacerHeight()
+        const viewH = scrollViewLayoutHeightRef.current
+        if (spacerH > 0 && viewH > 0) {
+          const targetY = Math.max(0, contentH - spacerH - viewH)
+          scrollViewRef.current?.scrollTo({ y: targetY, animated })
+        } else {
+          scrollViewRef.current?.scrollToEnd({ animated })
+        }
+        pendingScrollRef.current = null
+      }, 80)
+    },
+    [shouldFollowBottom, getSpacerHeight]
   )
 
   const syncStickFromNativeEvent = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!isNative) return
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
+      const spacerH = getSpacerHeight()
       const fromBottom =
-        contentSize.height - contentOffset.y - layoutMeasurement.height
+        contentSize.height - spacerH - contentOffset.y - layoutMeasurement.height
       stickToBottomRef.current = fromBottom <= STICK_BOTTOM_PX
     },
-    [isNative]
+    [isNative, getSpacerHeight]
   )
 
   useEffect(() => {
@@ -653,6 +694,12 @@ export const ChatPanel = observer(function ChatPanel({
     })
     return () => sub.remove()
   }, [scrollToBottomIfFollowing])
+
+  useEffect(() => {
+    return () => {
+      if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
+    }
+  }, [])
 
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
@@ -2281,12 +2328,16 @@ export const ChatPanel = observer(function ChatPanel({
               "max-w-3xl w-full self-center",
             )}
             keyboardShouldPersistTaps="handled"
+            onLayout={(e) => {
+              scrollViewLayoutHeightRef.current = e.nativeEvent.layout.height
+            }}
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
 
               if (!isNative) {
+                const spacerH = getSpacerHeight()
                 const isAtBottom =
-                  contentSize.height - contentOffset.y - layoutMeasurement.height < 100
+                  contentSize.height - spacerH - contentOffset.y - layoutMeasurement.height < 100
                 isUserAtBottomRef.current = isAtBottom
               }
 
@@ -2316,7 +2367,11 @@ export const ChatPanel = observer(function ChatPanel({
                   scrollViewRef.current?.scrollTo({ y: delta, animated: false })
                 }
               } else if (isNative && stickToBottomRef.current && contentHeightBeforeLoadRef.current > 0) {
-                scrollViewRef.current?.scrollToEnd({ animated: false })
+                if (isStreamingRef.current) {
+                  debouncedScrollFollow(h, true)
+                } else {
+                  scrollToContentBottom(false)
+                }
               }
               contentHeightBeforeLoadRef.current = h
             }}
@@ -2383,6 +2438,12 @@ export const ChatPanel = observer(function ChatPanel({
                 onConfirm={pendingPlan ? handleConfirmPlan : undefined}
                 isConfirmed={!pendingPlan && !!confirmedPlan}
               />
+            )}
+
+            {/* Streaming bottom spacer: provides room for content to grow into,
+                so scroll-follow targets real content bottom instead of chasing scrollToEnd */}
+            {isStreaming && (
+              <View style={{ height: scrollViewLayoutHeightRef.current || 400 }} />
             )}
           </ScrollView>
 
