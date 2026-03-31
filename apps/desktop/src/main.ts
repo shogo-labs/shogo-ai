@@ -9,7 +9,9 @@ import { readConfig, writeConfig } from './config'
 import { initAutoUpdater } from './updater'
 
 // --- Persistent file logging ---
-const logDir = path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
+const logDir = process.platform === 'win32'
+  ? path.join(app.getPath('userData'), 'logs')
+  : path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
 fs.mkdirSync(logDir, { recursive: true })
 const logFile = path.join(logDir, 'main.log')
 const logStream = fs.createWriteStream(logFile, { flags: 'a' })

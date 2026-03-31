@@ -5,7 +5,7 @@ const pgUrl = dbUrl || "postgres://localhost/prisma-generate";
 const sqliteUrl = dbUrl || "file:./dev.db";
 
 try {
-  execSync("bunx prisma generate", {
+  execSync("bun x prisma generate", {
     stdio: "inherit",
     env: { ...process.env, SHOGO_LOCAL_MODE: "false", DATABASE_URL: pgUrl },
   });
@@ -13,7 +13,7 @@ try {
   // PG generate may fail in local-only setups — continue to SQLite
 }
 
-execSync("bunx prisma generate", {
+execSync("bun x prisma generate", {
   stdio: "inherit",
   env: { ...process.env, SHOGO_LOCAL_MODE: "true", DATABASE_URL: sqliteUrl },
 });

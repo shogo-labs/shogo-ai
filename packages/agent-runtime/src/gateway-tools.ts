@@ -1189,7 +1189,7 @@ const MIN_USEFUL_CONTENT_LENGTH = 200
 // Web response cache (Redis-backed, enabled by WEB_CACHE_REDIS_URL env var)
 // ---------------------------------------------------------------------------
 
-import Redis from 'ioredis'
+type Redis = import('ioredis').default
 
 const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
 const WEB_CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
@@ -1198,6 +1198,7 @@ let _webCacheRedis: Redis | null = null
 function getWebCacheRedis(): Redis | null {
   if (!WEB_CACHE_REDIS_URL) return null
   if (!_webCacheRedis) {
+    const Redis = require('ioredis').default as new (...args: any[]) => Redis
     _webCacheRedis = new Redis(WEB_CACHE_REDIS_URL, {
       maxRetriesPerRequest: 1,
       connectTimeout: 3000,

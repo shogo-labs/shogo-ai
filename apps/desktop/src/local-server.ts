@@ -68,6 +68,18 @@ function removePidFile(): void {
 }
 
 function killStaleProcessGroup(pid: number): void {
+  const isWindows = process.platform === 'win32'
+
+  if (isWindows) {
+    try {
+      execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' })
+      console.log(`[Desktop] Killed stale process tree pid=${pid}`)
+    } catch {
+      console.log(`[Desktop] Stale process ${pid} already dead`)
+    }
+    return
+  }
+
   const pgid = -pid
   try {
     process.kill(pgid, 'SIGTERM')
@@ -76,7 +88,6 @@ function killStaleProcessGroup(pid: number): void {
     console.log(`[Desktop] Stale process group ${pgid} already dead`)
     return
   }
-  // Give it a moment, then force kill
   try {
     execSync('sleep 1')
     process.kill(pgid, 'SIGKILL')
@@ -108,32 +119,60 @@ function cleanupStaleProcesses(): void {
 }
 
 function killProcessOnPort(port: number): void {
+  const isWindows = process.platform === 'win32'
+
   try {
-    const result = execSync(
-      `lsof -ti tcp:${port} 2>/dev/null`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim()
-    if (!result) return
+    if (isWindows) {
+      const result = execSync(
+        `netstat -ano | findstr :${port} | findstr LISTENING`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim()
+      if (!result) return
 
-    const pids = result.split('\n').filter(Boolean)
-    const selfPid = String(process.pid)
-    const safePids = pids.filter(p => p !== selfPid)
+      const pids = [...new Set(
+        result.split('\n')
+          .map(line => line.trim().split(/\s+/).pop())
+          .filter(Boolean)
+      )] as string[]
+      const selfPid = String(process.pid)
+      const safePids = pids.filter(p => p !== selfPid && p !== '0')
 
-    if (safePids.length === 0) {
-      console.log(`[Desktop] Port ${port} held by current process, skipping`)
-      return
+      if (safePids.length === 0) return
+
+      console.log(`[Desktop] Port ${port} in use by pid(s)=${safePids.join(',')}, killing...`)
+      for (const pid of safePids) {
+        try {
+          execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' })
+        } catch { /* already dead */ }
+      }
+      console.log(`[Desktop] Killed stale process(es) on port ${port}`)
+    } else {
+      const result = execSync(
+        `lsof -ti tcp:${port} 2>/dev/null`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim()
+      if (!result) return
+
+      const pids = result.split('\n').filter(Boolean)
+      const selfPid = String(process.pid)
+      const safePids = pids.filter(p => p !== selfPid)
+
+      if (safePids.length === 0) {
+        console.log(`[Desktop] Port ${port} held by current process, skipping`)
+        return
+      }
+
+      console.log(`[Desktop] Port ${port} in use by pid(s)=${safePids.join(',')}, killing...`)
+      for (const pid of safePids) {
+        try {
+          execSync(`kill -9 ${pid} 2>/dev/null || true`)
+        } catch { /* already dead */ }
+      }
+      execSync('sleep 1')
+      console.log(`[Desktop] Killed stale process(es) on port ${port}`)
     }
-
-    console.log(`[Desktop] Port ${port} in use by pid(s)=${safePids.join(',')}, killing...`)
-    for (const pid of safePids) {
-      try {
-        execSync(`kill -9 ${pid} 2>/dev/null || true`)
-      } catch { /* already dead */ }
-    }
-    execSync('sleep 1')
-    console.log(`[Desktop] Killed stale process(es) on port ${port}`)
   } catch {
-    // Port is free or lsof not available
+    // Port is free or command not available
   }
 }
 
@@ -168,8 +207,13 @@ function ensureRuntimeTemplate(): void {
 export async function startLocalServer(): Promise<void> {
   const bunPath = getBunPath()
   const projectRoot = getProjectRoot()
+  const isWindows = process.platform === 'win32'
+  const IS_DEV = !require('electron').app.isPackaged
+
   const bundleDir = path.join(projectRoot, 'bundle')
-  const serverEntry = path.join(bundleDir, 'api.js')
+  const serverEntry = IS_DEV
+    ? path.join(projectRoot, 'apps', 'api', 'src', 'entry.ts')
+    : path.join(bundleDir, 'api.js')
 
   // Kill leftover processes from a previous session
   cleanupStaleProcesses()
@@ -184,10 +228,12 @@ export async function startLocalServer(): Promise<void> {
 
   const os = require('os') as typeof import('os')
   const bunDir = path.dirname(bunPath)
+  const pathSep = isWindows ? ';' : ':'
+  const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
-    PATH: `${bunDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'}`,
-    HOME: process.env.HOME || os.homedir(),
+    PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
+    HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
     DATABASE_URL: `file:${getDbPath()}`,
     WORKSPACES_DIR: getWorkspacesDir(),
@@ -195,15 +241,23 @@ export async function startLocalServer(): Promise<void> {
     API_PORT: String(apiPort),
     PORT: String(apiPort),
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),
-    NODE_ENV: 'production',
+    NODE_ENV: IS_DEV ? 'development' : 'production',
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     PREWARM_CLAUDE_CODE: 'false',
-    AGENT_RUNTIME_ENTRY: path.join(bundleDir, 'agent-runtime.js'),
-    MCP_SERVER_PATH: path.join(bundleDir, 'mcp-server.js'),
-    CANVAS_RUNTIME_DIST: path.join(projectRoot, 'canvas-runtime'),
-    CANVAS_GLOBALS_DTS: path.join(projectRoot, 'canvas-runtime', 'canvas-globals.d.ts'),
+    AGENT_RUNTIME_ENTRY: IS_DEV
+      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')
+      : path.join(bundleDir, 'agent-runtime.js'),
+    MCP_SERVER_PATH: IS_DEV
+      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'mcp-server.ts')
+      : path.join(bundleDir, 'mcp-server.js'),
+    CANVAS_RUNTIME_DIST: IS_DEV
+      ? path.join(projectRoot, 'packages', 'canvas-runtime', 'dist')
+      : path.join(projectRoot, 'canvas-runtime'),
+    CANVAS_GLOBALS_DTS: IS_DEV
+      ? path.join(projectRoot, 'packages', 'canvas-runtime', 'src', 'canvas-globals.d.ts')
+      : path.join(projectRoot, 'canvas-runtime', 'canvas-globals.d.ts'),
   }
 
   ensureDatabase()
@@ -218,7 +272,8 @@ export async function startLocalServer(): Promise<void> {
     cwd: getProjectRoot(),
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
+    detached: !isWindows,
+    windowsHide: true,
   })
 
   console.log(`[Desktop] API process spawned: pid=${apiProcess.pid}`)
@@ -267,9 +322,22 @@ export async function stopLocalServer(): Promise<void> {
     return
   }
 
+  const isWindows = process.platform === 'win32'
+
+  if (isWindows) {
+    try {
+      execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'pipe' })
+      console.log(`[Desktop] Killed API process tree pid=${pid}`)
+    } catch (err) {
+      console.log(`[Desktop] taskkill failed (already dead?): ${err}`)
+    }
+    apiProcess = null
+    removePidFile()
+    return
+  }
+
   const pgid = -pid
 
-  // Send SIGTERM to the entire process group (API + agent-runtime + vite + esbuild)
   try {
     process.kill(pgid, 'SIGTERM')
     console.log(`[Desktop] Sent SIGTERM to process group ${pgid}`)
@@ -280,7 +348,6 @@ export async function stopLocalServer(): Promise<void> {
     return
   }
 
-  // Wait for graceful exit, then force kill
   const exited = await new Promise<boolean>((resolve) => {
     const timeout = setTimeout(() => {
       console.log(`[Desktop] Shutdown timeout (${SHUTDOWN_TIMEOUT_MS}ms) reached, sending SIGKILL`)
@@ -314,15 +381,25 @@ function ensureDatabase(): void {
   }
 
   const seedPath = path.join(getProjectRoot(), 'seed.db')
-  if (!fs.existsSync(seedPath)) {
-    throw new Error(`Seed database not found at ${seedPath}`)
+  if (fs.existsSync(seedPath)) {
+    console.log('[Desktop] Initializing database from seed...')
+    fs.copyFileSync(seedPath, dbPath)
+    baselineMigrations(dbPath)
+    console.log('[Desktop] Database initialized from seed')
+    return
   }
 
-  console.log('[Desktop] Initializing database from seed...')
-  fs.copyFileSync(seedPath, dbPath)
+  // Dev mode: create empty database file — Prisma migrations will set up the schema
+  const IS_DEV = !require('electron').app.isPackaged
+  if (IS_DEV) {
+    console.log('[Desktop] Dev mode: creating empty database (migrations will initialize schema)')
+    const dbDir = path.dirname(dbPath)
+    fs.mkdirSync(dbDir, { recursive: true })
+    fs.writeFileSync(dbPath, '')
+    return
+  }
 
-  baselineMigrations(dbPath)
-  console.log('[Desktop] Database initialized')
+  throw new Error(`Seed database not found at ${seedPath}`)
 }
 
 function baselineMigrations(dbPath: string): void {
@@ -356,18 +433,63 @@ function baselineMigrations(dbPath: string): void {
     }),
   ]
 
-  execSync(`/usr/bin/sqlite3 "${dbPath}"`, {
-    input: stmts.join('\n'),
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 5000,
-  })
+  const isWindows = process.platform === 'win32'
+  const sqliteCmd = isWindows ? 'sqlite3' : '/usr/bin/sqlite3'
 
-  console.log(`[Desktop] Baselined ${dirs.length} migration(s) for seed database`)
+  try {
+    execSync(`${sqliteCmd} "${dbPath}"`, {
+      input: stmts.join('\n'),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    })
+    console.log(`[Desktop] Baselined ${dirs.length} migration(s) for seed database`)
+  } catch (err) {
+    console.warn('[Desktop] sqlite3 CLI not available, skipping baseline (migrations will handle schema)')
+  }
+}
+
+function getSchemaEngineName(): string {
+  const platform = process.platform
+  const arch = process.arch
+  if (platform === 'win32') return `schema-engine-windows`
+  if (platform === 'darwin' && arch === 'arm64') return `schema-engine-darwin-arm64`
+  if (platform === 'darwin') return `schema-engine-darwin`
+  return `schema-engine-debian-openssl-3.0.x`
 }
 
 function runMigrations(bunPath: string, env: Record<string, string>): void {
   const fs = require('fs') as typeof import('fs')
   const projectRoot = getProjectRoot()
+  const IS_DEV = !require('electron').app.isPackaged
+
+  if (IS_DEV) {
+    console.log('[Desktop] Dev mode: running SQLite migrations...')
+    try {
+      const result = execSync(
+        `"${bunPath}" x prisma migrate deploy --config=prisma.config.local.ts`,
+        {
+          cwd: projectRoot,
+          env,
+          stdio: 'pipe',
+          timeout: 30000,
+          encoding: 'utf-8',
+        }
+      )
+      console.log('[Desktop] Migrations complete:', result.trim())
+    } catch (err: any) {
+      const stderr = err.stderr?.toString() || ''
+      const stdout = err.stdout?.toString() || ''
+      if (stdout.includes('No pending migrations') || stderr.includes('No pending migrations')) {
+        console.log('[Desktop] Database schema is up to date')
+        return
+      }
+      console.error('[Desktop] Migration failed:', stderr || err.message)
+      console.error('[Desktop] Migration stdout:', stdout)
+      throw new Error('Failed to run database migrations')
+    }
+    return
+  }
+
   const prismaCli = path.join(projectRoot, 'node_modules', 'prisma', 'build', 'index.js')
 
   if (!fs.existsSync(prismaCli)) {
@@ -387,7 +509,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
         const dst = path.join(writableEngineDir, f)
         if (!fs.existsSync(dst)) {
           fs.copyFileSync(src, dst)
-          fs.chmodSync(dst, 0o755)
+          try { fs.chmodSync(dst, 0o755) } catch { /* Windows doesn't need chmod */ }
         }
       }
     }
@@ -401,7 +523,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
         cwd: projectRoot,
         env: {
           ...env,
-          PRISMA_SCHEMA_ENGINE_BINARY: path.join(writableEngineDir, 'schema-engine-darwin-arm64'),
+          PRISMA_SCHEMA_ENGINE_BINARY: path.join(writableEngineDir, getSchemaEngineName()),
         },
         stdio: 'pipe',
         timeout: 30000,
