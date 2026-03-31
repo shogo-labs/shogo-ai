@@ -34,6 +34,7 @@ import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl } from './internal-api'
+import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 
 const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
@@ -3300,7 +3301,8 @@ For MCP protocol servers (databases, file systems, custom tool servers), use mcp
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
           const userId = ctx.userId || process.env.USER_ID || 'default'
-          const initialized = await initComposioSession(userId, ctx.projectId)
+          const workspaceId = process.env.WORKSPACE_ID || 'default'
+          const initialized = await initComposioSession(userId, workspaceId, ctx.projectId)
           if (initialized) {
             const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
             const auth = await checkComposioAuth(composioToolkit.slug)
@@ -4863,8 +4865,10 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_lints',
     description:
-      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues). ' +
-      'Returns diagnostics from language servers. Supports .ts, .tsx, .js, .jsx, and .py files. ' +
+      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) ' +
+      'and canvas runtime errors (compile/render failures from the live preview). ' +
+      'Returns diagnostics from language servers plus any recent canvas runtime errors. ' +
+      'Supports .ts, .tsx, .js, .jsx, and .py files. ' +
       'Use after writing or editing code files to catch mistakes. ' +
       'Omit path to check all open files.',
     label: 'Read Lints',
@@ -4874,6 +4878,12 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
     execute: async (_toolCallId, params) => {
       const lsp = ctx.lspManager
       if (!lsp || !lsp.isRunning()) {
+        const runtimeErrors = getCanvasRuntimeErrors()
+        if (runtimeErrors.length > 0) {
+          const errors = runtimeErrors.map(e => `[${e.phase}] ${e.surfaceId}: ${e.error}`)
+          clearCanvasRuntimeErrors()
+          return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
+        }
         return textResult({ ok: false, error: 'Language server not available. Try again shortly.' })
       }
 
@@ -4914,7 +4924,17 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         }
       }
 
+      // Collect canvas runtime errors (compile/render failures from the live preview)
+      const runtimeErrorEntries = getCanvasRuntimeErrors()
+      const runtimeErrors = runtimeErrorEntries.length > 0
+        ? runtimeErrorEntries.map(e => `[${e.phase}] ${e.surfaceId}: ${e.error}`)
+        : undefined
+      if (runtimeErrorEntries.length > 0) clearCanvasRuntimeErrors()
+
       if (allDiags.size === 0) {
+        if (runtimeErrors) {
+          return textResult({ ok: false, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+        }
         return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
       }
 
@@ -4941,13 +4961,17 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       }
 
       if (files.length === 0) {
+        if (runtimeErrors) {
+          return textResult({ ok: false, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+        }
         return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
       }
 
-      const allOk = totalErrors === 0
+      const allOk = totalErrors === 0 && !runtimeErrors
       return textResult({
         ok: allOk,
         files,
+        ...(runtimeErrors ? { runtimeErrors } : {}),
         ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run read_lints again to verify.' }),
       })
     },

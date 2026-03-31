@@ -19,6 +19,7 @@
 
 import { Hono } from 'hono'
 import { verifyProxyToken } from '../lib/ai-proxy-token'
+import { resolveApiKey } from './api-keys'
 
 // =============================================================================
 // Configuration
@@ -79,14 +80,71 @@ function extractToken(req: Request): string | null {
 }
 
 // =============================================================================
+// Cloud forwarding helpers
+// =============================================================================
+
+function getShogoCloudUrl(): string {
+  return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
+}
+
+function isShogoCloudForwarding(): boolean {
+  return !!process.env.SHOGO_API_KEY
+}
+
+async function forwardToCloud(
+  req: Request,
+  serviceName: string,
+  upstreamPath: string,
+): Promise<Response> {
+  const cloudUrl = getShogoCloudUrl()
+  const shogoKey = process.env.SHOGO_API_KEY!
+  const url = `${cloudUrl}/api/tools/${serviceName}${upstreamPath}`
+
+  const headers = new Headers()
+  req.headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (lower === 'x-api-key' || lower === 'authorization') return
+    headers.set(key, value)
+  })
+  headers.set('Authorization', `Bearer ${shogoKey}`)
+
+  const upstream = await fetch(url, {
+    method: req.method,
+    headers,
+    body: req.body,
+    // @ts-expect-error -- Node fetch supports duplex for streaming request bodies
+    duplex: 'half',
+  })
+
+  const responseHeaders = new Headers()
+  upstream.headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (RESPONSE_SKIP_HEADERS.has(lower)) return
+    responseHeaders.set(key, value)
+  })
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
+}
+
+// =============================================================================
 // Generic forwarding
 // =============================================================================
 
 async function forwardRequest(
   req: Request,
   target: ProxyTarget,
+  serviceName: string,
   upstreamPath: string,
 ): Promise<Response> {
+  if (isShogoCloudForwarding()) {
+    return forwardToCloud(req, serviceName, upstreamPath)
+  }
+
   const realKey = process.env[target.envKey]
   if (!realKey) {
     return Response.json(
@@ -148,13 +206,22 @@ async function requireProxyAuth(
   }
 
   const payload = await verifyProxyToken(token)
-  if (!payload) {
-    return {
-      error: Response.json({ error: 'Invalid or expired proxy token' }, { status: 401 }),
-    }
+  if (payload) {
+    return { projectId: payload.projectId }
   }
 
-  return { projectId: payload.projectId }
+  if (token.startsWith('shogo_sk_')) {
+    try {
+      const resolved = await resolveApiKey(token)
+      if (resolved) {
+        return { projectId: `ws_${resolved.workspaceId}` }
+      }
+    } catch {}
+  }
+
+  return {
+    error: Response.json({ error: 'Invalid or expired proxy token' }, { status: 401 }),
+  }
 }
 
 // =============================================================================
@@ -231,7 +298,7 @@ export function toolsProxyRoutes() {
 
     const upstreamPath = extractUpstreamPath(c.req.path, 'composio')
     const qs = new URL(c.req.url).search
-    return forwardRequest(c.req.raw, TARGETS.composio, upstreamPath + qs)
+    return forwardRequest(c.req.raw, TARGETS.composio, 'composio', upstreamPath + qs)
   })
 
   // ---- Serper passthrough ----
@@ -241,7 +308,7 @@ export function toolsProxyRoutes() {
 
     const upstreamPath = extractUpstreamPath(c.req.path, 'serper')
     const qs = new URL(c.req.url).search
-    return forwardRequest(c.req.raw, TARGETS.serper, upstreamPath + qs)
+    return forwardRequest(c.req.raw, TARGETS.serper, 'serper', upstreamPath + qs)
   })
 
   // ---- OpenAI passthrough (embeddings, etc.) ----
@@ -260,7 +327,7 @@ export function toolsProxyRoutes() {
       return forwardLocalEmbedding(c.req.raw, localBaseUrl, localEmbeddingModel, upstreamPath + qs)
     }
 
-    return forwardRequest(c.req.raw, TARGETS.openai, upstreamPath + qs)
+    return forwardRequest(c.req.raw, TARGETS.openai, 'openai', upstreamPath + qs)
   })
 
   return router

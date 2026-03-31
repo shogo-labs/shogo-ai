@@ -836,6 +836,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         // requests to route through the API server (same as Kubernetes managers do).
         runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
 
+        runtimeEnv.WORKSPACE_ID = workspaceId
+
         // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
         const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
         runtimeEnv.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)

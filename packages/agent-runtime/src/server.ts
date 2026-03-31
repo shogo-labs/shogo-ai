@@ -42,6 +42,7 @@ import type { ActionEvent } from './dynamic-app-types'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
+import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 import { CanvasFileWatcher } from './canvas-file-watcher'
@@ -1831,8 +1832,9 @@ app.post('/agent/tools/install', async (c) => {
     if (composioToolkit) {
       try {
         const userId = c.req.header('X-User-Id') || process.env.USER_ID || 'default'
+        const workspaceId = process.env.WORKSPACE_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
-        await initComposioSession(userId, projectId)
+        await initComposioSession(userId, workspaceId, projectId)
         const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
         return c.json({
           ok: true,
@@ -2499,23 +2501,17 @@ app.get('/agent/canvas/stream', (c) => {
   })
 })
 
-const canvasRuntimeErrors: Array<{ surfaceId: string; phase: string; error: string; timestamp: number }> = []
-const MAX_CANVAS_ERRORS = 20
-
 app.post('/agent/canvas/error', async (c) => {
   try {
     const body = await c.req.json() as { surfaceId?: string; phase?: string; error?: string }
     if (!body.error) return c.json({ error: 'Missing error field' }, 400)
 
-    canvasRuntimeErrors.push({
+    pushCanvasRuntimeError({
       surfaceId: body.surfaceId || 'unknown',
       phase: body.phase || 'unknown',
       error: body.error,
       timestamp: Date.now(),
     })
-    if (canvasRuntimeErrors.length > MAX_CANVAS_ERRORS) {
-      canvasRuntimeErrors.splice(0, canvasRuntimeErrors.length - MAX_CANVAS_ERRORS)
-    }
 
     console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}: ${body.error.slice(0, 200)}`)
     return c.json({ ok: true })
@@ -2524,13 +2520,7 @@ app.post('/agent/canvas/error', async (c) => {
   }
 })
 
-export function getCanvasRuntimeErrors() {
-  return canvasRuntimeErrors
-}
-
-export function clearCanvasRuntimeErrors() {
-  canvasRuntimeErrors.length = 0
-}
+export { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 
 app.post('/agent/canvas/action', async (c) => {
   try {
