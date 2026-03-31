@@ -22,6 +22,7 @@ import {
   symlinkSync,
 } from "fs"
 import { execSync } from "child_process"
+import { pkg } from "@shogo/shared-runtime"
 import { MONOREPO_ROOT } from "./template-paths"
 import { loadTemplates, type TemplateInfo } from "./template.list"
 
@@ -680,12 +681,7 @@ function convertToSqliteMode(projectDir: string): void {
   writeFileSync(envPath, lines.filter(Boolean).join('\n') + '\n', "utf-8")
   
   try {
-    execSync('bunx prisma generate', {
-      cwd: projectDir,
-      env: { ...process.env, DATABASE_URL: 'file:./dev.db' },
-      stdio: 'pipe',
-      timeout: 60000,
-    })
+    pkg.prismaGenerate(projectDir, { env: { ...process.env, DATABASE_URL: 'file:./dev.db' } as NodeJS.ProcessEnv })
   } catch (error: any) {
     console.warn(`[template.copy] Failed to regenerate Prisma client: ${error.message}`)
   }
@@ -1019,25 +1015,17 @@ export async function executeTemplateCopy(
       
       try {
         const bunInstallStart = performance.now()
-        execSync("bun install", {
-          cwd: projectDir,
-          stdio: "pipe",
-          timeout: 120000,
-        })
-        installResults.push({ step: "bun install", success: true, durationMs: Math.round(performance.now() - bunInstallStart) })
+        pkg.installSync(projectDir)
+        installResults.push({ step: "install", success: true, durationMs: Math.round(performance.now() - bunInstallStart) })
       } catch (error: any) {
-        installResults.push({ step: "bun install", success: false, error: error.message })
+        installResults.push({ step: "install", success: false, error: error.message })
       }
       timer.mark('bunInstall')
 
       if (installResults[0]?.success) {
         try {
           const prismaGenStart = performance.now()
-          execSync("bunx prisma generate", {
-            cwd: projectDir,
-            stdio: "pipe",
-            timeout: 60000,
-          })
+          pkg.prismaGenerate(projectDir)
           installResults.push({ step: "prisma generate", success: true, durationMs: Math.round(performance.now() - prismaGenStart) })
         } catch (error: any) {
           installResults.push({ step: "prisma generate", success: false, error: error.message })
@@ -1048,11 +1036,7 @@ export async function executeTemplateCopy(
       if (installResults.every(r => r.success)) {
         try {
           const prismaPushStart = performance.now()
-          execSync("bunx prisma db push", {
-            cwd: projectDir,
-            stdio: "pipe",
-            timeout: 60000,
-          })
+          pkg.prismaDbPush(projectDir)
           installResults.push({ step: "prisma db push", success: true, durationMs: Math.round(performance.now() - prismaPushStart) })
         } catch (error: any) {
           installResults.push({ step: "prisma db push", success: false, error: error.message })

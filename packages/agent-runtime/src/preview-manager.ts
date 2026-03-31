@@ -14,9 +14,10 @@
  * so the unified runtime can activate it only when needed.
  */
 
-import { spawn, type ChildProcess, execSync } from 'child_process'
+import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'fs'
+import { pkg } from '@shogo/shared-runtime'
 
 const LOG_PREFIX = 'preview-manager'
 const PREVIEW_PORT = 5173
@@ -151,11 +152,7 @@ export class PreviewManager {
     const t0 = Date.now()
     try {
       console.log(`[${LOG_PREFIX}] Installing dependencies...`)
-      execSync('bun install --frozen-lockfile 2>&1 || bun install 2>&1', {
-        cwd: projectDir,
-        timeout: 120_000,
-        stdio: 'pipe',
-      })
+      pkg.installSync(projectDir, { frozen: true })
       timings.install = Date.now() - t0
       console.log(`[${LOG_PREFIX}] Dependencies installed (${timings.install}ms)`)
     } catch (err: any) {
@@ -177,7 +174,7 @@ export class PreviewManager {
       this._phase = 'generating-prisma'
       const t1 = Date.now()
       try {
-        execSync('bunx prisma generate 2>&1', { cwd: projectDir, timeout: 30_000, stdio: 'pipe' })
+        pkg.prismaGenerate(projectDir)
         timings.prisma = Date.now() - t1
       } catch (err: any) {
         timings.prisma = Date.now() - t1
@@ -195,12 +192,7 @@ export class PreviewManager {
 
     const t2 = Date.now()
     try {
-      execSync('bunx prisma db push 2>&1', {
-        cwd: projectDir,
-        timeout: 60_000,
-        stdio: 'pipe',
-        env: { ...process.env, DATABASE_URL: `file:${devDb}` },
-      })
+      pkg.prismaDbPush(projectDir, { env: { ...process.env, DATABASE_URL: `file:${devDb}` } as NodeJS.ProcessEnv })
       timings.dbPush = Date.now() - t2
       console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
     } catch (err: any) {

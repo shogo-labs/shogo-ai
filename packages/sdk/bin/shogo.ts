@@ -20,6 +20,7 @@ import { parseArgs } from 'util'
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs'
 import { resolve, dirname, basename } from 'path'
 import { execSync } from 'child_process'
+import { pkg } from '@shogo/shared-runtime'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { 
   transformSchemaFile, 
@@ -526,11 +527,7 @@ async function main() {
     
     try {
       console.log('   Running prisma generate...')
-      execSync('bunx --bun prisma generate', {
-        cwd,
-        stdio: values.verbose ? 'inherit' : 'pipe',
-        env: process.env,
-      })
+      pkg.prismaGenerate(cwd, { stdio: values.verbose ? 'inherit' : 'pipe' })
       console.log('   ✓ Prisma client generated')
     } catch (err) {
       console.warn(`   ⚠️ prisma generate failed: ${err instanceof Error ? err.message : err}`)
@@ -540,11 +537,7 @@ async function main() {
     if (process.env.DATABASE_URL) {
       try {
         console.log('   Running prisma db push...')
-        execSync('bunx --bun prisma db push --accept-data-loss', {
-          cwd,
-          stdio: values.verbose ? 'inherit' : 'pipe',
-          env: process.env,
-        })
+        pkg.prismaDbPush(cwd, { acceptDataLoss: true, stdio: values.verbose ? 'inherit' : 'pipe' })
         console.log('   ✓ Database schema synced')
       } catch (err) {
         console.warn(`   ⚠️ prisma db push failed: ${err instanceof Error ? err.message : err}`)
@@ -628,17 +621,13 @@ async function main() {
           const nodeModulesPath = resolve(absDocsDir, 'node_modules')
           if (!existsSync(nodeModulesPath)) {
             console.log('   Installing dependencies...')
-            execSync('bun install', {
-              cwd: absDocsDir,
-              stdio: values.verbose ? 'inherit' : 'pipe',
-            })
+            pkg.installSync(absDocsDir, { stdio: values.verbose ? 'inherit' : 'pipe' })
             console.log('   ✓ Dependencies installed')
           }
 
           // Build the static site
           console.log('   Building static site...')
-          execSync('bunx docusaurus build', {
-            cwd: absDocsDir,
+          pkg.execToolSync('docusaurus', ['build'], absDocsDir, {
             stdio: values.verbose ? 'inherit' : 'pipe',
           })
 

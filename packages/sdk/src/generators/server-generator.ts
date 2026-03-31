@@ -56,9 +56,7 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
     "import { Hono } from 'hono'",
   ]
 
-  if (cors) {
-    lines.push("import { cors } from 'hono/cors'")
-  }
+  // cors import intentionally omitted — using manual middleware for reliable wildcard support
 
   if (!skipStatic) {
     lines.push("import { serveStatic } from 'hono/bun'")
@@ -70,16 +68,14 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   lines.push('')
 
   if (cors) {
-    lines.push('// CORS middleware')
-    lines.push('app.use(')
-    lines.push("  '*',")
-    lines.push('  cors({')
-    lines.push(`    origin: ${JSON.stringify(corsOrigins)},`)
-    lines.push("    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],")
-    lines.push("    allowHeaders: ['Content-Type', 'Authorization'],")
-    lines.push('    credentials: true,')
-    lines.push('  })')
-    lines.push(')')
+    lines.push('// CORS — manual middleware so the wildcard always propagates')
+    lines.push("app.use('*', async (c, next) => {")
+    lines.push("  c.res.headers.set('Access-Control-Allow-Origin', '*')")
+    lines.push("  c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')")
+    lines.push("  c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization')")
+    lines.push("  if (c.req.method === 'OPTIONS') return c.text('', 204)")
+    lines.push('  await next()')
+    lines.push('})')
     lines.push('')
   }
 
