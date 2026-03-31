@@ -818,10 +818,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         runtimeEnv.AI_PROXY_URL = proxyUrl
 
         let proxyConfigured = false
+        const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
         try {
           const { generateProxyToken } = await import('../ai-proxy-token')
           const { getProjectOwnerUserId } = await import('../project-user-context')
-          const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
           const ownerUserId = await getProjectOwnerUserId(projectId)
           runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, ownerUserId, 7 * 24 * 60 * 60 * 1000)
           console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId}, owner: ${ownerUserId})`)
