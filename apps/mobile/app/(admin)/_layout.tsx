@@ -194,6 +194,8 @@ function AdminSidebar({
             <Pressable
               key={item.href}
               onPress={() => handleNav(item.href)}
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
               className={cn(
                 'flex-row items-center gap-3 px-3 py-2.5 rounded-lg',
                 active
@@ -225,6 +227,8 @@ function AdminSidebar({
       <View className="px-3 pb-4 gap-2">
         <Pressable
           onPress={() => { router.replace('/(app)'); onClose?.() }}
+          accessibilityRole="link"
+          accessibilityLabel="Back to App"
           className="flex-row items-center gap-3 px-3 py-2.5 rounded-lg active:bg-muted/50"
         >
           <ArrowLeft size={18} className="text-muted-foreground" />
@@ -270,7 +274,7 @@ function AdminSidebar({
 function MobileHeader({ onMenuPress, title }: { onMenuPress: () => void; title: string }) {
   return (
     <View className="flex-row items-center h-12 px-3 border-b border-border bg-card">
-      <Pressable onPress={onMenuPress} className="p-2 -ml-1 rounded-md active:bg-muted">
+      <Pressable onPress={onMenuPress} accessibilityRole="button" accessibilityLabel="Open menu" className="p-2 -ml-1 rounded-md active:bg-muted">
         <Menu size={20} className="text-foreground" />
       </Pressable>
       <View className="flex-row items-center gap-2 ml-2">

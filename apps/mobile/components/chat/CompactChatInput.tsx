@@ -259,6 +259,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               ref={textInputRef}
               placeholder={placeholderText}
               placeholderTextColor="#9ca3af"
+              accessibilityLabel="Describe the agent you want to build"
               value={value}
               onChangeText={setValue}
               onSubmitEditing={handleSubmit}
@@ -284,6 +285,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               <Pressable
                 onPress={handleAttachClick}
                 disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
+                accessibilityRole="button"
+                accessibilityLabel="Attach file"
                 className="min-h-11 min-w-11 flex-row items-center gap-1.5 rounded-lg px-3 py-2 active:opacity-70"
                 android_ripple={{ color: "rgba(128,128,128,0.25)" }}
               >
@@ -296,6 +299,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <Pressable
               onPress={handleSubmit}
               disabled={(!value.trim() && pendingFiles.length === 0) || disabled || isLoading}
+              accessibilityRole="button"
+              accessibilityLabel="Send message"
               className={cn(
                 "h-8 w-8 rounded-md items-center justify-center",
                 (!value.trim() && pendingFiles.length === 0) || disabled || isLoading
