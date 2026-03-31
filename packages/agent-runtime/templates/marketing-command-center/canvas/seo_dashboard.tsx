@@ -23,7 +23,7 @@ return (
     </CanvasCard>
     <CanvasCard title="🚀 Getting Started">
       <DynText
-        text="Try: \"Audit the SEO on https://example.com\" — I'll analyze technical health, content optimization, and competitive keywords."
+        text={"Try: \"Audit the SEO on https://example.com\" — I'll analyze technical health, content optimization, and competitive keywords."}
         variant="muted"
        />
     </CanvasCard>

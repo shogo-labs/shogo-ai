@@ -18,6 +18,7 @@
 
 export const CREDIT_DOLLAR_VALUE = 0.10
 export const MIN_CREDIT_COST = 0.2
+export const MIN_CREDIT_COST_ECONOMY = 0.1
 
 export const MODEL_DOLLAR_COSTS = {
   haiku:          { inputPerMillion: 0.80, outputPerMillion: 4.00 },
@@ -29,6 +30,13 @@ export const MODEL_DOLLAR_COSTS = {
 export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
 export type AgentMode = 'basic' | 'advanced'
 export type ModelTier = 'economy' | 'standard' | 'premium'
+
+const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
+  haiku:          'economy',
+  'gpt-5.4-mini': 'economy',
+  sonnet:         'standard',
+  opus:           'premium',
+}
 
 const MODEL_TIER_MAP: Record<string, ModelTier> = {
   'claude-opus-4-6': 'premium',
@@ -123,7 +131,9 @@ export function calculateCreditCost(
     (outputTokens * costs.outputPerMillion / 1_000_000)
 
   const raw = Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10
-  return raw > 0 ? Math.max(MIN_CREDIT_COST, raw) : 0
+  if (raw === 0) return 0
+  const min = BILLING_MODEL_TIER[model] === 'economy' ? MIN_CREDIT_COST_ECONOMY : MIN_CREDIT_COST
+  return Math.max(min, raw)
 }
 
 // =============================================================================

@@ -25,7 +25,7 @@ return (
       description="Copy, emails, and social posts"
     >
       <DynText
-        text="Ask me to write anything: \"Draft a homepage headline\" or \"Write a 5-email welcome sequence\" — drafts appear here for review."
+        text={"Ask me to write anything: \"Draft a homepage headline\" or \"Write a 5-email welcome sequence\" — drafts appear here for review."}
         variant="muted"
        />
     </CanvasCard>

@@ -25,7 +25,7 @@ return (
     </Grid>
     <CanvasCard title="🚀 Getting Started">
       <DynText
-        text="Say \"Connect Linear\" to import tasks, or \"Create a sprint board\" to start tracking tasks directly here."
+        text={"Say \"Connect Linear\" to import tasks, or \"Create a sprint board\" to start tracking tasks directly here."}
         variant="muted"
        />
     </CanvasCard>

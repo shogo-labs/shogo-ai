@@ -30,7 +30,7 @@ return (
     </CanvasCard>
     <CanvasCard title="🚀 Getting Started">
       <DynText
-        text="Say \"Connect Zendesk\" or \"Connect Linear\" — I'll pull tickets, auto-triage, and build SLA tracking."
+        text={"Say \"Connect Zendesk\" or \"Connect Linear\" — I'll pull tickets, auto-triage, and build SLA tracking."}
         variant="muted"
        />
     </CanvasCard>

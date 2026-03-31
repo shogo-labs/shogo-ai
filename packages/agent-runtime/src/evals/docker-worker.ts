@@ -248,11 +248,12 @@ export async function startDockerWorker(
   console.log(`  Starting worker ${id} (${containerName}) on port ${hostPort}...`)
 
   // Remove stale container — retry to avoid "name already in use" race
-  for (let i = 0; i < 3; i++) {
-    try { execSync(`docker rm -f "${containerName}" 2>/dev/null`, { stdio: 'pipe', timeout: 10_000 }) } catch {}
+  for (let i = 0; i < 5; i++) {
+    try { execSync(`docker kill "${containerName}" 2>/dev/null`, { stdio: 'pipe', timeout: 15_000 }) } catch {}
+    try { execSync(`docker rm -f "${containerName}" 2>/dev/null`, { stdio: 'pipe', timeout: 15_000 }) } catch {}
     try {
       execSync(`docker inspect "${containerName}" 2>/dev/null`, { stdio: 'pipe' })
-      await Bun.sleep(500)
+      await Bun.sleep(2000)
     } catch {
       break // container is gone
     }

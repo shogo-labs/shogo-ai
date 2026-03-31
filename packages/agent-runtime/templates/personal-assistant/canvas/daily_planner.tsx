@@ -14,7 +14,7 @@ return (
     </Grid>
     <CanvasCard title="Today's Schedule">
       <DynText
-        text="Connect your calendar and I'll show today's meetings with prep notes. Say \"Connect Google Calendar\" to start."
+        text={"Connect your calendar and I'll show today's meetings with prep notes. Say \"Connect Google Calendar\" to start."}
         variant="muted"
        />
     </CanvasCard>
@@ -22,11 +22,11 @@ return (
       <Column gap="md">
         <DynText text="Set up your personal hub:" variant="muted" />
         <Column gap="sm">
-          <DynText text="• \"Connect my Google Calendar\" for daily schedule" />
+          <DynText text={"• \"Connect my Google Calendar\" for daily schedule"} />
           <DynText
-            text="• \"Track exercise and reading habits\" for habit tracking"
+            text={"• \"Track exercise and reading habits\" for habit tracking"}
            />
-          <DynText text="• \"Remind me to...\" for reminders and tasks" />
+          <DynText text={"• \"Remind me to...\" for reminders and tasks"} />
         </Column>
       </Column>
     </CanvasCard>

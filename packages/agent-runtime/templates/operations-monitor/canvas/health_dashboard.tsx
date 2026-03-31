@@ -33,7 +33,7 @@ return (
     </CanvasCard>
     <CanvasCard title="🚀 Getting Started">
       <DynText
-        text="Share your API health check URLs and I'll start monitoring every 5 minutes. Say \"Connect Sentry\" for error tracking."
+        text={"Share your API health check URLs and I'll start monitoring every 5 minutes. Say \"Connect Sentry\" for error tracking."}
         variant="muted"
        />
     </CanvasCard>

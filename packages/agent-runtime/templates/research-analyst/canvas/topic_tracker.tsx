@@ -13,7 +13,7 @@ return (
     </Grid>
     <CanvasCard title="Monitored Topics">
       <DynText
-        text="Say \"Track AI agents\" or \"Monitor quantum computing news\" — I'll check for developments on every heartbeat and alert you."
+        text={"Say \"Track AI agents\" or \"Monitor quantum computing news\" — I'll check for developments on every heartbeat and alert you."}
         variant="muted"
        />
     </CanvasCard>

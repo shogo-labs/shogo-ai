@@ -14,7 +14,7 @@ return (
     </Grid>
     <CanvasCard title="Payment Activity">
       <DynText
-        text="Say \"Connect Stripe\" and I'll pull live revenue data with trend charts and failed payment alerts."
+        text={"Say \"Connect Stripe\" and I'll pull live revenue data with trend charts and failed payment alerts."}
         variant="muted"
        />
     </CanvasCard>
