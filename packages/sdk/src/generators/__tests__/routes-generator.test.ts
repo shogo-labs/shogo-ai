@@ -52,6 +52,12 @@ describe('Routes Generator', () => {
       expect(result!.code).toContain('export function createProjectRoutes(): Hono')
     })
 
+    it('should include SPDX license header', () => {
+      const result = generateModelRoutes(mockProjectModel)
+
+      expect(result!.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
     it('should import required dependencies', () => {
       const result = generateModelRoutes(mockProjectModel)
 
@@ -309,6 +315,12 @@ describe('Routes Generator', () => {
       expect(result.code).toContain('export interface ProjectHooks')
     })
 
+    it('should include SPDX license header', () => {
+      const result = generateModelHooks(mockProjectModel)
+
+      expect(result.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
     it('should define HookResult interface', () => {
       const result = generateModelHooks(mockProjectModel)
 
@@ -394,6 +406,12 @@ describe('Routes Generator', () => {
   })
 
   describe('generateRoutesIndex', () => {
+    it('should include SPDX license header', () => {
+      const code = generateRoutesIndex([mockWorkspaceModel, mockProjectModel])
+
+      expect(code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
     it('should generate index file with imports', () => {
       const code = generateRoutesIndex([mockWorkspaceModel, mockProjectModel])
 
