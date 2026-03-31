@@ -111,7 +111,7 @@
         "svc1_badge": {
           "id": "svc1_badge",
           "component": "Badge",
-          "text": ".",
+          "text": "●",
           "variant": "secondary"
         },
         "svc1_text": {
@@ -139,7 +139,7 @@
         "svc2_badge": {
           "id": "svc2_badge",
           "component": "Badge",
-          "text": ".",
+          "text": "●",
           "variant": "secondary"
         },
         "svc2_text": {
@@ -167,7 +167,7 @@
         "svc3_badge": {
           "id": "svc3_badge",
           "component": "Badge",
-          "text": ".",
+          "text": "●",
           "variant": "secondary"
         },
         "svc3_text": {
