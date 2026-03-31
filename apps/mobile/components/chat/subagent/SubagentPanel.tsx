@@ -59,7 +59,7 @@ export function SubagentPanel({
           <View
             className={cn(
               "w-2 h-2 rounded-full",
-              runningCount > 0 ? "bg-blue-400" : "bg-green-500"
+              runningCount > 0 ? "bg-primary" : "bg-green-500"
             )}
           />
           <Text className="text-xs font-semibold text-foreground/80">
@@ -92,7 +92,7 @@ export function SubagentPanel({
                 key={subagent.agentId}
                 className={cn(
                   "pl-3 border-l-2",
-                  isRunning ? "border-blue-400/30" : "border-green-500/30"
+                  isRunning ? "border-primary/30" : "border-green-500/30"
                 )}
               >
                 {/* Subagent type badge */}
@@ -100,7 +100,7 @@ export function SubagentPanel({
                   <Bot
                     className={cn(
                       "w-3.5 h-3.5",
-                      isRunning ? "text-blue-400" : "text-green-500"
+                      isRunning ? "text-primary" : "text-green-500"
                     )}
                     size={14}
                   />
@@ -108,7 +108,7 @@ export function SubagentPanel({
                     className={cn(
                       "text-xs font-medium px-2 py-0.5 rounded",
                       isRunning
-                        ? "text-blue-400 bg-blue-400/10"
+                        ? "text-primary bg-primary/10"
                         : "text-green-500 bg-green-500/10"
                     )}
                   >

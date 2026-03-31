@@ -14,6 +14,7 @@ import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
+import { AccentThemeProvider } from '../contexts/accent-theme'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { captureAttribution } from '../lib/attribution'
@@ -86,7 +87,9 @@ function RootLayout() {
   return (
     <RootErrorBoundary>
       <ThemeProvider>
-        <RootLayoutInner />
+        <AccentThemeProvider>
+          <RootLayoutInner />
+        </AccentThemeProvider>
       </ThemeProvider>
     </RootErrorBoundary>
   )

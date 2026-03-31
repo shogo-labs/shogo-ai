@@ -35,13 +35,13 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
         className={cn(
           "max-w-[80%] rounded-lg px-4 py-2",
           isUser
-            ? "bg-primary ml-auto"
+            ? "bg-secondary dark:bg-secondary ml-auto"
             : "bg-gray-100 dark:bg-gray-800 mr-auto"
         )}
       >
         {isUser ? (
           <Text
-            className={cn("text-sm text-primary-foreground")}
+            className={cn("text-sm text-foreground")}
           >
             {message.content}
           </Text>

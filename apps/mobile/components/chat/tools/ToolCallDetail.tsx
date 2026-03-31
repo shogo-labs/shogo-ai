@@ -42,7 +42,7 @@ export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailP
         className={cn(
           "w-1.5 h-1.5 rounded-full shrink-0",
           tool.category === "mcp" && "bg-violet-500",
-          tool.category === "file" && "bg-blue-500",
+          tool.category === "file" && "bg-primary",
           tool.category === "skill" && "bg-amber-500",
           tool.category === "bash" && "bg-emerald-500",
           tool.category === "other" && "bg-gray-400"
@@ -75,7 +75,7 @@ export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailP
       <StateIcon
         className={cn(
           "w-3.5 h-3.5 shrink-0",
-          tool.state === "streaming" && "text-blue-400",
+          tool.state === "streaming" && "text-primary",
           tool.state === "success" && "text-green-500",
           tool.state === "error" && "text-red-500"
         )}

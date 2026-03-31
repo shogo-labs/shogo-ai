@@ -63,7 +63,7 @@ export function SubagentStats({
           <Text
             className={cn(
               "font-mono text-xs",
-              status === "running" ? "text-blue-400" : "text-gray-400"
+              status === "running" ? "text-primary" : "text-gray-400"
             )}
           >
             {formatElapsed(elapsedSeconds)}
@@ -97,7 +97,7 @@ export function SubagentStats({
                   className={cn(
                     "w-1 h-1 rounded-full shrink-0",
                     category === "mcp" && "bg-violet-500",
-                    category === "file" && "bg-blue-500",
+                    category === "file" && "bg-primary",
                     category === "skill" && "bg-amber-500",
                     category === "bash" && "bg-emerald-500",
                     category === "other" && "bg-gray-400"
