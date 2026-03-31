@@ -5,11 +5,11 @@
  *
  * This is the for-await loop that converts the SDK's stream_event, assistant,
  * and result messages into text-start/delta/end, tool-input-start/delta/available,
- * tool-output-available, and finish chunks. The project-runtime's implementation
+ * tool-output-available, and finish chunks. The runtime implementation
  * is the canonical reference — it handles tool result tracking, duplicate
  * detection, usage stats, and step boundaries.
  *
- * Shared between project-runtime and agent-runtime.
+ * Shared between runtime and agent-runtime.
  */
 
 import type { SDKSession } from '@anthropic-ai/claude-agent-sdk'

@@ -11,7 +11,7 @@
  * - Handles scale-to-zero and cold starts
  *
  * Architecture:
- * Development projects: Single runtime container (project-runtime or agent-runtime)
+ * Development projects: Single runtime container (agent-runtime)
  *   with emptyDir volume synced to/from S3.
  * Published apps: nginx:alpine serving static files from emptyDir,
  *   populated by an init container that syncs from S3.
@@ -465,7 +465,7 @@ export class KnativeProjectManager {
         version: KNATIVE_VERSION,
         namespace: this.namespace,
         plural: "services",
-        labelSelector: "shogo.io/component=project-runtime",
+        labelSelector: "shogo.io/component=runtime",
       })
 
       const items = (response as any).items || []
@@ -501,7 +501,7 @@ export class KnativeProjectManager {
   }
 
   /**
-   * List all Knative services in the namespace (both project-runtime and agent-runtime).
+   * List all Knative services in the namespace (agent-runtime).
    * Used by the infra metrics collector to count all running pods.
    */
   async listAllServices(): Promise<ProjectPodInfo[]> {
@@ -958,13 +958,13 @@ export class KnativeProjectManager {
     ]
 
     // AI Proxy configuration
-    // When the proxy is configured, the project-runtime routes ALL AI calls
+    // When the proxy is configured, the runtime routes ALL AI calls
     // (including Claude Code CLI) through the proxy. No raw API keys are exposed.
     //
     // How it works:
     // - AI_PROXY_URL + AI_PROXY_TOKEN are injected into the pod
-    // - project-runtime sets ANTHROPIC_BASE_URL → proxy's Anthropic-native endpoint
-    // - project-runtime sets ANTHROPIC_API_KEY → proxy token (validated by proxy)
+    // - runtime sets ANTHROPIC_BASE_URL → proxy's Anthropic-native endpoint
+    // - runtime sets ANTHROPIC_API_KEY → proxy token (validated by proxy)
     // - The proxy forwards to the real Anthropic API using server-side keys
     //
     // Fallback: If proxy token generation fails, inject the raw ANTHROPIC_API_KEY
@@ -1026,7 +1026,7 @@ export class KnativeProjectManager {
     // injected into pods. Agents proxy these requests through the API server
     // via TOOLS_PROXY_URL, which holds the real keys server-side.
 
-    // Dev projects use SQLite (DATABASE_URL defaults to file:./prisma/dev.db in project-runtime).
+    // Dev projects use SQLite (DATABASE_URL defaults to file:./prisma/dev.db in runtime).
     // No external database provisioning needed. Published apps get PostgreSQL sidecars (Phase 5).
     console.log(`[KnativeProjectManager] Dev project ${projectId} uses SQLite — no database provisioning`)
 

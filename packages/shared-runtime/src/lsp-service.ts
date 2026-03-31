@@ -4,7 +4,7 @@
  * TypeScript Language Server Service
  *
  * Spawns typescript-language-server (LSP over stdio) and provides a typed
- * request/notification API.  Used by both project-runtime (Monaco editor
+ * request/notification API.  Used by both runtime (Monaco editor
  * IntelliSense) and agent-runtime (read_lints diagnostics).
  */
 

@@ -3,7 +3,7 @@
  * Test: Use (session as any).query.setMcpServers() workaround
  *
  * The V2 SDK does NOT forward mcpServers to the CLI subprocess.
- * The working project-runtime workaround accesses the internal query object
+ * The working runtime workaround accesses the internal query object
  * and calls setMcpServers() on it directly.
  */
 
@@ -16,7 +16,7 @@ import { buildClaudeCodeEnv } from '@shogo/shared-runtime'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const MONOREPO_ROOT = resolve(__dirname, '../../../..')
-const MCP_SERVER_PATH = resolve(MONOREPO_ROOT, 'packages/project-runtime/src/mcp-templates.ts')
+const MCP_SERVER_PATH = resolve(MONOREPO_ROOT, 'packages/agent-runtime/src/tools/mcp-templates.ts')
 
 const PROJECT_DIR = '/tmp/test-mcp-visibility'
 mkdirSync(PROJECT_DIR, { recursive: true })

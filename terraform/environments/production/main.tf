@@ -152,7 +152,7 @@ module "ocir" {
   source = "../../modules/ocir"
 
   compartment_id = var.compartment_id
-  repositories   = ["shogo-api", "shogo-web", "agent-runtime", "project-runtime", "shogo-docs"]
+  repositories   = ["shogo-api", "shogo-web", "agent-runtime", "shogo-docs"]
   tags           = local.tags
 }
 

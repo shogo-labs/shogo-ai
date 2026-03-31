@@ -8,7 +8,7 @@
  *
  * Sources:
  *   - code-agent.ts CLAUDE.md (SDK docs, template workflow, forbidden commands)
- *   - project-runtime/system-prompt.ts (build recovery, schema, shadcn, environment)
+ *   - system-prompt patterns (build recovery, schema, shadcn, environment)
  *   - Cursor agent prompting patterns (edit mastery, code quality, task planning)
  */
 

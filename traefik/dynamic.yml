@@ -30,7 +30,7 @@ http:
       rule: "HostRegexp(`{project:[a-z0-9-]+}.localhost`)"
       entryPoints:
         - web
-      service: project-runtime
+      service: runtime
       priority: 1
       middlewares:
         - project-headers
@@ -39,10 +39,10 @@ http:
   # Services - Define backend targets
   # ---------------------------------------------------------------------------
   services:
-    # Project runtime service
+    # Runtime service
     # Initially empty - RuntimeManager adds servers dynamically
     # This is a placeholder that will be populated at runtime
-    project-runtime:
+    runtime:
       loadBalancer:
         servers: []
         # PassHostHeader ensures Vite receives the original Host header

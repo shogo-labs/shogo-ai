@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Claude Code V2 SDK session lifecycle management.
- * Shared between project-runtime and agent-runtime.
+ * Shared between runtime and agent-runtime.
  *
  * Each runtime provides its own `buildSessionOptions` (tools, cwd, mcpServers differ),
  * but session caching, interruption, and pre-warming logic is identical.

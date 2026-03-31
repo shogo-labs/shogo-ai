@@ -28,7 +28,6 @@ COPY tsconfig.base.json ./
 
 COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/domain-stores/package.json ./packages/domain-stores/
@@ -62,7 +61,6 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
@@ -109,7 +107,6 @@ RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup appuser
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
@@ -152,7 +149,6 @@ COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons for bun resolution
-COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
 COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY --chown=appuser:appgroup --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/

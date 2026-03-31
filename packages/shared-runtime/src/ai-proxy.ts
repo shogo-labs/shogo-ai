@@ -5,7 +5,7 @@
  * Routes Claude API requests through the API server's proxy endpoint
  * instead of requiring a raw ANTHROPIC_API_KEY in the runtime process.
  *
- * Shared between project-runtime and agent-runtime.
+ * Shared between runtime and agent-runtime.
  *
  * Local-dev policy: when AI_PROXY_URL is present the proxy MUST be used.
  * The raw ANTHROPIC_API_KEY is always stripped from child-process environments

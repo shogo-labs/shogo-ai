@@ -32,7 +32,7 @@ const PROJECT_SUBDIR = 'project'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const MONOREPO_ROOT = resolve(__dirname, '../../..')
-const MCP_TEMPLATES_SERVER = resolve(MONOREPO_ROOT, 'packages/project-runtime/src/mcp-templates.ts')
+const MCP_TEMPLATES_SERVER = resolve(MONOREPO_ROOT, 'packages/agent-runtime/src/tools/mcp-templates.ts')
 
 export interface CodeAgentConfig {
   workspaceDir: string

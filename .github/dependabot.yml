@@ -25,10 +25,6 @@ updates:
     schedule:
       interval: "monthly"
 
-  - package-ecosystem: "docker"
-    directory: "/packages/project-runtime"
-    schedule:
-      interval: "monthly"
 
   - package-ecosystem: "terraform"
     directory: "/terraform"

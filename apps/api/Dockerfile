@@ -16,7 +16,6 @@ COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution
 # All workspace members must be present for bun install to succeed
-COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
@@ -39,7 +38,6 @@ COPY prisma.config.local.ts ./prisma.config.local.ts
 RUN bun install
 
 # Copy source code
-COPY packages/project-runtime ./packages/project-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/sdk ./packages/sdk
@@ -71,7 +69,6 @@ RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
@@ -120,7 +117,6 @@ RUN addgroup -g 1001 -S appgroup && \
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy built source from builder (small files, --chown is fast here)
-COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/sdk ./packages/sdk
@@ -133,7 +129,6 @@ COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
     ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
-    ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
     ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
     chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
 

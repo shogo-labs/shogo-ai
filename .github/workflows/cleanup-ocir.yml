@@ -73,7 +73,6 @@ jobs:
             "shogo/shogo-docs"
             "shogo/shogo-runtime-base"
             "shogo/agent-runtime"
-            "shogo/project-runtime"
           )
 
           TOTAL_DELETED=0

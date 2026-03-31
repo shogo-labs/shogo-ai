@@ -41,7 +41,6 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
-      - /app/packages/project-runtime/node_modules
       - /app/apps/api/node_modules
       # Persist workspaces for project files
       - ./workspaces:/app/workspaces

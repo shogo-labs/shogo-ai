@@ -43,7 +43,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy all workspace member package.json files for dependency resolution
-COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/

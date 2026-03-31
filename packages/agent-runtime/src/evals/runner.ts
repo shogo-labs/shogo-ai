@@ -108,7 +108,7 @@ function isRetryable(err: any): boolean {
 
 /**
  * Parse AI SDK UI Message Stream SSE into structured data.
- * Handles the same event types as the project-runtime runner.
+ * Handles the same event types as the runtime runner.
  */
 async function parseSSEStream(
   response: Response,
