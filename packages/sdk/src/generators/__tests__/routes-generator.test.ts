@@ -52,6 +52,12 @@ describe('Routes Generator', () => {
       expect(result!.code).toContain('export function createProjectRoutes(): Hono')
     })
 
+    it('should include SPDX license header', () => {
+      const result = generateModelRoutes(mockProjectModel)
+
+      expect(result!.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
     it('should import required dependencies', () => {
       const result = generateModelRoutes(mockProjectModel)
 
@@ -92,7 +98,7 @@ describe('Routes Generator', () => {
       it('should define reserved parameters', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('const reservedParams = ["limit", "offset", "include", "orderBy"]')
+        expect(result!.code).toContain('const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]')
       })
 
       it('should build where clause from query params', () => {
@@ -126,7 +132,7 @@ describe('Routes Generator', () => {
       it('should support beforeList hook', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('// Apply beforeList hook (can override where/include)')
+        expect(result!.code).toContain('// Apply beforeList hook (can override where/include/orderBy)')
         expect(result!.code).toContain('if (hooks.beforeList) {')
         expect(result!.code).toContain('const result = await hooks.beforeList(ctx)')
         expect(result!.code).toContain('if (result && !result.ok) {')
@@ -139,6 +145,7 @@ describe('Routes Generator', () => {
         expect(result!.code).toContain('if (result?.data) {')
         expect(result!.code).toContain('where = result.data.where || where')
         expect(result!.code).toContain('include = result.data.include || include')
+        expect(result!.code).toContain('orderBy = result.data.orderBy || orderBy')
       })
 
       it('should pass where to Prisma findMany', () => {
@@ -147,6 +154,7 @@ describe('Routes Generator', () => {
         expect(result!.code).toContain('await prisma.project.findMany({')
         expect(result!.code).toContain('where,')
         expect(result!.code).toContain('include,')
+        expect(result!.code).toContain('orderBy,')
       })
 
       it('should support pagination', () => {
@@ -307,6 +315,12 @@ describe('Routes Generator', () => {
       expect(result.code).toContain('export interface ProjectHooks')
     })
 
+    it('should include SPDX license header', () => {
+      const result = generateModelHooks(mockProjectModel)
+
+      expect(result.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
     it('should define HookResult interface', () => {
       const result = generateModelHooks(mockProjectModel)
 
@@ -331,11 +345,11 @@ describe('Routes Generator', () => {
       const result = generateModelHooks(mockProjectModel)
 
       expect(result.code).toContain('/**')
-      expect(result.code).toContain('* Called before listing records. Can modify where/include.')
-      expect(result.code).toContain('* Note: Query parameters (except limit, offset, include, orderBy) are automatically')
+      expect(result.code).toContain('* Called before listing records. Can modify where/include/orderBy.')
+      expect(result.code).toContain('* Note: Query parameters (except limit, offset, userId, include, orderBy) are automatically')
       expect(result.code).toContain('* added to the where clause. This hook receives them and can override/extend them.')
       expect(result.code).toContain('*/')
-      expect(result.code).toContain('beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>')
+      expect(result.code).toContain('beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>')
     })
 
     it('should define all hook methods', () => {
@@ -392,6 +406,12 @@ describe('Routes Generator', () => {
   })
 
   describe('generateRoutesIndex', () => {
+    it('should include SPDX license header', () => {
+      const code = generateRoutesIndex([mockWorkspaceModel, mockProjectModel])
+
+      expect(code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
     it('should generate index file with imports', () => {
       const code = generateRoutesIndex([mockWorkspaceModel, mockProjectModel])
 

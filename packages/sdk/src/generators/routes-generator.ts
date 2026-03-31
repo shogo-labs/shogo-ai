@@ -10,6 +10,15 @@ import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField } from './prisma-generator'
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+const LICENSE_HEADER = [
+  '// SPDX-License-Identifier: AGPL-3.0-or-later',
+  '// Copyright (C) 2026 Shogo Technologies, Inc.',
+].join('\n')
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -84,6 +93,7 @@ export function generateModelRoutes(
   const fileName = `${toFileName(modelName)}.routes.${ext}`
 
   const lines: string[] = [
+    LICENSE_HEADER,
     '/**',
     ` * Auto-generated ${modelName} Routes`,
     ' *',
@@ -153,11 +163,11 @@ export function generateModelRoutes(
   lines.push('      const query = ctx.query')
   lines.push('      ')
   lines.push('      // Build initial where from query params (exclude pagination/meta params)')
-  lines.push('      const reservedParams = ["limit", "offset", "include", "orderBy"]')
-  lines.push('      let where: any = {}')
-  lines.push('      ')
-  lines.push('      for (const [key, value] of Object.entries(query)) {')
-  lines.push('        if (!reservedParams.includes(key) && value !== undefined && value !== null && value !== "") {')
+      lines.push('      const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]')
+      lines.push('      let where: any = {}')
+      lines.push('      ')
+      lines.push('      for (const [key, value] of Object.entries(query)) {')
+      lines.push('        if (!reservedParams.includes(key) && value !== undefined && value !== null && value !== "") {')
   lines.push('          // Try to parse as number or boolean')
   lines.push('          let parsedValue: any = value')
   lines.push('          if (value === "true") parsedValue = true')
@@ -168,24 +178,27 @@ export function generateModelRoutes(
   lines.push('        }')
   lines.push('      }')
   lines.push('      ')
-  lines.push('      let include: any = undefined')
-  lines.push('')
-  lines.push('      // Apply beforeList hook (can override where/include)')
-  lines.push('      if (hooks.beforeList) {')
-  lines.push('        const result = await hooks.beforeList(ctx)')
-  lines.push('        if (result && !result.ok) {')
-  lines.push('          return c.json({ error: result.error }, 400)')
-  lines.push('        }')
-  lines.push('        if (result?.data) {')
-  lines.push('          where = result.data.where || where')
-  lines.push('          include = result.data.include || include')
-  lines.push('        }')
-  lines.push('      }')
-  lines.push('')
-  lines.push(`      const items = await prisma.${modelLower}.findMany({`)
-  lines.push('        where,')
-  lines.push('        include,')
-  lines.push('        take: query.limit ? parseInt(query.limit) : undefined,')
+      lines.push('      let include: any = undefined')
+      lines.push('      let orderBy: any = undefined')
+      lines.push('')
+      lines.push('      // Apply beforeList hook (can override where/include/orderBy)')
+      lines.push('      if (hooks.beforeList) {')
+      lines.push('        const result = await hooks.beforeList(ctx)')
+      lines.push('        if (result && !result.ok) {')
+      lines.push('          return c.json({ error: result.error }, 400)')
+      lines.push('        }')
+      lines.push('        if (result?.data) {')
+      lines.push('          where = result.data.where || where')
+      lines.push('          include = result.data.include || include')
+      lines.push('          orderBy = result.data.orderBy || orderBy')
+      lines.push('        }')
+      lines.push('      }')
+      lines.push('')
+      lines.push(`      const items = await prisma.${modelLower}.findMany({`)
+      lines.push('        where,')
+      lines.push('        include,')
+      lines.push('        orderBy,')
+      lines.push('        take: query.limit ? parseInt(query.limit) : undefined,')
   lines.push('        skip: query.offset ? parseInt(query.offset) : undefined,')
   lines.push('      })')
   lines.push('')
@@ -356,6 +369,7 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
   const fileName = `${toFileName(modelName)}.hooks.${ext}`
 
   const lines: string[] = [
+    LICENSE_HEADER,
     '/**',
     ` * ${modelName} Hooks`,
     ' *',
@@ -388,11 +402,11 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
     ' */',
     `export interface ${modelName}Hooks {`,
     '  /**',
-    '   * Called before listing records. Can modify where/include.',
-    '   * Note: Query parameters (except limit, offset, include, orderBy) are automatically',
+    '   * Called before listing records. Can modify where/include/orderBy.',
+    '   * Note: Query parameters (except limit, offset, userId, include, orderBy) are automatically',
     '   * added to the where clause. This hook receives them and can override/extend them.',
     '   */',
-    '  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>',
+    '  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>',
     '  /** Called before getting a single record. Can reject access. */',
     '  beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>',
     '  /** Called before creating a record. Can modify input or reject. */',
@@ -464,6 +478,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   const routeModels = models.filter(model => getIdField(model) !== undefined)
 
   const lines: string[] = [
+    LICENSE_HEADER,
     '/**',
     ' * Auto-generated Routes Index',
     ' *',

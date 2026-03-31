@@ -97,21 +97,15 @@ export function createChatMessageRoutes(): Hono {
         }
       }
 
-      const take = query.limit ? parseInt(query.limit) : undefined
-      const skip = query.offset ? parseInt(query.offset) : undefined
+      const items = await prisma.chatMessage.findMany({
+        where,
+        include,
+        orderBy,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
 
-      const [items, total] = await Promise.all([
-        prisma.chatMessage.findMany({
-          where,
-          include,
-          orderBy,
-          take,
-          skip,
-        }),
-        prisma.chatMessage.count({ where }),
-      ])
-
-      return c.json({ ok: true, items, total, limit: take, offset: skip ?? 0 })
+      return c.json({ ok: true, items })
     } catch (error: any) {
       console.error("[ChatMessage] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)

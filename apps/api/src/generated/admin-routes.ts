@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Admin Routes
  *
@@ -78,7 +76,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { sessions: true, accounts: true, members: true, notifications: true, starredProjects: true } },
+            _count: { select: { sessions: true, accounts: true, members: true, notifications: true, starredProjects: true, apiKeys: true } },
           },
         }),
         prisma.user.count({ where }),
@@ -98,11 +96,13 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
       const item = await prisma.user.findUnique({
         where: { id },
         include: {
+          signupAttribution: true,
           sessions: { take: 50 },
           accounts: { take: 50 },
           members: { take: 50 },
           notifications: { take: 50 },
           starredProjects: { take: 50 },
+          apiKeys: { take: 50 },
         },
       })
 
@@ -187,7 +187,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { projects: true, members: true, billingAccounts: true, invitations: true, folders: true, subscriptions: true, creditLedgers: true, usageEvents: true, starredProjects: true } },
+            _count: { select: { projects: true, members: true, billingAccounts: true, invitations: true, inviteLinks: true, folders: true, subscriptions: true, creditLedgers: true, usageEvents: true, starredProjects: true, apiKeys: true, instances: true } },
           },
         }),
         prisma.workspace.count({ where }),
@@ -211,11 +211,14 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           members: { take: 50 },
           billingAccounts: { take: 50 },
           invitations: { take: 50 },
+          inviteLinks: { take: 50 },
           folders: { take: 50 },
           subscriptions: { take: 50 },
           creditLedgers: { take: 50 },
           usageEvents: { take: 50 },
           starredProjects: { take: 50 },
+          apiKeys: { take: 50 },
+          instances: { take: 50 },
         },
       })
 
@@ -285,6 +288,9 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
             { publishedSubdomain: { contains: search, mode: "insensitive" } },
             { siteTitle: { contains: search, mode: "insensitive" } },
             { siteDescription: { contains: search, mode: "insensitive" } },
+            { thumbnailUrl: { contains: search, mode: "insensitive" } },
+            { templateId: { contains: search, mode: "insensitive" } },
+            { knativeServiceName: { contains: search, mode: "insensitive" } },
           ]
         }
       }
@@ -306,7 +312,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { members: true, featureSessions: true, chatSessions: true, usageEvents: true, checkpoints: true, starredBy: true } },
+            _count: { select: { members: true, inviteLinks: true, featureSessions: true, chatSessions: true, usageEvents: true, checkpoints: true, starredBy: true } },
           },
         }),
         prisma.project.count({ where }),
@@ -329,7 +335,9 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           workspace: true,
           folder: true,
           githubConnection: true,
+          agentConfig: true,
           members: { take: 50 },
+          inviteLinks: { take: 50 },
           featureSessions: { take: 50 },
           chatSessions: { take: 50 },
           usageEvents: { take: 50 },
