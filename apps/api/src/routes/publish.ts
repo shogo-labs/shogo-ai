@@ -7,7 +7,7 @@
  * Platform lives at shogo.ai, published apps at shogo.one for isolation.
  * 
  * Architecture:
- *   1. Trigger build in dev project-runtime pod
+ *   1. Trigger build in dev runtime pod
  *   2. Download built dist/ files from pod
  *   3. Upload to S3 bucket (persistent storage)
  *   4. Create nginx Knative Service that syncs from S3 via init container
@@ -113,7 +113,7 @@ function getMimeType(filename: string): string {
 }
 
 /**
- * Trigger a build in the project-runtime pod
+ * Trigger a build in the runtime pod
  */
 async function triggerBuild(projectId: string): Promise<{ success: boolean; error?: string }> {
   try {
@@ -141,7 +141,7 @@ async function triggerBuild(projectId: string): Promise<{ success: boolean; erro
 }
 
 /**
- * Download dist/ files from the project-runtime pod
+ * Download dist/ files from the runtime pod
  */
 async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>> {
   const { getProjectPodUrl } = await import("../lib/knative-project-manager")
@@ -151,7 +151,7 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
   // Get the file list from the pod
   console.log(`[Publish] Downloading dist files from ${podUrl}`)
   
-  // The project-runtime should expose an endpoint to list/download dist files
+  // The runtime should expose an endpoint to list/download dist files
   // For now, we'll use a simple API that returns all files
   const response = await fetch(`${podUrl}/api/dist-files`)
   

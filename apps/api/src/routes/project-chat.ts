@@ -255,7 +255,7 @@ async function trackUsageFromStream(
 
         // Track usage from finish events or dedicated usage events
         if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
-          // Custom data-usage event from project-runtime puts data in `data` field
+          // Custom data-usage event from runtime puts data in `data` field
           const usageData = data.usage || data.data
           if (usageData && (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens || usageData.totalTokens)) {
             lastUsage = {

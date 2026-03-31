@@ -22,7 +22,7 @@ import {
   symlinkSync,
 } from "fs"
 import { execSync } from "child_process"
-import { MONOREPO_ROOT } from "./paths"
+import { MONOREPO_ROOT } from "./template-paths"
 import { loadTemplates, type TemplateInfo } from "./template.list"
 
 /**

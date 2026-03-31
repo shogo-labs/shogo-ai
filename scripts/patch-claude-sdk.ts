@@ -48,7 +48,6 @@ function findSdkFiles(dir: string): string[] {
 
   walk(join(dir, 'node_modules'))
   walk(join(dir, 'apps/api/node_modules'))
-  walk(join(dir, 'packages/project-runtime/node_modules'))
 
   return results
 }

@@ -1547,18 +1547,18 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
 })
 
 // Restart project runtime (useful after template copy or file changes)
-// In Kubernetes, this triggers a rebuild in the project-runtime pod
+// In Kubernetes, this triggers a rebuild in the runtime pod
 app.post('/api/projects/:projectId/runtime/restart', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod's /preview/restart endpoint
+    // In Kubernetes: Proxy to runtime pod's /preview/restart endpoint
     // This triggers a rebuild (vite build) and restarts the preview server
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
       
-      console.log(`[Runtime Restart] Proxying to project-runtime pod: ${podUrl}/preview/restart`)
+      console.log(`[Runtime Restart] Proxying to runtime pod: ${podUrl}/preview/restart`)
       
       const response = await fetch(`${podUrl}/preview/restart`, {
         method: 'POST',
@@ -1888,7 +1888,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
 // =============================================================================
 
 // Preview proxy for project runtime (all methods, all paths)
-// Routes to the /preview/ endpoint on the project-runtime server which proxies to Vite
+// Routes to the /preview/ endpoint on the runtime server which proxies to Vite
 app.all('/api/projects/:projectId/preview/*', async (c) => {
   const projectId = c.req.param('projectId')
   
@@ -1907,12 +1907,12 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     const { getProjectPodUrl } = await import('./lib/knative-project-manager')
     const podUrl = await getProjectPodUrl(projectId)
     
-    // Extract the path after /preview/ and route to /preview/ on the project-runtime
-    // The project-runtime server proxies /preview/* to the Vite dev server on port 5173
+    // Extract the path after /preview/ and route to /preview/ on the runtime
+    // The runtime server proxies /preview/* to the Vite dev server on port 5173
     const path = c.req.path.replace(`/api/projects/${projectId}/preview`, '') || '/'
     const targetUrl = `${podUrl}/preview${path}`
     
-    // Tell project-runtime the external base path for URL rewriting in HTML
+    // Tell runtime the external base path for URL rewriting in HTML
     const externalBasePath = `/api/projects/${projectId}/preview/`
     
     console.log(`[PreviewProxy] Proxying ${c.req.method} ${path} to ${targetUrl} (external base: ${externalBasePath})`)
@@ -2153,7 +2153,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
 // =============================================================================
 // Files routes - Project file listing and reading
-// In Kubernetes mode, proxies to project-runtime pod's /files endpoint
+// In Kubernetes mode, proxies to runtime pod's /files endpoint
 // =============================================================================
 
 // List project files
@@ -2204,7 +2204,7 @@ app.get('/api/projects/:projectId/files/*', async (c) => {
   const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2247,7 +2247,7 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
   const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2303,7 +2303,7 @@ app.get('/api/projects/:projectId/download', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2501,7 +2501,7 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2712,7 +2712,7 @@ app.post('/api/projects/:projectId/tests/run', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2770,7 +2770,7 @@ app.get('/api/projects/:projectId/tests/traces', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2825,7 +2825,7 @@ app.get('/api/projects/:projectId/tests/traces/*', async (c) => {
   const tracePath = c.req.path.replace(`/api/projects/${projectId}/tests/traces/`, '')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2835,7 +2835,7 @@ app.get('/api/projects/:projectId/tests/traces/*', async (c) => {
       
       const response = await fetch(targetUrl)
       const responseHeaders = new Headers()
-      // Pass through all headers from project-runtime
+      // Pass through all headers from runtime
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
           responseHeaders.set(key, value)
@@ -2867,7 +2867,7 @@ app.delete('/api/projects/:projectId/tests/traces', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2924,7 +2924,7 @@ app.post('/api/projects/:projectId/security/scan', async (c) => {
   }
 
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -3006,7 +3006,7 @@ app.post('/api/projects/:projectId/database/start', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -3073,7 +3073,7 @@ app.post('/api/projects/:projectId/database/stop', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -3140,7 +3140,7 @@ app.get('/api/projects/:projectId/database/status', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -3223,7 +3223,7 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
       if (!response.ok) {
         const contentType = response.headers.get('content-type') || ''
         
-        // Try to parse JSON error response from project-runtime
+        // Try to parse JSON error response from runtime
         if (contentType.includes('application/json')) {
           try {
             const errorData = await response.json()
@@ -3313,7 +3313,7 @@ app.all('/api/projects/:projectId/database/proxy', async (c) => {
     const podUrl = await getProjectPodUrl(projectId)
     const targetUrl = `${podUrl}/database/proxy`
     
-    // Tell project-runtime the external base path for URL rewriting
+    // Tell runtime the external base path for URL rewriting
     const externalBasePath = `/api/projects/${projectId}/database/proxy/`
     
     console.log(`[DatabaseProxy] Proxying to ${targetUrl} (external base: ${externalBasePath})`)
@@ -3367,7 +3367,7 @@ app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
     const query = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
     const targetUrl = `${podUrl}/database/proxy${proxyPath}${query}`
     
-    // Tell project-runtime the external base path for URL rewriting
+    // Tell runtime the external base path for URL rewriting
     const externalBasePath = `/api/projects/${projectId}/database/proxy/`
     
     console.log(`[DatabaseProxy] Proxying to ${targetUrl}`)

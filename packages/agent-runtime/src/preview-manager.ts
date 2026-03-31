@@ -10,7 +10,7 @@
  *   - Prisma client generation
  *   - Restart/rebuild on demand
  *
- * Ported from project-runtime's inline preview logic into a standalone module
+ * Ported from runtime's inline preview logic into a standalone module
  * so the unified runtime can activate it only when needed.
  */
 

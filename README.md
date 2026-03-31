@@ -33,7 +33,6 @@ details.
 | `apps/desktop/` | Local desktop distribution |
 | `apps/docs/` | Documentation site |
 | `packages/agent-runtime/` | Agent gateway, tools, integrations |
-| `packages/project-runtime/` | Isolated project runtime |
 | `packages/shared-runtime/` | Shared runtime helpers |
 | `packages/shared-app/` | Shared app/domain logic |
 | `packages/shared-ui/` | Shared UI components |
@@ -100,7 +99,6 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 | `@shogo/mobile` | Primary client app |
 | `@shogo/desktop` | Desktop packaging layer |
 | `@shogo/agent-runtime` | Agent runtime and tool gateway |
-| `@shogo/project-runtime` | Isolated per-project runtime |
 | `@shogo-ai/sdk` | Developer SDK for auth, data, and email |
 
 ## Commands

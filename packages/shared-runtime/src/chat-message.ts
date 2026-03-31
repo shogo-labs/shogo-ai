@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * User message extraction for AI SDK v3 (parts) and legacy (content) formats.
- * Shared between project-runtime and agent-runtime.
+ * Shared between runtime and agent-runtime.
  */
 
 /**

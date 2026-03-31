@@ -9,7 +9,7 @@
  * - Health check endpoint for Kubernetes probes
  * - S3 file synchronization for persistent storage
  *
- * This mirrors project-runtime but replaces the Vite dev server
+ * This mirrors runtime but replaces the Vite dev server
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
@@ -2386,7 +2386,7 @@ app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
   return runtime.getApp().fetch(subRequest)
 })
 
-// Console log for forwarding (matches project-runtime pattern)
+// Console log for forwarding (matches runtime pattern)
 const consoleLogs: string[] = []
 app.post('/console-log/append', async (c) => {
   const { line } = await c.req.json()

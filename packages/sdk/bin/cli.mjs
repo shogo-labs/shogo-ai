@@ -6,7 +6,7 @@
  * It delegates to the source CLI (bin/shogo.ts) when running from the monorepo,
  * or runs a lightweight generate-only command when installed as a dependency.
  * 
- * In project-runtime pods, `bunx shogo generate` resolves to this file.
+ * In runtime pods, `bunx shogo generate` resolves to this file.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'

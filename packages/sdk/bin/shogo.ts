@@ -496,7 +496,7 @@ async function main() {
 
   console.log('')
 
-  // Detect if running inside a Shogo project-runtime environment.
+  // Detect if running inside a Shogo runtime environment.
   // When PORT is set and we're inside a pod, pause the Vite build watcher
   // to prevent crashes from rapid file writes during code generation.
   // The resume call at the end triggers a fresh build + backend server restart.
@@ -504,7 +504,7 @@ async function main() {
   const isInsideRuntime = !!runtimePort && existsSync(resolve(cwd, 'server.tsx'))
   
   if (isInsideRuntime) {
-    console.log(`📡 Detected project-runtime (port ${runtimePort})`)
+    console.log(`📡 Detected runtime (port ${runtimePort})`)
   }
   
   // ── Step 1: Pause watcher (if inside runtime) ──────────────────────────

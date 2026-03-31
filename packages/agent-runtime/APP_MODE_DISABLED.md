@@ -324,7 +324,7 @@ And the final `COPY --from=template-deps` line that placed archives into
 - The `app-template-card.tsx` component file was not deleted, only its imports were
   commented out.
 - The `packages/sdk/examples/` template directories were not modified.
-- The `packages/project-runtime/` template copy/list endpoints were not modified
+- The runtime template copy/list endpoints were not modified
   (they run inside pods and are only called by the now-disabled flows).
 - Eval test cases referencing app mode were not modified — they will need updating
   if evals are re-run.

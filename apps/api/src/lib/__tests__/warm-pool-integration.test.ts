@@ -86,7 +86,6 @@ beforeEach(() => {
   process.env.KUBERNETES_SERVICE_HOST = 'localhost'
   process.env.WARM_POOL_ENABLED = 'true'
   process.env.PROJECT_NAMESPACE = 'test-namespace'
-  process.env.PROJECT_RUNTIME_IMAGE = 'test-runtime:latest'
   process.env.AGENT_RUNTIME_IMAGE = 'test-agent:latest'
   process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
   process.env.S3_REGION = 'us-east-1'

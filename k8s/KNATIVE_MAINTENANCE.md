@@ -78,7 +78,7 @@ If a project is deleted but its Knative Service remains:
 
 ```bash
 # List all project services
-kubectl get ksvc -n shogo-staging-workspaces -l shogo.io/component=project-runtime
+kubectl get ksvc -n shogo-staging-workspaces -l shogo.io/component=runtime
 
 # Delete a specific project's service
 kubectl delete ksvc project-<project-id> -n shogo-staging-workspaces
@@ -121,7 +121,7 @@ kubectl get secret ghcr-pull-secret -n shogo-staging-workspaces
 kubectl get secret ghcr-pull-secret -n shogo-staging-workspaces -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq
 
 # Test pulling an image manually
-kubectl run test-pull --image=ghcr.io/shogo-ai/project-runtime:staging-latest -n shogo-staging-workspaces --rm -it --restart=Never -- echo "Image pull successful"
+kubectl run test-pull --image=ghcr.io/shogo-ai/runtime:staging-latest -n shogo-staging-workspaces --rm -it --restart=Never -- echo "Image pull successful"
 ```
 
 ### Update Image Pull Secret

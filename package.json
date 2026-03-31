@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
-    "build": "bun run --cwd packages/sdk build && concurrently \"bun run --cwd packages/canvas-runtime build\" \"bun run --cwd packages/agent-runtime build\" \"bun run --cwd packages/project-runtime build\"",
+    "build": "bun run --cwd packages/sdk build && concurrently \"bun run --cwd packages/canvas-runtime build\" \"bun run --cwd packages/agent-runtime build\"",
     "build:sdk": "bun run --cwd packages/sdk build",
     "web:dev": "cd apps/mobile && npx expo start --web",
     "mobile:dev": "bun run --cwd apps/mobile expo start --go",

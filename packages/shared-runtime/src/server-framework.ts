@@ -4,7 +4,7 @@
  * Shared Runtime Server Framework
  *
  * Provides createRuntimeApp() — a factory that builds a Hono server with all
- * the boilerplate shared between agent-runtime and project-runtime:
+ * the boilerplate shared between agent-runtime and runtime:
  *
  *   - OpenTelemetry instrumentation
  *   - Structured logger + startup timing
@@ -27,7 +27,7 @@ import { configureAIProxy } from './ai-proxy'
 import { checkSelfAssign } from './self-assign'
 
 export interface RuntimeAppConfig {
-  /** Display name used in logs (e.g. 'agent-runtime', 'project-runtime') */
+  /** Display name used in logs (e.g. 'agent-runtime', 'runtime') */
   name: string
   /** Workspace directory (WORKSPACE_DIR) */
   workDir: string
@@ -313,7 +313,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   })
 
   // /ready is NOT registered here — each runtime provides its own readiness check
-  // (e.g. project-runtime checks build status, agent-runtime checks gateway)
+  // (e.g. runtime checks build status, agent-runtime checks gateway)
 
   app.get('/pool/activity', (c) => {
     const activityStats = config.getActivityStats?.() ?? { activeSessions: 0, lastActivityAt: null }
