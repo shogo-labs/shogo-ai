@@ -32,7 +32,7 @@ export interface HookContext {
  */
 export interface SubscriptionHooks {
   /** Called before listing records. Can modify where/include. */
-  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>
+  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>
   /** Called before getting a single record. Can reject access. */
   beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>
   /** Called before creating a record. Can modify input or reject. */
@@ -77,6 +77,7 @@ export const subscriptionHooks: SubscriptionHooks = {
             },
           },
           include: { workspace: true },
+          orderBy: { createdAt: 'desc' },
         },
       }
     }
@@ -98,6 +99,7 @@ export const subscriptionHooks: SubscriptionHooks = {
       data: {
         where: { workspaceId },
         include: { workspace: true },
+        orderBy: { createdAt: 'desc' },
       },
     }
   },

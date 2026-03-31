@@ -322,7 +322,8 @@ async function _consumeCreditsTransaction(
 }
 
 /**
- * Sync subscription from Stripe webhook data
+ * Sync subscription from Stripe webhook data.
+ * One row per workspace (@@unique(workspaceId)); upsert updates stripeSubscriptionId when it changes.
  */
 export async function syncFromStripe(data: {
   stripeSubscriptionId: string;
@@ -336,7 +337,7 @@ export async function syncFromStripe(data: {
   cancelAtPeriodEnd?: boolean;
 }) {
   return prisma.subscription.upsert({
-    where: { stripeSubscriptionId: data.stripeSubscriptionId },
+    where: { workspaceId: data.workspaceId },
     create: {
       workspaceId: data.workspaceId,
       stripeSubscriptionId: data.stripeSubscriptionId,
@@ -349,6 +350,8 @@ export async function syncFromStripe(data: {
       cancelAtPeriodEnd: data.cancelAtPeriodEnd ?? false,
     },
     update: {
+      stripeSubscriptionId: data.stripeSubscriptionId,
+      stripeCustomerId: data.stripeCustomerId,
       planId: data.planId,
       status: data.status,
       billingInterval: data.billingInterval,

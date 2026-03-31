@@ -82,8 +82,9 @@ export function createUserRoutes(): Hono {
       }
       
       let include: any = undefined
+      let orderBy: any = undefined
 
-      // Apply beforeList hook (can override where/include)
+      // Apply beforeList hook (can override where/include/orderBy)
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
@@ -92,12 +93,14 @@ export function createUserRoutes(): Hono {
         if (result?.data) {
           where = result.data.where || where
           include = result.data.include || include
+          orderBy = result.data.orderBy || orderBy
         }
       }
 
       const items = await prisma.user.findMany({
         where,
         include,
+        orderBy,
         take: query.limit ? parseInt(query.limit) : undefined,
         skip: query.offset ? parseInt(query.offset) : undefined,
       })
