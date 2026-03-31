@@ -10,10 +10,13 @@
  * dollar cost using separate input/output token pricing per model tier.
  *
  * Model costs (per 1M tokens):
- * - Haiku:       $0.80 input / $4.00 output
- * - GPT-5.4-Mini: $1.10 input / $4.40 output
- * - Sonnet:      $3.00 input / $15.00 output
- * - Opus:        $15.00 input / $75.00 output
+ * - Haiku:       $0.80 input / $0.08 cached input / $4.00 output
+ * - GPT-5.4-Mini: $1.10 input / $0.55 cached input / $4.40 output
+ * - Sonnet:      $3.00 input / $0.30 cached input / $15.00 output
+ * - Opus:        $15.00 input / $1.50 cached input / $75.00 output
+ *
+ * Cached input rates: Anthropic charges 10% of input for cache reads,
+ * OpenAI charges 50%. The billing tiers approximate this per model family.
  */
 
 export const CREDIT_DOLLAR_VALUE = 0.10
@@ -21,10 +24,10 @@ export const MIN_CREDIT_COST = 0.2
 export const MIN_CREDIT_COST_ECONOMY = 0.1
 
 export const MODEL_DOLLAR_COSTS = {
-  haiku:          { inputPerMillion: 0.80, outputPerMillion: 4.00 },
-  'gpt-5.4-mini': { inputPerMillion: 1.10, outputPerMillion: 4.40 },
-  sonnet:         { inputPerMillion: 3.00, outputPerMillion: 15.00 },
-  opus:           { inputPerMillion: 15.00, outputPerMillion: 75.00 },
+  haiku:          { inputPerMillion: 0.80, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
+  'gpt-5.4-mini': { inputPerMillion: 1.10, cachedInputPerMillion: 0.55, outputPerMillion: 4.40 },
+  sonnet:         { inputPerMillion: 3.00, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
+  opus:           { inputPerMillion: 15.00, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
 } as const
 
 export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
@@ -118,16 +121,21 @@ function resolveModel(modelOrAgentMode?: ModelName | AgentMode): ModelName {
 /**
  * Calculate credit cost from separate input/output token counts.
  * 1 credit = $0.10 of raw LLM cost.
+ *
+ * `inputTokens` should be non-cached input only. Pass `cachedInputTokens`
+ * separately so they're billed at the discounted cache-read rate.
  */
 export function calculateCreditCost(
   inputTokens: number,
   outputTokens: number,
-  modelOrAgentMode?: ModelName | AgentMode
+  modelOrAgentMode?: ModelName | AgentMode,
+  cachedInputTokens: number = 0,
 ): number {
   const model = resolveModel(modelOrAgentMode)
   const costs = MODEL_DOLLAR_COSTS[model]
   const dollarCost =
     (inputTokens * costs.inputPerMillion / 1_000_000) +
+    (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
     (outputTokens * costs.outputPerMillion / 1_000_000)
 
   const raw = Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10

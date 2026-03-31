@@ -29,6 +29,7 @@ interface BillingSession {
   userId: string
   model: string
   inputTokens: number
+  cachedInputTokens: number
   outputTokens: number
   requestCount: number
   openedAt: number
@@ -72,6 +73,7 @@ export function openSession(
     userId,
     model: 'sonnet',
     inputTokens: 0,
+    cachedInputTokens: 0,
     outputTokens: 0,
     requestCount: 0,
     openedAt: Date.now(),
@@ -96,11 +98,13 @@ export function accumulateUsage(
   model: string,
   inputTokens: number,
   outputTokens: number,
+  cachedInputTokens: number = 0,
 ): boolean {
   const session = sessions.get(projectId)
   if (!session) return false
 
   session.inputTokens += inputTokens
+  session.cachedInputTokens += cachedInputTokens
   session.outputTokens += outputTokens
   session.requestCount += 1
   session.model = model
@@ -122,13 +126,13 @@ export async function closeSession(
     return { creditCost: 0, totalTokens: 0 }
   }
 
-  const totalTokens = session.inputTokens + session.outputTokens
+  const totalTokens = session.inputTokens + session.cachedInputTokens + session.outputTokens
   if (totalTokens === 0) {
     return { creditCost: 0, totalTokens: 0 }
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
-  const creditCost = calculateCreditCost(session.inputTokens, session.outputTokens, billingModel)
+  const creditCost = calculateCreditCost(session.inputTokens, session.outputTokens, billingModel, session.cachedInputTokens)
   const durationMs = Date.now() - session.openedAt
 
   try {
@@ -140,6 +144,7 @@ export async function closeSession(
       creditCost,
       {
         inputTokens: session.inputTokens,
+        cachedInputTokens: session.cachedInputTokens,
         outputTokens: session.outputTokens,
         totalTokens,
         model: session.model,
@@ -150,8 +155,9 @@ export async function closeSession(
     )
 
     if (result.success) {
+      const cacheNote = session.cachedInputTokens > 0 ? `, ${session.cachedInputTokens} cached` : ''
       console.log(
-        `[BillingSession] Charged ${creditCost} credits (${totalTokens} tokens across ${session.requestCount} requests, model: ${billingModel}) — remaining: ${result.remainingCredits}`
+        `[BillingSession] Charged ${creditCost} credits (${totalTokens} tokens across ${session.requestCount} requests${cacheNote}, model: ${billingModel}) — remaining: ${result.remainingCredits}`
       )
     } else {
       console.warn(`[BillingSession] Could not charge credits: ${result.error}`)

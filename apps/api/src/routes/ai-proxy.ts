@@ -618,7 +618,7 @@ async function proxyAnthropicStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number) => void
+  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
 ): Promise<Response> {
   const body = convertToAnthropicFormat({
     ...request,
@@ -646,6 +646,7 @@ async function proxyAnthropicStream(
   const decoder = new TextDecoder()
   const completionId = `chatcmpl-${Date.now()}`
   let inputTokens = 0
+  let cachedInputTokens = 0
   let outputTokens = 0
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -666,7 +667,9 @@ async function proxyAnthropicStream(
           }
 
           if (event.type === 'message_start' && event.message?.usage) {
-            inputTokens = event.message.usage.input_tokens || 0
+            const usage = event.message.usage
+            inputTokens = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
+            cachedInputTokens = usage.cache_read_input_tokens || 0
           }
           if (event.type === 'message_delta' && event.usage) {
             outputTokens = event.usage.output_tokens || 0
@@ -678,7 +681,7 @@ async function proxyAnthropicStream(
     },
     flush(controller) {
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-      onComplete?.(inputTokens, outputTokens)
+      onComplete?.(inputTokens, outputTokens, cachedInputTokens)
     },
   })
 
@@ -876,7 +879,7 @@ async function proxyOpenAIStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number) => void
+  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
 ): Promise<Response> {
   const url = getOpenAICompatibleBaseUrl(modelConfig)
   const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
@@ -914,6 +917,7 @@ async function proxyOpenAIStream(
   const decoder = new TextDecoder()
   let inputTokens = 0
   let outputTokens = 0
+  let cachedInputTokens = 0
   let sseBuffer = ''
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -932,7 +936,9 @@ async function proxyOpenAIStream(
         try {
           const parsed = JSON.parse(data)
           if (parsed.usage) {
-            inputTokens = parsed.usage.prompt_tokens || 0
+            const totalPrompt = parsed.usage.prompt_tokens || 0
+            cachedInputTokens = parsed.usage.prompt_tokens_details?.cached_tokens || 0
+            inputTokens = totalPrompt - cachedInputTokens
             outputTokens = parsed.usage.completion_tokens || 0
           }
         } catch {
@@ -941,7 +947,7 @@ async function proxyOpenAIStream(
       }
     },
     flush() {
-      onComplete(inputTokens, outputTokens)
+      onComplete(inputTokens, outputTokens, cachedInputTokens)
     },
   })
 
@@ -1020,25 +1026,26 @@ async function recordUsage(
   model: string,
   inputTokens: number,
   outputTokens: number,
+  cachedInputTokens: number = 0,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), not a real
   // Project row. Pass null so the UsageEvent FK constraint is satisfied.
   const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
 
   // If a billing session is open, accumulate — the session closer will charge
-  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens)) {
-    const totalTokens = inputTokens + outputTokens
+  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens)) {
+    const totalTokens = inputTokens + cachedInputTokens + outputTokens
     console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId})`)
     return
   }
 
   // No billing session — charge immediately (direct proxy usage)
-  const totalTokens = inputTokens + outputTokens
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens
   if (totalTokens === 0) return
 
   try {
     const billingModel = proxyModelToBillingModel(model)
-    const creditCost = calculateCreditCost(inputTokens, outputTokens, billingModel)
+    const creditCost = calculateCreditCost(inputTokens, outputTokens, billingModel, cachedInputTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
@@ -1516,12 +1523,12 @@ export function aiProxyRoutes() {
       // Route to provider
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
-          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok)
+          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok)
           })
         } else {
-          return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok)
+          return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok)
           })
         }
       } else {
@@ -1532,11 +1539,14 @@ export function aiProxyRoutes() {
           result = await proxyOpenAINonStream(request, apiKey, modelConfig)
         }
 
+        const totalPrompt = result.usage?.prompt_tokens || 0
+        const cachedPrompt = result.usage?.prompt_tokens_details?.cached_tokens || 0
         recordUsage(
           tokenPayload,
           request.model,
-          result.usage?.prompt_tokens || 0,
+          totalPrompt - cachedPrompt,
           result.usage?.completion_tokens || 0,
+          cachedPrompt,
         )
 
         return c.json(result)
@@ -1626,6 +1636,7 @@ export function aiProxyRoutes() {
         const decoder = new TextDecoder()
         let inputTokens = 0
         let outputTokens = 0
+        let cachedInputTokens = 0
         let sseBuffer = ''
 
         const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -1641,15 +1652,17 @@ export function aiProxyRoutes() {
               try {
                 const parsed = JSON.parse(data)
                 if (parsed.type === 'response.completed' && parsed.response?.usage) {
-                  inputTokens = parsed.response.usage.input_tokens || 0
+                  const totalInput = parsed.response.usage.input_tokens || 0
+                  cachedInputTokens = parsed.response.usage.input_tokens_details?.cached_tokens || 0
+                  inputTokens = totalInput - cachedInputTokens
                   outputTokens = parsed.response.usage.output_tokens || 0
                 }
               } catch {}
             }
           },
           flush() {
-            if (inputTokens || outputTokens) {
-              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens)
+            if (inputTokens || outputTokens || cachedInputTokens) {
+              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens)
             }
           },
         })
@@ -1673,7 +1686,9 @@ export function aiProxyRoutes() {
       } else {
         const result = await response.json() as any
         if (result.usage) {
-          recordUsage(tokenPayload, requestedModel, result.usage.input_tokens || 0, result.usage.output_tokens || 0)
+          const totalInput = result.usage.input_tokens || 0
+          const cachedInput = result.usage.input_tokens_details?.cached_tokens || 0
+          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput)
         }
         return c.json(result)
       }
@@ -1975,7 +1990,9 @@ export function aiProxyRoutes() {
           })
         } else {
           const openaiResult = await response.json() as any
-          recordUsage(tokenPayload, resolvedModel, openaiResult.usage?.prompt_tokens || 0, openaiResult.usage?.completion_tokens || 0)
+          const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
+          const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
+          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           return c.json(anthropicResult)
         }
@@ -2023,9 +2040,10 @@ export function aiProxyRoutes() {
 
       if (!isStream) {
         const responseBody = await response.json() as any
-        const inTok = responseBody.usage?.input_tokens || 0
+        const inTok = (responseBody.usage?.input_tokens || 0) + (responseBody.usage?.cache_creation_input_tokens || 0)
+        const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, resolvedModel, inTok, outTok)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok)
         return c.json(responseBody)
       }
 
@@ -2039,6 +2057,7 @@ export function aiProxyRoutes() {
       responseHeaders.set('X-Proxy-Project', tokenPayload.projectId)
 
       let streamInputTokens = 0
+      let streamCachedInputTokens = 0
       let streamOutputTokens = 0
       const sseDecoder = new TextDecoder()
       let sseBuffer = ''
@@ -2056,7 +2075,9 @@ export function aiProxyRoutes() {
             try {
               const event = JSON.parse(data)
               if (event.type === 'message_start' && event.message?.usage) {
-                streamInputTokens = event.message.usage.input_tokens || 0
+                const usage = event.message.usage
+                streamInputTokens = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
+                streamCachedInputTokens = usage.cache_read_input_tokens || 0
               }
               if (event.type === 'message_delta' && event.usage) {
                 streamOutputTokens = event.usage.output_tokens || 0
@@ -2065,7 +2086,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens)
         },
       })
 
