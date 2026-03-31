@@ -8,7 +8,7 @@
  * and unchanged context lines with no tint.
  */
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileEdit, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
@@ -31,7 +31,28 @@ function extractEditData(tool: ToolCallData) {
   return { path: path || "unknown", oldString, newString, replaceAll }
 }
 
-export function EditFileWidget({
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+function toolWidgetPropsEqual(
+  prev: EditFileWidgetProps,
+  next: EditFileWidgetProps,
+) {
+  return (
+    prev.tool.state === next.tool.state &&
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    prev.tool.error === next.tool.error &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result) &&
+    prev.isExpanded === next.isExpanded &&
+    prev.onToggle === next.onToggle &&
+    prev.className === next.className
+  )
+}
+
+export const EditFileWidget = memo(function EditFileWidget({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -44,7 +65,7 @@ export function EditFileWidget({
     else setInternalExpanded(!internalExpanded)
   }
 
-  const { path, oldString, newString } = extractEditData(tool)
+  const { path, oldString, newString } = useMemo(() => extractEditData(tool), [tool.args])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
 
@@ -130,7 +151,6 @@ export function EditFileWidget({
                     line.type === "added" && "bg-emerald-500/15",
                   )}
                 >
-                  {/* Gutter marker */}
                   <View className="w-5 items-center justify-center">
                     <Text
                       className={cn(
@@ -143,7 +163,6 @@ export function EditFileWidget({
                       {line.type === "removed" ? "-" : line.type === "added" ? "+" : " "}
                     </Text>
                   </View>
-                  {/* Code line */}
                   <Text
                     className={cn(
                       "flex-1 text-[10px] font-mono leading-[16px] px-1",
@@ -171,6 +190,6 @@ export function EditFileWidget({
       )}
     </View>
   )
-}
+}, toolWidgetPropsEqual)
 
 export default EditFileWidget

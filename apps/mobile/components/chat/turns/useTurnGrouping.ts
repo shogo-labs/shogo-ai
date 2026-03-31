@@ -35,7 +35,7 @@ function extractToolCallsFromMessage(message: UIMessage): ToolCallData[] {
         args: invocation?.args,
         result: invocation?.result,
         error: invocation?.error,
-        timestamp: Date.now(),
+        timestamp: 0,
       }
     })
 }
@@ -79,7 +79,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
             args: inv.args,
             result: inv.result,
             error: inv.error,
-            timestamp: Date.now(),
+            timestamp: 0,
           },
         })
       }
@@ -100,7 +100,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           args: part.input,
           result: part.output,
           error: errorContent,
-          timestamp: Date.now(),
+          timestamp: 0,
         },
       })
     } else if (part.type === "file" && part.url) {
@@ -148,7 +148,7 @@ export function useTurnGrouping(
           assistantMessage: null,
           toolCalls: [],
           assistantParts: [],
-          timestamp: Date.now(),
+          timestamp: (message as any).createdAt?.getTime?.() ?? 0,
           isStreaming: false,
         }
       } else if (message.role === "assistant") {
@@ -159,7 +159,7 @@ export function useTurnGrouping(
             assistantMessage: null,
             toolCalls: [],
             assistantParts: [],
-            timestamp: Date.now(),
+            timestamp: (message as any).createdAt?.getTime?.() ?? 0,
             isStreaming: false,
           }
         }

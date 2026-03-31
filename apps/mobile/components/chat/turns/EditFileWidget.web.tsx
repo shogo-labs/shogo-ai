@@ -5,7 +5,7 @@
  * highlighting on individual diff lines.
  */
 
-import { useState, useEffect, useRef, useMemo } from "react"
+import { useState, useEffect, useRef, useMemo, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileEdit, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
@@ -46,7 +46,9 @@ const FALLBACK_COLOR: Record<DiffLine["type"], string> = {
   context: "#8b949e",
 }
 
-function HighlightedDiffLines({
+const SHIKI_DEBOUNCE_MS = 150
+
+const HighlightedDiffLines = memo(function HighlightedDiffLines({
   lines,
   language,
 }: {
@@ -58,45 +60,47 @@ function HighlightedDiffLines({
 
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
-      try {
-        const { codeToTokens } = await import("shiki")
-        const allOldLines: string[] = []
-        const allNewLines: string[] = []
-        for (const l of lines) {
-          if (l.type === "removed" || l.type === "context") allOldLines.push(l.text)
-          if (l.type === "added" || l.type === "context") allNewLines.push(l.text)
-        }
-        const combined = [...new Set([...allOldLines, ...allNewLines])]
-        const fullCode = combined.join("\n")
+    const timer = setTimeout(() => {
+      ;(async () => {
+        try {
+          const { codeToTokens } = await import("shiki")
+          const allOldLines: string[] = []
+          const allNewLines: string[] = []
+          for (const l of lines) {
+            if (l.type === "removed" || l.type === "context") allOldLines.push(l.text)
+            if (l.type === "added" || l.type === "context") allNewLines.push(l.text)
+          }
+          const combined = [...new Set([...allOldLines, ...allNewLines])]
+          const fullCode = combined.join("\n")
 
-        const result = await codeToTokens(fullCode, {
-          lang: language === "text" ? "plaintext" : language,
-          theme: "github-dark-default",
-        })
+          const result = await codeToTokens(fullCode, {
+            lang: language === "text" ? "plaintext" : language,
+            theme: "github-dark-default",
+          })
 
-        const lineHtmlMap = new Map<string, string>()
-        for (let ti = 0; ti < result.tokens.length; ti++) {
-          const tokenLine = result.tokens[ti]
-          const lineText = combined[ti]
-          const spans = tokenLine
-            .map(t => `<span style="color:${t.color || '#e6edf3'}">${escapeHtml(t.content)}</span>`)
-            .join("")
-          lineHtmlMap.set(lineText, spans)
-        }
+          const lineHtmlMap = new Map<string, string>()
+          for (let ti = 0; ti < result.tokens.length; ti++) {
+            const tokenLine = result.tokens[ti]
+            const lineText = combined[ti]
+            const spans = tokenLine
+              .map(t => `<span style="color:${t.color || '#e6edf3'}">${escapeHtml(t.content)}</span>`)
+              .join("")
+            lineHtmlMap.set(lineText, spans)
+          }
 
-        if (cancelled) return
-        const indexMap = new Map<number, string>()
-        for (let i = 0; i < lines.length; i++) {
-          const html = lineHtmlMap.get(lines[i].text)
-          if (html) indexMap.set(i, html)
+          if (cancelled) return
+          const indexMap = new Map<number, string>()
+          for (let i = 0; i < lines.length; i++) {
+            const html = lineHtmlMap.get(lines[i].text)
+            if (html) indexMap.set(i, html)
+          }
+          setTokenMap(indexMap)
+        } catch {
+          // Shiki unavailable — fall back to plain text
         }
-        setTokenMap(indexMap)
-      } catch {
-        // Shiki unavailable — fall back to plain text
-      }
-    })()
-    return () => { cancelled = true }
+      })()
+    }, SHIKI_DEBOUNCE_MS)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [lines, language])
 
   return (
@@ -145,7 +149,7 @@ function HighlightedDiffLines({
       ))}
     </div>
   )
-}
+})
 
 function escapeHtml(str: string): string {
   return str
@@ -155,7 +159,28 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;")
 }
 
-export function EditFileWidget({
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+function toolWidgetPropsEqual(
+  prev: EditFileWidgetProps,
+  next: EditFileWidgetProps,
+) {
+  const equal =
+    prev.tool.state === next.tool.state &&
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    prev.tool.error === next.tool.error &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result) &&
+    prev.isExpanded === next.isExpanded &&
+    prev.onToggle === next.onToggle &&
+    prev.className === next.className
+  return equal
+}
+
+export const EditFileWidget = memo(function EditFileWidget({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -168,7 +193,7 @@ export function EditFileWidget({
     else setInternalExpanded(!internalExpanded)
   }
 
-  const { path, oldString, newString } = extractEditData(tool)
+  const { path, oldString, newString } = useMemo(() => extractEditData(tool), [tool.args])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
   const language = getLanguageFromPath(path)
@@ -261,6 +286,6 @@ export function EditFileWidget({
       )}
     </View>
   )
-}
+}, toolWidgetPropsEqual)
 
 export default EditFileWidget

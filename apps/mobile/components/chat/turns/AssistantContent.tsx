@@ -7,7 +7,7 @@
  * Preserves the natural ordering from the AI SDK message.parts array.
  */
 
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback, useMemo, useRef } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
@@ -95,7 +95,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
             args: inv.args,
             result: inv.result,
             error: inv.error,
-            timestamp: Date.now(),
+            timestamp: 0,
           },
         })
       }
@@ -116,7 +116,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           args: part.input,
           result: part.output,
           error: errorContent,
-          timestamp: Date.now(),
+          timestamp: 0,
         },
       })
     } else if (part.type === "file" && part.url) {
@@ -274,6 +274,16 @@ export function AssistantContent({
     })
   }, [])
 
+  const toggleCacheRef = useRef<Map<string, () => void>>(new Map())
+  const getToggle = useCallback((id: string) => {
+    let fn = toggleCacheRef.current.get(id)
+    if (!fn) {
+      fn = () => toggleTool(id)
+      toggleCacheRef.current.set(id, fn)
+    }
+    return fn
+  }, [toggleTool])
+
   const groupedParts = useMemo(() => {
     const parts = extractOrderedParts(message)
     return groupConsecutiveParts(parts)
@@ -317,7 +327,7 @@ export function AssistantContent({
               toolName={part.toolName}
               tools={part.tools}
               isExpanded={expandedTools.has(part.id)}
-              onToggle={() => toggleTool(part.id)}
+              onToggle={getToggle(part.id)}
             />
           )
         }
@@ -332,7 +342,7 @@ export function AssistantContent({
                 key={part.id}
                 tool={part.tool}
                 isExpanded={isExpanded}
-                onToggle={() => toggleTool(part.id)}
+                onToggle={getToggle(part.id)}
                 onSubmitResponse={(response) => {
                   if (chatContext?.sendMessage) {
                     chatContext.sendMessage(response)
@@ -350,7 +360,7 @@ export function AssistantContent({
                 key={part.id}
                 tool={part.tool}
                 isExpanded={isExpanded}
-                onToggle={() => toggleTool(part.id)}
+                onToggle={getToggle(part.id)}
               />
             )
           }
@@ -387,7 +397,7 @@ export function AssistantContent({
                 key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
-                onToggle={() => toggleTool(part.id)}
+                onToggle={getToggle(part.id)}
               />
             )
           }
@@ -398,7 +408,7 @@ export function AssistantContent({
                 key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
-                onToggle={() => toggleTool(part.id)}
+                onToggle={getToggle(part.id)}
               />
             )
           }
@@ -409,7 +419,7 @@ export function AssistantContent({
                 key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
-                onToggle={() => toggleTool(part.id)}
+                onToggle={getToggle(part.id)}
               />
             )
           }
@@ -419,7 +429,7 @@ export function AssistantContent({
               key={part.id}
               tool={part.tool}
               isExpanded={expandedTools.has(part.id)}
-              onToggle={() => toggleTool(part.id)}
+              onToggle={getToggle(part.id)}
             />
           )
         }

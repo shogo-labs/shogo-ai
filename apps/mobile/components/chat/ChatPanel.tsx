@@ -622,6 +622,8 @@ export const ChatPanel = observer(function ChatPanel({
   const isNative = Platform.OS !== "web"
   const STICK_BOTTOM_PX = 16
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastScrollTimeRef = useRef(0)
+  const SCROLL_THROTTLE_MS = 500
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -637,12 +639,19 @@ export const ChatPanel = observer(function ChatPanel({
     [shouldFollowBottom]
   )
 
-  const debouncedScrollToEnd = useCallback(() => {
-    if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
-    pendingScrollRef.current = setTimeout(() => {
+  const throttledScrollToEnd = useCallback(() => {
+    const now = Date.now()
+    const elapsed = now - lastScrollTimeRef.current
+    if (elapsed >= SCROLL_THROTTLE_MS) {
       scrollViewRef.current?.scrollToEnd({ animated: true })
-      pendingScrollRef.current = null
-    }, 500)
+      lastScrollTimeRef.current = now
+    } else if (!pendingScrollRef.current) {
+      pendingScrollRef.current = setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true })
+        lastScrollTimeRef.current = Date.now()
+        pendingScrollRef.current = null
+      }, SCROLL_THROTTLE_MS - elapsed)
+    }
   }, [])
 
   const syncStickFromNativeEvent = useCallback(
@@ -870,6 +879,7 @@ export const ChatPanel = observer(function ChatPanel({
   const { messages, sendMessage, addToolOutput, status, error, setMessages, stop } = useChat({
     transport: chatTransport,
     id: currentSessionId || undefined,
+    experimental_throttle: 50,
     onError: (err) => {
       console.error("[ChatPanel] Stream error:", err)
 
@@ -2292,7 +2302,7 @@ export const ChatPanel = observer(function ChatPanel({
             ref={scrollViewRef}
             className="flex-1"
             contentContainerClassName={cn(
-              isNativePhoneLayout ? "px-2 pt-2 pb-28" : "p-2 pb-10",
+              isNativePhoneLayout ? "px-2 pt-2 pb-28" : "p-2 pb-[30px]",
               "max-w-3xl w-full self-center",
             )}
             keyboardShouldPersistTaps="handled"
@@ -2331,7 +2341,7 @@ export const ChatPanel = observer(function ChatPanel({
                   scrollViewRef.current?.scrollTo({ y: delta, animated: false })
                 }
               } else if (isNative && stickToBottomRef.current && contentHeightBeforeLoadRef.current > 0) {
-                debouncedScrollToEnd()
+                throttledScrollToEnd()
               }
               contentHeightBeforeLoadRef.current = h
             }}
