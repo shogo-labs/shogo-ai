@@ -252,6 +252,9 @@
       "bin": {
         "shogo": "./bin/cli.mjs",
       },
+      "dependencies": {
+        "@shogo/shared-runtime": "workspace:*",
+      },
       "devDependencies": {
         "@aws-sdk/client-ses": "^3.700.0",
         "@playwright/test": "^1.40.0",

@@ -19,7 +19,7 @@ const WATCH_DIRS = [
   resolve(ROOT, "packages"),
 ];
 
-const IGNORE = ["node_modules", ".git", "dist", "build"];
+const IGNORE = ["node_modules", ".git", "dist", "build", "generated", "workspaces", ".canvas-state.json"];
 const EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".json"]);
 
 let child: Subprocess | null = null;

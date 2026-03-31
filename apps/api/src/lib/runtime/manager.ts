@@ -11,6 +11,7 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { pkg } from '@shogo/shared-runtime'
 import type {
   IRuntimeManager,
   IProjectRuntime,
@@ -451,48 +452,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         rmSync(nodeModulesDir, { recursive: true, force: true })
       }
 
-      const isWindows = process.platform === 'win32'
-      // Bun 1.x on Windows creates empty node_modules stubs (hardlink bug),
-      // so fall back to npm which handles Windows correctly.
-      const installCmd = isWindows ? 'npm.cmd' : 'bun'
-      const installArgs = isWindows ? ['install', '--loglevel=error'] : ['install']
-      const installTimeout = isWindows ? 120000 : 60000
-
-      console.log(`[RuntimeManager] Installing dependencies for ${projectId} (${installCmd})...`)
+      const cmdName = pkg.isWindows ? 'npm.cmd' : 'bun'
+      console.log(`[RuntimeManager] Installing dependencies for ${projectId} (${cmdName})...`)
       try {
-        await new Promise<void>((resolve, reject) => {
-          const spawnEnv = { ...process.env } as Record<string, string>
-          if (isWindows) {
-            const nodePath = 'C:\\Program Files\\nodejs'
-            if (!spawnEnv.PATH?.includes(nodePath)) {
-              spawnEnv.PATH = `${nodePath};${spawnEnv.PATH || ''}`
-            }
-          }
-          const proc = spawn(installCmd, installArgs, {
-            cwd: projectDir,
-            stdio: 'pipe',
-            env: spawnEnv,
-            shell: isWindows,
-          })
-          const timeout = setTimeout(() => {
-            proc.kill()
-            reject(new Error(`${installCmd} install timed out after ${installTimeout / 1000}s`))
-          }, installTimeout)
-          let stderr = ''
-          proc.stderr?.on('data', (data) => { stderr += data.toString() })
-          proc.on('exit', (code) => {
-            clearTimeout(timeout)
-            if (code === 0) resolve()
-            else {
-              console.error(`[RuntimeManager] ${installCmd} install stderr: ${stderr}`)
-              reject(new Error(`${installCmd} install exited with code ${code}`))
-            }
-          })
-          proc.on('error', (err) => {
-            clearTimeout(timeout)
-            reject(err)
-          })
-        })
+        await pkg.installAsync(projectDir)
 
         // Write sentinel so we know install completed successfully
         writeFileSync(installSentinel, new Date().toISOString())

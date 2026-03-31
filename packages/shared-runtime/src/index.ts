@@ -98,3 +98,10 @@ export {
   type TSLanguageServerOptions,
   type WorkspaceLSPManagerOptions,
 } from './lsp-service'
+
+export {
+  PlatformPackageManager,
+  pkg,
+  type PkgInstallOptions,
+  type PkgExecOptions,
+} from './platform-pkg'

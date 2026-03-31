@@ -212,7 +212,7 @@ export default function OnboardingPage() {
     await api.completeOnboarding(http).catch((e) => console.error('[Onboarding] Failed to complete onboarding:', e))
 
     setIsSavingSecurity(false)
-    router.replace('/(admin)')
+    router.replace('/(app)')
   }, [securityMode, router])
 
   // -- Test LLM connection

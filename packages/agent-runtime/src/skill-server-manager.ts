@@ -21,10 +21,11 @@
  *   4. Gateway calls stop() on shutdown — kills the child process
  */
 
-import { spawn, execSync, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from 'child_process'
 import { join, resolve, dirname } from 'path'
 import { existsSync, watch, mkdirSync, writeFileSync, type FSWatcher, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
+import { pkg } from '@shogo/shared-runtime'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -292,12 +293,7 @@ export class SkillServerManager {
     if (existsSync(nodeModules)) return
 
     console.log(`[${LOG_PREFIX}] Installing dependencies...`)
-    execSync('bun install', {
-      cwd: this.serverDir,
-      timeout: 60_000,
-      stdio: 'pipe',
-      encoding: 'utf-8',
-    })
+    pkg.installSync(this.serverDir)
     console.log(`[${LOG_PREFIX}] Dependencies installed`)
   }
 
