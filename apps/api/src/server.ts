@@ -812,15 +812,20 @@ app.use('/api/*', authMiddleware)
 // API key auth fallback — allows shogo_sk_* keys to authenticate requests
 // (used by local instances forwarding integrations/tools requests to cloud).
 app.use('/api/integrations/*', async (c, next) => {
-  if ((c.get('auth') as any)?.userId) return next()
+  const existingAuth = c.get('auth') as any
+  if (existingAuth?.userId) return next()
   const authHeader = c.req.header('authorization')
+  console.log(`[IntegrationsAuth] path=${new URL(c.req.url).pathname} hasBearer=${!!authHeader?.startsWith('Bearer shogo_sk_')} existingUserId=${existingAuth?.userId ?? 'none'}`)
   if (authHeader?.startsWith('Bearer shogo_sk_')) {
     try {
       const result = await resolveApiKey(authHeader.slice(7))
+      console.log(`[IntegrationsAuth] resolveApiKey result: ${result ? `userId=${result.userId}` : 'null'}`)
       if (result) {
         c.set('auth', { userId: result.userId, workspaceId: result.workspaceId, isAuthenticated: true, session: null } as any)
       }
-    } catch {}
+    } catch (err: any) {
+      console.error(`[IntegrationsAuth] resolveApiKey error: ${err.message}`)
+    }
   }
   return next()
 })
