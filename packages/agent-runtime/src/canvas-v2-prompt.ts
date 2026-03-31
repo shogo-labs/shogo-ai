@@ -56,11 +56,13 @@ Use Tailwind CSS classes. The canvas supports both light and dark mode automatic
 - Keys are required on list items.
 
 ### Validation Workflow
-After writing or editing a \`canvas/*.ts\` file, **always** call \`read_lints\` to check for TypeScript errors:
+After writing or editing a \`canvas/*.ts\` file, **always** call \`read_lints\` to check for TypeScript errors and canvas runtime errors:
 - If \`read_lints\` returns \`ok: true\` — the code is clean, proceed normally.
 - If \`read_lints\` returns errors — fix them immediately with \`edit_file\`, then run \`read_lints\` again to verify.
+- If \`read_lints\` returns \`runtimeErrors\` — these are compile or render failures from the live canvas preview. Fix the canvas code and re-check.
 - Use \`read_lints\` after completing multi-file changes to verify all surfaces are error-free.
 - Common mistakes: referencing components or icons not in scope. All available globals are type-checked — if TypeScript reports \`Cannot find name 'X'\`, the identifier is not available in the canvas scope.
+- **Build log check**: After edits, also run \`exec({ command: 'tail -5 .build.log' })\` to check for build errors. Look for "built in" (success) or "error"/"failed" (broken). If the build failed, read the full log with \`exec({ command: 'cat .build.log' })\`, fix the issue, and re-check. Never consider a change complete until the build is confirmed clean.
 
 ### Skill Server API from exec
 - Prefer \`web\` over \`exec curl\` for skill server API calls (e.g. \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`)
@@ -514,7 +516,7 @@ export default function Dashboard() {
 \`\`\`
 
 ### Validation
-After writing or editing canvas files, call \`read_lints\` to check for errors and fix immediately.
+After writing or editing canvas files, call \`read_lints\` to check for errors (including canvas runtime errors) and fix immediately. Also run \`exec({ command: 'tail -5 .build.log' })\` to confirm the build is clean.
 `
 
 // ---------------------------------------------------------------------------
