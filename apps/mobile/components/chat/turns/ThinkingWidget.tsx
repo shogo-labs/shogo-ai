@@ -39,7 +39,6 @@ export function ThinkingWidget({
   const colorScheme = useColorScheme()
   const innerScrollRef = useRef<ScrollView>(null)
   const userScrolledThinkingRef = useRef(false)
-  const streamingOpenedRef = useRef(false)
 
   useEffect(() => {
     if (isStreaming) {
@@ -48,7 +47,6 @@ export function ThinkingWidget({
       }
       userScrolledThinkingRef.current = false
       if (!userClosedRef.current) {
-        streamingOpenedRef.current = true
         setIsOpen(true)
       }
     } else {
@@ -56,14 +54,12 @@ export function ThinkingWidget({
         setDuration(Math.ceil((Date.now() - startTimeRef.current) / 1000))
         startTimeRef.current = null
       }
-      streamingOpenedRef.current = false
       setIsOpen(false)
       userClosedRef.current = false
     }
   }, [isStreaming])
 
   const toggleOpen = useCallback(() => {
-    streamingOpenedRef.current = false
     setIsOpen((prev) => {
       if (isStreaming && prev) {
         userClosedRef.current = true
@@ -83,9 +79,6 @@ export function ThinkingWidget({
   const targetHeight = capHeight
     ? Math.min(measuredHeight, STREAM_MAX_HEIGHT)
     : measuredHeight
-
-  // Skip height animation when streaming auto-opens to avoid layout churn
-  const effectiveDuration = streamingOpenedRef.current ? 0 : ANIM_DURATION
 
   // Composite bg color for gradient fades (muted/30 over page background)
   const fadeColor =
@@ -145,7 +138,7 @@ export function ThinkingWidget({
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }}
             exit={{ opacity: 0, height: 0 }}
-            transition={{ type: "timing", duration: effectiveDuration, easing: "easeInOut" }}
+            transition={{ type: "timing", duration: ANIM_DURATION, easing: "easeInOut" }}
             style={{ overflow: "hidden" }}
           >
             <View style={{ position: "relative" }}>
