@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated CreditLedger Routes
  *
@@ -82,8 +80,9 @@ export function createCreditLedgerRoutes(): Hono {
       }
       
       let include: any = undefined
+      let orderBy: any = undefined
 
-      // Apply beforeList hook (can override where/include)
+      // Apply beforeList hook (can override where/include/orderBy)
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
@@ -92,12 +91,14 @@ export function createCreditLedgerRoutes(): Hono {
         if (result?.data) {
           where = result.data.where || where
           include = result.data.include || include
+          orderBy = result.data.orderBy || orderBy
         }
       }
 
       const items = await prisma.creditLedger.findMany({
         where,
         include,
+        orderBy,
         take: query.limit ? parseInt(query.limit) : undefined,
         skip: query.offset ? parseInt(query.offset) : undefined,
       })

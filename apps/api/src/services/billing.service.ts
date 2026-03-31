@@ -322,7 +322,8 @@ async function _consumeCreditsTransaction(
 }
 
 /**
- * Sync subscription from Stripe webhook data
+ * Sync subscription from Stripe webhook data.
+ * One row per workspace (@@unique(workspaceId)); upsert updates stripeSubscriptionId when it changes.
  */
 export async function syncFromStripe(data: {
   stripeSubscriptionId: string;
@@ -335,21 +336,8 @@ export async function syncFromStripe(data: {
   currentPeriodEnd: Date;
   cancelAtPeriodEnd?: boolean;
 }) {
-  // Remove stale subscription rows for this workspace that belong to a
-  // different Stripe subscription. A workspace should only ever have one
-  // subscription record; duplicates cause the billing UI to pick the wrong
-  // row and show an incorrect plan.
-  if (data.workspaceId) {
-    await prisma.subscription.deleteMany({
-      where: {
-        workspaceId: data.workspaceId,
-        stripeSubscriptionId: { not: data.stripeSubscriptionId },
-      },
-    });
-  }
-
   return prisma.subscription.upsert({
-    where: { stripeSubscriptionId: data.stripeSubscriptionId },
+    where: { workspaceId: data.workspaceId },
     create: {
       workspaceId: data.workspaceId,
       stripeSubscriptionId: data.stripeSubscriptionId,
@@ -362,6 +350,8 @@ export async function syncFromStripe(data: {
       cancelAtPeriodEnd: data.cancelAtPeriodEnd ?? false,
     },
     update: {
+      stripeSubscriptionId: data.stripeSubscriptionId,
+      stripeCustomerId: data.stripeCustomerId,
       planId: data.planId,
       status: data.status,
       billingInterval: data.billingInterval,
