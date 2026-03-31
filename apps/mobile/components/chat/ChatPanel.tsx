@@ -2443,7 +2443,7 @@ export const ChatPanel = observer(function ChatPanel({
             {/* Streaming bottom spacer: provides room for content to grow into,
                 so scroll-follow targets real content bottom instead of chasing scrollToEnd */}
             {isStreaming && (
-              <View style={{ height: scrollViewLayoutHeightRef.current || 400 }} />
+              <View style={{ height: 60 }} />
             )}
           </ScrollView>
 
