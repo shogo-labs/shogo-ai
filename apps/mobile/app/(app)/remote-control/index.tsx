@@ -15,6 +15,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../../contexts/auth'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { API_URL } from '../../../lib/api'
+import { usePlatformConfig } from '../../../lib/platform-config'
 import {
   Monitor,
   Wifi,
@@ -26,6 +27,8 @@ import {
   Trash2,
   Key,
   ArrowRight,
+  Cloud,
+  Settings,
 } from 'lucide-react-native'
 
 interface Instance {
@@ -60,13 +63,17 @@ export default function RemoteControlScreen() {
   const router = useRouter()
   const { session } = useAuth()
   const workspace = useActiveWorkspace()
+  const { localMode, shogoKeyConnected } = usePlatformConfig()
   const [instances, setInstances] = useState<Instance[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const fetchInstances = useCallback(async () => {
-    if (!workspace?.id) return
+    if (!workspace?.id) {
+      setLoading(false)
+      return
+    }
     try {
       const res = await fetch(`${API_URL}/api/instances?workspaceId=${workspace.id}`, {
         credentials: 'include',
@@ -121,6 +128,36 @@ export default function RemoteControlScreen() {
 
   const onlineInstances = instances.filter((i) => i.status === 'online')
   const offlineInstances = instances.filter((i) => i.status === 'offline')
+
+  if (localMode && !shogoKeyConnected) {
+    return (
+      <View className="flex-1 bg-background items-center justify-center px-6">
+        <View className="max-w-md items-center">
+          <View className="w-16 h-16 rounded-2xl bg-primary/10 items-center justify-center mb-6">
+            <Cloud size={32} className="text-primary" />
+          </View>
+          <Text className="text-xl font-bold text-foreground text-center mb-2">
+            Enter your Shogo API Key
+          </Text>
+          <Text className="text-sm text-muted-foreground text-center leading-5 mb-6">
+            Remote Control lets you manage this machine from the Shogo Cloud
+            dashboard. Connect your Shogo API key in General Settings to enable
+            remote access, cloud LLMs, and more.
+          </Text>
+          <Pressable
+            onPress={() => router.push('/(admin)/general' as any)}
+            className="flex-row items-center gap-2 px-5 py-3 rounded-xl bg-primary active:opacity-80"
+          >
+            <Settings size={16} color="#fff" />
+            <Text className="text-sm font-semibold text-primary-foreground">
+              Go to General Settings
+            </Text>
+            <ArrowRight size={14} color="#fff" />
+          </Pressable>
+        </View>
+      </View>
+    )
+  }
 
   if (loading) {
     return (

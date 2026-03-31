@@ -82,12 +82,23 @@ export interface ShogoKeyConnectResult {
 }
 
 export interface LlmConfig {
+  AI_MODE?: string
   LOCAL_LLM_BASE_URL?: string
   LOCAL_LLM_BASIC_MODEL?: string
   LOCAL_LLM_ADVANCED_MODEL?: string
   LOCAL_EMBEDDING_MODEL?: string
   LOCAL_EMBEDDING_DIMENSIONS?: string
   [key: string]: string | undefined
+}
+
+export interface InstanceInfo {
+  name: string
+  hostname: string
+  os: string
+  arch: string
+  tunnelConnected: boolean
+  cloudUrl: string
+  workspaceName: string | null
 }
 
 // =============================================================================
@@ -230,5 +241,24 @@ export class PlatformApi {
       { baseUrl },
     )
     return res.data ?? { ok: false, models: [] }
+  }
+
+  // ===========================================================================
+  // Local: Instance Info
+  // ===========================================================================
+
+  /** Get local instance registration info (machine name, tunnel status, etc.) */
+  async getInstanceInfo(): Promise<InstanceInfo> {
+    const res = await this.http.get<InstanceInfo>('/api/local/instance-info')
+    return res.data!
+  }
+
+  /** Update the local instance display name. Restarts the tunnel to re-register. */
+  async updateInstanceName(name: string): Promise<{ ok: boolean; name?: string }> {
+    const res = await this.http.request<{ ok: boolean; name?: string }>(
+      '/api/local/instance-name',
+      { method: 'PUT', body: { name } },
+    )
+    return res.data ?? { ok: false }
   }
 }

@@ -1,0 +1,469 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Admin General Settings - Shogo Cloud connection, cloud registration, and appearance.
+ */
+
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  TextInput,
+} from 'react-native'
+import {
+  Cloud,
+  CheckCircle,
+  AlertTriangle,
+  Unplug,
+  Palette,
+  Check,
+  Pencil,
+  Wifi,
+  WifiOff,
+  Monitor,
+} from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+import { PlatformApi, type InstanceInfo } from '@shogo-ai/sdk'
+import { createHttpClient } from '../../lib/api'
+import { useAccentTheme } from '../../contexts/accent-theme'
+import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
+
+const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+
+export default function AdminGeneralPage() {
+  const [shogoKeyInput, setShogoKeyInput] = useState('')
+  const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
+  const [shogoKeyMask, setShogoKeyMask] = useState('')
+  const [shogoWorkspaceName, setShogoWorkspaceName] = useState('')
+  const [shogoKeyStatus, setShogoKeyStatus] = useState<
+    'idle' | 'connecting' | 'connected' | 'error'
+  >('idle')
+  const [shogoKeyError, setShogoKeyError] = useState('')
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [cloudUrl, setCloudUrl] = useState(SHOGO_CLOUD_URL_DEFAULT)
+
+  const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(null)
+  const [editingName, setEditingName] = useState(false)
+  const [instanceNameInput, setInstanceNameInput] = useState('')
+  const [isSavingName, setIsSavingName] = useState(false)
+
+  const [isLoading, setIsLoading] = useState(true)
+
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+
+  const fetchInstanceInfo = useCallback(async () => {
+    try {
+      const info = await platform.getInstanceInfo()
+      setInstanceInfo(info)
+      setInstanceNameInput(info.name)
+    } catch (err) {
+      console.error('[AdminGeneral] Failed to load instance info:', err)
+    }
+  }, [platform])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const shogoData = await platform.getShogoKeyStatus()
+        if (cancelled) return
+        setShogoKeyConnected(shogoData.connected)
+        if (shogoData.keyMask) setShogoKeyMask(shogoData.keyMask)
+        if (shogoData.cloudUrl) setCloudUrl(shogoData.cloudUrl)
+        if (shogoData.workspace?.name) setShogoWorkspaceName(shogoData.workspace.name)
+        if (shogoData.connected) {
+          setShogoKeyStatus('connected')
+          fetchInstanceInfo()
+        }
+      } catch (err) {
+        console.error('[AdminGeneral] Failed to load config:', err)
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [platform, fetchInstanceInfo])
+
+  const handleConnectShogoKey = async () => {
+    if (!shogoKeyInput.trim()) return
+    setShogoKeyStatus('connecting')
+    setShogoKeyError('')
+    try {
+      const url = cloudUrl.trim() !== SHOGO_CLOUD_URL_DEFAULT ? cloudUrl.trim() : undefined
+      const data = await platform.connectShogoKey(shogoKeyInput.trim(), url)
+      if (data.ok) {
+        setShogoKeyConnected(true)
+        setShogoKeyMask(
+          shogoKeyInput.trim().slice(0, 17) + '...' + shogoKeyInput.trim().slice(-4),
+        )
+        setShogoWorkspaceName(data.workspace?.name || '')
+        setShogoKeyStatus('connected')
+        setShogoKeyInput('')
+        fetchInstanceInfo()
+      } else {
+        setShogoKeyError(data.error || 'Failed to validate key')
+        setShogoKeyStatus('error')
+      }
+    } catch (err: any) {
+      setShogoKeyError(err.message || 'Connection failed')
+      setShogoKeyStatus('error')
+    }
+  }
+
+  const handleDisconnectShogoKey = async () => {
+    setIsDisconnecting(true)
+    try {
+      await platform.disconnectShogoKey()
+      setShogoKeyConnected(false)
+      setShogoKeyMask('')
+      setShogoWorkspaceName('')
+      setShogoKeyStatus('idle')
+      setShogoKeyInput('')
+      setInstanceInfo(null)
+    } catch (err) {
+      console.error('[AdminGeneral] Failed to disconnect Shogo key:', err)
+    } finally {
+      setIsDisconnecting(false)
+    }
+  }
+
+  const handleSaveInstanceName = async () => {
+    if (!instanceNameInput.trim()) return
+    setIsSavingName(true)
+    try {
+      await platform.updateInstanceName(instanceNameInput.trim())
+      setEditingName(false)
+      setTimeout(() => fetchInstanceInfo(), 2000)
+    } catch (err) {
+      console.error('[AdminGeneral] Failed to update instance name:', err)
+    } finally {
+      setIsSavingName(false)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <View className="flex-1 items-center justify-center">
+        <ActivityIndicator size="large" />
+      </View>
+    )
+  }
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="p-6 pb-20">
+      <View className="max-w-2xl w-full mx-auto gap-8">
+        {/* Header */}
+        <View>
+          <Text className="text-2xl font-bold text-foreground">General</Text>
+          <Text className="text-sm text-muted-foreground mt-1">
+            Cloud connection, appearance, and machine registration.
+          </Text>
+        </View>
+
+        {/* Shogo Cloud Connection */}
+        <SectionCard
+          icon={Cloud}
+          title="Shogo Cloud"
+          description="Connect this machine to your Shogo Cloud account"
+        >
+          {shogoKeyConnected ? (
+            <View className="gap-3">
+              <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
+                <CheckCircle size={16} className="text-green-500" />
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground">Connected</Text>
+                  {shogoWorkspaceName ? (
+                    <Text className="text-xs text-muted-foreground">
+                      Workspace: {shogoWorkspaceName}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-xs text-muted-foreground font-mono flex-1">
+                  {shogoKeyMask}
+                </Text>
+                <Pressable
+                  onPress={handleDisconnectShogoKey}
+                  disabled={isDisconnecting}
+                  className={cn(
+                    'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30',
+                    isDisconnecting && 'opacity-50',
+                  )}
+                >
+                  <Unplug size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">
+                    {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                  </Text>
+                </Pressable>
+              </View>
+              <Text className="text-xs text-muted-foreground">
+                Connected to {cloudUrl}
+              </Text>
+            </View>
+          ) : (
+            <View className="gap-3">
+              <Text className="text-sm text-muted-foreground">
+                Enter your Shogo API key to connect this machine to the cloud. Get your
+                key from the{' '}
+                <Text className="text-primary font-medium">Shogo Cloud dashboard</Text>.
+              </Text>
+              <View className="flex-row gap-2">
+                <View className="flex-1">
+                  <TextInput
+                    value={shogoKeyInput}
+                    onChangeText={(t) => {
+                      setShogoKeyInput(t)
+                      setShogoKeyError('')
+                      setShogoKeyStatus('idle')
+                    }}
+                    placeholder="shogo_sk_..."
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                  />
+                </View>
+                <Pressable
+                  onPress={handleConnectShogoKey}
+                  disabled={!shogoKeyInput.trim() || shogoKeyStatus === 'connecting'}
+                  className={cn(
+                    'px-4 py-2.5 rounded-lg items-center justify-center',
+                    shogoKeyInput.trim() && shogoKeyStatus !== 'connecting'
+                      ? 'bg-primary'
+                      : 'bg-muted',
+                  )}
+                >
+                  <Text
+                    className={cn(
+                      'text-sm font-medium',
+                      shogoKeyInput.trim() && shogoKeyStatus !== 'connecting'
+                        ? 'text-primary-foreground'
+                        : 'text-muted-foreground',
+                    )}
+                  >
+                    {shogoKeyStatus === 'connecting' ? 'Connecting...' : 'Connect'}
+                  </Text>
+                </Pressable>
+              </View>
+              {shogoKeyError ? (
+                <View className="flex-row items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">{shogoKeyError}</Text>
+                </View>
+              ) : null}
+              <Text className="text-xs text-muted-foreground">
+                Validating against {cloudUrl}
+              </Text>
+            </View>
+          )}
+        </SectionCard>
+
+        {/* Cloud Registration Info */}
+        {shogoKeyConnected && instanceInfo && (
+          <SectionCard
+            icon={Monitor}
+            title="Cloud Registration"
+            description="How this machine appears on your Shogo Cloud dashboard"
+          >
+            <View className="gap-4">
+              <View className="gap-1.5">
+                <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Machine Name
+                </Text>
+                {editingName ? (
+                  <View className="flex-row gap-2">
+                    <TextInput
+                      value={instanceNameInput}
+                      onChangeText={setInstanceNameInput}
+                      autoFocus
+                      className="flex-1 border border-border rounded-lg px-3 py-2 text-sm text-foreground bg-background"
+                      placeholderTextColor="#666"
+                      autoCapitalize="none"
+                      onSubmitEditing={handleSaveInstanceName}
+                    />
+                    <Pressable
+                      onPress={handleSaveInstanceName}
+                      disabled={isSavingName || !instanceNameInput.trim()}
+                      className={cn(
+                        'px-3 py-2 rounded-lg items-center justify-center',
+                        isSavingName ? 'bg-primary/50' : 'bg-primary',
+                      )}
+                    >
+                      {isSavingName ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Check size={14} color="#fff" />
+                      )}
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setEditingName(false)
+                        setInstanceNameInput(instanceInfo.name)
+                      }}
+                      className="px-3 py-2 rounded-lg border border-border items-center justify-center"
+                    >
+                      <Text className="text-sm text-muted-foreground">Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View className="flex-row items-center gap-2">
+                    <Text className="text-sm font-medium text-foreground flex-1">
+                      {instanceInfo.name}
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        setEditingName(true)
+                        setInstanceNameInput(instanceInfo.name)
+                      }}
+                      className="p-1.5 rounded-md active:bg-muted"
+                    >
+                      <Pencil size={14} className="text-muted-foreground" />
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+
+              <View className="gap-3">
+                <InfoRow label="Hostname" value={instanceInfo.hostname} />
+                <InfoRow
+                  label="OS / Architecture"
+                  value={`${instanceInfo.os} / ${instanceInfo.arch}`}
+                />
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Tunnel Status
+                  </Text>
+                  <View className="flex-row items-center gap-1.5">
+                    {instanceInfo.tunnelConnected ? (
+                      <>
+                        <Wifi size={12} className="text-green-500" />
+                        <Text className="text-sm text-green-500 font-medium">
+                          Connected
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <WifiOff size={12} className="text-destructive" />
+                        <Text className="text-sm text-destructive font-medium">
+                          Disconnected
+                        </Text>
+                      </>
+                    )}
+                  </View>
+                </View>
+                {instanceInfo.workspaceName && (
+                  <InfoRow label="Cloud Workspace" value={instanceInfo.workspaceName} />
+                )}
+                <InfoRow
+                  label="Cloud URL"
+                  value={instanceInfo.cloudUrl.replace(/^https?:\/\//, '')}
+                />
+              </View>
+            </View>
+          </SectionCard>
+        )}
+
+        {/* Appearance */}
+        <AccentColorPicker />
+      </View>
+    </ScrollView>
+  )
+}
+
+// =============================================================================
+// Info Row
+// =============================================================================
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View className="flex-row items-center justify-between">
+      <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+        {label}
+      </Text>
+      <Text className="text-sm text-foreground">{value}</Text>
+    </View>
+  )
+}
+
+// =============================================================================
+// Accent Color Picker
+// =============================================================================
+
+function AccentColorPicker() {
+  const { accent, setAccent } = useAccentTheme()
+
+  return (
+    <SectionCard
+      icon={Palette}
+      title="Appearance"
+      description="Customize the accent color used throughout the app"
+    >
+      <View className="flex-row flex-wrap gap-3">
+        {ACCENT_NAMES.map((name) => {
+          const preset = ACCENT_PRESETS[name]
+          const isActive = accent === name
+          return (
+            <Pressable
+              key={name}
+              onPress={() => setAccent(name)}
+              className="items-center gap-1.5"
+            >
+              <View
+                className={cn(
+                  'h-10 w-10 rounded-full items-center justify-center',
+                  isActive && 'border-2 border-foreground',
+                )}
+                style={{ backgroundColor: preset.swatch }}
+              >
+                {isActive && <Check size={16} color="#fff" strokeWidth={3} />}
+              </View>
+              <Text
+                className={cn(
+                  'text-[10px]',
+                  isActive ? 'text-foreground font-semibold' : 'text-muted-foreground',
+                )}
+              >
+                {preset.label}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </View>
+    </SectionCard>
+  )
+}
+
+// =============================================================================
+// Shared Components
+// =============================================================================
+
+function SectionCard({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: any
+  title: string
+  description: string
+  children: React.ReactNode
+}) {
+  return (
+    <View className="bg-card border border-border rounded-xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center gap-2.5 mb-1">
+          <Icon size={16} className="text-foreground" />
+          <Text className="text-base font-semibold text-foreground">{title}</Text>
+        </View>
+        <Text className="text-xs text-muted-foreground">{description}</Text>
+      </View>
+      <View className="px-5 py-4">{children}</View>
+    </View>
+  )
+}
