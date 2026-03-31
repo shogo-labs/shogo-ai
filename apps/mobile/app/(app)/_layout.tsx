@@ -10,6 +10,7 @@
  *  - Home page (wide): sidebar visible, NO header
  *  - List pages (wide): sidebar visible, NO header (sidebar provides nav)
  *  - Project detail (wide): NO sidebar (project provides its own top bar)
+ *  - Billing page (wide): NO sidebar (standalone full-width page)
  *  - All pages (narrow): hamburger header + drawer sidebar
  *
  * Auth guard redirects unauthenticated users to sign-in.
@@ -39,6 +40,7 @@ export default function AppLayout() {
     && pathname !== '/projects'
     && pathname !== '/(app)/projects'
   const isSettingsPage = pathname === '/settings' || pathname === '/(app)/settings' || pathname.includes('/settings')
+  const isBillingPage = pathname === '/billing' || pathname === '/(app)/billing'
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -83,7 +85,7 @@ export default function AppLayout() {
   if (isLoading) return null
   if (!isAuthenticated) return null
 
-  const showSidebar = isWide && !isProjectDetail && !isSettingsPage
+  const showSidebar = isWide && !isProjectDetail && !isSettingsPage && !isBillingPage
 
   return (
     <DomainProvider>
@@ -92,7 +94,7 @@ export default function AppLayout() {
           {showSidebar && <AppSidebar />}
 
           <View className="flex-1">
-            {!isWide && !isProjectDetail && <AppHeader onMenuPress={openDrawer} />}
+            {!isWide && !isProjectDetail && !isBillingPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <Slot />
             </View>
