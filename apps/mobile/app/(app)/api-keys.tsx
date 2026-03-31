@@ -259,6 +259,9 @@ export default function ApiKeysPage() {
           <Pressable
             onPress={(e) => e.stopPropagation()}
             className="bg-background rounded-xl p-6 w-full max-w-md"
+            role="dialog"
+            aria-label={createdKey ? 'API Key Created' : 'Create API Key'}
+            aria-modal
           >
             {createdKey ? (
               <View className="gap-4">
@@ -352,6 +355,9 @@ export default function ApiKeysPage() {
           <Pressable
             onPress={(e) => e.stopPropagation()}
             className="bg-background rounded-xl p-6 w-full max-w-sm gap-4"
+            role="dialog"
+            aria-label="Revoke API Key"
+            aria-modal
           >
             <Text className="text-lg font-semibold text-foreground">Revoke API Key</Text>
             <Text className="text-sm text-muted-foreground">
