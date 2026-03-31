@@ -33,6 +33,7 @@ import {
   ArrowRight,
   X,
   BarChart3,
+  Key,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
@@ -120,6 +121,24 @@ export const CommandPalette = observer(function CommandPalette({
         href: '/(app)/templates',
         category: 'navigation',
         keywords: ['templates', 'starter'],
+      },
+      {
+        id: 'nav-remote-control',
+        label: 'Remote Control',
+        description: 'Manage local Shogo instances',
+        icon: BarChart3,
+        href: '/(app)/remote-control',
+        category: 'navigation',
+        keywords: ['remote', 'control', 'instances', 'local', 'dashboard'],
+      },
+      {
+        id: 'nav-api-keys',
+        label: 'API Keys',
+        description: 'Create and manage API keys',
+        icon: Key,
+        href: '/(app)/api-keys',
+        category: 'navigation',
+        keywords: ['api', 'keys', 'token', 'secret', 'local', 'connect'],
       },
       {
         id: 'settings-billing',

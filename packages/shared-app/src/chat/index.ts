@@ -14,3 +14,9 @@ export {
   type ChatTransportOptions,
   type ChatTransportConfig,
 } from './useChatTransport'
+
+export {
+  useRemoteChatTransportConfig,
+  buildRemoteChatApiUrl,
+  type RemoteChatTransportOptions,
+} from './useRemoteChatTransport'

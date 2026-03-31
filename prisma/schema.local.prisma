@@ -38,6 +38,7 @@ model User {
   members         Member[]
   notifications   Notification[]
   starredProjects StarredProject[]
+  apiKeys         ApiKey[]
 
   @@map("users")
 }
@@ -115,6 +116,8 @@ model Workspace {
   creditLedgers   CreditLedger[]
   usageEvents     UsageEvent[]
   starredProjects StarredProject[]
+  instances       Instance[]
+  apiKeys         ApiKey[]
 
   @@map("workspaces")
 }
@@ -890,6 +893,54 @@ model InfraSnapshot {
 
   @@index([timestamp])
   @@map("infra_snapshots")
+}
+
+// =============================================================================
+// API KEYS
+// =============================================================================
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String
+  keyHash     String    @unique
+  keyPrefix   String
+  workspaceId String
+  userId      String
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("api_keys")
+}
+
+// =============================================================================
+// REMOTE CONTROL (Instance Registry for Local Shogo Instances)
+// =============================================================================
+
+model Instance {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  hostname    String
+  os          String?
+  arch        String?
+  status      String    @default("offline")
+  lastSeenAt  DateTime?
+  metadata    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, hostname])
+  @@index([workspaceId])
+  @@map("instances")
 }
 
 // =============================================================================
