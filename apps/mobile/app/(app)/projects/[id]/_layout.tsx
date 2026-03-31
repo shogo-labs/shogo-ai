@@ -1214,7 +1214,7 @@ function CanvasPanel({
     return (
       <View className="flex-1 p-2okay, t pt-0">
         <View className="flex-1 overflow-hidden rounded-2xl">
-          <CanvasWebView agentUrl={agentUrl} />
+          <CanvasWebView agentUrl={agentUrl} activeSurfaceId={activeSurfaceId} />
         </View>
       </View>
     )

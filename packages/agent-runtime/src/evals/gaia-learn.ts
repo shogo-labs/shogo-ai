@@ -284,7 +284,7 @@ async function runBatch(
     if (!(await isWorkerHealthy(worker))) {
       console.log('  [lifecycle] Worker unhealthy, restarting...')
       stopDockerWorker(worker)
-      await Bun.sleep(1000)
+      await Bun.sleep(3000)
       const fresh = await startDockerWorker(worker.id, workerConfig)
       Object.assign(worker, fresh)
       globalWorkers = [worker]

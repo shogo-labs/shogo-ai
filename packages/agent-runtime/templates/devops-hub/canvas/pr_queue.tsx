@@ -20,7 +20,7 @@ return (
     </CanvasCard>
     <CanvasCard title="🚀 Getting Started">
       <DynText
-        text="Say \"Connect my GitHub\" — I'll fetch your repos, triage PRs, and start auto-reviewing."
+        text={"Say \"Connect my GitHub\" — I'll fetch your repos, triage PRs, and start auto-reviewing."}
         variant="muted"
        />
     </CanvasCard>

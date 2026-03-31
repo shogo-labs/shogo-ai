@@ -13,7 +13,7 @@ return (
     </Grid>
     <CanvasCard title="Active Research" description="Your research projects">
       <DynText
-        text="Tell me a topic to research and I'll search the web, synthesize findings, and build an analysis dashboard. Try: \"Research the latest developments in AI agents\""
+        text={"Tell me a topic to research and I'll search the web, synthesize findings, and build an analysis dashboard. Try: \"Research the latest developments in AI agents\""}
         variant="muted"
        />
     </CanvasCard>

@@ -127,36 +127,6 @@ class CanvasErrorBoundary extends React.Component<
 }
 
 // ---------------------------------------------------------------------------
-// Surface Tab Bar
-// ---------------------------------------------------------------------------
-
-function SurfaceTabBar({ surfaces, activeId, onSelect }: {
-  surfaces: SurfaceState[]
-  activeId: string
-  onSelect: (id: string) => void
-}) {
-  if (surfaces.length <= 1) return null
-
-  return (
-    <div className="flex border-b border-border bg-background sticky top-0 z-10">
-      {surfaces.map((s) => (
-        <button
-          key={s.surfaceId}
-          onClick={() => onSelect(s.surfaceId)}
-          className={`px-4 py-2.5 text-sm font-medium transition-colors ${
-            s.surfaceId === activeId
-              ? 'border-b-2 border-primary text-foreground'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          {s.title || s.surfaceId}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Embedded vs standalone detection
 // ---------------------------------------------------------------------------
 
@@ -279,6 +249,8 @@ function CanvasApp() {
       } else if (msg.type === 'canvas-connected') {
         setConnected(true)
         setError(null)
+      } else if (msg.type === 'canvas-set-active-surface') {
+        setActiveId(msg.surfaceId as string)
       } else if (msg.type === 'canvas-theme') {
         applyThemeVariables(msg.variables as Record<string, string> | undefined, msg.isDark as boolean | undefined)
       }
@@ -350,11 +322,6 @@ function CanvasApp() {
 
   return (
     <div className="flex flex-col h-screen">
-      <SurfaceTabBar
-        surfaces={surfaceList}
-        activeId={activeId}
-        onSelect={setActiveId}
-      />
       <div className="flex-1 overflow-auto p-4">
         {activeSurface && (
           <SurfaceRenderer

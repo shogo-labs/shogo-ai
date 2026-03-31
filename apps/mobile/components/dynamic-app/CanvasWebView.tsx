@@ -14,6 +14,7 @@ import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasWebViewProps {
   agentUrl: string | null
+  activeSurfaceId?: string | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
 }
 
@@ -111,7 +112,7 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, onCanvasError }: CanvasWebViewProps) {
+export function CanvasWebView({ agentUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
   const canvasUrl = agentUrl ? `${agentUrl}/canvas/` : null
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
@@ -137,10 +138,10 @@ export function CanvasWebView({ agentUrl, onCanvasError }: CanvasWebViewProps) {
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} onCanvasError={onCanvasError} />
+    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} onCanvasError={onCanvasError} />
+  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
 }
 
 // ---------------------------------------------------------------------------
@@ -157,11 +158,12 @@ interface BridgeProps {
   url: string
   agentUrl: string
   sse: ReturnType<typeof useCanvasSSE>
+  activeSurfaceId?: string | null
   themeMessage: ThemeMessage | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
 }
 
-function CanvasIframe({ url, agentUrl, sse, themeMessage, onCanvasError }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
 
@@ -180,6 +182,13 @@ function CanvasIframe({ url, agentUrl, sse, themeMessage, onCanvasError }: Bridg
   useEffect(() => {
     if (sse.connected) sendToIframe({ type: 'canvas-connected' })
   }, [sse.connected, sendToIframe])
+
+  // Relay active surface selection from parent tabs
+  useEffect(() => {
+    if (activeSurfaceId && readyRef.current) {
+      sendToIframe({ type: 'canvas-set-active-surface', surfaceId: activeSurfaceId })
+    }
+  }, [activeSurfaceId, sendToIframe])
 
   // Send theme when it changes
   useEffect(() => {
@@ -235,7 +244,7 @@ function CanvasIframe({ url, agentUrl, sse, themeMessage, onCanvasError }: Bridg
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
-function CanvasNativeWebView({ url, agentUrl, sse, themeMessage, onCanvasError }: BridgeProps) {
+function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
@@ -255,6 +264,13 @@ function CanvasNativeWebView({ url, agentUrl, sse, themeMessage, onCanvasError }
   useEffect(() => {
     if (sse.connected) sendToWebView({ type: 'canvas-connected' })
   }, [sse.connected, sendToWebView])
+
+  // Relay active surface selection from parent tabs
+  useEffect(() => {
+    if (activeSurfaceId && readyRef.current) {
+      sendToWebView({ type: 'canvas-set-active-surface', surfaceId: activeSurfaceId })
+    }
+  }, [activeSurfaceId, sendToWebView])
 
   // Send theme when it changes
   useEffect(() => {
