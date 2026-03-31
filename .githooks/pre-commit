@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# pre-commit: ensure Prisma migrations are up-to-date when schema changes.
+#
+# If prisma/schema.prisma is staged, runs `prisma migrate diff` to detect
+# whether the schema has drifted from the migration history. If it has,
+# the commit is blocked until the developer runs `npx prisma migrate dev`.
+#
+
+SCHEMA_FILE="prisma/schema.prisma"
+MIGRATIONS_DIR="prisma/migrations"
+
+# Only run if prisma/schema.prisma is among the staged files
+if ! git diff --cached --name-only | grep -q "^${SCHEMA_FILE}$"; then
+  exit 0
+fi
+
+echo "[pre-commit] Prisma schema change detected — checking migration status..."
+
+# Use prisma migrate diff to compare migrations against the schema.
+# --exit-code makes it exit 2 if there are differences, 0 if in sync.
+diff_output=$(npx prisma migrate diff \
+  --from-migrations "./${MIGRATIONS_DIR}" \
+  --to-schema-datamodel "./${SCHEMA_FILE}" \
+  --exit-code 2>&1)
+diff_exit=$?
+
+if [ "$diff_exit" -eq 2 ]; then
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════╗"
+  echo "║  ERROR: Prisma schema has changes without a migration!      ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+  echo ""
+  echo "The schema at ${SCHEMA_FILE} has drifted from the migration"
+  echo "history in ${MIGRATIONS_DIR}/."
+  echo ""
+  echo "Pending changes:"
+  echo "$diff_output"
+  echo ""
+  echo "To fix this, run:"
+  echo ""
+  echo "    npx prisma migrate dev --name <descriptive_name>"
+  echo ""
+  echo "Then stage the new migration files and commit again."
+  echo ""
+  echo "To skip this check (e.g. comment-only changes), use:"
+  echo "    git commit --no-verify"
+  echo ""
+  exit 1
+elif [ "$diff_exit" -ne 0 ]; then
+  echo "[pre-commit] WARNING: prisma migrate diff failed (exit code $diff_exit)."
+  echo "[pre-commit] Output: $diff_output"
+  echo "[pre-commit] Skipping migration check — could not verify schema state."
+  exit 0
+fi
+
+echo "[pre-commit] Prisma migrations are up to date."
+exit 0
