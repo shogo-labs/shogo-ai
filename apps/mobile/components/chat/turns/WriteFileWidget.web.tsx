@@ -5,7 +5,7 @@
  * syntax highlighting for the code preview.
  */
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FilePlus2, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
@@ -49,40 +49,44 @@ function truncateContent(text: string): { display: string; truncated: boolean; t
   return { display: trimmed, truncated: true, totalLines }
 }
 
-function HighlightedCode({ code, language }: { code: string; language: string }) {
+const SHIKI_DEBOUNCE_MS = 150
+
+const HighlightedCode = memo(function HighlightedCode({ code, language }: { code: string; language: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [fallback, setFallback] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
-      try {
-        const { codeToHtml } = await import("shiki")
-        const html = await codeToHtml(code, {
-          lang: language === "text" ? "plaintext" : language,
-          theme: "github-dark-default",
-        })
-        if (!cancelled && containerRef.current) {
-          containerRef.current.innerHTML = html
-          const pre = containerRef.current.querySelector("pre")
-          if (pre) {
-            pre.style.margin = "0"
-            pre.style.padding = "0"
-            pre.style.background = "transparent"
-            pre.style.fontSize = "10px"
-            pre.style.lineHeight = "16px"
-            pre.style.fontFamily = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace"
+    const timer = setTimeout(() => {
+      ;(async () => {
+        try {
+          const { codeToHtml } = await import("shiki")
+          const html = await codeToHtml(code, {
+            lang: language === "text" ? "plaintext" : language,
+            theme: "github-dark-default",
+          })
+          if (!cancelled && containerRef.current) {
+            containerRef.current.innerHTML = html
+            const pre = containerRef.current.querySelector("pre")
+            if (pre) {
+              pre.style.margin = "0"
+              pre.style.padding = "0"
+              pre.style.background = "transparent"
+              pre.style.fontSize = "10px"
+              pre.style.lineHeight = "16px"
+              pre.style.fontFamily = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace"
+            }
+            const codeEl = containerRef.current.querySelector("code")
+            if (codeEl) {
+              codeEl.style.background = "transparent"
+            }
           }
-          const codeEl = containerRef.current.querySelector("code")
-          if (codeEl) {
-            codeEl.style.background = "transparent"
-          }
+        } catch {
+          if (!cancelled) setFallback(true)
         }
-      } catch {
-        if (!cancelled) setFallback(true)
-      }
-    })()
-    return () => { cancelled = true }
+      })()
+    }, SHIKI_DEBOUNCE_MS)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [code, language])
 
   if (fallback) {
@@ -94,9 +98,30 @@ function HighlightedCode({ code, language }: { code: string; language: string })
   }
 
   return <div ref={containerRef} style={{ minHeight: 16 }} />
+})
+
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
 }
 
-export function WriteFileWidget({
+function toolWidgetPropsEqual(
+  prev: WriteFileWidgetProps,
+  next: WriteFileWidgetProps,
+) {
+  const equal =
+    prev.tool.state === next.tool.state &&
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    prev.tool.error === next.tool.error &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result) &&
+    prev.isExpanded === next.isExpanded &&
+    prev.onToggle === next.onToggle &&
+    prev.className === next.className
+  return equal
+}
+
+export const WriteFileWidget = memo(function WriteFileWidget({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -111,7 +136,7 @@ export function WriteFileWidget({
     else setInternalExpanded(!internalExpanded)
   }
 
-  const { path, content, append, bytes } = extractWriteData(tool)
+  const { path, content, append, bytes } = useMemo(() => extractWriteData(tool), [tool.args, tool.result])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
   const language = getLanguageFromPath(path)
@@ -217,6 +242,6 @@ export function WriteFileWidget({
       )}
     </View>
   )
-}
+}, toolWidgetPropsEqual)
 
 export default WriteFileWidget

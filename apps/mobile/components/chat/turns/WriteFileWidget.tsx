@@ -6,7 +6,7 @@
  * and line numbers.
  */
 
-import { useState } from "react"
+import { useState, useMemo, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FilePlus2, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
@@ -51,7 +51,28 @@ function truncateContent(text: string): { display: string; truncated: boolean; t
   return { display: trimmed, truncated: true, totalLines }
 }
 
-export function WriteFileWidget({
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+function toolWidgetPropsEqual(
+  prev: WriteFileWidgetProps,
+  next: WriteFileWidgetProps,
+) {
+  return (
+    prev.tool.state === next.tool.state &&
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    prev.tool.error === next.tool.error &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result) &&
+    prev.isExpanded === next.isExpanded &&
+    prev.onToggle === next.onToggle &&
+    prev.className === next.className
+  )
+}
+
+export const WriteFileWidget = memo(function WriteFileWidget({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -66,7 +87,7 @@ export function WriteFileWidget({
     else setInternalExpanded(!internalExpanded)
   }
 
-  const { path, content, append, bytes } = extractWriteData(tool)
+  const { path, content, append, bytes } = useMemo(() => extractWriteData(tool), [tool.args, tool.result])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
   const { display, truncated, totalLines } = truncateContent(content)
@@ -174,6 +195,6 @@ export function WriteFileWidget({
       )}
     </View>
   )
-}
+}, toolWidgetPropsEqual)
 
 export default WriteFileWidget
