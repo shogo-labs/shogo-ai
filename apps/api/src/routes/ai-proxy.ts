@@ -1438,6 +1438,14 @@ export function aiProxyRoutes() {
     try {
       const request: ChatCompletionRequest = await c.req.json()
 
+      // Resolve agent-mode aliases (basic/advanced) to real model names
+      if (request.model) {
+        const { resolvedModel } = resolveAgentModel(request.model)
+        if (resolvedModel !== request.model) {
+          request.model = resolvedModel
+        }
+      }
+
       // Validate model
       if (!request.model) {
         return c.json(
