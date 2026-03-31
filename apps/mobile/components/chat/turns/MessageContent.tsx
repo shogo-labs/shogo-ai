@@ -143,7 +143,7 @@ export function MessageContent({
   const baseClasses = cn(
     "rounded-md px-3 py-1.5",
     isUser
-      ? "max-w-[85%] bg-primary ml-auto"
+      ? "max-w-[85%] bg-secondary dark:bg-secondary ml-auto"
       : "w-full bg-transparent",
     className
   )
@@ -152,7 +152,7 @@ export function MessageContent({
     return (
       <View className={cn(baseClasses, "gap-2")}>
         {content ? (
-          <Text className="text-xs text-primary-foreground" selectable>
+          <Text className="text-xs text-foreground" selectable>
             {content}
           </Text>
         ) : null}

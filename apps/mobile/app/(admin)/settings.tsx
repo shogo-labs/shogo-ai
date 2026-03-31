@@ -29,10 +29,18 @@ import {
   ChevronDown,
   Cloud,
   Unplug,
+  Palette,
+  Check,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type LlmConfig } from '@shogo-ai/sdk'
 import { createHttpClient } from '../../lib/api'
+import { useAccentTheme } from '../../contexts/accent-theme'
+import {
+  ACCENT_PRESETS,
+  ACCENT_NAMES,
+  type AccentThemeName,
+} from '../../lib/accent-themes'
 
 // =============================================================================
 // Types
@@ -236,6 +244,9 @@ export default function AdminSettingsPage() {
             Configure your local LLM provider and models. Changes take effect immediately.
           </Text>
         </View>
+
+        {/* Appearance Section */}
+        <AccentColorPicker />
 
         {/* Shogo Cloud Section */}
         <SectionCard
@@ -536,6 +547,54 @@ export default function AdminSettingsPage() {
         </View>
       </View>
     </ScrollView>
+  )
+}
+
+// =============================================================================
+// Accent Color Picker
+// =============================================================================
+
+function AccentColorPicker() {
+  const { accent, setAccent } = useAccentTheme()
+
+  return (
+    <SectionCard
+      icon={Palette}
+      title="Appearance"
+      description="Customize the accent color used throughout the app"
+    >
+      <View className="flex-row flex-wrap gap-3">
+        {ACCENT_NAMES.map((name) => {
+          const preset = ACCENT_PRESETS[name]
+          const isActive = accent === name
+          return (
+            <Pressable
+              key={name}
+              onPress={() => setAccent(name)}
+              className="items-center gap-1.5"
+            >
+              <View
+                className={cn(
+                  'h-10 w-10 rounded-full items-center justify-center',
+                  isActive && 'border-2 border-foreground',
+                )}
+                style={{ backgroundColor: preset.swatch }}
+              >
+                {isActive && <Check size={16} color="#fff" strokeWidth={3} />}
+              </View>
+              <Text
+                className={cn(
+                  'text-[10px]',
+                  isActive ? 'text-foreground font-semibold' : 'text-muted-foreground',
+                )}
+              >
+                {preset.label}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </View>
+    </SectionCard>
   )
 }
 

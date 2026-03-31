@@ -70,7 +70,7 @@ export function EditFileWidget({
         className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-900 dark:bg-gray-950"
       >
         <View className="group-hover:hidden">
-          <FileEdit className="w-3 h-3 text-blue-400" size={12} />
+          <FileEdit className="w-3 h-3 text-primary" size={12} />
         </View>
         <View className="hidden group-hover:flex">
           {isExpanded ? (
@@ -101,7 +101,7 @@ export function EditFileWidget({
         <StateIcon
           className={cn(
             "w-3 h-3",
-            tool.state === "streaming" && "text-blue-400",
+            tool.state === "streaming" && "text-primary",
             tool.state === "success" && "text-emerald-500",
             tool.state === "error" && "text-red-500",
           )}
@@ -114,7 +114,7 @@ export function EditFileWidget({
         <View className="bg-gray-900 dark:bg-gray-950 border-t border-gray-800">
           {tool.state === "streaming" && !oldString && !newString && (
             <View className="flex-row items-center gap-1.5 px-2 py-2">
-              <Loader2 className="w-3 h-3 text-blue-400" size={12} />
+              <Loader2 className="w-3 h-3 text-primary" size={12} />
               <Text className="text-[10px] text-gray-500">Editing…</Text>
             </View>
           )}

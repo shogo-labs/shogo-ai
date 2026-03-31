@@ -116,7 +116,7 @@ export function ExecWidget({
         <StateIcon
           className={cn(
             "w-3 h-3",
-            tool.state === "streaming" && "text-blue-400",
+            tool.state === "streaming" && "text-primary",
             tool.state === "success" && "text-emerald-500",
             tool.state === "error" && "text-red-500",
           )}
@@ -178,7 +178,7 @@ export function ExecWidget({
           {/* Streaming indicator */}
           {tool.state === "streaming" && (
             <View className="flex-row items-center gap-1.5 py-1">
-              <Loader2 className="w-3 h-3 text-blue-400" size={12} />
+              <Loader2 className="w-3 h-3 text-primary" size={12} />
               <Text className="text-[10px] text-gray-500">Running…</Text>
             </View>
           )}

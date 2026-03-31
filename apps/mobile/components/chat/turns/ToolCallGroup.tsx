@@ -98,7 +98,7 @@ export function ToolCallGroup({
         <View className="flex-1" />
 
         {hasStreaming ? (
-          <Loader2 className="w-3 h-3 text-blue-400" />
+          <Loader2 className="w-3 h-3 text-primary" />
         ) : hasErrors ? (
           <XCircle className="w-3 h-3 text-red-500" />
         ) : allSuccess ? (

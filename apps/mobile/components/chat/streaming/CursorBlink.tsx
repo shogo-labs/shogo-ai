@@ -48,7 +48,7 @@ export function CursorBlink({ isVisible, className }: CursorBlinkProps) {
 
   return (
     <Animated.View
-      className={cn("w-[2px] h-4 ml-0.5 bg-blue-400", className)}
+      className={cn("w-[2px] h-4 ml-0.5 bg-primary", className)}
       style={{ opacity }}
       accessibilityElementsHidden
     />

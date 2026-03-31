@@ -452,7 +452,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                       </View>
                       <View className="items-end">
                         {session.compactedSummary && (
-                          <Text className="text-[10px] text-blue-500">
+                          <Text className="text-[10px] text-primary">
                             Compacted x{session.compactionCount}
                           </Text>
                         )}

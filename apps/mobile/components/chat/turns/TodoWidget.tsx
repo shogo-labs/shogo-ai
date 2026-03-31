@@ -104,7 +104,7 @@ function getStatusColors(status: TodoStatus) {
     case "completed":
       return "text-green-500"
     case "in_progress":
-      return "text-blue-500"
+      return "text-primary"
     case "cancelled":
       return "text-muted-foreground"
     case "pending":
@@ -158,7 +158,7 @@ function ProgressBar({ todos }: { todos: TodoItem[] }) {
           style={{ width: `${completedPercent}%` }}
         />
         <View
-          className="h-full bg-blue-500"
+          className="h-full bg-primary"
           style={{ width: `${inProgressPercent}%` }}
         />
       </View>
@@ -168,7 +168,7 @@ function ProgressBar({ todos }: { todos: TodoItem[] }) {
           {completed}/{total} completed
         </Text>
         {inProgress > 0 && (
-          <Text className="text-[9px] text-blue-500">
+          <Text className="text-[9px] text-primary">
             {inProgress} in progress
           </Text>
         )}
@@ -208,12 +208,12 @@ export function TodoWidget({
     return (
       <View
         className={cn(
-          "rounded-md border border-blue-500/20 bg-blue-500/5 p-2",
+          "rounded-md border border-primary/20 bg-primary/5 p-2",
           className
         )}
       >
         <View className="flex-row items-center gap-1.5">
-          <ListTodo className="w-3 h-3 text-blue-500" />
+          <ListTodo className="w-3 h-3 text-primary" />
           <Text className="font-mono text-[10px] font-medium text-foreground">
             TodoWrite
           </Text>
@@ -251,7 +251,7 @@ export function TodoWidget({
         allComplete
           ? "border-green-500/30 bg-green-500/5"
           : hasInProgress
-            ? "border-blue-500/30 bg-blue-500/5"
+            ? "border-primary/30 bg-primary/5"
             : "border-border/50 bg-muted/30",
         className
       )}
@@ -273,7 +273,7 @@ export function TodoWidget({
             allComplete
               ? "text-green-500"
               : hasInProgress
-                ? "text-blue-500"
+                ? "text-primary"
                 : "text-muted-foreground"
           )}
         />
@@ -285,7 +285,7 @@ export function TodoWidget({
         <Text className="flex-1 text-[9px] text-muted-foreground text-right">
           {stats.completed}/{stats.total} complete
           {stats.inProgress > 0 && (
-            <Text className="text-blue-500">
+            <Text className="text-primary">
               {" "}• {stats.inProgress} active
             </Text>
           )}
@@ -294,7 +294,7 @@ export function TodoWidget({
         {allComplete ? (
           <CheckCircle2 className="w-3 h-3 text-green-500" />
         ) : hasInProgress ? (
-          <Loader2 className="w-3 h-3 text-blue-500" />
+          <Loader2 className="w-3 h-3 text-primary" />
         ) : null}
       </Pressable>
 
