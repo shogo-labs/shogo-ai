@@ -65,6 +65,7 @@ const levelArg = getArg(args, 'level')
 const maxIterations = parseInt(getArg(args, 'iterations', '5')!)
 const batchSize = parseInt(getArg(args, 'batch-size', '0')!)
 const filterArg = getArg(args, 'filter')
+const startFrom = parseInt(getArg(args, 'start-from', '0')!)
 const dataDir = getArg(args, 'data', resolve(REPO_ROOT, '.gaia/data'))!
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
@@ -428,6 +429,10 @@ async function main() {
   if (filterArg) {
     const patterns = filterArg.toLowerCase().split(',').map(s => s.trim()).filter(Boolean)
     tasks = tasks.filter(i => patterns.some(p => i.task_id.toLowerCase().includes(p)))
+  }
+  if (startFrom > 0) {
+    console.log(`  Skipping first ${startFrom} tasks (--start-from)`)
+    tasks = tasks.slice(startFrom)
   }
   if (batchSize > 0 && batchSize < tasks.length) {
     tasks = tasks.slice(0, batchSize)

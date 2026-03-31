@@ -234,7 +234,12 @@ export async function ensureDockerImage(
 export async function startDockerWorker(
   id: number,
   config: DockerWorkerConfig,
-  opts?: { workspaceDir?: string },
+  opts?: {
+    workspaceDir?: string
+    imageOverride?: string
+    extraVolumeMounts?: string[]
+    containerWorkspaceDir?: string
+  },
 ): Promise<DockerWorker> {
   const hostPort = config.baseHostPort + id
   const containerName = `${config.containerPrefix}-${id}`
@@ -264,12 +269,13 @@ export async function startDockerWorker(
     }
   }
 
+  const wsDir = opts?.containerWorkspaceDir || '/app/workspace'
   const envFlags = [
     `-e NODE_ENV=development`,
     `-e PORT=${config.containerAgentPort}`,
-    `-e WORKSPACE_DIR=/app/workspace`,
-    `-e AGENT_DIR=/app/workspace`,
-    `-e PROJECT_DIR=/app/workspace`,
+    `-e WORKSPACE_DIR=${wsDir}`,
+    `-e AGENT_DIR=${wsDir}`,
+    `-e PROJECT_DIR=${wsDir}`,
     `-e PROJECT_ID=${containerName}`,
     `-e AGENT_MODEL=${config.model}`,
     `-e SECURITY_POLICY=${encodeSecurityPolicy({ mode: 'full_autonomy' })}`,
@@ -294,12 +300,21 @@ export async function startDockerWorker(
     networkFlags.push(`--network ${config.extraNetworks[0]}`)
   }
 
+  const volumeFlags = [`-v "${dir}:/app/workspace"`]
+  if (opts?.extraVolumeMounts) {
+    for (const m of opts.extraVolumeMounts) {
+      volumeFlags.push(`-v "${m}"`)
+    }
+  }
+
+  const effectiveImage = opts?.imageOverride || config.image
+
   const parts = [
     'docker run -d',
     `--name "${containerName}"`,
     ...portFlags,
     ...networkFlags,
-    `-v "${dir}:/app/workspace"`,
+    ...volumeFlags,
     `--env-file "${envFile}"`,
     ...envFlags,
   ]
@@ -308,7 +323,7 @@ export async function startDockerWorker(
     parts.push('--entrypoint sh')
   }
 
-  parts.push(config.image)
+  parts.push(effectiveImage)
 
   if (config.entrypoint) {
     parts.push(`-c "${config.entrypoint}"`)

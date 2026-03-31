@@ -92,13 +92,24 @@ function inferProviderFromModel(modelId: string, configProvider: string): string
 }
 
 /**
+ * Resolve UI-facing model aliases (basic/advanced) to concrete model IDs
+ * so pi-ai can find them in its model registry and pick the correct API
+ * (e.g. openai-responses vs openai-completions).
+ */
+function resolveModelAlias(modelId: string): string {
+  if (modelId === 'basic') return 'gpt-5.4-mini'
+  if (modelId === 'advanced') return 'claude-sonnet-4-6'
+  return modelId
+}
+
+/**
  * Resolve the thinking/reasoning level for a turn. The 'basic' agent mode
  * uses gpt-5.4-mini which benefits from xhigh reasoning effort.
  */
 function resolveThinkingLevel(modelOverride?: string): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
   const envLevel = process.env.AGENT_THINKING_LEVEL as any
   if (modelOverride === 'basic') {
-    return (process.env.AGENT_BASIC_THINKING_LEVEL as any) || 'xhigh'
+    return (process.env.AGENT_BASIC_THINKING_LEVEL as any) || 'medium'
   }
   return envLevel || 'medium'
 }
@@ -1177,9 +1188,10 @@ export class AgentGateway {
     }
 
     const session = this.sessionManager.getOrCreate(sessionId)
-    const modelId = session.modelOverride || this.config.model.name
-    const provider = inferProviderFromModel(modelId, this.config.model.provider)
-    console.log(`${this.logPrefix} LLM turn: model=${modelId} provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+    const modelAlias = session.modelOverride || this.config.model.name
+    const provider = inferProviderFromModel(modelAlias, this.config.model.provider)
+    const modelId = resolveModelAlias(modelAlias)
+    console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
     // When there's no uiWriter (cron, heartbeat, channel, webhook turns),
