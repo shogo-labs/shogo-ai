@@ -3,7 +3,6 @@
   "name": "Communications Monitoring",
   "description": "Stay on top of critical signals across email and Slack without constant manual checking. Monitors mentions, keywords, and key senders, then forwards alerts with rich formatting.",
   "category": "operations",
-  "icon": "📡",
   "tags": [
     "slack",
     "email",

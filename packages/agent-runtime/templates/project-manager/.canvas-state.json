@@ -28,7 +28,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "📋 Sprint Board",
+          "text": "Sprint Board",
           "variant": "h2"
         },
         "sprint_badge": {
@@ -95,7 +95,7 @@
         "todo_col": {
           "id": "todo_col",
           "component": "Card",
-          "title": "📋 To Do",
+          "title": "To Do",
           "child": "todo_placeholder"
         },
         "todo_placeholder": {
@@ -107,7 +107,7 @@
         "progress_col": {
           "id": "progress_col",
           "component": "Card",
-          "title": "🔄 In Progress",
+          "title": "In Progress",
           "child": "progress_placeholder"
         },
         "progress_placeholder": {
@@ -119,7 +119,7 @@
         "done_col": {
           "id": "done_col",
           "component": "Card",
-          "title": "✅ Done",
+          "title": "Done",
           "child": "done_placeholder"
         },
         "done_placeholder": {
@@ -131,7 +131,7 @@
         "getting_started": {
           "id": "getting_started",
           "component": "Card",
-          "title": "🚀 Getting Started",
+          "title": "Getting Started",
           "child": "gs_text"
         },
         "gs_text": {
@@ -179,7 +179,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "🗓️ Standup Summary",
+          "text": "Standup Summary",
           "variant": "h2"
         },
         "date_badge": {

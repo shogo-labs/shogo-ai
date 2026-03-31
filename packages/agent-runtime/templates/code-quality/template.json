@@ -3,7 +3,6 @@
   "name": "Code Review & Quality",
   "description": "Automate pull request reviews with AI-powered code quality analysis and inline feedback. Keep your codebase healthy without slowing down your team.",
   "category": "development",
-  "icon": "🔍",
   "tags": [
     "pull-requests",
     "code-review",

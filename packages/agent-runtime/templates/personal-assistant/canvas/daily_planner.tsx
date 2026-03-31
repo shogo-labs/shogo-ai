@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="⚡ Daily Planner" variant="h2" />
+      <DynText text="Daily Planner" variant="h2" />
       <DynBadge text="Ready to set up" variant="outline" />
     </Row>
     <Grid columns={4}>
@@ -18,7 +18,7 @@ return (
         variant="muted"
        />
     </CanvasCard>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <Column gap="md">
         <DynText text="Set up your personal hub:" variant="muted" />
         <Column gap="sm">

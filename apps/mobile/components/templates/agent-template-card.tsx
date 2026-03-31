@@ -5,25 +5,6 @@ import { View, Text, Pressable, ActivityIndicator, Platform } from 'react-native
 import { Zap, ChevronRight, Sparkles } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
-export const AGENT_TEMPLATE_ICON_BOX: Record<string, string> = {
-  'marketing-command-center': 'bg-violet-500/15 dark:bg-violet-400/20',
-  'devops-hub': 'bg-blue-500/15 dark:bg-blue-400/20',
-  'project-manager': 'bg-cyan-500/15 dark:bg-cyan-400/20',
-  'sales-revenue': 'bg-amber-500/15 dark:bg-amber-400/20',
-  'support-ops': 'bg-violet-500/15 dark:bg-violet-400/20',
-  'research-analyst': 'bg-blue-500/15 dark:bg-blue-400/20',
-  'hr-recruiting': 'bg-teal-500/15 dark:bg-teal-400/20',
-  'personal-assistant': 'bg-violet-500/15 dark:bg-violet-400/20',
-  'operations-monitor': 'bg-red-500/15 dark:bg-red-400/20',
-  'code-quality': 'bg-green-500/15 dark:bg-green-400/20',
-  'comms-monitoring': 'bg-indigo-500/15 dark:bg-indigo-400/20',
-  'engineering-pulse': 'bg-cyan-500/15 dark:bg-cyan-400/20',
-  'incident-response': 'bg-orange-500/15 dark:bg-orange-400/20',
-  'meeting-intelligence': 'bg-blue-500/15 dark:bg-blue-400/20',
-  'research-tracking': 'bg-emerald-500/15 dark:bg-emerald-400/20',
-  'revenue-finance': 'bg-green-500/15 dark:bg-green-400/20',
-  'standup-automation': 'bg-amber-500/15 dark:bg-amber-400/20',
-}
 
 const SPINNER_COLOR: Record<string, string> = {
   'marketing-command-center': '#a855f7',
@@ -98,7 +79,6 @@ export interface AgentTemplateCardData {
   name: string
   description: string
   category: string
-  icon: string
   tags: string[]
 }
 
@@ -669,7 +649,6 @@ export function AgentTemplateGalleryCard({
   const cat = CATEGORY_BADGE[template.category] || CATEGORY_BADGE.development
   const catLabel = CATEGORY_LABEL[template.category] || template.category
   const popular = POPULAR_IDS.has(template.id)
-  const iconBox = AGENT_TEMPLATE_ICON_BOX[template.id] || 'bg-indigo-500/15 dark:bg-indigo-400/20'
   const spinner = SPINNER_COLOR[template.id] || '#6366f1'
 
   const displayTags = template.tags.slice(0, 3).map((t) =>

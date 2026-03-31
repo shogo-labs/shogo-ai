@@ -3,7 +3,6 @@
   "name": "Meeting Intelligence",
   "description": "Walk into every meeting fully prepared and leave with clear action items. Researches attendees beforehand and generates structured summaries with follow-ups afterward.",
   "category": "personal",
-  "icon": "🗓️",
   "tags": [
     "meetings",
     "calendar",

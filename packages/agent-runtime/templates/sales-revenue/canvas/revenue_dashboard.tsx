@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="💰 Revenue Dashboard" variant="h2" />
+      <DynText text="Revenue Dashboard" variant="h2" />
       <DynBadge text="Connect Stripe to start" variant="outline" />
     </Row>
     <Grid columns={4}>

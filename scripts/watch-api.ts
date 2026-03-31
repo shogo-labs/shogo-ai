@@ -24,6 +24,8 @@ const EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".json"]);
 
 let child: Subprocess | null = null;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
+let generation = 0;
+let waitingForChange = false;
 const DEBOUNCE_MS = 300;
 
 function startServer() {
@@ -31,6 +33,9 @@ function startServer() {
     child.kill();
     child = null;
   }
+
+  waitingForChange = false;
+  const gen = ++generation;
 
   child = spawn({
     cmd: ["bun", "run", ENTRY],
@@ -41,10 +46,10 @@ function startServer() {
   });
 
   child.exited.then((code) => {
-    if (child?.killed) return;
+    if (gen !== generation) return;
     if (code !== 0) {
-      console.log(`[watch-api] Server exited with code ${code}, restarting in 1s...`);
-      setTimeout(startServer, 1000);
+      console.log(`[watch-api] Server exited with code ${code} — waiting for file change to restart...`);
+      waitingForChange = true;
     }
   });
 }

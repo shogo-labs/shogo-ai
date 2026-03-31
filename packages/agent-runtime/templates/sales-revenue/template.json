@@ -3,7 +3,6 @@
   "name": "Sales & Revenue",
   "description": "Pipeline management, deal tracking, client onboarding, revenue dashboards, and Stripe integration with multi-surface sales views.",
   "category": "sales",
-  "icon": "🏆",
   "tags": [
     "sales",
     "pipeline",

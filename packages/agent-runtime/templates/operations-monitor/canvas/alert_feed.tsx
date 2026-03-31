@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="🔔 Alert Feed" variant="h2" />
+      <DynText text="Alert Feed" variant="h2" />
       <DynBadge text="No alerts yet" variant="outline" />
     </Row>
     <Grid columns={3}>

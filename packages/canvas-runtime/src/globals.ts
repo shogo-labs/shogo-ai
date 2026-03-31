@@ -185,7 +185,7 @@ function buildFlatScope(data: unknown, onAction: (name: string, context?: Record
   }
 
   for (const [name, icon] of Object.entries(LucideIcons)) {
-    if (name[0] === name[0].toUpperCase() && name !== 'createLucideIcon' && icon != null) {
+    if (name[0] === name[0].toUpperCase() && name !== 'createLucideIcon' && icon != null && !(name in scope)) {
       scope[name] = icon
     }
   }

@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="💓 Health Dashboard" variant="h2" />
+      <DynText text="Health Dashboard" variant="h2" />
       <DynBadge text="No endpoints configured" variant="outline" />
     </Row>
     <Grid columns={4}>
@@ -31,7 +31,7 @@ return (
         </Row>
       </Column>
     </CanvasCard>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <DynText
         text={"Share your API health check URLs and I'll start monitoring every 5 minutes. Say \"Connect Sentry\" for error tracking."}
         variant="muted"
