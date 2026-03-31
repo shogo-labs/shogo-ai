@@ -835,7 +835,7 @@ app.use(
       '/api/version',
       '/api/config',
       '/api/webhooks/',
-      '/api/integrations/callback',
+      '/api/integrations/',
       '/api/invite-links/',
       '/api/internal/',
       '/api/local/',
