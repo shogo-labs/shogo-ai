@@ -1,0 +1,133 @@
+
+# =============================================================================
+# SWE-bench Overlay Image (x86_64)
+# =============================================================================
+# Lightweight image containing only Node.js, Bun, ripgrep, and the Shogo
+# gateway code. Used as a COPY --from source to layer our runtime onto
+# official SWE-bench Docker images.
+#
+# Build (one-time, ~3-5 min on ARM via QEMU):
+#   DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+#     -t shogo-swe-overlay -f packages/agent-runtime/Dockerfile.swe-overlay .
+# =============================================================================
+
+# =============================================================================
+# Stage 0: builder — install deps, copy source, fetch skills
+# =============================================================================
+FROM oven/bun:1.3-debian AS builder
+
+WORKDIR /app
+
+COPY package.json bun.lock ./
+COPY tsconfig.base.json ./
+
+COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/domain-stores/package.json ./packages/domain-stores/
+COPY packages/shared-app/package.json ./packages/shared-app/
+COPY packages/shared-ui/package.json ./packages/shared-ui/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY apps/api/package.json ./apps/api/
+COPY apps/mobile/package.json ./apps/mobile/
+
+COPY scripts ./scripts
+
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+COPY prisma.config.local.ts ./prisma.config.local.ts
+
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
+
+COPY packages/shared-runtime ./packages/shared-runtime
+COPY packages/agent-runtime ./packages/agent-runtime
+COPY templates/runtime-template ./templates/runtime-template
+
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
+    bun run scripts/fetch-external-skills.ts && \
+    apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+RUN rm -rf packages/*/node_modules apps/*/node_modules
+
+# =============================================================================
+# Stage 1: deps — full node_modules with workspace links
+# =============================================================================
+FROM oven/bun:1.3-debian AS deps
+
+WORKDIR /app
+
+COPY package.json bun.lock ./
+COPY tsconfig.base.json ./
+
+COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/domain-stores/package.json ./packages/domain-stores/
+COPY packages/shared-app/package.json ./packages/shared-app/
+COPY packages/shared-ui/package.json ./packages/shared-ui/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY apps/api/package.json ./apps/api/
+COPY apps/mobile/package.json ./apps/mobile/
+
+COPY scripts ./scripts
+
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+COPY prisma.config.local.ts ./prisma.config.local.ts
+
+RUN bun install && \
+    echo "Installed $(ls node_modules/ | wc -l) packages"
+
+# =============================================================================
+# Stage 2: minimal final image — just the files needed for COPY --from
+# =============================================================================
+# No chromium, no MCP servers, no AWS/Stripe/GitHub CLIs, no Python packages.
+# Only: Node.js, Bun, ripgrep, git, and our gateway code.
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl bash git ca-certificates ripgrep unzip && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.11" && \
+    apt-get purge -y unzip && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
+COPY --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --from=builder /app/templates/runtime-template ./templates/runtime-template
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/bun.lock ./
+COPY --from=builder /app/tsconfig.base.json ./
+
+# Workspace member package.jsons for bun resolution
+COPY --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
+COPY --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
+COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
+COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
+COPY --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
+COPY --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
+COPY --from=builder /app/apps/api/package.json ./apps/api/
+COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
+
+# Empty canvas dist dir (workspace resolution expects it but SWE evals don't use canvas)
+RUN mkdir -p /app/packages/canvas-runtime/dist
+
+
+COPY packages/agent-runtime/swe-entrypoint.sh /swe-entrypoint.sh
+RUN chmod +x /swe-entrypoint.sh
+
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV WORKSPACE_DIR=/app/workspace
+ENV SCHEMAS_PATH=/app/.schemas
+ENV HOME=/app

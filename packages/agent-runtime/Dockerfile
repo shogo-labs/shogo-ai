@@ -102,6 +102,10 @@ FROM oven/bun:1.3-debian AS deps
 
 WORKDIR /app
 
+# Create user matching production uid so node_modules is pre-owned by uid 1001.
+# COPY --from=deps preserves ownership, so no --chown or chown -R needed later.
+RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup appuser
+
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
@@ -124,8 +128,11 @@ COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
 COPY prisma.config.local.ts ./prisma.config.local.ts
 
-RUN bun install && \
-    echo "Installed $(ls node_modules/ | wc -l) packages"
+# chown the small set of config files (~30 files, instant), then install as appuser
+# so all of node_modules is created with uid 1001 ownership from the start.
+RUN chown -R appuser:appgroup /app
+USER appuser
+RUN bun install
 
 # =============================================================================
 # Stage 3: production image — layer source code onto base image
@@ -145,18 +152,15 @@ COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons for bun resolution
-COPY --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
-COPY --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
-COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
-COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
-COPY --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
-COPY --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
-COPY --from=builder /app/apps/api/package.json ./apps/api/
-COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
-
-RUN bun install --ignore-scripts && \
-    chown -R appuser:appgroup node_modules
+COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
+COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY --chown=appuser:appgroup --from=builder /app/packages/sdk/package.json ./packages/sdk/
+COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
+COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
+COPY --chown=appuser:appgroup --from=builder /app/apps/api/package.json ./apps/api/
+COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 COPY --chown=appuser:appgroup packages/agent-runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -176,5 +180,9 @@ HEALTHCHECK --interval=3s --timeout=2s --start-period=5s --retries=10 \
   CMD curl -sf http://localhost:8080/health || exit 1
 
 USER appuser
+
+# Rebuild bun's module resolution links from .bun/ cache (no downloads).
+# Running as appuser so output is correctly owned — no chown -R needed.
+RUN bun install --ignore-scripts
 
 ENTRYPOINT ["/entrypoint.sh"]

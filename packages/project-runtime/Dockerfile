@@ -82,6 +82,10 @@ FROM oven/bun:1.3-alpine AS deps
 
 WORKDIR /app
 
+# Create user matching production uid so node_modules is pre-owned by uid 1001.
+# COPY --from=deps preserves ownership, so no --chown or chown -R needed later.
+RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
+
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
@@ -103,8 +107,11 @@ COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
 COPY prisma.config.local.ts ./prisma.config.local.ts
 
-RUN bun install && \
-    echo "Installed $(ls node_modules/ | wc -l) packages (full install, not --production)"
+# chown the small set of config files (~30 files, instant), then install as appuser
+# so all of node_modules is created with uid 1001 ownership from the start.
+RUN chown -R appuser:appgroup /app
+USER appuser
+RUN bun install
 
 # =============================================================================
 # Stage 3: template-deps — pre-install and pre-build all templates
@@ -203,10 +210,9 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # ---------------------------------------------------------------------------
-# Copy node_modules from the parallel deps stage. Per-package node_modules
-# were cleaned in the builder so package COPYs only transfer source + dist.
-# All COPYs use --chown to set ownership at copy time, avoiding the ~90s
-# recursive chown that was duplicating GBs of layer data.
+# Copy node_modules from deps stage. Files are already owned by uid 1001
+# (installed as appuser in deps), so COPY preserves ownership natively —
+# no --chown flag and no chown -R needed.
 # ---------------------------------------------------------------------------
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
@@ -217,21 +223,14 @@ COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons needed by bun install for resolution
-COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
-COPY --from=builder /app/packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
-COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
-COPY --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
-COPY --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
-COPY --from=builder /app/apps/api/package.json ./apps/api/
-COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
-
-# Rebuild bun's module resolution links. Docker COPY from the deps stage
-# preserves the .bun/ cache (all packages) but destroys the internal symlinks
-# bun uses to resolve package names. Re-running install with existing cache
-# rebuilds those links instantly without re-downloading.
-RUN bun install --ignore-scripts && \
-    chown -R appuser:appgroup node_modules
+COPY --chown=appuser:appgroup --from=builder /app/packages/sdk/package.json ./packages/sdk/
+COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
+COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
+COPY --chown=appuser:appgroup --from=builder /app/apps/api/package.json ./apps/api/
+COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Copy template archives
 COPY --chown=appuser:appgroup --from=template-deps /templates/archives ./packages/sdk/templates
@@ -242,6 +241,13 @@ RUN mkdir -p /app/project /app/.schemas /app/.claude && \
 
 COPY --chown=appuser:appgroup packages/project-runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Switch to non-root user before rebuilding workspace links
+USER appuser
+
+# Rebuild bun's module resolution links from .bun/ cache (no downloads).
+# Running as appuser so output is correctly owned — no chown -R needed.
+RUN bun install --ignore-scripts
 
 # Environment defaults
 ENV NODE_ENV=production
@@ -261,7 +267,5 @@ EXPOSE 8080 5173
 
 HEALTHCHECK --interval=3s --timeout=2s --start-period=5s --retries=10 \
   CMD curl -sf http://localhost:8080/health || exit 1
-
-USER appuser
 
 ENTRYPOINT ["/entrypoint.sh"]

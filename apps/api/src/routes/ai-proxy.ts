@@ -1552,6 +1552,130 @@ export function aiProxyRoutes() {
   })
 
   // =========================================================================
+  // POST /ai/v1/responses - OpenAI Responses API proxy (pass-through)
+  //
+  // pi-ai routes reasoning models (gpt-5.4-mini etc.) through the Responses
+  // API which supports reasoning_effort + tools. This endpoint resolves the
+  // model alias, swaps in the real model name, and forwards the full body
+  // to OpenAI's /v1/responses endpoint.
+  // =========================================================================
+  router.post('/ai/v1/responses', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { error: { message: 'Insufficient credits.', type: 'billing_error', code: 'insufficient_credits' } },
+        402
+      )
+    }
+
+    try {
+      const body = await c.req.json()
+      const requestedModel = body.model
+      if (!requestedModel) {
+        return c.json({ error: { message: 'model is required', type: 'invalid_request_error' } }, 400)
+      }
+
+      const { resolvedModel } = resolveAgentModel(requestedModel)
+      const modelConfig = resolveModel(resolvedModel)
+      if (!modelConfig) {
+        return c.json({ error: { message: `Model '${requestedModel}' is not supported.`, type: 'invalid_request_error' } }, 400)
+      }
+
+      const apiKey = getProviderApiKey(modelConfig.provider)
+      if (!apiKey) {
+        return c.json({ error: { message: `Provider '${modelConfig.provider}' is not configured.`, type: 'server_error' } }, 503)
+      }
+
+      const isStream = !!body.stream
+      console.log(`[AI Proxy] Responses API: ${tokenPayload.projectId} → ${modelConfig.provider}/${modelConfig.apiModel} (stream: ${isStream})`)
+
+      const forwardBody = { ...body, model: modelConfig.apiModel }
+
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(forwardBody),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
+        return new Response(errorText, { status: response.status, headers: { 'Content-Type': 'application/json' } })
+      }
+
+      if (isStream) {
+        // SSE pass-through with usage extraction
+        const decoder = new TextDecoder()
+        let inputTokens = 0
+        let outputTokens = 0
+        let sseBuffer = ''
+
+        const transformStream = new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            controller.enqueue(chunk)
+            sseBuffer += decoder.decode(chunk, { stream: true })
+            const lines = sseBuffer.split('\n')
+            sseBuffer = lines.pop() || ''
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const data = line.slice(6).trim()
+              if (data === '[DONE]') continue
+              try {
+                const parsed = JSON.parse(data)
+                if (parsed.type === 'response.completed' && parsed.response?.usage) {
+                  inputTokens = parsed.response.usage.input_tokens || 0
+                  outputTokens = parsed.response.usage.output_tokens || 0
+                }
+              } catch {}
+            }
+          },
+          flush() {
+            if (inputTokens || outputTokens) {
+              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens)
+            }
+          },
+        })
+
+        const reader = response.body!.getReader()
+        const readable = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            const { done, value } = await reader.read()
+            if (done) { controller.close(); return }
+            controller.enqueue(value)
+          },
+        })
+
+        return new Response(readable.pipeThrough(transformStream), {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
+        })
+      } else {
+        const result = await response.json() as any
+        if (result.usage) {
+          recordUsage(tokenPayload, requestedModel, result.usage.input_tokens || 0, result.usage.output_tokens || 0)
+        }
+        return c.json(result)
+      }
+    } catch (error: any) {
+      console.error('[AI Proxy] Responses API error:', error.message)
+      return c.json({ error: { message: error.message || 'Internal proxy error', type: 'server_error' } }, 500)
+    }
+  })
+
+  // =========================================================================
   // GET /ai/v1/models - List available models
   // =========================================================================
   router.get('/ai/v1/models', async (c) => {
