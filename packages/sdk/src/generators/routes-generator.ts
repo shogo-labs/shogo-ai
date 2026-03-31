@@ -8,15 +8,7 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField } from './prisma-generator'
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-const LICENSE_HEADER = [
-  '// SPDX-License-Identifier: AGPL-3.0-or-later',
-  '// Copyright (C) 2026 Shogo Technologies, Inc.',
-].join('\n')
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
 // Types
@@ -93,7 +85,7 @@ export function generateModelRoutes(
   const fileName = `${toFileName(modelName)}.routes.${ext}`
 
   const lines: string[] = [
-    LICENSE_HEADER,
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ` * Auto-generated ${modelName} Routes`,
     ' *',
@@ -369,7 +361,7 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
   const fileName = `${toFileName(modelName)}.hooks.${ext}`
 
   const lines: string[] = [
-    LICENSE_HEADER,
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ` * ${modelName} Hooks`,
     ' *',
@@ -478,7 +470,7 @@ export function generateRoutesIndex(models: PrismaModel[]): string {
   const routeModels = models.filter(model => getIdField(model) !== undefined)
 
   const lines: string[] = [
-    LICENSE_HEADER,
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Routes Index',
     ' *',

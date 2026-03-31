@@ -14,6 +14,7 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField, getScalarFields } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 /**
  * Simple pluralization matching the routes-generator convention
@@ -32,6 +33,7 @@ function toRoutePath(name: string): string {
  */
 export function generateServerFunctions(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Client Functions',
     ' *',

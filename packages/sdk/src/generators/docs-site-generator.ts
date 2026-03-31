@@ -14,6 +14,7 @@
  */
 
 import type { GeneratedDocFile } from './docs-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 export interface DocsSiteConfig {
   /** Project name (used in title, navbar) */
@@ -110,7 +111,9 @@ function generateDocusaurusConfig(config: DocsSiteConfig): GeneratedDocFile {
   const baseUrl = config.baseUrl || '/'
   const url = config.url || 'https://your-docs-site.example.com'
 
-  const content = `import { themes as prismThemes } from 'prism-react-renderer'
+  const content = `${GENERATED_FILE_LICENSE_HEADER}
+
+import { themes as prismThemes } from 'prism-react-renderer'
 import type { Config } from '@docusaurus/types'
 import type * as Preset from '@docusaurus/preset-classic'
 
@@ -185,7 +188,9 @@ export default config
 // ============================================================================
 
 function generateSidebars(): GeneratedDocFile {
-  const content = `import type { SidebarsConfig } from '@docusaurus/plugin-content-docs'
+  const content = `${GENERATED_FILE_LICENSE_HEADER}
+
+import type { SidebarsConfig } from '@docusaurus/plugin-content-docs'
 
 const sidebars: SidebarsConfig = {
   docsSidebar: [

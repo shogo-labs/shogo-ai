@@ -9,12 +9,14 @@
 
 import type { PrismaModel } from './prisma-generator'
 import { toCamelCase, getIdField } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 /**
  * Generate domain store code that uses API client
  */
 export function generateApiDomainStore(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Domain Store (API-based)',
     ' *',
