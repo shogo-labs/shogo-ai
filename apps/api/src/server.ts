@@ -818,7 +818,7 @@ app.use('/api/integrations/*', async (c, next) => {
     try {
       const result = await resolveApiKey(authHeader.slice(7))
       if (result) {
-        c.set('auth', { userId: result.userId, workspaceId: result.workspaceId, session: null } as any)
+        c.set('auth', { userId: result.userId, workspaceId: result.workspaceId, isAuthenticated: true, session: null } as any)
       }
     } catch {}
   }
