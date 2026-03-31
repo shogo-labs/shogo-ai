@@ -4952,7 +4952,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
     }
 
     const existing = await billingService.getSubscription(workspaceId)
-    if (existing) {
+    if (existing?.stripeSubscriptionId === (session.subscription as string)) {
       return c.json({ ok: true, workspaceId, planId, alreadyProvisioned: true }, 200)
     }
 

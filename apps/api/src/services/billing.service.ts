@@ -335,6 +335,19 @@ export async function syncFromStripe(data: {
   currentPeriodEnd: Date;
   cancelAtPeriodEnd?: boolean;
 }) {
+  // Remove stale subscription rows for this workspace that belong to a
+  // different Stripe subscription. A workspace should only ever have one
+  // subscription record; duplicates cause the billing UI to pick the wrong
+  // row and show an incorrect plan.
+  if (data.workspaceId) {
+    await prisma.subscription.deleteMany({
+      where: {
+        workspaceId: data.workspaceId,
+        stripeSubscriptionId: { not: data.stripeSubscriptionId },
+      },
+    });
+  }
+
   return prisma.subscription.upsert({
     where: { stripeSubscriptionId: data.stripeSubscriptionId },
     create: {
