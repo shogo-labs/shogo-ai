@@ -19,6 +19,7 @@
 import type { Context, Next } from "hono"
 import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
+import { resolveApiKey } from "../routes/api-keys"
 
 /**
  * Auth context set by middleware
@@ -30,6 +31,8 @@ export interface AuthContext {
   email?: string
   /** User name */
   name?: string
+  /** Workspace ID (set when authenticated via API key) */
+  workspaceId?: string
   /** Whether the request is authenticated */
   isAuthenticated: boolean
 }
@@ -48,8 +51,25 @@ declare module "hono" {
  * Does NOT block unauthenticated requests - that's the job of requireAuth.
  */
 export async function authMiddleware(c: Context, next: Next) {
+  // 1. Try shogo_sk_* API key auth (used by local instances forwarding to cloud)
+  const authHeader = c.req.header("authorization")
+  if (authHeader?.startsWith("Bearer shogo_sk_")) {
+    try {
+      const result = await resolveApiKey(authHeader.slice(7))
+      if (result) {
+        c.set("auth", {
+          userId: result.userId,
+          workspaceId: result.workspaceId,
+          isAuthenticated: true,
+        })
+        await next()
+        return
+      }
+    } catch {}
+  }
+
+  // 2. Try Better Auth session (cookies)
   try {
-    // Get session from Better Auth using the request headers (cookies)
     const session = await auth.api.getSession({
       headers: c.req.raw.headers,
     })
@@ -67,7 +87,6 @@ export async function authMiddleware(c: Context, next: Next) {
       })
     }
   } catch (error) {
-    // Session fetch failed - treat as unauthenticated
     console.warn("[authMiddleware] Failed to get session:", error)
     c.set("auth", {
       isAuthenticated: false,
@@ -87,10 +106,29 @@ export async function authMiddleware(c: Context, next: Next) {
  * app.use('/api/*', requireAuth)
  * ```
  */
+const PUBLIC_PREFIXES = [
+  '/api/auth/',
+  '/api/health',
+  '/api/version',
+  '/api/config',
+  '/api/webhooks/',
+  '/api/integrations/',
+  '/api/invite-links/',
+  '/api/internal/',
+  '/api/local/',
+  '/api/ai/',
+  '/api/tools/',
+  '/api/api-keys/validate',
+]
+
 export async function requireAuth(c: Context, next: Next) {
   const auth = c.get("auth")
 
   if (!auth?.isAuthenticated || !auth.userId) {
+    const path = new URL(c.req.url).pathname
+    if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
+      return next()
+    }
     return c.json(
       { error: { code: "unauthorized", message: "Authentication required" } },
       401

@@ -51,7 +51,7 @@ import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
 import { evalOutputRoutes } from './routes/eval-outputs'
-import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
+import { apiKeyRoutes } from './routes/api-keys'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -809,27 +809,6 @@ function isAllowedUnauthWebchatProxyPath(path: string): boolean {
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
 
-// API key auth fallback — allows shogo_sk_* keys to authenticate requests
-// (used by local instances forwarding integrations/tools requests to cloud).
-app.use('/api/integrations/*', async (c, next) => {
-  const existingAuth = c.get('auth') as any
-  if (existingAuth?.userId) return next()
-  const authHeader = c.req.header('authorization')
-  console.log(`[IntegrationsAuth] path=${new URL(c.req.url).pathname} hasBearer=${!!authHeader?.startsWith('Bearer shogo_sk_')} existingUserId=${existingAuth?.userId ?? 'none'}`)
-  if (authHeader?.startsWith('Bearer shogo_sk_')) {
-    try {
-      const result = await resolveApiKey(authHeader.slice(7))
-      console.log(`[IntegrationsAuth] resolveApiKey result: ${result ? `userId=${result.userId}` : 'null'}`)
-      if (result) {
-        c.set('auth', { userId: result.userId, workspaceId: result.workspaceId, isAuthenticated: true, session: null } as any)
-      }
-    } catch (err: any) {
-      console.error(`[IntegrationsAuth] resolveApiKey error: ${err.message}`)
-    }
-  }
-  return next()
-})
-
 app.use(
   '/api/*',
   async (c, next) => {
@@ -849,7 +828,6 @@ app.use(
       '/api/api-keys/validate',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
-    // Webchat uses widget/session token auth in agent-runtime (not Shogo user sessions).
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
     return requireAuth(c, next)
   }
