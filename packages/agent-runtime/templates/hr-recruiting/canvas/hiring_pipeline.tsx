@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="👥 Hiring Pipeline" variant="h2" />
+      <DynText text="Hiring Pipeline" variant="h2" />
       <DynBadge text="Ready to set up" variant="outline" />
     </Row>
     <Grid columns={4}>
@@ -17,23 +17,23 @@ return (
       <Metric label="Offer Rate" value={data.metrics.offerRate} />
     </Grid>
     <Grid columns={5} gap="md">
-      <CanvasCard title="📩 Applied">
+      <CanvasCard title="Applied">
         <DynText text="New applicants" variant="muted" />
       </CanvasCard>
-      <CanvasCard title="📞 Screen">
+      <CanvasCard title="Screen">
         <DynText text="Phone screen" variant="muted" />
       </CanvasCard>
-      <CanvasCard title="🗣️ Interview">
+      <CanvasCard title="Interview">
         <DynText text="Interviewing" variant="muted" />
       </CanvasCard>
-      <CanvasCard title="📋 Offer">
+      <CanvasCard title="Offer">
         <DynText text="Offer sent" variant="muted" />
       </CanvasCard>
-      <CanvasCard title="🎉 Hired">
+      <CanvasCard title="Hired">
         <DynText text="Welcome!" variant="muted" />
       </CanvasCard>
     </Grid>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <DynText
         text="Tell me your open roles and I'll set up candidate tracking, interview scheduling, and hiring metrics."
         variant="muted"

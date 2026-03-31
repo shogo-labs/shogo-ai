@@ -28,7 +28,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "⚡ Daily Planner",
+          "text": "Daily Planner",
           "variant": "h2"
         },
         "date_badge": {
@@ -96,7 +96,7 @@
         "getting_started": {
           "id": "getting_started",
           "component": "Card",
-          "title": "🚀 Getting Started",
+          "title": "Getting Started",
           "child": "gs_col"
         },
         "gs_col": {
@@ -127,17 +127,17 @@
         "opt1": {
           "id": "opt1",
           "component": "Text",
-          "text": "• \"Connect my Google Calendar\" for daily schedule"
+          "text": "\"Connect my Google Calendar\" for daily schedule"
         },
         "opt2": {
           "id": "opt2",
           "component": "Text",
-          "text": "• \"Track exercise and reading habits\" for habit tracking"
+          "text": "\"Track exercise and reading habits\" for habit tracking"
         },
         "opt3": {
           "id": "opt3",
           "component": "Text",
-          "text": "• \"Remind me to...\" for reminders and tasks"
+          "text": "\"Remind me to...\" for reminders and tasks"
         }
       },
       "dataModel": {
@@ -178,7 +178,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "📓 Journal",
+          "text": "Journal",
           "variant": "h2"
         },
         "streak_badge": {

@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="📡 Topic Tracker" variant="h2" />
+      <DynText text="Topic Tracker" variant="h2" />
       <DynBadge text="No topics tracked yet" variant="outline" />
     </Row>
     <Grid columns={3}>

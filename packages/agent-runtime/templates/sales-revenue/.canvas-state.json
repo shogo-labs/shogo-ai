@@ -28,7 +28,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "🏆 Sales Pipeline",
+          "text": "Sales Pipeline",
           "variant": "h2"
         },
         "status_badge": {
@@ -98,7 +98,7 @@
         "new_col": {
           "id": "new_col",
           "component": "Card",
-          "title": "🆕 New",
+          "title": "New",
           "child": "new_ph"
         },
         "new_ph": {
@@ -110,7 +110,7 @@
         "qualified_col": {
           "id": "qualified_col",
           "component": "Card",
-          "title": "✅ Qualified",
+          "title": "Qualified",
           "child": "qual_ph"
         },
         "qual_ph": {
@@ -122,7 +122,7 @@
         "proposal_col": {
           "id": "proposal_col",
           "component": "Card",
-          "title": "📄 Proposal",
+          "title": "Proposal",
           "child": "prop_ph"
         },
         "prop_ph": {
@@ -134,7 +134,7 @@
         "negotiation_col": {
           "id": "negotiation_col",
           "component": "Card",
-          "title": "🤝 Negotiation",
+          "title": "Negotiation",
           "child": "neg_ph"
         },
         "neg_ph": {
@@ -146,7 +146,7 @@
         "closed_col": {
           "id": "closed_col",
           "component": "Card",
-          "title": "🏆 Won",
+          "title": "Won",
           "child": "won_ph"
         },
         "won_ph": {
@@ -158,7 +158,7 @@
         "getting_started": {
           "id": "getting_started",
           "component": "Card",
-          "title": "🚀 Getting Started",
+          "title": "Getting Started",
           "child": "gs_text"
         },
         "gs_text": {
@@ -206,7 +206,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "💰 Revenue Dashboard",
+          "text": "Revenue Dashboard",
           "variant": "h2"
         },
         "status_badge": {

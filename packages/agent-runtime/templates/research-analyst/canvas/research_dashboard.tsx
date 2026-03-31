@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="🔬 Research Dashboard" variant="h2" />
+      <DynText text="Research Dashboard" variant="h2" />
       <DynBadge text="Ready to research" variant="outline" />
     </Row>
     <Grid columns={3}>
@@ -17,7 +17,7 @@ return (
         variant="muted"
        />
     </CanvasCard>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <DynText
         text="I research from 5+ sources, distinguish facts from opinions, and always cite URLs. Ask anything."
         variant="muted"

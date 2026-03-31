@@ -24,7 +24,7 @@ import { api, getOnboardingMessage, type AgentTemplateSummary, type EvalOutputRu
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePostHogSafe } from '../../contexts/posthog'
-import { LayoutGrid, Download, X } from 'lucide-react-native'
+import { Download, X } from 'lucide-react-native'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
@@ -50,14 +50,14 @@ function useDarkMode() {
 }
 
 const AGENT_FILTER_TABS = [
-  { key: 'all', label: 'All Templates', icon: null as string | null },
-  { key: 'sales', label: 'Sales', icon: '🏆' },
-  { key: 'marketing', label: 'Marketing', icon: '📣' },
-  { key: 'business', label: 'Business', icon: '💼' },
-  { key: 'development', label: 'Development', icon: '🐙' },
-  { key: 'research', label: 'Research', icon: '📚' },
-  { key: 'operations', label: 'DevOps', icon: '🚨' },
-  { key: 'personal', label: 'Personal', icon: '⚡' },
+  { key: 'all', label: 'All Templates' },
+  { key: 'sales', label: 'Sales' },
+  { key: 'marketing', label: 'Marketing' },
+  { key: 'business', label: 'Business' },
+  { key: 'development', label: 'Development' },
+  { key: 'research', label: 'Research' },
+  { key: 'operations', label: 'DevOps' },
+  { key: 'personal', label: 'Personal' },
 ]
 
 // APP_MODE_DISABLED: APP_FILTER_TABS removed
@@ -269,7 +269,7 @@ export default observer(function TemplatesPage() {
                 <Pressable
                   key={tab.key}
                   onPress={() => setActiveFilter(tab.key)}
-                  className="items-center px-4 py-2.5 rounded-lg"
+                  className="px-4 py-2.5 rounded-lg"
                   style={{
                     borderBottomWidth: isActive ? 2 : 0,
                     borderBottomColor: isActive
@@ -278,19 +278,9 @@ export default observer(function TemplatesPage() {
                     marginBottom: isActive ? -2 : 0,
                   }}
                 >
-                  {tab.key === 'all' ? (
-                    <View style={{ height: 24, marginBottom: 4, justifyContent: 'center' }}>
-                      <LayoutGrid
-                        size={18}
-                        className={isActive ? 'text-foreground' : 'text-muted-foreground'}
-                      />
-                    </View>
-                  ) : (
-                    <Text style={{ fontSize: 18, height: 24, marginBottom: 4 }}>{tab.icon}</Text>
-                  )}
                   <Text
                     className={cn(
-                      'text-[12px]',
+                      'text-[13px]',
                       isActive ? 'text-foreground font-semibold' : 'text-muted-foreground',
                     )}
                   >

@@ -3,7 +3,6 @@
   "name": "Project Manager",
   "description": "Kanban board, sprint planning, standup collection, and team velocity tracking with multi-surface project dashboards.",
   "category": "development",
-  "icon": "📋",
   "tags": [
     "project",
     "kanban",

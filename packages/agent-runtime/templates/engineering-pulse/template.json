@@ -3,7 +3,6 @@
   "name": "Engineering Pulse",
   "description": "Track team velocity, code activity, and sprint progress in one place. Combines commit insights, PR monitoring, and developer activity into actionable dashboards for engineering managers.",
   "category": "development",
-  "icon": "⚙️",
   "tags": [
     "github",
     "velocity",

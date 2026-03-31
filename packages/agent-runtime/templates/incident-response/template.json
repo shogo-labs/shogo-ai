@@ -3,7 +3,6 @@
   "name": "Incident Response",
   "description": "Detect, investigate, and escalate production incidents fast. Correlates errors and deploys into a timeline and routes urgent alerts to the right people instantly.",
   "category": "operations",
-  "icon": "🚨",
   "tags": [
     "incidents",
     "on-call",

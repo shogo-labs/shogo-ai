@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="🐙 PR Queue" variant="h2" />
+      <DynText text="PR Queue" variant="h2" />
       <DynBadge text="Connect GitHub to start" variant="outline" />
     </Row>
     <Grid columns={4}>
@@ -18,7 +18,7 @@ return (
         variant="muted"
        />
     </CanvasCard>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <DynText
         text={"Say \"Connect my GitHub\" — I'll fetch your repos, triage PRs, and start auto-reviewing."}
         variant="muted"

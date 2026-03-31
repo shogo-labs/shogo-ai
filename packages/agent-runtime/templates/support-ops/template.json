@@ -3,7 +3,6 @@
   "name": "Support Operations",
   "description": "Ticket triage, incident management, SLA monitoring, email-to-Slack alerting, and escalation automation with multi-surface ops dashboards.",
   "category": "operations",
-  "icon": "🎫",
   "tags": [
     "support",
     "tickets",

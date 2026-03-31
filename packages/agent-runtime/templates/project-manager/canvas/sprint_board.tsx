@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="📋 Sprint Board" variant="h2" />
+      <DynText text="Sprint Board" variant="h2" />
       <DynBadge text="Ready to set up" variant="outline" />
     </Row>
     <Grid columns={4}>
@@ -13,17 +13,17 @@ return (
       <Metric label="Done This Sprint" value={data.metrics.done} />
     </Grid>
     <Grid columns={3} gap="md">
-      <CanvasCard title="📋 To Do">
+      <CanvasCard title="To Do">
         <DynText text="Tasks will appear here" variant="muted" />
       </CanvasCard>
-      <CanvasCard title="🔄 In Progress">
+      <CanvasCard title="In Progress">
         <DynText text="Active tasks" variant="muted" />
       </CanvasCard>
-      <CanvasCard title="✅ Done">
+      <CanvasCard title="Done">
         <DynText text="Completed tasks" variant="muted" />
       </CanvasCard>
     </Grid>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <DynText
         text={"Say \"Connect Linear\" to import tasks, or \"Create a sprint board\" to start tracking tasks directly here."}
         variant="muted"

@@ -28,7 +28,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "🎫 Ticket Queue",
+          "text": "Ticket Queue",
           "variant": "h2"
         },
         "status_badge": {
@@ -165,7 +165,7 @@
         "getting_started": {
           "id": "getting_started",
           "component": "Card",
-          "title": "🚀 Getting Started",
+          "title": "Getting Started",
           "child": "gs_text"
         },
         "gs_text": {
@@ -213,7 +213,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "🚨 Incident Tracker",
+          "text": "Incident Tracker",
           "variant": "h2"
         },
         "all_ok_badge": {

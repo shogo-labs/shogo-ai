@@ -28,7 +28,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "🔬 Research Dashboard",
+          "text": "Research Dashboard",
           "variant": "h2"
         },
         "status_badge": {
@@ -87,7 +87,7 @@
         "getting_started": {
           "id": "getting_started",
           "component": "Card",
-          "title": "🚀 Getting Started",
+          "title": "Getting Started",
           "child": "gs_text"
         },
         "gs_text": {
@@ -134,7 +134,7 @@
         "title": {
           "id": "title",
           "component": "Text",
-          "text": "📡 Topic Tracker",
+          "text": "Topic Tracker",
           "variant": "h2"
         },
         "status_badge": {

@@ -3,7 +3,6 @@
   "name": "Standup Automation",
   "description": "Eliminate manual standup overhead by auto-generating summaries from GitHub and Slack activity, and compiling team updates into a single digest.",
   "category": "operations",
-  "icon": "📋",
   "tags": [
     "standup",
     "async",

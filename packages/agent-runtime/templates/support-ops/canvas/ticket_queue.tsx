@@ -3,7 +3,7 @@
 return (
   <Column gap="lg">
     <Row align="center" justify="between">
-      <DynText text="🎫 Ticket Queue" variant="h2" />
+      <DynText text="Ticket Queue" variant="h2" />
       <DynBadge text="Connect ticketing tool" variant="outline" />
     </Row>
     <Grid columns={4}>
@@ -28,7 +28,7 @@ return (
         </Row>
       </Column>
     </CanvasCard>
-    <CanvasCard title="🚀 Getting Started">
+    <CanvasCard title="Getting Started">
       <DynText
         text={"Say \"Connect Zendesk\" or \"Connect Linear\" — I'll pull tickets, auto-triage, and build SLA tracking."}
         variant="muted"
