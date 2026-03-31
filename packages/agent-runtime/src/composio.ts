@@ -19,6 +19,10 @@ import { smartTruncateJson } from './response-transforms'
 /** Stored composio user ID for SDK auth and tool execution scoping */
 let storedComposioUserId: string | null = null
 
+/** Legacy composio user ID (shogo_{userId}_{projectId}) for backward-compatible lookups.
+ * TODO: Remove after all existing connections have been re-authenticated under the new format. */
+let storedLegacyComposioUserId: string | null = null
+
 /** Track registered proxy tool names for dedup across multiple toolkit installs */
 const registeredProxyToolNames = new Set<string>()
 
@@ -227,9 +231,10 @@ function getComposioClient(): Composio | null {
  */
 export async function initComposioSession(
   userId: string,
+  workspaceId: string,
   projectId: string,
 ): Promise<boolean> {
-  const composioUserId = `shogo_${userId}_${projectId}`
+  const composioUserId = `shogo_${userId}_${workspaceId}_${projectId}`
 
   if (storedComposioUserId === composioUserId) return true
 
@@ -250,6 +255,8 @@ export async function initComposioSession(
     await client.create(composioUserId, sessionOpts)
 
     storedComposioUserId = composioUserId
+    // TODO: Remove legacy ID tracking after migration period
+    storedLegacyComposioUserId = `shogo_${userId}_${projectId}`
     const elapsed = performance.now() - t0
     recordTiming('session init', elapsed)
     console.log(`[Composio] Session initialized for user "${composioUserId}"`)
@@ -265,6 +272,7 @@ export async function initComposioSession(
  */
 export function resetComposioSession(): void {
   storedComposioUserId = null
+  storedLegacyComposioUserId = null
   registeredProxyToolNames.clear()
   console.log('[Composio] Session reset')
 }
@@ -293,9 +301,17 @@ export function getComposio(): Composio | null {
 }
 
 /**
- * Build the composio user ID from Shogo user/project IDs.
+ * Build the composio user ID from Shogo user/workspace/project IDs.
  */
-export function buildComposioUserId(userId: string, projectId: string): string {
+export function buildComposioUserId(userId: string, workspaceId: string, projectId: string): string {
+  return `shogo_${userId}_${workspaceId}_${projectId}`
+}
+
+/**
+ * Build the legacy composio user ID format (pre-workspace era).
+ * TODO: Remove after all existing connections have been re-authenticated under the new format.
+ */
+export function buildLegacyComposioUserId(userId: string, projectId: string): string {
   return `shogo_${userId}_${projectId}`
 }
 
@@ -461,9 +477,14 @@ export async function checkComposioAuth(
   }
 
   try {
+    // TODO: Remove legacy dual-lookup after all connections migrated to new format
+    const userIds = storedLegacyComposioUserId && storedLegacyComposioUserId !== storedComposioUserId
+      ? [storedComposioUserId, storedLegacyComposioUserId]
+      : [storedComposioUserId]
+
     const t0 = performance.now()
     const accounts = await client.connectedAccounts.list({
-      userIds: [storedComposioUserId],
+      userIds,
       toolkitSlugs: [toolkitSlug],
     })
     const elapsed = performance.now() - t0
@@ -503,7 +524,10 @@ async function initiateComposioAuth(
     const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
     const session = await client.create(storedComposioUserId, sessionOpts)
 
-    const callbackBase = process.env.BETTER_AUTH_URL || process.env.API_URL || 'http://localhost:8002'
+    const isCloudProxy = !!process.env.SHOGO_API_KEY
+    const callbackBase = isCloudProxy
+      ? (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
+      : (process.env.BETTER_AUTH_URL || process.env.API_URL || 'http://localhost:8002')
     const connection = await session.authorize(toolkitSlug, {
       callbackUrl: `${callbackBase}/api/integrations/callback?toolkit=${encodeURIComponent(toolkitSlug)}&redirect=${encodeURIComponent('shogo://integrations-callback')}`,
     })

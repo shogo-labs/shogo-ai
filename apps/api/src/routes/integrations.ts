@@ -20,6 +20,82 @@
 import { Hono } from 'hono'
 import { Composio } from '@composio/core'
 
+// =============================================================================
+// Cloud forwarding for local mode with SHOGO_API_KEY
+// =============================================================================
+
+const CLOUD_SKIP_HEADERS = new Set([
+  'host', 'connection', 'keep-alive', 'transfer-encoding',
+  'te', 'trailer', 'upgrade', 'cookie',
+])
+
+function getShogoCloudUrl(): string {
+  return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
+}
+
+function shouldForwardToCloud(): boolean {
+  return !!process.env.SHOGO_API_KEY
+}
+
+async function forwardIntegrationsToCloud(
+  method: string,
+  path: string,
+  originalReq: Request,
+  body?: string | null,
+  extraHeaders?: Record<string, string>,
+): Promise<Response> {
+  const cloudUrl = getShogoCloudUrl()
+  const shogoKey = process.env.SHOGO_API_KEY!
+  const url = `${cloudUrl}/api/${path}`
+
+  const headers = new Headers()
+  originalReq.headers.forEach((value, key) => {
+    if (!CLOUD_SKIP_HEADERS.has(key.toLowerCase())) {
+      headers.set(key, value)
+    }
+  })
+  headers.set('Authorization', `Bearer ${shogoKey}`)
+  if (body) headers.set('Content-Type', 'application/json')
+  if (extraHeaders) {
+    for (const [k, v] of Object.entries(extraHeaders)) headers.set(k, v)
+  }
+
+  const upstream = await fetch(url, { method, headers, body })
+
+  const responseHeaders = new Headers()
+  upstream.headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (lower === 'content-encoding' || lower === 'transfer-encoding') return
+    responseHeaders.set(key, value)
+  })
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
+}
+
+function extractRedirectFromCallbackUrl(callbackUrl: string): string | null {
+  try {
+    const parsed = new URL(callbackUrl)
+    return parsed.searchParams.get('redirect')
+  } catch {
+    return null
+  }
+}
+
+function buildCloudCallbackUrl(redirectParam?: string | null): string {
+  const cloudUrl = getShogoCloudUrl()
+  const base = `${cloudUrl}/api/integrations/callback`
+  const redirect = redirectParam || 'shogo://integrations-callback'
+  return `${base}?redirect=${encodeURIComponent(redirect)}`
+}
+
+// =============================================================================
+// Auth config overrides
+// =============================================================================
+
 const TOOLKIT_AUTH_CONFIG_OVERRIDES: Record<string, string> = {}
 
 /**
@@ -81,8 +157,26 @@ function getComposio(): Composio | null {
   return composioClient
 }
 
-function buildComposioUserId(userId: string, projectId: string): string {
+function buildComposioUserId(userId: string, workspaceId: string, projectId: string): string {
+  return `shogo_${userId}_${workspaceId}_${projectId}`
+}
+
+/** TODO: Remove after all existing connections have been re-authenticated under the new format. */
+function buildLegacyComposioUserId(userId: string, projectId: string): string {
   return `shogo_${userId}_${projectId}`
+}
+
+async function getProjectWorkspaceId(projectId: string): Promise<string | null> {
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    return project?.workspaceId ?? null
+  } catch {
+    return null
+  }
 }
 
 export function integrationRoutes() {
@@ -91,6 +185,10 @@ export function integrationRoutes() {
   const router = new Hono()
 
   router.get('/integrations/providers', async (c) => {
+    if (shouldForwardToCloud()) {
+      return forwardIntegrationsToCloud('GET', 'integrations/providers', c.req.raw)
+    }
+
     const composio = getComposio()
     if (!composio) {
       return c.json({ ok: true, data: [], enabled: false })
@@ -112,11 +210,6 @@ export function integrationRoutes() {
   })
 
   router.post('/integrations/connect', async (c) => {
-    const composio = getComposio()
-    if (!composio) {
-      return c.json({ error: 'Composio integration not configured' }, 503)
-    }
-
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -134,6 +227,23 @@ export function integrationRoutes() {
       return c.json({ error: 'toolkit and projectId are required' }, 400)
     }
 
+    if (shouldForwardToCloud()) {
+      const redirectParam = callbackUrl ? extractRedirectFromCallbackUrl(callbackUrl) : null
+      const cloudCallbackUrl = buildCloudCallbackUrl(redirectParam)
+
+      return forwardIntegrationsToCloud(
+        'POST',
+        'integrations/connect',
+        c.req.raw,
+        JSON.stringify({ toolkit, projectId, callbackUrl: cloudCallbackUrl }),
+      )
+    }
+
+    const composio = getComposio()
+    if (!composio) {
+      return c.json({ error: 'Composio integration not configured' }, 503)
+    }
+
     if (callbackUrl) {
       try {
         const parsed = new URL(callbackUrl)
@@ -145,7 +255,8 @@ export function integrationRoutes() {
       }
     }
 
-    const composioUserId = buildComposioUserId(auth.userId, projectId)
+    const workspaceId = auth.workspaceId || await getProjectWorkspaceId(projectId) || 'default'
+    const composioUserId = buildComposioUserId(auth.userId, workspaceId, projectId)
     const authConfigOverride = TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit]
 
     try {
@@ -177,11 +288,6 @@ export function integrationRoutes() {
   // (before auth middleware) in server.ts to avoid auth blocking.
 
   router.get('/integrations/connections', async (c) => {
-    const composio = getComposio()
-    if (!composio) {
-      return c.json({ ok: true, data: [] })
-    }
-
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -192,12 +298,27 @@ export function integrationRoutes() {
       return c.json({ error: 'projectId query parameter required' }, 400)
     }
 
-    const composioUserId = buildComposioUserId(auth.userId, projectId)
+    if (shouldForwardToCloud()) {
+      return forwardIntegrationsToCloud(
+        'GET',
+        `integrations/connections?projectId=${encodeURIComponent(projectId)}`,
+        c.req.raw,
+      )
+    }
+
+    const composio = getComposio()
+    if (!composio) {
+      return c.json({ ok: true, data: [] })
+    }
+
+    const workspaceId = auth.workspaceId || await getProjectWorkspaceId(projectId) || 'default'
+    const composioUserId = buildComposioUserId(auth.userId, workspaceId, projectId)
+    // TODO: Remove legacy ID lookup after all connections migrated to new format
+    const legacyId = buildLegacyComposioUserId(auth.userId, projectId)
+    const userIds = legacyId !== composioUserId ? [composioUserId, legacyId] : [composioUserId]
 
     try {
-      const accounts = await composio.connectedAccounts.list({
-        userIds: [composioUserId],
-      })
+      const accounts = await composio.connectedAccounts.list({ userIds })
 
       const items = (accounts as any)?.items || (accounts as any)?.data || []
 
@@ -223,24 +344,26 @@ export function integrationRoutes() {
       return c.json({ ok: true, data: connections })
     } catch (err: any) {
       console.error(`[Integrations] List connections error for user ${composioUserId}:`, err.message)
-      // Return 200 with empty data so clients (SDK/mobile) don't throw on 5xx; they get [] and can show UI.
-      // Backend still logs the error. Clients that want to show "unavailable" can check for a future _meta flag.
       return c.json({ ok: true, data: [] })
     }
   })
 
   router.delete('/integrations/connections/:id', async (c) => {
-    const composio = getComposio()
-    if (!composio) {
-      return c.json({ error: 'Composio integration not configured' }, 503)
-    }
-
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
     const connectionId = c.req.param('id')
+
+    if (shouldForwardToCloud()) {
+      return forwardIntegrationsToCloud('DELETE', `integrations/connections/${connectionId}`, c.req.raw)
+    }
+
+    const composio = getComposio()
+    if (!composio) {
+      return c.json({ error: 'Composio integration not configured' }, 503)
+    }
 
     try {
       await composio.connectedAccounts.delete(connectionId)
@@ -252,11 +375,6 @@ export function integrationRoutes() {
   })
 
   router.get('/integrations/status/:toolkit', async (c) => {
-    const composio = getComposio()
-    if (!composio) {
-      return c.json({ ok: true, data: { connected: false, enabled: false } })
-    }
-
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: 'Unauthorized' }, 401)
@@ -268,12 +386,26 @@ export function integrationRoutes() {
       return c.json({ error: 'projectId query parameter required' }, 400)
     }
 
-    // Check both the authenticated user's entity and the 'default' entity.
-    // The agent runtime prefers the X-User-Id header from the chat request,
-    // falling back to process.env.USER_ID then 'default'.
+    if (shouldForwardToCloud()) {
+      return forwardIntegrationsToCloud(
+        'GET',
+        `integrations/status/${encodeURIComponent(toolkit)}?projectId=${encodeURIComponent(projectId)}`,
+        c.req.raw,
+      )
+    }
+
+    const composio = getComposio()
+    if (!composio) {
+      return c.json({ ok: true, data: { connected: false, enabled: false } })
+    }
+
+    const workspaceId = auth.workspaceId || await getProjectWorkspaceId(projectId) || 'default'
+    // TODO: Remove legacy ID lookups after all connections migrated to new format
     const candidateIds = [
-      buildComposioUserId(auth.userId, projectId),
-      buildComposioUserId('default', projectId),
+      buildComposioUserId(auth.userId, workspaceId, projectId),
+      buildComposioUserId('default', workspaceId, projectId),
+      buildLegacyComposioUserId(auth.userId, projectId),
+      buildLegacyComposioUserId('default', projectId),
     ]
     const uniqueIds = [...new Set(candidateIds)]
 
@@ -302,8 +434,6 @@ export function integrationRoutes() {
       })
     } catch (err: any) {
       console.error(`[Integrations] Status check error for ${toolkit}:`, err.message)
-      // Return 200 with connected: false so clients don't throw on 5xx; they get safe data.
-      // Backend still logs the error.
       return c.json({ ok: true, data: { connected: false, status: null, connectionId: null, enabled: true } })
     }
   })

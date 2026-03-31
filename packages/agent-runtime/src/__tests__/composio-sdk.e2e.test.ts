@@ -30,6 +30,7 @@ import {
   getComposioTimings,
   clearComposioTimings,
   buildComposioUserId,
+  buildLegacyComposioUserId,
 } from '../composio'
 import { fetchComposioToolSchemas } from '../composio-auto-bind'
 
@@ -38,6 +39,7 @@ const SKIP = !API_KEY
 const SKIP_AUTH = SKIP || process.env.COMPOSIO_TEST_AUTHENTICATED !== 'true'
 
 const TEST_USER_ID = `e2e-test-${Date.now()}`
+const TEST_WORKSPACE_ID = 'e2e-workspace'
 const TEST_PROJECT_ID = 'e2e-project'
 
 afterEach(() => {
@@ -71,19 +73,19 @@ describe('initComposioSession', () => {
   test.skipIf(SKIP)('creates session and sets initialized state', async () => {
     expect(isComposioInitialized()).toBe(false)
 
-    const result = await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    const result = await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     expect(result).toBe(true)
     expect(isComposioInitialized()).toBe(true)
   })
 
   test.skipIf(SKIP)('returns true immediately if already initialized', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
-    const result = await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
+    const result = await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     expect(result).toBe(true)
   })
 
   test.skipIf(SKIP)('records session init timing', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
 
     const timings = getComposioTimings()
     const initTiming = timings.find(t => t.operation === 'session init')
@@ -99,7 +101,7 @@ describe('initComposioSession', () => {
 
 describe('resetComposioSession', () => {
   test.skipIf(SKIP)('clears initialized state', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     expect(isComposioInitialized()).toBe(true)
 
     resetComposioSession()
@@ -136,10 +138,10 @@ describe('fetchComposioToolSchemas with timing', () => {
 
 describe('direct SDK tool execution', () => {
   test.skipIf(SKIP_AUTH)('executes GMAIL_FETCH_EMAILS and returns data', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
 
     const client = getComposio()!
-    const composioUserId = buildComposioUserId(TEST_USER_ID, TEST_PROJECT_ID)
+    const composioUserId = buildComposioUserId(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
 
     const t0 = performance.now()
     const result = await client.tools.execute('GMAIL_FETCH_EMAILS', {
@@ -171,7 +173,7 @@ describe('tool execution timing', () => {
   })
 
   test.skipIf(SKIP)('clearComposioTimings clears recorded timings', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     expect(getComposioTimings().length).toBeGreaterThan(0)
 
     clearComposioTimings()
@@ -179,7 +181,7 @@ describe('tool execution timing', () => {
   })
 
   test.skipIf(SKIP)('timings are immutable snapshots', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     const snapshot1 = getComposioTimings()
     const snapshot2 = getComposioTimings()
     expect(snapshot1).not.toBe(snapshot2)
@@ -232,7 +234,12 @@ describe('checkComposioAuth', () => {
 
 describe('error handling', () => {
   test.skipIf(SKIP)('buildComposioUserId formats correctly', () => {
-    const id = buildComposioUserId('user123', 'project456')
+    const id = buildComposioUserId('user123', 'workspace789', 'project456')
+    expect(id).toBe('shogo_user123_workspace789_project456')
+  })
+
+  test.skipIf(SKIP)('buildLegacyComposioUserId formats correctly', () => {
+    const id = buildLegacyComposioUserId('user123', 'project456')
     expect(id).toBe('shogo_user123_project456')
   })
 })

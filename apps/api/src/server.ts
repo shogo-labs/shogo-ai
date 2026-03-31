@@ -51,7 +51,7 @@ import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
 import { evalOutputRoutes } from './routes/eval-outputs'
-import { apiKeyRoutes } from './routes/api-keys'
+import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -808,6 +808,23 @@ function isAllowedUnauthWebchatProxyPath(path: string): boolean {
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
+
+// API key auth fallback — allows shogo_sk_* keys to authenticate requests
+// (used by local instances forwarding integrations/tools requests to cloud).
+app.use('/api/integrations/*', async (c, next) => {
+  if ((c.get('auth') as any)?.userId) return next()
+  const authHeader = c.req.header('authorization')
+  if (authHeader?.startsWith('Bearer shogo_sk_')) {
+    try {
+      const result = await resolveApiKey(authHeader.slice(7))
+      if (result) {
+        c.set('auth', { userId: result.userId, workspaceId: result.workspaceId, session: null } as any)
+      }
+    } catch {}
+  }
+  return next()
+})
+
 app.use(
   '/api/*',
   async (c, next) => {
