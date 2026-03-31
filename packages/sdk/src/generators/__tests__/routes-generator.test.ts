@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'bun:test'
 import { generateModelRoutes, generateModelHooks, generateRoutes, generateRoutesIndex } from '../routes-generator'
+import { generateAdminRoutes } from '../admin-routes-generator'
 import type { PrismaModel } from '../prisma-generator'
 
 // ============================================================================
@@ -459,6 +460,21 @@ describe('Routes Generator', () => {
       const code = generateRoutesIndex([mockWorkspaceModel])
 
       expect(code).toContain('export type { WorkspaceHooks } from "./workspace.hooks"')
+    })
+  })
+
+  describe('generateAdminRoutes', () => {
+    it('should include SPDX license header', () => {
+      const result = generateAdminRoutes([mockProjectModel, mockWorkspaceModel])
+
+      expect(result.code).toStartWith('// SPDX-License-Identifier: AGPL-3.0-or-later\n// Copyright (C) 2026 Shogo Technologies, Inc.\n')
+    })
+
+    it('should generate admin-routes file', () => {
+      const result = generateAdminRoutes([mockProjectModel, mockWorkspaceModel])
+
+      expect(result.fileName).toBe('admin-routes.ts')
+      expect(result.code).toContain('export function createAdminRoutes(config: AdminRoutesConfig): Hono')
     })
   })
 })
