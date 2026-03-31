@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated Workspace Routes
  *
@@ -82,25 +80,25 @@ export function createWorkspaceRoutes(): Hono {
       }
       
       let include: any = undefined
+      let orderBy: any = undefined
 
-      // Apply beforeList hook (can override where/include)
+      // Apply beforeList hook (can override where/include/orderBy)
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
-          const status = result.error?.code === 'unauthorized' ? 401
-            : result.error?.code === 'forbidden' ? 403
-            : 400
-          return c.json({ error: result.error }, status)
+          return c.json({ error: result.error }, 400)
         }
         if (result?.data) {
           where = result.data.where || where
           include = result.data.include || include
+          orderBy = result.data.orderBy || orderBy
         }
       }
 
       const items = await prisma.workspace.findMany({
         where,
         include,
+        orderBy,
         take: query.limit ? parseInt(query.limit) : undefined,
         skip: query.offset ? parseInt(query.offset) : undefined,
       })

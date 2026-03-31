@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated ChatSession Routes
  *
@@ -97,21 +95,15 @@ export function createChatSessionRoutes(): Hono {
         }
       }
 
-      const take = query.limit ? parseInt(query.limit) : undefined
-      const skip = query.offset ? parseInt(query.offset) : undefined
+      const items = await prisma.chatSession.findMany({
+        where,
+        include,
+        orderBy,
+        take: query.limit ? parseInt(query.limit) : undefined,
+        skip: query.offset ? parseInt(query.offset) : undefined,
+      })
 
-      const [items, total] = await Promise.all([
-        prisma.chatSession.findMany({
-          where,
-          include,
-          orderBy,
-          take,
-          skip,
-        }),
-        prisma.chatSession.count({ where }),
-      ])
-
-      return c.json({ ok: true, items, total, limit: take, offset: skip ?? 0 })
+      return c.json({ ok: true, items })
     } catch (error: any) {
       console.error("[ChatSession] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)

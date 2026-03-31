@@ -52,6 +52,12 @@ export function isBillingError(error: unknown): error is BillingError {
 
 /**
  * Configuration for the webhook handler
+ *
+ * Production uses `POST /api/webhooks/stripe` in server.ts with
+ * `billingService.syncFromStripe` directly. If you wire this generic handler,
+ * implement `billingStore.syncFromStripe` by delegating to the same Prisma
+ * billing service (one subscription row per workspace; upsert by `workspaceId`)
+ * so webhook behavior matches checkout and verify-checkout.
  */
 export interface StripeWebhookConfig {
   /** Billing service for signature verification and event parsing */

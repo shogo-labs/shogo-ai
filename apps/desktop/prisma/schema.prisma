@@ -379,7 +379,7 @@ model Subscription {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@index([workspaceId])
+  @@unique([workspaceId])
   @@map("subscriptions")
 }
 

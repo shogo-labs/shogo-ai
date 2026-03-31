@@ -32,7 +32,7 @@ export interface HookContext {
  */
 export interface StarredProjectHooks {
   /** Called before listing records. Can modify where/include. */
-  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>
+  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>
   /** Called before getting a single record. Can reject access. */
   beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>
   /** Called before creating a record. Can modify input or reject. */
