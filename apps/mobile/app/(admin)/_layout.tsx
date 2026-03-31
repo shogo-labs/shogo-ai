@@ -47,9 +47,6 @@ const BASE_NAV_ITEMS = [
 const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' }
 
 const LOCAL_NAV_ITEMS = [
-  { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/(admin)/users', icon: Users, label: 'Users' },
-  { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' },
@@ -310,6 +307,7 @@ function AdminLayoutInner() {
   const { width } = useWindowDimensions()
   const isWide = width >= 900
   const { isSuperAdmin, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
+  const { localMode } = usePlatformConfig()
   const infraHealth = useInfraHealth(isSuperAdmin)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -318,6 +316,15 @@ function AdminLayoutInner() {
       router.replace('/(app)')
     }
   }, [isPending, isAuthenticated, isSuperAdmin, router])
+
+  useEffect(() => {
+    if (localMode && !isPending && isSuperAdmin) {
+      const p = pathname
+      if (p === '/' || p === '' || p === '/(admin)' || p === '/index') {
+        router.replace('/(admin)/projects' as any)
+      }
+    }
+  }, [localMode, isPending, isSuperAdmin, pathname, router])
 
   useEffect(() => {
     if (isWide) setDrawerOpen(false)
