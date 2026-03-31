@@ -82,6 +82,7 @@ export function createSubscriptionRoutes(): Hono {
       }
       
       let include: any = undefined
+      let orderBy: any = undefined
 
       // Apply beforeList hook (can override where/include)
       if (hooks.beforeList) {
@@ -92,12 +93,14 @@ export function createSubscriptionRoutes(): Hono {
         if (result?.data) {
           where = result.data.where || where
           include = result.data.include || include
+          orderBy = result.data.orderBy || orderBy
         }
       }
 
       const items = await prisma.subscription.findMany({
         where,
         include,
+        orderBy,
         take: query.limit ? parseInt(query.limit) : undefined,
         skip: query.offset ? parseInt(query.offset) : undefined,
       })
