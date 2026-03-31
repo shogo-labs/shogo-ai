@@ -13,6 +13,7 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { getScalarFields, getRelationFields, toCamelCase } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 interface PrismaEnum {
   name: string
@@ -51,6 +52,7 @@ export function generateTypes(
   enums: PrismaEnum[]
 ): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Types',
     ' *',
@@ -266,6 +268,7 @@ export function generateModelTypes(model: PrismaModel, enums: PrismaEnum[] = [],
   const fileName = `${toFileName(modelName)}.types.${fileExtension}`
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ` * Auto-generated ${modelName} Types`,
     ' *',
@@ -318,6 +321,7 @@ export function generateTypesPerModel(
  */
 export function generateTypesIndex(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Types Index',
     ' *',

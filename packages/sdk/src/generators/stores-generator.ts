@@ -8,6 +8,7 @@
 
 import type { PrismaModel } from './prisma-generator'
 import { toCamelCase, getIdField } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
 // Types
@@ -78,6 +79,7 @@ export function generateModelStore(
   const endpoint = `${basePath}/${routePath}`
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ` * Auto-generated ${modelName} Store`,
     ' *',
@@ -157,6 +159,7 @@ export function generateStoresIndex(
   const basePath = config.basePath || '/api'
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Stores Index',
     ' *',
