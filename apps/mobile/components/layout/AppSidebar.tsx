@@ -11,7 +11,7 @@
  *  - Workspace switcher
  *  - Primary nav: Home + Search (Cmd+K)
  *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
- *  - RESOURCES section: Templates, Docs (external)
+ *  - RESOURCES section: Templates, Remote Control, Docs (external)
  *  - Upgrade to Pro CTA
  *  - User avatar + Sign Out
  */
@@ -67,6 +67,7 @@ import {
   Check,
   Inbox,
   Shield,
+  Key,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -1305,6 +1306,22 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               label="Templates"
               href="/(app)/templates"
               active={isRouteActive(pathname, '/(app)/templates')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+            <NavItem
+              icon={Monitor}
+              label="Remote Control"
+              href="/(app)/remote-control"
+              active={isRouteActive(pathname, '/(app)/remote-control')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+            <NavItem
+              icon={Key}
+              label="API Keys"
+              href="/(app)/api-keys"
+              active={isRouteActive(pathname, '/(app)/api-keys')}
               collapsed={collapsed}
               onNavPress={onNavPress}
             />

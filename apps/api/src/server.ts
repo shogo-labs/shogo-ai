@@ -52,6 +52,7 @@ import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
 import { evalOutputRoutes } from './routes/eval-outputs'
 import { apiKeyRoutes } from './routes/api-keys'
+import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -1210,6 +1211,12 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       process.env.SHOGO_API_KEY = body.key
       process.env.SHOGO_CLOUD_URL = cloudUrl
 
+      // (Re)start instance tunnel with the new key
+      import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
+        stopInstanceTunnel()
+        startInstanceTunnel()
+      }).catch(() => {})
+
       return c.json({ ok: true, workspace: validateData.workspace })
     } catch (err: any) {
       return c.json({ ok: false, error: `Cannot reach Shogo Cloud: ${err.message}` }, 502)
@@ -1225,6 +1232,11 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       ])
       delete process.env.SHOGO_API_KEY
       delete process.env.SHOGO_CLOUD_URL
+
+      import('./lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
+        stopInstanceTunnel()
+      }).catch(() => {})
+
       return c.json({ ok: true })
     } catch (err: any) {
       return c.json({ ok: false, error: err.message }, 500)
@@ -1240,6 +1252,10 @@ app.route('/api', evalOutputRoutes())
 
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
+
+// Remote Control — Instance registry and tunnel proxy
+app.route('/api', instanceRoutes())
+startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {
@@ -5915,13 +5931,40 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     } catch (err: any) {
       console.error('[LocalMode] Failed to auto-seed user:', err.message)
     }
+
+    // Start instance tunnel to Shogo Cloud if API key is configured
+    if (process.env.SHOGO_API_KEY) {
+      try {
+        const { startInstanceTunnel } = await import('./lib/instance-tunnel')
+        startInstanceTunnel()
+      } catch (err: any) {
+        console.error('[LocalMode] Failed to start instance tunnel (non-fatal):', err.message)
+      }
+    }
   }, 1000)
 }
 
 export default {
   port: API_PORT,
   hostname: "0.0.0.0",
-  fetch: app.fetch,
+  fetch: async (req: Request, server: any) => {
+    const url = new URL(req.url)
+    if (url.pathname === '/api/instances/ws' && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const authResult = await authenticateInstanceWs(req)
+      if (!authResult) {
+        return new Response('Unauthorized', { status: 401 })
+      }
+      const upgraded = server.upgrade(req, { data: authResult })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
+    return app.fetch(req, server)
+  },
+  websocket: {
+    open: handleInstanceWsOpen,
+    message: handleInstanceWsMessage,
+    close: handleInstanceWsClose,
+  },
   idleTimeout: 120,
 }
 
