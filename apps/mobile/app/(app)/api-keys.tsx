@@ -32,8 +32,8 @@ import {
 } from 'lucide-react-native'
 import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
+import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { createHttpClient } from '../../lib/api'
 import {
   Card,
   CardContent,
@@ -47,8 +47,9 @@ export default function ApiKeysPage() {
   const router = useRouter()
   const { user } = useAuth()
   const workspace = useActiveWorkspace()
+  const http = useDomainHttp()
 
-  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+  const platform = useMemo(() => new PlatformApi(http), [http])
 
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)
