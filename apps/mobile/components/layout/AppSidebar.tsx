@@ -929,7 +929,7 @@ function CreateWorkspaceModal({
             placeholder="Enter workspace name"
             placeholderTextColor="#9ca3af"
             className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
-            autoFocus
+            autoFocus={Platform.OS === 'web'}
             onSubmitEditing={handleSubmit}
           />
           <View className="flex-row gap-2 justify-end">
@@ -1123,11 +1123,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     () => {
       if (allWorkspaces.length >= 1) {
         router.push('/(app)/new-workspace' as any)
+        if (!isWide) onClose?.()
       } else {
         setCreateWorkspaceOpen(true)
+        if (!isWide) onClose?.()
       }
     },
-    [allWorkspaces.length, router]
+    [allWorkspaces.length, router, isWide, onClose]
   )
 
   const handleCreateWorkspaceSubmit = useCallback(
@@ -1210,7 +1212,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           workspacePlan={workspacePlan}
           allPlans={allPlans}
           showBilling={features.billing}
-          onNavigate={(href) => { router.push(href as any); onNavPress() }}
+          onNavigate={(href) => {
+            if (!isWide) onClose?.()
+            router.push(href as any)
+          }}
           onSwitchWorkspace={handleSwitchWorkspace}
           onCreateWorkspace={handleCreateWorkspace}
           localMode={localMode}
