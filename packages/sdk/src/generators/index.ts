@@ -7,6 +7,9 @@
  * Supports both web (Hono server) and Expo (HTTP API).
  */
 
+/** SPDX + copyright block prepended to all `shogo generate` TypeScript outputs */
+export { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
+
 // Main generator
 export {
   generateFromPrisma,

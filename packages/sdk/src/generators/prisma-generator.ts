@@ -23,6 +23,7 @@ import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-gene
 import { generateDocs } from './docs-generator'
 import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-generator'
 import { generateAdminRoutes } from './admin-routes-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
 // Types
@@ -476,6 +477,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
  */
 function generateHooksTemplate(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Server Function Hooks',
     ' *',
@@ -515,6 +517,7 @@ function generateHooksTemplate(models: PrismaModel[]): string {
  */
 function generateIndexFile(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Generated Shogo SDK Code',
     ' *',
@@ -543,6 +546,7 @@ function generateIndexFile(models: PrismaModel[]): string {
  */
 function generateMSTIndex(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * MST Domain Exports',
     ' *',

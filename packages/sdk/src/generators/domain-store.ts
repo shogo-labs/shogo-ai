@@ -12,12 +12,14 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField, getScalarFields, getRelationFields } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 /**
  * Generate domain store code for all models
  */
 export function generateDomainStore(models: PrismaModel[]): string {
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Domain Store',
     ' *',

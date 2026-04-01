@@ -16,6 +16,7 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField, getScalarFields, getRelationFields } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
 // Types
@@ -86,6 +87,7 @@ export function generateAdminRoutes(
   const routeModels = models.filter(m => getIdField(m))
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auto-generated Admin Routes',
     ' *',
