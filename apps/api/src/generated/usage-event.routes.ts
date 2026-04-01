@@ -97,15 +97,18 @@ export function createUsageEventRoutes(): Hono {
         }
       }
 
-      const items = await prisma.usageEvent.findMany({
-        where,
-        include,
-        orderBy,
-        take: query.limit ? parseInt(query.limit) : undefined,
-        skip: query.offset ? parseInt(query.offset) : undefined,
-      })
+      const [items, total] = await Promise.all([
+        prisma.usageEvent.findMany({
+          where,
+          include,
+          orderBy,
+          take: query.limit ? parseInt(query.limit) : undefined,
+          skip: query.offset ? parseInt(query.offset) : undefined,
+        }),
+        prisma.usageEvent.count({ where }),
+      ])
 
-      return c.json({ ok: true, items })
+      return c.json({ ok: true, items, total })
     } catch (error: any) {
       console.error("[UsageEvent] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)
