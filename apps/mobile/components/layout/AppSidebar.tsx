@@ -87,6 +87,7 @@ import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { invitationEvents } from '../../lib/invitation-events'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -1013,6 +1014,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   useEffect(() => { loadInvites() }, [loadInvites])
 
+  useEffect(() => invitationEvents.subscribe(loadInvites), [loadInvites])
+
   // Detect return from Stripe checkout: verify payment, provision subscription, reload
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return
@@ -1482,6 +1485,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                               setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
+                            invitationEvents.emit()
                             workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to reload workspaces:', e))
                             setProcessingInvite(null)
                           }}
@@ -1502,6 +1506,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                               setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
+                            invitationEvents.emit()
                             setProcessingInvite(null)
                           }}
                           className={cn('flex-1 h-8 border border-border rounded-md items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
