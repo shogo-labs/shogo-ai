@@ -18,6 +18,16 @@ export function deriveApiUrl(): string | null {
   return `http://api.${systemNs}.svc.cluster.local`
 }
 
+/**
+ * Public-facing API URL for URLs that end up in browser-facing contexts
+ * (e.g. webchat widget embed snippets). Prefers BETTER_AUTH_URL which is the
+ * publicly routable origin, falling back to deriveApiUrl() for local dev.
+ */
+export function derivePublicApiUrl(): string | null {
+  if (process.env.BETTER_AUTH_URL) return process.env.BETTER_AUTH_URL
+  return deriveApiUrl()
+}
+
 export function getInternalHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
