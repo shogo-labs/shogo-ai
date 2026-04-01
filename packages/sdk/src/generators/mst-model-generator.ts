@@ -9,6 +9,7 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField, getScalarFields, getRelationFields } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
 // Types
@@ -156,6 +157,7 @@ export function generateMSTModel(
   }
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ` * Auto-generated ${modelName} MST Model`,
     ' *',

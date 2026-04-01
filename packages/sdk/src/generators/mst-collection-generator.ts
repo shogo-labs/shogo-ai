@@ -12,6 +12,7 @@
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
 import { toCamelCase, getIdField, getRelationFields } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
 // Types
@@ -67,6 +68,7 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
   const relationFieldNames = relationFields.map(f => f.name)
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ` * Auto-generated ${modelName} Collection`,
     ' *',

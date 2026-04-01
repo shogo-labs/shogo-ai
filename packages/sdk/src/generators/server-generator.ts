@@ -11,6 +11,8 @@
  * - Exports Bun-compatible server
  */
 
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
+
 export interface ServerGeneratorConfig {
   /** Port to run server on (default: 3000) */
   port?: number
@@ -46,6 +48,7 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   } = config
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Hono Server',
     ' *',
@@ -112,6 +115,7 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
  */
 export function generateDbModule(): string {
   const lines = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Prisma Database Client',
     ' *',
@@ -148,6 +152,7 @@ export function generateDbModule(): string {
  */
 export function generateSqliteDbModule(): string {
   const lines = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Prisma Database Client (SQLite via Bun adapter)',
     ' *',

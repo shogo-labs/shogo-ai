@@ -9,6 +9,7 @@
  */
 
 import type { PrismaModel, PrismaField } from './prisma-generator'
+import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 export interface AuthStoreGeneratorOptions {
   /** The User model from Prisma schema */
@@ -61,6 +62,7 @@ export function generateAuthStore(options: AuthStoreGeneratorOptions): string {
   const userEndpoint = userModelName.toLowerCase() + 's' // e.g., 'users'
 
   const lines: string[] = [
+    GENERATED_FILE_LICENSE_HEADER,
     '/**',
     ' * Auth Store',
     ' *',
