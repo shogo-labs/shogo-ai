@@ -415,8 +415,8 @@ function transformForMST(obj: any): any {
       result[key] = new Date(value).getTime()
     }
     // For relation fields, extract only the ID (for safeReference)
-    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && (value as any).id) {
-      result[key] = (value as any).id
+    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && value.id) {
+      result[key] = value.id
     }
     // For array relation fields, extract IDs
     else if (relationFields.includes(key) && Array.isArray(value)) {
@@ -425,9 +425,9 @@ function transformForMST(obj: any): any {
     // Skip nested objects that are not relations (they might be JSON fields)
     else if (value && typeof value === "object" && !Array.isArray(value)) {
       // Only include if it has an id (likely a reference) or is a plain data object
-      if ((value as any).id && !relationFields.includes(key)) {
+      if (value.id && !relationFields.includes(key)) {
         result[key] = value // Keep as-is for JSON fields
-      } else if (!(value as any).id) {
+      } else if (!value.id) {
         result[key] = value // Keep plain objects (like metadata)
       }
       // If it has an id but is a relation field, we already handled it above

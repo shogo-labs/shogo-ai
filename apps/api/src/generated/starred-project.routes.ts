@@ -97,15 +97,18 @@ export function createStarredProjectRoutes(): Hono {
         }
       }
 
-      const items = await prisma.starredProject.findMany({
-        where,
-        include,
-        orderBy,
-        take: query.limit ? parseInt(query.limit) : undefined,
-        skip: query.offset ? parseInt(query.offset) : undefined,
-      })
+      const [items, total] = await Promise.all([
+        prisma.starredProject.findMany({
+          where,
+          include,
+          orderBy,
+          take: query.limit ? parseInt(query.limit) : undefined,
+          skip: query.offset ? parseInt(query.offset) : undefined,
+        }),
+        prisma.starredProject.count({ where }),
+      ])
 
-      return c.json({ ok: true, items })
+      return c.json({ ok: true, items, total })
     } catch (error: any) {
       console.error("[StarredProject] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)

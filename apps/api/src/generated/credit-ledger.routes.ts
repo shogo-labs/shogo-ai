@@ -97,15 +97,18 @@ export function createCreditLedgerRoutes(): Hono {
         }
       }
 
-      const items = await prisma.creditLedger.findMany({
-        where,
-        include,
-        orderBy,
-        take: query.limit ? parseInt(query.limit) : undefined,
-        skip: query.offset ? parseInt(query.offset) : undefined,
-      })
+      const [items, total] = await Promise.all([
+        prisma.creditLedger.findMany({
+          where,
+          include,
+          orderBy,
+          take: query.limit ? parseInt(query.limit) : undefined,
+          skip: query.offset ? parseInt(query.offset) : undefined,
+        }),
+        prisma.creditLedger.count({ where }),
+      ])
 
-      return c.json({ ok: true, items })
+      return c.json({ ok: true, items, total })
     } catch (error: any) {
       console.error("[CreditLedger] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)
