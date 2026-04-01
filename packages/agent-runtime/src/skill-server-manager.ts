@@ -21,7 +21,7 @@
  *   4. Gateway calls stop() on shutdown — kills the child process
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { execSync, spawn, type ChildProcess } from 'child_process'
 import { join, resolve, dirname } from 'path'
 import { existsSync, watch, mkdirSync, writeFileSync, type FSWatcher, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'

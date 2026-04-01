@@ -26,32 +26,59 @@ let child: Subprocess | null = null;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let generation = 0;
 let waitingForChange = false;
+let restarting = false;
+let restartQueued = false;
 const DEBOUNCE_MS = 300;
+const KILL_TIMEOUT_MS = 5_000;
 
-function startServer() {
-  if (child) {
-    child.kill();
-    child = null;
+async function startServer() {
+  if (restarting) {
+    restartQueued = true;
+    return;
   }
+  restarting = true;
+  restartQueued = false;
 
-  waitingForChange = false;
-  const gen = ++generation;
+  try {
+    if (child) {
+      const oldChild = child;
+      child = null;
+      oldChild.kill();
 
-  child = spawn({
-    cmd: ["bun", "run", ENTRY],
-    stdout: "inherit",
-    stderr: "inherit",
-    stdin: "inherit",
-    env: { ...process.env, PREWARM_CLAUDE_CODE: "false" },
-  });
+      const killTimeout = setTimeout(() => {
+        console.log(`[watch-api] Graceful exit timed out — sending SIGKILL`);
+        try { oldChild.kill(9); } catch {}
+      }, KILL_TIMEOUT_MS);
 
-  child.exited.then((code) => {
-    if (gen !== generation) return;
-    if (code !== 0) {
-      console.log(`[watch-api] Server exited with code ${code} — waiting for file change to restart...`);
-      waitingForChange = true;
+      await oldChild.exited;
+      clearTimeout(killTimeout);
     }
-  });
+
+    waitingForChange = false;
+    const gen = ++generation;
+
+    child = spawn({
+      cmd: ["bun", "run", ENTRY],
+      stdout: "inherit",
+      stderr: "inherit",
+      stdin: "inherit",
+      env: { ...process.env, PREWARM_CLAUDE_CODE: "false" },
+    });
+
+    child.exited.then((code) => {
+      if (gen !== generation) return;
+      if (code !== 0) {
+        console.log(`[watch-api] Server exited with code ${code} — waiting for file change to restart...`);
+        waitingForChange = true;
+      }
+    });
+  } finally {
+    restarting = false;
+    if (restartQueued) {
+      restartQueued = false;
+      startServer();
+    }
+  }
 }
 
 function shouldIgnore(filename: string | null): boolean {

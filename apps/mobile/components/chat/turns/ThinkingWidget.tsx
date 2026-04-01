@@ -14,7 +14,7 @@ import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
 
-const ANIM_DURATION = 250
+const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
 const FADE_HEIGHT = 16
 
@@ -138,7 +138,10 @@ export function ThinkingWidget({
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }}
             exit={{ opacity: 0, height: 0 }}
-            transition={{ type: "timing", duration: ANIM_DURATION, easing: "easeInOut" }}
+            transition={{
+              opacity: { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" },
+              height: { type: "spring", damping: 22, stiffness: 260, mass: 1 },
+            }}
             style={{ overflow: "hidden" }}
           >
             <View style={{ position: "relative" }}>

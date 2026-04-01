@@ -46,7 +46,19 @@ Your code is executed via \`new Function()\` — write the **body** of a functio
 
 ### Style
 
-Use Tailwind CSS classes. The canvas supports both light and dark mode automatically.
+Use Tailwind CSS classes. The canvas supports both light and dark mode automatically. Follow these critical design rules on every canvas:
+- **Always start with a header**: title (\`text-2xl font-bold tracking-tight\`) + description (\`text-sm text-muted-foreground\`)
+- **Use \`gap-6\` between major sections**, \`gap-4\` between related items — never skip gaps
+- **Wrap data sections in Cards** with both \`CardTitle\` and \`CardDescription\`
+- **Color-code trends**: green (\`text-emerald-600\`) for positive, red (\`text-red-600\`) for negative
+- **Use Badges** for all status/category values — never display raw status text
+- **Add hover states** on table rows: \`hover:bg-muted/50 transition-colors\`
+- **Show empty states** with an icon + message when no data is present — never render blank space
+- **Pair action buttons with icons** from lucide-react (e.g. \`Plus\`, \`Trash2\`, \`Search\`)
+- Use semantic color tokens (\`text-foreground\`, \`text-muted-foreground\`, \`bg-muted\`) for dark mode compatibility
+- **NEVER add borders** (\`border\`, \`border-t\`, \`divide-y\`, etc.) unless the user asks — use spacing and subtle backgrounds for separation instead
+
+See the **UI/UX Design Guide** section for comprehensive design patterns and anti-patterns.
 
 ### Important rules
 - Do NOT use \`export\`, \`import\`, \`const\`, \`let\`, or arrow functions — use \`var\` and \`function\` expressions for full compatibility with \`new Function()\`.
@@ -62,7 +74,6 @@ After writing or editing a \`canvas/*.ts\` file, **always** call \`read_lints\` 
 - If \`read_lints\` returns \`runtimeErrors\` — these are compile or render failures from the live canvas preview. Fix the canvas code and re-check.
 - Use \`read_lints\` after completing multi-file changes to verify all surfaces are error-free.
 - Common mistakes: referencing components or icons not in scope. All available globals are type-checked — if TypeScript reports \`Cannot find name 'X'\`, the identifier is not available in the canvas scope.
-- **Build log check**: After edits, also run \`exec({ command: 'tail -5 .build.log' })\` to check for build errors. Look for "built in" (success) or "error"/"failed" (broken). If the build failed, read the full log with \`exec({ command: 'cat .build.log' })\`, fix the issue, and re-check. Never consider a change complete until the build is confirmed clean.
 
 ### Skill Server API from exec
 - Prefer \`web\` over \`exec curl\` for skill server API calls (e.g. \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`)
@@ -274,18 +285,19 @@ User: "Show me our key metrics — 1,500 users, $45K revenue, 342 sessions"
 
 \`\`\`
 write_file({ path: "canvas/dashboard.ts", content: \`
-  var metrics = [
-    { label: 'Users', value: '1,500', trend: '+12%' },
-    { label: 'Revenue', value: '$45K', trend: '+8%' },
-    { label: 'Sessions', value: '342', trend: '+5%' },
-  ]
   return h('div', { className: 'flex flex-col gap-6 p-2' }, [
-    h('h2', { className: 'text-2xl font-semibold' }, 'Dashboard'),
-    h(Row, { gap: 'md' },
-      metrics.map(function(m, i) {
-        return h(Metric, { key: i, label: m.label, value: m.value, trend: 'up', trendValue: m.trend })
-      })
-    ),
+    h('div', { key: 'header', className: 'flex items-center justify-between' }, [
+      h('div', { key: 'left', className: 'space-y-1' }, [
+        h('h2', { key: 't', className: 'text-2xl font-bold tracking-tight' }, 'Dashboard'),
+        h('p', { key: 'd', className: 'text-sm text-muted-foreground' }, 'Key performance metrics at a glance'),
+      ]),
+      h(Badge, { key: 'badge', variant: 'outline' }, 'Live'),
+    ]),
+    h(Row, { key: 'metrics', gap: 'md' }, [
+      h(Metric, { key: 1, label: 'Users', value: '1,500', trend: 'up', trendValue: '+12%' }),
+      h(Metric, { key: 2, label: 'Revenue', value: '$45K', trend: 'up', trendValue: '+8%' }),
+      h(Metric, { key: 3, label: 'Sessions', value: '342', trend: 'up', trendValue: '+5%' }),
+    ]),
   ])
 \`})
 \`\`\`
@@ -349,46 +361,73 @@ write_file({ path: "canvas/leads.ts", content: \`
     })
   }
 
-  if (loading) return h('div', { className: 'p-4 space-y-3' }, [
-    h(Skeleton, { key: 1, className: 'h-8 w-48' }),
-    h(Skeleton, { key: 2, className: 'h-64 w-full' }),
+  if (loading) return h('div', { className: 'flex flex-col gap-6 p-2' }, [
+    h('div', { key: 'header', className: 'space-y-2' }, [
+      h(Skeleton, { key: 1, className: 'h-8 w-48' }),
+      h(Skeleton, { key: 2, className: 'h-4 w-72' }),
+    ]),
+    h(Row, { key: 'metrics', gap: 'md' }, [
+      h(Skeleton, { key: 1, className: 'h-24 flex-1 rounded-lg' }),
+      h(Skeleton, { key: 2, className: 'h-24 flex-1 rounded-lg' }),
+    ]),
+    h(Skeleton, { key: 'table', className: 'h-64 w-full rounded-lg' }),
   ])
 
+  var newCount = leads.filter(function(l) { return l.status === 'new' }).length
+
   return h('div', { className: 'flex flex-col gap-6 p-2' }, [
-    h('h2', { key: 'title', className: 'text-2xl font-semibold' }, 'Lead Tracker'),
+    h('div', { key: 'header', className: 'flex items-center justify-between' }, [
+      h('div', { key: 'left', className: 'space-y-1' }, [
+        h('h2', { key: 't', className: 'text-2xl font-bold tracking-tight' }, 'Lead Tracker'),
+        h('p', { key: 'd', className: 'text-sm text-muted-foreground' }, 'Manage and track your sales pipeline'),
+      ]),
+      h(Badge, { key: 'badge', variant: 'secondary' }, leads.length + ' total'),
+    ]),
     h(Row, { key: 'metrics', gap: 'md' }, [
       h(Metric, { key: 'total', label: 'Total Leads', value: leads.length }),
-      h(Metric, { key: 'new', label: 'New', value: leads.filter(function(l) { return l.status === 'new' }).length }),
+      h(Metric, { key: 'new', label: 'New', value: newCount, trendValue: newCount > 0 ? '+' + newCount + ' pending' : null }),
     ]),
     h(Card, { key: 'form' }, [
-      h(CardHeader, { key: 'hdr' }, h(CardTitle, {}, 'Add Lead')),
+      h(CardHeader, { key: 'hdr' }, [
+        h(CardTitle, { key: 't' }, 'Add Lead'),
+        h(CardDescription, { key: 'd' }, 'Enter contact details to add a new lead'),
+      ]),
       h(CardContent, { key: 'content' },
         h(Row, { gap: 'sm' }, [
-          h(Input, { key: 'name', value: name, onChange: function(e) { setName(e.target.value) }, placeholder: 'Name' }),
-          h(Input, { key: 'email', value: email, onChange: function(e) { setEmail(e.target.value) }, placeholder: 'Email' }),
-          h(Button, { key: 'btn', onClick: addLead }, 'Add'),
+          h(Input, { key: 'name', value: name, onChange: function(e) { setName(e.target.value) }, placeholder: 'Full name' }),
+          h(Input, { key: 'email', value: email, onChange: function(e) { setEmail(e.target.value) }, placeholder: 'Email address' }),
+          h(Button, { key: 'btn', onClick: addLead }, [h(Plus, { key: 'i', className: 'h-4 w-4 mr-2' }), 'Add']),
         ])
       ),
     ]),
     h(Card, { key: 'table' }, [
-      h(CardHeader, { key: 'hdr' }, h(CardTitle, {}, 'All Leads')),
+      h(CardHeader, { key: 'hdr' }, [
+        h(CardTitle, { key: 't' }, 'All Leads'),
+        h(CardDescription, { key: 'd' }, 'Your complete lead directory'),
+      ]),
       h(CardContent, { key: 'content' },
-        h(Table, {}, [
-          h(TableHeader, { key: 'thead' }, h(TableRow, {}, [
-            h(TableHead, { key: 'name' }, 'Name'),
-            h(TableHead, { key: 'email' }, 'Email'),
-            h(TableHead, { key: 'status' }, 'Status'),
-          ])),
-          h(TableBody, { key: 'tbody' },
-            leads.map(function(l) {
-              return h(TableRow, { key: l.id }, [
-                h(TableCell, { key: 'name' }, l.name),
-                h(TableCell, { key: 'email' }, l.email),
-                h(TableCell, { key: 'status' }, h(Badge, {}, l.status)),
-              ])
-            })
-          ),
-        ])
+        leads.length === 0
+          ? h('div', { className: 'flex flex-col items-center justify-center py-12 text-center' }, [
+              h(Users, { key: 'icon', className: 'h-12 w-12 text-muted-foreground/50 mb-4' }),
+              h('h3', { key: 't', className: 'text-lg font-semibold' }, 'No leads yet'),
+              h('p', { key: 'd', className: 'text-sm text-muted-foreground' }, 'Add your first lead above to get started.'),
+            ])
+          : h(Table, {}, [
+              h(TableHeader, { key: 'thead' }, h(TableRow, {}, [
+                h(TableHead, { key: 'name' }, 'Name'),
+                h(TableHead, { key: 'email' }, 'Email'),
+                h(TableHead, { key: 'status' }, 'Status'),
+              ])),
+              h(TableBody, { key: 'tbody' },
+                leads.map(function(l) {
+                  return h(TableRow, { key: l.id, className: 'hover:bg-muted/50 transition-colors' }, [
+                    h(TableCell, { key: 'name', className: 'font-medium' }, l.name),
+                    h(TableCell, { key: 'email', className: 'text-muted-foreground' }, l.email),
+                    h(TableCell, { key: 'status' }, h(Badge, { variant: l.status === 'new' ? 'default' : 'secondary' }, l.status)),
+                  ])
+                })
+              ),
+            ])
       ),
     ]),
   ])
@@ -440,10 +479,17 @@ User: "Build a dashboard tab and a settings tab"
 \`\`\`
 write_file({ path: "canvas/dashboard.ts", content: \`
   return h('div', { className: 'flex flex-col gap-6 p-2' }, [
-    h('h2', { key: 'title', className: 'text-2xl font-semibold' }, 'Dashboard'),
+    h('div', { key: 'header', className: 'flex items-center justify-between' }, [
+      h('div', { key: 'left', className: 'space-y-1' }, [
+        h('h2', { key: 't', className: 'text-2xl font-bold tracking-tight' }, 'Dashboard'),
+        h('p', { key: 'd', className: 'text-sm text-muted-foreground' }, 'Overview of key business metrics'),
+      ]),
+      h(Badge, { key: 'badge', variant: 'outline' }, 'This Month'),
+    ]),
     h(Row, { key: 'metrics', gap: 'md' }, [
-      h(Metric, { key: 'users', label: 'Users', value: 1200 }),
-      h(Metric, { key: 'revenue', label: 'Revenue', value: '$32K' }),
+      h(Metric, { key: 'users', label: 'Active Users', value: '1,200', trend: 'up', trendValue: '+15%' }),
+      h(Metric, { key: 'revenue', label: 'Revenue', value: '$32K', trend: 'up', trendValue: '+8.2%' }),
+      h(Metric, { key: 'conv', label: 'Conversion', value: '3.1%', trend: 'down', trendValue: '-0.4%' }),
     ]),
   ])
 \`})
@@ -452,17 +498,30 @@ write_file({ path: "canvas/settings.ts", content: \`
   var darkMode = _d[0], setDarkMode = _d[1]
   var _n = useState(true)
   var notifications = _n[0], setNotifications = _n[1]
-  return h('div', { className: 'flex flex-col gap-4 p-2' }, [
-    h('h2', { key: 'title', className: 'text-2xl font-semibold' }, 'Settings'),
+  return h('div', { className: 'flex flex-col gap-6 p-2' }, [
+    h('div', { key: 'header', className: 'space-y-1' }, [
+      h('h2', { key: 't', className: 'text-2xl font-bold tracking-tight' }, 'Settings'),
+      h('p', { key: 'd', className: 'text-sm text-muted-foreground' }, 'Manage your application preferences'),
+    ]),
     h(Card, { key: 'prefs' }, [
-      h(CardHeader, { key: 'hdr' }, h(CardTitle, {}, 'Preferences')),
+      h(CardHeader, { key: 'hdr' }, [
+        h(CardTitle, { key: 't' }, 'Preferences'),
+        h(CardDescription, { key: 'd' }, 'Configure display and notification settings'),
+      ]),
       h(CardContent, { key: 'content', className: 'flex flex-col gap-4' }, [
         h('div', { key: 'dark', className: 'flex items-center justify-between' }, [
-          h(Label, { key: 'l' }, 'Dark Mode'),
+          h('div', { key: 'info', className: 'space-y-0.5' }, [
+            h(Label, { key: 'l' }, 'Dark Mode'),
+            h('p', { key: 'd', className: 'text-xs text-muted-foreground' }, 'Toggle between light and dark theme'),
+          ]),
           h(Switch, { key: 's', checked: darkMode, onCheckedChange: setDarkMode }),
         ]),
+        h(Separator, { key: 'sep' }),
         h('div', { key: 'notif', className: 'flex items-center justify-between' }, [
-          h(Label, { key: 'l' }, 'Notifications'),
+          h('div', { key: 'info', className: 'space-y-0.5' }, [
+            h(Label, { key: 'l' }, 'Notifications'),
+            h('p', { key: 'd', className: 'text-xs text-muted-foreground' }, 'Receive alerts for important updates'),
+          ]),
           h(Switch, { key: 's', checked: notifications, onCheckedChange: setNotifications }),
         ]),
       ]),
@@ -516,7 +575,7 @@ export default function Dashboard() {
 \`\`\`
 
 ### Validation
-After writing or editing canvas files, call \`read_lints\` to check for errors (including canvas runtime errors) and fix immediately. Also run \`exec({ command: 'tail -5 .build.log' })\` to confirm the build is clean.
+After writing or editing canvas files, call \`read_lints\` to check for errors (including canvas runtime errors) and fix immediately.
 `
 
 // ---------------------------------------------------------------------------

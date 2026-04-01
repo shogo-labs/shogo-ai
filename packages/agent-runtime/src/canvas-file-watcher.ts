@@ -9,8 +9,9 @@
  *   - canvas/*.data.json       → surface data (surfaceId = filename without .data.json)
  */
 
-import { readFileSync, existsSync, readdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'fs'
 import { basename, join } from 'path'
+import { transform } from 'sucrase'
 
 const CODE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js'] as const
 
@@ -54,12 +55,44 @@ export class CanvasFileWatcher {
   private subscribers = new Set<(event: CanvasEvent) => void>()
   private workspaceDir: string
   private surfaceCode = new Map<string, string>()
+  private surfaceGoodCode = new Map<string, string>()
   private surfaceData = new Map<string, Record<string, unknown>>()
   private surfaceTitles = new Map<string, string>()
+  private cacheDir: string
 
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir
+    this.cacheDir = join(workspaceDir, '.shogo', 'canvas-cache')
     this.loadExisting()
+  }
+
+  private tryCompile(code: string): boolean {
+    try {
+      transform(code, {
+        transforms: ['typescript', 'jsx', 'imports'],
+        jsxRuntime: 'classic',
+        production: true,
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private persistGoodCode(surfaceId: string, code: string): void {
+    try {
+      mkdirSync(this.cacheDir, { recursive: true })
+      writeFileSync(join(this.cacheDir, `${surfaceId}.ts`), code, 'utf-8')
+    } catch {}
+  }
+
+  private loadCachedGoodCode(surfaceId: string): string | null {
+    try {
+      const cached = readFileSync(join(this.cacheDir, `${surfaceId}.ts`), 'utf-8')
+      return this.tryCompile(cached) ? cached : null
+    } catch {
+      return null
+    }
   }
 
   private loadExisting() {
@@ -75,6 +108,13 @@ export class CanvasFileWatcher {
           const code = readFileSync(fullPath, 'utf-8')
           this.surfaceCode.set(surfaceId, code)
           this.surfaceTitles.set(surfaceId, this.titleFromId(surfaceId))
+          if (this.tryCompile(code)) {
+            this.surfaceGoodCode.set(surfaceId, code)
+            this.persistGoodCode(surfaceId, code)
+          } else {
+            const cached = this.loadCachedGoodCode(surfaceId)
+            if (cached) this.surfaceGoodCode.set(surfaceId, cached)
+          }
         } catch {}
       } else if (file.endsWith('.data.json')) {
         const dataId = basename(file, '.data.json')
@@ -108,7 +148,11 @@ export class CanvasFileWatcher {
         this.surfaceCode.set(surfaceId, code)
         const title = this.titleFromId(surfaceId)
         this.surfaceTitles.set(surfaceId, title)
-        this.broadcast({ type: 'renderCode', surfaceId, title, code })
+        if (this.tryCompile(code)) {
+          this.surfaceGoodCode.set(surfaceId, code)
+          this.persistGoodCode(surfaceId, code)
+          this.broadcast({ type: 'renderCode', surfaceId, title, code })
+        }
       } catch {}
     }
 
@@ -134,6 +178,7 @@ export class CanvasFileWatcher {
       const surfaceId = getCodeSurfaceId(fileName)
       if (!surfaceId || isInternalFile(surfaceId)) return
       this.surfaceCode.delete(surfaceId)
+      this.surfaceGoodCode.delete(surfaceId)
       this.surfaceTitles.delete(surfaceId)
       this.broadcast({ type: 'removeSurface', surfaceId })
     }
@@ -149,7 +194,7 @@ export class CanvasFileWatcher {
    */
   getInitEvent(): CanvasEvent {
     const surfaces: CanvasEvent['surfaces'] = []
-    for (const [surfaceId, code] of this.surfaceCode) {
+    for (const [surfaceId, code] of this.surfaceGoodCode) {
       surfaces.push({
         surfaceId,
         title: this.surfaceTitles.get(surfaceId) || surfaceId,

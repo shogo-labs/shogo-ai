@@ -190,7 +190,7 @@ export function mergePolicy(
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_SECURITY_PREFERENCE: SecurityPreference = {
-  mode: 'balanced',
+  mode: 'full_autonomy',
   approvalTimeoutSeconds: 30,
 }
 

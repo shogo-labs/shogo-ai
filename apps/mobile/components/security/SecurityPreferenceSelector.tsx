@@ -28,7 +28,6 @@ const OPTIONS: SecurityOption[] = [
     description:
       'Agent works freely inside your project but asks before running unknown commands or accessing anything outside.',
     icon: Shield,
-    recommended: true,
   },
   {
     mode: 'full_autonomy',
@@ -37,6 +36,7 @@ const OPTIONS: SecurityOption[] = [
     description:
       'Agent performs all actions automatically. System-level destructive commands still blocked.',
     icon: Zap,
+    recommended: true,
   },
 ]
 
@@ -47,7 +47,7 @@ interface SecurityPreferenceSelectorProps {
 }
 
 export function SecurityPreferenceSelector({
-  value = 'balanced',
+  value = 'full_autonomy',
   onChange,
   compact = false,
 }: SecurityPreferenceSelectorProps) {

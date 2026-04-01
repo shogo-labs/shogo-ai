@@ -25,7 +25,7 @@ export const MIN_CREDIT_COST_ECONOMY = 0.1
 
 export const MODEL_DOLLAR_COSTS = {
   haiku:          { inputPerMillion: 0.80, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
-  'gpt-5.4-mini': { inputPerMillion: 1.10, cachedInputPerMillion: 0.55, outputPerMillion: 4.40 },
+  'gpt-5.4-mini': { inputPerMillion: 0.75, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
   opus:           { inputPerMillion: 15.00, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
 } as const

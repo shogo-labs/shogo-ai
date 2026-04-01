@@ -132,7 +132,7 @@ export default function OnboardingPage() {
   const [templatesLoading, setTemplatesLoading] = useState(false)
 
   // Security preference state (local mode only)
-  const [securityMode, setSecurityMode] = useState<'strict' | 'balanced' | 'full_autonomy'>('balanced')
+  const [securityMode, setSecurityMode] = useState<'strict' | 'balanced' | 'full_autonomy'>('full_autonomy')
   const [isSavingSecurity, setIsSavingSecurity] = useState(false)
 
   // Completing

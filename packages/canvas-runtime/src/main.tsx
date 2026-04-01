@@ -191,14 +191,26 @@ function CanvasApp() {
         case 'init':
           next.clear()
           for (const s of event.surfaces) {
-            next.set(s.surfaceId, s)
+            try {
+              transpile(s.code)
+              next.set(s.surfaceId, s)
+            } catch (err) {
+              reportCanvasError(s.surfaceId, 'compile', String(err))
+            }
           }
           if (event.surfaces.length > 0) {
-            setActiveId((cur) => cur || event.surfaces[0].surfaceId)
+            const validIds = Array.from(next.keys())
+            setActiveId((cur) => cur || validIds[0] || '')
           }
           break
 
         case 'renderCode': {
+          try {
+            transpile(event.code)
+          } catch (err) {
+            reportCanvasError(event.surfaceId, 'compile', String(err))
+            break
+          }
           const existing = next.get(event.surfaceId)
           next.set(event.surfaceId, {
             surfaceId: event.surfaceId,

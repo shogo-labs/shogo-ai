@@ -294,7 +294,7 @@ export function AssistantContent({
   }
 
   return (
-    <View className={cn("gap-y-1.5", className)}>
+    <View className={cn("gap-y-2", className)}>
       {groupedParts.map((part, index) => {
         if (part.type === "reasoning") {
           return (
