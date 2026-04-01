@@ -23,6 +23,8 @@ COPY packages/domain-stores/package.json ./packages/domain-stores/
 COPY packages/shared-app/package.json ./packages/shared-app/
 COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY packages/model-catalog/package.json ./packages/model-catalog/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
@@ -76,6 +78,8 @@ COPY packages/domain-stores/package.json ./packages/domain-stores/
 COPY packages/shared-app/package.json ./packages/shared-app/
 COPY packages/shared-ui/package.json ./packages/shared-ui/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY packages/model-catalog/package.json ./packages/model-catalog/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
@@ -137,6 +141,8 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
+COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
+COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog/package.json ./packages/model-catalog/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Copy prisma schema, config, and migrations for runtime migrations
