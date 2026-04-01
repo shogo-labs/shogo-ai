@@ -2301,6 +2301,7 @@ export const ChatPanel = observer(function ChatPanel({
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
+            style={Platform.OS === "web" ? { scrollbarWidth: "thin", scrollbarColor: "rgba(150,150,150,0.3) transparent" } as any : undefined}
             contentContainerClassName={cn(
               isNativePhoneLayout ? "px-2 pt-2 pb-28" : "p-2 pb-[30px]",
               "max-w-3xl w-full self-center",

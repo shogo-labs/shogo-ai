@@ -401,7 +401,7 @@ export const api = {
 
   async getSecurityPrefs(http: HttpClient) {
     const res = await http.get<SecurityPrefs>('/api/local/security-prefs')
-    return res.data ?? { mode: 'balanced' as const, approvalTimeoutSeconds: 60 }
+    return res.data ?? { mode: 'full_autonomy' as const, approvalTimeoutSeconds: 60 }
   },
 
   async saveSecurityPrefs(http: HttpClient, prefs: SecurityPrefs) {

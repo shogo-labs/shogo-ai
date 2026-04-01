@@ -5,6 +5,11 @@ const config = getDefaultConfig(__dirname)
 
 const monorepoRoot = path.resolve(__dirname, '../..')
 
+config.watchFolders = [
+  path.resolve(monorepoRoot, 'packages'),
+  path.resolve(monorepoRoot, 'node_modules'),
+]
+
 config.resolver.unstable_enablePackageExports = true
 config.resolver.useWatchman = false
 config.resolver.blockList = [

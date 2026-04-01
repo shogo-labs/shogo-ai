@@ -510,7 +510,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       const localDb = prisma as any
 
       const TIER_RANK: Record<string, number> = { strict: 0, balanced: 1, full_autonomy: 2 }
-      const DEFAULT_PREF = { mode: 'balanced', approvalTimeoutSeconds: 60 }
+      const DEFAULT_PREF = { mode: 'full_autonomy', approvalTimeoutSeconds: 60 }
 
       // Read user-level preference
       let userPref = DEFAULT_PREF

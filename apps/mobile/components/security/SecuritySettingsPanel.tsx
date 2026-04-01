@@ -22,7 +22,7 @@ export function SecuritySettingsPanel() {
     setLoading(true)
     api.getSecurityPrefs(http)
       .then(setPrefs)
-      .catch(() => setPrefs({ mode: 'balanced', approvalTimeoutSeconds: 60 }))
+      .catch(() => setPrefs({ mode: 'full_autonomy', approvalTimeoutSeconds: 60 }))
       .finally(() => setLoading(false))
   }, [http])
 
@@ -123,7 +123,7 @@ export function SecuritySettingsPanel() {
 
   const resetToDefaults = useCallback(() => {
     savePrefs({
-      mode: 'balanced',
+      mode: 'full_autonomy',
       overrides: {},
       approvalTimeoutSeconds: 60,
     })

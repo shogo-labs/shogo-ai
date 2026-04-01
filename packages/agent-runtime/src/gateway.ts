@@ -43,6 +43,7 @@ import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt
 import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES, CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
+import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager } from '@shogo/shared-runtime'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
@@ -1909,6 +1910,7 @@ When integrations are connected, use \`tool_search\` to discover available actio
         parts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
         parts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
         parts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
+        // parts.push(this.promptOverrides.get('ui_ux_design_guide') ?? UI_UX_DESIGN_GUIDE)
       } else {
         parts.push(BASIC_CANVAS_TOOLS_GUIDE)
         parts.push(BASIC_CANVAS_EXAMPLES)

@@ -1112,7 +1112,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     try {
       const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
       if (!row) {
-        return c.json({ mode: 'balanced', approvalTimeoutSeconds: 60 })
+        return c.json({ mode: 'full_autonomy', approvalTimeoutSeconds: 60 })
       }
       return c.json(JSON.parse(row.value))
     } catch (err: any) {
