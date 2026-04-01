@@ -4,9 +4,11 @@
  * useAgentUrl
  *
  * Resolves the agent runtime URL and preview URL for a project by calling
- * the sandbox/url endpoint. Returns both values separately:
- *   agentUrl  – proxied agent runtime (for chat, SSE stream, capabilities)
- *   previewUrl – Vite dev server or published app URL (for APP project iframe)
+ * the sandbox/url endpoint. Returns three values:
+ *   agentUrl      – proxied agent runtime (for chat, SSE stream, capabilities)
+ *   previewUrl    – Vite dev server or published app URL (for APP project iframe)
+ *   canvasBaseUrl – direct runtime URL for the canvas iframe; fetch('/api/...')
+ *                   resolves same-origin so no proxy rewriting is needed.
  */
 
 import { useState, useEffect, useRef } from 'react'
@@ -35,6 +37,7 @@ export function useAgentUrl(
 ) {
   const [agentUrl, setAgentUrl] = useState<string | null>(options?.localAgentUrl ?? null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [canvasBaseUrl, setCanvasBaseUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -65,6 +68,7 @@ export function useAgentUrl(
 
         let resolvedAgent = data.agentUrl || data.url || null
         let resolvedPreview = data.url || null
+        let resolvedCanvas = data.canvasBaseUrl || resolvedAgent || null
 
         if (resolvedAgent) {
           resolvedAgent = rewriteLocalhostUrl(resolvedAgent, apiBaseUrl)
@@ -72,10 +76,14 @@ export function useAgentUrl(
         if (resolvedPreview) {
           resolvedPreview = rewriteLocalhostUrl(resolvedPreview, apiBaseUrl)
         }
+        if (resolvedCanvas) {
+          resolvedCanvas = rewriteLocalhostUrl(resolvedCanvas, apiBaseUrl)
+        }
 
         if (!controller.signal.aborted) {
           setAgentUrl(resolvedAgent)
           setPreviewUrl(resolvedPreview)
+          setCanvasBaseUrl(resolvedCanvas)
           setError(null)
         }
       } catch (err: any) {
@@ -87,5 +95,5 @@ export function useAgentUrl(
     return () => { controller.abort() }
   }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials])
 
-  return { agentUrl, previewUrl, error }
+  return { agentUrl, previewUrl, canvasBaseUrl, error }
 }

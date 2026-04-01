@@ -14,6 +14,9 @@ import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasWebViewProps {
   agentUrl: string | null
+  /** Direct runtime URL for the canvas iframe. When set, the iframe loads from
+   *  here so fetch('/api/...') resolves same-origin — no proxy needed. */
+  canvasBaseUrl?: string | null
   activeSurfaceId?: string | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
 }
@@ -112,8 +115,9 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
-  const canvasUrl = agentUrl ? `${agentUrl}/canvas/` : null
+export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
+  const iframeBase = canvasBaseUrl || agentUrl
+  const canvasUrl = iframeBase ? `${iframeBase}/canvas/` : null
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
 
@@ -171,12 +175,8 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
     iframeRef.current?.contentWindow?.postMessage(msg, '*')
   }, [])
 
-  // Relay SSE events into the iframe
-  useEffect(() => {
-    return sse.subscribe((event) => {
-      sendToIframe({ type: 'canvas-event', event })
-    })
-  }, [sse, sendToIframe])
+  // Reload is handled inside the iframe itself (main.tsx listens to the SSE
+  // stream on the same origin, avoiding cross-origin issues entirely).
 
   // Send connected status
   useEffect(() => {
@@ -253,12 +253,14 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
     webViewRef.current?.postMessage(JSON.stringify(msg))
   }, [])
 
-  // Relay SSE events into the WebView
+  // Handle SSE events — reload WebView on build complete
   useEffect(() => {
     return sse.subscribe((event) => {
-      sendToWebView({ type: 'canvas-event', event })
+      if (event.type === 'reload') {
+        webViewRef.current?.reload()
+      }
     })
-  }, [sse, sendToWebView])
+  }, [sse])
 
   // Send connected status
   useEffect(() => {

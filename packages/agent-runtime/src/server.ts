@@ -2409,8 +2409,7 @@ app.get('/console-log', (c) => {
 // =============================================================================
 
 app.all('/api/*', async (c) => {
-  const pm = getPreviewManager()
-  const port = pm.apiServerPort
+  const port = agentGateway?.getSkillServerPort() ?? getPreviewManager().apiServerPort
   if (!port) return c.notFound()
 
   const url = new URL(c.req.url)
@@ -2538,16 +2537,19 @@ app.post('/agent/canvas/action', async (c) => {
   }
 })
 
-// Canvas runtime static files – allow override via env for bundled desktop builds
-const CANVAS_RUNTIME_DIST = process.env.CANVAS_RUNTIME_DIST || resolve(__dirname, '../../canvas-runtime/dist')
+// Canvas static files — serve the workspace's Vite build output (dist/)
+function getCanvasDistDir(): string {
+  return join(WORKSPACE_DIR, 'dist')
+}
 
 app.get('/canvas/*', (c) => {
+  const distDir = getCanvasDistDir()
   const urlPath = new URL(c.req.url).pathname
   const relativePath = urlPath.replace(/^\/canvas\/?/, '') || 'index.html'
   const safePath = relativePath.replace(/\.\./g, '').replace(/\/+/g, '/')
-  const filePath = join(CANVAS_RUNTIME_DIST, safePath)
+  const filePath = join(distDir, safePath)
 
-  if (!filePath.startsWith(resolve(CANVAS_RUNTIME_DIST))) {
+  if (!filePath.startsWith(resolve(distDir))) {
     return c.notFound()
   }
 
@@ -2563,7 +2565,7 @@ app.get('/canvas/*', (c) => {
   }
 
   // SPA fallback
-  const indexPath = join(CANVAS_RUNTIME_DIST, 'index.html')
+  const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
     return new Response(readFileSync(indexPath), {
       headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },

@@ -161,10 +161,10 @@ const MODEL_REGISTRY: Record<string, ModelConfig> = {
     apiModel: 'gpt-5-mini',
     displayName: 'GPT-5 Mini',
   },
-  'gpt-5-nano': {
+  'gpt-5.4-nano': {
     provider: 'openai',
-    apiModel: 'gpt-5-nano',
-    displayName: 'GPT-5 Nano',
+    apiModel: 'gpt-5.4-nano',
+    displayName: 'GPT-5.4 Nano',
   },
   'o3': {
     provider: 'openai',
@@ -315,7 +315,7 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: model, isLocal: true }
   }
   if (model === 'basic') {
-    return { resolvedModel: 'gpt-5.4-mini', isLocal: false }
+    return { resolvedModel: 'gpt-5.4-nano', isLocal: false }
   }
   if (model === 'advanced') {
     return { resolvedModel: 'claude-sonnet-4-6', isLocal: false }
@@ -1490,7 +1490,7 @@ export function aiProxyRoutes() {
             return c.json(
               {
                 error: {
-                  message: `Model '${request.model}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).`,
+                  message: `Model '${request.model}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).`,
                   type: 'billing_error',
                   code: 'model_tier_restricted',
                 },
@@ -1881,7 +1881,7 @@ export function aiProxyRoutes() {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
           if (!hasAdvanced) {
             return c.json(
-              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).` } },
+              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).` } },
               403
             )
           }

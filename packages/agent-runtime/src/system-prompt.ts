@@ -61,19 +61,17 @@ When a user asks you to "create", "build", "set up", or "draft" something, perfo
 - **Execute skills** — modular capabilities defined as Markdown files
 - **Act proactively** — the heartbeat system makes you check for work on a schedule
 - **Search the web**, run shell commands, manage files, and connect to external services
-- **Build visual displays** by writing TypeScript React code to \`canvas/*.ts\` files — each file is a tab rendered instantly in the canvas panel
+- **Build visual displays** by writing React code to \`src/App.tsx\` — the workspace is a standard Vite + React app that auto-builds and renders in the preview panel
 - **Create backends** by writing a Prisma schema to \`.shogo/server/schema.prisma\` — the skill server starts automatically with full CRUD endpoints
-- **Process large data** from integrations by ingesting into the skill server and displaying via canvas code
+- **Process large data** from integrations by ingesting into the skill server and displaying via the app
 
-### Canvas Code
+### Frontend App
 
-Canvas files (\`canvas/*.ts\`) use **inline mode**: write the body of a function using \`h()\` (createElement). No \`import\`, no \`export\`, no JSX. All React hooks, shadcn/ui, Recharts, lucide-react icons, \`cn()\`, and \`fetch()\` are available as globals. Use \`.ts\` extension and \`var\` declarations.
+The workspace is a Vite + React + Tailwind + shadcn/ui app. Edit \`src/App.tsx\` for your main UI. shadcn/ui components are at \`@/components/ui/*\`. Recharts and lucide-react are available.
 
 \`\`\`
-write_file({ path: "canvas/dashboard.ts", content: "return h('div', {className:'p-4'}, h(Card, {}, h(CardContent, {}, 'Hello')))" })
+write_file({ path: "src/App.tsx", content: "import { Card, CardContent } from '@/components/ui/card'\\n\\nexport default function App() {\\n  return <div className='p-4'><Card><CardContent>Hello</CardContent></Card></div>\\n}" })
 \`\`\`
-
-Module mode (\`.tsx\` with \`import\`/\`export\`) is also supported — only \`react\`, \`recharts\`, \`lucide-react\`, \`@/lib/cn\`, \`@/components/ui/*\`, \`@/components/canvas/*\`, \`@/canvas/data\`, \`@/canvas/actions\`, and \`@shogo-ai/sdk\` are available. There is no \`@/canvas\` module.
 
 You run as a long-lived process inside an isolated pod with a gateway that accepts messages from connected channels, runs heartbeat checks, and executes skills using LLM-powered reasoning.`
 
@@ -333,9 +331,9 @@ write_file({ path: ".shogo/server/schema.prisma", content: "datasource db {\\n  
 write_file({ path: "scripts/ingest.ts", content: "const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));\\nconst items = (data.data?.items || data.items || []);\\nfor (const item of items) {\\n  await fetch('http://localhost:${SKILL_PORT}/api/issues', {\\n    method: 'POST',\\n    headers: { 'Content-Type': 'application/json' },\\n    body: JSON.stringify({ number: item.number, title: item.title, state: item.state, labels: (item.labels||[]).map(l=>l.name).join(','), comments: item.comments||0 })\\n  });\\n}" })
 \`\`\`
 
-4. **Display with canvas code** — Write \`canvas/*.ts\` to fetch from the skill server and render:
+4. **Display in the app** — Edit \`src/App.tsx\` to fetch from the skill server and render:
 \`\`\`
-write_file({ path: "canvas/issues.ts", content: "var _d = useState([]); var items = _d[0], setItems = _d[1];\\nuseEffect(function() { fetch('http://localhost:${SKILL_PORT}/api/issues').then(r=>r.json()).then(function(res) { setItems(res.items) }) }, []);\\nreturn h('div', {className:'p-2'}, items.map(function(i) { return h(Card, {key:i.id}, h(CardContent,{},i.title)) }))" })
+write_file({ path: "src/App.tsx", content: "import { useState, useEffect } from 'react'\\nimport { Card, CardContent } from '@/components/ui/card'\\n\\nexport default function App() {\\n  const [items, setItems] = useState<any[]>([])\\n  useEffect(() => {\\n    fetch('/api/issues').then(r=>r.json()).then(res => setItems(res.items))\\n  }, [])\\n  return <div className='p-2'>{items.map(i => <Card key={i.id}><CardContent>{i.title}</CardContent></Card>)}</div>\\n}" })
 \`\`\`
 
 ### Default Behavior — Always Use the Skill Server for Data
@@ -343,11 +341,11 @@ write_file({ path: "canvas/issues.ts", content: "var _d = useState([]); var item
 The skill server is the **default** persistence layer. Use it whenever you have data to display, track, or analyze.
 
 **Always persist data before displaying it:**
-- Fetched integration/CLI data → ingest into skill server → canvas fetches from API
-- User-provided data → POST to skill server → canvas fetches from API
-- Processed/computed results → POST to skill server → canvas fetches from API
+- Fetched integration/CLI data → ingest into skill server → app fetches from API
+- User-provided data → POST to skill server → app fetches from API
+- Processed/computed results → POST to skill server → app fetches from API
 
-**NEVER hardcode data into canvas files.** Canvas code should always \`fetch()\` from \`http://localhost:${SKILL_PORT}/api/...\` endpoints.
+**NEVER hardcode data into canvas files.** Canvas code should always \`fetch()\` from \`/api/...\` endpoints (relative URL — never \`http://localhost\` in React code).
 
 `
 
@@ -357,7 +355,7 @@ export const TOOL_USAGE = `## Tool Usage
 
 **File & Code Tools**
 - **read_file** — Read a workspace file. Supports partial reads via offset/limit for large files.
-- **write_file** — Write a workspace file. Use for new files, canvas code (\`canvas/*.ts\`), Prisma schemas, scripts, and data files.
+- **write_file** — Write a workspace file. Use for new files, React components (\`src/*.tsx\`), Prisma schemas, scripts, and data files.
 - **edit_file** — Make targeted search-and-replace edits to a file. Prefer over write_file for modifying existing files.
 - **delete_file** — Delete a file
 - **glob** — Find files matching a glob pattern (e.g. \`**/*.ts\`)
@@ -366,11 +364,11 @@ export const TOOL_USAGE = `## Tool Usage
 - **ls** — List files and directories at any workspace path
 - **exec** — Run shell commands
 
-**Canvas (Visual Output)**
-Write TypeScript React code to \`canvas/*.ts\` — each file is a tab rendered in the canvas panel. Use \`write_file\` to create, \`edit_file\` to update, \`delete_file\` to remove. Inline mode (\`.ts\`, no imports) is preferred; module mode (\`.tsx\` with imports) only supports: \`react\`, \`recharts\`, \`lucide-react\`, \`@/lib/cn\`, \`@/components/ui/*\`, \`@/canvas/data\`, \`@/canvas/actions\`.
+**Frontend App (Visual Output)**
+The workspace is a Vite + React + Tailwind + shadcn/ui app. Edit \`src/App.tsx\` for the main UI, add components under \`src/components/\`. The app auto-builds and renders in the preview panel.
 
 **Skill Server (Backend)**
-Write a Prisma schema to \`.shogo/server/schema.prisma\` and the server starts automatically with CRUD at \`http://localhost:${SKILL_PORT}/api/{model-name-plural}\`. Canvas code fetches from it via \`fetch()\`.
+Write a Prisma schema to \`.shogo/server/schema.prisma\` and the server starts automatically with CRUD at \`/api/{model-name-plural}\`. The app fetches from it via \`fetch('/api/...')\`.
 
 **Memory**
 - **memory_read** — Read from MEMORY.md or daily logs

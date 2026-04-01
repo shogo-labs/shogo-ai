@@ -246,7 +246,7 @@ export default observer(function ProjectLayout() {
   }, [])
 
   // Resolve agent + preview URLs
-  const { agentUrl, previewUrl } = useAgentUrl(API_URL!, projectId, {
+  const { agentUrl, previewUrl, canvasBaseUrl } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
@@ -826,6 +826,7 @@ export default observer(function ProjectLayout() {
       onSurfaceChange={setUserSelectedSurfaceId}
       connected={connected}
       agentUrl={agentUrl}
+      canvasBaseUrl={canvasBaseUrl}
       onAction={handleCanvasAction}
       onDataChange={updateLocalData}
       authHeaders={nativeHeaders}
@@ -1135,6 +1136,7 @@ function CanvasPanel({
   onSurfaceChange,
   connected,
   agentUrl,
+  canvasBaseUrl,
   onAction,
   onDataChange,
   authHeaders,
@@ -1148,6 +1150,7 @@ function CanvasPanel({
   onSurfaceChange: (surfaceId: string) => void
   connected: boolean
   agentUrl: string | null
+  canvasBaseUrl?: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
   authHeaders?: () => Record<string, string>
@@ -1214,7 +1217,7 @@ function CanvasPanel({
     return (
       <View className="flex-1 p-2okay, t pt-0">
         <View className="flex-1 overflow-hidden rounded-2xl">
-          <CanvasWebView agentUrl={agentUrl} activeSurfaceId={activeSurfaceId} />
+          <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={canvasBaseUrl} activeSurfaceId={activeSurfaceId} />
         </View>
       </View>
     )

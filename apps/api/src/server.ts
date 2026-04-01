@@ -1841,6 +1841,13 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     // Agent URL for chat (proxied through API to avoid CORS issues)
     const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
+    // Canvas iframe loads directly from the runtime (not through the proxy)
+    // so fetch('/api/...') resolves same-origin to the skill server.
+    // In production this is the preview subdomain; locally it's the direct runtime port.
+    const canvasBaseUrl = previewMode === 'subdomain'
+      ? getPreviewUrl(projectId)
+      : `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
+
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
@@ -1867,6 +1874,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
         directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
+        ...(canvasBaseUrl && { canvasBaseUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -1892,6 +1900,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         proxyUrl: legacyProxyUrl,
         directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
+        ...(canvasBaseUrl && { canvasBaseUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
         ready: false,
@@ -1917,6 +1926,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         proxyUrl: legacyProxyUrl,
         directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
+        ...(canvasBaseUrl && { canvasBaseUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
         ready: true,
@@ -1930,6 +1940,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
           proxyUrl: legacyProxyUrl,
           directUrl: resolvedDirectUrl,
           ...(agentUrl && { agentUrl }),
+        ...(canvasBaseUrl && { canvasBaseUrl }),
           sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
           status: 'starting',
           ready: false,
@@ -2168,9 +2179,11 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
           responseHeaders.set(key, value)
         }
       })
-      responseHeaders.set('access-control-allow-origin', '*')
+      const reqOrigin = c.req.header('origin')
+      responseHeaders.set('access-control-allow-origin', reqOrigin || '*')
       responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
       responseHeaders.set('access-control-allow-headers', '*')
+      if (reqOrigin) responseHeaders.set('access-control-allow-credentials', 'true')
       responseHeaders.set('cross-origin-resource-policy', 'cross-origin')
 
       const responseContentType = response.headers.get('content-type') || ''
