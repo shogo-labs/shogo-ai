@@ -48,6 +48,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
+COPY packages/model-catalog ./packages/model-catalog
 COPY templates/runtime-template ./templates/runtime-template
 
 # Fetch external Claude Code skills from skill-registry.json
@@ -106,6 +107,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
@@ -118,7 +120,6 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
-COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog/package.json ./packages/model-catalog/
 COPY --chown=appuser:appgroup --from=builder /app/apps/api/package.json ./apps/api/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 

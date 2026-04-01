@@ -222,8 +222,10 @@ jobs:
             WEB_CHANGED=true
           fi
 
+          MODEL_CATALOG=$(has_match '^packages/model-catalog/')
+
           RUNTIME_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$RUNTIME_BASE_CHANGED" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$RUNTIME_BASE_CHANGED" = "true" ] || [ "$MODEL_CATALOG" = "true" ]; then
             RUNTIME_CHANGED=true
           fi
 
