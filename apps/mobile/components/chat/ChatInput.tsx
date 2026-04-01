@@ -721,14 +721,44 @@ export function ChatInput({
                 <Pressable
                   {...triggerProps}
                   disabled={disabled || isStreaming}
-                  className="h-7 flex-row items-center gap-1 rounded-md px-2 bg-muted/50"
+                  className={cn(
+                    "h-7 flex-row items-center gap-1 rounded-md px-2",
+                    interactionMode === "agent" && "bg-muted/50",
+                    interactionMode === "plan" &&
+                      "border border-amber-500/45 bg-amber-500/12",
+                    interactionMode === "ask" &&
+                      "border border-emerald-500/45 bg-emerald-500/12"
+                  )}
                   testID="interaction-mode-trigger"
                 >
-                  <currentInteractionConfig.Icon className="h-3 w-3 text-muted-foreground" size={12} />
-                  <Text className="text-xs text-muted-foreground">
+                  <currentInteractionConfig.Icon
+                    className={cn(
+                      "h-3 w-3",
+                      interactionMode === "agent" && "text-muted-foreground",
+                      interactionMode === "plan" && "text-amber-400",
+                      interactionMode === "ask" && "text-emerald-400"
+                    )}
+                    size={12}
+                  />
+                  <Text
+                    className={cn(
+                      "text-xs",
+                      interactionMode === "agent" && "text-muted-foreground",
+                      interactionMode === "plan" && "text-amber-400",
+                      interactionMode === "ask" && "text-emerald-400"
+                    )}
+                  >
                     {currentInteractionConfig.label}
                   </Text>
-                  <ChevronDown className="h-2.5 w-2.5 text-muted-foreground/60" size={10} />
+                  <ChevronDown
+                    className={cn(
+                      "h-2.5 w-2.5",
+                      interactionMode === "agent" && "text-muted-foreground/60",
+                      interactionMode === "plan" && "text-amber-400/80",
+                      interactionMode === "ask" && "text-emerald-400/80"
+                    )}
+                    size={10}
+                  />
                 </Pressable>
               )}
             >
@@ -746,14 +776,47 @@ export function ChatInput({
                         }}
                         className={cn(
                           "flex-row items-center gap-3 p-3 rounded-lg mb-1",
-                          isSelected && "bg-accent"
+                          isSelected &&
+                            mode.id === "agent" &&
+                            "bg-accent",
+                          isSelected &&
+                            mode.id === "plan" &&
+                            "border border-amber-500/35 bg-amber-500/12",
+                          isSelected &&
+                            mode.id === "ask" &&
+                            "border border-emerald-500/35 bg-emerald-500/12"
                         )}
                       >
                         <View className="w-8 items-center">
-                          <mode.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                          <mode.Icon
+                            className={cn(
+                              "h-3.5 w-3.5",
+                              isSelected &&
+                                mode.id === "plan" &&
+                                "text-amber-400",
+                              isSelected &&
+                                mode.id === "ask" &&
+                                "text-emerald-400",
+                              (!isSelected || mode.id === "agent") &&
+                                "text-muted-foreground"
+                            )}
+                            size={14}
+                          />
                         </View>
                         <View className="flex-1">
-                          <Text className="font-medium text-sm text-foreground">
+                          <Text
+                            className={cn(
+                              "font-medium text-sm",
+                              isSelected &&
+                                mode.id === "plan" &&
+                                "text-amber-400",
+                              isSelected &&
+                                mode.id === "ask" &&
+                                "text-emerald-400",
+                              (!isSelected || mode.id === "agent") &&
+                                "text-foreground"
+                            )}
+                          >
                             {mode.label}
                           </Text>
                           <Text className="text-xs text-muted-foreground">
