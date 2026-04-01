@@ -97,15 +97,18 @@ export function createWorkspaceRoutes(): Hono {
         }
       }
 
-      const items = await prisma.workspace.findMany({
-        where,
-        include,
-        orderBy,
-        take: query.limit ? parseInt(query.limit) : undefined,
-        skip: query.offset ? parseInt(query.offset) : undefined,
-      })
+      const [items, total] = await Promise.all([
+        prisma.workspace.findMany({
+          where,
+          include,
+          orderBy,
+          take: query.limit ? parseInt(query.limit) : undefined,
+          skip: query.offset ? parseInt(query.offset) : undefined,
+        }),
+        prisma.workspace.count({ where }),
+      ])
 
-      return c.json({ ok: true, items })
+      return c.json({ ok: true, items, total })
     } catch (error: any) {
       console.error("[Workspace] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)
