@@ -13,6 +13,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, appendFileS
 import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { encodeSecurityPolicy } from '../permission-engine'
+import { MODEL_ALIASES, inferProviderFromModel as catalogInferProvider } from '@shogo/model-catalog'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,13 +104,7 @@ export interface WorkerSetupOptions {
 // Shared constants
 // ---------------------------------------------------------------------------
 
-export const MODEL_MAP: Record<string, string> = {
-  haiku: 'claude-haiku-4-5',
-  sonnet: 'claude-sonnet-4-5',
-  opus: 'claude-opus-4-6',
-  'gpt-5.4-mini': 'gpt-5.4-mini',
-  'gpt54mini': 'gpt-5.4-mini',
-}
+export const MODEL_MAP: Record<string, string> = { ...MODEL_ALIASES }
 
 export const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   haiku: { input: 0.0000008, output: 0.000004, cacheRead: 0.00000008, cacheWrite: 0.000001 },
@@ -121,9 +116,7 @@ export const PRICING: Record<string, { input: number; output: number; cacheRead:
 
 /** Infer provider from a resolved model ID string. */
 export function inferProvider(model: string): string {
-  if (model.startsWith('claude')) return 'anthropic'
-  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) return 'openai'
-  return 'anthropic'
+  return catalogInferProvider(model, 'anthropic')
 }
 
 export const REPO_ROOT = resolve(import.meta.dir, '../../../..')

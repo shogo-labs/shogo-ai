@@ -1,0 +1,14 @@
+{
+  "name": "@shogo/model-catalog",
+  "version": "0.0.1",
+  "license": "AGPL-3.0-or-later",
+  "description": "Single source of truth for LLM model IDs, display names, providers, tiers, and aliases",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
+  }
+}
