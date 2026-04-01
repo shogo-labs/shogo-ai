@@ -70,6 +70,7 @@ import {
   UsageBreakdownSection,
 } from '../../components/analytics/SharedAnalytics'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
+import { invitationEvents } from '../../lib/invitation-events'
 import {
   Card,
   CardContent,
@@ -1013,6 +1014,8 @@ const PeopleTab = observer(function PeopleTab() {
 
   useEffect(() => { loadPeopleData() }, [loadPeopleData])
 
+  useEffect(() => invitationEvents.subscribe(loadPeopleData), [loadPeopleData])
+
   const ROLE_PRIORITY: Record<string, number> = { owner: 0, admin: 1, member: 2, viewer: 3 }
 
   const workspaceMembers = useMemo(() => {
@@ -1525,6 +1528,7 @@ const PeopleTab = observer(function PeopleTab() {
                               setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadPeopleData()
+                            invitationEvents.emit()
                             setProcessingInvite(null)
                           }}
                           className={cn('flex-1 h-10 bg-primary rounded-lg items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
@@ -1544,6 +1548,7 @@ const PeopleTab = observer(function PeopleTab() {
                               setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadPeopleData()
+                            invitationEvents.emit()
                             setProcessingInvite(null)
                           }}
                           className={cn('flex-1 h-10 border border-border rounded-lg items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
