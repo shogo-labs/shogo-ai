@@ -761,6 +761,10 @@ export default observer(function ProjectLayout() {
       pendingToolInstalls.length > 0
     )
 
+  /** Native phone + narrow layout: float only on Chat tab (not Canvas / Files / Terminal / …). Web, tablet, and wide layouts unchanged. */
+  const showIntegrationsCardUi =
+    showIntegrationsCard && (!nativePhone || isWide || activeTab === 'chat')
+
   const narrowOnCanvas = !isWide && activeTab === 'canvas'
   /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
   const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
@@ -1031,7 +1035,7 @@ export default observer(function ProjectLayout() {
           </View>
 
           {/* Floating integrations card */}
-          {showIntegrationsCard && (
+          {showIntegrationsCardUi && (
             <View
               className={cn(
                 'absolute z-30',
