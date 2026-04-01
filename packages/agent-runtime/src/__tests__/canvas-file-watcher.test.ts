@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { CanvasFileWatcher, type CanvasEvent } from '../canvas-file-watcher'
 
@@ -12,7 +12,7 @@ let nextId = 0
 
 function freshDir(): string {
   const dir = join(TMP_BASE, `w-${nextId++}-${Date.now()}`)
-  mkdirSync(join(dir, 'canvas'), { recursive: true })
+  mkdirSync(join(dir, 'src'), { recursive: true })
   return dir
 }
 
@@ -34,255 +34,130 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// Construction & loadExisting
-// ---------------------------------------------------------------------------
-
-describe('loadExisting', () => {
-  test('loads .js files from canvas/ on construction', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'dashboard.js'), 'return h("div", null, "hi")')
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const init = watcher.getInitEvent()
-
-    expect(init.type).toBe('init')
-    expect(init.surfaces).toHaveLength(1)
-    expect(init.surfaces![0].surfaceId).toBe('dashboard')
-    expect(init.surfaces![0].code).toBe('return h("div", null, "hi")')
-    expect(init.surfaces![0].title).toBe('Dashboard')
-  })
-
-  test('loads .tsx files from canvas/ on construction', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'app.tsx'), 'export default function App() { return <div>hi</div> }')
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const init = watcher.getInitEvent()
-
-    expect(init.surfaces).toHaveLength(1)
-    expect(init.surfaces![0].surfaceId).toBe('app')
-    expect(init.surfaces![0].code).toContain('export default')
-  })
-
-  test('loads .ts and .jsx files from canvas/', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'utils.ts'), 'const x = 1')
-    writeFileSync(join(tmpDir, 'canvas', 'view.jsx'), 'export default () => <div/>')
-    const watcher = new CanvasFileWatcher(tmpDir)
-
-    expect(watcher.getInitEvent().surfaces).toHaveLength(2)
-  })
-
-  test('loads .data.json files and pairs them with code surfaces', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'stats.tsx'), 'export default function Stats() { return <div/> }')
-    writeFileSync(join(tmpDir, 'canvas', 'stats.data.json'), JSON.stringify({ count: 42 }))
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const init = watcher.getInitEvent()
-
-    expect(init.surfaces).toHaveLength(1)
-    expect(init.surfaces![0].data).toEqual({ count: 42 })
-  })
-
-  test('returns empty surfaces when canvas/ does not exist', () => {
-    const emptyDir = join(TMP_BASE, 'empty-' + Date.now())
-    mkdirSync(emptyDir, { recursive: true })
-    const watcher = new CanvasFileWatcher(emptyDir)
-
-    expect(watcher.getInitEvent().surfaces).toEqual([])
-  })
-
-  test('loads multiple surfaces', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'dashboard.tsx'), 'code1')
-    writeFileSync(join(tmpDir, 'canvas', 'settings.js'), 'code2')
-    writeFileSync(join(tmpDir, 'canvas', 'todo_list.tsx'), 'code3')
-    const watcher = new CanvasFileWatcher(tmpDir)
-
-    expect(watcher.getInitEvent().surfaces).toHaveLength(3)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// titleFromId
-// ---------------------------------------------------------------------------
-
-describe('titleFromId', () => {
-  test('converts underscore-separated ids to title case', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'my_dashboard.js'), 'code')
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const surface = watcher.getInitEvent().surfaces![0]
-    expect(surface.title).toBe('My Dashboard')
-  })
-
-  test('converts hyphen-separated ids to title case', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'user-profile.js'), 'code')
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const surface = watcher.getInitEvent().surfaces![0]
-    expect(surface.title).toBe('User Profile')
-  })
-
-  test('capitalizes single-word ids', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'counter.js'), 'code')
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const surface = watcher.getInitEvent().surfaces![0]
-    expect(surface.title).toBe('Counter')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// onFileChanged
+// onFileChanged — triggers rebuild for src/ files
 // ---------------------------------------------------------------------------
 
 describe('onFileChanged', () => {
-  test('emits renderCode for canvas/*.js', () => {
+  test('calls onRebuild for src/*.tsx', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
 
-    const absPath = join(tmpDir, 'canvas', 'todo.js')
-    writeFileSync(absPath, 'return h("div", null, "todos")')
-    watcher.onFileChanged('canvas/todo.js', absPath)
+    watcher.onFileChanged('src/App.tsx', join(tmpDir, 'src', 'App.tsx'))
 
-    expect(events).toHaveLength(1)
-    expect(events[0].type).toBe('renderCode')
-    expect(events[0].surfaceId).toBe('todo')
-    expect(events[0].title).toBe('Todo')
-    expect(events[0].code).toBe('return h("div", null, "todos")')
+    expect(rebuildCalled).toBe(true)
   })
 
-  test('emits renderCode for canvas/*.tsx', () => {
+  test('calls onRebuild for src/components/*.tsx', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
 
-    const absPath = join(tmpDir, 'canvas', 'dashboard.tsx')
-    const code = 'export default function Dashboard() { return <div>hi</div> }'
-    writeFileSync(absPath, code)
-    watcher.onFileChanged('canvas/dashboard.tsx', absPath)
+    watcher.onFileChanged('src/components/Header.tsx', join(tmpDir, 'src', 'components', 'Header.tsx'))
 
-    expect(events).toHaveLength(1)
-    expect(events[0].type).toBe('renderCode')
-    expect(events[0].surfaceId).toBe('dashboard')
-    expect(events[0].code).toBe(code)
+    expect(rebuildCalled).toBe(true)
   })
 
-  test('emits dataUpdate for canvas/*.data.json', () => {
+  test('calls onRebuild for src/*.css', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
 
-    const absPath = join(tmpDir, 'canvas', 'todo.data.json')
-    writeFileSync(absPath, JSON.stringify({ items: [1, 2, 3] }))
-    watcher.onFileChanged('canvas/todo.data.json', absPath)
+    watcher.onFileChanged('src/index.css', join(tmpDir, 'src', 'index.css'))
 
-    expect(events).toHaveLength(1)
-    expect(events[0].type).toBe('dataUpdate')
-    expect(events[0].surfaceId).toBe('todo')
-    expect(events[0].data).toEqual({ items: [1, 2, 3] })
+    expect(rebuildCalled).toBe(true)
   })
 
-  test('ignores non-canvas paths', () => {
+  test('calls onRebuild for index.html', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
 
-    watcher.onFileChanged('src/index.js', join(tmpDir, 'src', 'index.js'))
+    watcher.onFileChanged('index.html', join(tmpDir, 'index.html'))
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('calls onRebuild for vite.config.ts', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileChanged('vite.config.ts', join(tmpDir, 'vite.config.ts'))
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('ignores non-buildable paths', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
     watcher.onFileChanged('MEMORY.md', join(tmpDir, 'MEMORY.md'))
+    watcher.onFileChanged('skills/test.md', join(tmpDir, 'skills', 'test.md'))
+    watcher.onFileChanged('.shogo/server/schema.prisma', join(tmpDir, '.shogo', 'server', 'schema.prisma'))
 
-    expect(events).toHaveLength(0)
+    expect(rebuildCalled).toBe(false)
   })
 
-  test('ignores nested canvas subdirectory files', () => {
+  test('ignores non-buildable extensions under src/', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
 
-    watcher.onFileChanged('canvas/nested/deep.js', join(tmpDir, 'canvas', 'nested', 'deep.js'))
+    watcher.onFileChanged('src/data.md', join(tmpDir, 'src', 'data.md'))
 
-    expect(events).toHaveLength(0)
-  })
-
-  test('updates internal state accessible via getInitEvent', () => {
-    const watcher = new CanvasFileWatcher(tmpDir)
-
-    expect(watcher.getInitEvent().surfaces).toHaveLength(0)
-
-    const absPath = join(tmpDir, 'canvas', 'app.js')
-    writeFileSync(absPath, 'return h("span", null, "v1")')
-    watcher.onFileChanged('canvas/app.js', absPath)
-
-    const surfaces = watcher.getInitEvent().surfaces!
-    expect(surfaces).toHaveLength(1)
-    expect(surfaces[0].code).toBe('return h("span", null, "v1")')
-
-    writeFileSync(absPath, 'return h("span", null, "v2")')
-    watcher.onFileChanged('canvas/app.js', absPath)
-
-    expect(watcher.getInitEvent().surfaces![0].code).toBe('return h("span", null, "v2")')
+    expect(rebuildCalled).toBe(false)
   })
 })
 
 // ---------------------------------------------------------------------------
-// onFileDeleted
+// onFileDeleted — triggers rebuild for src/ files
 // ---------------------------------------------------------------------------
 
 describe('onFileDeleted', () => {
-  test('emits removeSurface for canvas/*.js', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'page.js'), 'code')
+  test('calls onRebuild when src/*.tsx is deleted', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileDeleted('src/App.tsx')
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('ignores non-buildable deletes', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileDeleted('MEMORY.md')
+    expect(rebuildCalled).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// broadcastReload & getInitEvent
+// ---------------------------------------------------------------------------
+
+describe('broadcastReload', () => {
+  test('broadcasts reload event to subscribers', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
     const events: CanvasEvent[] = []
     watcher.subscribe((e) => events.push(e))
 
-    watcher.onFileDeleted('canvas/page.js')
+    watcher.broadcastReload()
 
     expect(events).toHaveLength(1)
-    expect(events[0].type).toBe('removeSurface')
-    expect(events[0].surfaceId).toBe('page')
+    expect(events[0].type).toBe('reload')
   })
+})
 
-  test('emits removeSurface for canvas/*.tsx', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'app.tsx'), 'export default () => <div/>')
+describe('getInitEvent', () => {
+  test('returns init event', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
-
-    watcher.onFileDeleted('canvas/app.tsx')
-
-    expect(events).toHaveLength(1)
-    expect(events[0].type).toBe('removeSurface')
-    expect(events[0].surfaceId).toBe('app')
-  })
-
-  test('removes surface from getInitEvent after delete', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'a.tsx'), 'codeA')
-    writeFileSync(join(tmpDir, 'canvas', 'b.js'), 'codeB')
-    const watcher = new CanvasFileWatcher(tmpDir)
-
-    expect(watcher.getInitEvent().surfaces).toHaveLength(2)
-
-    watcher.onFileDeleted('canvas/a.tsx')
-
-    const surfaces = watcher.getInitEvent().surfaces!
-    expect(surfaces).toHaveLength(1)
-    expect(surfaces[0].surfaceId).toBe('b')
-  })
-
-  test('cleans up data on .data.json delete without emitting removeSurface', () => {
-    writeFileSync(join(tmpDir, 'canvas', 'dash.js'), 'code')
-    writeFileSync(join(tmpDir, 'canvas', 'dash.data.json'), '{"x":1}')
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
-
-    expect(watcher.getInitEvent().surfaces![0].data).toEqual({ x: 1 })
-
-    watcher.onFileDeleted('canvas/dash.data.json')
-
-    expect(events).toHaveLength(0)
-    expect(watcher.getInitEvent().surfaces![0].data).toEqual({})
-  })
-
-  test('ignores non-canvas deletes', () => {
-    const watcher = new CanvasFileWatcher(tmpDir)
-    const events: CanvasEvent[] = []
-    watcher.subscribe((e) => events.push(e))
-
-    watcher.onFileDeleted('src/old.js')
-    expect(events).toHaveLength(0)
+    const init = watcher.getInitEvent()
+    expect(init.type).toBe('init')
   })
 })
 
@@ -298,12 +173,11 @@ describe('subscribe/unsubscribe', () => {
     watcher.subscribe((e) => events1.push(e))
     watcher.subscribe((e) => events2.push(e))
 
-    const absPath = join(tmpDir, 'canvas', 'x.js')
-    writeFileSync(absPath, 'code')
-    watcher.onFileChanged('canvas/x.js', absPath)
+    watcher.broadcastReload()
 
     expect(events1).toHaveLength(1)
     expect(events2).toHaveLength(1)
+    expect(events1[0].type).toBe('reload')
   })
 
   test('unsubscribed listener stops receiving events', () => {
@@ -312,15 +186,12 @@ describe('subscribe/unsubscribe', () => {
     const fn = (e: CanvasEvent) => events.push(e)
     watcher.subscribe(fn)
 
-    const absPath = join(tmpDir, 'canvas', 'a.js')
-    writeFileSync(absPath, 'v1')
-    watcher.onFileChanged('canvas/a.js', absPath)
+    watcher.broadcastReload()
     expect(events).toHaveLength(1)
 
     watcher.unsubscribe(fn)
 
-    writeFileSync(absPath, 'v2')
-    watcher.onFileChanged('canvas/a.js', absPath)
+    watcher.broadcastReload()
     expect(events).toHaveLength(1)
   })
 
@@ -330,9 +201,7 @@ describe('subscribe/unsubscribe', () => {
     watcher.subscribe(() => { throw new Error('boom') })
     watcher.subscribe((e) => events.push(e))
 
-    const absPath = join(tmpDir, 'canvas', 'ok.js')
-    writeFileSync(absPath, 'code')
-    watcher.onFileChanged('canvas/ok.js', absPath)
+    watcher.broadcastReload()
 
     expect(events).toHaveLength(1)
   })

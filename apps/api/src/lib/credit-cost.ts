@@ -10,6 +10,7 @@
  * dollar cost using separate input/output token pricing per model tier.
  *
  * Model costs (per 1M tokens):
+ * - GPT-5.4-Nano: $0.20 input / $0.02 cached input / $1.25 output
  * - Haiku:       $0.80 input / $0.08 cached input / $4.00 output
  * - GPT-5.4-Mini: $1.10 input / $0.55 cached input / $4.40 output
  * - Sonnet:      $3.00 input / $0.30 cached input / $15.00 output
@@ -24,6 +25,7 @@ export const MIN_CREDIT_COST = 0.2
 export const MIN_CREDIT_COST_ECONOMY = 0.1
 
 export const MODEL_DOLLAR_COSTS = {
+  'gpt-5.4-nano': { inputPerMillion: 0.20, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
   haiku:          { inputPerMillion: 0.80, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
   'gpt-5.4-mini': { inputPerMillion: 0.75, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
@@ -35,6 +37,7 @@ export type AgentMode = 'basic' | 'advanced'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 
 const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
+  'gpt-5.4-nano': 'economy',
   haiku:          'economy',
   'gpt-5.4-mini': 'economy',
   sonnet:         'standard',
@@ -71,7 +74,7 @@ const MODEL_TIER_MAP: Record<string, ModelTier> = {
   'gpt-4.1': 'standard',
   'gpt-4o': 'standard',
   'gpt-4-turbo': 'standard',
-  'gpt-5-nano': 'economy',
+  'gpt-5.4-nano': 'economy',
   'gpt-4o-mini': 'economy',
   'o1-mini': 'economy',
   'o3-mini': 'economy',
@@ -93,7 +96,7 @@ export function getModelTier(model: string): ModelTier {
  * Map agent mode to model name for credit calculation.
  */
 export function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return 'gpt-5.4-mini'
+  if (agentMode === 'basic') return 'gpt-5.4-nano'
   return 'sonnet'
 }
 
@@ -102,6 +105,7 @@ export function agentModeToModel(agentMode?: AgentMode): ModelName {
  */
 export function proxyModelToBillingModel(proxyModel: string): ModelName {
   const lower = proxyModel.toLowerCase()
+  if (lower === 'gpt-5.4-nano') return 'gpt-5.4-nano'
   if (lower === 'gpt-5.4-mini') return 'gpt-5.4-mini'
   if (lower.includes('opus') || lower === 'gpt-5.4' || lower === 'o3') return 'opus'
   if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'haiku'

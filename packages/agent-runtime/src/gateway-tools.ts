@@ -68,7 +68,7 @@ export interface ToolContext {
   codeIndexEngine?: CodeIndexEngine
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
-  /** Canvas v2 file watcher — notified when canvas/*.{ts,js} files are written/edited/deleted */
+  /** File watcher — notified when src/ files are written/edited/deleted to trigger rebuilds */
   canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
   permissionEngine?: PermissionEngine
@@ -260,7 +260,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
     description: 'Create a NEW file in the agent workspace. Creates parent directories as needed. ' +
-      'WARNING: Do NOT use write_file to modify existing files (especially canvas/*.ts) — use edit_file instead. ' +
+      'WARNING: Do NOT use write_file to modify existing files — use edit_file instead. ' +
       'write_file overwrites the entire file which risks losing code. Only use for creating brand-new files.',
     label: 'Write File',
     parameters: Type.Object({
@@ -4873,7 +4873,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       'Omit path to check all open files.',
     label: 'Read Lints',
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: 'File to check (e.g. canvas/dashboard.ts or scripts/main.py). Omit to check all tracked files.' })),
+      path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Omit to check all tracked files.' })),
     }),
     execute: async (_toolCallId, params) => {
       const lsp = ctx.lspManager
@@ -4893,36 +4893,8 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}`
         : undefined
 
-      // Wait for LSP diagnostics to stabilize. The LSP lazily loads
-      // canvas-globals.d.ts (420KB) so early reads may show false
-      // "Cannot find name" errors for known canvas globals.
-      const CANVAS_GLOBALS = new Set(['useState', 'useEffect', 'useMemo', 'useCallback', 'useRef', 'useReducer', 'h', 'Fragment'])
-      let allDiags: Map<string, any[]>
-
       await new Promise(resolve => setTimeout(resolve, 1500))
-      allDiags = await lsp.getDiagnosticsAsync(targetUri)
-
-      const hasDiagsForTarget = targetUri ? allDiags.has(targetUri) : allDiags.size > 0
-      if (hasDiagsForTarget) {
-        const hasGlobalErrors = [...allDiags.values()].some(diags =>
-          diags.some((d: any) =>
-            d.severity === 1 && CANVAS_GLOBALS.has((d.message.match(/^Cannot find name '(\w+)'\.$/) ?? [])[1]),
-          ),
-        )
-        if (hasGlobalErrors) {
-          const retryDelays = [1500, 2000, 3000, 5000]
-          for (const delay of retryDelays) {
-            await new Promise(resolve => setTimeout(resolve, delay))
-            allDiags = await lsp.getDiagnosticsAsync(targetUri)
-            const stillHasErrors = [...allDiags.values()].some(diags =>
-              diags.some((d: any) =>
-                d.severity === 1 && CANVAS_GLOBALS.has((d.message.match(/^Cannot find name '(\w+)'\.$/) ?? [])[1]),
-              ),
-            )
-            if (!stillHasErrors) break
-          }
-        }
-      }
+      const allDiags = await lsp.getDiagnosticsAsync(targetUri)
 
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()

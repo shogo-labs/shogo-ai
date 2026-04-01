@@ -220,11 +220,18 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       const protocol = c.req.header('x-forwarded-proto') || 'http'
       const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
+      // The canvas iframe should load directly from the agent runtime,
+      // not through the API proxy, so fetch('/api/...') resolves same-origin.
+      const canvasBaseUrl = runtime.agentPort
+        ? `http://localhost:${runtime.agentPort}`
+        : runtime.url
+
       // Return format matching Kubernetes response for frontend compatibility
       return c.json({
         url: runtime.url,
         directUrl: runtime.url,
         agentUrl,
+        canvasBaseUrl,
         sandbox: SANDBOX_ATTRIBUTES,
         status: runtime.status,
         ready: isReady,

@@ -5,27 +5,17 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@shogo-ai/sdk": "workspace:*",
     "clsx": "^2.1.1",
-    "lucide-react": "^0.511.0",
-    "react": "19.1.0",
-    "react-dom": "19.1.0",
-    "recharts": "^2.15.3",
-    "sucrase": "^3.35.1",
     "tailwind-merge": "^3.3.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.4",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^4.5.2",
-    "tailwindcss": "^4.1.4",
-    "typescript": "^6.0.2",
-    "vite": "^6.3.5"
+    "typescript": "^6.0.2"
+  },
+  "peerDependencies": {
+    "react": ">=18"
   }
 }

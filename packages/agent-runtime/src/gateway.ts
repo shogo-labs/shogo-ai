@@ -19,7 +19,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
@@ -38,10 +38,10 @@ import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
-import { CanvasCodeStreamParser } from './canvas-code-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
 import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES, CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
+import { CanvasBuildManager } from './canvas-build-manager'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -98,7 +98,7 @@ function inferProviderFromModel(modelId: string, configProvider: string): string
  * (e.g. openai-responses vs openai-completions).
  */
 function resolveModelAlias(modelId: string): string {
-  if (modelId === 'basic') return 'gpt-5.4-mini'
+  if (modelId === 'basic') return 'gpt-5.4-nano'
   if (modelId === 'advanced') return 'claude-sonnet-4-6'
   return modelId
 }
@@ -292,6 +292,8 @@ export class AgentGateway {
   private get canvasFileWatcher(): CanvasFileWatcher {
     return CanvasFileWatcher.getInstance(this.workspaceDir)
   }
+  /** Canvas build manager — runs per-workspace Vite builds */
+  private canvasBuildManager: CanvasBuildManager | null = null
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -607,6 +609,19 @@ export class AgentGateway {
       })
     }
 
+    // Start canvas build manager for Vite builds (fire-and-forget)
+    if (this.config.canvasMode === 'code') {
+      const watcher = this.canvasFileWatcher
+      this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
+        onBuildComplete: () => watcher.broadcastReload(),
+        onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
+      })
+      watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
+      this.canvasBuildManager.start().catch(err => {
+        console.warn(`${this.logPrefix} Canvas build manager startup failed (non-fatal):`, err.message)
+      })
+    }
+
     // Pre-warm code index for workspace-wide semantic search (fire-and-forget)
     try {
       const { CodeIndexEngine } = require('./code-index-engine')
@@ -649,6 +664,7 @@ export class AgentGateway {
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
     await this.skillServerManager.stop()
+    this.canvasBuildManager?.stop()
     await this.mcpClientManager.stopAll()
 
     for (const [name, adapter] of this.channels) {
@@ -1418,7 +1434,6 @@ export class AgentGateway {
     // Canvas streaming: track active parsers and which tool calls already
     // sent their tool-input-start via the streaming path.
     const canvasParsers = new Map<string, CanvasStreamParser>()
-    const canvasCodeParsers = new Map<string, CanvasCodeStreamParser>()
     const streamedToolCalls = new Set<string>()
 
     try {
@@ -1493,23 +1508,6 @@ export class AgentGateway {
             })
             canvasParsers.set(toolCallId, parser)
           }
-          if ((toolName === 'write_file' || toolName === 'edit_file') && this.config.canvasMode === 'code') {
-            const watcher = this.canvasFileWatcher
-            const codeParser = new CanvasCodeStreamParser(
-              toolName as 'write_file' | 'edit_file',
-              {
-                onPreview: (surfaceId, code) => {
-                  const title = surfaceId.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-                  watcher.broadcast({ type: 'renderCode', surfaceId, title, code })
-                },
-                getCurrentCode: (surfaceId) => {
-                  const init = watcher.getInitEvent()
-                  return init.surfaces?.find(s => s.surfaceId === surfaceId)?.code
-                },
-              },
-            )
-            canvasCodeParsers.set(toolCallId, codeParser)
-          }
         },
         onToolCallDelta: (toolName, delta, toolCallId) => {
           if (uiWriter) {
@@ -1519,18 +1517,9 @@ export class AgentGateway {
           if (parser) {
             parser.feed(delta)
           }
-          const codeParser = canvasCodeParsers.get(toolCallId)
-          if (codeParser) {
-            codeParser.feed(delta)
-          }
         },
         onToolCallEnd: (_toolName, toolCallId) => {
           canvasParsers.delete(toolCallId)
-          const codeParser = canvasCodeParsers.get(toolCallId)
-          if (codeParser) {
-            codeParser.flush()
-            canvasCodeParsers.delete(toolCallId)
-          }
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
           if (uiWriter && uiTextId) {
@@ -1866,15 +1855,15 @@ export class AgentGateway {
     // Inject mode-specific prompt sections
     if (activeMode === 'canvas') {
       if (this.config.canvasMode === 'code') {
-        parts.push(`\n## Canvas Mode — React Code Display
+        parts.push(`\n## Canvas Mode — React App
 
-You are in canvas code mode. Write TypeScript React code to \`canvas/*.ts\` files using \`write_file\`, \`edit_file\`, \`delete_file\`. Each file is a separate tab rendered instantly in the canvas panel. Always use \`.ts\` extensions.
+You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. Edit \`src/App.tsx\` to build your UI and add components under \`src/components/\`. The app auto-builds and renders in the preview panel.
 
-**Your workflow in canvas code mode:**
+**Your workflow:**
 1. Understand what the user wants to display or build
 2. If the app needs persistent data, create a skill server by writing \`.shogo/server/schema.prisma\`
-3. Write canvas code that fetches from the skill server and renders the UI
-4. Use \`edit_file\` to update existing canvas files, \`delete_file\` to remove tabs
+3. Write React code in \`src/App.tsx\` (and \`src/components/\`) that fetches from the skill server
+4. Use \`edit_file\` to update existing files
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
@@ -1916,8 +1905,8 @@ When integrations are connected, use \`tool_search\` to discover available actio
         parts.push(BASIC_CANVAS_EXAMPLES)
       }
     } else {
-      // Non-canvas modes: include a brief canvas file reference so the agent
-      // knows the correct conventions if it writes to canvas/ files.
+      // Non-canvas modes: include a brief reference so the agent
+      // knows the correct conventions if it writes to src/ files.
       parts.push(CANVAS_FILE_REFERENCE)
     }
     // General coding guide (edit_file, exec safety, code quality) — always included
@@ -2275,6 +2264,10 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
   getChannel(type: string): ChannelAdapter | undefined {
     return this.channels.get(type)
+  }
+
+  getSkillServerPort(): number | null {
+    return this.skillServerManager.isRunning ? this.skillServerManager.port : null
   }
 
   getMcpClientManager(): MCPClientManager {
