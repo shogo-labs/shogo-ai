@@ -165,10 +165,10 @@ describe('Routes Generator', () => {
         expect(result!.code).toContain('skip: query.offset ? parseInt(query.offset) : undefined,')
       })
 
-      it('should return items in response', () => {
+      it('should return items and total in response', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('return c.json({ ok: true, items })')
+        expect(result!.code).toContain('return c.json({ ok: true, items, total })')
       })
 
       it('should include error handling', () => {
