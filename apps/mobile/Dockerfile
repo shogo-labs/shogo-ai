@@ -71,6 +71,7 @@ COPY packages/domain-stores ./packages/domain-stores
 COPY packages/shared-app ./packages/shared-app
 COPY packages/shared-ui ./packages/shared-ui
 COPY packages/ui-kit ./packages/ui-kit
+COPY packages/model-catalog ./packages/model-catalog
 COPY packages/sdk ./packages/sdk
 
 # Copy the mobile app source
