@@ -20,9 +20,11 @@ import {
   ActivityIndicator,
   Linking,
   Platform,
+  StyleSheet,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter, useLocalSearchParams } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
@@ -1785,6 +1787,32 @@ const PeopleTab = observer(function PeopleTab() {
   )
 })
 
+/** RN Modal on iOS needs explicit layout + `overFullScreen`; NativeWind flex inside Modal is unreliable on device. */
+const inviteMembersModalStyles = StyleSheet.create({
+  nativeOverlay: {
+    flex: 1,
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  centerRegion: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+  },
+  card: {
+    width: '100%',
+    maxWidth: 448,
+    zIndex: 10,
+    overflow: 'visible',
+  },
+  cardCompact: {
+    maxHeight: '92%',
+  },
+})
+
 function InviteMembersModal({
   visible,
   onClose,
@@ -1799,7 +1827,10 @@ function InviteMembersModal({
   actions: ReturnType<typeof useDomainActions>
 }) {
   const { width, height } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const compactInviteModal = width < SETTINGS_WIDE_BREAKPOINT
+  /** iOS: never put actions as sibling below a bounded ScrollView — RCTScrollView draws a hard edge that clips/overlaps the footer. */
+  const nativeCompactScrollMaxHeight = Math.min(height * 0.78, 560)
 
   const workspaces = useWorkspaceCollection()
   const [emailInput, setEmailInput] = useState('')
@@ -1894,7 +1925,7 @@ function InviteMembersModal({
       </View>
 
       <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
-      <View className={cn('relative', compactInviteModal ? 'mb-4' : 'mb-6')} style={{ zIndex: 50 }}>
+      <View className={cn('relative z-50', compactInviteModal ? 'mb-4' : 'mb-6')}>
         <Pressable
           onPress={() => setShowRolePicker(!showRolePicker)}
           className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
@@ -1903,7 +1934,10 @@ function InviteMembersModal({
           <ChevronDown size={14} className="text-muted-foreground" />
         </Pressable>
         {showRolePicker && (
-          <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg overflow-hidden">
+          <View className={cn(
+            'bg-background border border-border rounded-lg shadow-lg overflow-hidden',
+            Platform.OS === 'web' ? 'absolute top-11 left-0 right-0 z-50' : 'mt-1'
+          )}>
             {INVITE_ROLES.map((r) => (
               <Pressable
                 key={r.value}
@@ -1949,43 +1983,104 @@ function InviteMembersModal({
     </View>
   )
 
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
-      <Pressable
-        onPress={handleClose}
-        className={cn(
-          'flex-1 bg-black/50 justify-center',
-          compactInviteModal ? 'px-4 py-6' : 'items-center justify-center px-6'
-        )}
-      >
-        <Pressable
-          onPress={(e) => e.stopPropagation()}
-          className={cn(
-            'bg-background rounded-xl w-full max-w-md shadow-xl overflow-visible',
-            compactInviteModal ? 'p-5' : 'p-6'
-          )}
-          style={compactInviteModal ? { maxHeight: height * 0.92 } : undefined}
+  const inviteModalInner = compactInviteModal ? (
+    Platform.OS === 'web' ? (
+      <>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+          className="max-h-[420px]"
         >
-          {compactInviteModal ? (
-            <>
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-                nestedScrollEnabled
-                style={{ maxHeight: Math.min(height * 0.58, 420) }}
-              >
-                {inviteFormFields}
-              </ScrollView>
-              {inviteFormActions}
-            </>
-          ) : (
-            <>
-              {inviteFormFields}
-              {inviteFormActions}
-            </>
+          {inviteFormFields}
+        </ScrollView>
+        {inviteFormActions}
+      </>
+    ) : (
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        keyboardDismissMode="interactive"
+        style={{ maxHeight: nativeCompactScrollMaxHeight }}
+        contentContainerClassName="pb-1"
+      >
+        <View>
+          {inviteFormFields}
+          <View className="mt-5">{inviteFormActions}</View>
+        </View>
+      </ScrollView>
+    )
+  ) : (
+    <>
+      {inviteFormFields}
+      {inviteFormActions}
+    </>
+  )
+
+  const inviteCardWeb = (
+    <Pressable
+      onPress={(e) => e.stopPropagation()}
+      className={cn(
+        'bg-background rounded-xl w-full max-w-md shadow-xl overflow-visible z-10',
+        compactInviteModal ? 'p-5 max-h-[92%]' : 'p-6'
+      )}
+    >
+      {inviteModalInner}
+    </Pressable>
+  )
+
+  if (Platform.OS === 'web') {
+    return (
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+        <Pressable
+          onPress={handleClose}
+          className={cn(
+            'flex-1 bg-black/50 justify-center',
+            compactInviteModal ? 'px-4 py-6' : 'items-center justify-center px-6'
           )}
+        >
+          {inviteCardWeb}
         </Pressable>
-      </Pressable>
+      </Modal>
+    )
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      presentationStyle={Platform.OS === 'ios' ? 'overFullScreen' : undefined}
+      statusBarTranslucent
+      onRequestClose={handleClose}
+    >
+      <View style={inviteMembersModalStyles.nativeOverlay}>
+        <Pressable style={inviteMembersModalStyles.backdrop} onPress={handleClose} />
+        <View
+          style={[
+            inviteMembersModalStyles.centerRegion,
+            {
+              paddingTop: insets.top,
+              paddingBottom: insets.bottom,
+              paddingHorizontal: compactInviteModal ? 16 : 24,
+            },
+          ]}
+          pointerEvents="box-none"
+        >
+          <View
+            style={[
+              inviteMembersModalStyles.card,
+              compactInviteModal ? inviteMembersModalStyles.cardCompact : null,
+            ]}
+            className={cn(
+              'bg-background rounded-xl shadow-xl',
+              compactInviteModal ? 'p-5' : 'p-6'
+            )}
+          >
+            {inviteModalInner}
+          </View>
+        </View>
+      </View>
     </Modal>
   )
 }
