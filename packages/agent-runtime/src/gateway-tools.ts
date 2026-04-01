@@ -5004,7 +5004,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createTranscribeAudioTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
-    // createCreatePlanTool(ctx), // disabled: plan mode tool removed from agent
+    createCreatePlanTool(ctx),
   ]
 
   // Self-referencing getter for tools that need the full tool list (skill)
