@@ -866,28 +866,35 @@ export function ChatInput({
           </View>
 
           {/* Right side buttons */}
-          <View className="flex-row items-center gap-1">
-            {isStreaming ? (
+          <View className="flex-row items-center gap-2">
+            {/* Always show Stop button while streaming */}
+            {isStreaming && (
               <Pressable
                 onPress={onStop}
                 accessibilityLabel="Stop"
                 testID="stop-streaming"
-                className="h-8 w-8 rounded-full bg-destructive items-center justify-center"
+                className="h-8 w-8 rounded-full bg-destructive items-center justify-center active:opacity-70"
               >
                 <Square
-                  className="h-3.5 w-3.5 text-destructive-foreground"
-                  size={14}
+                  className="h-3 w-3 text-destructive-foreground"
+                  size={12}
                 />
               </Pressable>
-            ) : (
+            )}
+
+            {/* Show Send/Queue button:
+                1. If not streaming (normal behavior)
+                2. If streaming AND there is text/files to queue
+            */}
+            {(!isStreaming || (inputValue.trim() || pendingFiles.length > 0)) && (
               <Pressable
                 onPress={handleSubmit}
-                disabled={disabled || isProcessingFiles}
+                disabled={disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)}
                 accessibilityRole="button"
-                accessibilityLabel="Send message"
+                accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
                 className={cn(
                   "h-8 w-8 rounded-full items-center justify-center bg-primary",
-                  (disabled || isProcessingFiles) && "opacity-50"
+                  (disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)) && "opacity-50"
                 )}
               >
                 <ArrowUp
