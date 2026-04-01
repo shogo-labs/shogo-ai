@@ -33,7 +33,7 @@ import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
-import { deriveApiUrl } from './internal-api'
+import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
 
@@ -4420,7 +4420,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
             const widgetPath = `/agent/channels/webchat/widget.js?widgetKey=${widgetKey}`
             let widgetUrl: string
             if (process.env.KUBERNETES_SERVICE_HOST) {
-              const apiUrl = deriveApiUrl()
+              const apiUrl = derivePublicApiUrl()
               widgetUrl = `${apiUrl}/api/projects/${ctx.projectId}/agent-proxy${widgetPath}`
             } else {
               widgetUrl = `http://localhost:${process.env.PORT || '8080'}${widgetPath}`
