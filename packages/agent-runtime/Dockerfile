@@ -15,44 +15,7 @@
 ARG BASE_IMAGE=shogo-runtime-base:latest
 
 # =============================================================================
-# Stage 0: canvas-build — build canvas-runtime static assets (native arch)
-# =============================================================================
-# Canvas-runtime produces platform-independent HTML/CSS/JS, so we build it
-# without QEMU to avoid the massive slowdown of running Vite under emulation.
-FROM --platform=$BUILDPLATFORM oven/bun:1.3-debian AS canvas-build
-
-WORKDIR /app
-
-COPY package.json bun.lock ./
-COPY tsconfig.base.json ./
-
-COPY packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/shared-runtime/package.json ./packages/shared-runtime/
-COPY packages/domain-stores/package.json ./packages/domain-stores/
-COPY packages/shared-app/package.json ./packages/shared-app/
-COPY packages/shared-ui/package.json ./packages/shared-ui/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY apps/api/package.json ./apps/api/
-COPY apps/mobile/package.json ./apps/mobile/
-
-COPY scripts ./scripts
-COPY prisma ./prisma
-COPY prisma.config.ts ./prisma.config.ts
-COPY prisma.config.local.ts ./prisma.config.local.ts
-
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install
-
-COPY packages/sdk ./packages/sdk
-COPY packages/canvas-runtime ./packages/canvas-runtime
-
-RUN bun run --cwd packages/sdk build && \
-    bun run --cwd packages/canvas-runtime build
-
-# =============================================================================
-# Stage 1: builder — install all deps, copy source
+# Stage 0: builder — install all deps, copy source
 # =============================================================================
 FROM oven/bun:1.3-debian AS builder
 
@@ -94,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && \
 RUN rm -rf packages/*/node_modules apps/*/node_modules
 
 # =============================================================================
-# Stage 2: deps — full node_modules with workspace links
+# Stage 1: deps — full node_modules with workspace links
 # =============================================================================
 FROM oven/bun:1.3-debian AS deps
 
@@ -132,7 +95,7 @@ USER appuser
 RUN bun install
 
 # =============================================================================
-# Stage 3: production image — layer source code onto base image
+# Stage 2: production image — layer source code onto base image
 # =============================================================================
 FROM ${BASE_IMAGE}
 
@@ -141,8 +104,6 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
-COPY --chown=appuser:appgroup --from=canvas-build /app/packages/canvas-runtime/dist ./packages/canvas-runtime/dist
-COPY --chown=appuser:appgroup --from=canvas-build /app/packages/canvas-runtime/src/canvas-globals.d.ts ./packages/canvas-runtime/src/canvas-globals.d.ts
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
