@@ -924,17 +924,18 @@ model ApiKey {
 // =============================================================================
 
 model Instance {
-  id          String    @id @default(cuid())
-  workspaceId String
-  name        String
-  hostname    String
-  os          String?
-  arch        String?
-  status      String    @default("offline")
-  lastSeenAt  DateTime?
-  metadata    String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id            String    @id @default(cuid())
+  workspaceId   String
+  name          String
+  hostname      String
+  os            String?
+  arch          String?
+  status        String    @default("offline")
+  lastSeenAt    DateTime?
+  wsRequestedAt DateTime?
+  metadata      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 

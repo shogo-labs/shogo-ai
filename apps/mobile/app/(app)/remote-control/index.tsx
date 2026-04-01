@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -29,6 +29,8 @@ import {
   ArrowRight,
   Cloud,
   Settings,
+  Radio,
+  Loader2,
 } from 'lucide-react-native'
 
 interface Instance {
@@ -37,7 +39,7 @@ interface Instance {
   hostname: string
   os: string | null
   arch: string | null
-  status: 'online' | 'offline'
+  status: 'online' | 'heartbeat' | 'offline'
   lastSeenAt: string | null
   metadata: Record<string, unknown> | null
   createdAt: string
@@ -59,6 +61,13 @@ function getOsIcon(os: string | null) {
   return Laptop
 }
 
+function useAuthHeaders() {
+  const { session } = useAuth()
+  return Platform.OS !== 'web' && session?.token
+    ? { Cookie: `better-auth.session_token=${session.token}` }
+    : {}
+}
+
 export default function RemoteControlScreen() {
   const router = useRouter()
   const { session } = useAuth()
@@ -68,6 +77,9 @@ export default function RemoteControlScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [connectingId, setConnectingId] = useState<string | null>(null)
+  const viewerPingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const authHeaders = useAuthHeaders()
 
   const fetchInstances = useCallback(async () => {
     if (!workspace?.id) {
@@ -77,11 +89,7 @@ export default function RemoteControlScreen() {
     try {
       const res = await fetch(`${API_URL}/api/instances?workspaceId=${workspace.id}`, {
         credentials: 'include',
-        headers: {
-          ...(Platform.OS !== 'web' && session?.token
-            ? { Cookie: `better-auth.session_token=${session.token}` }
-            : {}),
-        },
+        headers: authHeaders,
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
@@ -95,16 +103,75 @@ export default function RemoteControlScreen() {
     }
   }, [workspace?.id, session?.token])
 
+  const signalViewerActive = useCallback(async () => {
+    if (!workspace?.id) return
+    try {
+      await fetch(`${API_URL}/api/instances/viewer-active`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ workspaceId: workspace.id }),
+      })
+    } catch {}
+  }, [workspace?.id, session?.token])
+
   useEffect(() => {
     fetchInstances()
-    const interval = setInterval(fetchInstances, 10_000)
-    return () => clearInterval(interval)
-  }, [fetchInstances])
+    signalViewerActive()
+
+    const fetchInterval = setInterval(fetchInstances, 10_000)
+    viewerPingRef.current = setInterval(signalViewerActive, 60_000)
+
+    return () => {
+      clearInterval(fetchInterval)
+      if (viewerPingRef.current) clearInterval(viewerPingRef.current)
+    }
+  }, [fetchInstances, signalViewerActive])
 
   const onRefresh = useCallback(() => {
     setRefreshing(true)
     fetchInstances()
   }, [fetchInstances])
+
+  const handleRequestConnect = useCallback(async (instanceId: string) => {
+    setConnectingId(instanceId)
+    try {
+      await fetch(`${API_URL}/api/instances/${instanceId}/request-connect`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+      })
+
+      let attempts = 0
+      const maxAttempts = 30
+      const pollForOnline = async () => {
+        while (attempts < maxAttempts) {
+          attempts++
+          await new Promise((r) => setTimeout(r, 2000))
+          try {
+            const res = await fetch(`${API_URL}/api/instances/${instanceId}`, {
+              credentials: 'include',
+              headers: authHeaders,
+            })
+            if (res.ok) {
+              const data = await res.json()
+              if (data.status === 'online') {
+                setConnectingId(null)
+                router.push(`/(app)/remote-control/${instanceId}` as any)
+                return
+              }
+            }
+          } catch {}
+        }
+        setConnectingId(null)
+        setError('Timed out waiting for instance to connect')
+      }
+      pollForOnline()
+    } catch (err: any) {
+      setConnectingId(null)
+      setError(err.message)
+    }
+  }, [session?.token, router])
 
   const handleDelete = useCallback(async (instanceId: string, name: string) => {
     const confirmed = Platform.OS === 'web'
@@ -116,17 +183,14 @@ export default function RemoteControlScreen() {
       await fetch(`${API_URL}/api/instances/${instanceId}`, {
         method: 'DELETE',
         credentials: 'include',
-        headers: {
-          ...(Platform.OS !== 'web' && session?.token
-            ? { Cookie: `better-auth.session_token=${session.token}` }
-            : {}),
-        },
+        headers: authHeaders,
       })
       setInstances((prev) => prev.filter((i) => i.id !== instanceId))
     } catch {}
   }, [session?.token])
 
   const onlineInstances = instances.filter((i) => i.status === 'online')
+  const heartbeatInstances = instances.filter((i) => i.status === 'heartbeat')
   const offlineInstances = instances.filter((i) => i.status === 'offline')
 
   if (localMode && !shogoKeyConnected) {
@@ -195,8 +259,12 @@ export default function RemoteControlScreen() {
       {/* Stats */}
       <View className="flex-row gap-3 mb-6">
         <View className="flex-1 p-4 rounded-lg border border-border bg-card">
-          <Text className="text-xs text-muted-foreground uppercase tracking-wider">Online</Text>
+          <Text className="text-xs text-muted-foreground uppercase tracking-wider">Connected</Text>
           <Text className="text-2xl font-bold text-green-500 mt-1">{onlineInstances.length}</Text>
+        </View>
+        <View className="flex-1 p-4 rounded-lg border border-border bg-card">
+          <Text className="text-xs text-muted-foreground uppercase tracking-wider">Available</Text>
+          <Text className="text-2xl font-bold text-blue-500 mt-1">{heartbeatInstances.length}</Text>
         </View>
         <View className="flex-1 p-4 rounded-lg border border-border bg-card">
           <Text className="text-xs text-muted-foreground uppercase tracking-wider">Total</Text>
@@ -229,21 +297,33 @@ export default function RemoteControlScreen() {
         </View>
       ) : (
         <View className="gap-2">
-          {/* Online instances first */}
           {onlineInstances.map((instance) => (
             <InstanceCard
               key={instance.id}
               instance={instance}
+              connecting={connectingId === instance.id}
               onPress={() => router.push(`/(app)/remote-control/${instance.id}` as any)}
+              onConnect={() => {}}
               onDelete={() => handleDelete(instance.id, instance.name)}
             />
           ))}
-          {/* Offline instances */}
+          {heartbeatInstances.map((instance) => (
+            <InstanceCard
+              key={instance.id}
+              instance={instance}
+              connecting={connectingId === instance.id}
+              onPress={() => handleRequestConnect(instance.id)}
+              onConnect={() => handleRequestConnect(instance.id)}
+              onDelete={() => handleDelete(instance.id, instance.name)}
+            />
+          ))}
           {offlineInstances.map((instance) => (
             <InstanceCard
               key={instance.id}
               instance={instance}
+              connecting={connectingId === instance.id}
               onPress={() => router.push(`/(app)/remote-control/${instance.id}` as any)}
+              onConnect={() => {}}
               onDelete={() => handleDelete(instance.id, instance.name)}
             />
           ))}
@@ -255,31 +335,37 @@ export default function RemoteControlScreen() {
 
 function InstanceCard({
   instance,
+  connecting,
   onPress,
+  onConnect,
   onDelete,
 }: {
   instance: Instance
+  connecting: boolean
   onPress: () => void
+  onConnect: () => void
   onDelete: () => void
 }) {
   const isOnline = instance.status === 'online'
+  const isHeartbeat = instance.status === 'heartbeat'
   const OsIcon = getOsIcon(instance.os)
   const projectCount = (instance.metadata as any)?.activeProjects ?? null
 
   return (
     <Pressable
       onPress={onPress}
+      disabled={connecting}
       className={cn(
         'flex-row items-center p-4 rounded-lg border bg-card',
-        isOnline ? 'border-green-500/30' : 'border-border opacity-60',
+        isOnline ? 'border-green-500/30' : isHeartbeat ? 'border-blue-500/30' : 'border-border opacity-60',
       )}
-      style={Platform.OS === 'web' ? { cursor: 'pointer' } as any : undefined}
+      style={Platform.OS === 'web' ? { cursor: connecting ? 'wait' : 'pointer' } as any : undefined}
     >
       <View className={cn(
         'w-10 h-10 rounded-full items-center justify-center mr-3',
-        isOnline ? 'bg-green-500/10' : 'bg-muted',
+        isOnline ? 'bg-green-500/10' : isHeartbeat ? 'bg-blue-500/10' : 'bg-muted',
       )}>
-        <OsIcon size={20} className={isOnline ? 'text-green-500' : 'text-muted-foreground'} />
+        <OsIcon size={20} className={isOnline ? 'text-green-500' : isHeartbeat ? 'text-blue-500' : 'text-muted-foreground'} />
       </View>
 
       <View className="flex-1">
@@ -287,6 +373,8 @@ function InstanceCard({
           <Text className="text-base font-medium text-foreground">{instance.name}</Text>
           {isOnline ? (
             <Wifi size={14} className="text-green-500" />
+          ) : isHeartbeat ? (
+            <Radio size={14} className="text-blue-500" />
           ) : (
             <WifiOff size={14} className="text-muted-foreground" />
           )}
@@ -307,11 +395,27 @@ function InstanceCard({
           )}
         </View>
         <Text className="text-xs text-muted-foreground/70 mt-0.5">
-          {isOnline ? 'Connected' : `Last seen ${formatRelativeTime(instance.lastSeenAt)}`}
+          {connecting
+            ? 'Connecting...'
+            : isOnline
+              ? 'Session active'
+              : isHeartbeat
+                ? `Polling · Last seen ${formatRelativeTime(instance.lastSeenAt)}`
+                : `Last seen ${formatRelativeTime(instance.lastSeenAt)}`}
         </Text>
       </View>
 
       <View className="flex-row items-center gap-1">
+        {connecting ? (
+          <ActivityIndicator size="small" />
+        ) : isHeartbeat ? (
+          <Pressable
+            onPress={(e) => { e.stopPropagation?.(); onConnect() }}
+            className="px-3 py-1.5 rounded-md bg-blue-500 active:bg-blue-600"
+          >
+            <Text className="text-xs font-medium text-white">Connect</Text>
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={(e) => { e.stopPropagation?.(); onDelete() }}
           className="p-2 rounded-md active:bg-destructive/10"

@@ -4,22 +4,57 @@
  * Remote Control — Instance Registry & Tunnel Proxy
  *
  * Enables cloud users to see and control their local Shogo instances.
- * Local instances connect outward via WebSocket; the cloud proxies
- * dashboard commands back through the tunnel.
+ * Local instances poll via HTTP heartbeat; the cloud signals them to
+ * open an on-demand WebSocket when a user needs interactive control.
  *
  * Endpoints:
- * - GET  /api/instances/ws          — WebSocket upgrade (API key auth from local instance)
- * - GET  /api/instances             — List instances for workspace (session auth)
- * - GET  /api/instances/:id         — Instance details (session auth)
- * - PUT  /api/instances/:id         — Update instance name (session auth)
- * - DELETE /api/instances/:id       — Remove instance from registry (session auth)
- * - POST /api/instances/:id/proxy   — Proxy a request to local instance via tunnel
- * - POST /api/instances/:id/proxy/stream — Proxy a streaming request via tunnel
+ * - POST /api/instances/heartbeat         — Heartbeat from local instance (API key auth)
+ * - POST /api/instances/viewer-active     — Signal that a user is viewing Remote Control
+ * - POST /api/instances/:id/request-connect — Request an instance to open its WebSocket tunnel
+ * - GET  /api/instances/ws                — WebSocket upgrade (API key auth from local instance)
+ * - GET  /api/instances                   — List instances for workspace (session auth)
+ * - GET  /api/instances/:id               — Instance details (session auth)
+ * - PUT  /api/instances/:id               — Update instance name (session auth)
+ * - DELETE /api/instances/:id             — Remove instance from registry (session auth)
+ * - POST /api/instances/:id/proxy         — Proxy a request to local instance via tunnel
+ * - POST /api/instances/:id/proxy/stream  — Proxy a streaming request via tunnel
  */
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { resolveApiKey } from './api-keys'
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const POLL_INTERVAL_IDLE_S = 60
+const POLL_INTERVAL_VIEWER_S = 5
+const POLL_INTERVAL_WS_REQUESTED_S = 3
+const WS_REQUEST_TTL_MS = 2 * 60 * 1000
+const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
+const PROXY_TIMEOUT_MS = 30_000
+const STREAM_TIMEOUT_MS = 120_000
+const HEARTBEAT_INTERVAL_MS = 25_000
+
+// ─── In-memory viewer tracking ──────────────────────────────────────────────
+// Tracks which workspaces have active Remote Control viewers.
+// This is an optimization: if the flag isn't visible (multi-pod), the instance
+// simply stays at the 60s poll and takes up to 60s to pick up a connect request.
+
+const activeViewers = new Map<string, number>()
+
+export function isViewerActive(workspaceId: string): boolean {
+  const ts = activeViewers.get(workspaceId)
+  if (!ts) return false
+  if (Date.now() - ts > VIEWER_ACTIVE_TTL_MS) {
+    activeViewers.delete(workspaceId)
+    return false
+  }
+  return true
+}
+
+function markViewerActive(workspaceId: string) {
+  activeViewers.set(workspaceId, Date.now())
+}
 
 // ─── In-memory tunnel registry ──────────────────────────────────────────────
 
@@ -68,11 +103,24 @@ type TunnelMessage = TunnelResponse | TunnelStreamChunk | TunnelHeartbeat | { ty
 
 const tunnels = new Map<string, TunnelConnection>()
 
-const PROXY_TIMEOUT_MS = 30_000
-const STREAM_TIMEOUT_MS = 120_000
-
 function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+// ─── Adaptive poll interval ─────────────────────────────────────────────────
+
+function computeNextPollIn(instanceId: string, workspaceId: string, wsRequestedAt: Date | null): number {
+  if (wsRequestedAt && Date.now() - wsRequestedAt.getTime() < WS_REQUEST_TTL_MS) {
+    return POLL_INTERVAL_WS_REQUESTED_S
+  }
+  if (isViewerActive(workspaceId)) {
+    return POLL_INTERVAL_VIEWER_S
+  }
+  return POLL_INTERVAL_IDLE_S
+}
+
+function isWsRequested(wsRequestedAt: Date | null): boolean {
+  return !!wsRequestedAt && Date.now() - wsRequestedAt.getTime() < WS_REQUEST_TTL_MS
 }
 
 // ─── WebSocket handler (called from Bun.serve websocket config) ─────────────
@@ -95,7 +143,7 @@ export function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
 
   prisma.instance.update({
     where: { id: instanceId },
-    data: { status: 'online', lastSeenAt: new Date() },
+    data: { status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
   }).catch(() => {})
 
   console.log(`[RemoteControl] Instance ${instanceId} connected (workspace ${workspaceId})`)
@@ -199,7 +247,7 @@ export async function authenticateInstanceWs(
 
   const instance = await prisma.instance.upsert({
     where: { workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname } },
-    update: { name, os, arch, status: 'online', lastSeenAt: new Date() },
+    update: { name, os, arch, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
     create: {
       workspaceId: resolved.workspaceId,
       name,
@@ -274,6 +322,118 @@ function sendTunnelStreamRequest(
 export function instanceRoutes() {
   const router = new Hono()
 
+  // POST /instances/heartbeat — HTTP heartbeat from local instance (replaces always-on WS)
+  router.post('/instances/heartbeat', async (c) => {
+    const key = c.req.header('x-api-key') || ''
+    if (!key) {
+      return c.json({ error: { code: 'unauthorized', message: 'API key required' } }, 401)
+    }
+
+    const resolved = await resolveApiKey(key)
+    if (!resolved) {
+      return c.json({ error: { code: 'unauthorized', message: 'Invalid API key' } }, 401)
+    }
+
+    const body = await c.req.json<{
+      hostname: string
+      name?: string
+      os?: string
+      arch?: string
+      metadata?: Record<string, unknown>
+    }>()
+
+    if (!body.hostname) {
+      return c.json({ error: { code: 'invalid_request', message: 'hostname required' } }, 400)
+    }
+
+    const instance = await prisma.instance.upsert({
+      where: {
+        workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname: body.hostname },
+      },
+      update: {
+        name: body.name || body.hostname,
+        os: body.os || null,
+        arch: body.arch || null,
+        lastSeenAt: new Date(),
+        metadata: (body.metadata ?? undefined) as any,
+      },
+      create: {
+        workspaceId: resolved.workspaceId,
+        name: body.name || body.hostname,
+        hostname: body.hostname,
+        os: body.os || null,
+        arch: body.arch || null,
+        lastSeenAt: new Date(),
+        metadata: (body.metadata ?? undefined) as any,
+      },
+    })
+
+    const wsRequested = isWsRequested(instance.wsRequestedAt)
+    const nextPollIn = computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
+
+    return c.json({
+      instanceId: instance.id,
+      nextPollIn,
+      wsRequested,
+    })
+  })
+
+  // POST /instances/viewer-active — Signal that a user is viewing Remote Control
+  router.post('/instances/viewer-active', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const body = await c.req.json<{ workspaceId: string }>()
+    if (!body.workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'workspaceId required' } }, 400)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { userId: auth.userId, workspaceId: body.workspaceId },
+    })
+    if (!member) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    markViewerActive(body.workspaceId)
+    return c.json({ ok: true })
+  })
+
+  // POST /instances/:id/request-connect — Ask an instance to open its WebSocket tunnel
+  router.post('/instances/:id/request-connect', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    if (!instance) {
+      return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { userId: auth.userId, workspaceId: instance.workspaceId },
+    })
+    if (!member) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    if (tunnels.has(instance.id)) {
+      return c.json({ ok: true, status: 'already_connected' })
+    }
+
+    await prisma.instance.update({
+      where: { id: instance.id },
+      data: { wsRequestedAt: new Date() },
+    })
+
+    markViewerActive(instance.workspaceId)
+
+    return c.json({ ok: true, status: 'requested' })
+  })
+
   // GET /instances — List all instances for the authenticated user's workspace
   router.get('/instances', async (c) => {
     const auth = c.get('auth') as any
@@ -300,7 +460,7 @@ export function instanceRoutes() {
 
     const withLiveStatus = instances.map((inst) => ({
       ...inst,
-      status: tunnels.has(inst.id) ? 'online' : 'offline',
+      status: tunnels.has(inst.id) ? 'online' : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
     }))
 
     return c.json({ instances: withLiveStatus })
@@ -327,7 +487,7 @@ export function instanceRoutes() {
 
     return c.json({
       ...instance,
-      status: tunnels.has(instance.id) ? 'online' : 'offline',
+      status: tunnels.has(instance.id) ? 'online' : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
     })
   })
 
@@ -509,9 +669,14 @@ export function instanceRoutes() {
   return router
 }
 
-// ─── Heartbeat ping for all connected tunnels ───────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const HEARTBEAT_INTERVAL_MS = 25_000
+function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
+  if (!lastSeenAt) return false
+  return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+}
+
+// ─── Heartbeat ping for all connected tunnels ───────────────────────────────
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
@@ -533,4 +698,20 @@ export function stopTunnelHeartbeat() {
     clearInterval(heartbeatTimer)
     heartbeatTimer = null
   }
+}
+
+// ─── Exported for testing ────────────────────────────────────────────────────
+
+export const _testing = {
+  tunnels,
+  activeViewers,
+  computeNextPollIn,
+  isWsRequested,
+  isViewerActive,
+  markViewerActive,
+  POLL_INTERVAL_IDLE_S,
+  POLL_INTERVAL_VIEWER_S,
+  POLL_INTERVAL_WS_REQUESTED_S,
+  WS_REQUEST_TTL_MS,
+  VIEWER_ACTIVE_TTL_MS,
 }
