@@ -144,7 +144,7 @@ export default function NewWorkspacePage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 60 }}
+      contentContainerClassName="p-4 pb-[60px]"
       showsVerticalScrollIndicator={false}
     >
       {/* Header */}
@@ -174,7 +174,7 @@ export default function NewWorkspacePage() {
             placeholder="e.g. My Team, Acme Corp"
             placeholderTextColor="#9ca3af"
             className="border border-border rounded-md px-3 py-2.5 text-sm text-foreground bg-background"
-            autoFocus
+            autoFocus={Platform.OS === 'web'}
           />
         </CardContent>
       </Card>
@@ -291,7 +291,7 @@ export default function NewWorkspacePage() {
 
         {/* Business Plan */}
         <View className="md:flex-1 md:w-0">
-          <View className="items-center" style={{ marginBottom: -12, zIndex: 1 }}>
+          <View className="items-center -mb-3 z-10">
             <Badge className="bg-primary">
               <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
             </Badge>
