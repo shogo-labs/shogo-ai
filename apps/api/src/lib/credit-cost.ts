@@ -20,6 +20,17 @@
  * OpenAI charges 50%. The billing tiers approximate this per model family.
  */
 
+import {
+  getModelTier as catalogGetModelTier,
+  getModelBillingModel,
+  AGENT_MODE_DEFAULTS,
+  type ModelTier,
+  type AgentMode,
+  type BillingModel,
+} from '@shogo/model-catalog'
+
+export type { ModelTier, AgentMode }
+
 export const CREDIT_DOLLAR_VALUE = 0.10
 export const MIN_CREDIT_COST = 0.2
 export const MIN_CREDIT_COST_ECONOMY = 0.1
@@ -33,8 +44,6 @@ export const MODEL_DOLLAR_COSTS = {
 } as const
 
 export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
-export type AgentMode = 'basic' | 'advanced'
-export type ModelTier = 'economy' | 'standard' | 'premium'
 
 const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
   'gpt-5.4-nano': 'economy',
@@ -44,71 +53,23 @@ const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
   opus:           'premium',
 }
 
-const MODEL_TIER_MAP: Record<string, ModelTier> = {
-  'claude-opus-4-6': 'premium',
-  'claude-opus-4-5': 'premium',
-  'claude-opus-4-5-20251101': 'premium',
-  'claude-opus-4-1': 'premium',
-  'claude-opus-4-1-20250805': 'premium',
-  'claude-opus-4-0': 'premium',
-  'claude-opus-4-20250514': 'premium',
-  'claude-opus': 'premium',
-  'claude-sonnet-4-6': 'standard',
-  'claude-sonnet-4-5': 'standard',
-  'claude-sonnet-4-5-20250929': 'standard',
-  'claude-sonnet-4-0': 'standard',
-  'claude-sonnet-4-20250514': 'standard',
-  'claude-sonnet': 'standard',
-  'claude-3-7-sonnet-20250219': 'standard',
-  'claude-3-7-sonnet-latest': 'standard',
-  'claude-haiku-4-5-20251001': 'economy',
-  'claude-haiku-4-5': 'economy',
-  'claude-haiku': 'economy',
-  'claude-3-haiku-20240307': 'economy',
-  'gpt-5.4': 'premium',
-  'gpt-5.4-mini': 'economy',
-  'o3': 'premium',
-  'o1': 'premium',
-  'gpt-5-mini': 'standard',
-  'o4-mini': 'standard',
-  'gpt-4.1': 'standard',
-  'gpt-4o': 'standard',
-  'gpt-4-turbo': 'standard',
-  'gpt-5.4-nano': 'economy',
-  'gpt-4o-mini': 'economy',
-  'o1-mini': 'economy',
-  'o3-mini': 'economy',
-}
-
-/**
- * Resolve the billing tier for a model. Unknown models default to 'standard'
- * so they're blocked for free users (fail-safe).
- */
-export function getModelTier(model: string): ModelTier {
-  if (MODEL_TIER_MAP[model]) return MODEL_TIER_MAP[model]
-  const lower = model.toLowerCase()
-  if (lower.includes('opus')) return 'premium'
-  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'economy'
-  return 'standard'
-}
+/** Re-export from the shared catalog for backward compatibility. */
+export const getModelTier = catalogGetModelTier
 
 /**
  * Map agent mode to model name for credit calculation.
  */
 export function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return 'gpt-5.4-nano'
+  if (agentMode === 'basic') return AGENT_MODE_DEFAULTS.basic as ModelName
   return 'sonnet'
 }
 
 /**
- * Map a proxy model string (e.g. "claude-sonnet", "claude-haiku-4-5", "gpt-5-mini") to a billing ModelName.
+ * Map a proxy model string to a billing ModelName using the shared catalog.
  */
 export function proxyModelToBillingModel(proxyModel: string): ModelName {
-  const lower = proxyModel.toLowerCase()
-  if (lower === 'gpt-5.4-nano') return 'gpt-5.4-nano'
-  if (lower === 'gpt-5.4-mini') return 'gpt-5.4-mini'
-  if (lower.includes('opus') || lower === 'gpt-5.4' || lower === 'o3') return 'opus'
-  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'haiku'
+  const billing = getModelBillingModel(proxyModel)
+  if (billing in MODEL_DOLLAR_COSTS) return billing as ModelName
   return 'sonnet'
 }
 

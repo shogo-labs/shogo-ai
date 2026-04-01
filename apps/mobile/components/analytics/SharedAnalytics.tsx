@@ -32,6 +32,11 @@ import {
   RefreshCw,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  getModelShortDisplayName,
+  getModelFamily,
+  type ModelFamily,
+} from '@shogo/model-catalog'
 
 // =============================================================================
 // Types
@@ -128,52 +133,33 @@ export function formatDuration(ms: number): string {
   return `${ms}ms`
 }
 
+const FAMILY_BG_COLOR: Record<ModelFamily, string> = {
+  opus: 'bg-purple-500/15 border-purple-500/20',
+  sonnet: 'bg-blue-500/15 border-blue-500/20',
+  haiku: 'bg-emerald-500/15 border-emerald-500/20',
+  gpt: 'bg-green-500/15 border-green-500/20',
+  'o-series': 'bg-teal-500/15 border-teal-500/20',
+  other: 'bg-muted border-border',
+}
+
+const FAMILY_TEXT_COLOR: Record<ModelFamily, string> = {
+  opus: 'text-purple-400',
+  sonnet: 'text-blue-400',
+  haiku: 'text-emerald-400',
+  gpt: 'text-green-400',
+  'o-series': 'text-teal-400',
+  other: 'text-muted-foreground',
+}
+
 export function getModelColor(model: string): string {
-  if (model.includes('opus')) return 'bg-purple-500/15 border-purple-500/20'
-  if (model.includes('sonnet')) return 'bg-blue-500/15 border-blue-500/20'
-  if (model.includes('haiku')) return 'bg-emerald-500/15 border-emerald-500/20'
-  if (model.includes('gpt-4o-mini') || model.includes('o1-mini') || model.includes('o3-mini'))
-    return 'bg-teal-500/15 border-teal-500/20'
-  if (model.includes('gpt') || model.includes('o1') || model.includes('o3'))
-    return 'bg-green-500/15 border-green-500/20'
-  return 'bg-muted border-border'
+  return FAMILY_BG_COLOR[getModelFamily(model)] ?? 'bg-muted border-border'
 }
 
 export function getModelTextColor(model: string): string {
-  if (model.includes('opus')) return 'text-purple-400'
-  if (model.includes('sonnet')) return 'text-blue-400'
-  if (model.includes('haiku')) return 'text-emerald-400'
-  if (model.includes('gpt-4o-mini') || model.includes('o1-mini') || model.includes('o3-mini'))
-    return 'text-teal-400'
-  if (model.includes('gpt') || model.includes('o1') || model.includes('o3'))
-    return 'text-green-400'
-  return 'text-muted-foreground'
+  return FAMILY_TEXT_COLOR[getModelFamily(model)] ?? 'text-muted-foreground'
 }
 
-export function getModelDisplayName(model: string): string {
-  if (!model) return 'Unknown'
-  const map: Record<string, string> = {
-    'claude-opus-4-6': 'Opus 4.6',
-    'claude-sonnet-4-5': 'Sonnet 4.5',
-    'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
-    'claude-haiku-4-5': 'Haiku 4.5',
-    'claude-haiku-4-5-20251001': 'Haiku 4.5',
-    'claude-opus-4-5-20251101': 'Opus 4.5',
-    'claude-sonnet-4-20250514': 'Sonnet 4',
-    'claude-sonnet-4': 'Sonnet 4',
-    'claude-3-7-sonnet-20250219': 'Sonnet 3.7',
-    'claude-opus-4-20250514': 'Opus 4',
-    'claude-opus-4': 'Opus 4',
-    'claude-3-haiku-20240307': 'Haiku 3',
-    'gpt-4o': 'GPT-4o',
-    'gpt-4o-mini': 'GPT-4o Mini',
-    'gpt-4-turbo': 'GPT-4 Turbo',
-    'o1': 'o1',
-    'o1-mini': 'o1 Mini',
-    'o3-mini': 'o3 Mini',
-  }
-  return map[model] || (model.length > 20 ? model.slice(0, 20) + '...' : model)
-}
+export { getModelShortDisplayName as getModelDisplayName }
 
 // =============================================================================
 // Components

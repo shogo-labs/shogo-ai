@@ -35,6 +35,15 @@ import {
   type ProxyTokenPayload,
 } from '../lib/ai-proxy-token'
 import { resolveApiKey } from './api-keys'
+import {
+  MODEL_CATALOG,
+  MODEL_ALIASES,
+  IMAGE_MODEL_CATALOG,
+  AGENT_MODE_DEFAULTS,
+  type Provider,
+  type ImageProvider,
+  type AgentMode,
+} from '@shogo/model-catalog'
 
 // =============================================================================
 // Types
@@ -70,10 +79,7 @@ interface ChatCompletionRequest {
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } }
 }
 
-/** Supported model providers */
-type Provider = 'anthropic' | 'openai' | 'local'
-
-/** Model routing configuration */
+/** Model routing configuration (derived from the shared catalog) */
 interface ModelConfig {
   provider: Provider
   apiModel: string
@@ -81,155 +87,24 @@ interface ModelConfig {
 }
 
 // =============================================================================
-// Model Registry
+// Model Registry — built from the shared catalog
 // =============================================================================
 
-const MODEL_REGISTRY: Record<string, ModelConfig> = {
-  // ---------------------------------------------------------------------------
-  // Anthropic models — Current generation
-  // ---------------------------------------------------------------------------
-  'claude-opus-4-6': {
-    provider: 'anthropic',
-    apiModel: 'claude-opus-4-6',
-    displayName: 'Claude Opus 4.6',
-  },
-  'claude-sonnet-4-6': {
-    provider: 'anthropic',
-    apiModel: 'claude-sonnet-4-6',
-    displayName: 'Claude Sonnet 4.6',
-  },
-  'claude-haiku-4-5-20251001': {
-    provider: 'anthropic',
-    apiModel: 'claude-haiku-4-5-20251001',
-    displayName: 'Claude Haiku 4.5',
-  },
+const MODEL_REGISTRY: Record<string, ModelConfig> = {}
 
-  // ---------------------------------------------------------------------------
-  // Anthropic models — Legacy (still available)
-  // ---------------------------------------------------------------------------
-  'claude-sonnet-4-5-20250929': {
-    provider: 'anthropic',
-    apiModel: 'claude-sonnet-4-5-20250929',
-    displayName: 'Claude Sonnet 4.5',
-  },
-  'claude-opus-4-5-20251101': {
-    provider: 'anthropic',
-    apiModel: 'claude-opus-4-5-20251101',
-    displayName: 'Claude Opus 4.5',
-  },
-  'claude-opus-4-1-20250805': {
-    provider: 'anthropic',
-    apiModel: 'claude-opus-4-1-20250805',
-    displayName: 'Claude Opus 4.1',
-  },
-  'claude-sonnet-4-20250514': {
-    provider: 'anthropic',
-    apiModel: 'claude-sonnet-4-20250514',
-    displayName: 'Claude Sonnet 4',
-  },
-  'claude-3-7-sonnet-20250219': {
-    provider: 'anthropic',
-    apiModel: 'claude-3-7-sonnet-20250219',
-    displayName: 'Claude 3.7 Sonnet',
-  },
-  'claude-opus-4-20250514': {
-    provider: 'anthropic',
-    apiModel: 'claude-opus-4-20250514',
-    displayName: 'Claude Opus 4',
-  },
-  'claude-3-haiku-20240307': {
-    provider: 'anthropic',
-    apiModel: 'claude-3-haiku-20240307',
-    displayName: 'Claude 3 Haiku',
-  },
-
-  // ---------------------------------------------------------------------------
-  // OpenAI models — Current generation
-  // ---------------------------------------------------------------------------
-  'gpt-5.4': {
-    provider: 'openai',
-    apiModel: 'gpt-5.4',
-    displayName: 'GPT-5.4',
-  },
-  'gpt-5.4-mini': {
-    provider: 'openai',
-    apiModel: 'gpt-5.4-mini',
-    displayName: 'GPT-5.4 Mini',
-  },
-  'gpt-5-mini': {
-    provider: 'openai',
-    apiModel: 'gpt-5-mini',
-    displayName: 'GPT-5 Mini',
-  },
-  'gpt-5.4-nano': {
-    provider: 'openai',
-    apiModel: 'gpt-5.4-nano',
-    displayName: 'GPT-5.4 Nano',
-  },
-  'o3': {
-    provider: 'openai',
-    apiModel: 'o3',
-    displayName: 'o3',
-  },
-  'o4-mini': {
-    provider: 'openai',
-    apiModel: 'o4-mini',
-    displayName: 'o4 Mini',
-  },
-
-  // ---------------------------------------------------------------------------
-  // OpenAI models — Legacy (still available)
-  // ---------------------------------------------------------------------------
-  'gpt-4.1': {
-    provider: 'openai',
-    apiModel: 'gpt-4.1',
-    displayName: 'GPT-4.1',
-  },
-  'gpt-4o': {
-    provider: 'openai',
-    apiModel: 'gpt-4o',
-    displayName: 'GPT-4o',
-  },
-  'gpt-4o-mini': {
-    provider: 'openai',
-    apiModel: 'gpt-4o-mini',
-    displayName: 'GPT-4o Mini',
-  },
-  'gpt-4-turbo': {
-    provider: 'openai',
-    apiModel: 'gpt-4-turbo',
-    displayName: 'GPT-4 Turbo',
-  },
-  'o1': {
-    provider: 'openai',
-    apiModel: 'o1',
-    displayName: 'o1',
-  },
-  'o1-mini': {
-    provider: 'openai',
-    apiModel: 'o1-mini',
-    displayName: 'o1 Mini',
-  },
-  'o3-mini': {
-    provider: 'openai',
-    apiModel: 'o3-mini',
-    displayName: 'o3 Mini',
-  },
+for (const entry of Object.values(MODEL_CATALOG)) {
+  MODEL_REGISTRY[entry.id] = {
+    provider: entry.provider,
+    apiModel: entry.apiModel,
+    displayName: entry.displayName,
+  }
 }
 
-// Convenience aliases — current generation (Anthropic)
-MODEL_REGISTRY['claude-opus'] = MODEL_REGISTRY['claude-opus-4-6']
-MODEL_REGISTRY['claude-sonnet'] = MODEL_REGISTRY['claude-sonnet-4-6']
-MODEL_REGISTRY['claude-haiku'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
-MODEL_REGISTRY['claude-haiku-4-5'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
-
-// Convenience aliases — legacy (Anthropic)
-MODEL_REGISTRY['claude-sonnet-4-5'] = MODEL_REGISTRY['claude-sonnet-4-5-20250929']
-MODEL_REGISTRY['claude-opus-4-5'] = MODEL_REGISTRY['claude-opus-4-5-20251101']
-MODEL_REGISTRY['claude-opus-4-1'] = MODEL_REGISTRY['claude-opus-4-1-20250805']
-MODEL_REGISTRY['claude-sonnet-4-0'] = MODEL_REGISTRY['claude-sonnet-4-20250514']
-MODEL_REGISTRY['claude-3-7-sonnet-latest'] = MODEL_REGISTRY['claude-3-7-sonnet-20250219']
-MODEL_REGISTRY['claude-opus-4-0'] = MODEL_REGISTRY['claude-opus-4-20250514']
+for (const [alias, canonicalId] of Object.entries(MODEL_ALIASES)) {
+  if (MODEL_REGISTRY[canonicalId]) {
+    MODEL_REGISTRY[alias] = MODEL_REGISTRY[canonicalId]
+  }
+}
 
 // =============================================================================
 // Provider Routing
@@ -298,10 +173,9 @@ function getProviderApiKey(provider: Provider): string | null {
 
 /**
  * Resolve 'basic' / 'advanced' agent modes to actual model names.
- * The proxy is the single source of truth for model resolution.
  *
  * When LOCAL_LLM_BASE_URL is set: use admin-configured local models.
- * Otherwise: use default Claude models.
+ * Otherwise: use defaults from the shared model catalog.
  */
 function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boolean } {
   const localBaseUrl = process.env.LOCAL_LLM_BASE_URL
@@ -314,11 +188,8 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     }
     return { resolvedModel: model, isLocal: true }
   }
-  if (model === 'basic') {
-    return { resolvedModel: 'gpt-5.4-nano', isLocal: false }
-  }
-  if (model === 'advanced') {
-    return { resolvedModel: 'claude-sonnet-4-6', isLocal: false }
+  if (model === 'basic' || model === 'advanced') {
+    return { resolvedModel: AGENT_MODE_DEFAULTS[model as AgentMode], isLocal: false }
   }
   return { resolvedModel: model, isLocal: false }
 }
@@ -1074,8 +945,6 @@ async function recordUsage(
 // Image Generation
 // =============================================================================
 
-type ImageProvider = 'openai' | 'google' | 'local'
-
 interface ImageModelConfig {
   provider: ImageProvider
   apiModel: string
@@ -1087,14 +956,14 @@ interface ImageGenerationResponse {
   data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
 }
 
-const IMAGE_MODEL_REGISTRY: Record<string, ImageModelConfig> = {
-  'dall-e-3': { provider: 'openai', apiModel: 'dall-e-3', displayName: 'DALL-E 3' },
-  'dall-e-2': { provider: 'openai', apiModel: 'dall-e-2', displayName: 'DALL-E 2' },
-  'gpt-image-1': { provider: 'openai', apiModel: 'gpt-image-1', displayName: 'GPT Image 1' },
-  'gpt-image-1.5': { provider: 'openai', apiModel: 'gpt-image-1.5', displayName: 'GPT Image 1.5' },
-  'imagen-4': { provider: 'google', apiModel: 'imagen-4.0-generate-001', displayName: 'Imagen 4' },
-  'imagen-4-ultra': { provider: 'google', apiModel: 'imagen-4.0-ultra-generate-001', displayName: 'Imagen 4 Ultra' },
-  'imagen-4-fast': { provider: 'google', apiModel: 'imagen-4.0-fast-generate-001', displayName: 'Imagen 4 Fast' },
+const IMAGE_MODEL_REGISTRY: Record<string, ImageModelConfig> = {}
+
+for (const entry of Object.values(IMAGE_MODEL_CATALOG)) {
+  IMAGE_MODEL_REGISTRY[entry.id] = {
+    provider: entry.provider,
+    apiModel: entry.apiModel,
+    displayName: entry.displayName,
+  }
 }
 
 function resolveImageModel(model: string): ImageModelConfig | null {

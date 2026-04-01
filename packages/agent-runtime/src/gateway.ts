@@ -42,6 +42,11 @@ import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt
 import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES, CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
+import {
+  inferProviderFromModel as catalogInferProvider,
+  resolveModelId,
+  AGENT_MODE_DEFAULTS,
+} from '@shogo/model-catalog'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -77,30 +82,19 @@ function hasErrorInResult(result: unknown): boolean {
 }
 
 /**
- * Infer the LLM provider from a model ID string. Agent-mode aliases
- * ('basic', 'advanced') are resolved to the correct provider so
- * pi-agent-core uses the right transport (Anthropic vs OpenAI API).
- * The proxy handles the actual model name resolution — the runtime
- * just picks the right provider endpoint.
+ * Infer the LLM provider from a model ID string. Delegates to the
+ * shared model catalog which handles aliases and prefix matching.
  */
 function inferProviderFromModel(modelId: string, configProvider: string): string {
-  if (modelId === 'basic') return 'openai'
-  if (modelId === 'advanced') return 'anthropic'
-  if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3') || modelId.startsWith('o4')) return 'openai'
-  if (modelId.startsWith('claude')) return 'anthropic'
-  if (modelId.startsWith('gemini')) return 'google'
-  return configProvider
+  return catalogInferProvider(modelId, configProvider)
 }
 
 /**
  * Resolve UI-facing model aliases (basic/advanced) to concrete model IDs
- * so pi-ai can find them in its model registry and pick the correct API
- * (e.g. openai-responses vs openai-completions).
+ * so pi-ai can find them in its model registry and pick the correct API.
  */
 function resolveModelAlias(modelId: string): string {
-  if (modelId === 'basic') return 'gpt-5.4-nano'
-  if (modelId === 'advanced') return 'claude-sonnet-4-6'
-  return modelId
+  return resolveModelId(modelId)
 }
 
 /**

@@ -32,6 +32,7 @@
     "@sentry/react-native": "~7.11.0",
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/domain-stores": "workspace:*",
+    "@shogo/model-catalog": "workspace:*",
     "@shogo/shared-app": "workspace:*",
     "@shogo/shared-ui": "workspace:*",
     "@shogo/ui-kit": "workspace:*",

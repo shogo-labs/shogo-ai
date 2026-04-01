@@ -28,6 +28,7 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { getAvailableModels, getModelsByProvider, type ModelTier } from '@shogo/model-catalog'
 import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
 
@@ -107,26 +108,27 @@ interface ModelOption {
   provider: string
   name: string
   displayName: string
-  tier: 'premium' | 'standard' | 'economy'
+  tier: ModelTier
 }
 
-const AVAILABLE_MODELS: ModelOption[] = [
-  { provider: 'anthropic', name: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', tier: 'premium' },
-  { provider: 'anthropic', name: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', tier: 'standard' },
-  { provider: 'anthropic', name: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', tier: 'economy' },
-  { provider: 'openai', name: 'gpt-5.4', displayName: 'GPT-5.4', tier: 'premium' },
-  { provider: 'openai', name: 'gpt-5-mini', displayName: 'GPT-5 Mini', tier: 'standard' },
-  { provider: 'openai', name: 'gpt-5.4-nano', displayName: 'GPT-5.4 Nano', tier: 'economy' },
-  { provider: 'openai', name: 'o3', displayName: 'o3', tier: 'premium' },
-  { provider: 'openai', name: 'o4-mini', displayName: 'o4 Mini', tier: 'standard' },
-]
+const AVAILABLE_MODELS: ModelOption[] = getAvailableModels({ generation: 'current' }).map(e => ({
+  provider: e.provider,
+  name: e.id,
+  displayName: e.displayName,
+  tier: e.tier,
+}))
 
-const MODEL_GROUPS = [
-  { label: 'Anthropic', models: AVAILABLE_MODELS.filter(m => m.provider === 'anthropic') },
-  { label: 'OpenAI', models: AVAILABLE_MODELS.filter(m => m.provider === 'openai') },
-]
+const MODEL_GROUPS = getModelsByProvider().map(g => ({
+  label: g.label,
+  models: g.models.map(e => ({
+    provider: e.provider,
+    name: e.id,
+    displayName: e.displayName,
+    tier: e.tier,
+  })),
+}))
 
-const TIER_LABELS: Record<ModelOption['tier'], string> = {
+const TIER_LABELS: Record<ModelTier, string> = {
   premium: 'Premium',
   standard: 'Standard',
   economy: 'Economy',

@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+import {
+  MODEL_CATALOG,
+  IMAGE_MODEL_CATALOG,
+  type ModelEntry,
+  type ImageModelEntry,
+  type ModelId,
+  type Provider,
+  type ModelTier,
+  type ModelFamily,
+  type ModelGeneration,
+  type AgentMode,
+  type BillingModel,
+} from './models'
+import { MODEL_ALIASES, AGENT_MODE_DEFAULTS } from './aliases'
+
+// ---------------------------------------------------------------------------
+// Resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a model string (alias, agent mode, or canonical ID) to a canonical
+ * model ID. Returns the input unchanged if it's already canonical or unknown.
+ */
+export function resolveModelId(id: string): string {
+  if (id in MODEL_CATALOG) return id
+  if (id in MODEL_ALIASES) return MODEL_ALIASES[id]
+  if (id === 'basic' || id === 'advanced') return AGENT_MODE_DEFAULTS[id as AgentMode]
+  return id
+}
+
+/**
+ * Look up the full catalog entry for a model. Resolves aliases automatically.
+ * Returns undefined for unknown models.
+ */
+export function getModelEntry(id: string): ModelEntry | undefined {
+  const resolved = resolveModelId(id)
+  return (MODEL_CATALOG as Record<string, ModelEntry>)[resolved]
+}
+
+/**
+ * Look up the full catalog entry for an image model.
+ * Falls back to prefix matching. Returns undefined for unknown models.
+ */
+export function getImageModelEntry(id: string): ImageModelEntry | undefined {
+  if (id in IMAGE_MODEL_CATALOG) {
+    return (IMAGE_MODEL_CATALOG as Record<string, ImageModelEntry>)[id]
+  }
+  for (const [key, entry] of Object.entries(IMAGE_MODEL_CATALOG)) {
+    if (key.startsWith(id) || entry.apiModel.startsWith(id)) return entry
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+// Display names
+// ---------------------------------------------------------------------------
+
+/** Full display name, e.g. "Claude Sonnet 4.6". Falls back to the raw ID. */
+export function getModelDisplayName(id: string): string {
+  if (!id) return 'Unknown'
+  const entry = getModelEntry(id)
+  if (entry) return entry.displayName
+  return id.length > 20 ? id.slice(0, 20) + '...' : id
+}
+
+/** Short display name for compact UIs, e.g. "Sonnet 4.6". Falls back to the raw ID. */
+export function getModelShortDisplayName(id: string): string {
+  if (!id) return 'Unknown'
+  const entry = getModelEntry(id)
+  if (entry) return entry.shortDisplayName
+  return id.length > 20 ? id.slice(0, 20) + '...' : id
+}
+
+// ---------------------------------------------------------------------------
+// Provider inference
+// ---------------------------------------------------------------------------
+
+/**
+ * Infer the LLM provider from a model ID. Uses the catalog first, then
+ * falls back to prefix heuristics for unknown model strings.
+ */
+export function inferProviderFromModel(modelId: string, fallback: string = 'anthropic'): string {
+  if (modelId === 'basic') return 'openai'
+  if (modelId === 'advanced') return 'anthropic'
+
+  const entry = getModelEntry(modelId)
+  if (entry) return entry.provider
+
+  if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3') || modelId.startsWith('o4')) return 'openai'
+  if (modelId.startsWith('claude')) return 'anthropic'
+  if (modelId.startsWith('gemini')) return 'google'
+  return fallback
+}
+
+// ---------------------------------------------------------------------------
+// Tier & billing
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the billing tier for a model. Uses the catalog first, then falls back
+ * to keyword heuristics for unknown models. Unknown models default to
+ * 'standard' (fail-safe: blocks free users).
+ */
+export function getModelTier(id: string): ModelTier {
+  const entry = getModelEntry(id)
+  if (entry) return entry.tier
+
+  const lower = id.toLowerCase()
+  if (lower.includes('opus')) return 'premium'
+  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'economy'
+  return 'standard'
+}
+
+/**
+ * Get the billing model bucket for a model (maps to dollar cost tables).
+ * Falls back to 'sonnet' for unknown models.
+ */
+export function getModelBillingModel(id: string): BillingModel {
+  const entry = getModelEntry(id)
+  if (entry) return entry.billingModel
+  return 'sonnet'
+}
+
+// ---------------------------------------------------------------------------
+// Family (for UI color coding)
+// ---------------------------------------------------------------------------
+
+export function getModelFamily(id: string): ModelFamily {
+  const entry = getModelEntry(id)
+  if (entry) return entry.family
+
+  const lower = id.toLowerCase()
+  if (lower.includes('opus')) return 'opus'
+  if (lower.includes('sonnet')) return 'sonnet'
+  if (lower.includes('haiku')) return 'haiku'
+  if (lower.startsWith('o1') || lower.startsWith('o3') || lower.startsWith('o4')) return 'o-series'
+  if (lower.startsWith('gpt')) return 'gpt'
+  return 'other'
+}
+
+// ---------------------------------------------------------------------------
+// Filtered model lists (for UI pickers)
+// ---------------------------------------------------------------------------
+
+export interface AvailableModelFilter {
+  generation?: ModelGeneration
+  provider?: Provider
+  tier?: ModelTier
+}
+
+/**
+ * Get a filtered list of models from the catalog. Defaults to current-generation
+ * models suitable for UI pickers.
+ */
+export function getAvailableModels(filter: AvailableModelFilter = { generation: 'current' }): ModelEntry[] {
+  return Object.values(MODEL_CATALOG).filter(entry => {
+    if (filter.generation && entry.generation !== filter.generation) return false
+    if (filter.provider && entry.provider !== filter.provider) return false
+    if (filter.tier && entry.tier !== filter.tier) return false
+    return true
+  })
+}
+
+/**
+ * Get current-generation models grouped by provider, suitable for UI display.
+ */
+export function getModelsByProvider(): Array<{ label: string; models: ModelEntry[] }> {
+  const current = getAvailableModels({ generation: 'current' })
+  const groups: Record<string, ModelEntry[]> = {}
+  for (const entry of current) {
+    const label = entry.provider === 'anthropic' ? 'Anthropic' : entry.provider === 'openai' ? 'OpenAI' : entry.provider
+    if (!groups[label]) groups[label] = []
+    groups[label].push(entry)
+  }
+  return Object.entries(groups).map(([label, models]) => ({ label, models }))
+}
