@@ -106,7 +106,7 @@ export default function ResetPasswordScreen() {
               onPress={() => setShowPassword((s) => !s)}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5"
               disabled={submitting}
-              accessibilityRole="button"
+              role="button"
               accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
             >
               {showPassword ? (

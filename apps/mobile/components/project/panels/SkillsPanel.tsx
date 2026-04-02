@@ -233,7 +233,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         <View className="ml-auto flex-row items-center gap-1">
           <Pressable
             onPress={() => { setShowLibrary(!showLibrary); setSearchQuery('') }}
-            accessibilityRole="button"
+            role="button"
             accessibilityLabel={showLibrary ? 'Close skill library' : 'Open skill library'}
             accessibilityState={{ expanded: showLibrary }}
             className={cn(
@@ -248,7 +248,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           </Pressable>
           <Pressable
             onPress={loadSkills}
-            accessibilityRole="button"
+            role="button"
             accessibilityLabel="Refresh skills"
             className="p-1 rounded-md active:bg-muted"
           >
@@ -272,10 +272,10 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         ) : showLibrary ? (
           <View className="gap-3">
             {/* Library tabs */}
-            <View className="flex-row gap-1 bg-muted/50 rounded-lg p-1" accessibilityRole="tablist">
+            <View className="flex-row gap-1 bg-muted/50 rounded-lg p-1" role="tablist">
               <Pressable
                 onPress={() => { setLibraryTab('community'); setSearchQuery('') }}
-                accessibilityRole="tab"
+                role="tab"
                 accessibilityLabel={`Community skills, ${registrySkills.length} available`}
                 accessibilityState={{ selected: libraryTab === 'community' }}
                 className={cn(
@@ -290,7 +290,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
               </Pressable>
               <Pressable
                 onPress={() => { setLibraryTab('bundled'); setSearchQuery('') }}
-                accessibilityRole="tab"
+                role="tab"
                 accessibilityLabel={`Built-in skills, ${bundledSkills.length} available`}
                 accessibilityState={{ selected: libraryTab === 'bundled' }}
                 className={cn(
@@ -364,7 +364,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                           <Pressable
                             onPress={() => handleRegistryInstall(skill)}
                             disabled={installing === key}
-                            accessibilityRole="button"
+                            role="button"
                             accessibilityLabel={`Install ${skill.name} skill`}
                             accessibilityState={{ busy: installing === key }}
                             className={cn(
@@ -425,7 +425,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                               isExpanded ? null : `bundled:${skill.name}`,
                             )
                           }
-                          accessibilityRole="button"
+                          role="button"
                           accessibilityLabel={`${skill.name} skill details`}
                           accessibilityState={{ expanded: isExpanded }}
                           className="p-3 active:bg-muted/50"
@@ -452,7 +452,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                                 handleInstall(skill.name)
                               }}
                               disabled={installing === skill.name}
-                              accessibilityRole="button"
+                              role="button"
                               accessibilityLabel={`Install ${skill.name} skill`}
                               accessibilityState={{ busy: installing === skill.name }}
                               className={cn(
@@ -545,7 +545,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
             </Text>
             <Pressable
               onPress={() => setShowLibrary(true)}
-              accessibilityRole="button"
+              role="button"
               accessibilityLabel="Browse skill library"
               className="flex-row items-center gap-1 px-3 py-1.5 rounded-md bg-primary active:bg-primary/80"
             >
@@ -564,7 +564,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 <View key={skill.name} className="border border-border rounded-lg">
                   <Pressable
                     onPress={() => toggleSkillDetail(skill.name)}
-                    accessibilityRole="button"
+                    role="button"
                     accessibilityLabel={`${skill.name} skill details`}
                     accessibilityState={{ expanded: isExpanded }}
                     className="p-3 active:bg-muted/50"
@@ -591,7 +591,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                           handleRemove(skill.name)
                         }}
                         disabled={removing === skill.name}
-                        accessibilityRole="button"
+                        role="button"
                         accessibilityLabel={`Remove ${skill.name} skill`}
                         accessibilityState={{ busy: removing === skill.name }}
                         className="p-1 rounded-md active:bg-destructive/10"
