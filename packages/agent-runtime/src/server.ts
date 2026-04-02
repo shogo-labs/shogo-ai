@@ -2638,6 +2638,11 @@ async function initializeEssentials(): Promise<void> {
       const result = await initializeS3Sync(WORKSPACE_DIR)
       if (result) {
         s3SyncInstance = result.sync
+        // If node_modules were seeded from the template (not from S3), mark deps
+        // as pre-seeded so S3 sync won't try to tar.gz 37K+ files and OOM.
+        if (existsSync(join(WORKSPACE_DIR, 'node_modules', '.bin', 'vite'))) {
+          await s3SyncInstance.markDepsPreSeeded()
+        }
         logTiming('S3 sync initialized')
       }
     } catch (error: any) {
