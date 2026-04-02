@@ -3,7 +3,7 @@
     "name": "Shogo",
     "slug": "shogo",
     "version": "0.1.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/ic_playstore_legacy.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
@@ -44,7 +44,8 @@
       ["@sentry/react-native/expo", {
         "organization": "shogo",
         "project": "shogo-mobile"
-      }]
+      }],
+      "./plugins/withRemoveOrientationLocks"
     ],
     "extra": {
       "router": {},

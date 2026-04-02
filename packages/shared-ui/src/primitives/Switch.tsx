@@ -21,7 +21,7 @@ export function Switch({ checked, onCheckedChange, disabled, className }: Switch
       )}
       disabled={disabled}
       onPress={() => onCheckedChange(!checked)}
-      accessibilityRole="switch"
+      role="switch"
       accessibilityState={{ checked }}
       style={{
         width: 44,
