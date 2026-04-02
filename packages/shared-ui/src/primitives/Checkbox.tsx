@@ -18,7 +18,7 @@ export function Checkbox({ checked, onCheckedChange, disabled, className, label 
       className={cn('flex-row items-center gap-2', disabled && 'opacity-50')}
       disabled={disabled}
       onPress={() => onCheckedChange(!checked)}
-      accessibilityRole="checkbox"
+      role="checkbox"
       accessibilityState={{ checked }}
     >
       <View

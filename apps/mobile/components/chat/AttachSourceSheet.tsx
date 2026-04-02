@@ -58,7 +58,7 @@ export function AttachSourceSheet({ open, onOpenChange, ...opts }: AttachSourceS
         <Pressable
           className="absolute left-0 right-0 top-0 bottom-0 bg-black/60"
           onPress={() => onOpenChange(false)}
-          accessibilityRole="button"
+          role="button"
           accessibilityLabel="Dismiss attach menu"
         />
         <View className="z-10 w-full rounded-t-3xl border border-outline-100 border-b-0 bg-background-0 pb-safe shadow-hard-5">
@@ -75,7 +75,7 @@ export function AttachSourceSheet({ open, onOpenChange, ...opts }: AttachSourceS
               onPress={() => onOpenChange(false)}
               hitSlop={8}
               className="rounded-full p-2 active:bg-background-100"
-              accessibilityRole="button"
+              role="button"
               accessibilityLabel="Close"
             >
               <X size={22} className="text-typography-500" />

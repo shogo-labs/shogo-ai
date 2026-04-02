@@ -288,7 +288,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
           )}
           <Pressable
             onPress={loadInitial}
-            accessibilityRole="button"
+            role="button"
             accessibilityLabel="Refresh agent status"
             className="p-1 rounded-md active:bg-muted"
           >
@@ -518,7 +518,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                     onValueChange={toggleHeartbeat}
                     disabled={hbToggling}
                     size="sm"
-                    accessibilityRole="switch"
+                    role="switch"
                     accessibilityLabel="Toggle periodic heartbeat check-ins"
                     accessibilityState={{
                       checked: hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled,

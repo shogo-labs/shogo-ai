@@ -19,7 +19,7 @@ export function ShogoLogoMark({ className }: ShogoLogoMarkProps) {
   return (
     <View
       className={cn('h-8 w-8 shrink-0', className)}
-      accessibilityRole="image"
+      role="image"
       accessibilityLabel="Shogo"
     >
       <Svg width="100%" height="100%" viewBox="0 0 30 29" preserveAspectRatio="xMidYMid meet">

@@ -37,7 +37,7 @@ function PasswordVisibilityToggle({
       onPress={onToggle}
       className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5"
       disabled={disabled}
-      accessibilityRole="button"
+      role="button"
       accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
     >
       {showPassword ? (
@@ -98,7 +98,7 @@ function GoogleContinueButton({
   const { isDark, labelColor, fill, stroke } = useGoogleCtaTheme(colorScheme)
   return (
     <Pressable
-      accessibilityRole="button"
+      role="button"
       accessibilityLabel="Continue with Google"
       onPress={onPress}
       style={({ pressed }) => ({
@@ -265,7 +265,7 @@ function SignInForm({
           <Pressable
             onPress={handleForgotPassword}
             disabled={!onForgotPassword || forgotSending || isLoading}
-            accessibilityRole="link"
+            role="link"
             accessibilityLabel="Forgot password"
             accessibilityState={{ disabled: !onForgotPassword || forgotSending || isLoading }}
           >
@@ -535,12 +535,12 @@ function MobileLoginPanel({
                 </Text>
               </View>
 
-              <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
+              <View className="flex-row bg-secondary rounded-lg p-1 mb-5" role="tablist">
                 {(['signin', 'signup'] as Tab[]).map((tab) => (
                   <Pressable
                     key={tab}
                     onPress={() => switchTab(tab)}
-                    accessibilityRole="tab"
+                    role="tab"
                     accessibilityState={{ selected: activeTab === tab }}
                     accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
                     className={cn(
@@ -649,12 +649,12 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword
             {activeTab === 'signin' ? 'Log in to your account' : 'Create a Shogo account'}
           </Text>
 
-          <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
+          <View className="flex-row bg-secondary rounded-lg p-1 mb-5" role="tablist">
             {(['signin', 'signup'] as Tab[]).map((tab) => (
               <Pressable
                 key={tab}
                 onPress={() => switchTab(tab)}
-                accessibilityRole="tab"
+                role="tab"
                 accessibilityState={{ selected: activeTab === tab }}
                 accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
                 className={cn(
