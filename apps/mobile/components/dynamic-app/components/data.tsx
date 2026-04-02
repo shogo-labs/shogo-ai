@@ -221,7 +221,7 @@ function ChartLegend({ data, palette }: { data: ChartDataPoint[]; palette?: stri
 
 export function DynChart({
   type = 'bar',
-  data = [],
+  data: rawData,
   title,
   height = 200,
   showLegend,
@@ -231,6 +231,7 @@ export function DynChart({
   colors,
   className,
 }: ChartProps) {
+  const data = Array.isArray(rawData) ? rawData : []
   if (data.length === 0) {
     return (
       <View className={cn('flex items-center justify-center', className)} style={{ height }}>
