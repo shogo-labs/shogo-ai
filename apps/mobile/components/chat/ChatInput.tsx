@@ -694,7 +694,7 @@ export function ChatInput({
             <Pressable
               onPress={handleAttachClick}
               disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
-              accessibilityRole="button"
+              role="button"
               accessibilityLabel="Attach file"
               className="min-h-11 min-w-11 rounded-full items-center justify-center active:opacity-70"
               android_ripple={{ color: "rgba(128,128,128,0.25)" }}
@@ -953,7 +953,7 @@ export function ChatInput({
               <Pressable
                 onPress={handleSubmit}
                 disabled={disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)}
-                accessibilityRole="button"
+                role="button"
                 accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
                 className={cn(
                   "h-8 w-8 rounded-full items-center justify-center bg-primary",

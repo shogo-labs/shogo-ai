@@ -2557,7 +2557,7 @@ export const ChatPanel = observer(function ChatPanel({
                       <Pressable
                         onPress={() => setErrorBannerExpanded((e) => !e)}
                         className="mt-1.5 self-start py-0.5"
-                        accessibilityRole="button"
+                        role="button"
                         accessibilityLabel={
                           errorBannerExpanded ? 'Show less error detail' : 'Read full error message'
                         }
