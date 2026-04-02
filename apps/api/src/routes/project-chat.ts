@@ -688,6 +688,29 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // 401/403/404 during warm pool transitions are transient — retry.
             // 404 means the runtime hasn't registered routes yet after assignment.
             const isTransientAuthError = (response.status === 401 || response.status === 403 || response.status === 404) && attempt < MAX_RETRIES
+
+            // Detect permanently broken pods: "RUNTIME_AUTH_SECRET not configured"
+            // means the container restarted and lost its assignment. Evict after
+            // a grace period to allow self-assign to complete on the pod.
+            const isPodMissingAuth = response.status === 401 && errorText.includes('RUNTIME_AUTH_SECRET not configured')
+            const EVICT_AFTER_ATTEMPTS = 8
+
+            if (isPodMissingAuth && attempt >= EVICT_AFTER_ATTEMPTS) {
+              console.error(`[ProjectChat] Pod for ${projectId} is permanently broken (no auth secret after ${attempt} attempts) — evicting`)
+              try {
+                const { getWarmPoolController } = await import('../lib/warm-pool-controller')
+                const warmPool = getWarmPoolController()
+                await warmPool.evictProject(projectId)
+                console.log(`[ProjectChat] Evicted broken pod for ${projectId} — next request will get a fresh assignment`)
+              } catch (evictErr: any) {
+                console.error(`[ProjectChat] Failed to evict broken pod for ${projectId}:`, evictErr.message)
+              }
+              return c.json(
+                { error: { code: "pod_restarted", message: "Your session pod restarted. Please try again — a fresh pod will be assigned automatically." } },
+                503 as any
+              )
+            }
+
             if (isTransientAuthError) {
               const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
               console.log(`[ProjectChat] Transient ${response.status} from pod, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`)

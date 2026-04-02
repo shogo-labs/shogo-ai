@@ -5,12 +5,19 @@
  *
  * When a warm pool pod restarts (OOM, node drain, scale-to-zero cold start),
  * it boots with PROJECT_ID=__POOL__ and WARM_POOL_MODE=true. If the pod was
- * previously assigned to a project (indicated by the ASSIGNED_PROJECT env var
- * from the Kubernetes Downward API), this module fetches the project config
+ * previously assigned to a project, this module fetches the project config
  * from the API and returns it for the runtime to apply.
+ *
+ * Assignment is detected from:
+ *   1. ASSIGNED_PROJECT env var (Kubernetes Downward API)
+ *   2. Disk marker file (.shogo-pool-assignment) written during /pool/assign
+ *      — survives container restarts on emptyDir volumes
  */
 
 import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+
+export const POOL_ASSIGNMENT_MARKER = '.shogo-pool-assignment'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
@@ -24,10 +31,14 @@ export interface SelfAssignConfig {
  * Returns null if no assignment is found or if fetching fails.
  *
  * @param apiUrl - The API server URL (derived from AI_PROXY_URL or explicitly set)
+ * @param workDir - Workspace directory to check for disk-based assignment marker
  */
-export async function checkSelfAssign(apiUrl?: string): Promise<SelfAssignConfig | null> {
-  const assignedProject = process.env.ASSIGNED_PROJECT
+export async function checkSelfAssign(apiUrl?: string, workDir?: string): Promise<SelfAssignConfig | null> {
+  let assignedProject = process.env.ASSIGNED_PROJECT
   if (!assignedProject || assignedProject === '' || assignedProject === '__POOL__') {
+    assignedProject = readAssignmentMarker(workDir)
+  }
+  if (!assignedProject) {
     return null
   }
 
@@ -106,4 +117,22 @@ function deriveApiUrl(): string | null {
   // Fallback using system namespace
   const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
   return `http://api.${systemNs}.svc.cluster.local`
+}
+
+function readAssignmentMarker(workDir?: string): string | null {
+  const dir = workDir || process.env.WORKSPACE_DIR
+  if (!dir) return null
+  try {
+    const markerPath = join(dir, POOL_ASSIGNMENT_MARKER)
+    if (existsSync(markerPath)) {
+      const projectId = readFileSync(markerPath, 'utf-8').trim()
+      if (projectId && projectId !== '__POOL__') {
+        console.log(`[self-assign] Found disk assignment marker: ${projectId}`)
+        return projectId
+      }
+    }
+  } catch {
+    // Marker file unreadable
+  }
+  return null
 }

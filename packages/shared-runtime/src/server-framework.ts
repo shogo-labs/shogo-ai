@@ -21,10 +21,12 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { writeFileSync, unlinkSync } from 'fs'
+import { join } from 'path'
 import { initInstrumentation, traceOperation } from './instrumentation'
 import { createLogger } from './logger'
 import { configureAIProxy } from './ai-proxy'
-import { checkSelfAssign } from './self-assign'
+import { checkSelfAssign, POOL_ASSIGNMENT_MARKER } from './self-assign'
 
 export interface RuntimeAppConfig {
   /** Display name used in logs (e.g. 'agent-runtime', 'runtime') */
@@ -137,7 +139,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   if (IS_POOL_MODE) {
     logTiming('Starting in WARM POOL mode (awaiting project assignment)')
 
-    const selfAssignConfig = await checkSelfAssign()
+    const selfAssignConfig = await checkSelfAssign(undefined, config.workDir)
     if (selfAssignConfig) {
       logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
       currentProjectId = selfAssignConfig.projectId
@@ -401,6 +403,14 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       state.poolAssignedAt = Date.now()
       poolAssigned = true
       poolAssignedAt = state.poolAssignedAt
+
+      // 5. Persist assignment to disk so self-assign works after container restarts
+      try {
+        writeFileSync(join(config.workDir, POOL_ASSIGNMENT_MARKER), projectId, 'utf-8')
+      } catch (writeErr: any) {
+        console.warn(`[${config.name}] Could not persist pool assignment marker: ${writeErr.message}`)
+      }
+
       const duration = Date.now() - startTime
       logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
       return c.json({ ok: true, projectId, durationMs: duration })
@@ -409,6 +419,8 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       state.currentProjectId = undefined
       currentProjectId = '__POOL__'
       process.env.PROJECT_ID = '__POOL__'
+      // Clean up marker if it was written before failure
+      try { unlinkSync(join(config.workDir, POOL_ASSIGNMENT_MARKER)) } catch {}
       console.error(`[${config.name}] Pool assignment failed for ${projectId}:`, error.message)
       return c.json({ error: `Assignment failed: ${error.message}` }, 500)
     }
