@@ -473,7 +473,7 @@ const HomeScreen = observer(function HomeScreen() {
             </Text>
 
             <View
-              className="w-full rounded-2xl overflow-hidden bg-card border border-border"
+              className="w-full rounded-2xl"
               style={Platform.OS === 'web' ? {
                 maxWidth: 680,
                 boxShadow: isDark
