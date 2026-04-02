@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
-import { ActivityIndicator, Platform, Text, View, StyleSheet } from 'react-native'
+import { Platform, View, StyleSheet } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasWebViewProps {
@@ -112,45 +112,12 @@ function postCanvasError(
 }
 
 // ---------------------------------------------------------------------------
-// URL readiness — polls the preview root until it stops returning 404
-// (handles DomainMapping propagation delay on newly-created projects)
-// ---------------------------------------------------------------------------
-
-function useUrlReadiness(baseUrl: string | null): string | null {
-  const [ready, setReady] = useState(false)
-
-  useEffect(() => {
-    if (!baseUrl) { setReady(false); return }
-
-    let alive = true
-
-    async function poll() {
-      const probeUrl = `${baseUrl}/health`
-      for (let i = 0; i < 30 && alive; i++) {
-        try {
-          const res = await fetch(probeUrl, { signal: AbortSignal.timeout(4000) })
-          if (res.status !== 404) { if (alive) setReady(true); return }
-        } catch { /* CORS error or network failure — DomainMapping not ready */ }
-        await new Promise(r => setTimeout(r, 1000))
-      }
-      if (alive) setReady(true)
-    }
-
-    poll()
-    return () => { alive = false }
-  }, [baseUrl])
-
-  return ready ? baseUrl : null
-}
-
-// ---------------------------------------------------------------------------
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
 export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
-  const readyBase = useUrlReadiness(iframeBase)
-  const canvasUrl = readyBase ? `${readyBase}/` : null
+  const canvasUrl = iframeBase ? `${iframeBase}/` : null
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
 
@@ -169,10 +136,7 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanv
   if (!canvasUrl || !agentUrl) {
     return (
       <View style={styles.container}>
-        <View style={styles.loading}>
-          <ActivityIndicator size="large" />
-          <Text style={styles.loadingText}>Connecting to runtime...</Text>
-        </View>
+        <View style={styles.placeholder} />
       </View>
     )
   }
@@ -359,17 +323,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  loading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 14,
-    opacity: 0.5,
-  },
   webview: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
+  placeholder: {
     flex: 1,
     backgroundColor: 'transparent',
   },

@@ -1133,6 +1133,34 @@ function TopBarBridge({
 // Canvas Panel — renders dynamic app surfaces or runtime preview placeholder
 // ---------------------------------------------------------------------------
 
+/** Polls baseUrl/health until it stops returning 404 (DomainMapping propagation). */
+function usePreviewReadiness(baseUrl: string | null | undefined): string | null {
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    if (!baseUrl) { setReady(false); return }
+
+    let alive = true
+
+    async function poll() {
+      const probeUrl = `${baseUrl}/health`
+      for (let i = 0; i < 30 && alive; i++) {
+        try {
+          const res = await fetch(probeUrl, { signal: AbortSignal.timeout(4000) })
+          if (res.status !== 404) { if (alive) setReady(true); return }
+        } catch { /* CORS / network failure — DomainMapping not ready */ }
+        await new Promise(r => setTimeout(r, 1000))
+      }
+      if (alive) setReady(true)
+    }
+
+    poll()
+    return () => { alive = false }
+  }, [baseUrl])
+
+  return ready ? baseUrl! : null
+}
+
 function CanvasPanel({
   surface,
   surfaces,
@@ -1167,19 +1195,23 @@ function CanvasPanel({
   const showTreePanel = editMode?.showTreePanel ?? false
   const surfaceId = surface?.surfaceId ?? null
 
+  // Poll the preview URL's /health endpoint until the DomainMapping propagates.
+  // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
+  const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
+
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
   useEffect(() => {
-    if (connected && agentUrl) {
+    if (connected && agentUrl && readyCanvasBaseUrl) {
       setTimedOut(false)
       return
     }
     setTimedOut(false)
     const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [connected, agentUrl])
+  }, [connected, agentUrl, readyCanvasBaseUrl])
 
-  if (!agentUrl) {
+  if (!agentUrl || !readyCanvasBaseUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
         {timedOut ? (
@@ -1221,7 +1253,7 @@ function CanvasPanel({
     return (
       <View className="flex-1 p-2okay, t pt-0">
         <View className="flex-1 overflow-hidden rounded-2xl">
-          <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={canvasBaseUrl} activeSurfaceId={activeSurfaceId} />
+          <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} />
         </View>
       </View>
     )
