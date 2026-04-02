@@ -18,7 +18,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/ic_shogo_legacy.png"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#E27927"
       },
       "package": "ai.shogo.mobile",
       "softInputMode": "adjustResize"
