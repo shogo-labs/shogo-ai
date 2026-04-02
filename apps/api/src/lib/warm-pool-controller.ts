@@ -1665,9 +1665,8 @@ export class WarmPoolController {
     env.push({ name: 'TOOLS_PROXY_URL', value: `${apiUrl}/api/tools` })
 
     // Public API URL for browser-facing contexts (e.g. webchat widget embed snippets)
-    const publicApiUrl = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
-    if (publicApiUrl) {
-      env.push({ name: 'SHOGO_PUBLIC_API_URL', value: publicApiUrl })
+    if (process.env.SHOGO_PUBLIC_API_URL) {
+      env.push({ name: 'SHOGO_PUBLIC_API_URL', value: process.env.SHOGO_PUBLIC_API_URL })
     }
 
     // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
