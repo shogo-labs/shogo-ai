@@ -156,7 +156,7 @@ function NavItem({
   return (
     <Pressable
       onPress={handlePress}
-      accessibilityRole={href || externalHref ? 'link' : 'button'}
+      role={href || externalHref ? 'link' : 'button'}
       accessibilityLabel={label}
       className={cn(
         'flex-row items-center gap-3 rounded-md px-3 py-2',
@@ -263,7 +263,7 @@ function ExpandableNavItem({
     return (
       <Pressable
         onPress={handlePress}
-        accessibilityRole="link"
+        role="link"
         accessibilityLabel={label}
         className={cn(
           'items-center justify-center rounded-md px-2 py-2',
@@ -283,7 +283,7 @@ function ExpandableNavItem({
           active ? 'bg-accent' : ''
         )}
       >
-        <Pressable onPress={handlePress} accessibilityRole="link" accessibilityLabel={label} className="flex-1 flex-row items-center gap-3 active:opacity-70">
+        <Pressable onPress={handlePress} role="link" accessibilityLabel={label} className="flex-1 flex-row items-center gap-3 active:opacity-70">
           <Icon
             size={16}
             className={active ? 'text-foreground' : 'text-muted-foreground'}
@@ -295,7 +295,7 @@ function ExpandableNavItem({
             {label}
           </Text>
         </Pressable>
-        <Pressable onPress={() => setExpanded(!expanded)} accessibilityRole="button" accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`} className="p-1 -mr-1 active:opacity-70">
+        <Pressable onPress={() => setExpanded(!expanded)} role="button" accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`} className="p-1 -mr-1 active:opacity-70">
           {expanded ? (
             <ChevronDown size={14} className="text-muted-foreground" />
           ) : (
@@ -333,7 +333,7 @@ function ProjectItem({
         router.push(`/(app)/projects/${projectId}` as any)
         onNavPress?.()
       }}
-      accessibilityRole="link"
+      role="link"
       accessibilityLabel={`Project: ${name}`}
       className={cn(
         'flex-row items-center rounded-md px-2 py-1.5',
@@ -391,10 +391,10 @@ function UserMenuContent({
       </View>
 
       {/* Menu items */}
-      <View accessibilityRole="menu" className="py-1">
+      <View role="menu" className="py-1">
         <Pressable
           onPress={() => { onNavigate('/(app)/profile'); onClose() }}
-          accessibilityRole="menuitem"
+          role="menuitem"
           accessibilityLabel="Profile"
           className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
         >
@@ -404,7 +404,7 @@ function UserMenuContent({
 
         <Pressable
           onPress={() => setAppearanceOpen(!appearanceOpen)}
-          accessibilityRole="menuitem"
+          role="menuitem"
           accessibilityLabel="Appearance"
           accessibilityState={{ expanded: appearanceOpen }}
           className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
@@ -419,7 +419,7 @@ function UserMenuContent({
         </Pressable>
 
         {appearanceOpen && (
-          <View accessibilityRole="radiogroup" accessibilityLabel="Theme options" className="pl-11 pr-4 py-1">
+          <View role="radiogroup" accessibilityLabel="Theme options" className="pl-11 pr-4 py-1">
             {([
               { value: 'light' as const, label: 'Light', Icon: Sun },
               { value: 'dark' as const, label: 'Dark', Icon: Moon },
@@ -428,7 +428,7 @@ function UserMenuContent({
               <Pressable
                 key={value}
                 onPress={() => setTheme(value)}
-                accessibilityRole="radio"
+                role="radio"
                 accessibilityLabel={label}
                 accessibilityState={{ checked: theme === value }}
                 className="flex-row items-center gap-3 py-2.5 active:bg-muted rounded-md px-2"
@@ -446,7 +446,7 @@ function UserMenuContent({
         {isSuperAdmin && (
           <Pressable
             onPress={() => { onNavigate('/(admin)'); onClose() }}
-            accessibilityRole="menuitem"
+            role="menuitem"
             accessibilityLabel="Super Admin panel"
             className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
           >
@@ -460,10 +460,10 @@ function UserMenuContent({
         <>
           <View className="h-px bg-border" />
 
-          <View accessibilityRole="menu" className="py-1">
+          <View role="menu" className="py-1">
             <Pressable
               onPress={() => { onSignOut(); onClose() }}
-              accessibilityRole="menuitem"
+              role="menuitem"
               accessibilityLabel="Sign out"
               className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
             >
@@ -491,7 +491,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         trigger={(triggerProps) => (
           <Pressable
             {...triggerProps}
-            accessibilityRole="button"
+            role="button"
             accessibilityLabel={`${user?.name || 'User'} — open user menu`}
             accessibilityHint="Opens menu with profile, appearance, and sign out options"
             accessibilityState={{ expanded: isOpen }}
@@ -525,7 +525,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
     <>
       <Pressable
         onPress={() => setIsOpen(true)}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel={`${user?.name || 'User'} — open user menu`}
         accessibilityHint="Opens menu with profile, appearance, and sign out options"
         accessibilityState={{ expanded: isOpen }}
@@ -1172,7 +1172,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
 
   const sidebarContent = (
-    <View accessibilityRole="navigation" accessibilityLabel="App sidebar" className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
+    <View role="navigation" accessibilityLabel="App sidebar" className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
       {/* ── Logo Row ── */}
       <View
         className={cn(
@@ -1184,7 +1184,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           <>
             <Pressable
               onPress={() => { router.push('/(app)' as any); onNavPress() }}
-              accessibilityRole="link"
+              role="link"
               accessibilityLabel="Shogo Home"
               className="flex-row items-center gap-2"
             >

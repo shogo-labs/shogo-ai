@@ -103,7 +103,7 @@ export function ThinkingWidget({
       <Pressable
         onPress={toggleOpen}
         className="flex-row items-center gap-1.5 rounded-md"
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel={label}
       >
         <Text className="text-[11px] text-muted-foreground">{label}</Text>

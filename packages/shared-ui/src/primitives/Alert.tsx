@@ -23,7 +23,7 @@ export function Alert({ variant = 'default', className, children }: AlertProps) 
         variantStyles[variant],
         className,
       )}
-      accessibilityRole="alert"
+      role="alert"
     >
       {children}
     </View>
