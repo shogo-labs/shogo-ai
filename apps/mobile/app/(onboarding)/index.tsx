@@ -449,7 +449,7 @@ function WelcomeStep({
 
       <Pressable
         onPress={onNext}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel="Get Started"
         className="flex-row items-center gap-2 bg-primary px-8 py-3.5 rounded-xl mt-4"
       >
@@ -742,7 +742,7 @@ function ConfigureAIStep({
         <Pressable
           onPress={onSave}
           disabled={isSaving || (aiMode === 'api-keys' && !anthropicKey) || (aiMode === 'shogo-cloud' && !shogoApiKey)}
-          accessibilityRole="button"
+          role="button"
           accessibilityLabel="Save and Continue"
           className={cn(
             'flex-row items-center justify-center gap-2 py-3.5 rounded-xl',
@@ -811,7 +811,7 @@ function FeaturesStep({ onNext }: { onNext: () => void }) {
 
       <Pressable
         onPress={onNext}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel="Continue"
         className="flex-row items-center justify-center gap-2 bg-primary py-3.5 rounded-xl"
       >
@@ -894,7 +894,7 @@ function TemplatesStep({
 
       <Pressable
         onPress={onNext}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel={selectedTemplate ? 'Continue with template' : 'Skip and continue'}
         className="flex-row items-center justify-center gap-2 bg-primary py-3.5 rounded-xl"
       >
@@ -948,7 +948,7 @@ function GetStartedStep({
       <Pressable
         onPress={onComplete}
         disabled={isCompleting}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel="Enter Shogo"
         accessibilityState={{ disabled: isCompleting }}
         className={cn(
@@ -1089,7 +1089,7 @@ function SecurityPreferenceStep({
       <Pressable
         onPress={onComplete}
         disabled={isLoading}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel="Continue"
         accessibilityState={{ disabled: isLoading }}
         className={cn(

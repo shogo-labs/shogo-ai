@@ -378,7 +378,7 @@ export function ProjectTopBar({
 
         <View className="w-px h-5 bg-border mx-1 flex-shrink-0" />
 
-        <View className="flex-row items-center gap-0.5" accessibilityRole="tablist">
+        <View className="flex-row items-center gap-0.5" role="tablist">
           {narrowPrimaryTabs.map((tab) => (
             <BarIconButton
               key={tab.id}
@@ -557,7 +557,7 @@ export function ProjectTopBar({
       {/* ── Right zone: aligned with canvas panel (flex-1) ── */}
       <View className="flex-1 h-full flex-row items-center px-2">
         {/* Panel navigation icons */}
-        <View className="flex-row items-center gap-0.5" accessibilityRole="tablist">
+        <View className="flex-row items-center gap-0.5" role="tablist">
           {visibleTabs.map((tab) => (
             <BarIconButton
               key={tab.id}
