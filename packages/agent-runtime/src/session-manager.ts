@@ -284,8 +284,9 @@ export class SessionManager {
   /**
    * Compact a session by summarizing old messages and keeping only recent ones.
    * If no summarizeFn is set, uses a simple text extraction fallback.
+   * @param extraContext Optional extra context (e.g. file state summary) appended to the compacted summary.
    */
-  async compact(id: string): Promise<CompactionResult | null> {
+  async compact(id: string, extraContext?: string): Promise<CompactionResult | null> {
     const session = this.sessions.get(id)
     if (!session) return null
 
@@ -332,7 +333,8 @@ export class SessionManager {
       ? `${session.compactedSummary}\n\n`
       : ''
 
-    session.compactedSummary = `${existingSummary}${summary}`
+    const extraSuffix = extraContext ? `\n\n${extraContext}` : ''
+    session.compactedSummary = `${existingSummary}${summary}${extraSuffix}`
     session.messages = toKeep
     session.compactionCount++
     session.lastActivityAt = Date.now()

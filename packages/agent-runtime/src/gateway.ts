@@ -66,6 +66,7 @@ import {
   SELF_EVOLUTION_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
+import { FileStateCache } from './file-state-cache'
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -280,6 +281,8 @@ export class AgentGateway {
   private skillServerManager: SkillServerManager
   /** Multi-language LSP manager for read_lints diagnostics */
   private lspManager: WorkspaceLSPManager | null = null
+  /** Tracks files the agent has read across turns for cache-aware compaction */
+  private fileStateCache = new FileStateCache()
   /** Shared code index engine for workspace-wide semantic search */
   private codeIndexEngine: import('./code-index-engine').CodeIndexEngine | null = null
   /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
@@ -1236,6 +1239,7 @@ export class AgentGateway {
         ? this.canvasFileWatcher
         : undefined,
       lspManager: this.lspManager ?? undefined,
+      fileStateCache: this.fileStateCache,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1667,7 +1671,10 @@ export class AgentGateway {
       this.sessionManager.addMessages(sessionId, ...result.newMessages)
 
       if (this.sessionManager.needsCompaction(session)) {
-        const compactResult = await this.sessionManager.compact(sessionId)
+        const fileStateSummary = this.fileStateCache.size > 0
+          ? this.fileStateCache.getSummary(this.workspaceDir)
+          : undefined
+        const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
         if (compactResult) {
           console.log(
             `${this.logPrefix} Session ${sessionId} compacted: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
@@ -1770,86 +1777,25 @@ export class AgentGateway {
       return this.buildGeneralPrompt()
     }
 
-    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
-    const parts: string[] = []
+    // =========================================================================
+    // Prompt cache optimization: sections are ordered by stability so that
+    // Anthropic's prompt cache can reuse the prefix across turns. Most-stable
+    // content (tool guides, coding guide, canvas guides) comes first; per-turn
+    // dynamic content (date, workspace tree, installed tools) comes last.
+    // The PROMPT_CACHE_STABLE_BOUNDARY marker below separates the two zones —
+    // everything before it is expected to stay identical across turns.
+    // =========================================================================
 
-    for (const filename of files) {
-      const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
-      if (filepath) {
-        const content = readFileSync(filepath, 'utf-8').trim()
-        if (content) {
-          parts.push(content)
-        }
-      }
-    }
+    const stableParts: string[] = []
+    const dynamicParts: string[] = []
 
-    const memoryPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'MEMORY.md')
-    if (memoryPath) {
-      const memory = readFileSync(memoryPath, 'utf-8').trim()
-      if (memory) {
-        parts.push(`## Memory\n${memory}`)
-      }
-    }
+    // ---- STABLE ZONE: rarely changes within a session ----
 
-    // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
-
-    // Inject agent template context if this project was created from an agent template
-    const agentTemplatePath = join(this.workspaceDir, '.template')
-    if (existsSync(agentTemplatePath)) {
-      const agentTemplate = readFileSync(agentTemplatePath, 'utf-8').trim()
-      if (agentTemplate) {
-        const humanName = agentTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        parts.push([
-          '## Agent Template Context',
-          '',
-          `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
-          'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
-          'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
-          '',
-          'Canvas surfaces have been pre-built for this template. Use canvas tools directly (canvas_create, canvas_update, etc.)',
-          'to update or add surfaces as needed.',
-          '',
-        ].join('\n'))
-      }
-    }
-
-    const now = new Date()
-    parts.push([
-      '## Current Context',
-      `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
-      `- Year: ${now.getFullYear()}`,
-      `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${this.workspaceDir}\``,
-      '',
-      'All file paths are relative to the working directory.',
-      'When users mention dates without a year, default to the current or next occurrence (never a past date).',
-    ].join('\n'))
-
-    const installedToolsContext = this.buildInstalledToolsContext()
-    if (installedToolsContext) {
-      parts.push(installedToolsContext)
-    }
-
-    const uploadedFilesContext = this.buildUploadedFilesContext()
-    if (uploadedFilesContext) {
-      parts.push(uploadedFilesContext)
-    }
-
-    const workspaceTree = this.buildWorkspaceTreeContext()
-    if (workspaceTree) {
-      parts.push(workspaceTree)
-    }
-
-    const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
-    const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
-    const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
-    const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
-
+    // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
-    // Inject mode-specific prompt sections
     if (activeMode === 'canvas') {
       if (this.config.canvasMode === 'code') {
-        parts.push(`\n## Canvas Mode — React App
+        stableParts.push(`\n## Canvas Mode — React App
 
 You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. Edit \`src/App.tsx\` to build your UI and add components under \`src/components/\`. The app auto-builds and renders in the preview panel.
 
@@ -1861,8 +1807,12 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
+        stableParts.push(this.promptOverrides.get('canvas_v2_guide') ?? CANVAS_V2_GUIDE)
+        stableParts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
+        stableParts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
+        stableParts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
       } else {
-        parts.push(`\n## Canvas Mode — Declarative Agent Display
+        stableParts.push(`\n## Canvas Mode — Declarative Agent Display
 
 You are in canvas mode. You have all canvas tools available directly — use them to build and update canvas surfaces.
 
@@ -1881,44 +1831,35 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
-      }
-    }
-    const modeLabel = activeMode === 'none' ? 'chat' : activeMode
-    parts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
-
-    // Mode-specific tool guides
-    if (activeMode === 'canvas') {
-      if (this.config.canvasMode === 'code') {
-        parts.push(this.promptOverrides.get('canvas_v2_guide') ?? CANVAS_V2_GUIDE)
-        parts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
-        parts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
-        parts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
-        // parts.push(this.promptOverrides.get('ui_ux_design_guide') ?? UI_UX_DESIGN_GUIDE)
-      } else {
-        parts.push(BASIC_CANVAS_TOOLS_GUIDE)
-        parts.push(BASIC_CANVAS_EXAMPLES)
+        stableParts.push(BASIC_CANVAS_TOOLS_GUIDE)
+        stableParts.push(BASIC_CANVAS_EXAMPLES)
       }
     } else {
-      // Non-canvas modes: include a brief reference so the agent
-      // knows the correct conventions if it writes to src/ files.
-      parts.push(CANVAS_FILE_REFERENCE)
+      stableParts.push(CANVAS_FILE_REFERENCE)
     }
-    // General coding guide (edit_file, exec safety, code quality) — always included
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
-    // APP_MODE_DISABLED: CODE_AGENT_APP_BUILDING_GUIDE no longer injected
 
-    parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
-    parts.push(toolPlanningGuide)
-    parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
+    // 2. General coding guide (always the same)
+    stableParts.push(CODE_AGENT_GENERAL_GUIDE)
+
+    // 3. Behavioral guides (stable unless user edits personality mid-session)
+    const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
+    const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
+    const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
+    const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
+
+    stableParts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
+    stableParts.push(toolPlanningGuide)
+    stableParts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
     if (this.config.memoryEnabled !== false) {
-      parts.push(memoryGuide)
+      stableParts.push(memoryGuide)
     }
-    parts.push(SELF_EVOLUTION_GUIDE)
-    parts.push(skillMatchingGuide)
-    parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
+    stableParts.push(SELF_EVOLUTION_GUIDE)
+    stableParts.push(skillMatchingGuide)
+    stableParts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
+    // 4. Security permissions guide (stable once mode is set)
     if (this.permissionEngine) {
-      parts.push([
+      stableParts.push([
         '## Security Permissions',
         '',
         'This agent runs with a security permission system. Some tool calls may be blocked or require user approval through a UI dialog (not through chat).',
@@ -1928,7 +1869,8 @@ When integrations are connected, use \`tool_search\` to discover available actio
       ].join('\n'))
     }
 
-    parts.push([
+    // 5. Error notification guide (always the same)
+    stableParts.push([
       '## CRITICAL: Error Notifications (MUST follow)',
       '',
       'You have a tool called `notify_user_error`. You MUST call it whenever:',
@@ -1945,21 +1887,99 @@ When integrations are connected, use \`tool_search\` to discover available actio
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
 
-    // Inject available skill descriptions
-    if (this.skills.length > 0) {
-      const skillsSection = buildSkillsPromptSection(this.skills)
-      if (skillsSection) {
-        parts.push(skillsSection)
+    // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
+
+    // ---- DYNAMIC ZONE: changes between turns or sessions ----
+
+    // 6. Project identity files (change when user edits them)
+    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
+    for (const filename of files) {
+      const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
+      if (filepath) {
+        const content = readFileSync(filepath, 'utf-8').trim()
+        if (content) {
+          dynamicParts.push(content)
+        }
       }
     }
 
-    // Inject skill server context
-    const skillServerSection = this.buildSkillServerPromptSection()
-    if (skillServerSection) {
-      parts.push(skillServerSection)
+    // 7. Memory (changes frequently)
+    const memoryPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'MEMORY.md')
+    if (memoryPath) {
+      const memory = readFileSync(memoryPath, 'utf-8').trim()
+      if (memory) {
+        dynamicParts.push(`## Memory\n${memory}`)
+      }
     }
 
-    return parts.join('\n\n---\n\n')
+    // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
+
+    // 8. Agent template context (stable per-project, but read from disk)
+    const agentTemplatePath = join(this.workspaceDir, '.template')
+    if (existsSync(agentTemplatePath)) {
+      const agentTemplate = readFileSync(agentTemplatePath, 'utf-8').trim()
+      if (agentTemplate) {
+        const humanName = agentTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        dynamicParts.push([
+          '## Agent Template Context',
+          '',
+          `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
+          'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
+          'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
+          '',
+          'Canvas surfaces have been pre-built for this template. Use canvas tools directly (canvas_create, canvas_update, etc.)',
+          'to update or add surfaces as needed.',
+          '',
+        ].join('\n'))
+      }
+    }
+
+    // 9. Current date/time context (changes every turn)
+    const now = new Date()
+    dynamicParts.push([
+      '## Current Context',
+      `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+      `- Year: ${now.getFullYear()}`,
+      `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      `- Working directory: \`${this.workspaceDir}\``,
+      '',
+      'All file paths are relative to the working directory.',
+      'When users mention dates without a year, default to the current or next occurrence (never a past date).',
+    ].join('\n'))
+
+    const modeLabel = activeMode === 'none' ? 'chat' : activeMode
+    dynamicParts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
+
+    // 10. Dynamic workspace context (changes as files are added/removed)
+    const installedToolsContext = this.buildInstalledToolsContext()
+    if (installedToolsContext) {
+      dynamicParts.push(installedToolsContext)
+    }
+
+    const uploadedFilesContext = this.buildUploadedFilesContext()
+    if (uploadedFilesContext) {
+      dynamicParts.push(uploadedFilesContext)
+    }
+
+    const workspaceTree = this.buildWorkspaceTreeContext()
+    if (workspaceTree) {
+      dynamicParts.push(workspaceTree)
+    }
+
+    // 11. Skills and skill server (can change when skills are installed)
+    if (this.skills.length > 0) {
+      const skillsSection = buildSkillsPromptSection(this.skills)
+      if (skillsSection) {
+        dynamicParts.push(skillsSection)
+      }
+    }
+
+    const skillServerSection = this.buildSkillServerPromptSection()
+    if (skillServerSection) {
+      dynamicParts.push(skillServerSection)
+    }
+
+    return [...stableParts, ...dynamicParts].join('\n\n---\n\n')
   }
 
   /**

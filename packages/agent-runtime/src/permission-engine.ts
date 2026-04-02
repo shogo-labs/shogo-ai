@@ -9,8 +9,8 @@
  * Hard-blocked actions (sudo, rm -rf /, system paths) are denied in ALL modes.
  */
 
-import { resolve, join } from 'path'
-import { existsSync, lstatSync, realpathSync } from 'fs'
+import { resolve, join, dirname } from 'path'
+import { existsSync, lstatSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { createLogger } from '@shogo/shared-runtime'
@@ -131,6 +131,11 @@ function matchesAnyPattern(value: string, patterns: string[]): boolean {
   return patterns.some(p => matchesGlobPattern(value, p))
 }
 
+function mergeUnique(a?: string[], b?: string[]): string[] {
+  const set = new Set<string>([...(a ?? []), ...(b ?? [])])
+  return [...set]
+}
+
 // ---------------------------------------------------------------------------
 // Policy merge with escalation protection
 // ---------------------------------------------------------------------------
@@ -235,11 +240,91 @@ export class PermissionEngine {
   private sessionApprovalCache = new Map<string, boolean>()
   private denialCount = 0
   private readonly MAX_DENIALS_PER_TURN = 5
+  private readonly persistPath: string
 
   constructor(opts: PermissionEngineOptions) {
     this.pref = opts.preference
     this.workspaceDir = opts.workspaceDir
     this.sendSseEvent = opts.sendSseEvent
+    this.persistPath = join(opts.workspaceDir, '.shogo', 'permissions.json')
+    this.loadPersistedRules()
+  }
+
+  /**
+   * Load persisted permission rules from .shogo/permissions.json and merge
+   * them into the active preference. Called on construction so "Always Allow"
+   * decisions survive across gateway restarts.
+   */
+  private loadPersistedRules(): void {
+    try {
+      if (!existsSync(this.persistPath)) return
+      const raw = readFileSync(this.persistPath, 'utf-8')
+      const persisted = JSON.parse(raw) as Partial<SecurityPreference['overrides']>
+      if (!persisted || typeof persisted !== 'object') return
+
+      this.pref = {
+        ...this.pref,
+        overrides: {
+          ...this.pref.overrides,
+          shellCommands: {
+            allow: mergeUnique(
+              this.pref.overrides?.shellCommands?.allow,
+              persisted.shellCommands?.allow,
+            ),
+            deny: mergeUnique(
+              this.pref.overrides?.shellCommands?.deny,
+              persisted.shellCommands?.deny,
+            ),
+          },
+          fileAccess: {
+            allow: mergeUnique(
+              this.pref.overrides?.fileAccess?.allow,
+              persisted.fileAccess?.allow,
+            ),
+            deny: mergeUnique(
+              this.pref.overrides?.fileAccess?.deny,
+              persisted.fileAccess?.deny,
+            ),
+          },
+          network: {
+            allowedDomains: mergeUnique(
+              this.pref.overrides?.network?.allowedDomains,
+              persisted.network?.allowedDomains,
+            ),
+          },
+          mcpTools: {
+            autoApprove: mergeUnique(
+              this.pref.overrides?.mcpTools?.autoApprove,
+              persisted.mcpTools?.autoApprove,
+            ),
+          },
+        },
+      }
+      log.info('Loaded persisted permission rules', { path: this.persistPath })
+    } catch (err: any) {
+      log.warn('Failed to load persisted permissions, starting fresh', { err: err.message })
+    }
+  }
+
+  /**
+   * Persist the current override rules to .shogo/permissions.json so they
+   * survive across gateway restarts. Only the user-configured overrides are
+   * persisted — the mode and hard-blocks are not included.
+   */
+  persistRules(): void {
+    try {
+      const dir = dirname(this.persistPath)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      const data = JSON.stringify(this.pref.overrides ?? {}, null, 2)
+      writeFileSync(this.persistPath, data, 'utf-8')
+    } catch (err: any) {
+      log.warn('Failed to persist permission rules', { err: err.message })
+    }
+  }
+
+  /** Get the current overrides (for propagating to sub-agents). */
+  getOverrides(): SecurityPreference['overrides'] | undefined {
+    return this.pref.overrides
   }
 
   get mode(): SecurityMode {
@@ -602,6 +687,7 @@ export class PermissionEngine {
               },
             }
           }
+          this.persistRules()
         }
         this.sessionApprovalCache.set(pending.cacheKey, true)
         pending.resolve(true)

@@ -339,6 +339,7 @@ export async function runSubagent(
   const subCtx: ToolContext = {
     ...parentCtx,
     workspaceDir: config.workingDir || parentCtx.workspaceDir,
+    fileStateCache: parentCtx.fileStateCache?.clone(),
   }
 
   // Ensure working directory exists
