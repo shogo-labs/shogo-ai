@@ -26,6 +26,8 @@
 #   KEY_ALIAS                   - Key alias within the keystore
 #   KEY_PASSWORD                - Key password
 #   GOOGLE_SERVICES_JSON_BASE64 - Base64-encoded Play Store service account key
+#
+# API URLs for native builds match apps/mobile/eas.json (staging vs production).
 # =============================================================================
 
 name: Android Build & Update
@@ -65,6 +67,11 @@ on:
         description: 'Submit to Play Store (internal track) — full mode only'
         required: false
         default: true
+        type: boolean
+      force_build:
+        description: 'Ignore fingerprint cache and run full Gradle build (signed AAB)'
+        required: false
+        default: false
         type: boolean
 
 jobs:
@@ -147,6 +154,9 @@ jobs:
           if [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"
             echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.force_build }}" = "true" ]; then
+            echo "force_build requested → full native build (signed AAB)"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
             echo "Fingerprint cached from previous build → OTA update only"
             echo "needs_build=false" >> $GITHUB_OUTPUT
@@ -194,6 +204,8 @@ jobs:
         working-directory: apps/mobile
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
         run: |
           # Use only the subject line to avoid shell injection from backticks/newlines
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
@@ -201,8 +213,6 @@ jobs:
             --branch ${{ needs.check-fingerprint.outputs.environment }} \
             --message "$SUBJECT" \
             --non-interactive
-          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
 
       - name: Summary
         run: |
@@ -295,6 +305,7 @@ jobs:
         run: npx expo prebuild --platform android --clean
         env:
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
+          EXPO_PUBLIC_API_URL: ${{ needs.check-fingerprint.outputs.environment == 'production' && 'https://studio.shogo.ai' || 'https://studio.staging.shogo.ai' }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
 
@@ -371,7 +382,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
+          EXPO_PUBLIC_API_URL: ${{ needs.check-fingerprint.outputs.environment == 'production' && 'https://studio.shogo.ai' || 'https://studio.staging.shogo.ai' }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -438,3 +449,6 @@ jobs:
 
 # Full build, skip Play Store submit
 # gh workflow run android.yml --ref staging -f mode=full -f environment=staging -f submit=false
+
+# Production signed AAB (studio.shogo.ai + production_app), skip submit, force native build
+# gh workflow run android.yml --ref main -f mode=full -f environment=production -f submit=false -f force_build=true
