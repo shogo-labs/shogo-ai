@@ -43,6 +43,7 @@ RUN bun install
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/sdk ./packages/sdk
+COPY packages/model-catalog ./packages/model-catalog
 COPY apps/api ./apps/api
 COPY templates/runtime-template ./templates/runtime-template
 
