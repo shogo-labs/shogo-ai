@@ -63,6 +63,11 @@ const SKIP_DIRS = new Set([
   '.swe-bench',
 ])
 
+function isInsideSkippedDir(relPath: string): boolean {
+  const segments = relPath.split('/')
+  return segments.some(s => SKIP_DIRS.has(s))
+}
+
 const SKIP_FILE_PATTERNS = [/\.pyc$/, /\.pyo$/, /\.so$/, /\.dylib$/, /\.wasm$/, /\.min\.js$/, /\.map$/]
 
 const MAX_FILE_SIZE = 512 * 1024 // 512KB — skip very large files
@@ -175,6 +180,7 @@ export class CodeIndexEngine {
 
   async reindex(): Promise<{ indexed: number; removed: number; total: number }> {
     const diskFiles = this.discoverFiles()
+    console.log(`[code-index] Discovered ${diskFiles.length} files to consider`)
     const getMeta = this.db.prepare('SELECT mtime_ms FROM code_meta WHERE path = ?')
 
     const toIndex: string[] = []
@@ -219,6 +225,7 @@ export class CodeIndexEngine {
   }
 
   private async indexFile(relPath: string): Promise<void> {
+    if (isInsideSkippedDir(relPath)) return
     const absPath = join(this.workspaceDir, relPath)
     if (!existsSync(absPath)) return
 
@@ -260,8 +267,12 @@ export class CodeIndexEngine {
     }
   }
 
+  private consecutiveEmbeddingFailures = 0
+  private static readonly MAX_EMBEDDING_FAILURES = 2
+
   private async embedAndStore(chunks: CodeChunk[], chunkIds: number[]): Promise<void> {
     if (!this.openai) return
+    if (this.consecutiveEmbeddingFailures >= CodeIndexEngine.MAX_EMBEDDING_FAILURES) return
 
     const texts = chunks.map(c => c.chunk)
     const insertVec = this.db.prepare(
@@ -269,6 +280,8 @@ export class CodeIndexEngine {
     )
 
     for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
+      if (this.consecutiveEmbeddingFailures >= CodeIndexEngine.MAX_EMBEDDING_FAILURES) return
+
       const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE)
       const batchIds = chunkIds.slice(i, i + EMBEDDING_BATCH_SIZE)
 
@@ -279,6 +292,8 @@ export class CodeIndexEngine {
           dimensions: EMBEDDING_DIMENSIONS,
         })
 
+        this.consecutiveEmbeddingFailures = 0
+
         const insertBatch = this.db.transaction(() => {
           for (let j = 0; j < response.data.length; j++) {
             const embedding = new Float32Array(response.data[j].embedding)
@@ -287,7 +302,10 @@ export class CodeIndexEngine {
         })
         insertBatch()
       } catch (err: any) {
-        console.warn(`[code-index] Embedding batch failed: ${err.message}`)
+        this.consecutiveEmbeddingFailures++
+        if (this.consecutiveEmbeddingFailures >= CodeIndexEngine.MAX_EMBEDDING_FAILURES) {
+          console.warn(`[code-index] Embedding disabled after ${CodeIndexEngine.MAX_EMBEDDING_FAILURES} consecutive failures (last: ${err.message})`)
+        }
       }
     }
   }
@@ -505,6 +523,7 @@ export class CodeIndexEngine {
   }
 
   private shouldIndex(name: string, absPath: string): boolean {
+    if (absPath.includes('/node_modules/')) return false
     const ext = extname(name).toLowerCase()
     if (!CODE_EXTENSIONS.has(ext)) return false
     if (SKIP_FILE_PATTERNS.some(p => p.test(name))) return false

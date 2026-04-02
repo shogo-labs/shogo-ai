@@ -234,8 +234,12 @@ export class FileIndexEngine {
     }
   }
 
+  private consecutiveEmbeddingFailures = 0
+  private static readonly MAX_EMBEDDING_FAILURES = 3
+
   private async embedAndStore(chunks: FileChunk[], chunkIds: number[]): Promise<void> {
     if (!this.openai) return
+    if (this.consecutiveEmbeddingFailures >= FileIndexEngine.MAX_EMBEDDING_FAILURES) return
 
     const texts = chunks.map(c => c.chunk)
     const insertVec = this.db.prepare(
@@ -243,6 +247,8 @@ export class FileIndexEngine {
     )
 
     for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
+      if (this.consecutiveEmbeddingFailures >= FileIndexEngine.MAX_EMBEDDING_FAILURES) return
+
       const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE)
       const batchIds = chunkIds.slice(i, i + EMBEDDING_BATCH_SIZE)
 
@@ -253,6 +259,8 @@ export class FileIndexEngine {
           dimensions: EMBEDDING_DIMENSIONS,
         })
 
+        this.consecutiveEmbeddingFailures = 0
+
         const insertBatch = this.db.transaction(() => {
           for (let j = 0; j < response.data.length; j++) {
             const embedding = new Float32Array(response.data[j].embedding)
@@ -261,7 +269,10 @@ export class FileIndexEngine {
         })
         insertBatch()
       } catch (err: any) {
-        console.warn(`[file-index] Embedding batch failed: ${err.message}`)
+        this.consecutiveEmbeddingFailures++
+        if (this.consecutiveEmbeddingFailures >= FileIndexEngine.MAX_EMBEDDING_FAILURES) {
+          console.warn(`[file-index] Embedding disabled after ${FileIndexEngine.MAX_EMBEDDING_FAILURES} consecutive failures (last: ${err.message})`)
+        }
       }
     }
   }
@@ -437,6 +448,7 @@ export class FileIndexEngine {
 
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.')) continue
+      if (entry.name === 'node_modules') continue
 
       const absPath = join(dir, entry.name)
       const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
