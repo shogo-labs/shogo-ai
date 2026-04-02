@@ -1199,6 +1199,7 @@ function CanvasPanel({
   // Poll the preview URL's /health endpoint until the DomainMapping propagates.
   // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
+  const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
 
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
@@ -1250,8 +1251,6 @@ function CanvasPanel({
   }
 
   // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
-  const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
-
   if (canvasMode === 'code') {
     return (
       <View className="flex-1 pt-0">
