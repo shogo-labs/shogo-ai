@@ -302,7 +302,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           )}
 
           {/* Input area */}
-          <View className="px-4 pt-4 pb-2">
+          <View className="px-4 pt-4 pb-1">
             <TextInput
               ref={textInputRef}
               placeholder={placeholderText}
@@ -328,7 +328,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           </View>
 
           {/* Action bar */}
-          <View className="px-4 pt-1 pb-2 flex-row items-center justify-between gap-2">
+          <View className="px-4 pt-0 pb-1 flex-row items-center justify-between gap-2">
             <View className="flex-row items-center gap-1 flex-1 min-w-0">
               <Pressable
                 onPress={handleAttachClick}
