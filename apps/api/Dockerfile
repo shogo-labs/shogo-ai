@@ -134,6 +134,7 @@ RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
     ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
     ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
+    ln -sf ../../../packages/model-catalog node_modules/@shogo/model-catalog && \
     chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
 
 # Stub package.jsons for workspace members not shipped in the image
@@ -142,7 +143,7 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.js
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
 COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog/package.json ./packages/model-catalog/
+COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Copy prisma schema, config, and migrations for runtime migrations
