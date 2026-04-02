@@ -150,7 +150,7 @@ function useUrlReadiness(baseUrl: string | null): string | null {
 export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
   const readyBase = useUrlReadiness(iframeBase)
-  const canvasUrl = readyBase ? `${readyBase}/canvas/` : null
+  const canvasUrl = readyBase ? `${readyBase}/` : null
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
 

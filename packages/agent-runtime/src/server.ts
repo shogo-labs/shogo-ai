@@ -2535,17 +2535,27 @@ app.post('/agent/canvas/action', async (c) => {
   }
 })
 
-// Canvas static files — serve the workspace's Vite build output (dist/)
-function getCanvasDistDir(): string {
+// =============================================================================
+// Static File Serving — workspace Vite build output (dist/) at root
+// =============================================================================
+
+function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
 
-app.get('/canvas/*', (c) => {
-  const distDir = getCanvasDistDir()
+app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
-  const relativePath = urlPath.replace(/^\/canvas\/?/, '') || 'index.html'
-  const safePath = relativePath.replace(/\.\./g, '').replace(/\/+/g, '/')
-  const filePath = join(distDir, safePath)
+
+  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
+      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
+      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates')) {
+    return c.notFound()
+  }
+
+  const distDir = getDistDir()
+  const safePath = urlPath.replace(/\.\./g, '').replace(/\/+/g, '/')
+  const filePath = join(distDir, safePath === '/' ? 'index.html' : safePath)
 
   if (!filePath.startsWith(resolve(distDir))) {
     return c.notFound()
@@ -2564,49 +2574,6 @@ app.get('/canvas/*', (c) => {
 
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
-  if (existsSync(indexPath)) {
-    return new Response(readFileSync(indexPath), {
-      headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
-    })
-  }
-
-  return c.notFound()
-})
-
-// =============================================================================
-// Static File Serving (app-preview mode)
-// =============================================================================
-
-const PROJECT_DIST = join(WORKSPACE_DIR, 'project', 'dist')
-
-app.get('*', (c) => {
-  const urlPath = new URL(c.req.url).pathname
-
-  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
-      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
-      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
-      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
-      urlPath.startsWith('/canvas')) {
-    return c.notFound()
-  }
-
-  const safePath = urlPath.replace(/\.\./g, '').replace(/\/+/g, '/')
-  const filePath = join(PROJECT_DIST, safePath === '/' ? 'index.html' : safePath)
-
-  if (!filePath.startsWith(resolve(PROJECT_DIST))) {
-    return c.notFound()
-  }
-
-  if (existsSync(filePath) && statSync(filePath).isFile()) {
-    const ext = extname(filePath).toLowerCase()
-    const mime = STATIC_MIME[ext] || 'application/octet-stream'
-    return new Response(readFileSync(filePath), {
-      headers: { 'Content-Type': mime, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable' },
-    })
-  }
-
-  // SPA fallback: serve index.html for non-file paths
-  const indexPath = join(PROJECT_DIST, 'index.html')
   if (existsSync(indexPath)) {
     return new Response(readFileSync(indexPath), {
       headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
