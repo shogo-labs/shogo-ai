@@ -7,6 +7,11 @@
 
 /* ── Streamdown overrides for chat markdown ── */
 
+/* Base text color — inherits the theme-aware foreground so all
+   prose elements (p, h1-h6, li, td, th, strong, em) respect dark mode. */
+.chat-md {
+  color: rgb(var(--color-foreground));
+}
 
 /* Code block container — flat, minimal chrome */
 .chat-md [data-streamdown="code-block"] {
