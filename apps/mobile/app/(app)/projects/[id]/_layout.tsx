@@ -1133,7 +1133,9 @@ function TopBarBridge({
 // Canvas Panel — renders dynamic app surfaces or runtime preview placeholder
 // ---------------------------------------------------------------------------
 
-/** Polls baseUrl/health until it stops returning 404 (DomainMapping propagation). */
+/** Polls the preview root URL until it stops returning 404.
+ *  Covers both DomainMapping propagation (ingress 404 / CORS error)
+ *  and runtime deployment (old pods serve /canvas/* but not /). */
 function usePreviewReadiness(baseUrl: string | null | undefined): string | null {
   const [ready, setReady] = useState(false)
 
@@ -1143,10 +1145,9 @@ function usePreviewReadiness(baseUrl: string | null | undefined): string | null 
     let alive = true
 
     async function poll() {
-      const probeUrl = `${baseUrl}/health`
-      for (let i = 0; i < 30 && alive; i++) {
+      for (let i = 0; i < 60 && alive; i++) {
         try {
-          const res = await fetch(probeUrl, { signal: AbortSignal.timeout(4000) })
+          const res = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(4000) })
           if (res.status !== 404) { if (alive) setReady(true); return }
         } catch { /* CORS / network failure — DomainMapping not ready */ }
         await new Promise(r => setTimeout(r, 1000))
@@ -1249,11 +1250,18 @@ function CanvasPanel({
   }
 
   // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
+  const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
+
   if (canvasMode === 'code') {
     return (
-      <View className="flex-1 p-2okay, t pt-0">
-        <View className="flex-1 overflow-hidden rounded-2xl">
-          <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} />
+      <View className="flex-1 pt-0">
+        <View className="flex-row items-center justify-end px-2 py-1">
+          <Pressable onPress={() => setIframeRefreshKey(k => k + 1)} className="p-1.5 rounded-md active:opacity-70">
+            <RefreshCw size={14} className="text-muted-foreground" />
+          </Pressable>
+        </View>
+        <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
+          <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} />
         </View>
       </View>
     )
