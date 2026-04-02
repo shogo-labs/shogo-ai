@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
-import { Platform, View, StyleSheet } from 'react-native'
+import { ActivityIndicator, Platform, Text, View, StyleSheet } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasWebViewProps {
@@ -169,7 +169,10 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanv
   if (!canvasUrl || !agentUrl) {
     return (
       <View style={styles.container}>
-        <View style={styles.placeholder} />
+        <View style={styles.loading}>
+          <ActivityIndicator size="large" />
+          <Text style={styles.loadingText}>Connecting to runtime...</Text>
+        </View>
       </View>
     )
   }
@@ -356,11 +359,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  webview: {
+  loading: {
     flex: 1,
-    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
   },
-  placeholder: {
+  loadingText: {
+    fontSize: 14,
+    opacity: 0.5,
+  },
+  webview: {
     flex: 1,
     backgroundColor: 'transparent',
   },
