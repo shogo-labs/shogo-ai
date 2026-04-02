@@ -20,11 +20,11 @@ export function deriveApiUrl(): string | null {
 
 /**
  * Public-facing API URL for URLs that end up in browser-facing contexts
- * (e.g. webchat widget embed snippets). Prefers BETTER_AUTH_URL which is the
- * publicly routable origin, falling back to deriveApiUrl() for local dev.
+ * (e.g. webchat widget embed snippets). Falls back to deriveApiUrl() for
+ * local dev where everything runs on localhost.
  */
 export function derivePublicApiUrl(): string | null {
-  if (process.env.BETTER_AUTH_URL) return process.env.BETTER_AUTH_URL
+  if (process.env.SHOGO_PUBLIC_API_URL) return process.env.SHOGO_PUBLIC_API_URL
   return deriveApiUrl()
 }
 
