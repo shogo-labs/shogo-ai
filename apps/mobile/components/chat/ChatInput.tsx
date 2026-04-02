@@ -72,7 +72,7 @@ export interface InteractionModeConfig {
   Icon: React.ElementType
 }
 
-const INTERACTION_MODES: InteractionModeConfig[] = [
+export const INTERACTION_MODES: InteractionModeConfig[] = [
   {
     id: "agent",
     label: "Agent",
