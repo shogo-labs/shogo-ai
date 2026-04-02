@@ -35,6 +35,7 @@ import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl } from './internal-api'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { FileStateCache } from './file-state-cache'
 
 const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
@@ -88,6 +89,8 @@ export interface ToolContext {
   }) => Promise<void>
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
+  /** Tracks which files the agent has read, their mtimes, and line counts */
+  fileStateCache?: FileStateCache
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -231,12 +234,19 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       } catch { /* proceed to read */ }
       const fullContent = readFileSync(resolved, 'utf-8')
 
+      const totalLineCount = fullContent.split('\n').length
+      const mtime = statSync(resolved).mtimeMs
+
       if (offset !== undefined || limit !== undefined) {
         const lines = fullContent.split('\n')
         const startLine = Math.max(0, ((offset as number) ?? 1) - 1)
         const endLine = limit !== undefined ? startLine + limit : lines.length
         const sliced = lines.slice(startLine, endLine)
         const numberedLines = sliced.map((line, i) => `${startLine + i + 1}|${line}`)
+        ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, {
+          offset: startLine + 1,
+          limit: Math.min(endLine, lines.length) - startLine,
+        })
         return textResult({
           content: numberedLines.join('\n'),
           totalLines: lines.length,
@@ -245,11 +255,11 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const lineCount = fullContent.split('\n').length
+      ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount)
       const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
-      if (lineCount > 500) {
-        result.totalLines = lineCount
-        result.note = `Large file (${lineCount} lines). Use offset/limit to read specific sections, or grep to find the code you need. Reading the whole file wastes context.`
+      if (totalLineCount > 500) {
+        result.totalLines = totalLineCount
+        result.note = `Large file (${totalLineCount} lines). Use offset/limit to read specific sections, or grep to find the code you need. Reading the whole file wastes context.`
       }
       return textResult(result)
     },
@@ -284,6 +294,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       } else {
         writeFileSync(resolved, content, 'utf-8')
       }
+      ctx.fileStateCache?.invalidate(filePath)
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
       if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
@@ -411,6 +422,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
           ? content.split(old_string).join(new_string)
           : content.replace(old_string, new_string)
         writeFileSync(resolved, updated, 'utf-8')
+        ctx.fileStateCache?.invalidate(filePath)
         ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
         if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
           ctx.lspManager.notifyFileChanged(resolved, updated)
@@ -431,6 +443,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         if (fuzzy) {
           const updated = content.substring(0, fuzzy.index) + new_string + content.substring(fuzzy.index + fuzzy.match.length)
           writeFileSync(resolved, updated, 'utf-8')
+          ctx.fileStateCache?.invalidate(filePath)
           ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
           if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
             ctx.lspManager.notifyFileChanged(resolved, updated)
@@ -4101,6 +4114,8 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
       }
 
       unlinkSync(resolved)
+      ctx.fileStateCache?.invalidate(filePath)
+      ctx.fileStateCache?.invalidate(`files/${filePath}`)
       ctx.canvasFileWatcher?.onFileDeleted(filePath)
       return textResult({ ok: true, deleted: filePath })
     },

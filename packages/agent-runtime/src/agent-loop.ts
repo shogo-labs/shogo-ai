@@ -31,9 +31,11 @@ import {
   extractFinalText,
   sumUsage,
 } from './pi-adapter'
+import { wrapToolsWithOrchestration, type OrchestrationOptions } from './tool-orchestration'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { ToolContext }
+export type { OrchestrationOptions }
 
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
@@ -88,6 +90,8 @@ export interface AgentLoopOptions {
   loopDetection?: Partial<LoopDetectorConfig> | false
   /** Custom stream function (for testing — replaces Pi's streamSimple) */
   streamFn?: StreamFn
+  /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
+  orchestration?: OrchestrationOptions | false
 }
 
 export interface ToolCallRecord {
@@ -145,6 +149,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     ? new LoopDetector(typeof options.loopDetection === 'object' ? options.loopDetection : {})
     : null
 
+  // Wrap tools with orchestration: read-only tools run freely in parallel,
+  // write/mutating tools are serialized via an exclusive mutex, all gated
+  // by a concurrency semaphore (default 10).
+  const orchestrated = options.orchestration !== false
+    ? wrapToolsWithOrchestration(tools, typeof options.orchestration === 'object' ? options.orchestration : {})
+    : { tools, state: null }
+
   const toolCalls: ToolCallRecord[] = []
   const pendingArgs = new Map<string, any>()
   const streamingToolCalls = new Map<number, { name: string; id: string }>()
@@ -157,9 +168,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       systemPrompt: system,
       model,
       thinkingLevel: thinkingLevel === 'off' ? undefined : thinkingLevel,
-      tools,
+      tools: orchestrated.tools,
       messages: [...history],
     },
+    toolExecution: 'parallel',
     convertToLlm: defaultConvertToLlm,
     streamFn: options.streamFn,
     getApiKey: (prov) => {
