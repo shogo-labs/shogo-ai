@@ -4,7 +4,7 @@
     "slug": "shogo",
     "version": "0.1.0",
     "orientation": "default",
-    "icon": "./assets/ic_playstore_legacy.png",
+    "icon": "./assets/ic_shogo_legacy.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
     "splash": {
@@ -18,7 +18,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/ic_playstore_legacy.png"
+        "foregroundImage": "./assets/ic_shogo_legacy.png"
       },
       "package": "ai.shogo.mobile",
       "softInputMode": "adjustResize"
@@ -26,7 +26,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/ic_playstore_legacy.png"
+      "favicon": "./assets/ic_shogo_legacy.png"
     },
     "plugins": [
       "expo-router",
