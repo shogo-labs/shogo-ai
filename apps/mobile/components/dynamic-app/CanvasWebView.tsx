@@ -112,40 +112,35 @@ function postCanvasError(
 }
 
 // ---------------------------------------------------------------------------
-// URL readiness — polls until the preview URL is reachable (handles
-// DomainMapping propagation delay on newly-created projects)
+// URL readiness — polls the preview root until it stops returning 404
+// (handles DomainMapping propagation delay on newly-created projects)
 // ---------------------------------------------------------------------------
 
-function useUrlReadiness(url: string | null, maxRetries = 15, intervalMs = 2000): string | null {
-  const [readyUrl, setReadyUrl] = useState<string | null>(null)
+function useUrlReadiness(baseUrl: string | null): string | null {
+  const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    if (!url) { setReadyUrl(null); return }
+    if (!baseUrl) { setReady(false); return }
 
     let alive = true
-    let attempt = 0
 
-    async function probe() {
-      while (alive && attempt < maxRetries) {
+    async function poll() {
+      const probeUrl = `${baseUrl}/health`
+      for (let i = 0; i < 30 && alive; i++) {
         try {
-          await fetch(url!, { method: 'HEAD', mode: 'no-cors', signal: AbortSignal.timeout(3000) })
-          // mode: no-cors returns opaque response (status 0) on success — any
-          // non-throw means the host resolved and responded.
-          if (alive) { setReadyUrl(url); return }
-        } catch {
-          attempt++
-          if (alive) await new Promise(r => setTimeout(r, intervalMs))
-        }
+          const res = await fetch(probeUrl, { signal: AbortSignal.timeout(4000) })
+          if (res.status !== 404) { if (alive) setReady(true); return }
+        } catch { /* CORS error or network failure — DomainMapping not ready */ }
+        await new Promise(r => setTimeout(r, 1000))
       }
-      // Exhausted retries — render anyway; the user can refresh.
-      if (alive) setReadyUrl(url)
+      if (alive) setReady(true)
     }
 
-    probe()
+    poll()
     return () => { alive = false }
-  }, [url, maxRetries, intervalMs])
+  }, [baseUrl])
 
-  return readyUrl
+  return ready ? baseUrl : null
 }
 
 // ---------------------------------------------------------------------------
@@ -154,8 +149,8 @@ function useUrlReadiness(url: string | null, maxRetries = 15, intervalMs = 2000)
 
 export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
-  const targetUrl = iframeBase ? `${iframeBase}/canvas/` : null
-  const canvasUrl = useUrlReadiness(targetUrl)
+  const readyBase = useUrlReadiness(iframeBase)
+  const canvasUrl = readyBase ? `${readyBase}/canvas/` : null
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
 
