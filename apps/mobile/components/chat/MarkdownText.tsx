@@ -3,7 +3,8 @@
 import React, { useMemo } from "react"
 import Markdown from "react-native-marked"
 import type { MarkedStyles } from "react-native-marked"
-import { useColorScheme, type ColorValue } from "react-native"
+import { useColorScheme } from "nativewind"
+import type { ColorValue } from "react-native"
 
 interface ThemeColors {
   text: ColorValue
@@ -35,12 +36,6 @@ const baseStyles: MarkedStyles = {
   h2: { fontSize: 14, fontWeight: "bold", marginBottom: 3 },
   h3: { fontSize: 12, fontWeight: "600", marginBottom: 2 },
   h4: { fontSize: 12, fontWeight: "500" },
-  blockquote: {
-    borderLeftWidth: 2,
-    borderLeftColor: "#d0d0d0",
-    paddingLeft: 10,
-    opacity: 0.8,
-  },
   list: { marginVertical: 2 },
   li: { fontSize: 12, lineHeight: 18 },
   link: { textDecorationLine: "underline" },
@@ -56,14 +51,14 @@ const lightColors: ThemeColors = {
 }
 
 const darkColors: ThemeColors = {
-  text: "#e5e5e5",
-  code: "#1e1e1e",
-  link: "#60a5fa",
-  border: "#404040",
+  text: "#f0f0f0",
+  code: "#2a2a2a",
+  link: "#93c5fd",
+  border: "#525252",
 }
 
 export function MarkdownText({ children }: MarkdownTextProps) {
-  const colorScheme = useColorScheme()
+  const { colorScheme } = useColorScheme()
   const colors = colorScheme === "dark" ? darkColors : lightColors
 
   const value = useMemo(() => children || "", [children])
