@@ -659,6 +659,11 @@ jobs:
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
 
+      - name: Ensure Knative max revision timeout for long-running agent turns
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
           kubectl annotate svc kourier -n kourier-system \
@@ -909,6 +914,11 @@ jobs:
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
 
+      - name: Ensure Knative max revision timeout for long-running agent turns
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
           kubectl annotate svc kourier -n kourier-system \
@@ -1141,6 +1151,11 @@ jobs:
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
 
+      - name: Ensure Knative max revision timeout for long-running agent turns
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
           kubectl annotate svc kourier -n kourier-system \
@@ -1363,6 +1378,11 @@ jobs:
         run: |
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
+
+      - name: Ensure Knative max revision timeout for long-running agent turns
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
 
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
