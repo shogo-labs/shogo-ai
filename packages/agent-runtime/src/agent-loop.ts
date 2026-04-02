@@ -92,6 +92,8 @@ export interface AgentLoopOptions {
   streamFn?: StreamFn
   /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
   orchestration?: OrchestrationOptions | false
+  /** AbortSignal for external cancellation (e.g., user stop). */
+  signal?: AbortSignal
 }
 
 export interface ToolCallRecord {
@@ -162,6 +164,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let iterations = 0
   let loopBreak: LoopDetectorResult | undefined
   let abortTriggered = false
+
+  const { signal } = options
+
+  if (signal?.aborted) {
+    abortTriggered = true
+  }
 
   const agent = new Agent({
     initialState: {
@@ -257,13 +265,29 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     }
   })
 
+  const onAbort = () => {
+    if (!abortTriggered) {
+      abortTriggered = true
+      agent.abort()
+    }
+  }
+  if (signal && !signal.aborted) {
+    signal.addEventListener('abort', onAbort, { once: true })
+  }
+
   let promptError: Error | undefined
   try {
-    await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+    if (abortTriggered) {
+      promptError = new Error('Aborted before prompt')
+    } else {
+      await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+    }
   } catch (err: any) {
     if (!abortTriggered) {
       promptError = err
     }
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
   }
 
   const allMessages = agent.state.messages
