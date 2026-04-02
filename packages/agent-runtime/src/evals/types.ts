@@ -34,6 +34,7 @@ export type EvalCategory =
   | 'tau2-bench'
   | 'terminal-bench'
   | 'feature-bench'
+  | 'subagent'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 

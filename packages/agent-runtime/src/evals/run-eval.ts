@@ -74,6 +74,9 @@ import { CANVAS_V2_LINT_EVALS } from './test-cases-canvas-v2-lint'
 import { BUG_FIX_EVALS } from './test-cases-bug-fix'
 import { CODING_DISCIPLINE_EVALS } from './test-cases-coding-discipline'
 import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
+import { SUBAGENT_CODE_EVALS } from './test-cases-subagent-code'
+import { SUBAGENT_AB_EVALS } from './test-cases-subagent-ab'
+import { subagentEvals as SUBAGENT_EVALS } from './test-cases-subagent'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 import { runRuntimeChecks } from './runtime-checks'
@@ -90,6 +93,7 @@ const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const filterArg = getArg(args, 'filter')
 const tagsArg = getArg(args, 'tags')
 const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'general' | undefined
+const subagentModeArg = getArg(args, 'subagent-mode') as 'static' | 'dynamic' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
@@ -129,9 +133,12 @@ function getEvals(track: string): AgentEval[] {
     case 'bug-fix': return BUG_FIX_EVALS
     case 'coding-discipline': return CODING_DISCIPLINE_EVALS
     case 'skill-server-advanced': return SKILL_SERVER_ADVANCED_EVALS
+    case 'subagent': return SUBAGENT_EVALS
+    case 'subagent-code': return SUBAGENT_CODE_EVALS
+    case 'subagent-ab': return SUBAGENT_AB_EVALS
     case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, all`)
       process.exit(1)
   }
 }
@@ -270,6 +277,7 @@ async function runEvalOnWorker(
     model: modelArg,
     mode: initialMode,
     promptProfile: promptProfileArg,
+    subagentMode: subagentModeArg,
     evalLabel,
     mocks: buildMockPayload(ev.toolMocks),
     verbose: verboseFlag,
@@ -434,6 +442,9 @@ async function main() {
   if (tagsArg) {
     const requiredTags = tagsArg.split(',').map(t => t.trim().toLowerCase())
     evals = evals.filter(e => e.tags?.some(t => requiredTags.includes(t.toLowerCase())))
+  }
+  if (subagentModeArg) {
+    evals = evals.filter(e => !e.tags?.length || e.tags.includes(subagentModeArg))
   }
 
   console.log(`  Evals: ${evals.length}`)

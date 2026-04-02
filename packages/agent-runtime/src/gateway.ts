@@ -29,7 +29,7 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { createTools, createHeartbeatTools, createDynamicModeTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -68,6 +68,9 @@ import {
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
+import { createCodeAgentTool, type CodeAgentConfig } from './code-agent'
+import { STATIC_SUBAGENT_GUIDE, DYNAMIC_SUBAGENT_GUIDE } from './subagent-prompts'
+import { AgentManager } from './agent-manager'
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -180,6 +183,8 @@ export interface GatewayConfig {
   canvasMode?: 'json' | 'code'
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
+  /** Sub-agent mode: 'static' = predefined types (Cursor/Claude Code style), 'dynamic' = agent creates its own specialists at runtime */
+  subagentMode?: 'static' | 'dynamic'
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
@@ -292,6 +297,8 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /** Dynamic sub-agent registry and lifecycle manager */
+  public agentManager = new AgentManager()
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -1273,6 +1280,7 @@ export class AgentGateway {
         : undefined,
       lspManager: this.lspManager ?? undefined,
       fileStateCache: this.fileStateCache,
+      agentManager: this.agentManager,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1293,7 +1301,9 @@ export class AgentGateway {
 
     const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
-      : createTools(toolContext)
+      : this.config.subagentMode === 'dynamic'
+        ? createDynamicModeTools(toolContext)
+        : createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
@@ -1324,6 +1334,23 @@ export class AgentGateway {
     }
     if (this.config.canvasMode === 'code') {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
+    }
+
+    // Inject code_agent tool when in app mode
+    if ((this.config.activeMode || 'canvas') === 'app') {
+      const proxyUrl = process.env.AI_PROXY_URL
+      const proxyToken = process.env.AI_PROXY_TOKEN
+      const codeAgentConfig: CodeAgentConfig = {
+        workspaceDir: this.workspaceDir,
+        aiProxy: proxyUrl && proxyToken ? { url: proxyUrl, token: proxyToken } : null,
+        getModelTier: () => {
+          const m = session.modelOverride || this.config.model.name
+          if (m.includes('haiku')) return 'haiku'
+          if (m.includes('opus')) return 'opus'
+          return 'sonnet'
+        },
+      }
+      assembledTools.push(createCodeAgentTool(codeAgentConfig))
     }
 
     // Interaction mode tool restrictions
@@ -1815,6 +1842,7 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(this.config.subagentMode === 'dynamic' ? DYNAMIC_SUBAGENT_GUIDE : STATIC_SUBAGENT_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }
@@ -1852,6 +1880,8 @@ export class AgentGateway {
         parts.push(skillsSection)
       }
     }
+
+    parts.push(this.config.subagentMode === 'dynamic' ? DYNAMIC_SUBAGENT_GUIDE : STATIC_SUBAGENT_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }
@@ -1973,6 +2003,9 @@ When integrations are connected, use \`tool_search\` to discover available actio
       'The message should explain what went wrong AND how to fix it.',
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
+
+    // 5b. Sub-agent orchestration guide (stable per config — changes only on mode switch)
+    stableParts.push(this.config.subagentMode === 'dynamic' ? DYNAMIC_SUBAGENT_GUIDE : STATIC_SUBAGENT_GUIDE)
 
     // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
 

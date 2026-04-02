@@ -3277,6 +3277,137 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// Fixture: Weekly Team Report — Jira Sprint + GitHub PRs
+// Agent should install jira + github, pull sprint tickets and merged PRs,
+// then synthesize a weekly report of what was built.
+// ---------------------------------------------------------------------------
+
+export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'pattern',
+    patterns: [
+      {
+        match: { query: 'jira' },
+        response: {
+          results: [
+            { name: 'jira', source: 'managed', description: 'Jira project management — issues, sprints, boards', installed: false },
+          ],
+        },
+      },
+      {
+        match: { query: 'github' },
+        response: {
+          results: [
+            { name: 'github', source: 'managed', description: 'GitHub repositories — PRs, issues, actions', installed: false },
+          ],
+        },
+      },
+    ],
+    default: { results: [] },
+  },
+  tool_install: {
+    type: 'pattern',
+    patterns: [
+      {
+        match: { name: 'jira' },
+        response: {
+          ok: true, server: 'composio', source: 'managed', integration: 'jira', toolCount: 2,
+          connected: true, authStatus: 'active',
+          tools: ['JIRA_GET_ISSUES', 'JIRA_GET_SPRINT'],
+          message: 'Installed jira with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'github' },
+        response: {
+          ok: true, server: 'composio', source: 'managed', integration: 'github', toolCount: 2,
+          connected: true, authStatus: 'active',
+          tools: ['GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_PULL_REQUEST'],
+          message: 'Installed github with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+    ],
+    default: { ok: false, error: 'Unknown integration' },
+  },
+  JIRA_GET_ISSUES: {
+    type: 'static',
+    description: 'Search and list Jira issues. Accepts JQL or project key.',
+    paramKeys: ['jql', 'project', 'maxResults'],
+    response: {
+      issues: [
+        { key: 'PROJ-101', summary: 'Implement user authentication flow', status: 'Done', assignee: 'alice@acme.com', storyPoints: 5, completedDate: '2026-03-30', type: 'Story', labels: ['backend', 'auth'] },
+        { key: 'PROJ-102', summary: 'Add password reset email template', status: 'Done', assignee: 'bob@acme.com', storyPoints: 3, completedDate: '2026-03-31', type: 'Story', labels: ['backend', 'email'] },
+        { key: 'PROJ-103', summary: 'Fix checkout total calculation bug', status: 'Done', assignee: 'charlie@acme.com', storyPoints: 2, completedDate: '2026-03-28', type: 'Bug', labels: ['payments'] },
+        { key: 'PROJ-104', summary: 'Redesign settings page UI', status: 'Done', assignee: 'dana@acme.com', storyPoints: 5, completedDate: '2026-04-01', type: 'Story', labels: ['frontend', 'design'] },
+        { key: 'PROJ-105', summary: 'Set up CI/CD pipeline for staging', status: 'Done', assignee: 'alice@acme.com', storyPoints: 3, completedDate: '2026-03-29', type: 'Task', labels: ['devops'] },
+        { key: 'PROJ-106', summary: 'Migrate user table to new schema', status: 'In Review', assignee: 'bob@acme.com', storyPoints: 8, completedDate: null, type: 'Story', labels: ['backend', 'database'] },
+        { key: 'PROJ-107', summary: 'Add rate limiting to API endpoints', status: 'In Progress', assignee: 'charlie@acme.com', storyPoints: 5, completedDate: null, type: 'Story', labels: ['backend', 'security'] },
+        { key: 'PROJ-108', summary: 'Write integration tests for payments', status: 'In Progress', assignee: 'dana@acme.com', storyPoints: 3, completedDate: null, type: 'Task', labels: ['testing'] },
+        { key: 'PROJ-109', summary: 'Update API documentation', status: 'To Do', assignee: 'alice@acme.com', storyPoints: 2, completedDate: null, type: 'Task', labels: ['docs'] },
+        { key: 'PROJ-110', summary: 'Investigate memory leak in worker process', status: 'Done', assignee: 'charlie@acme.com', storyPoints: 3, completedDate: '2026-03-31', type: 'Bug', labels: ['backend', 'performance'] },
+      ],
+      total: 10,
+    },
+  },
+  JIRA_GET_SPRINT: {
+    type: 'static',
+    description: 'Get current or specified sprint details.',
+    paramKeys: ['sprintId', 'boardId'],
+    response: {
+      sprint: {
+        id: 42,
+        name: 'Sprint 42 — Auth & Payments',
+        state: 'active',
+        startDate: '2026-03-24',
+        endDate: '2026-04-04',
+        goal: 'Complete user auth flow and fix payment bugs',
+        completedIssues: 6,
+        totalIssues: 10,
+        totalStoryPoints: 39,
+        completedStoryPoints: 21,
+        velocityLastThreeSprints: [18, 22, 21],
+      },
+    },
+  },
+  GITHUB_LIST_PULL_REQUESTS: {
+    type: 'static',
+    description: 'List pull requests in a repository. Filter by state, author, base branch.',
+    paramKeys: ['state', 'base', 'sort', 'per_page'],
+    response: {
+      pullRequests: [
+        { number: 234, title: 'feat: implement JWT auth middleware (PROJ-101)', author: 'alice', state: 'merged', mergedAt: '2026-03-30T14:22:00Z', base: 'main', additions: 342, deletions: 12, changedFiles: 8, reviewers: ['bob'] },
+        { number: 235, title: 'feat: password reset email with Resend (PROJ-102)', author: 'bob', state: 'merged', mergedAt: '2026-03-31T10:05:00Z', base: 'main', additions: 156, deletions: 4, changedFiles: 5, reviewers: ['alice'] },
+        { number: 236, title: 'fix: checkout total rounding error (PROJ-103)', author: 'charlie', state: 'merged', mergedAt: '2026-03-28T16:30:00Z', base: 'main', additions: 23, deletions: 8, changedFiles: 2, reviewers: ['dana'] },
+        { number: 237, title: 'feat: redesign settings page with new design system (PROJ-104)', author: 'dana', state: 'merged', mergedAt: '2026-04-01T09:15:00Z', base: 'main', additions: 487, deletions: 201, changedFiles: 12, reviewers: ['alice', 'charlie'] },
+        { number: 238, title: 'chore: configure GitHub Actions CI/CD (PROJ-105)', author: 'alice', state: 'merged', mergedAt: '2026-03-29T11:45:00Z', base: 'main', additions: 98, deletions: 0, changedFiles: 3, reviewers: ['bob'] },
+        { number: 239, title: 'fix: memory leak in background worker (PROJ-110)', author: 'charlie', state: 'merged', mergedAt: '2026-03-31T17:00:00Z', base: 'main', additions: 45, deletions: 32, changedFiles: 3, reviewers: ['alice'] },
+        { number: 240, title: 'feat: migrate user table schema (PROJ-106)', author: 'bob', state: 'open', mergedAt: null, base: 'main', additions: 210, deletions: 85, changedFiles: 6, reviewers: ['charlie'] },
+        { number: 241, title: 'refactor: extract shared validation utils', author: 'dana', state: 'merged', mergedAt: '2026-03-30T13:00:00Z', base: 'main', additions: 112, deletions: 67, changedFiles: 7, reviewers: ['bob'] },
+      ],
+      total: 8,
+    },
+  },
+  GITHUB_GET_PULL_REQUEST: {
+    type: 'pattern',
+    patterns: [
+      {
+        match: { pull_number: '234' },
+        response: {
+          number: 234, title: 'feat: implement JWT auth middleware (PROJ-101)', author: 'alice', state: 'merged', mergedAt: '2026-03-30T14:22:00Z',
+          body: 'Implements the full JWT authentication middleware with token refresh, session management, and role-based access control.\n\n## Changes\n- Added auth middleware\n- JWT token generation and validation\n- Session storage in Redis\n- Role-based route guards',
+          additions: 342, deletions: 12, changedFiles: 8,
+          reviews: [{ author: 'bob', state: 'APPROVED', body: 'LGTM, clean implementation.' }],
+        },
+      },
+    ],
+    default: {
+      number: 0, title: 'Unknown PR', author: 'unknown', state: 'unknown',
+      body: 'No details available', additions: 0, deletions: 0, changedFiles: 0, reviews: [],
+    },
+  },
+}
+
 /**
  * Build the mock payload for an eval. Merges built-in tool mocks with
  * the eval's specific `toolMocks`. Only MCP tools explicitly listed in

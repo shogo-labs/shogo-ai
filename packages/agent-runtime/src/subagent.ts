@@ -14,6 +14,7 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
 
@@ -39,6 +40,8 @@ const CORE_GATEWAY_TOOLS = new Set([
 // Types
 // ---------------------------------------------------------------------------
 
+export type ModelTierName = 'fast' | 'default' | 'capable'
+
 export interface SubagentConfig {
   name: string
   description: string
@@ -51,6 +54,8 @@ export interface SubagentConfig {
   includeInstalledTools?: boolean
   model?: string
   provider?: string
+  /** Model tier shorthand — resolved to a concrete model name via resolveModelTier(). */
+  modelTier?: ModelTierName
   maxTurns?: number
   /** Override working directory for file tools (scoping). */
   workingDir?: string
@@ -58,6 +63,8 @@ export interface SubagentConfig {
   maxTokens?: number
   /** Override loop detector config. Pass false to disable. */
   loopDetection?: Partial<LoopDetectorConfig> | false
+  /** When true, strip all write/mutating tools — only read-only tools are available. */
+  readonly?: boolean
 }
 
 export interface SubagentResult {
@@ -68,6 +75,8 @@ export interface SubagentResult {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** Conversation messages produced during this run (for resume support). */
+  newMessages?: Message[]
 }
 
 export interface SubagentStreamCallbacks {
@@ -322,8 +331,40 @@ function parseAgentFrontmatter(raw: string): CustomAgentDef {
 }
 
 // ---------------------------------------------------------------------------
+// Model Tier Resolution
+// ---------------------------------------------------------------------------
+
+import { CONCURRENT_SAFE_TOOLS } from './tool-orchestration'
+
+const MODEL_TIER_MAP: Record<ModelTierName, string> = {
+  fast: 'claude-haiku-4-5',
+  default: '', // sentinel — uses parent model
+  capable: 'claude-sonnet-4-6',
+}
+
+export function resolveModelTier(tier: ModelTierName | undefined, parentModel: string): string {
+  if (!tier || tier === 'default') return parentModel
+  return MODEL_TIER_MAP[tier] || parentModel
+}
+
+// ---------------------------------------------------------------------------
+// Read-only tool set (used by readonly mode)
+// ---------------------------------------------------------------------------
+
+const READONLY_TOOLS = new Set([
+  ...CONCURRENT_SAFE_TOOLS,
+  'ask_user',
+  'todo_write',
+])
+
+// ---------------------------------------------------------------------------
 // Subagent Execution
 // ---------------------------------------------------------------------------
+
+export interface SubagentRunOptions {
+  /** Pre-existing conversation history for resume support. */
+  history?: Message[]
+}
 
 export async function runSubagent(
   config: SubagentConfig,
@@ -331,6 +372,7 @@ export async function runSubagent(
   parentCtx: ToolContext,
   allParentTools: AgentTool[],
   callbacks?: SubagentStreamCallbacks,
+  options?: SubagentRunOptions,
 ): Promise<SubagentResult> {
   callbacks?.onStart?.(config.name, config.description)
 
@@ -362,23 +404,30 @@ export async function runSubagent(
     tools = [...allParentTools]
   }
 
-  // Always strip task/skill/code_agent from subagent tools to prevent nesting
+  // Always strip task/skill/code_agent + dynamic-mode agent tools from subagent tools
   const disallowed = new Set([
     ...(config.disallowedTools || []),
     'task', 'code_agent',
+    'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
   ])
   tools = tools.filter(t => !disallowed.has(t.name))
 
-  const model = config.model || parentCtx.config.model.name
+  // Readonly mode: strip all write/mutating tools
+  if (config.readonly) {
+    tools = tools.filter(t => READONLY_TOOLS.has(t.name))
+  }
+
+  const model = resolveModelTier(config.modelTier, config.model || parentCtx.config.model.name)
   const provider = config.provider || parentCtx.config.model.provider
   const maxIterations = config.maxTurns || 10
+  const history = options?.history || []
 
   try {
     const result = await runAgentLoop({
       provider,
       model,
       system: config.systemPrompt,
-      history: [],
+      history,
       prompt,
       tools,
       maxIterations,
@@ -408,6 +457,7 @@ export async function runSubagent(
       outputTokens: result.outputTokens,
       cacheReadTokens: result.cacheReadTokens,
       cacheWriteTokens: result.cacheWriteTokens,
+      newMessages: result.newMessages,
     }
   } catch (err: any) {
     const errorMsg = `Subagent ${config.name} failed: ${err.message}`
@@ -420,6 +470,24 @@ export async function runSubagent(
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      newMessages: [],
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Parallel Sub-Agent Execution
+// ---------------------------------------------------------------------------
+
+export async function runSubagentsParallel(
+  configs: Array<{ config: SubagentConfig; prompt: string }>,
+  parentCtx: ToolContext,
+  allParentTools: AgentTool[],
+  callbacks?: SubagentStreamCallbacks,
+): Promise<SubagentResult[]> {
+  return Promise.all(
+    configs.map(({ config, prompt }) =>
+      runSubagent(config, prompt, parentCtx, allParentTools, callbacks),
+    ),
+  )
 }

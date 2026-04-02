@@ -21,6 +21,8 @@ import {
   getBuiltinSubagentConfig,
   loadCustomAgents,
   type SubagentConfig,
+  type SubagentResult,
+  type SubagentStreamCallbacks,
   type CustomAgentDef,
 } from './subagent'
 import { MemorySearchEngine } from './memory-search'
@@ -92,6 +94,8 @@ export interface ToolContext {
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
   /** Tracks which files the agent has read, their mtimes, and line counts */
   fileStateCache?: FileStateCache
+  /** Dynamic sub-agent registry and lifecycle manager */
+  agentManager?: import('./agent-manager').AgentManager
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -3504,6 +3508,43 @@ function createMcpUninstallTool(ctx: ToolContext): AgentTool {
 
 let cachedCustomAgents: CustomAgentDef[] | null = null
 
+/** Background tasks awaiting completion, keyed by taskId. */
+interface BackgroundTask {
+  promise: Promise<SubagentResult>
+  startedAt: number
+  name: string
+  status: 'running' | 'completed' | 'failed'
+  result?: SubagentResult
+}
+const backgroundTasks = new Map<string, BackgroundTask>()
+
+function createTaskStatusTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_status',
+    description: 'Check the status of a background task spawned with task(background: true).',
+    label: 'Task Status',
+    parameters: Type.Object({
+      task_id: Type.String({ description: 'The task ID returned by a background task call' }),
+    }),
+    execute: async (_id, params) => {
+      const { task_id } = params as { task_id: string }
+      const entry = backgroundTasks.get(task_id)
+      if (!entry) return textResult({ error: `Unknown task: ${task_id}` })
+      if (entry.status === 'running') {
+        return textResult({ status: 'running', name: entry.name, elapsed_ms: Date.now() - entry.startedAt })
+      }
+      const r = entry.result
+      return textResult({
+        status: entry.status,
+        name: entry.name,
+        elapsed_ms: Date.now() - entry.startedAt,
+        summary: r?.text,
+        tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
+      })
+    },
+  }
+}
+
 function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'task',
@@ -3512,7 +3553,8 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
       'Built-in types: explore (fast read-only codebase search, uses Haiku), general-purpose (all tools). ' +
       'Also available: code_agent (scoped to project/), canvas_agent (canvas tools + integrations). ' +
       'Custom agents from .claude/agents/ are also available. ' +
-      'Note: the main agent has all tools directly — subagents are optional for parallelism or isolation.',
+      'Use model_tier to control cost: fast (cheap searches), default (parent model), capable (best reasoning). ' +
+      'Use background: true for long-running tasks, then check with task_status.',
     label: 'Task',
     parameters: Type.Object({
       description: Type.String({ description: 'Short 3-5 word task description' }),
@@ -3521,7 +3563,11 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
         description: 'Agent type: explore, general-purpose, code_agent, canvas_agent, or custom name',
       })),
       model: Type.Optional(Type.String({ description: 'Model override (e.g. claude-haiku-4-5)' })),
+      model_tier: Type.Optional(Type.String({ description: 'Model tier: fast (cheap), default (parent), capable (best)' })),
       max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
+      readonly: Type.Optional(Type.Boolean({ description: 'If true, strip all write tools — read-only mode' })),
+      background: Type.Optional(Type.Boolean({ description: 'If true, run in background and return a task_id immediately' })),
+      resume: Type.Optional(Type.String({ description: 'Task ID to resume — sends a follow-up prompt to an existing agent' })),
     }),
     execute: async (_toolCallId, params, context) => {
       const {
@@ -3529,10 +3575,15 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
         prompt,
         subagent_type: agentType = 'general-purpose',
         model,
+        model_tier,
         max_turns,
+        readonly: readonlyMode,
+        background,
+        resume,
       } = params as {
         description: string; prompt: string;
-        subagent_type?: string; model?: string; max_turns?: number
+        subagent_type?: string; model?: string; model_tier?: string; max_turns?: number;
+        readonly?: boolean; background?: boolean; resume?: string
       }
 
       let config: SubagentConfig | null = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
@@ -3562,7 +3613,23 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
       }
 
       if (model) config.model = model
+      if (model_tier && (model_tier === 'fast' || model_tier === 'default' || model_tier === 'capable')) {
+        config.modelTier = model_tier as import('./subagent').ModelTierName
+      }
       if (max_turns) config.maxTurns = max_turns
+      if (readonlyMode) config.readonly = true
+
+      // Background mode: fire and forget, return task_id immediately
+      if (background) {
+        const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const entry: BackgroundTask = { promise: null as any, startedAt: Date.now(), name: config.name, status: 'running', result: undefined }
+        entry.promise = runSubagent(config, prompt, ctx, allToolsGetter()).then(
+          (result) => { (entry as BackgroundTask).status = 'completed'; entry.result = result; return result },
+          (err) => { (entry as BackgroundTask).status = 'failed'; const r: SubagentResult = { text: err.message, toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }; entry.result = r; return r },
+        )
+        backgroundTasks.set(taskId, entry)
+        return textResult({ task_id: taskId, status: 'running', name: config.name, hint: 'Use task_status to check progress' })
+      }
 
       const w = ctx.uiWriter
       let subReasoningId: string | null = null
@@ -3667,7 +3734,16 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
         },
       } : undefined
 
-      const result = await runSubagent(config, prompt, ctx, allToolsGetter(), callbacks)
+      // Retrieve history from a previous background task for resume
+      const resumeHistory = resume ? backgroundTasks.get(resume)?.result?.newMessages : undefined
+      const result = await runSubagent(config, prompt, ctx, allToolsGetter(), callbacks, { history: resumeHistory ?? [] })
+
+      // Store result for potential future resume
+      if (result.newMessages && result.newMessages.length > 0) {
+        const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const entry: BackgroundTask = { promise: Promise.resolve(result), startedAt: Date.now(), name: config.name, status: 'completed', result }
+        backgroundTasks.set(taskId, entry)
+      }
 
       // Emit subagent token usage so it's tracked by the SSE consumer (eval runner, server.ts billing)
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
@@ -3694,6 +3770,295 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
       })
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic Sub-Agent Tools (agent_create, agent_spawn, agent_status, etc.)
+// ---------------------------------------------------------------------------
+
+import { AgentManager } from './agent-manager'
+import type { ModelTierName } from './subagent'
+
+function createAgentCreateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_create',
+    description:
+      'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. ' +
+      'Use the same name to update an existing type. Set persist: true to save across sessions.',
+    label: 'Create Agent',
+    parameters: Type.Object({
+      name: Type.String({ description: 'Unique agent type name (e.g. "test-writer", "pr-reviewer")' }),
+      description: Type.String({ description: 'Short description of what this agent does' }),
+      system_prompt: Type.String({ description: 'System prompt for the agent (max 4000 chars)' }),
+      tools: Type.Optional(Type.Array(Type.String(), { description: 'Tool names this agent can use. Omit for all tools.' })),
+      model_tier: Type.Optional(Type.String({ description: 'Model tier: fast, default, or capable' })),
+      max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
+      readonly: Type.Optional(Type.Boolean({ description: 'If true, only read-only tools are available' })),
+      persist: Type.Optional(Type.Boolean({ description: 'If true, save to .claude/agents/ for future sessions' })),
+    }),
+    execute: async (_id, params) => {
+      const { name, description, system_prompt, tools, model_tier, max_turns, readonly: ro, persist } = params as {
+        name: string; description: string; system_prompt: string;
+        tools?: string[]; model_tier?: string; max_turns?: number; readonly?: boolean; persist?: boolean
+      }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const config: SubagentConfig = {
+        name,
+        description,
+        systemPrompt: system_prompt,
+        toolNames: tools,
+        modelTier: (model_tier as ModelTierName) || 'default',
+        maxTurns: max_turns || 10,
+        readonly: ro,
+      }
+
+      const result = am.register(config, persist)
+      if (!result.ok) return textResult({ error: result.error })
+
+      if (persist) am.persistToWorkspace(ctx.workspaceDir)
+      return textResult({ ok: true, name, description, persisted: !!persist })
+    },
+  }
+}
+
+function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+  return {
+    name: 'agent_spawn',
+    description:
+      'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
+      'Use background: true for async execution, then check with agent_status/agent_result. ' +
+      'Built-in types: explore, general-purpose, code_agent, canvas_agent.',
+    label: 'Spawn Agent',
+    parameters: Type.Object({
+      type: Type.String({ description: 'Agent type name (built-in or created with agent_create)' }),
+      prompt: Type.String({ description: 'Task prompt for the agent' }),
+      background: Type.Optional(Type.Boolean({ description: 'If true, run asynchronously (default: false — blocks until done)' })),
+      resume: Type.Optional(Type.String({ description: 'Instance ID to resume (sends follow-up to existing agent)' })),
+    }),
+    execute: async (_id, params) => {
+      const { type, prompt, background, resume } = params as {
+        type: string; prompt: string; background?: boolean; resume?: string
+      }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const history = resume ? am.getInstanceMessages(resume) ?? undefined : undefined
+
+      const w = ctx.uiWriter
+      const callbacks: SubagentStreamCallbacks | undefined = w ? {
+        onStart: (name: string, desc: string) => {
+          w.write({ type: 'data-subagent-start', data: { name, description: desc } })
+        },
+        onEnd: (name: string, summary: string) => {
+          w.write({ type: 'data-subagent-end', data: { name, summary: summary.substring(0, 500) } })
+        },
+        onTextDelta: (delta: string) => {
+          w.write({ type: 'text-delta', delta })
+        },
+      } : undefined
+
+      const spawnResult = am.spawn(type, prompt, ctx, allToolsGetter(), callbacks, { history })
+      if (!spawnResult.ok) return textResult({ error: spawnResult.error })
+
+      const instanceId = spawnResult.instanceId
+
+      if (background) {
+        return textResult({ instance_id: instanceId, status: 'running', hint: 'Use agent_status or agent_result to check progress' })
+      }
+
+      // Synchronous: wait for completion
+      const inst = am.getInstance(instanceId)
+      if (!inst) return textResult({ error: 'Instance lost' })
+      const result = await inst.promise
+
+      return textResult({
+        instance_id: instanceId,
+        status: inst.status,
+        summary: result.text,
+        tokens: { input: result.inputTokens, output: result.outputTokens },
+        toolCalls: result.toolCalls,
+        iterations: result.iterations,
+      })
+    },
+  }
+}
+
+function createAgentStatusTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_status',
+    description: 'Check the status of agent instances. Omit instance_id to see all.',
+    label: 'Agent Status',
+    parameters: Type.Object({
+      instance_id: Type.Optional(Type.String({ description: 'Specific instance ID to check' })),
+    }),
+    execute: async (_id, params) => {
+      const { instance_id } = params as { instance_id?: string }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      if (instance_id) {
+        const inst = am.getInstance(instance_id)
+        if (!inst) return textResult({ error: `Unknown instance: ${instance_id}` })
+        return textResult({
+          id: inst.id,
+          type: inst.type,
+          status: inst.status,
+          elapsed_ms: Date.now() - inst.startedAt,
+          ...(inst.result ? { summary_preview: inst.result.text.substring(0, 200) } : {}),
+        })
+      }
+
+      return textResult({ instances: am.listInstances() })
+    },
+  }
+}
+
+function createAgentCancelTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_cancel',
+    description: 'Cancel a running agent instance.',
+    label: 'Cancel Agent',
+    parameters: Type.Object({
+      instance_id: Type.String({ description: 'Instance ID to cancel' }),
+    }),
+    execute: async (_id, params) => {
+      const { instance_id } = params as { instance_id: string }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const cancelled = am.cancel(instance_id)
+      return textResult({ ok: cancelled, instance_id })
+    },
+  }
+}
+
+function createAgentResultTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_result',
+    description: 'Get the full result of a completed agent instance.',
+    label: 'Agent Result',
+    parameters: Type.Object({
+      instance_id: Type.String({ description: 'Instance ID to retrieve result for' }),
+    }),
+    execute: async (_id, params) => {
+      const { instance_id } = params as { instance_id: string }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const inst = am.getInstance(instance_id)
+      if (!inst) return textResult({ error: `Unknown instance: ${instance_id}` })
+      if (inst.status === 'running') return textResult({ status: 'running', hint: 'Agent is still running. Check again later.' })
+
+      const r = inst.result
+      return textResult({
+        instance_id: inst.id,
+        type: inst.type,
+        status: inst.status,
+        summary: r?.text ?? '(no output)',
+        tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
+        toolCalls: r?.toolCalls ?? 0,
+        iterations: r?.iterations ?? 0,
+      })
+    },
+  }
+}
+
+function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+  return {
+    name: 'agent_list',
+    description: 'List all registered agent types (built-in and custom) with performance metrics.',
+    label: 'List Agents',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const types = am.listTypes(ctx, allToolsGetter())
+      const instances = am.listInstances()
+
+      return textResult({ types, active_instances: instances.filter(i => i.status === 'running').length, total_instances: instances.length })
+    },
+  }
+}
+
+/**
+ * Build the full tool set for dynamic sub-agent mode.
+ * Includes all base tools (minus the static `task` and `task_status` tools)
+ * plus the 6 agent_* tools.
+ */
+export function createDynamicModeTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
+  const pe = ctx.permissionEngine
+  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+
+  const tools: AgentTool[] = [
+    g(createExecTool(ctx), 'shell'),
+    g(createReadFileTool(ctx), 'file_read'),
+    g(createWriteFileTool(ctx), 'file_write'),
+    g(createEditFileTool(ctx), 'file_write'),
+    g(createGlobTool(ctx), 'file_read'),
+    g(createGrepTool(ctx), 'file_read'),
+    g(createLsTool(ctx), 'file_read'),
+    g(createListFilesTool(ctx), 'file_read'),
+    g(createDeleteFileTool(ctx), 'file_delete'),
+    g(createSearchFilesTool(ctx), 'file_read'),
+    g(createCodeSearchTool(ctx), 'file_read'),
+    g(createWebTool(), 'network'),
+    g(createBrowserTool(ctx), 'network'),
+    createMemoryReadTool(ctx),
+    createMemorySearchTool(ctx),
+    createTodoWriteTool(ctx),
+    createAskUserTool(ctx),
+    createNotifyUserErrorTool(),
+    createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
+    createChannelDisconnectTool(ctx),
+    createChannelListTool(ctx),
+    createCanvasCreateTool(),
+    createCanvasUpdateTool(),
+    createCanvasDataTool(),
+    createCanvasDataPatchTool(),
+    createCanvasDeleteTool(),
+    createCanvasActionWaitTool(),
+    createCanvasComponentsTool({ basic: true }),
+    createCanvasApiSchemaTool(),
+    createCanvasApiSeedTool(),
+    createCanvasApiQueryTool(),
+    createCanvasApiHooksTool(),
+    createCanvasApiBindTool(ctx),
+    createCanvasTriggerActionTool(),
+    createCanvasInspectTool(),
+    createReadLintsTool(ctx),
+    createToolSearchTool(ctx),
+    createToolInstallTool(ctx),
+    createToolUninstallTool(ctx),
+    createMcpSearchTool(),
+    createMcpInstallTool(ctx),
+    createMcpUninstallTool(ctx),
+    g(createGenerateImageTool(ctx), 'network'),
+    g(createTranscribeAudioTool(ctx), 'network'),
+    createHeartbeatConfigureTool(ctx),
+    createHeartbeatStatusTool(ctx),
+    createCreatePlanTool(ctx),
+  ]
+
+  const allToolsGetter = () => tools
+  tools.push(createSkillTool(ctx, allToolsGetter))
+
+  // Dynamic-mode agent tools (replaces task/task_status)
+  tools.push(createAgentCreateTool(ctx))
+  tools.push(createAgentSpawnTool(ctx, allToolsGetter))
+  tools.push(createAgentStatusTool(ctx))
+  tools.push(createAgentCancelTool(ctx))
+  tools.push(createAgentResultTool(ctx))
+  tools.push(createAgentListTool(ctx, allToolsGetter))
+
+  if (extraTools) {
+    tools.push(...extraTools)
+  }
+
+  return tools
 }
 
 // ---------------------------------------------------------------------------
@@ -5024,9 +5389,11 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCreatePlanTool(ctx),
   ]
 
-  // Self-referencing getter for tools that need the full tool list (skill)
+  // Self-referencing getter for tools that need the full tool list (skill, task)
   const allToolsGetter = () => tools
   tools.push(createSkillTool(ctx, allToolsGetter))
+  tools.push(createTaskTool(ctx, allToolsGetter))
+  tools.push(createTaskStatusTool(ctx))
 
   if (extraTools) {
     tools.push(...extraTools)
