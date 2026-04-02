@@ -19,6 +19,8 @@ interface CanvasWebViewProps {
   canvasBaseUrl?: string | null
   activeSurfaceId?: string | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
+  /** Incremented externally to force the iframe to reload. */
+  refreshKey?: number
 }
 
 interface CanvasEvent {
@@ -115,7 +117,7 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
+export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError, refreshKey }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
   const canvasUrl = iframeBase ? `${iframeBase}/` : null
   const sse = useCanvasSSE(agentUrl)
@@ -142,7 +144,7 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanv
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
+    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
   }
 
   return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
