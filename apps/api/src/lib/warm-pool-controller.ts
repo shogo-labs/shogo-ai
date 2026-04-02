@@ -768,6 +768,7 @@ export class WarmPoolController {
    *  1. Remove from in-memory assigned map
    *  2. Clear knativeServiceName in the database
    *  3. Delete the old Knative Service (async, best-effort)
+   *  4. Delete the preview DomainMapping (async, best-effort)
    *
    * The next chat/runtime request triggers getProjectPodUrl() which
    * claims a new warm pod from the pool.
@@ -818,6 +819,17 @@ export class WarmPoolController {
         }
       })()
     }
+
+    // Delete the preview DomainMapping (best-effort, non-blocking)
+    ;(async () => {
+      try {
+        const { getKnativeProjectManager } = await import('./knative-project-manager')
+        const manager = getKnativeProjectManager()
+        await manager.deletePreviewDomainMapping(projectId)
+      } catch (err: any) {
+        console.error(`[WarmPool] evictProject: failed to delete DomainMapping for ${projectId} (non-fatal):`, err.message)
+      }
+    })()
 
     console.log(`[WarmPool] evictProject: evicted project ${projectId} from ${oldServiceName || '(not found)'}`)
     return { evicted: !!oldServiceName, oldService: oldServiceName }
@@ -1062,7 +1074,7 @@ export class WarmPoolController {
         console.log(
           `[WarmPool GC] Deleting orphaned promoted pod ${pod.serviceName} (project ${pod.projectId} no longer maps to it)`
         )
-        this.deleteWarmPodService(pod.serviceName).catch((err) => {
+        this.deleteWarmPodService(pod.serviceName, pod.projectId).catch((err) => {
           console.error(`[WarmPool GC] Failed to delete orphan ${pod.serviceName}:`, err.message)
         })
         orphansDeleted++
@@ -1263,7 +1275,7 @@ export class WarmPoolController {
           continue
         }
 
-        this.deleteWarmPodService(svc.name).catch((err) => {
+        this.deleteWarmPodService(svc.name, svc.projectId ?? undefined).catch((err) => {
           console.error(`[WarmPool GC:namespace] Failed to delete ${svc.name}:`, err.message)
         })
         deleted++
@@ -1835,9 +1847,11 @@ export class WarmPoolController {
   }
 
   /**
-   * Delete a warm pool Knative Service.
+   * Delete a warm pool Knative Service and its associated DomainMapping.
+   * When projectId is provided, also cleans up the preview DomainMapping
+   * to prevent orphaned DomainMappings that continuously fail to reconcile.
    */
-  private async deleteWarmPodService(serviceName: string): Promise<void> {
+  private async deleteWarmPodService(serviceName: string, projectId?: string): Promise<void> {
     try {
       const api = getCustomApi()
       await api.deleteNamespacedCustomObject({
@@ -1851,6 +1865,16 @@ export class WarmPoolController {
     } catch (err: any) {
       if (err?.code !== 404 && err?.response?.statusCode !== 404) {
         throw err
+      }
+    }
+
+    if (projectId) {
+      try {
+        const { getKnativeProjectManager } = await import('./knative-project-manager')
+        const manager = getKnativeProjectManager()
+        await manager.deletePreviewDomainMapping(projectId)
+      } catch (err: any) {
+        console.error(`[WarmPool] Failed to delete DomainMapping for project ${projectId} (non-fatal):`, err.message)
       }
     }
   }
