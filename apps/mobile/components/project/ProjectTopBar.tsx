@@ -62,6 +62,7 @@ import {
   Trash2,
   Terminal,
   ClipboardList,
+  RefreshCw,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
@@ -142,6 +143,7 @@ export interface ProjectTopBarProps {
   onCreateNewSession?: () => void
   // Slot for canvas theme picker
   canvasThemePicker?: React.ReactNode
+  onCanvasRefresh?: () => void
 }
 
 function BarIconButton({
@@ -230,6 +232,7 @@ export function ProjectTopBar({
   onChatCollapseToggle,
   onCreateNewSession,
   canvasThemePicker,
+  onCanvasRefresh,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width, height } = useWindowDimensions()
@@ -666,8 +669,11 @@ export function ProjectTopBar({
 
         <View className="flex-1" />
 
-        {/* Canvas theme picker */}
+        {/* Canvas theme picker + refresh */}
         {isCanvasActive && canvasThemePicker}
+        {isCanvasActive && onCanvasRefresh && (
+          <BarIconButton icon={RefreshCw} onPress={onCanvasRefresh} title="Refresh preview" />
+        )}
 
         {/* Right actions */}
         <View className="flex-row items-center gap-0.5">

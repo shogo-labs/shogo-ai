@@ -517,7 +517,7 @@ export class WorkspaceLSPManager {
 
   private async warmupTS(): Promise<void> {
     const warmupFile = join(this.projectDir, '.shogo', '__lsp_warmup__.ts')
-    const warmupContent = '// LSP warmup sentinel — do not delete\nvar _w = useState(0)\nreturn h("div", {}, _w[0])\n'
+    const warmupContent = '// LSP warmup sentinel — do not delete\nimport { useState } from "react"\nvar _w = useState(0)\nreturn h("div", {}, _w[0])\n'
     try {
       mkdirSync(join(this.projectDir, '.shogo'), { recursive: true })
       writeFileSync(warmupFile, warmupContent, 'utf-8')
@@ -544,7 +544,7 @@ export class WorkspaceLSPManager {
   renotifyWarmupFile(): void {
     if (!this.tsServer?.isRunning()) return
     const warmupFile = join(this.projectDir, '.shogo', '__lsp_warmup__.ts')
-    const warmupContent = '// LSP warmup sentinel — do not delete\nvar _w = useState(0)\nreturn h("div", {}, _w[0])\n'
+    const warmupContent = '// LSP warmup sentinel — do not delete\nimport { useState } from "react"\nvar _w = useState(0)\nreturn h("div", {}, _w[0])\n'
     try {
       mkdirSync(join(this.projectDir, '.shogo'), { recursive: true })
       writeFileSync(warmupFile, warmupContent, 'utf-8')

@@ -199,6 +199,7 @@ export default observer(function ProjectLayout() {
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
   const canvasMode = (projectSettings.canvasMode as 'json' | 'code') || 'json'
+  const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
   const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
   const activeMode = rawMode === 'app' ? 'none' : rawMode
@@ -837,6 +838,7 @@ export default observer(function ProjectLayout() {
       onRefresh={reconnect}
       fullBleed={!isWide}
       canvasMode={canvasMode}
+      iframeRefreshKey={iframeRefreshKey}
     />
   ) : null
 
@@ -880,6 +882,7 @@ export default observer(function ProjectLayout() {
     onCreateNewSession: handleCreateNewSession,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
     effectiveSurfaceId,
+    onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
   }
 
   return (
@@ -1176,6 +1179,7 @@ function CanvasPanel({
   onRefresh,
   fullBleed,
   canvasMode = 'json',
+  iframeRefreshKey = 0,
 }: {
   surface: any | null
   surfaces: Map<string, any>
@@ -1190,6 +1194,7 @@ function CanvasPanel({
   onRefresh?: () => void
   fullBleed?: boolean
   canvasMode?: 'json' | 'code'
+  iframeRefreshKey?: number
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -1199,7 +1204,6 @@ function CanvasPanel({
   // Poll the preview URL's /health endpoint until the DomainMapping propagates.
   // Until ready, treat canvasBaseUrl as null so the loading screen stays visible.
   const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl)
-  const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
 
   const CONNECTION_TIMEOUT_MS = 60_000
   const [timedOut, setTimedOut] = useState(false)
@@ -1253,15 +1257,8 @@ function CanvasPanel({
   // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
   if (canvasMode === 'code') {
     return (
-      <View className="flex-1 pt-0">
-        <View className="flex-row items-center justify-end px-2 py-1">
-          <Pressable onPress={() => setIframeRefreshKey(k => k + 1)} className="p-1.5 rounded-md active:opacity-70">
-            <RefreshCw size={14} className="text-muted-foreground" />
-          </Pressable>
-        </View>
-        <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-          <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} />
-        </View>
+      <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
+        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} />
       </View>
     )
   }

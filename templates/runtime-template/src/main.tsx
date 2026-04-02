@@ -18,7 +18,43 @@ es.onmessage = (e) => {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Parent bridge — receive theme + other messages from the host app
+// ---------------------------------------------------------------------------
+
+function applyCanvasTheme(variables: Record<string, string>, isDark: boolean) {
+  const el = document.documentElement
+
+  el.classList.toggle('dark', isDark)
+
+  for (const [key, triplet] of Object.entries(variables)) {
+    const value = `rgb(${triplet})`
+    el.style.setProperty(key, value)
+    // Also set the base variable (e.g. --background for --color-background)
+    // so Tailwind v4's @theme inline mapping stays consistent.
+    if (key.startsWith('--color-')) {
+      el.style.setProperty(`--${key.slice(8)}`, value)
+    }
+  }
+}
+
+window.addEventListener('message', (e) => {
+  const msg = e.data
+  if (!msg || typeof msg !== 'object') return
+
+  if (msg.type === 'canvas-theme') {
+    applyCanvasTheme(msg.variables, msg.isDark)
+  }
+})
+
+// ---------------------------------------------------------------------------
+
 const root = document.getElementById('root')
 if (root) {
   createRoot(root).render(<App />)
+}
+
+// Signal the parent that we're ready to receive messages.
+if (window.parent !== window) {
+  window.parent.postMessage({ type: 'canvas-ready' }, '*')
 }
