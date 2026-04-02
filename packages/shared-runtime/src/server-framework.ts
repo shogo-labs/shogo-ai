@@ -280,6 +280,11 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
           await next()
           return
         }
+        const poolPath = c.req.path
+        if (poolPath === '/pool/assign' || poolPath === '/pool/activity') {
+          await next()
+          return
+        }
         const denied = checkRuntimeAuth(c)
         if (denied) return denied
         await next()
