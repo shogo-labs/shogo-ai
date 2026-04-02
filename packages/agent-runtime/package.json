@@ -26,7 +26,8 @@
     "generate-templates:force": "bun run src/template-generator/cli.ts --force",
     "generate-templates:dry": "bun run src/template-generator/cli.ts --dry-run",
     "migrate-canvas": "bun run src/migrate-canvas-to-code.ts",
-    "migrate-canvas:all": "bun run src/migrate-canvas-to-code.ts --all"
+    "migrate-canvas:all": "bun run src/migrate-canvas-to-code.ts --all",
+    "test:pool-assign": "bun run ../../scripts/test-pool-assign.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",

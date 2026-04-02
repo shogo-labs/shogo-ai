@@ -113,17 +113,9 @@ export class CodeIndexEngine {
     const proxyToken = process.env.AI_PROXY_TOKEN
     const effectiveKey = directKey || proxyToken
 
-    if (effectiveKey && this.vecExtensionLoaded) {
-      this.openai = new OpenAI({
-        apiKey: effectiveKey,
-        baseURL: process.env.OPENAI_BASE_URL || (
-          !directKey && proxyUrl ? `${proxyUrl}/openai` : undefined
-        ),
-      })
-      this.embeddingsEnabled = true
-    } else {
-      this.embeddingsEnabled = false
-    }
+    // Embeddings disabled — FTS5 keyword search is sufficient and avoids
+    // the memory/latency cost of embedding API calls during indexing.
+    this.embeddingsEnabled = false
 
     this.initSchema()
   }

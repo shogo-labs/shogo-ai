@@ -2768,7 +2768,13 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // =============================================================================
 
 if (state.isPoolMode && !state.poolAssigned) {
-  logTiming('Pool mode: skipping project init, server ready for assignment')
+  logTiming('Pool mode: pre-seeding workspace with runtime template...')
+  ensureWorkspaceFiles()
+  ensureWorkspaceDeps(WORKSPACE_DIR).then(() => {
+    logTiming('Pool mode: workspace pre-seeded, ready for assignment')
+  }).catch(err => {
+    console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
+  })
 } else {
   // Runs for both normal (non-pool) startup AND self-assigned cold-start pods.
   // Self-assigned pods have poolAssigned=true and need full init to restore
