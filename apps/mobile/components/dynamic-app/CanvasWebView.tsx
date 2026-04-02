@@ -112,12 +112,50 @@ function postCanvasError(
 }
 
 // ---------------------------------------------------------------------------
+// URL readiness — polls until the preview URL is reachable (handles
+// DomainMapping propagation delay on newly-created projects)
+// ---------------------------------------------------------------------------
+
+function useUrlReadiness(url: string | null, maxRetries = 15, intervalMs = 2000): string | null {
+  const [readyUrl, setReadyUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!url) { setReadyUrl(null); return }
+
+    let alive = true
+    let attempt = 0
+
+    async function probe() {
+      while (alive && attempt < maxRetries) {
+        try {
+          await fetch(url!, { method: 'HEAD', mode: 'no-cors', signal: AbortSignal.timeout(3000) })
+          // mode: no-cors returns opaque response (status 0) on success — any
+          // non-throw means the host resolved and responded.
+          if (alive) { setReadyUrl(url); return }
+        } catch {
+          attempt++
+          if (alive) await new Promise(r => setTimeout(r, intervalMs))
+        }
+      }
+      // Exhausted retries — render anyway; the user can refresh.
+      if (alive) setReadyUrl(url)
+    }
+
+    probe()
+    return () => { alive = false }
+  }, [url, maxRetries, intervalMs])
+
+  return readyUrl
+}
+
+// ---------------------------------------------------------------------------
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
 export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
-  const canvasUrl = iframeBase ? `${iframeBase}/canvas/` : null
+  const targetUrl = iframeBase ? `${iframeBase}/canvas/` : null
+  const canvasUrl = useUrlReadiness(targetUrl)
   const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
 
