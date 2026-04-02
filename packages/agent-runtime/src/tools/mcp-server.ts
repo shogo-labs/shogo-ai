@@ -13,7 +13,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdir
 import { join, resolve, extname, dirname } from 'path'
 import { randomUUID } from 'crypto'
 import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
-import { deriveApiUrl } from '../internal-api'
+import { deriveApiUrl, derivePublicApiUrl } from '../internal-api'
 
 /**
  * Resolve a path ensuring it stays within the given base directory.
@@ -510,7 +510,7 @@ defineTool({
           const widgetPath = `/agent/channels/webchat/widget.js?widgetKey=${widgetKey}`
           let widgetUrl: string
           if (process.env.KUBERNETES_SERVICE_HOST) {
-            const apiUrl = deriveApiUrl()
+            const apiUrl = derivePublicApiUrl()
             widgetUrl = `${apiUrl}/api/projects/${PROJECT_ID}/agent-proxy${widgetPath}`
           } else {
             widgetUrl = `http://localhost:${port}${widgetPath}`

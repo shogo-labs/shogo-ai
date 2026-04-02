@@ -1664,6 +1664,11 @@ export class WarmPoolController {
     env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
     env.push({ name: 'TOOLS_PROXY_URL', value: `${apiUrl}/api/tools` })
 
+    // Public API URL for browser-facing contexts (e.g. webchat widget embed snippets)
+    if (process.env.SHOGO_PUBLIC_API_URL) {
+      env.push({ name: 'SHOGO_PUBLIC_API_URL', value: process.env.SHOGO_PUBLIC_API_URL })
+    }
+
     // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
       env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
