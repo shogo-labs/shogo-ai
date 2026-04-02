@@ -1157,7 +1157,8 @@ export class KnativeProjectManager {
             },
           },
           spec: {
-            timeoutSeconds: 600,
+            timeoutSeconds: 1800,
+            responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
             containers,
             volumes,

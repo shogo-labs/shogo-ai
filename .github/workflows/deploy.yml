@@ -654,10 +654,16 @@ jobs:
             CERTS_SECRET_NAMESPACE=kourier-system \
             CERTS_SECRET_NAME=kourier-tls || true
 
-      - name: Ensure Kourier connection draining
+      - name: Ensure Kourier connection draining and stream timeouts
         run: |
           kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15"}}' || true
+            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
+
+      - name: Ensure OCI LB idle timeout for SSE streaming
+        run: |
+          kubectl annotate svc kourier -n kourier-system \
+            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
+            --overwrite || true
 
       - name: Deploy Cluster Autoscaler
         env:
@@ -898,10 +904,16 @@ jobs:
             CERTS_SECRET_NAMESPACE=kourier-system \
             CERTS_SECRET_NAME=kourier-tls || true
 
-      - name: Ensure Kourier connection draining
+      - name: Ensure Kourier connection draining and stream timeouts
         run: |
           kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15"}}' || true
+            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
+
+      - name: Ensure OCI LB idle timeout for SSE streaming
+        run: |
+          kubectl annotate svc kourier -n kourier-system \
+            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
+            --overwrite || true
 
       - name: Ensure docs DomainMapping
         if: env.DOCS_DOMAIN != ''
@@ -1124,10 +1136,16 @@ jobs:
             CERTS_SECRET_NAMESPACE=kourier-system \
             CERTS_SECRET_NAME=kourier-tls || true
 
-      - name: Ensure Kourier connection draining
+      - name: Ensure Kourier connection draining and stream timeouts
         run: |
           kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15"}}' || true
+            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
+
+      - name: Ensure OCI LB idle timeout for SSE streaming
+        run: |
+          kubectl annotate svc kourier -n kourier-system \
+            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
+            --overwrite || true
 
       - name: Ensure docs DomainMapping
         if: env.DOCS_DOMAIN != ''
@@ -1341,10 +1359,16 @@ jobs:
             CERTS_SECRET_NAMESPACE=kourier-system \
             CERTS_SECRET_NAME=kourier-tls || true
 
-      - name: Ensure Kourier connection draining
+      - name: Ensure Kourier connection draining and stream timeouts
         run: |
           kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15"}}' || true
+            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
+
+      - name: Ensure OCI LB idle timeout for SSE streaming
+        run: |
+          kubectl annotate svc kourier -n kourier-system \
+            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
+            --overwrite || true
 
       - name: Ensure docs DomainMapping
         if: env.DOCS_DOMAIN != ''

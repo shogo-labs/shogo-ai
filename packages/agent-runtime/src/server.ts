@@ -653,6 +653,7 @@ app.post('/agent/chat', async (c) => {
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
 
+  trackStreamStart()
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
@@ -677,6 +678,8 @@ app.post('/agent/chat', async (c) => {
         writer.write({ type: 'finish', finishReason: 'stop' })
       } catch (error: any) {
         writer.write({ type: 'error', errorText: error.message || 'Agent chat error' } as any)
+      } finally {
+        trackStreamEnd()
       }
     },
   })
@@ -2697,15 +2700,42 @@ async function initialize(): Promise<void> {
 }
 
 // =============================================================================
+// In-Flight Request Tracking
+// =============================================================================
+
+let activeStreams = 0
+let isShuttingDown = false
+
+function trackStreamStart(): void { activeStreams++ }
+function trackStreamEnd(): void { activeStreams = Math.max(0, activeStreams - 1) }
+
+// =============================================================================
 // Graceful Shutdown
 // =============================================================================
 
-let isShuttingDown = false
+const DRAIN_TIMEOUT_MS = 30_000
 
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return
   isShuttingDown = true
-  console.log(`[agent-runtime] ${signal} received — starting graceful shutdown`)
+  console.log(`[agent-runtime] ${signal} received — draining ${activeStreams} active stream(s) (max ${DRAIN_TIMEOUT_MS / 1000}s)`)
+
+  if (activeStreams > 0) {
+    const drainStart = Date.now()
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (activeStreams <= 0 || Date.now() - drainStart > DRAIN_TIMEOUT_MS) {
+          clearInterval(check)
+          if (activeStreams > 0) {
+            console.warn(`[agent-runtime] Drain timeout — ${activeStreams} stream(s) still active, proceeding with shutdown`)
+          } else {
+            console.log(`[agent-runtime] All streams drained in ${Date.now() - drainStart}ms`)
+          }
+          resolve()
+        }
+      }, 500)
+    })
+  }
 
   try {
     if (s3SyncInstance) {
@@ -2758,5 +2788,5 @@ if (state.isPoolMode && !state.poolAssigned) {
 export default {
   port: PORT,
   fetch: app.fetch,
-  idleTimeout: 120,
+  idleTimeout: 0,
 }
