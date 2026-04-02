@@ -53,6 +53,7 @@ import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
+import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
@@ -87,6 +88,7 @@ export default observer(function ProjectLayout() {
     id: string
     chatSessionId?: string
     initialMessage?: string
+    initialInteractionMode?: string
     appTemplateName?: string
     showIntegrations?: string
   }>()
@@ -108,6 +110,12 @@ export default observer(function ProjectLayout() {
 
   // Capture initialMessage and files once so they don't re-fire on re-renders
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
+  const [capturedInitialInteractionMode] = useState<InteractionMode | undefined>(() => {
+    const raw = params.initialInteractionMode
+    const m = Array.isArray(raw) ? raw[0] : raw
+    if (m === 'agent' || m === 'plan' || m === 'ask') return m
+    return undefined
+  })
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
@@ -814,6 +822,7 @@ export default observer(function ProjectLayout() {
       projectId={projectId}
       projectType="unified"
       initialMessage={capturedInitialMessage}
+      initialInteractionMode={capturedInitialInteractionMode}
       initialFiles={capturedInitialFiles}
       billingData={features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}

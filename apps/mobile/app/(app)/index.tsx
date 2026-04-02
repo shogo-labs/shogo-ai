@@ -29,7 +29,8 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
-import type { FileAttachment } from '../../components/chat/ChatInput'
+import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
+import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
@@ -195,6 +196,7 @@ const HomeScreen = observer(function HomeScreen() {
   const gridColumns = screenWidth < 640 ? 2 : screenWidth < 1024 ? 2 : 3
 
   const [prompt, setPrompt] = useState('')
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
@@ -301,6 +303,18 @@ const HomeScreen = observer(function HomeScreen() {
     return name.split(' ')[0] || 'there'
   }, [user?.name])
 
+  const handleHomeInteractionModeChange = useCallback((mode: InteractionMode) => {
+    setInteractionMode(mode)
+    void saveInteractionModePreference(mode)
+  }, [])
+
+  const homeComposerPlaceholder =
+    interactionMode === 'plan'
+      ? 'Describe what you want to plan...'
+      : interactionMode === 'ask'
+        ? 'Ask a question...'
+        : 'Ask Shogo to create...'
+
   const handlePromptSubmit = useCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
     setIsCreating(true)
@@ -348,12 +362,13 @@ const HomeScreen = observer(function HomeScreen() {
           id: newProject.id,
           chatSessionId: chatSession.id,
           initialMessage: text,
+          initialInteractionMode: interactionMode,
         },
       } as any)
     } finally {
       setIsCreating(false)
     }
-  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog])
+  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog, interactionMode])
 
   const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -458,7 +473,7 @@ const HomeScreen = observer(function HomeScreen() {
             </Text>
 
             <View
-              className="w-full rounded-2xl overflow-hidden bg-card border border-border"
+              className="w-full rounded-2xl"
               style={Platform.OS === 'web' ? {
                 maxWidth: 680,
                 boxShadow: isDark
@@ -471,9 +486,11 @@ const HomeScreen = observer(function HomeScreen() {
               <CompactChatInput
                 onSubmit={handlePromptSubmit}
                 isLoading={isCreating}
-                placeholder="Ask Shogo to create..."
+                placeholder={homeComposerPlaceholder}
                 value={prompt}
                 onChange={setPrompt}
+                interactionMode={interactionMode}
+                onInteractionModeChange={handleHomeInteractionModeChange}
               />
             </View>
           </View>
