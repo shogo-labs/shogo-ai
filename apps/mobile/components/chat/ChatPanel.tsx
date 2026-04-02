@@ -62,7 +62,16 @@ import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
-import { ChatInput, type AgentMode, type InteractionMode, type FileAttachment } from "./ChatInput"
+import {
+  ChatInput,
+  type AgentMode,
+  type InteractionMode,
+  type FileAttachment,
+} from "./ChatInput"
+import {
+  loadInteractionModePreference,
+  saveInteractionModePreference,
+} from "../../lib/interaction-mode-preference"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -114,41 +123,6 @@ async function saveAgentMode(value: AgentMode): Promise<void> {
       return
     }
     await SecureStore.setItemAsync(AGENT_MODE_KEY, value)
-  } catch {
-    // Silently fail
-  }
-}
-
-// ============================================================
-// Interaction Mode Persistence
-// ============================================================
-
-const INTERACTION_MODE_KEY = "interaction-mode-preference"
-
-async function loadInteractionMode(): Promise<InteractionMode | null> {
-  try {
-    if (Platform.OS === "web") {
-      const stored = typeof localStorage !== "undefined" ? localStorage.getItem(INTERACTION_MODE_KEY) : null
-      if (stored === "agent" || stored === "plan" || stored === "ask") return stored
-      return null
-    }
-    const stored = await SecureStore.getItemAsync(INTERACTION_MODE_KEY)
-    if (stored === "agent" || stored === "plan" || stored === "ask") return stored
-    return null
-  } catch {
-    return null
-  }
-}
-
-async function saveInteractionMode(value: InteractionMode): Promise<void> {
-  try {
-    if (Platform.OS === "web") {
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(INTERACTION_MODE_KEY, value)
-      }
-      return
-    }
-    await SecureStore.setItemAsync(INTERACTION_MODE_KEY, value)
   } catch {
     // Silently fail
   }
@@ -225,6 +199,8 @@ export interface ChatPanelProps {
   onCollapsedChange?: (collapsed: boolean) => void
   initialMessage?: string
   initialFiles?: FileAttachment[]
+  /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
+  initialInteractionMode?: InteractionMode
   onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void
   compactValue?: string
   onCompactValueChange?: (value: string) => void
@@ -560,6 +536,7 @@ export const ChatPanel = observer(function ChatPanel({
   onCollapsedChange,
   initialMessage,
   initialFiles,
+  initialInteractionMode,
   onCompactSubmit,
   compactValue,
   onCompactValueChange,
@@ -698,19 +675,26 @@ export const ChatPanel = observer(function ChatPanel({
     saveAgentMode(mode)
   }, [])
 
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>("agent")
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>(
+    () => initialInteractionMode ?? "agent"
+  )
 
   useEffect(() => {
-    loadInteractionMode().then((stored) => {
+    if (initialInteractionMode) {
+      setInteractionMode(initialInteractionMode)
+      void saveInteractionModePreference(initialInteractionMode)
+      return
+    }
+    void loadInteractionModePreference().then((stored) => {
       if (stored) {
         setInteractionMode(stored)
       }
     })
-  }, [])
+  }, [initialInteractionMode])
 
   const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
     setInteractionMode(mode)
-    saveInteractionMode(mode)
+    void saveInteractionModePreference(mode)
   }, [])
 
   const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)

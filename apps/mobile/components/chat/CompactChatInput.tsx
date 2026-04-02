@@ -12,11 +12,29 @@
  * Drag-and-drop is omitted (not available on mobile).
  */
 
-import { useState, useRef, useCallback, forwardRef, useEffect } from "react"
+import { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon } from "lucide-react-native"
-import type { FileAttachment } from "./ChatInput"
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverContent,
+} from "@/components/ui/popover"
+import {
+  Paperclip,
+  Send,
+  Loader2,
+  X,
+  File,
+  FileText,
+  ImageIcon,
+  ChevronDown,
+} from "lucide-react-native"
+import {
+  INTERACTION_MODES,
+  type FileAttachment,
+  type InteractionMode,
+} from "./ChatInput"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -38,6 +56,8 @@ export interface CompactChatInputProps {
   className?: string
   value?: string
   onChange?: (value: string) => void
+  interactionMode?: InteractionMode
+  onInteractionModeChange?: (mode: InteractionMode) => void
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -50,6 +70,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       className,
       value: controlledValue,
       onChange: controlledOnChange,
+      interactionMode: controlledInteractionMode,
+      onInteractionModeChange,
     },
     ref
   ) {
@@ -59,13 +81,39 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
     const [attachSheetOpen, setAttachSheetOpen] = useState(false)
+    const [interactionModeOpen, setInteractionModeOpen] = useState(false)
+    const [internalInteractionMode, setInternalInteractionMode] =
+      useState<InteractionMode>("agent")
+    const interactionMode = controlledInteractionMode ?? internalInteractionMode
+
+    const handleInteractionModeChange = useCallback(
+      (mode: InteractionMode) => {
+        if (onInteractionModeChange) {
+          onInteractionModeChange(mode)
+        } else {
+          setInternalInteractionMode(mode)
+        }
+      },
+      [onInteractionModeChange]
+    )
+
+    const currentInteractionConfig = useMemo(
+      () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
+      [interactionMode]
+    )
     const fileInputRef = useRef<HTMLInputElement | null>(null)
     const dropZoneRef = useRef<View>(null)
 
     const value = controlledValue ?? internalValue
     const setValue = controlledOnChange ?? setInternalValue
 
-    const placeholderText = placeholderProp ?? "Describe the agent you want to build..."
+    const placeholderText =
+      placeholderProp ??
+      (interactionMode === "plan"
+        ? "Describe what you want to plan..."
+        : interactionMode === "ask"
+          ? "Ask a question..."
+          : "Describe the agent you want to build...")
 
     const formatFileSize = useCallback((bytes: number): string => {
       if (bytes < 1024) return `${bytes} B`
@@ -281,7 +329,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
           {/* Action bar */}
           <View className="px-4 pb-4 flex-row items-center justify-between gap-2">
-            <View className="flex-row items-center gap-1">
+            <View className="flex-row items-center gap-1 flex-1 min-w-0">
               <Pressable
                 onPress={handleAttachClick}
                 disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
@@ -294,6 +342,125 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 <Text className="text-xs text-gray-400">Attach</Text>
               </Pressable>
 
+              <Popover
+                placement="top"
+                size="xs"
+                isOpen={interactionModeOpen}
+                onOpen={() => setInteractionModeOpen(true)}
+                onClose={() => setInteractionModeOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    disabled={disabled || isLoading}
+                    className={cn(
+                      "h-8 flex-row items-center gap-1 rounded-md px-2 max-w-[140px]",
+                      interactionMode === "agent" && "bg-muted/50",
+                      interactionMode === "plan" &&
+                        "border border-amber-500/45 bg-amber-500/12",
+                      interactionMode === "ask" &&
+                        "border border-emerald-500/45 bg-emerald-500/12"
+                    )}
+                    testID="home-interaction-mode-trigger"
+                  >
+                    <currentInteractionConfig.Icon
+                      className={cn(
+                        "h-3 w-3 shrink-0",
+                        interactionMode === "agent" && "text-muted-foreground",
+                        interactionMode === "plan" && "text-amber-400",
+                        interactionMode === "ask" && "text-emerald-400"
+                      )}
+                      size={12}
+                    />
+                    <Text
+                      className={cn(
+                        "text-xs shrink-0",
+                        interactionMode === "agent" && "text-muted-foreground",
+                        interactionMode === "plan" && "text-amber-400",
+                        interactionMode === "ask" && "text-emerald-400"
+                      )}
+                      numberOfLines={1}
+                    >
+                      {currentInteractionConfig.label}
+                    </Text>
+                    <ChevronDown
+                      className={cn(
+                        "h-2.5 w-2.5 shrink-0",
+                        interactionMode === "agent" && "text-muted-foreground/60",
+                        interactionMode === "plan" && "text-amber-400/80",
+                        interactionMode === "ask" && "text-emerald-400/80"
+                      )}
+                      size={10}
+                    />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-[280px] p-0">
+                  <View className="py-1">
+                    {INTERACTION_MODES.map((mode) => {
+                      const isSelected = mode.id === interactionMode
+                      return (
+                        <Pressable
+                          key={mode.id}
+                          onPress={() => {
+                            handleInteractionModeChange(mode.id)
+                            setInteractionModeOpen(false)
+                          }}
+                          className={cn(
+                            "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                            isSelected &&
+                              mode.id === "agent" &&
+                              "bg-accent",
+                            isSelected &&
+                              mode.id === "plan" &&
+                              "border border-amber-500/35 bg-amber-500/12",
+                            isSelected &&
+                              mode.id === "ask" &&
+                              "border border-emerald-500/35 bg-emerald-500/12"
+                          )}
+                        >
+                          <View className="w-8 items-center">
+                            <mode.Icon
+                              className={cn(
+                                "h-3.5 w-3.5",
+                                isSelected &&
+                                  mode.id === "plan" &&
+                                  "text-amber-400",
+                                isSelected &&
+                                  mode.id === "ask" &&
+                                  "text-emerald-400",
+                                (!isSelected || mode.id === "agent") &&
+                                  "text-muted-foreground"
+                              )}
+                              size={14}
+                            />
+                          </View>
+                          <View className="flex-1">
+                            <Text
+                              className={cn(
+                                "font-medium text-sm",
+                                isSelected &&
+                                  mode.id === "plan" &&
+                                  "text-amber-400",
+                                isSelected &&
+                                  mode.id === "ask" &&
+                                  "text-emerald-400",
+                                (!isSelected || mode.id === "agent") &&
+                                  "text-foreground"
+                              )}
+                            >
+                              {mode.label}
+                            </Text>
+                            <Text className="text-xs text-muted-foreground">
+                              {mode.description}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      )
+                    })}
+                  </View>
+                </PopoverContent>
+              </Popover>
             </View>
 
             <Pressable
