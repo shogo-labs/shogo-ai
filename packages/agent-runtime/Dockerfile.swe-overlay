@@ -46,6 +46,9 @@ COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY templates/runtime-template ./templates/runtime-template
 
+# Pre-install runtime-template dependencies so workspaces get node_modules instantly
+RUN cd templates/runtime-template && bun install
+
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     bun run scripts/fetch-external-skills.ts && \
     apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*

@@ -70,6 +70,14 @@ export class CanvasBuildManager {
       this.pendingBuild = true
       return
     }
+
+    if (!existsSync(join(this.workspaceDir, 'package.json'))) {
+      return
+    }
+    if (!existsSync(join(this.workspaceDir, 'node_modules', '.bin', 'vite'))) {
+      return
+    }
+
     this.building = true
 
     try {

@@ -33,7 +33,7 @@ import {
   initializePostgresBackup,
   configureAIProxy,
 } from '@shogo/shared-runtime'
-import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig } from './workspace-defaults'
+import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
@@ -170,11 +170,9 @@ function ensureWorkspaceFiles(): void {
     logTiming('Migrated legacy APP layout into project/ subdirectory')
   }
 
-  // Ensure project/ dir exists (empty placeholder for when app mode is activated)
-  const projectDir = join(WORKSPACE_DIR, 'project')
-  if (!existsSync(projectDir)) {
-    mkdirSync(projectDir, { recursive: true })
-  }
+  // Seed runtime-template (Vite + React + Tailwind + shadcn/ui) if not already present.
+  // This provides the Vite project structure so `bun run build` works for canvas mode.
+  seedRuntimeTemplate(WORKSPACE_DIR)
 }
 
 // AI proxy is configured by the shared framework (state.aiProxy)
@@ -2645,6 +2643,15 @@ async function initializeEssentials(): Promise<void> {
     } catch (error: any) {
       console.error('[agent-runtime] S3 sync init failed:', error.message)
     }
+  }
+
+  // Ensure workspace has node_modules (template copy may include them;
+  // otherwise install now — before canvas build manager tries `bun run build`).
+  try {
+    await ensureWorkspaceDeps(WORKSPACE_DIR)
+    logTiming('Workspace deps ready')
+  } catch (err: any) {
+    console.error('[agent-runtime] Workspace deps install failed:', err.message)
   }
 
   // Initialize canvas state manager with disk persistence.

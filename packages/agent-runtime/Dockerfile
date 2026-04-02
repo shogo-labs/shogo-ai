@@ -51,6 +51,9 @@ COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/model-catalog ./packages/model-catalog
 COPY templates/runtime-template ./templates/runtime-template
 
+# Pre-install runtime-template dependencies so workspaces get node_modules instantly
+RUN cd templates/runtime-template && bun install
+
 # Fetch external Claude Code skills from skill-registry.json
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     bun run scripts/fetch-external-skills.ts && \

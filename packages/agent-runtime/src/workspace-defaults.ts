@@ -181,6 +181,107 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 }
 
 // ---------------------------------------------------------------------------
+// Runtime Template Seed (Vite + React + Tailwind + shadcn/ui)
+// ---------------------------------------------------------------------------
+
+const RUNTIME_TEMPLATE_SKIP = new Set([
+  'dist',
+  '.shogo',
+  // Prisma generated files and lock are workspace-specific
+  'src/generated',
+])
+
+/**
+ * Resolve the path to the runtime-template directory.
+ * In Docker: /app/templates/runtime-template
+ * In local dev: ../../templates/runtime-template (relative to src/)
+ */
+function getRuntimeTemplatePath(): string | null {
+  const candidates = [
+    join(__dirname, '..', '..', '..', 'templates', 'runtime-template'),
+    '/app/templates/runtime-template',
+  ]
+  for (const p of candidates) {
+    if (existsSync(join(p, 'package.json'))) return p
+  }
+  return null
+}
+
+/**
+ * Copy runtime-template files into a workspace so it's a working
+ * Vite + React project out of the box. Copies node_modules if the
+ * template has pre-installed deps (from Docker build). Skips files
+ * that already exist to preserve user modifications (e.g. after S3 restore).
+ *
+ * Returns true if files were copied, false if template was not found
+ * or workspace already has a package.json.
+ */
+export function seedRuntimeTemplate(dir: string): boolean {
+  if (existsSync(join(dir, 'package.json'))) return false
+
+  const templatePath = getRuntimeTemplatePath()
+  if (!templatePath) {
+    console.warn('[workspace-defaults] runtime-template not found — skipping')
+    return false
+  }
+
+  cpSync(templatePath, dir, {
+    recursive: true,
+    filter: (src) => {
+      const rel = src.slice(templatePath.length + 1)
+      if (!rel) return true
+      const topLevel = rel.split('/')[0]
+      return !RUNTIME_TEMPLATE_SKIP.has(topLevel) && !RUNTIME_TEMPLATE_SKIP.has(rel)
+    },
+  })
+
+  console.log('[workspace-defaults] Seeded runtime template into workspace')
+  return true
+}
+
+/**
+ * Ensure workspace has node_modules installed.
+ * If the template copy included pre-installed node_modules, this is a no-op.
+ * Otherwise, runs `bun install` to install dependencies.
+ */
+export async function ensureWorkspaceDeps(dir: string): Promise<void> {
+  if (!existsSync(join(dir, 'package.json'))) return
+  if (existsSync(join(dir, 'node_modules', '.package-lock.json')) ||
+      existsSync(join(dir, 'node_modules', '.cache'))) return
+
+  const viteBin = join(dir, 'node_modules', '.bin', 'vite')
+  if (existsSync(viteBin)) return
+
+  console.log('[workspace-defaults] Installing workspace dependencies...')
+  const { spawn } = await import('child_process')
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('bun', ['install', '--frozen-lockfile'], {
+      cwd: dir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    proc.stdout?.on('data', () => {})
+    proc.on('close', (code) => {
+      if (code === 0) resolve()
+      else {
+        console.warn(`[workspace-defaults] bun install exited with code ${code}, retrying without --frozen-lockfile`)
+        const retry = spawn('bun', ['install'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+        retry.stderr?.on('data', () => {})
+        retry.stdout?.on('data', () => {})
+        retry.on('close', (c2) => {
+          if (c2 === 0) resolve()
+          else reject(new Error(`bun install failed: ${stderr}`))
+        })
+        retry.on('error', reject)
+      }
+    })
+    proc.on('error', reject)
+  })
+  console.log('[workspace-defaults] Workspace dependencies installed')
+}
+
+// ---------------------------------------------------------------------------
 // Skill Server Seed
 // ---------------------------------------------------------------------------
 
