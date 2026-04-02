@@ -151,6 +151,21 @@ export class S3Sync {
     }
   }
 
+  /**
+   * Mark the current lockfile hash as already synced so the first upload
+   * cycle won't try to create a deps archive. Call this when node_modules
+   * were pre-seeded from a template (not restored from S3) to avoid an
+   * expensive tar.gz of 37K+ files that can OOM small containers.
+   */
+  async markDepsPreSeeded(): Promise<void> {
+    const hash = await this.computeLockfileHash()
+    if (hash) {
+      this.currentLockfileHash = hash
+      this.depsNeedUpload = false
+      console.log(`[S3Sync] Marked deps as pre-seeded (lockfile hash: ${hash})`)
+    }
+  }
+
   // ===========================================================================
   // S3 Key Helpers
   // ===========================================================================
