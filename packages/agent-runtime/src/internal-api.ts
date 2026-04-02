@@ -18,6 +18,16 @@ export function deriveApiUrl(): string | null {
   return `http://api.${systemNs}.svc.cluster.local`
 }
 
+/**
+ * Public-facing API URL for URLs that end up in browser-facing contexts
+ * (e.g. webchat widget embed snippets). Falls back to deriveApiUrl() for
+ * local dev where everything runs on localhost.
+ */
+export function derivePublicApiUrl(): string | null {
+  if (process.env.SHOGO_PUBLIC_API_URL) return process.env.SHOGO_PUBLIC_API_URL
+  return deriveApiUrl()
+}
+
 export function getInternalHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {

@@ -1022,6 +1022,11 @@ export class KnativeProjectManager {
       env.push({ name: "BETTER_AUTH_URL", value: process.env.BETTER_AUTH_URL })
     }
 
+    // Public API URL for browser-facing contexts (e.g. webchat widget embed snippets)
+    if (process.env.SHOGO_PUBLIC_API_URL) {
+      env.push({ name: "SHOGO_PUBLIC_API_URL", value: process.env.SHOGO_PUBLIC_API_URL })
+    }
+
     // Third-party API keys (Composio, Serper, OpenAI embeddings) are NOT
     // injected into pods. Agents proxy these requests through the API server
     // via TOOLS_PROXY_URL, which holds the real keys server-side.

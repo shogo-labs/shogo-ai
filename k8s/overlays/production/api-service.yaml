@@ -115,6 +115,8 @@ spec:
               value: "shogo.one"
             - name: BETTER_AUTH_URL
               value: "https://studio.shogo.ai"
+            - name: SHOGO_PUBLIC_API_URL
+              value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
             - name: REDIS_URL
