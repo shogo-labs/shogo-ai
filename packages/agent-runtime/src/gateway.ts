@@ -2094,6 +2094,8 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
     lines.push('')
     lines.push('Use these tools directly — no need to search or install them. Use `tool_uninstall` to remove any you no longer need.')
+    lines.push('')
+    lines.push('**From canvas code:** These tools are also callable from React code via `import { useTools } from \'@shogo-ai/sdk/tools\'`. Use `const { execute } = useTools()` then `await execute(\'TOOL_NAME\', { ...args })`. This is the preferred pattern when building apps that need ongoing access to integration data.')
 
     return lines.join('\n')
   }
