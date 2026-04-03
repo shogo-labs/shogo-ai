@@ -94,3 +94,56 @@ export function wroteEnvFile(result: EvalResult, key: string): boolean {
       return (path === '.env' || path.endsWith('/.env')) && content.includes(key)
     })
 }
+
+// ---------------------------------------------------------------------------
+// Skill server exec validation
+// ---------------------------------------------------------------------------
+
+interface ExecCallInfo {
+  command: string
+  stdout: string
+  exitCode: number
+}
+
+/** Extract all exec tool calls that target the local skill server. */
+export function execCallsToSkillServer(result: EvalResult): ExecCallInfo[] {
+  return result.toolCalls
+    .filter(t => t.name === 'exec')
+    .map(t => {
+      const output = t.output as any
+      const input = t.input as any
+      const command = typeof input?.command === 'string' ? input.command : ''
+      const stdout = output?.details?.stdout ?? output?.stdout ?? ''
+      const exitCode = output?.details?.exitCode ?? output?.exitCode ?? 1
+      return { command, stdout: String(stdout), exitCode: Number(exitCode) }
+    })
+    .filter(o =>
+      o.command.includes('localhost:4100') ||
+      o.command.includes('127.0.0.1:4100') ||
+      o.stdout.includes('localhost:4100') ||
+      o.stdout.includes('127.0.0.1:4100')
+    )
+}
+
+/** True if the agent made at least one exec call to the skill server that returned valid data. */
+export function anyExecToSkillServerSucceeded(result: EvalResult): boolean {
+  const calls = execCallsToSkillServer(result)
+  if (calls.length === 0) return true
+  return calls.some(c =>
+    c.exitCode === 0 &&
+    !c.stdout.includes('ENOENT') &&
+    !c.stdout.includes('404 Not Found') &&
+    !c.stdout.includes('Cannot connect')
+  )
+}
+
+/** True if the agent's last exec call to the skill server did not return an error. */
+export function lastSkillServerExecSucceeded(result: EvalResult): boolean {
+  const calls = execCallsToSkillServer(result)
+  if (calls.length === 0) return true
+  const last = calls[calls.length - 1]
+  return last.exitCode === 0 &&
+    !last.stdout.includes('ENOENT') &&
+    !last.stdout.includes('404 Not Found') &&
+    !last.stdout.includes('Cannot connect')
+}

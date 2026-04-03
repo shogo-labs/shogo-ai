@@ -49,6 +49,14 @@ interface RegisteredAgent {
   metrics: AgentTypeMetrics
 }
 
+export interface ActivityEntry {
+  tool: string
+  summary: string
+  at: number
+}
+
+const MAX_RECENT_ACTIVITY = 10
+
 export interface ManagedInstance {
   id: string
   type: string
@@ -60,6 +68,8 @@ export interface ManagedInstance {
   abort: AbortController
   /** Conversation messages for resume support. */
   messages?: Message[]
+  /** Rolling window of recent tool calls for progress visibility while running. */
+  recentActivity: ActivityEntry[]
 }
 
 export interface AgentTypeInfo {
@@ -209,7 +219,20 @@ export class AgentManager {
     const startTime = Date.now()
     const regEntry = this.registry.get(type)
 
-    const promise = runSubagent(config, prompt, parentCtx, allTools, callbacks, { history: options?.history })
+    const recentActivity: ActivityEntry[] = []
+    const trackingCallbacks: SubagentStreamCallbacks = {
+      ...callbacks,
+      onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+        const summary = isError
+          ? 'ERROR'
+          : typeof result === 'string' ? result.substring(0, 120) : JSON.stringify(result).substring(0, 120)
+        recentActivity.push({ tool: toolName, summary, at: Date.now() })
+        if (recentActivity.length > MAX_RECENT_ACTIVITY) recentActivity.shift()
+        await callbacks?.onAfterToolCall?.(toolName, args, result, isError, toolCallId)
+      },
+    }
+
+    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history })
       .then((result) => {
         const inst = this.instances.get(instanceId)
         if (inst) {
@@ -252,6 +275,7 @@ export class AgentManager {
       startedAt: startTime,
       promise,
       abort: abortController,
+      recentActivity,
     }
     this.instances.set(instanceId, instance)
 

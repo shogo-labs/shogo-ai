@@ -125,14 +125,25 @@ function generateLargeWorkspace(): Record<string, string> {
 
   // Auth middleware
   files['src/middleware/auth.ts'] = [
-    'import jwt from "jsonwebtoken"',
+    'import crypto from "crypto"',
     'import { JWT_SECRET } from "../config/auth"',
+    '',
+    'function base64UrlDecode(str: string) {',
+    '  return Buffer.from(str.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString()',
+    '}',
+    '',
+    'function verifyToken(token: string, secret: string) {',
+    '  const [header, payload, signature] = token.split(".")',
+    '  const expected = crypto.createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url")',
+    '  if (signature !== expected) throw new Error("Invalid signature")',
+    '  return JSON.parse(base64UrlDecode(payload))',
+    '}',
     '',
     'export function authMiddleware(req: any, res: any, next: any) {',
     '  const token = req.headers.authorization?.replace("Bearer ", "")',
     '  if (!token) return res.status(401).json({ error: "Missing token" })',
     '  try {',
-    '    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; role: string }',
+    '    const decoded = verifyToken(token, JWT_SECRET) as { userId: string; role: string }',
     '    req.user = decoded',
     '    next()',
     '  } catch {',
@@ -147,20 +158,40 @@ function generateLargeWorkspace(): Record<string, string> {
 
   // Auth service
   files['src/services/auth.ts'] = [
-    'import bcrypt from "bcrypt"',
-    'import jwt from "jsonwebtoken"',
+    'import crypto from "crypto"',
     'import { JWT_SECRET, JWT_EXPIRY, BCRYPT_ROUNDS } from "../config/auth"',
     'import { pool } from "../db/connection"',
+    '',
+    'function base64Url(data: string) { return Buffer.from(data).toString("base64url") }',
+    '',
+    'function signToken(payload: object, secret: string) {',
+    '  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }))',
+    '  const body = base64Url(JSON.stringify({ ...payload, iat: Math.floor(Date.now() / 1000) }))',
+    '  const signature = crypto.createHmac("sha256", secret).update(`${header}.${body}`).digest("base64url")',
+    '  return `${header}.${body}.${signature}`',
+    '}',
+    '',
+    'function hashPassword(password: string, rounds = 12) {',
+    '  const salt = crypto.randomBytes(16).toString("hex")',
+    '  const hash = crypto.pbkdf2Sync(password, salt, rounds * 1000, 64, "sha512").toString("hex")',
+    '  return `${salt}:${hash}`',
+    '}',
+    '',
+    'function comparePassword(password: string, stored: string) {',
+    '  const [salt, hash] = stored.split(":")',
+    '  const candidate = crypto.pbkdf2Sync(password, salt, 12000, 64, "sha512").toString("hex")',
+    '  return candidate === hash',
+    '}',
     '',
     'export async function login(email: string, password: string) {',
     '  const result = await pool.query("SELECT * FROM users WHERE email = $1", [email])',
     '  const user = result.rows[0]',
-    '  if (!user || !(await bcrypt.compare(password, user.password_hash))) throw new Error("Invalid credentials")',
-    '  return jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRY })',
+    '  if (!user || !comparePassword(password, user.password_hash)) throw new Error("Invalid credentials")',
+    '  return signToken({ userId: user.id, role: user.role }, JWT_SECRET)',
     '}',
     '',
     'export async function register(email: string, password: string) {',
-    '  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS)',
+    '  const hash = hashPassword(password, BCRYPT_ROUNDS)',
     '  const result = await pool.query("INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email", [email, hash])',
     '  return result.rows[0]',
     '}',
@@ -209,7 +240,7 @@ function generateLargeWorkspace(): Record<string, string> {
   files['tests/api.test.ts'] = 'import { describe, it, expect } from "vitest"\n\ndescribe("API integration", () => {\n  it("should return 200 on health check", () => { expect(true).toBe(true) })\n  it("should return 401 without token", () => { expect(true).toBe(true) })\n  it("should paginate results", () => { expect(true).toBe(true) })\n})'
 
   // Package/config files
-  files['package.json'] = '{ "name": "acme-platform", "version": "1.0.0", "dependencies": { "express": "^4", "pg": "^8", "jsonwebtoken": "^9", "bcrypt": "^5" }, "devDependencies": { "vitest": "^1", "typescript": "^5" }, "scripts": { "start": "tsx src/index.ts", "test": "vitest run", "db:migrate": "tsx src/db/migrations.ts" } }'
+  files['package.json'] = '{ "name": "acme-platform", "version": "1.0.0", "dependencies": { "express": "^4", "pg": "^8" }, "devDependencies": { "vitest": "^1", "typescript": "^5" }, "scripts": { "start": "tsx src/index.ts", "test": "vitest run", "db:migrate": "tsx src/db/migrations.ts" } }'
   files['tsconfig.json'] = '{ "compilerOptions": { "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "outDir": "dist", "rootDir": "src" } }'
 
   return files
@@ -289,12 +320,13 @@ export const subagentEvals: AgentEval[] = [
       },
       {
         id: 'found-auth',
-        description: 'Response covers authentication (JWT, middleware, bcrypt)',
+        description: 'Response covers authentication (JWT, middleware, password hashing)',
         points: 3,
         phase: 'execution',
         validate: (r) =>
           r.responseText.toLowerCase().includes('jwt') ||
-          r.responseText.toLowerCase().includes('bcrypt') ||
+          r.responseText.toLowerCase().includes('pbkdf2') ||
+          r.responseText.toLowerCase().includes('hmac') ||
           (r.responseText.toLowerCase().includes('auth') && r.responseText.toLowerCase().includes('middleware')),
       },
       {

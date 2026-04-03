@@ -2434,6 +2434,25 @@ app.get('/console-log', (c) => {
 
 
 // =============================================================================
+// Skill Server control (used by eval harness to force-sync before runtime checks)
+// =============================================================================
+
+app.get('/agent/skill-server/status', (c) => {
+  if (!agentGateway) return c.json({ phase: 'unknown' })
+  return c.json({ phase: agentGateway.getSkillServerPhase() })
+})
+
+app.post('/agent/skill-server/sync', async (c) => {
+  if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
+  try {
+    const result = await agentGateway.syncSkillServer()
+    return c.json(result)
+  } catch (err: any) {
+    return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
+  }
+})
+
+// =============================================================================
 // Template API Proxy (forward /api/* to the template's Hono server)
 // =============================================================================
 

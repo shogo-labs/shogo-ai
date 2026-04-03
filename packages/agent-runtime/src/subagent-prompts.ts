@@ -47,14 +47,15 @@ The 4 built-in types (explore, general-purpose, code_agent, canvas_agent) are al
 available via \`agent_spawn\` without needing \`agent_create\`.
 
 ### Orchestration Patterns
-- **Fan-out:** Spawn N agents for independent sub-tasks, collect all results via \`agent_result\`.
+- **Fan-out:** Spawn N agents with \`background: true\`, then call \`agent_result\` for each — it blocks until completion automatically.
 - **Pipeline:** Agent A analyzes → use A's result as input for Agent B → B's result feeds Agent C.
 - **Escalate:** Try with \`fast\` model first. If output is low quality, recreate with \`capable\` and re-spawn.
 - **Evaluate:** Spawn 2-3 agents with different approaches, compare results, pick the best.
 
 ### Lifecycle Management
 - Use \`agent_spawn\` with \`background: true\` for long-running tasks.
-- Poll \`agent_status\` to check progress. Cancel stuck agents with \`agent_cancel\`.
+- Use \`agent_result\` to wait for completion — it blocks up to 2 minutes by default and returns recent activity if still running.
+- Use \`agent_status\` for quick non-blocking status checks. Cancel stuck agents with \`agent_cancel\`.
 - Use \`agent_list\` to see all registered types and their performance metrics.
 
 ### Self-Improvement

@@ -96,6 +96,8 @@ export interface ToolContext {
   fileStateCache?: FileStateCache
   /** Dynamic sub-agent registry and lifecycle manager */
   agentManager?: import('./agent-manager').AgentManager
+  /** Skill server manager — exposed so tools can sync/query the skill server */
+  skillServerManager?: import('./skill-server-manager').SkillServerManager
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -309,7 +311,90 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ctx.lspManager.notifyFileChanged(resolved, finalContent)
       }
 
-      return textResult({ ok: true, path: filePath, bytes: content.length })
+      const base = { ok: true, path: filePath, bytes: content.length }
+      const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
+      return textResult(schemaResult ?? base)
+    },
+  }
+}
+
+/**
+ * If the file is .shogo/server/schema.prisma, sync the skill server and
+ * return an enriched result.  Otherwise returns null (caller uses default).
+ */
+async function maybeSchemaSync(
+  ctx: ToolContext,
+  filePath: string,
+  resolved: string,
+  baseResult: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const isSchemaWrite = filePath === '.shogo/server/schema.prisma' ||
+    resolved.endsWith('.shogo/server/schema.prisma')
+  if (!isSchemaWrite || !ctx.skillServerManager) return null
+
+  const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
+  if (!/^model\s+\w+/m.test(content)) return null
+
+  try {
+    const syncResult = await ctx.skillServerManager.sync()
+    const routes = ctx.skillServerManager.getActiveRoutes()
+    return {
+      ...baseResult,
+      skillServer: {
+        synced: syncResult.ok,
+        phase: syncResult.phase,
+        activeRoutes: routes.map(r => `/api/${r}`),
+        ...(syncResult.error ? { error: syncResult.error } : {}),
+      },
+    }
+  } catch (err: any) {
+    return {
+      ...baseResult,
+      skillServer: {
+        synced: false,
+        error: err.message,
+        hint: 'Schema saved but regeneration failed. Check the schema for errors.',
+      },
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill Server Sync Tool
+// ---------------------------------------------------------------------------
+
+function createSkillServerSyncTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'skill_server_sync',
+    description:
+      'Force the skill server to regenerate routes from schema.prisma and restart. ' +
+      'Use this when routes are returning 404 after a schema change, or to verify the server is healthy. ' +
+      'Returns the current phase and list of active API routes.',
+    label: 'Skill Server Sync',
+    parameters: Type.Object({}),
+    execute: async () => {
+      if (!ctx.skillServerManager) {
+        return textResult({ ok: false, error: 'Skill server manager not available' })
+      }
+
+      try {
+        const result = await ctx.skillServerManager.sync()
+        const routes = ctx.skillServerManager.getActiveRoutes()
+        const models = ctx.skillServerManager.getSchemaModels()
+        return textResult({
+          ok: result.ok,
+          phase: result.phase,
+          activeRoutes: routes.map(r => `/api/${r}`),
+          schemaModels: models,
+          url: ctx.skillServerManager.url,
+        })
+      } catch (err: any) {
+        return textResult({
+          ok: false,
+          error: err.message,
+          phase: ctx.skillServerManager.phase,
+        })
+      }
     },
   }
 }
@@ -432,7 +517,9 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
           ctx.lspManager.notifyFileChanged(resolved, updated)
         }
-        return textResult({ ok: true, path: filePath, replacements: replace_all ? exactOccurrences : 1 })
+        const base = { ok: true, path: filePath, replacements: replace_all ? exactOccurrences : 1 }
+        const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
+        return textResult(schemaResult ?? base)
       }
 
       if (exactOccurrences > 1 && !replace_all) {
@@ -453,7 +540,9 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
           if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
             ctx.lspManager.notifyFileChanged(resolved, updated)
           }
-          return textResult({ ok: true, path: filePath, replacements: 1, note: 'Matched with whitespace normalization' })
+          const base = { ok: true, path: filePath, replacements: 1, note: 'Matched with whitespace normalization' }
+          const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
+          return textResult(schemaResult ?? base)
         }
       }
 
@@ -3937,19 +4026,44 @@ function createAgentCancelTool(ctx: ToolContext): AgentTool {
 function createAgentResultTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_result',
-    description: 'Get the full result of a completed agent instance.',
+    description:
+      'Wait for and retrieve the result of an agent instance. Blocks until the agent completes ' +
+      'by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
     label: 'Agent Result',
     parameters: Type.Object({
       instance_id: Type.String({ description: 'Instance ID to retrieve result for' }),
+      timeout_ms: Type.Optional(Type.Number({
+        description: 'Max milliseconds to wait for completion. Defaults to 120000 (2 min). Set to 0 for immediate (non-blocking) check.',
+        default: 120_000,
+      })),
     }),
     execute: async (_id, params) => {
-      const { instance_id } = params as { instance_id: string }
+      const { instance_id, timeout_ms = 120_000 } = params as { instance_id: string; timeout_ms?: number }
       const am = ctx.agentManager
       if (!am) return textResult({ error: 'AgentManager not available' })
 
       const inst = am.getInstance(instance_id)
       if (!inst) return textResult({ error: `Unknown instance: ${instance_id}` })
-      if (inst.status === 'running') return textResult({ status: 'running', hint: 'Agent is still running. Check again later.' })
+
+      if (inst.status === 'running' && timeout_ms > 0) {
+        const timeout = new Promise<null>(r => setTimeout(() => r(null), timeout_ms))
+        const winner = await Promise.race([inst.promise.then(r => r), timeout])
+        if (!winner) {
+          const elapsed = Date.now() - inst.startedAt
+          return textResult({
+            status: 'running',
+            elapsed_ms: elapsed,
+            recent_activity: inst.recentActivity.slice(-5).map(a => `${a.tool}: ${a.summary}`),
+            hint: `Agent still running after ${Math.round(elapsed / 1000)}s. Call again to keep waiting.`,
+          })
+        }
+      } else if (inst.status === 'running') {
+        return textResult({
+          status: 'running',
+          recent_activity: inst.recentActivity.slice(-5).map(a => `${a.tool}: ${a.summary}`),
+          hint: 'Agent is still running. Call again with timeout_ms > 0 to wait.',
+        })
+      }
 
       const r = inst.result
       return textResult({
@@ -4361,7 +4475,7 @@ export const ALL_TOOL_NAMES = [
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
-  'canvas_inspect', 'read_lints',
+  'canvas_inspect', 'read_lints', 'skill_server_sync',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
@@ -5375,6 +5489,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
     createReadLintsTool(ctx),
+    createSkillServerSyncTool(ctx),
     // APP_MODE_DISABLED: createTemplateListTool(), createTemplateCopyTool(ctx),
     createToolSearchTool(ctx),
     createToolInstallTool(ctx),

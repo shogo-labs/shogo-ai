@@ -455,6 +455,7 @@ export class AgentGateway {
       canvasMode: 'code',
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
+      subagentMode: 'dynamic',
     }
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
@@ -1281,6 +1282,7 @@ export class AgentGateway {
       lspManager: this.lspManager ?? undefined,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
+      skillServerManager: this.skillServerManager,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1390,10 +1392,12 @@ export class AgentGateway {
           }
         }
 
+        const realExecute = tool.execute
         return {
           ...tool,
-          execute: async (_id: string, params: any) => {
+          execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
             const result = mockFn(params)
+            if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
             return textResult(result)
           },
         }
@@ -2110,35 +2114,102 @@ When integrations are connected, use \`tool_search\` to discover available actio
   private buildSkillServerPromptSection(): string | null {
     if (this.config.shellEnabled === false) return null
 
-    if (this.skillServerManager.isRunning) {
-      return [
-        '## Skill Server',
-        '',
-        `A skill server is running at **${this.skillServerManager.url}**.`,
-        '',
-        'This is a Hono API backed by SQLite. To see what endpoints exist,',
-        'read `.shogo/server/schema.prisma` — each Prisma model has CRUD routes at',
-        '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
-        '',
-        'Use the `web` tool with the full URL (e.g. `web({ url: "' + this.skillServerManager.url + '/api/leads" })`) to interact with it.',
-        '',
-        'To add new models or change the schema, just edit `.shogo/server/schema.prisma`.',
-        'Code generation, database migration, and server restart happen **automatically** when the schema file changes.',
-        '',
-        'Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts` (beforeCreate, afterUpdate, etc.).',
-      ].join('\n')
-    }
-
     const phase = this.skillServerManager.phase
     const genError = this.skillServerManager.lastGenerateError
+    const activeRoutes = this.skillServerManager.getActiveRoutes()
+    const schemaModels = this.skillServerManager.getSchemaModels()
+    const url = this.skillServerManager.url
 
-    if (phase === 'generating') {
-      return [
-        '## Skill Server (Generating...)',
+    const regenGuide = [
+      '### How schema regeneration works',
+      '',
+      'When you write or edit `.shogo/server/schema.prisma` using `write_file` or `edit_file`,',
+      'the tool **automatically** runs the full pipeline before returning:',
+      '1. Runs `shogo generate` — creates routes, types, hooks, server, Prisma client, and pushes the DB schema',
+      '2. Restarts the server process so it loads the new routes',
+      '3. Returns the list of **active routes** in the tool response',
+      '',
+      '**The tool response tells you exactly which routes are live.** Use those exact paths in your code.',
+      '',
+      '**Important:** Write your **complete schema in one save** — include ALL models you need.',
+      'Do NOT make multiple rapid edits to the schema.',
+      '',
+      'If you ever see a route 404 or need to force a refresh, use the `skill_server_sync` tool:',
+      '```',
+      'skill_server_sync({})',
+      '```',
+      'It returns the current phase, active routes, and schema models.',
+      '',
+      '**Do NOT** manually run `prisma generate`, `shogo generate`, or `npm run db:generate` — it is all automatic.',
+    ].join('\n')
+
+    if (this.skillServerManager.isRunning) {
+      const lines = [
+        '## Skill Server',
         '',
-        'The skill server is currently regenerating from your schema changes.',
-        'It will be available shortly at `http://localhost:' + this.skillServerManager.port + '`.',
-      ].join('\n')
+        `A skill server is running at **${url}** (status: **healthy**).`,
+        '',
+        'This is a Hono API backed by SQLite. Each Prisma model gets CRUD routes at',
+        '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
+      ]
+
+      if (activeRoutes.length > 0) {
+        lines.push('')
+        lines.push('**Currently active routes:**')
+        for (const r of activeRoutes) {
+          lines.push(`- \`${url}/api/${r}\``)
+        }
+      }
+
+      const pendingModels = schemaModels.filter(m => {
+        const kebab = m.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()
+        let expected: string
+        if (kebab.endsWith('y')) expected = kebab.slice(0, -1) + 'ies'
+        else if (kebab.endsWith('s') || kebab.endsWith('x') || kebab.endsWith('ch') || kebab.endsWith('sh')) expected = kebab + 'es'
+        else expected = kebab + 's'
+        return !activeRoutes.includes(expected)
+      })
+
+      if (pendingModels.length > 0) {
+        lines.push('')
+        lines.push(`**Schema models without routes yet (regeneration pending):** ${pendingModels.join(', ')}`)
+        lines.push('These routes will appear after the regeneration pipeline finishes (~5-15 s).')
+      }
+
+      lines.push('')
+      lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it.`)
+      lines.push('')
+      lines.push('To add new models or change the schema, edit `.shogo/server/schema.prisma`.')
+      lines.push('Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts`.')
+      lines.push('')
+      lines.push(regenGuide)
+
+      return lines.join('\n')
+    }
+
+    if (phase === 'generating' || phase === 'restarting') {
+      const lines = [
+        `## Skill Server (${phase === 'generating' ? 'Generating...' : 'Restarting...'})`,
+        '',
+        `The skill server is currently ${phase}. It will be available shortly at \`${url}\`.`,
+      ]
+
+      if (activeRoutes.length > 0) {
+        lines.push('')
+        lines.push('**Routes from last generation:**')
+        for (const r of activeRoutes) lines.push(`- \`/api/${r}\``)
+        lines.push('')
+        lines.push('These may 404 until the restart completes. Wait a few seconds and retry.')
+      }
+
+      if (schemaModels.length > 0) {
+        lines.push('')
+        lines.push(`**Schema models:** ${schemaModels.join(', ')}`)
+      }
+
+      lines.push('')
+      lines.push(regenGuide)
+      return lines.join('\n')
     }
 
     if (phase === 'crashed' && genError) {
@@ -2150,6 +2221,8 @@ When integrations are connected, use \`tool_search\` to discover available actio
         genError,
         '```',
         'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
+        '',
+        regenGuide,
       ].join('\n')
     }
 
@@ -2182,10 +2255,12 @@ When integrations are connected, use \`tool_search\` to discover available actio
       '```',
       '',
       'That\'s it — **everything else is automatic**: dependency install, code generation,',
-      'database creation, and server startup on `http://localhost:' + this.skillServerManager.port + '`.',
+      `database creation, and server startup on \`${url}\`.`,
       'Each model gets full CRUD at `/api/{model-name-plural}`.',
       '',
       'Custom logic goes in `.shogo/server/generated/{model}.hooks.ts`.',
+      '',
+      regenGuide,
     ].join('\n')
   }
 
@@ -2404,6 +2479,22 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
   getSkillServerPort(): number | null {
     return this.skillServerManager.isRunning ? this.skillServerManager.port : null
+  }
+
+  getSkillServerPhase(): string {
+    return this.skillServerManager.phase
+  }
+
+  getSkillServerActiveRoutes(): string[] {
+    return this.skillServerManager.getActiveRoutes()
+  }
+
+  getSkillServerSchemaModels(): string[] {
+    return this.skillServerManager.getSchemaModels()
+  }
+
+  async syncSkillServer(): Promise<{ ok: boolean; phase: string }> {
+    return this.skillServerManager.sync()
   }
 
   getMcpClientManager(): MCPClientManager {

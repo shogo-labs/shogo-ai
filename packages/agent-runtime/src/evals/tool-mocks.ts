@@ -25,8 +25,12 @@ export type ToolMockMap = Record<string, ToolMockSpec>
 // ---------------------------------------------------------------------------
 
 const DEFAULT_WEB_FETCH: ToolMockSpec = {
-  type: 'static',
-  response: {
+  type: 'pattern',
+  patterns: [
+    { match: { url: 'localhost' }, response: '__passthrough' },
+    { match: { url: '127.0.0.1' }, response: '__passthrough' },
+  ],
+  default: {
     content: '<html><body><h1>Mock Page</h1><p>This is a mocked web page for eval testing.</p></body></html>',
     status: 200,
     bytes: 120,
@@ -309,14 +313,6 @@ export const API_HEALTH_MOCKS: ToolMockMap = {
       status: 503,
       bytes: 30,
       url: 'https://unknown-api.example.com',
-    },
-  },
-  exec: {
-    type: 'static',
-    response: {
-      stdout: 'real\t0m0.045s\nuser\t0m0.003s\nsys\t0m0.002s',
-      stderr: '',
-      exitCode: 0,
     },
   },
 }
@@ -3043,11 +3039,6 @@ export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
     paramKeys: ['path', 'content'],
     response: { ok: true, message: 'File written successfully.' },
   },
-  exec: {
-    type: 'static',
-    paramKeys: ['command'],
-    response: { stdout: 'Done. 500 records ingested.', stderr: '', exitCode: 0 },
-  },
 }
 
 export const DATA_PROCESSING_LARGE_CALENDAR_MOCKS: ToolMockMap = {
@@ -3085,11 +3076,6 @@ export const DATA_PROCESSING_LARGE_CALENDAR_MOCKS: ToolMockMap = {
     type: 'static',
     paramKeys: ['path', 'content'],
     response: { ok: true, message: 'File written successfully.' },
-  },
-  exec: {
-    type: 'static',
-    paramKeys: ['command'],
-    response: { stdout: 'Done. 400 records ingested.', stderr: '', exitCode: 0 },
   },
 }
 
@@ -3406,6 +3392,317 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
       body: 'No details available', additions: 0, deletions: 0, changedFiles: 0, reviews: [],
     },
   },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Business User Mega Eval — Pixel & Co. digital agency
+// ---------------------------------------------------------------------------
+
+export const BUSINESS_USER_MOCKS: ToolMockMap = {
+  channel_connect: {
+    type: 'static',
+    response: { ok: true, connected: true, message: 'Channel connected successfully.' },
+  },
+  heartbeat_configure: {
+    type: 'static',
+    response: { ok: true, enabled: true, intervalSeconds: 3600, quietHoursStart: '19:00', quietHoursEnd: '09:00' },
+  },
+  web: {
+    type: 'pattern',
+    patterns: [
+      { match: { url: 'localhost' }, response: '__passthrough' },
+      { match: { url: '127.0.0.1' }, response: '__passthrough' },
+      { match: { url: 'webflow studio' }, response: { content: '<html><body><h1>Webflow Studio</h1><p>Premium web design agency. Services: custom web design, Webflow development, brand identity. Pricing: projects start at $15,000. Recent work: redesigned Bloom Skincare e-commerce (40% conversion lift), launched Terrain Outdoor Gear site.</p></body></html>', status: 200 } },
+      { match: { url: 'digital forge' }, response: { content: '<html><body><h1>Digital Forge</h1><p>Full-stack digital agency. Services: web apps, mobile apps, DevOps consulting, AI integration. Pricing: retainers from $8,000/month. Recent work: built inventory management SaaS for 3 warehouse clients, launched AI chatbot for RetailMax.</p></body></html>', status: 200 } },
+      { match: { url: 'creative dynamics' }, response: { content: '<html><body><h1>Creative Dynamics</h1><p>Creative-first agency specializing in e-commerce. Services: Shopify development, UX audits, conversion optimization, content strategy. Pricing: Shopify builds from $5,000, CRO audits $3,000. Recent work: Shopify Plus migration for Luxe Candles, UX redesign for FitGear.</p></body></html>', status: 200 } },
+    ],
+    default: { content: '<html><body><p>Search results for your query.</p></body></html>', status: 200 },
+  },
+  tool_search: {
+    type: 'pattern',
+    patterns: [
+      { match: { query: 'github' }, response: { tools: [{ name: 'GITHUB_LIST_REPOS', description: 'List repos in an org', app: 'github' }, { name: 'GITHUB_LIST_PULL_REQUESTS', description: 'List PRs', app: 'github' }, { name: 'GITHUB_GET_REPO', description: 'Get repo details', app: 'github' }] } },
+      { match: { query: 'calendar' }, response: { tools: [{ name: 'GOOGLECALENDAR_FIND_EVENTS', description: 'Find calendar events', app: 'googlecalendar' }, { name: 'GOOGLECALENDAR_CREATE_EVENT', description: 'Create calendar event', app: 'googlecalendar' }] } },
+    ],
+    default: { tools: [] },
+  },
+  mcp_search: {
+    type: 'pattern',
+    patterns: [
+      { match: { query: 'github' }, response: { servers: [{ name: 'github', description: 'GitHub API integration', tools: ['list_repos', 'list_prs', 'get_repo'] }] } },
+      { match: { query: 'calendar' }, response: { servers: [{ name: 'google-calendar', description: 'Google Calendar integration', tools: ['find_events', 'create_event'] }] } },
+    ],
+    default: { servers: [] },
+  },
+  tool_install: {
+    type: 'static',
+    response: { ok: true, installed: true, message: 'Tool installed and ready to use.' },
+  },
+  mcp_install: {
+    type: 'static',
+    response: { ok: true, installed: true, message: 'MCP server installed and connected.' },
+  },
+  GITHUB_LIST_REPOS: {
+    type: 'static',
+    description: 'List repositories for Pixel & Co.',
+    response: {
+      repos: [
+        { name: 'pixelco-website', description: 'Company marketing site', language: 'TypeScript', updatedAt: '2026-03-30', openIssues: 3 },
+        { name: 'acme-ecommerce', description: 'Acme Corp e-commerce redesign', language: 'TypeScript', updatedAt: '2026-04-01', openIssues: 7 },
+        { name: 'bloom-skincare', description: 'Bloom Skincare Shopify theme', language: 'Liquid', updatedAt: '2026-03-28', openIssues: 1 },
+        { name: 'fitgear-app', description: 'FitGear mobile companion app', language: 'React Native', updatedAt: '2026-03-25', openIssues: 12 },
+        { name: 'internal-tools', description: 'Internal dashboards and utilities', language: 'TypeScript', updatedAt: '2026-03-15', openIssues: 0 },
+      ],
+    },
+  },
+  GITHUB_LIST_PULL_REQUESTS: {
+    type: 'pattern',
+    patterns: [
+      { match: { repo: 'acme' }, response: { pullRequests: [
+        { number: 142, title: 'fix: checkout page 500 error on invalid coupon', author: 'james-dev', state: 'open', base: 'main', additions: 23, deletions: 8, changedFiles: 2, createdAt: '2026-04-01T09:00:00Z' },
+        { number: 141, title: 'feat: add wishlist functionality', author: 'sarah-dev', state: 'open', base: 'main', additions: 340, deletions: 12, changedFiles: 8, createdAt: '2026-03-31T14:00:00Z' },
+        { number: 140, title: 'fix: product image lazy loading broken on Safari', author: 'mike-dev', state: 'merged', mergedAt: '2026-03-30T16:00:00Z', base: 'main', additions: 15, deletions: 5, changedFiles: 1 },
+      ], total: 3 } },
+    ],
+    default: { pullRequests: [], total: 0 },
+  },
+  GOOGLECALENDAR_FIND_EVENTS: {
+    type: 'static',
+    description: 'Find events on Google Calendar.',
+    response: {
+      events: [
+        { id: 'evt-1', summary: 'Acme Corp - Sprint Review', start: '2026-04-02T10:00:00', end: '2026-04-02T11:00:00', attendees: ['maya@pixelandco.com', 'john@acmecorp.com'] },
+        { id: 'evt-2', summary: 'Team Standup', start: '2026-04-02T09:00:00', end: '2026-04-02T09:30:00', attendees: ['maya@pixelandco.com', 'team@pixelandco.com'] },
+        { id: 'evt-3', summary: 'New Lead Call - Luxe Candles', start: '2026-04-02T14:00:00', end: '2026-04-02T14:45:00', attendees: ['maya@pixelandco.com', 'rachel@luxecandles.com'] },
+      ],
+    },
+  },
+  task: {
+    type: 'static',
+    response: { ok: true, result: 'Sub-agent analysis complete. Key findings have been compiled.' },
+  },
+  task_status: {
+    type: 'static',
+    response: { status: 'completed', result: 'Task finished successfully.' },
+  },
+}
+
+const BUSINESS_USER_WEB = BUSINESS_USER_MOCKS.web as {
+  type: 'pattern'
+  patterns: Array<{ match: Record<string, string>; response: any }>
+  default: any
+}
+
+// ---------------------------------------------------------------------------
+// Event planner track — Sofia (Stellar Events) mega eval
+// ---------------------------------------------------------------------------
+
+/** Business-user baseline plus web fixtures for parallel caterer comparisons. */
+export const EVENT_PLANNER_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
+  web: {
+    type: 'pattern',
+    patterns: [
+      ...BUSINESS_USER_WEB.patterns,
+      {
+        match: { url: 'savory' },
+        response: {
+          content: '<html><body><h1>Savory Bites Catering</h1><p>Reviews 4.8/5. Premium pricing for 180 guests ~$12k–$15k. Available May 15. Menu: plated dinner, stations, dietary accommodations.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'fresh feast' },
+        response: {
+          content: '<html><body><h1>Fresh Feast</h1><p>Reviews 4.2/5. Mid-tier pricing for 180 guests ~$8k–$10k. May 15 open. Menu: buffet and family-style options.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'gourmet guild' },
+        response: {
+          content: '<html><body><h1>Gourmet Guild</h1><p>Reviews 4.5/5. Premium tier ~$11k–$14k for 180. May 15 tentatively open. Menu: chef-attended stations, wine pairings.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'plate perfect' },
+        response: {
+          content: '<html><body><h1>Plate Perfect</h1><p>Reviews 3.9/5. Budget-friendly ~$6k–$8k for 180. May 15 available. Menu: classic buffet, simple upgrades.</p></body></html>',
+          status: 200,
+        },
+      },
+    ],
+    default: BUSINESS_USER_WEB.default,
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Startup CTO track — Priya (Launchpad) mega eval
+// ---------------------------------------------------------------------------
+
+/** Business-user baseline plus feature-flag vendor pages for parallel research evals. */
+export const STARTUP_CTO_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
+  web: {
+    type: 'pattern',
+    patterns: [
+      ...BUSINESS_USER_WEB.patterns,
+      {
+        match: { url: 'launchdarkly' },
+        response: {
+          content:
+            '<html><body><h1>LaunchDarkly</h1><p>LaunchDarkly enterprise feature flags. Pricing: usage-based tiers from ~$8/seat/month; enterprise contracts. Features: targeting, experimentation, approvals. Self-host: primarily cloud; enterprise private options. Developer experience: mature SDKs and docs.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'unleash' },
+        response: {
+          content:
+            '<html><body><h1>Unleash</h1><p>Unleash open-source feature flags. Pricing: OSS free; hosted plans available. Self-host: Docker/Kubernetes first-class. Developer experience: MIT license, simple API.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'flagsmith' },
+        response: {
+          content:
+            '<html><body><h1>Flagsmith</h1><p>Flagsmith feature flags and remote config. Pricing: generous free tier; usage-based cloud. Self-host: full open-source stack. Developer experience: REST API, solid SDK coverage.</p></body></html>',
+          status: 200,
+        },
+      },
+    ],
+    default: BUSINESS_USER_WEB.default,
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Freelancer track — Jake (UX designer) mega eval
+// ---------------------------------------------------------------------------
+
+/** Same baseline as business-user (channels, calendar search, web, sub-agent). */
+export const FREELANCER_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
+}
+
+// ---------------------------------------------------------------------------
+// Content creator track — Marcus (tech review YouTuber) mega eval
+// ---------------------------------------------------------------------------
+
+/** Business-user baseline plus web fixtures for trending and competitor research. */
+export const CONTENT_CREATOR_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
+  web: {
+    type: 'pattern',
+    patterns: [
+      ...BUSINESS_USER_WEB.patterns,
+      {
+        match: { url: 'ai hardware' },
+        response: {
+          content: '<html><body><h1>Tech trends</h1><p>AI hardware accelerators, edge NPUs, and on-device inference are dominating tech YouTube in 2026.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'foldable' },
+        response: {
+          content: '<html><body><h1>Foldable phones</h1><p>Foldable phone reviews and comparisons remain high-CTR topics across phone and tech channels.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'smart home' },
+        response: {
+          content: '<html><body><h1>Smart home</h1><p>Smart home tech, Matter hubs, and security cameras are steady evergreen content for tech reviewers.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'mkbhd' },
+        response: {
+          content: '<html><body><h1>MKBHD</h1><p>MKBHD: polished long-form reviews, high production, selective sponsored integrations, ~weekly flagship uploads.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'dave2d' },
+        response: {
+          content: '<html><body><h1>Dave2D</h1><p>Dave2D: concise laptop and gadget analysis, strong engagement on explainers, modest sponsored segment density.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'linus' },
+        response: {
+          content: '<html><body><h1>Linus Tech Tips</h1><p>LTT: very high posting frequency, workshop and challenge formats, frequent sponsor reads and integrations.</p></body></html>',
+          status: 200,
+        },
+      },
+    ],
+    default: BUSINESS_USER_WEB.default,
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Nonprofit track — Amara (BrightPath) mega eval
+// ---------------------------------------------------------------------------
+
+/** Business-user baseline plus city research fixtures for expansion evals. */
+export const NONPROFIT_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
+  web: {
+    type: 'pattern',
+    patterns: [
+      ...BUSINESS_USER_WEB.patterns,
+      {
+        match: { url: 'austin' },
+        response: {
+          content:
+            '<html><body><h1>Austin expansion brief</h1><p>Education need: high Title I concentration in east Austin; strong demand for after-school STEM and literacy. Cost of living: moderate vs coasts; housing pressure on families. Existing programs: AISD community schools, several nonprofit partners, YMCA after-care. Grant opportunities: TEA innovation grants, local foundations (Austin Ed Fund), corporate CSR.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'denver' },
+        response: {
+          content:
+            '<html><body><h1>Denver expansion brief</h1><p>Education need: growing refugee and multilingual learner population; math remediation waitlists. Cost of living: elevated housing costs. Existing programs: DPS extended learning, Boys & Girls Clubs, museum partnerships. Grant opportunities: Colorado Department of Education, Daniels Fund, regional United Way.</p></body></html>',
+          status: 200,
+        },
+      },
+      {
+        match: { url: 'portland' },
+        response: {
+          content:
+            '<html><body><h1>Portland expansion brief</h1><p>Education need: chronic absenteeism post-pandemic; reading gaps in K-5. Cost of living: high relative to median income. Existing programs: SUN community schools, culturally specific nonprofits, library homework hubs. Grant opportunities: Oregon Community Foundation, Meyer Memorial Trust, federal 21st CCLC-style funding.</p></body></html>',
+          status: 200,
+        },
+      },
+    ],
+    default: BUSINESS_USER_WEB.default,
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Adversarial robustness evals — Pat (chaotic SMB owner)
+// ---------------------------------------------------------------------------
+
+export const ADVERSARIAL_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
+  send_message: {
+    type: 'static',
+    response: { ok: true, sent: true, messageId: 'adv-mock-msg-1', channel: 'email' },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Cross-cutting track — meta-behavior evals (delegation, memory, terse input)
+// ---------------------------------------------------------------------------
+
+/** Baseline mocks for cross-cutting evals (web, sub-agents, exec). */
+export const CROSS_CUTTING_MOCKS: ToolMockMap = {
+  ...BUSINESS_USER_MOCKS,
 }
 
 /**
