@@ -49,10 +49,17 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/model-catalog ./packages/model-catalog
+COPY packages/sdk ./packages/sdk
 COPY templates/runtime-template ./templates/runtime-template
 
 # Pre-install runtime-template dependencies so workspaces get node_modules instantly
 RUN cd templates/runtime-template && bun install
+
+# Pre-install skill server dependencies so schema regeneration doesn't need network
+RUN mkdir -p templates/skill-server && \
+    printf '{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}' \
+      > templates/skill-server/package.json && \
+    cd templates/skill-server && bun install
 
 # Fetch external Claude Code skills from skill-registry.json
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
@@ -111,14 +118,15 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog
+COPY --chown=appuser:appgroup --from=builder /app/packages/sdk ./packages/sdk
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
+COPY --chown=appuser:appgroup --from=builder /app/templates/skill-server ./templates/skill-server
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons for bun resolution
 COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
-COPY --chown=appuser:appgroup --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --chown=appuser:appgroup --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/

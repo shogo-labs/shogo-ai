@@ -23,6 +23,7 @@ import {
   execCommandContains,
   toolCallsJson,
 } from './eval-helpers'
+import { buildSkillServerSchema } from '../workspace-defaults'
 
 // ---------------------------------------------------------------------------
 // Tool Mocks
@@ -145,49 +146,20 @@ const SKILL_SERVER_PERSIST_MOCKS: ToolMockMap = {
 // Pre-seeded workspace files
 // ---------------------------------------------------------------------------
 
-const EXISTING_TODO_SCHEMA = `datasource db {
-  provider = "sqlite"
-}
-
-generator client {
-  provider = "prisma-client"
-  output   = "./generated/prisma"
-}
-
-model Todo {
+const EXISTING_TODO_SCHEMA = buildSkillServerSchema(`model Todo {
   id        String   @id @default(cuid())
   title     String
   done      Boolean  @default(false)
   createdAt DateTime @default(now())
-}
-`
+}`)
 
-const EXISTING_SHOGO_CONFIG = JSON.stringify({
-  schema: './schema.prisma',
-  outputs: [
-    { dir: './generated', generate: ['routes', 'hooks', 'types'] },
-    { dir: '.', generate: ['server'] },
-    { dir: '.', generate: ['db'] },
-  ],
-}, null, 2)
-
-const EXISTING_BOOKMARK_SCHEMA = `datasource db {
-  provider = "sqlite"
-}
-
-generator client {
-  provider = "prisma-client"
-  output   = "./generated/prisma"
-}
-
-model Bookmark {
+const EXISTING_BOOKMARK_SCHEMA = buildSkillServerSchema(`model Bookmark {
   id        String   @id @default(cuid())
   url       String
   title     String
   notes     String?
   createdAt DateTime @default(now())
-}
-`
+}`)
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -293,9 +265,9 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     name: 'Skill Server: Evolve an existing schema (add field + model)',
     category: 'skill',
     level: 3,
+    useSkillServer: true,
     workspaceFiles: {
       '.shogo/server/schema.prisma': EXISTING_TODO_SCHEMA,
-      '.shogo/server/shogo.config.json': EXISTING_SHOGO_CONFIG,
     },
     input: 'I have a skill server with a Todo model. Add a "priority" field (P0-P3, default P2) to Todo, and add a new Tag model with name and color fields so I can tag my todos.',
     maxScore: 100,
@@ -376,9 +348,9 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     name: 'Skill Server: Persist and query data via REST API',
     category: 'skill',
     level: 4,
+    useSkillServer: true,
     workspaceFiles: {
       '.shogo/server/schema.prisma': EXISTING_BOOKMARK_SCHEMA,
-      '.shogo/server/shogo.config.json': EXISTING_SHOGO_CONFIG,
     },
     conversationHistory: [
       {

@@ -45,7 +45,7 @@ import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './loc
 loadEnvFromDisk(REPO_ROOT)
 
 import { runEval } from './runner'
-import { resetWorkspaceDefaults, seedLSPConfig } from '../workspace-defaults'
+import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
 import { CANVAS_EVALS } from './test-cases-canvas'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
@@ -77,6 +77,14 @@ import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
 import { SUBAGENT_CODE_EVALS } from './test-cases-subagent-code'
 import { SUBAGENT_AB_EVALS } from './test-cases-subagent-ab'
 import { subagentEvals as SUBAGENT_EVALS } from './test-cases-subagent'
+import { BUSINESS_USER_EVALS } from './test-cases-business-user'
+import { STARTUP_CTO_EVALS } from './test-cases-startup-cto'
+import { FREELANCER_EVALS } from './test-cases-freelancer'
+import { CONTENT_CREATOR_EVALS } from './test-cases-content-creator'
+import { NONPROFIT_EVALS } from './test-cases-nonprofit'
+import { EVENT_PLANNER_EVALS } from './test-cases-event-planner'
+import { ADVERSARIAL_EVALS } from './test-cases-adversarial'
+import { CROSS_CUTTING_EVALS } from './test-cases-cross-cutting'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 import { runRuntimeChecks } from './runtime-checks'
@@ -98,6 +106,7 @@ const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
+const noPipelineFlag = args.includes('--no-pipeline')
 
 const BASE_PORT = 6400
 const SKILL_SERVER_BASE_PORT = 4100
@@ -136,11 +145,60 @@ function getEvals(track: string): AgentEval[] {
     case 'subagent': return SUBAGENT_EVALS
     case 'subagent-code': return SUBAGENT_CODE_EVALS
     case 'subagent-ab': return SUBAGENT_AB_EVALS
-    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS]
+    case 'business-user': return BUSINESS_USER_EVALS
+    case 'startup-cto': return STARTUP_CTO_EVALS
+    case 'freelancer': return FREELANCER_EVALS
+    case 'content-creator': return CONTENT_CREATOR_EVALS
+    case 'event-planner': return EVENT_PLANNER_EVALS
+    case 'nonprofit': return NONPROFIT_EVALS
+    case 'adversarial': return ADVERSARIAL_EVALS
+    case 'cross-cutting': return CROSS_CUTTING_EVALS
+    case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
+    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, all`)
       process.exit(1)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline work-queue
+// ---------------------------------------------------------------------------
+
+type WorkItem =
+  | { type: 'standalone'; eval: AgentEval }
+  | { type: 'pipeline'; name: string; phases: AgentEval[] }
+
+function buildWorkQueue(evals: AgentEval[]): WorkItem[] {
+  if (noPipelineFlag) {
+    return evals.map(ev => ({ type: 'standalone', eval: ev }))
+  }
+
+  const pipelineMap = new Map<string, AgentEval[]>()
+  const standalone: AgentEval[] = []
+
+  for (const ev of evals) {
+    if (ev.pipeline) {
+      const arr = pipelineMap.get(ev.pipeline) || []
+      arr.push(ev)
+      pipelineMap.set(ev.pipeline, arr)
+    } else {
+      standalone.push(ev)
+    }
+  }
+
+  const items: WorkItem[] = []
+
+  for (const [name, phases] of pipelineMap) {
+    phases.sort((a, b) => (a.pipelinePhase ?? 0) - (b.pipelinePhase ?? 0))
+    items.push({ type: 'pipeline', name, phases })
+  }
+
+  for (const ev of standalone) {
+    items.push({ type: 'standalone', eval: ev })
+  }
+
+  return items
 }
 
 // ---------------------------------------------------------------------------
@@ -149,15 +207,227 @@ function getEvals(track: string): AgentEval[] {
 
 const EVAL_OUTPUTS_DIR = resolve(REPO_ROOT, 'packages/agent-runtime/eval-outputs')
 
+function writeEvalLog(
+  result: EvalResult,
+  runDir: string,
+): string {
+  const ev = result.eval
+  const logDir = join(runDir, 'logs')
+  mkdirSync(logDir, { recursive: true })
+  const logPath = join(logDir, `${ev.id}.md`)
+
+  const status = result.passed ? 'PASS' : 'FAIL'
+  const lines: string[] = []
+
+  lines.push(`# ${status}: ${ev.name}`)
+  lines.push('')
+
+  // Surface runtime failures prominently at the top
+  const rc = result.runtimeChecks
+  const hasRuntimeFailure = rc && (
+    rc.serverHealthy === false ||
+    !rc.canListModels ||
+    !rc.canCreateRecord ||
+    rc.canvasCompiles === false ||
+    rc.missingRoutes.length > 0 ||
+    (rc.workspaceIntegrity && (!rc.workspaceIntegrity.schema || !rc.workspaceIntegrity.server || !rc.workspaceIntegrity.prismaClient))
+  )
+  if (hasRuntimeFailure) {
+    lines.push('> **RUNTIME FAILURES DETECTED** — The generated application is not fully functional.')
+    lines.push('>')
+    if (rc.serverHealthy === false) lines.push('> - Server health check FAILED')
+    if (!rc.canListModels) lines.push('> - Cannot list models via API (routes returning errors)')
+    if (!rc.canCreateRecord) lines.push('> - Cannot create records via API')
+    if (rc.missingRoutes.length > 0) lines.push(`> - Missing routes for: ${rc.missingRoutes.join(', ')}`)
+    if (rc.canvasCompiles === false) lines.push(`> - Canvas compilation failed (${rc.canvasCompileErrors.length} errors)`)
+    if (rc.workspaceIntegrity) {
+      const wi = rc.workspaceIntegrity
+      const missing: string[] = []
+      if (!wi.schema) missing.push('schema.prisma')
+      if (!wi.server) missing.push('server.ts')
+      if (!wi.db) missing.push('db.ts')
+      if (!wi.prismaClient) missing.push('@prisma/client')
+      if (!wi.generated) missing.push('generated/')
+      if (missing.length > 0) lines.push(`> - Missing workspace files: ${missing.join(', ')}`)
+    }
+    if (rc.canvasOrphanedFetches.length > 0) lines.push(`> - Canvas fetches non-existent routes: ${rc.canvasOrphanedFetches.join(', ')}`)
+    if (rc.errors.length > 0) {
+      lines.push('>')
+      for (const e of rc.errors.slice(0, 5)) lines.push(`> - ${e}`)
+      if (rc.errors.length > 5) lines.push(`> - ...and ${rc.errors.length - 5} more`)
+    }
+    lines.push('')
+  }
+
+  lines.push('## Metadata')
+  lines.push(`| Field | Value |`)
+  lines.push(`|-------|-------|`)
+  lines.push(`| ID | \`${ev.id}\` |`)
+  lines.push(`| Category | ${ev.category} |`)
+  lines.push(`| Level | ${ev.level} |`)
+  lines.push(`| Score | **${result.score}/${result.maxScore}** (${result.percentage.toFixed(1)}%) |`)
+  lines.push(`| Duration | ${(result.timing.durationMs / 1000).toFixed(1)}s |`)
+  lines.push(`| Tool Calls | ${result.metrics.toolCallCount} (${result.metrics.failedToolCalls} failed) |`)
+  lines.push(`| Tokens | ${result.metrics.tokens.input} in / ${result.metrics.tokens.output} out |`)
+  lines.push('')
+
+  // Conversation history
+  if (ev.conversationHistory?.length) {
+    lines.push('## Conversation History')
+    lines.push('')
+    for (const turn of ev.conversationHistory) {
+      lines.push(`**${turn.role}:**`)
+      lines.push(`> ${turn.content.replace(/\n/g, '\n> ')}`)
+      lines.push('')
+    }
+  }
+
+  lines.push('## Final Prompt')
+  lines.push('')
+  lines.push('```')
+  lines.push(ev.input)
+  lines.push('```')
+  lines.push('')
+
+  // Response
+  lines.push('## Agent Response')
+  lines.push('')
+  lines.push(result.responseText || '*No response text*')
+  lines.push('')
+
+  // Tool calls
+  lines.push(`## Tool Calls (${result.toolCalls.length})`)
+  lines.push('')
+  for (let i = 0; i < result.toolCalls.length; i++) {
+    const tc = result.toolCalls[i]
+    const dur = tc.durationMs ? ` (${(tc.durationMs / 1000).toFixed(1)}s)` : ''
+    const err = tc.error ? ' **ERROR**' : ''
+    lines.push(`### ${i + 1}. \`${tc.name}\`${dur}${err}`)
+    lines.push('')
+    lines.push('<details><summary>Input</summary>')
+    lines.push('')
+    lines.push('```json')
+    try { lines.push(JSON.stringify(tc.input, null, 2)) } catch { lines.push(String(tc.input)) }
+    lines.push('```')
+    lines.push('</details>')
+    lines.push('')
+    lines.push('<details><summary>Output</summary>')
+    lines.push('')
+    lines.push('```json')
+    const outStr = typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)
+    if (outStr && outStr.length > 4000) {
+      lines.push(outStr.slice(0, 4000) + '\n... (truncated)')
+    } else {
+      lines.push(outStr ?? 'null')
+    }
+    lines.push('```')
+    lines.push('</details>')
+    lines.push('')
+  }
+
+  // Scoring breakdown
+  lines.push('## Scoring Breakdown')
+  lines.push('')
+  lines.push('| # | Criterion | Phase | Points | Result |')
+  lines.push('|---|-----------|-------|--------|--------|')
+  for (let i = 0; i < result.criteriaResults.length; i++) {
+    const cr = result.criteriaResults[i]
+    const icon = cr.passed ? '✅' : '❌'
+    const phase = cr.criterion.phase || '-'
+    lines.push(`| ${i + 1} | ${cr.criterion.description} | ${phase} | ${cr.pointsEarned}/${cr.criterion.points} | ${icon} |`)
+  }
+  lines.push('')
+
+  // Penalties
+  const toolErrCount = result.metrics.failedToolCalls
+  if (toolErrCount > 0 || result.triggeredAntiPatterns.length > 0) {
+    lines.push('## Penalties')
+    lines.push('')
+    if (toolErrCount > 0) {
+      lines.push(`- ⚠️ Tool errors: ${toolErrCount} failed tool call${toolErrCount !== 1 ? 's' : ''} (−${toolErrCount * 2} points)`)
+    }
+    for (const ap of result.triggeredAntiPatterns) {
+      lines.push(`- ⚠️ Anti-pattern: ${ap} (−10 points)`)
+    }
+    lines.push('')
+  }
+
+  // Runtime checks
+  if (result.runtimeChecks) {
+    const rtc = result.runtimeChecks
+    lines.push('## Runtime Checks')
+    lines.push('')
+    lines.push(`| Check | Result |`)
+    lines.push(`|-------|--------|`)
+    lines.push(`| Server healthy | ${rtc.serverHealthy === null ? 'N/A' : rtc.serverHealthy ? '✅' : '❌'} |`)
+    lines.push(`| Can list models | ${rtc.serverHealthy === null ? 'N/A' : rtc.canListModels ? '✅' : '❌'} |`)
+    lines.push(`| Can create record | ${rtc.serverHealthy === null ? 'N/A' : rtc.canCreateRecord ? '✅' : '❌'} |`)
+    lines.push(`| Canvas port correct | ${rtc.canvasPortCorrect === null ? 'N/A' : rtc.canvasPortCorrect ? '✅' : '❌'} |`)
+    lines.push(`| Canvas compiles | ${rtc.canvasCompiles === null ? 'N/A' : rtc.canvasCompiles ? '✅' : '❌'} |`)
+    lines.push(`| Canvas-API contract | ${rtc.canvasFetchesValid === null ? 'N/A' : rtc.canvasFetchesValid ? '✅' : '❌'} |`)
+    lines.push(`| Missing routes | ${rtc.missingRoutes.length === 0 ? '✅ none' : '❌ ' + rtc.missingRoutes.join(', ')} |`)
+    lines.push('')
+
+    if (rtc.modelResults.length > 0) {
+      lines.push('### Per-Model CRUD')
+      lines.push('')
+      lines.push('| Model | List | Create | Round-trip |')
+      lines.push('|-------|------|--------|------------|')
+      for (const mr of rtc.modelResults) {
+        lines.push(`| ${mr.model} | ${mr.canList ? '✅' : '❌'} | ${mr.canCreate ? '✅' : '❌'} | ${mr.roundTripOk ? '✅' : '❌'} |`)
+      }
+      lines.push('')
+    }
+
+    if (rtc.workspaceIntegrity) {
+      const wi = rtc.workspaceIntegrity
+      lines.push('### Workspace Integrity')
+      lines.push('')
+      lines.push('| File | Present |')
+      lines.push('|------|---------|')
+      lines.push(`| schema.prisma | ${wi.schema ? '✅' : '❌'} (models: ${wi.schemaHasModels ? 'yes' : 'no'}) |`)
+      lines.push(`| generated/ | ${wi.generated ? '✅' : '❌'} |`)
+      lines.push(`| server.ts | ${wi.server ? '✅' : '❌'} |`)
+      lines.push(`| db.ts | ${wi.db ? '✅' : '❌'} |`)
+      lines.push(`| @prisma/client | ${wi.prismaClient ? '✅' : '❌'} |`)
+      lines.push('')
+    }
+
+    if (rtc.errors.length) {
+      lines.push('### Runtime Errors')
+      lines.push('')
+      for (const e of rtc.errors) lines.push(`- ${e}`)
+      lines.push('')
+    }
+  }
+
+  if (result.runtimeWarnings?.length) {
+    lines.push('## Runtime Warnings')
+    lines.push('')
+    for (const w of result.runtimeWarnings) lines.push(`- ${w}`)
+    lines.push('')
+  }
+
+  if (result.errors?.length) {
+    lines.push('## Errors')
+    lines.push('')
+    for (const e of result.errors) lines.push(`- ${e}`)
+    lines.push('')
+  }
+
+  writeFileSync(logPath, lines.join('\n'), 'utf-8')
+  return logPath
+}
+
 function archiveWorkspaceAsTemplate(
   ev: AgentEval,
   result: EvalResult,
   workspaceDir: string,
-  runTimestamp: string,
+  runDir: string,
 ): string | null {
   if (!existsSync(workspaceDir)) return null
 
-  const destDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${runTimestamp}`, ev.id)
+  const destDir = join(runDir, 'workspaces', ev.id)
   mkdirSync(destDir, { recursive: true })
 
   const templateJson = {
@@ -234,43 +504,80 @@ async function runEvalOnWorker(
   index: number,
   total: number,
   runTimestamp: string,
+  opts?: { skipCleanup?: boolean },
 ): Promise<EvalResult> {
   // Force GC between evals to prevent memory pressure crashes in Bun
   try { Bun.gc(true) } catch {}
 
-  if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
+  const skipCleanup = opts?.skipCleanup ?? false
 
-  // Clean workspace between evals — delete eval-generated content but skip
-  // locked files (SQLite DB, etc.) that the worker process holds open.
-  if (existsSync(worker.dir)) {
-    const safeDirs = ['canvas', 'files', '.shogo/server']
-    for (const sub of safeDirs) {
-      const p = join(worker.dir, sub)
-      try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}
+  if (skipCleanup) {
+    // Pipeline continuation — keep workspace intact, only overlay new files
+    if (verboseFlag) console.log(`      [setup] Pipeline phase ${ev.pipelinePhase} — keeping workspace`)
+
+    // Idempotent: seed template/skill-server if this phase needs them (no-ops if already present)
+    if (ev.useRuntimeTemplate) {
+      seedRuntimeTemplate(worker.dir)
+      if (verboseFlag) console.log(`      [setup] Seeded runtime template (idempotent)`)
     }
-    const keepFiles = new Set(['sessions.db', 'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json'])
-    try {
-      for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
-        if (entry.isFile() && !keepFiles.has(entry.name)) {
-          try { rmSync(join(worker.dir, entry.name), { force: true }) } catch {}
-        }
+    if (ev.useSkillServer) {
+      seedSkillServer(worker.dir)
+      if (verboseFlag) console.log(`      [setup] Seeded skill server scaffold (idempotent)`)
+    }
+
+    const overlay = ev.pipelineFiles ?? {}
+    if (Object.keys(overlay).length > 0) {
+      if (verboseFlag) console.log(`      [setup] Writing ${Object.keys(overlay).length} pipeline overlay file(s)`)
+      for (const [relPath, content] of Object.entries(overlay)) {
+        const absPath = join(worker.dir, relPath)
+        mkdirSync(dirname(absPath), { recursive: true })
+        writeFileSync(absPath, content, 'utf-8')
       }
-    } catch {}
-  }
-  resetWorkspaceDefaults(worker.dir)
-  seedLSPConfig(worker.dir)
+    }
+  } else {
+    // Full setup — clean workspace, seed defaults, write workspaceFiles
+    if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
 
-  if (verboseFlag) console.log(`      [setup] Seeding workspace files...`)
+    if (existsSync(worker.dir)) {
+      const safeDirs = ['canvas', 'files', '.shogo/server']
+      for (const sub of safeDirs) {
+        const p = join(worker.dir, sub)
+        try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}
+      }
+      const keepFiles = new Set(['sessions.db', 'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json'])
+      try {
+        for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
+          if (entry.isFile() && !keepFiles.has(entry.name)) {
+            try { rmSync(join(worker.dir, entry.name), { force: true }) } catch {}
+          }
+        }
+      } catch {}
+    }
+    resetWorkspaceDefaults(worker.dir)
+    seedLSPConfig(worker.dir)
 
-  if (ev.workspaceFiles) {
-    for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
-      const absPath = join(worker.dir, relPath)
-      mkdirSync(dirname(absPath), { recursive: true })
-      writeFileSync(absPath, content, 'utf-8')
+    if (ev.useRuntimeTemplate) {
+      seedRuntimeTemplate(worker.dir)
+      if (verboseFlag) console.log(`      [setup] Seeded runtime template`)
+    }
+    if (ev.useSkillServer) {
+      seedSkillServer(worker.dir)
+      if (verboseFlag) console.log(`      [setup] Seeded skill server scaffold`)
+    }
+
+    if (verboseFlag) console.log(`      [setup] Seeding workspace files...`)
+
+    if (ev.workspaceFiles) {
+      for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
+        const absPath = join(worker.dir, relPath)
+        mkdirSync(dirname(absPath), { recursive: true })
+        writeFileSync(absPath, content, 'utf-8')
+      }
     }
   }
 
-  const evalLabel = `E${index + 1}:${ev.name.replace(/^[^:]*:\s*/, '').toLowerCase().replace(/\s+/g, '-').substring(0, 30)}`
+  const pipelineTag = ev.pipeline ? `[${ev.pipeline}:${ev.pipelinePhase}] ` : ''
+  const evalLabel = `${pipelineTag}E${index + 1}:${ev.name.replace(/^[^:]*:\s*/, '').toLowerCase().replace(/\s+/g, '-').substring(0, 30)}`
   const initialMode = ev.initialMode || (ev.category === 'canvas' ? 'canvas' : 'none')
 
   await configureWorkerForTask(worker, {
@@ -304,6 +611,27 @@ async function runEvalOnWorker(
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
 
     if (result.score > 0) {
+      // Force the skill server to regenerate + restart with the latest schema
+      // before probing routes. This eliminates file-watcher timing races.
+      if (ev.useSkillServer) {
+        try {
+          if (verboseFlag) console.log(`      [runtime] Syncing skill server...`)
+          const syncRes = await fetch(`http://localhost:${worker.port}/agent/skill-server/sync`, {
+            method: 'POST',
+            signal: AbortSignal.timeout(180_000),
+          })
+          const text = await syncRes.text()
+          try {
+            const syncBody = JSON.parse(text) as { ok: boolean; phase: string; error?: string }
+            if (verboseFlag) console.log(`      [runtime] Skill server sync: ok=${syncBody.ok} phase=${syncBody.phase}${syncBody.error ? ` error=${syncBody.error}` : ''}`)
+          } catch {
+            if (verboseFlag) console.log(`      [runtime] Skill server sync: HTTP ${syncRes.status} (non-JSON: ${text.slice(0, 200)})`)
+          }
+        } catch (err: any) {
+          console.warn(`      [runtime] Skill server sync failed: ${err.message}`)
+        }
+      }
+
       const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
       const canvasExpected = localFlag ? hostSkillPort : CONTAINER_SKILL_PORT
       const runtimeResults = await runRuntimeChecks({
@@ -317,18 +645,22 @@ async function runEvalOnWorker(
         result.runtimeChecks = runtimeResults
         result.runtimeWarnings = result.runtimeWarnings || []
 
+        const isFullstack = ev.useSkillServer === true
+
         const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] = [
           {
             id: 'runtime-server-healthy',
             desc: 'Skill server boots and responds to /health',
             pts: 2,
             passed: runtimeResults.serverHealthy === true,
+            skip: runtimeResults.serverHealthy === null,
           },
           {
             id: 'runtime-crud-functional',
             desc: 'Can list and create records via API',
             pts: 2,
             passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
+            skip: runtimeResults.serverHealthy === null,
           },
           {
             id: 'runtime-canvas-port',
@@ -336,6 +668,13 @@ async function runEvalOnWorker(
             pts: 1,
             passed: runtimeResults.canvasPortCorrect === true,
             skip: runtimeResults.canvasPortCorrect === null,
+          },
+          {
+            id: 'runtime-canvas-compiles',
+            desc: 'Canvas app source files transpile without syntax errors',
+            pts: 3,
+            passed: runtimeResults.canvasCompiles === true,
+            skip: runtimeResults.canvasCompiles === null,
           },
         ]
 
@@ -355,14 +694,35 @@ async function runEvalOnWorker(
 
         result.score += runtimeBonus
         result.maxScore += runtimeMaxBonus
+
+        // For fullstack evals (useSkillServer), runtime failures are penalties
+        // that deduct from the static score — a broken server can't pass.
+        if (isFullstack) {
+          let penalty = 0
+          if (runtimeResults.serverHealthy === false) {
+            penalty += Math.ceil(ev.maxScore * 0.25)
+          }
+          if (!runtimeResults.canListModels || !runtimeResults.canCreateRecord) {
+            penalty += Math.ceil(ev.maxScore * 0.15)
+          }
+          if (penalty > 0) {
+            result.score = Math.max(0, result.score - penalty)
+            result.runtimeWarnings.push(`Runtime penalty: −${penalty} pts (server/CRUD failures)`)
+          }
+        }
+
         result.percentage = result.maxScore > 0 ? (result.score / result.maxScore) * 100 : 0
         result.passed = result.percentage >= 70 && result.triggeredAntiPatterns.length === 0
 
-        if (!runtimeResults.serverHealthy) {
+        if (runtimeResults.serverHealthy === false) {
           result.runtimeWarnings.push('Skill server health check failed')
         }
         if (runtimeResults.canvasPortCorrect === false) {
           result.runtimeWarnings.push('Canvas references wrong skill server port')
+        }
+        if (runtimeResults.canvasCompiles === false) {
+          const errCount = runtimeResults.canvasCompileErrors.length
+          result.runtimeWarnings.push(`Canvas compilation failed (${errCount} error${errCount !== 1 ? 's' : ''})`)
         }
 
         const warns = result.runtimeWarnings.length
@@ -374,7 +734,7 @@ async function runEvalOnWorker(
     }
 
     if (saveWorkspacesFlag) {
-      const archivePath = archiveWorkspaceAsTemplate(ev, result, worker.dir, runTimestamp)
+      const archivePath = archiveWorkspaceAsTemplate(ev, result, worker.dir, runDir)
       if (archivePath) {
         result.workspaceDir = archivePath
         console.log(`[${evalLabel}] Workspace saved: ${archivePath}`)
@@ -447,7 +807,14 @@ async function main() {
     evals = evals.filter(e => !e.tags?.length || e.tags.includes(subagentModeArg))
   }
 
-  console.log(`  Evals: ${evals.length}`)
+  const workQueue = buildWorkQueue(evals)
+  const pipelineCount = workQueue.filter(w => w.type === 'pipeline').length
+  const standaloneCount = workQueue.filter(w => w.type === 'standalone').length
+  console.log(`  Evals:      ${evals.length}`)
+  if (pipelineCount > 0) {
+    console.log(`  Pipelines:  ${pipelineCount} (${evals.length - standaloneCount} evals)`)
+    console.log(`  Standalone: ${standaloneCount}`)
+  }
   console.log('')
 
   if (evals.length === 0) {
@@ -510,38 +877,58 @@ async function main() {
   const results: EvalResult[] = []
   const partialPath = resolve(tmpdir(), `agent-eval-partial-${modelArg}-${trackArg}.json`)
 
+  const runDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${modelArg}-${runTimestamp}`)
+  mkdirSync(join(runDir, 'logs'), { recursive: true })
+  console.log(`  Logs: ${join(runDir, 'logs')}`)
+
   if (saveWorkspacesFlag) {
-    const outputDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${runTimestamp}`)
-    mkdirSync(outputDir, { recursive: true })
-    console.log(`  Workspaces will be saved to: ${outputDir}`)
-    console.log('')
+    console.log(`  Workspaces will be saved to: ${runDir}`)
+  }
+  console.log('')
+
+  // Parallel work-pool: each worker pulls the next work item from the queue.
+  // Pipelines run all phases sequentially on one worker; standalone evals run individually.
+  let nextItemIndex = 0
+  let globalEvalIndex = 0
+
+  async function ensureWorkerHealthy(worker: DockerWorker) {
+    if (!(await isWorkerHealthy(worker))) {
+      if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
+      stopWorker(worker)
+      await Bun.sleep(500)
+      const fresh = localFlag
+        ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
+        : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
+      Object.assign(worker, fresh)
+    }
   }
 
-  // Parallel work-pool: each worker pulls the next eval from the queue.
-  // Containers are reused across evals; only restart if health check fails.
-  let nextIndex = 0
-  async function workerLoop(worker: DockerWorker) {
-    while (nextIndex < evals.length) {
-      const i = nextIndex++
-      const ev = evals[i]
+  async function runAndRecord(worker: DockerWorker, ev: AgentEval, skipCleanup: boolean) {
+    const idx = globalEvalIndex++
+    await ensureWorkerHealthy(worker)
+    const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, { skipCleanup })
+    results.push(result)
+    try { writeEvalLog(result, runDir) } catch {}
+    try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
+    return result
+  }
 
-      // Check worker health — restart if it died
-      if (!(await isWorkerHealthy(worker))) {
-        if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
-        stopWorker(worker)
-        await Bun.sleep(500)
-        const fresh = localFlag
-          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
-          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
-        Object.assign(worker, fresh)
-      }
+  async function workerLoop(worker: DockerWorker) {
+    while (nextItemIndex < workQueue.length) {
+      const item = workQueue[nextItemIndex++]
 
       try {
-        const result = await runEvalOnWorker(worker, ev, i, evals.length, runTimestamp)
-        results.push(result)
-        try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
+        if (item.type === 'standalone') {
+          await runAndRecord(worker, item.eval, false)
+        } else {
+          console.log(`[Worker ${worker.id}] Pipeline "${item.name}" — ${item.phases.length} phases`)
+          for (let p = 0; p < item.phases.length; p++) {
+            await runAndRecord(worker, item.phases[p], p > 0)
+          }
+          console.log(`[Worker ${worker.id}] Pipeline "${item.name}" complete`)
+        }
       } catch (err: any) {
-        console.error(`[Worker ${worker.id}] Eval failed: ${err?.message || err}`)
+        console.error(`[Worker ${worker.id}] Work item failed: ${err?.message || err}`)
       }
     }
   }
@@ -626,7 +1013,29 @@ async function main() {
   console.log(`  Failed tool calls:  ${totalFailed}`)
   console.log(`  Avg tools/eval:     ${(totalToolCalls / results.length).toFixed(1)}`)
   console.log(`  Success rate:       ${totalToolCalls > 0 ? ((1 - totalFailed / totalToolCalls) * 100).toFixed(1) : 100}%`)
+  console.log(`  Error penalty:      −${totalFailed * 2} points (${totalFailed} × 2)`)
   console.log('')
+
+  if (totalFailed > 0) {
+    const errorsByTool = new Map<string, { count: number; evals: string[] }>()
+    for (const r of results) {
+      for (const tc of r.toolCalls) {
+        if (!tc.error) continue
+        const entry = errorsByTool.get(tc.name) || { count: 0, evals: [] }
+        entry.count++
+        if (!entry.evals.includes(r.eval.id)) entry.evals.push(r.eval.id)
+        errorsByTool.set(tc.name, entry)
+      }
+    }
+    const sorted = [...errorsByTool.entries()].sort((a, b) => b[1].count - a[1].count)
+
+    console.log('TOOL ERRORS')
+    console.log('-'.repeat(60))
+    for (const [tool, { count, evals: evalIds }] of sorted) {
+      console.log(`  ${tool.padEnd(28)} ${String(count).padStart(3)} error${count !== 1 ? 's' : ''} across ${evalIds.length} eval${evalIds.length !== 1 ? 's' : ''}`)
+    }
+    console.log('')
+  }
 
   const cacheHitRate = (totalInput + totalCacheRead + totalCacheWrite) > 0
     ? (totalCacheRead / (totalInput + totalCacheRead + totalCacheWrite) * 100).toFixed(1)
@@ -692,16 +1101,18 @@ async function main() {
       costPerEval: totalCost / results.length,
     },
   }
+  const summaryPath = join(runDir, 'results.json')
+  writeFileSync(summaryPath, JSON.stringify(exportData, null, 2))
   writeFileSync(outputPath, JSON.stringify(exportData, null, 2))
   console.log('')
-  console.log(`Results saved: ${outputPath}`)
+  console.log(`Results: ${summaryPath}`)
+  console.log(`Logs:    ${join(runDir, 'logs')}`)
 
   if (saveWorkspacesFlag) {
-    const outputDir = join(EVAL_OUTPUTS_DIR, `${trackArg}-${runTimestamp}`)
     console.log('')
     console.log('SAVED WORKSPACES (template format)')
     console.log('-'.repeat(60))
-    console.log(`  Directory: ${outputDir}`)
+    console.log(`  Directory: ${join(runDir, 'workspaces')}`)
     for (const r of results) {
       if (r.workspaceDir) {
         const status = r.passed ? 'PASS' : 'FAIL'
