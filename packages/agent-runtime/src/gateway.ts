@@ -100,7 +100,7 @@ function resolveModelAlias(modelId: string): string {
 
 /**
  * Resolve the thinking/reasoning level for a turn. The 'basic' agent mode
- * uses gpt-5.4-mini which benefits from xhigh reasoning effort.
+ * uses claude-haiku which benefits from medium reasoning effort.
  */
 function resolveThinkingLevel(modelOverride?: string): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
   const envLevel = process.env.AGENT_THINKING_LEVEL as any

@@ -36,6 +36,6 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 // ---------------------------------------------------------------------------
 
 export const AGENT_MODE_DEFAULTS: Record<AgentMode, ModelId> = {
-  basic: 'gpt-5.4-nano',
+  basic: 'claude-haiku-4-5-20251001',
   advanced: 'claude-sonnet-4-6',
 }
