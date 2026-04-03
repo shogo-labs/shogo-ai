@@ -1404,7 +1404,7 @@ export const ChatPanel = observer(function ChatPanel({
     const stopUrl = localAgentUrl
       ? `${localAgentUrl}/agent/stop`
       : projectId
-        ? `${API_URL}/api/projects/${projectId}/agent/stop`
+        ? `${API_URL}/api/projects/${projectId}/chat/stop`
         : null
     if (stopUrl) {
       fetch(stopUrl, {

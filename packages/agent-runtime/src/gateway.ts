@@ -1149,6 +1149,34 @@ export class AgentGateway {
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
   ): Promise<string> {
+    // Wait for any in-flight turn on this session to finish so the new turn
+    // reads a fully-updated session history (critical for "continue" after stop).
+    const prevTurn = this.turnLocks.get(sessionId)
+    if (prevTurn) {
+      await prevTurn.catch(() => {})
+    }
+
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode)
+    this.turnLocks.set(sessionId, turnPromise)
+    try {
+      return await turnPromise
+    } finally {
+      if (this.turnLocks.get(sessionId) === turnPromise) {
+        this.turnLocks.delete(sessionId)
+      }
+    }
+  }
+
+  private async _agentTurnInner(
+    prompt: string,
+    sessionId: string = 'default',
+    isHeartbeat: boolean = false,
+    streamTarget?: { adapter: ChannelAdapter; channelId: string },
+    uiWriter?: { write(chunk: Record<string, any>): void },
+    activeSkill?: { name: string },
+    images?: ImageContent[],
+    interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
+  ): Promise<string> {
     // Reload skills from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
     setLoadedSkills(this.skills)
@@ -1434,6 +1462,9 @@ export class AgentGateway {
     const canvasParsers = new Map<string, CanvasStreamParser>()
     const streamedToolCalls = new Set<string>()
 
+    const turnAbort = new AbortController()
+    this.turnAbortControllers.set(sessionId, turnAbort)
+
     try {
       const hookEmitter = this.hookEmitter
       const result = await runAgentLoop({
@@ -1448,6 +1479,7 @@ export class AgentGateway {
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(session.modelOverride),
+        signal: turnAbort.signal,
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
@@ -1606,68 +1638,9 @@ export class AgentGateway {
         },
       })
 
-      // Flush any remaining buffered text
-      chunker?.flush()
-      chunker?.dispose()
-
-      // Close any open UI text block
-      if (uiWriter && uiTextId) {
-        uiWriter.write({ type: 'text-end', id: uiTextId })
-        uiTextId = null
-      }
-
-      // Store usage for callers (server.ts includes it in the `finish` event)
-      this._lastTurnUsage = {
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        cacheReadTokens: result.cacheReadTokens,
-        cacheWriteTokens: result.cacheWriteTokens,
-        iterations: result.iterations,
-        toolCallCount: result.toolCalls.length,
-      }
-
-      if (result.loopBreak) {
-        console.warn(
-          `${this.logPrefix} Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
-        )
-      }
-
-      const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
-      if (result.toolCalls.length > 0) {
-        console.log(
-          `${this.logPrefix} Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${totalInput}+${result.outputTokens} tokens (${result.cacheReadTokens} cached)`
-        )
-      }
-
-      if (result.error) {
-        const msg = result.error.message || 'An unexpected error occurred'
-        const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
-        console.error(
-          `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
-        )
-        chunker?.dispose()
-        if (uiWriter) {
-          uiWriter.write({
-            type: 'error',
-            errorText: isProviderError
-              ? `AI provider error: ${msg}`
-              : `I encountered an issue processing your message: ${msg}`,
-          } as any)
-        }
-      } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
-        console.error(
-          `${this.logPrefix} Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
-        )
-        if (uiWriter) {
-          uiWriter.write({
-            type: 'error',
-            errorText: 'I encountered an issue processing your message. Please try starting a new conversation.',
-          } as any)
-        }
-      }
-
-      // Store full messages (including tool calls and tool results) in the
-      // session so subsequent turns have complete context about prior actions.
+      // Persist messages to session FIRST — before any uiWriter calls that
+      // could throw due to client disconnect.  This ensures "continue" after
+      // stop always has the interrupted turn's context.
       this.sessionManager.addMessages(sessionId, ...result.newMessages)
 
       if (this.sessionManager.needsCompaction(session)) {
@@ -1684,6 +1657,71 @@ export class AgentGateway {
 
       this.sessionManager.touch(sessionId)
 
+      // Store usage for callers (server.ts includes it in the `finish` event)
+      this._lastTurnUsage = {
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        cacheReadTokens: result.cacheReadTokens,
+        cacheWriteTokens: result.cacheWriteTokens,
+        iterations: result.iterations,
+        toolCallCount: result.toolCalls.length,
+      }
+
+      // UI notifications below may throw if the client disconnected (stop).
+      // Wrap in try/catch so session persistence above is never affected.
+      try {
+        chunker?.flush()
+        chunker?.dispose()
+
+        if (uiWriter && uiTextId) {
+          uiWriter.write({ type: 'text-end', id: uiTextId })
+          uiTextId = null
+        }
+
+        if (result.loopBreak) {
+          console.warn(
+            `${this.logPrefix} Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
+          )
+        }
+
+        const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
+        if (result.toolCalls.length > 0) {
+          console.log(
+            `${this.logPrefix} Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${totalInput}+${result.outputTokens} tokens (${result.cacheReadTokens} cached)`
+          )
+        }
+
+        if (result.error) {
+          const msg = result.error.message || 'An unexpected error occurred'
+          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+          console.error(
+            `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
+          )
+          chunker?.dispose()
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'error',
+              errorText: isProviderError
+                ? `AI provider error: ${msg}`
+                : `I encountered an issue processing your message: ${msg}`,
+            } as any)
+          }
+        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
+          console.error(
+            `${this.logPrefix} Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
+          )
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'error',
+              errorText: 'I encountered an issue processing your message. Please try starting a new conversation.',
+            } as any)
+          }
+        }
+      } catch (uiErr: any) {
+        console.warn(`${this.logPrefix} Post-loop UI write failed (session messages already persisted): ${uiErr.message}`)
+        chunker?.dispose()
+      }
+
       if (result.text) return result.text
       if (isHeartbeat) return 'HEARTBEAT_OK'
       console.warn(`${this.logPrefix} Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
@@ -1691,19 +1729,22 @@ export class AgentGateway {
     } catch (error: any) {
       console.error(`${this.logPrefix} Agent turn failed:`, error.message, error.stack?.split('\n').slice(0, 3).join('\n'))
       chunker?.dispose()
-      if (uiWriter) {
-        const msg = error.message || 'An unexpected error occurred'
-        const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
-        uiWriter.write({
-          type: 'error',
-          errorText: isProviderError
-            ? `AI provider error: ${msg}`
-            : 'I encountered an issue processing your message. Please try starting a new conversation.',
-        } as any)
-      }
+      try {
+        if (uiWriter) {
+          const msg = error.message || 'An unexpected error occurred'
+          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+          uiWriter.write({
+            type: 'error',
+            errorText: isProviderError
+              ? `AI provider error: ${msg}`
+              : 'I encountered an issue processing your message. Please try starting a new conversation.',
+          } as any)
+        }
+      } catch { /* writer may be dead — ignore */ }
       if (isHeartbeat) return 'HEARTBEAT_OK'
       return `Sorry, I encountered an error processing your message. Please try again.`
     } finally {
+      this.turnAbortControllers.delete(sessionId)
       if (typingInterval) clearInterval(typingInterval)
     }
   }
@@ -2431,6 +2472,10 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
   /** Map of sessionId -> AbortController for cancelling in-progress agent turns */
   private turnAbortControllers = new Map<string, AbortController>()
+
+  /** Per-session turn lock: ensures sequential turn execution so a "continue"
+   *  after stop always sees the interrupted turn's messages in the session. */
+  private turnLocks = new Map<string, Promise<unknown>>()
 
   abortCurrentTurn(sessionId: string): boolean {
     const controller = this.turnAbortControllers.get(sessionId)
