@@ -34,7 +34,8 @@ import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
-import { SessionManager, type SessionManagerConfig } from './session-manager'
+import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
+import { microcompact } from './microcompact'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
@@ -1423,7 +1424,34 @@ export class AgentGateway {
       },
     }) as AgentTool[]
 
-    const history = this.sessionManager.buildHistory(sessionId)
+    // Multi-layer context compaction pipeline (Layers 1-4)
+    const contextBudgetChars = (this.sessionManager.autocompactThreshold) * 4
+    let history = this.sessionManager.buildHistory(sessionId)
+    history = applyToolResultBudget(history, contextBudgetChars)
+    const mc = microcompact(history)
+    history = mc.messages
+    history = snipConsumedResults(history)
+
+    if (mc.tokensSaved > 0) {
+      console.log(`${this.logPrefix} Microcompact saved ~${mc.tokensSaved} tokens for session ${sessionId}`)
+    }
+
+    // Layer 4: LLM autocompact if still over threshold after cheap layers
+    if (this.sessionManager.estimateTokens(session) > this.sessionManager.autocompactThreshold) {
+      const fileStateSummary = this.fileStateCache.size > 0
+        ? this.fileStateCache.getSummary(this.workspaceDir)
+        : undefined
+      const preCompactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
+      if (preCompactResult) {
+        console.log(
+          `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
+        )
+        history = this.sessionManager.buildHistory(sessionId)
+        history = applyToolResultBudget(history, contextBudgetChars)
+        history = microcompact(history).messages
+        history = snipConsumedResults(history)
+      }
+    }
 
     // Typing indicator: send once before the turn and periodically
     let typingInterval: ReturnType<typeof setInterval> | undefined
@@ -1484,6 +1512,20 @@ export class AgentGateway {
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(session.modelOverride),
         signal: turnAbort.signal,
+        onContextOverflow: async () => {
+          console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
+          const fileStateSummary = this.fileStateCache.size > 0
+            ? this.fileStateCache.getSummary(this.workspaceDir)
+            : undefined
+          const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
+          if (!r) return null
+          console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
+          let h = this.sessionManager.buildHistory(sessionId)
+          h = applyToolResultBudget(h, contextBudgetChars)
+          h = microcompact(h).messages
+          h = snipConsumedResults(h)
+          return h
+        },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
@@ -1654,7 +1696,7 @@ export class AgentGateway {
         const compactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
         if (compactResult) {
           console.log(
-            `${this.logPrefix} Session ${sessionId} compacted: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
+            `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
         }
       }
