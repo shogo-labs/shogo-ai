@@ -12,6 +12,44 @@ import { spawn, type Subprocess } from 'bun'
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 
+const IS_WINDOWS = process.platform === 'win32'
+const WIN_BIN_EXTENSIONS = ['.exe', '.cmd']
+
+/**
+ * Resolve a Node CLI binary across platforms.
+ *
+ * On Windows, Bun creates `.exe` / `.bunx` shims in `node_modules/.bin/`
+ * instead of extensionless POSIX scripts, so a bare `existsSync(…/.bin/name)`
+ * will fail. This helper checks the extensionless path first, then Windows
+ * shim extensions, then falls back to the module's JS entry point
+ * (bypassing `.bin/` entirely, like the Vite workaround in manager.ts).
+ */
+export function resolveBin(
+  name: string,
+  searchDirs: string[],
+  directEntryPath?: string,
+): { resolved: string; viaBun: boolean } | undefined {
+  for (const dir of searchDirs) {
+    const base = join(dir, 'node_modules', '.bin', name)
+    if (existsSync(base)) return { resolved: base, viaBun: false }
+    if (IS_WINDOWS) {
+      for (const ext of WIN_BIN_EXTENSIONS) {
+        const withExt = base + ext
+        if (existsSync(withExt)) return { resolved: withExt, viaBun: false }
+      }
+    }
+  }
+
+  if (directEntryPath) {
+    for (const dir of searchDirs) {
+      const entry = join(dir, 'node_modules', name, directEntryPath)
+      if (existsSync(entry)) return { resolved: entry, viaBun: true }
+    }
+  }
+
+  return undefined
+}
+
 export interface LSPMessage {
   jsonrpc: '2.0'
   id?: number | string
@@ -82,28 +120,55 @@ export class TSLanguageServer {
   async start(): Promise<void> {
     if (this.process) return
 
-    const possiblePaths = [
-      ...(this.serverBin ? [this.serverBin] : []),
-      ...this.fallbackBinNames.flatMap(name => [
-        join(this.projectDir, 'node_modules', '.bin', name),
-        join(dirname(dirname(import.meta.path)), 'node_modules', '.bin', name),
-        name,
-      ]),
+    const searchDirs = [
+      this.projectDir,
+      dirname(dirname(import.meta.path)),
     ]
 
-    let serverPath = this.fallbackBinNames[0] ?? 'typescript-language-server'
-    for (const p of possiblePaths) {
-      if (this.fallbackBinNames.includes(p) || existsSync(p)) {
-        serverPath = p
-        break
+    let serverPath: string | undefined
+    let spawnViaBun = false
+
+    if (this.serverBin) {
+      if (existsSync(this.serverBin)) {
+        serverPath = this.serverBin
+      } else if (IS_WINDOWS) {
+        for (const ext of WIN_BIN_EXTENSIONS) {
+          if (existsSync(this.serverBin + ext)) {
+            serverPath = this.serverBin + ext
+            break
+          }
+        }
       }
     }
 
-    console.log(`[${this.label}] Starting ${serverPath}`)
+    if (!serverPath) {
+      for (const name of this.fallbackBinNames) {
+        const result = resolveBin(name, searchDirs, 'lib/cli.mjs')
+        if (result) {
+          serverPath = result.resolved
+          spawnViaBun = result.viaBun
+          break
+        }
+      }
+    }
+
+    if (!serverPath) {
+      const tried = this.fallbackBinNames.join(', ')
+      throw new Error(
+        `[${this.label}] Could not find language server binary (${tried}). ` +
+        `Searched: ${searchDirs.map(d => join(d, 'node_modules', '.bin')).join(', ')}`,
+      )
+    }
+
+    console.log(`[${this.label}] Starting ${serverPath}${spawnViaBun ? ' (via bun)' : ''}`)
     console.log(`[${this.label}] Project directory: ${this.projectDir}`)
 
+    const cmd = spawnViaBun
+      ? ['bun', serverPath, '--stdio', ...this.serverArgs]
+      : [serverPath, '--stdio', ...this.serverArgs]
+
     try {
-      this.process = spawn([serverPath, '--stdio', ...this.serverArgs], {
+      this.process = spawn(cmd, {
         cwd: this.projectDir,
         env: { ...process.env },
         stdin: 'pipe',
@@ -565,20 +630,24 @@ export class WorkspaceLSPManager {
   }
 
   private async detectPyright(): Promise<void> {
-    const possiblePaths = [
-      ...(this.pyrightBin ? [this.pyrightBin] : []),
-      join(this.projectDir, 'node_modules', '.bin', 'pyright'),
-      join(dirname(dirname(import.meta.path)), 'node_modules', '.bin', 'pyright'),
-      'pyright',
-    ]
-    for (const p of possiblePaths) {
-      if (p === 'pyright' || existsSync(p)) {
-        this.pyrightBin = p
-        this.pyAvailable = true
-        console.log(`[LSP-PY] Pyright CLI available at: ${p}`)
-        return
-      }
+    if (this.pyrightBin && existsSync(this.pyrightBin)) {
+      this.pyAvailable = true
+      console.log(`[LSP-PY] Pyright CLI available at: ${this.pyrightBin}`)
+      return
     }
+
+    const searchDirs = [
+      this.projectDir,
+      dirname(dirname(import.meta.path)),
+    ]
+    const result = resolveBin('pyright', searchDirs)
+    if (result) {
+      this.pyrightBin = result.resolved
+      this.pyAvailable = true
+      console.log(`[LSP-PY] Pyright CLI available at: ${result.resolved}`)
+      return
+    }
+
     console.log('[LSP-PY] Pyright not found — Python linting disabled')
   }
 

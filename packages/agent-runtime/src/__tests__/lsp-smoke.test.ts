@@ -11,11 +11,13 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, readFileSync, copyFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
-import { TSLanguageServer } from '@shogo/shared-runtime'
+import { TSLanguageServer, resolveBin } from '@shogo/shared-runtime'
 
 const WORKSPACE = '/tmp/test-lsp-smoke'
 const CANVAS_GLOBALS_SRC = resolve(__dirname, '../../../canvas-runtime/src/canvas-globals.d.ts')
-const TS_LS_BIN = resolve(__dirname, '../../node_modules/.bin/typescript-language-server')
+const pkgDir = resolve(__dirname, '../..')
+const tsResult = resolveBin('typescript-language-server', [pkgDir], 'lib/cli.mjs')
+const TS_LS_BIN = tsResult?.resolved ?? resolve(pkgDir, 'node_modules/.bin/typescript-language-server')
 
 const TSCONFIG = JSON.stringify({
   compilerOptions: {
