@@ -313,6 +313,7 @@
         "@opentelemetry/sdk-node": "^0.213.0",
         "@opentelemetry/sdk-trace-base": "^2.5.1",
         "@opentelemetry/semantic-conventions": "^1.39.0",
+        "@shogo/model-catalog": "workspace:*",
         "ai": "^6.0.73",
         "hono": "^4.7.10",
         "tar": "^7.4.3",

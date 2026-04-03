@@ -73,7 +73,6 @@ export async function groupSkills(
 
   const { data, usage } = await sendMessageJSON<{ groups: TemplateGroup[] }>(prompt, {
     system: SYSTEM_PROMPT,
-    maxTokens: 4096,
     temperature: 0,
   })
 

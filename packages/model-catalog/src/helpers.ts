@@ -125,6 +125,22 @@ export function getModelBillingModel(id: string): BillingModel {
 }
 
 // ---------------------------------------------------------------------------
+// Max output tokens
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_OUTPUT_TOKENS = 64_000
+
+/**
+ * Get the max output tokens for a model per official provider specs.
+ * Falls back to 64k for unknown models.
+ */
+export function getMaxOutputTokens(id: string): number {
+  const entry = getModelEntry(id)
+  if (entry) return entry.maxOutputTokens
+  return DEFAULT_MAX_OUTPUT_TOKENS
+}
+
+// ---------------------------------------------------------------------------
 // Family (for UI color coding)
 // ---------------------------------------------------------------------------
 

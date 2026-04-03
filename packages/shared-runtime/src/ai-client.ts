@@ -9,6 +9,8 @@
  * and production environments.
  */
 
+import { getMaxOutputTokens } from '@shogo/model-catalog'
+
 const DEFAULT_BASE_URL = 'https://api.anthropic.com'
 const API_VERSION = '2023-06-01'
 
@@ -22,7 +24,7 @@ export interface SendMessageOptions {
   model?: string
   /** System prompt */
   system?: string
-  /** Max tokens to generate. Defaults to 4096 */
+  /** Max tokens to generate. Defaults to the model's max from the catalog. */
   maxTokens?: number
   /** Temperature. Defaults to 0 */
   temperature?: number
@@ -76,7 +78,7 @@ export async function sendMessages(
 
   const body: Record<string, unknown> = {
     model,
-    max_tokens: options?.maxTokens ?? 4096,
+    max_tokens: options?.maxTokens ?? getMaxOutputTokens(model),
     temperature: options?.temperature ?? 0,
     messages,
   }

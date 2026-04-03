@@ -19,6 +19,7 @@ export interface ModelEntry {
   family: ModelFamily
   generation: ModelGeneration
   billingModel: BillingModel
+  maxOutputTokens: number
 }
 
 export interface ImageModelEntry {
@@ -44,6 +45,7 @@ export const MODEL_CATALOG = {
     family: 'opus',
     generation: 'current',
     billingModel: 'opus',
+    maxOutputTokens: 128_000,
   },
   'claude-sonnet-4-6': {
     id: 'claude-sonnet-4-6',
@@ -55,6 +57,7 @@ export const MODEL_CATALOG = {
     family: 'sonnet',
     generation: 'current',
     billingModel: 'sonnet',
+    maxOutputTokens: 64_000,
   },
   'claude-haiku-4-5-20251001': {
     id: 'claude-haiku-4-5-20251001',
@@ -66,6 +69,7 @@ export const MODEL_CATALOG = {
     family: 'haiku',
     generation: 'current',
     billingModel: 'haiku',
+    maxOutputTokens: 64_000,
   },
 
   // Anthropic — legacy
@@ -79,6 +83,7 @@ export const MODEL_CATALOG = {
     family: 'sonnet',
     generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 64_000,
   },
   'claude-opus-4-5-20251101': {
     id: 'claude-opus-4-5-20251101',
@@ -90,6 +95,7 @@ export const MODEL_CATALOG = {
     family: 'opus',
     generation: 'legacy',
     billingModel: 'opus',
+    maxOutputTokens: 64_000,
   },
   'claude-opus-4-1-20250805': {
     id: 'claude-opus-4-1-20250805',
@@ -101,6 +107,7 @@ export const MODEL_CATALOG = {
     family: 'opus',
     generation: 'legacy',
     billingModel: 'opus',
+    maxOutputTokens: 32_000,
   },
   'claude-sonnet-4-20250514': {
     id: 'claude-sonnet-4-20250514',
@@ -112,6 +119,7 @@ export const MODEL_CATALOG = {
     family: 'sonnet',
     generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 64_000,
   },
   'claude-3-7-sonnet-20250219': {
     id: 'claude-3-7-sonnet-20250219',
@@ -123,6 +131,7 @@ export const MODEL_CATALOG = {
     family: 'sonnet',
     generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 128_000,
   },
   'claude-opus-4-20250514': {
     id: 'claude-opus-4-20250514',
@@ -134,6 +143,7 @@ export const MODEL_CATALOG = {
     family: 'opus',
     generation: 'legacy',
     billingModel: 'opus',
+    maxOutputTokens: 32_000,
   },
   'claude-3-haiku-20240307': {
     id: 'claude-3-haiku-20240307',
@@ -145,6 +155,7 @@ export const MODEL_CATALOG = {
     family: 'haiku',
     generation: 'legacy',
     billingModel: 'haiku',
+    maxOutputTokens: 4_096,
   },
 
   // OpenAI — current generation
@@ -158,6 +169,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'current',
     billingModel: 'opus',
+    maxOutputTokens: 128_000,
   },
   'gpt-5.4-mini': {
     id: 'gpt-5.4-mini',
@@ -169,6 +181,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'current',
     billingModel: 'gpt-5.4-mini',
+    maxOutputTokens: 128_000,
   },
   'gpt-5-mini': {
     id: 'gpt-5-mini',
@@ -180,6 +193,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'current',
     billingModel: 'sonnet',
+    maxOutputTokens: 128_000,
   },
   'gpt-5.4-nano': {
     id: 'gpt-5.4-nano',
@@ -191,6 +205,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'current',
     billingModel: 'gpt-5.4-nano',
+    maxOutputTokens: 128_000,
   },
   'o3': {
     id: 'o3',
@@ -202,6 +217,7 @@ export const MODEL_CATALOG = {
     family: 'o-series',
     generation: 'current',
     billingModel: 'opus',
+    maxOutputTokens: 100_000,
   },
   'o4-mini': {
     id: 'o4-mini',
@@ -213,6 +229,7 @@ export const MODEL_CATALOG = {
     family: 'o-series',
     generation: 'current',
     billingModel: 'sonnet',
+    maxOutputTokens: 100_000,
   },
 
   // OpenAI — legacy
@@ -226,6 +243,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 32_768,
   },
   'gpt-4o': {
     id: 'gpt-4o',
@@ -237,6 +255,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 16_384,
   },
   'gpt-4o-mini': {
     id: 'gpt-4o-mini',
@@ -248,6 +267,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'legacy',
     billingModel: 'haiku',
+    maxOutputTokens: 16_384,
   },
   'gpt-4-turbo': {
     id: 'gpt-4-turbo',
@@ -259,6 +279,7 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'legacy',
     billingModel: 'sonnet',
+    maxOutputTokens: 4_096,
   },
   'o1': {
     id: 'o1',
@@ -270,6 +291,7 @@ export const MODEL_CATALOG = {
     family: 'o-series',
     generation: 'legacy',
     billingModel: 'opus',
+    maxOutputTokens: 100_000,
   },
   'o1-mini': {
     id: 'o1-mini',
@@ -281,6 +303,7 @@ export const MODEL_CATALOG = {
     family: 'o-series',
     generation: 'legacy',
     billingModel: 'haiku',
+    maxOutputTokens: 65_536,
   },
   'o3-mini': {
     id: 'o3-mini',
@@ -292,6 +315,7 @@ export const MODEL_CATALOG = {
     family: 'o-series',
     generation: 'legacy',
     billingModel: 'haiku',
+    maxOutputTokens: 65_536,
   },
 } as const satisfies Record<string, ModelEntry>
 
