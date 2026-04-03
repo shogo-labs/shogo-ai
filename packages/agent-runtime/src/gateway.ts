@@ -50,7 +50,7 @@ import {
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
-import { WorkspaceLSPManager } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import type { FilePart } from './file-attachment-utils'
@@ -636,12 +636,16 @@ export class AgentGateway {
   private async startLSP(): Promise<void> {
     try {
       const thisDir = dirname(fileURLToPath(import.meta.url))
-      const tsBin = join(thisDir, '..', 'node_modules', '.bin', 'typescript-language-server')
-      const pyBin = join(thisDir, '..', 'node_modules', '.bin', 'pyright')
+      const pkgDir = join(thisDir, '..')
+      const searchDirs = [pkgDir]
+
+      const tsResult = resolveBin('typescript-language-server', searchDirs, 'lib/cli.mjs')
+      const pyResult = resolveBin('pyright', searchDirs)
+
       this.lspManager = new WorkspaceLSPManager({
         projectDir: this.workspaceDir,
-        tsServerBin: existsSync(tsBin) ? tsBin : undefined,
-        pyrightBin: existsSync(pyBin) ? pyBin : undefined,
+        tsServerBin: tsResult?.resolved,
+        pyrightBin: pyResult?.resolved,
       })
       await this.lspManager.startAll()
       console.log(`${this.logPrefix} LSP ready for workspace: ${this.workspaceDir}`)

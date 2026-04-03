@@ -11,11 +11,14 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, copyFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { realpathSync } from 'node:fs'
-import { WorkspaceLSPManager } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
 
 const WORKSPACE = realpathSync('/tmp') + '/test-workspace-lsp-mgr'
-const TS_BIN = resolve(__dirname, '../../node_modules/.bin/typescript-language-server')
-const PY_BIN = resolve(__dirname, '../../node_modules/.bin/pyright')
+const pkgDir = resolve(__dirname, '../..')
+const tsResult = resolveBin('typescript-language-server', [pkgDir], 'lib/cli.mjs')
+const pyResult = resolveBin('pyright', [pkgDir])
+const TS_BIN = tsResult?.resolved ?? resolve(pkgDir, 'node_modules/.bin/typescript-language-server')
+const PY_BIN = pyResult?.resolved ?? resolve(pkgDir, 'node_modules/.bin/pyright')
 const CANVAS_GLOBALS_SRC = resolve(__dirname, '../../../canvas-runtime/src/canvas-globals.d.ts')
 
 const TSCONFIG = JSON.stringify({

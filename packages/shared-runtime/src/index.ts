@@ -93,6 +93,7 @@ export {
   LSPServerManager,
   lspManager,
   WorkspaceLSPManager,
+  resolveBin,
   type LSPMessage,
   type LSPDiagnostic,
   type TSLanguageServerOptions,
