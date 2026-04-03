@@ -40,6 +40,7 @@ import {
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
+  getMaxOutputTokens,
   type Provider,
   type ImageProvider,
   type AgentMode,
@@ -224,7 +225,7 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
   const body: Record<string, unknown> = {
     model: request.model,
     messages,
-    max_tokens: request.max_tokens || 4096,
+    max_tokens: request.max_tokens || getMaxOutputTokens(request.model),
   }
 
   if (systemPrompt) body.system = systemPrompt

@@ -101,7 +101,6 @@ ${skillContents}`
 
   const { data, usage } = await sendMessageJSON<GeneratedWorkspace>(prompt, {
     system: SYSTEM_PROMPT,
-    maxTokens: 8192,
     temperature: 0,
   })
 

@@ -17,6 +17,7 @@ import { join, relative, extname } from "path"
 import { existsSync } from "fs"
 import { exec } from "child_process"
 import { promisify } from "util"
+import { getMaxOutputTokens } from "@shogo/model-catalog"
 
 const execAsync = promisify(exec)
 
@@ -851,7 +852,7 @@ async function llmSecurityAnalysis(
       },
       body: JSON.stringify({
         model: "claude-3-5-haiku-latest",
-        max_tokens: 2048,
+        max_tokens: getMaxOutputTokens("claude-haiku-4-5"),
         system: `You are a security auditor. Analyze the provided source code files and identify security vulnerabilities.
 
 Return ONLY a JSON array of findings. Each finding must have:

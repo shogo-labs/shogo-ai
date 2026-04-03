@@ -32,6 +32,7 @@ export {
   getModelTier,
   getModelBillingModel,
   getModelFamily,
+  getMaxOutputTokens,
   getAvailableModels,
   getModelsByProvider,
   type AvailableModelFilter,

@@ -19,6 +19,7 @@ import {
   getSourceBreakdown,
   type ConversationThread,
 } from '../services/analytics.service'
+import { getMaxOutputTokens } from '@shogo/model-catalog'
 
 const MAX_TOKENS_PER_CHUNK = 100_000
 const MAX_CHUNKS = 3
@@ -98,7 +99,7 @@ Return ONLY valid JSON, no markdown fences.`
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
+        max_tokens: getMaxOutputTokens('claude-sonnet-4-20250514'),
         messages: [{ role: 'user', content: prompt }],
       }),
     })

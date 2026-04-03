@@ -54,7 +54,7 @@ export interface SubagentConfig {
   maxTurns?: number
   /** Override working directory for file tools (scoping). */
   workingDir?: string
-  /** Max output tokens per LLM call (default: 4096 from agent-loop). */
+  /** Max output tokens per LLM call. Defaults to the model's max from the catalog. */
   maxTokens?: number
   /** Override loop detector config. Pass false to disable. */
   loopDetection?: Partial<LoopDetectorConfig> | false
@@ -207,7 +207,6 @@ export function getBuiltinSubagentConfig(
         disallowedTools: ['task', 'skill', 'code_agent'],
         workingDir: projectDir,
         maxTurns: 50,
-        maxTokens: 16384,
         loopDetection: { maxIdenticalCalls: 5 },
       }
     }
@@ -226,7 +225,6 @@ export function getBuiltinSubagentConfig(
         includeInstalledTools: true,
         disallowedTools: ['task', 'skill', 'code_agent'],
         maxTurns: 50,
-        maxTokens: 16384,
       }
     case 'explore':
       return {

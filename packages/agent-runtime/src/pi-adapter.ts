@@ -30,6 +30,7 @@ import {
   getProviders,
 } from '@mariozechner/pi-ai'
 import type { AgentMessage, StreamFn } from '@mariozechner/pi-agent-core'
+import { getMaxOutputTokens } from '@shogo/model-catalog'
 
 // ---------------------------------------------------------------------------
 // Model Resolution
@@ -64,6 +65,8 @@ const PROVIDER_BASE_URL_ENV: Record<string, string> = {
  * the API server's AI proxy instead of hitting provider APIs directly.
  */
 export function resolveModel(provider: string, modelId: string): Model<Api> {
+  const catalogMax = getMaxOutputTokens(modelId)
+
   let model: Model<Api> | undefined
   try {
     model = getModel(provider as any, modelId as any) ?? undefined
@@ -82,8 +85,10 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       input: ['text', 'image'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
-      maxTokens: 8192,
+      maxTokens: catalogMax,
     } as Model<Api>
+  } else {
+    model = { ...model, maxTokens: catalogMax }
   }
 
   const envBaseUrl = resolveBaseUrl(provider)

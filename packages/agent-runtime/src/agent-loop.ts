@@ -58,7 +58,7 @@ export interface AgentLoopOptions {
   tools: AgentTool[]
   /** Max tool-call iterations (default: 10) */
   maxIterations?: number
-  /** Max tokens per LLM call (default: 4096) */
+  /** Max tokens per LLM call. Defaults to the model's max from the catalog. */
   maxTokens?: number
   /** Thinking/reasoning level (default: 'medium') */
   thinkingLevel?: ThinkingLevel
@@ -129,7 +129,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     images,
     tools,
     maxIterations = 10,
-    maxTokens = 4096,
+    maxTokens,
     thinkingLevel = 'medium',
     onToolCall,
     onIteration,
@@ -145,7 +145,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     onToolCallEnd,
   } = options
 
-  const model = resolveModel(provider, modelId)
+  const resolvedModel = resolveModel(provider, modelId)
+  const model = maxTokens ? { ...resolvedModel, maxTokens } : resolvedModel
 
   const loopDetector = options.loopDetection !== false
     ? new LoopDetector(typeof options.loopDetection === 'object' ? options.loopDetection : {})
