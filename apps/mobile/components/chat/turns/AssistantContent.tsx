@@ -141,7 +141,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -352,7 +352,7 @@ export function AssistantContent({
             )
           }
 
-          if (part.tool.toolName === "TodoWrite") {
+          if (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write") {
             const isExpanded = !expandedTools.has(part.id)
 
             return (
