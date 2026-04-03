@@ -83,7 +83,7 @@ export function getModelShortDisplayName(id: string): string {
  * falls back to prefix heuristics for unknown model strings.
  */
 export function inferProviderFromModel(modelId: string, fallback: string = 'anthropic'): string {
-  if (modelId === 'basic') return 'openai'
+  if (modelId === 'basic') return 'anthropic'
   if (modelId === 'advanced') return 'anthropic'
 
   const entry = getModelEntry(modelId)
