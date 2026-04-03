@@ -218,6 +218,18 @@ export interface SandboxExecResult {
   sandboxed: boolean
 }
 
+// Internal runtime env vars that must not leak to agent-spawned child
+// processes.  PORT / VITE_PORT are set by RuntimeManager for the agent
+// server itself; if they leak, user servers try to bind the same port
+// → EADDRINUSE.  Workspace .env values are merged *after* stripping
+// so explicit user PORT overrides still take effect.
+export const RUNTIME_ONLY_VARS = ['PORT', 'VITE_PORT']
+
+export function stripRuntimeVars(env: Record<string, string | undefined>): typeof env {
+  for (const key of RUNTIME_ONLY_VARS) delete env[key]
+  return env
+}
+
 function shouldSandbox(opts: SandboxExecOptions): boolean {
   const config = { ...DEFAULT_SANDBOX, ...opts.sandboxConfig }
   if (!config.enabled) return false
@@ -268,7 +280,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
       timeout: opts.timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
-      env: getSanitizedEnv(),
+      env: stripRuntimeVars(getSanitizedEnv()),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: true }
   } catch (err: any) {
@@ -284,12 +296,13 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
 function nativeExec(command: string, cwd: string, timeout?: number): SandboxExecResult {
   const shell = resolveShell()
   try {
+    const baseEnv = stripRuntimeVars(getSanitizedEnv())
     const stdout = execSync(command, {
       cwd,
       timeout: timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
-      env: { ...getSanitizedEnv(), ...loadWorkspaceEnv(cwd) },
+      env: { ...baseEnv, ...loadWorkspaceEnv(cwd) },
       ...(shell ? { shell } : {}),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: false }

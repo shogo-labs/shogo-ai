@@ -48,6 +48,40 @@ describe('gateway-tools', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
+  describe('grep', () => {
+    test('finds a pattern in workspace files', async () => {
+      writeFileSync(join(TEST_DIR, 'sample.ts'), 'const foo = 42\nconst bar = 99\n')
+      const result = await exec(createCtx(), 'grep', { pattern: 'foo' })
+      expect(result.count).toBeGreaterThanOrEqual(1)
+      expect(result.matches.some((m: any) => m.text.includes('foo'))).toBe(true)
+    })
+
+    test('returns zero matches for absent pattern', async () => {
+      writeFileSync(join(TEST_DIR, 'sample.ts'), 'const bar = 99\n')
+      const result = await exec(createCtx(), 'grep', { pattern: 'zzz_never_exists_zzz' })
+      expect(result.count).toBe(0)
+      expect(result.matches).toHaveLength(0)
+    })
+
+    test('does not error with "command not found"', async () => {
+      writeFileSync(join(TEST_DIR, 'sample.ts'), 'hello world\n')
+      const result = await exec(createCtx(), 'grep', { pattern: 'hello' })
+      // Should succeed — either via rg or the JS fallback
+      expect(result.error).toBeUndefined()
+      expect(result.count).toBeGreaterThanOrEqual(1)
+    })
+
+    test('reports matches with file and line number', async () => {
+      writeFileSync(join(TEST_DIR, 'multi.ts'), 'line_one\nfind_me_here\nline_three\n')
+      const result = await exec(createCtx(), 'grep', { pattern: 'find_me_here' })
+      expect(result.count).toBe(1)
+      const match = result.matches[0]
+      expect(match.text).toContain('find_me_here')
+      expect(match.line).toBe(2)
+      expect(match.file).toContain('multi.ts')
+    })
+  })
+
   describe('exec', () => {
     test('runs a simple command', async () => {
       const result = await exec(createCtx(), 'exec', { command: 'echo hello' })

@@ -113,10 +113,17 @@ async function trackUsageFromStream(
 
   try {
     while (true) {
-      const idleTimeout = new Promise<{ done: true; value: undefined }>((_, reject) =>
-        setTimeout(() => reject(new Error('chunk idle timeout')), PER_CHUNK_IDLE_TIMEOUT_MS)
-      )
-      const { done, value } = await Promise.race([reader.read(), idleTimeout])
+      let idleTimer: ReturnType<typeof setTimeout> | undefined
+      const idleTimeout = new Promise<{ done: true; value: undefined }>((_, reject) => {
+        idleTimer = setTimeout(() => reject(new Error('chunk idle timeout')), PER_CHUNK_IDLE_TIMEOUT_MS)
+      })
+      let result: { done: boolean; value: Uint8Array | undefined }
+      try {
+        result = await Promise.race([reader.read(), idleTimeout]) as any
+      } finally {
+        clearTimeout(idleTimer)
+      }
+      const { done, value } = result!
       if (done) break
       buffer += decoder.decode(value, { stream: true })
 
