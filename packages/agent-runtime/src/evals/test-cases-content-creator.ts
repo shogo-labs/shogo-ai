@@ -23,6 +23,7 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  lastSchemaPreservesModel,
 } from './eval-helpers'
 import { buildSkillServerSchema } from '../workspace-defaults'
 
@@ -554,7 +555,7 @@ const PHASE_2: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: Sponsorship Management (creator-sponsors) — Level 4, 50 points
+// Phase 3: Sponsorship Management (creator-sponsors) — Level 4, 53 points
 // ---------------------------------------------------------------------------
 
 const PHASE_3: AgentEval = {
@@ -596,7 +597,7 @@ const PHASE_3: AgentEval = {
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
   useSkillServer: true,
-  maxScore: 50,
+  maxScore: 53,
   validationCriteria: [
     {
       id: 'sponsor-schema',
@@ -703,6 +704,13 @@ const PHASE_3: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) => canvasCodeFetches(r),
+    },
+    {
+      id: 'prior-models-preserved',
+      description: 'Schema preserves Video model from prior phase',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => lastSchemaPreservesModel(r, 'Video'),
     },
   ],
   tags: ['content-creator'],

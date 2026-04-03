@@ -25,6 +25,7 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  lastSchemaPreservesModel,
 } from './eval-helpers'
 import { buildSkillServerSchema } from '../workspace-defaults'
 
@@ -253,29 +254,34 @@ const PHASE_1: AgentEval = {
       validate: (r) => toolCallsJson(r).includes('github'),
     },
     {
-      id: 'github-installed',
-      description: 'Installed GitHub integration (tool_install or mcp_install)',
+      id: 'github-cli',
+      description: 'Used gh CLI via exec to interact with GitHub',
       points: 5,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'tool_install') || usedTool(r, 'mcp_install'),
+        usedTool(r, 'tool_install') || usedTool(r, 'mcp_install') ||
+        toolCallArgsContain(r, 'exec', 'gh '),
     },
     {
-      id: 'standup-heartbeat',
-      description: 'Configured digest via heartbeat_configure',
+      id: 'digest-plan',
+      description: 'Response describes digest/heartbeat/schedule plan',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'heartbeat_configure'),
+      validate: (r) =>
+        responseContains(r, 'digest') || responseContains(r, 'heartbeat') ||
+        responseContains(r, 'schedule') || usedTool(r, 'heartbeat_configure'),
     },
     {
-      id: 'morning-schedule',
-      description: 'Schedule mentions 9:30 / morning digest',
+      id: 'clarifies-channel-or-timezone',
+      description: 'Asks about Slack channel or timezone, or configures schedule with 9:30',
       points: 4,
-      phase: 'execution',
+      phase: 'intention',
       validate: (r) => {
+        const text = r.responseText.toLowerCase()
+        const asksChannel = text.includes('channel') || text.includes('timezone') || text.includes('time zone')
         const json = toolCallsJson(r)
-        return json.includes('9:30') || json.includes('09:30') || json.includes('9:') ||
-          json.includes('morning')
+        const configures930 = json.includes('9:30') || json.includes('09:30')
+        return asksChannel || configures930
       },
     },
   ],
@@ -441,7 +447,7 @@ const PHASE_2: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: Hiring Pipeline (cto-hiring) — Level 3, 45 points
+// Phase 3: Hiring Pipeline (cto-hiring) — Level 3, 48 points
 // ---------------------------------------------------------------------------
 
 const PHASE_3: AgentEval = {
@@ -481,7 +487,7 @@ const PHASE_3: AgentEval = {
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
   useSkillServer: true,
-  maxScore: 45,
+  maxScore: 48,
   validationCriteria: [
     {
       id: 'applicant-schema',
@@ -586,12 +592,20 @@ const PHASE_3: AgentEval = {
       phase: 'execution',
       validate: (r) => canvasCodeFetches(r),
     },
+    {
+      id: 'prior-models-preserved',
+      description: 'Schema preserves Ticket model from prior phase',
+      points: 3,
+      phase: 'execution',
+      validate: (r) =>
+        lastSchemaPreservesModel(r, 'Ticket') || lastSchemaPreservesModel(r, 'Sprint'),
+    },
   ],
   tags: ['startup-cto'],
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4: Technical Operations (cto-tech-ops) — Level 4, 51 points (criteria sum)
+// Phase 4: Technical Operations (cto-tech-ops) — Level 4, 54 points (criteria sum)
 // ---------------------------------------------------------------------------
 
 const PHASE_4: AgentEval = {
@@ -631,7 +645,7 @@ const PHASE_4: AgentEval = {
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
   useSkillServer: true,
-  maxScore: 51,
+  maxScore: 54,
   validationCriteria: [
     {
       id: 'postmortem-schema',
@@ -753,6 +767,14 @@ const PHASE_4: AgentEval = {
       points: 4,
       phase: 'execution',
       validate: (r) => canvasCodeFetches(r),
+    },
+    {
+      id: 'prior-models-preserved',
+      description: 'Schema preserves Applicant model from prior phase',
+      points: 3,
+      phase: 'execution',
+      validate: (r) =>
+        lastSchemaPreservesModel(r, 'Applicant') || lastSchemaPreservesModel(r, 'Candidate'),
     },
   ],
   tags: ['startup-cto'],

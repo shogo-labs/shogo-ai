@@ -426,6 +426,17 @@ export class TSLanguageServer {
     }
   }
 
+  notifyFileSaved(filePath: string): void {
+    if (!this.isInitialized || !this.isRunning()) return
+    const uri = `file://${filePath}`
+    if (!this.openDocVersions.has(uri)) return
+    this.send({
+      jsonrpc: '2.0',
+      method: 'textDocument/didSave',
+      params: { textDocument: { uri } },
+    })
+  }
+
   notifyFileDeleted(filePath: string): void {
     if (!this.isInitialized || !this.isRunning()) return
     const uri = `file://${filePath}`
@@ -657,6 +668,13 @@ export class WorkspaceLSPManager {
       this.tsServer?.notifyFileChanged(filePath, content)
     } else if (PY_EXTENSIONS.has(ext)) {
       this.pyDirtyFiles.add(filePath)
+    }
+  }
+
+  notifyFileSaved(filePath: string): void {
+    const ext = extOf(filePath)
+    if (TS_EXTENSIONS.has(ext)) {
+      this.tsServer?.notifyFileSaved(filePath)
     }
   }
 

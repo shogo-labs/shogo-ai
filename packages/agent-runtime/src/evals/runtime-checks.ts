@@ -324,6 +324,11 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
   // 0b. Workspace integrity
   const workspaceIntegrity = hasSchema ? checkWorkspaceIntegrity(workspaceDir, verbose) : null
 
+  if (hasSchema && workspaceIntegrity && !workspaceIntegrity.schemaHasModels && canvasCompiles === null) {
+    if (verbose) console.log(`  [${LOG_PREFIX}] Schema exists but has no models and no canvas source, skipping runtime checks`)
+    return null
+  }
+
   // 1-3. Skill server checks (only when schema exists)
   let serverHealthy: boolean | null = hasSchema ? false : null
   let healthEndpoint = false

@@ -23,6 +23,7 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  lastSchemaPreservesModel,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -487,7 +488,7 @@ const PHASE_2: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: Invoicing (free-invoicing) — Level 4, 55 points
+// Phase 3: Invoicing (free-invoicing) — Level 4, 58 points
 // ---------------------------------------------------------------------------
 
 const PHASE_3: AgentEval = {
@@ -526,7 +527,7 @@ const PHASE_3: AgentEval = {
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
   useSkillServer: true,
-  maxScore: 55,
+  maxScore: 58,
   validationCriteria: [
     {
       id: 'invoice-generator',
@@ -627,6 +628,13 @@ const PHASE_3: AgentEval = {
       phase: 'execution',
       validate: (r) =>
         responseContains(r, 'month') || responseContains(r, 'trend') || responseContains(r, 'quarter'),
+    },
+    {
+      id: 'prior-models-preserved',
+      description: 'Schema preserves Client model from prior phase',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => lastSchemaPreservesModel(r, 'Client'),
     },
   ],
   tags: ['freelancer'],

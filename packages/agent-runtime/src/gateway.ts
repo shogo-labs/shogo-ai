@@ -1918,13 +1918,14 @@ export class AgentGateway {
       if (this.config.canvasMode === 'code') {
         stableParts.push(`\n## Canvas Mode — React App
 
-You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. Edit \`src/App.tsx\` to build your UI and add components under \`src/components/\`. The app auto-builds and renders in the preview panel.
+You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. The app auto-builds and renders in the preview panel.
 
 **Your workflow:**
-1. Understand what the user wants to display or build
-2. If the app needs persistent data, create a skill server by writing \`.shogo/server/schema.prisma\`
-3. Write React code in \`src/App.tsx\` (and \`src/components/\`) that fetches from the skill server
-4. Use \`edit_file\` to update existing files
+1. **Read existing state** — check \`.shogo/server/schema.prisma\` and \`src/App.tsx\` to understand what's already built
+2. If the app needs persistent data, **ADD** models to the schema — never replace existing models
+3. Create new feature components under \`src/components/\` — one file per feature
+4. Update \`src/App.tsx\` to add a tab/section for the new feature — don't rewrite the whole file
+5. Use \`edit_file\` to update existing files, \`write_file\` only for new files
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
@@ -2173,7 +2174,7 @@ When integrations are connected, use \`tool_search\` to discover available actio
       if (pendingModels.length > 0) {
         lines.push('')
         lines.push(`**Schema models without routes yet (regeneration pending):** ${pendingModels.join(', ')}`)
-        lines.push('These routes will appear after the regeneration pipeline finishes (~5-15 s).')
+        lines.push('These routes will appear after the regeneration pipeline finishes.')
       }
 
       lines.push('')
