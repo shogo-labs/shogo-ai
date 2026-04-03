@@ -4,7 +4,7 @@
  * Canvas V2 (Code Mode) Eval Test Cases — Full-Stack
  *
  * Tests the agent's ability to build fully-connected apps using:
- * - write_file/edit_file/delete_file for canvas/*.ts React code
+ * - write_file/edit_file/delete_file for src/ React (TSX) code
  * - .shogo/server/schema.prisma for Prisma-backed REST backend
  * - fetch() in canvas code to connect frontend to skill server
  *
@@ -54,11 +54,15 @@ const SKILL_SERVER_MOCKS: ToolMockMap = {
 // Canvas-v2 validation helpers
 // ---------------------------------------------------------------------------
 
+function isCodeFile(path: string): boolean {
+  return /^src\/.*\.(tsx?|jsx?)$/.test(path)
+}
+
 function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
+    if (!isCodeFile(path)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -67,7 +71,7 @@ function wroteCanvasDataFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.data\.json$/)) return false
+    if (!path.match(/\.(data\.json|json)$/)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
@@ -77,9 +81,12 @@ function allCanvasCode(r: EvalResult): string {
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => {
       const path = String((t.input as any).path ?? '')
-      return path.match(/^canvas\/[^/]+\.ts$/)
+      return isCodeFile(path)
     })
-    .map(t => String((t.input as any).content ?? ''))
+    .map(t => {
+      const inp = t.input as any
+      return String(inp.content ?? inp.new_string ?? '')
+    })
     .join('\n')
     .toLowerCase()
 }
@@ -98,17 +105,24 @@ function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'edit_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
+    if (!isCodeFile(path)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
 
 function deletedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
-    if (t.name !== 'delete_file') return false
-    const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
-    return namePattern ? namePattern.test(path) : true
+    if (t.name === 'delete_file') {
+      const path = String((t.input as any).path ?? '')
+      if (!isCodeFile(path)) return false
+      return namePattern ? namePattern.test(path) : true
+    }
+    if (t.name === 'exec') {
+      const cmd = String((t.input as any).command ?? '')
+      if (!cmd.match(/\brm\s/)) return false
+      return namePattern ? namePattern.test(cmd) : true
+    }
+    return false
   })
 }
 
@@ -117,7 +131,7 @@ function canvasFileCount(r: EvalResult): number {
   for (const t of r.toolCalls) {
     if (t.name !== 'write_file') continue
     const path = String((t.input as any).path ?? '')
-    if (path.match(/^canvas\/[^/]+\.ts$/)) paths.add(path)
+    if (isCodeFile(path)) paths.add(path)
   }
   return paths.size
 }
@@ -128,7 +142,7 @@ function canvasCodeJson(r: EvalResult): string {
       .filter(t => t.name === 'write_file' || t.name === 'edit_file')
       .filter(t => {
         const path = String((t.input as any).path ?? '')
-        return path.startsWith('canvas/')
+        return isCodeFile(path)
       })
       .map(t => t.input)
   ).toLowerCase()
@@ -174,33 +188,50 @@ function canvasHasLoadingState(r: EvalResult): boolean {
 // Pre-seeded canvas files for edit/delete evals
 // ---------------------------------------------------------------------------
 
-const PRESEEDED_DASHBOARD_JS = `var metrics = [
-  { label: 'Users', value: 1200 },
+const PRESEEDED_DASHBOARD_TSX = `import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+
+const metrics = [
+  { label: 'Users', value: '1,200' },
   { label: 'Revenue', value: '$32K' },
-  { label: 'Sessions', value: 890 },
+  { label: 'Sessions', value: '890' },
 ]
 
-return h('div', { className: 'flex flex-col gap-6 p-2' }, [
-  h('h2', { className: 'text-2xl font-semibold' }, 'Dashboard'),
-  h(Row, { gap: 'md' },
-    metrics.map(function(m, i) {
-      return h(Metric, { key: i, label: m.label, value: m.value })
-    })
-  ),
-])`
+export default function Dashboard() {
+  return (
+    <div className="flex flex-col gap-6 p-4">
+      <h2 className="text-2xl font-semibold">Dashboard</h2>
+      <div className="grid grid-cols-3 gap-4">
+        {metrics.map((m) => (
+          <Card key={m.label}>
+            <CardHeader><CardTitle>{m.label}</CardTitle></CardHeader>
+            <CardContent><p className="text-2xl font-bold">{m.value}</p></CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}`
 
-const PRESEEDED_SETTINGS_JS = `var _state = useState(false)
-var darkMode = _state[0], setDarkMode = _state[1]
+const PRESEEDED_SETTINGS_TSX = `import { useState } from 'react'
+import { Card, CardContent } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 
-return h('div', { className: 'flex flex-col gap-4 p-2' }, [
-  h('h2', { className: 'text-2xl font-semibold' }, 'Settings'),
-  h(Card, {}, [
-    h(CardContent, { className: 'flex items-center justify-between pt-6' }, [
-      h(Label, {}, 'Dark Mode'),
-      h(Switch, { checked: darkMode, onCheckedChange: setDarkMode }),
-    ]),
-  ]),
-])`
+export default function Settings() {
+  const [darkMode, setDarkMode] = useState(false)
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <h2 className="text-2xl font-semibold">Settings</h2>
+      <Card>
+        <CardContent className="flex items-center justify-between pt-6">
+          <Label>Dark Mode</Label>
+          <Switch checked={darkMode} onCheckedChange={setDarkMode} />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}`
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -244,11 +275,11 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'uses-h',
-        description: 'Code uses h() not JSX',
+        id: 'uses-jsx',
+        description: 'Code uses JSX syntax',
         points: 15,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'h('),
+        validate: (r) => anyCanvasCodeContains(r, '<div') || anyCanvasCodeContains(r, '<card') || anyCanvasCodeContains(r, 'return ('),
       },
       {
         id: 'response-confirms',
@@ -310,11 +341,11 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         validate: (r) => anyCanvasCodeContains(r, 'Table') || anyCanvasCodeContains(r, 'Card'),
       },
       {
-        id: 'uses-h',
-        description: 'Code uses h() not JSX',
+        id: 'uses-jsx',
+        description: 'Code uses JSX syntax',
         points: 15,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'h('),
+        validate: (r) => anyCanvasCodeContains(r, '<div') || anyCanvasCodeContains(r, '<card') || anyCanvasCodeContains(r, 'return ('),
       },
       {
         id: 'reasonable-tool-count',
@@ -378,11 +409,11 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'uses-h',
-        description: 'Code uses h() not JSX',
+        id: 'uses-jsx',
+        description: 'Code uses JSX syntax',
         points: 10,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'h('),
+        validate: (r) => anyCanvasCodeContains(r, '<div') || anyCanvasCodeContains(r, '<button') || anyCanvasCodeContains(r, 'return ('),
       },
       {
         id: 'reasonable-tool-count',
@@ -702,7 +733,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'The dashboard needs a chart showing the weekly trend. Add a line chart to it.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.ts': PRESEEDED_DASHBOARD_JS,
+      'src/components/Dashboard.tsx': PRESEEDED_DASHBOARD_TSX,
     },
     initialMode: 'canvas',
     maxScore: 100,
@@ -712,7 +743,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         description: 'Used edit_file or write_file on the existing file',
         points: 20,
         phase: 'intention',
-        validate: (r) => editedCanvasFile(r, /dashboard/) || wroteCanvasFile(r, /dashboard/),
+        validate: (r) => editedCanvasFile(r, /dashboard/i) || wroteCanvasFile(r, /dashboard/i),
       },
       {
         id: 'never-v1',
@@ -742,10 +773,10 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'targeted-dashboard',
-        description: 'Wrote to canvas/dashboard.ts specifically',
+        description: 'Wrote to Dashboard.tsx specifically',
         points: 15,
         phase: 'execution',
-        validate: (r) => editedCanvasFile(r, /dashboard/) || wroteCanvasFile(r, /dashboard/),
+        validate: (r) => editedCanvasFile(r, /dashboard/i) || wroteCanvasFile(r, /dashboard/i),
       },
       {
         id: 'reasonable-tool-count',
@@ -766,18 +797,18 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     input: 'Remove the settings page, I don\'t need it anymore.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.ts': PRESEEDED_DASHBOARD_JS,
-      'canvas/settings.ts': PRESEEDED_SETTINGS_JS,
+      'src/components/Dashboard.tsx': PRESEEDED_DASHBOARD_TSX,
+      'src/components/Settings.tsx': PRESEEDED_SETTINGS_TSX,
     },
     initialMode: 'canvas',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-delete-file',
-        description: 'Used delete_file to remove a canvas file',
+        description: 'Deleted a canvas file (delete_file or exec rm)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'delete_file'),
+        validate: (r) => usedTool(r, 'delete_file') || deletedCanvasFile(r, /settings/i),
       },
       {
         id: 'never-v1',
@@ -788,17 +819,17 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'deleted-settings',
-        description: 'Deleted canvas/settings.ts specifically',
+        description: 'Deleted Settings.tsx specifically',
         points: 25,
         phase: 'execution',
-        validate: (r) => deletedCanvasFile(r, /settings/),
+        validate: (r) => deletedCanvasFile(r, /settings/i),
       },
       {
         id: 'kept-dashboard',
-        description: 'Did NOT delete canvas/dashboard.ts',
+        description: 'Did NOT delete Dashboard.tsx',
         points: 20,
         phase: 'execution',
-        validate: (r) => !deletedCanvasFile(r, /dashboard/),
+        validate: (r) => !deletedCanvasFile(r, /dashboard/i),
       },
       {
         id: 'response-confirms',

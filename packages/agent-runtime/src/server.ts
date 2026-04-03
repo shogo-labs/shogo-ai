@@ -1761,6 +1761,34 @@ app.get('/agent/tools/status', (c) => {
   return c.json({ tools })
 })
 
+app.post('/agent/tools/execute', async (c) => {
+  if (!agentGateway) {
+    return c.json({ ok: false, error: 'Agent gateway not running' }, 503)
+  }
+  const body = await c.req.json().catch(() => null)
+  if (!body || typeof body.tool !== 'string') {
+    return c.json({ ok: false, error: 'Missing required field: tool (string)' }, 400)
+  }
+  const { tool, args } = body as { tool: string; args?: Record<string, any> }
+  const mcpMgr = agentGateway.getMcpClientManager()
+  const result = await mcpMgr.callTool(tool, args || {})
+  return c.json(result, result.ok ? 200 : 404)
+})
+
+app.get('/agent/tools/schemas', (c) => {
+  if (!agentGateway) {
+    return c.json({ tools: [] })
+  }
+  const mcpMgr = agentGateway.getMcpClientManager()
+  const allTools = mcpMgr.getTools()
+  const schemas = allTools.map((t) => ({
+    name: t.name,
+    description: t.description || '',
+    parameters: t.parameters ?? {},
+  }))
+  return c.json({ tools: schemas })
+})
+
 app.get('/agent/tools/search', async (c) => {
   const query = c.req.query('q') || ''
   if (!query.trim()) {

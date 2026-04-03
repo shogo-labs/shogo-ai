@@ -78,6 +78,8 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 
 **SDK** — \`import { createClient, HttpClient, OptimisticStore } from '@shogo-ai/sdk'\`
 
+**Integration Tools SDK** — \`import { ToolsClient, useTools } from '@shogo-ai/sdk/tools'\` — Call installed integration tools (Meta Ads, Google Calendar, Slack, etc.) from your React code. See the "Integration Tools" section below.
+
 **Installing new packages** — Run \`exec({ command: "bun add <package-name>" })\` to install any npm package.
 
 ### Style
@@ -282,6 +284,52 @@ function deleteItem(id: string) {
 }
 \`\`\`
 
+### Integration Tools (Meta Ads, Google Calendar, Slack, etc.)
+
+When the user has installed integrations via \`tool_install\`, you can call them directly from React code using the tools SDK. This is the preferred approach for building apps around third-party integrations.
+
+**Step 1:** Install the integration (agent tool call):
+\`\`\`
+tool_install({ name: "meta_ads" })
+\`\`\`
+
+**Step 2:** Use the \`useTools\` hook in your React code:
+\`\`\`tsx
+import { useState, useEffect } from 'react'
+import { useTools } from '@shogo-ai/sdk/tools'
+
+export default function AdsManager() {
+  const { execute, tools, loading } = useTools()
+  const [insights, setInsights] = useState<any>(null)
+
+  useEffect(() => {
+    execute('METAADS_GET_INSIGHTS', {
+      ad_account_id: 'act_123456',
+      date_preset: 'last_30_days',
+    }).then(res => {
+      if (res.ok && res.data) setInsights(JSON.parse(res.data))
+    })
+  }, [execute])
+
+  if (loading) return <p>Loading...</p>
+  return <pre>{JSON.stringify(insights, null, 2)}</pre>
+}
+\`\`\`
+
+**Imperative (non-React) usage:**
+\`\`\`ts
+import { ToolsClient } from '@shogo-ai/sdk/tools'
+const tools = new ToolsClient()
+const result = await tools.execute('GMAIL_SEND_EMAIL', { to: 'user@example.com', subject: 'Hello', body: 'Hi!' })
+\`\`\`
+
+**Key points:**
+- Tools must be installed first via \`tool_install({ name: "<toolkit>" })\` before the app can call them
+- Tool names are uppercase slugs like \`METAADS_GET_INSIGHTS\`, \`GMAIL_SEND_EMAIL\`, \`GOOGLECALENDAR_CREATE_EVENT\`
+- \`execute()\` returns \`{ ok: boolean, data?: string, error?: string }\` — parse \`data\` as JSON when the tool returns structured data
+- \`useTools()\` auto-discovers installed tools — use \`tools\` array to show available actions in the UI
+- Works zero-config because the app is served same-origin with the agent runtime
+
 ### State management
 
 - Use \`useState\` for UI state (form inputs, toggles, selected tab)
@@ -464,6 +512,7 @@ Your workspace is a Vite + React app. Edit \`src/App.tsx\` to build your UI. Add
 - \`@/lib/cn\` — cn (classname merge)
 - \`@/components/ui/*\` — card, button, badge, input, label, textarea, checkbox, switch, select, tabs, table, dialog, alert, accordion, progress, separator, scroll-area, skeleton, tooltip, avatar, dropdown-menu, sheet, popover
 - \`@shogo-ai/sdk\` — createClient, HttpClient, OptimisticStore
+- \`@shogo-ai/sdk/tools\` — ToolsClient, useTools (call installed integration tools from code)
 
 ### Validation
 After writing or editing files under \`src/\`, call \`read_lints\` to check for errors and fix immediately.

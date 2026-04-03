@@ -11,6 +11,7 @@ export default defineConfig({
     'src/generators/index.ts',
     'src/email/index.ts',
     'src/email/server.ts',
+    'src/tools/index.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

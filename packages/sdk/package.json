@@ -41,6 +41,11 @@
       "types": "./dist/generators/index.d.ts",
       "import": "./dist/generators/index.js",
       "require": "./dist/generators/index.cjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js",
+      "require": "./dist/tools/index.cjs"
     }
   },
   "bin": {
