@@ -4083,15 +4083,27 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const history = resume ? am.getInstanceMessages(resume) ?? undefined : undefined
 
       const w = ctx.uiWriter
+      let spawnTextId: string | null = null
+      function closeSpawnText() {
+        if (spawnTextId) {
+          w!.write({ type: 'text-end', id: spawnTextId })
+          spawnTextId = null
+        }
+      }
       const callbacks: SubagentStreamCallbacks | undefined = w ? {
         onStart: (name: string, desc: string) => {
           w.write({ type: 'data-subagent-start', data: { name, description: desc } })
         },
         onEnd: (name: string, summary: string) => {
+          closeSpawnText()
           w.write({ type: 'data-subagent-end', data: { name, summary: summary.substring(0, 500) } })
         },
         onTextDelta: (delta: string) => {
-          w.write({ type: 'text-delta', delta })
+          if (!spawnTextId) {
+            spawnTextId = `spawn-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+            w.write({ type: 'text-start', id: spawnTextId })
+          }
+          w.write({ type: 'text-delta', id: spawnTextId, delta })
         },
       } : undefined
 

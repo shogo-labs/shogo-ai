@@ -72,8 +72,10 @@ import {
   MonitorPanel,
   TerminalPanel,
   PlansPanel,
+  AgentsPanel,
 } from '../../../../components/project/panels'
 import { RefreshCw, MessageSquare } from 'lucide-react-native'
+import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
 
@@ -81,7 +83,7 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'monitor', 'plans']
+const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans']
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -523,6 +525,7 @@ export default observer(function ProjectLayout() {
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
+  const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!canvasEnabled) {
@@ -567,6 +570,15 @@ export default observer(function ProjectLayout() {
     }
     setPreviewTab(tabId)
   }, [])
+
+  useEffect(() => {
+    subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
+      setSelectedAgentToolId(toolId ?? null)
+      setPreviewTab('agents')
+      if (!isWide) setActiveTab('canvas')
+    })
+    return () => subagentStreamStore.onRequestTabSwitch(null)
+  }, [isWide])
 
   const handleCapabilityToggle = useCallback(async (key: string, enabled: boolean) => {
     await updateProjectSettings({ [key]: enabled })
@@ -1042,6 +1054,7 @@ export default observer(function ProjectLayout() {
               <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
               <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
+              <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
               <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
             </View>
