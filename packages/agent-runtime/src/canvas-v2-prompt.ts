@@ -21,23 +21,25 @@ Your workspace is a standard **Vite + React + TypeScript + Tailwind CSS** app. W
 
 \`\`\`
 src/
-  App.tsx          ← Main app component (edit this)
-  main.tsx         ← Entry point (renders App)
-  index.css        ← Tailwind + theme variables
+  App.tsx              ← Navigation shell (tabs across features)
+  main.tsx             ← Entry point (renders App)
+  index.css            ← Tailwind + theme variables
   components/
-    ui/            ← Pre-installed shadcn/ui components
+    ui/                ← Pre-installed shadcn/ui components
+    SprintBoard.tsx    ← Feature component (example)
+    LeadTracker.tsx    ← Feature component (example)
   lib/
-    cn.ts          ← Tailwind class merge utility
-    db.ts          ← Database client (for skill server)
-index.html         ← Vite entry HTML
-vite.config.ts     ← Vite config (already set up)
-package.json       ← Dependencies (react, tailwind, recharts, etc.)
+    cn.ts              ← Tailwind class merge utility
+    db.ts              ← Database client (for skill server)
+index.html             ← Vite entry HTML
+vite.config.ts         ← Vite config (already set up)
+package.json           ← Dependencies (react, tailwind, recharts, etc.)
 \`\`\`
 
 ### How it works
-1. You edit \`src/App.tsx\` (or add files under \`src/\`) using \`write_file\` / \`edit_file\`
-2. A Vite build runs automatically after each file change
-3. The preview panel reloads with your updated app
+1. Create feature components under \`src/components/\` (e.g. \`SprintBoard.tsx\`) using \`write_file\`
+2. Update \`src/App.tsx\` to import and display the new feature using \`edit_file\`
+3. A Vite build runs automatically after each file change and the preview panel reloads
 
 ### Available imports
 
@@ -99,10 +101,48 @@ Use Tailwind CSS classes. The app supports both light and dark mode automaticall
 See the **UI/UX Design Guide** section for comprehensive design patterns and anti-patterns.
 
 ### Important rules
-- Edit \`src/App.tsx\` for the main UI. Create additional components under \`src/components/\`.
+- \`src/App.tsx\` is the **navigation shell** — it imports and renders feature components. Don't put feature logic directly in App.tsx.
+- Each feature gets its own file under \`src/components/\` (e.g. \`SprintBoard.tsx\`, \`CapacityPlanner.tsx\`).
+- **Write modular, reusable components.** Extract repeated UI patterns (stat cards, data tables, form sections, chart wrappers) into their own files under \`src/components/\`. A feature component should compose smaller pieces, not be a single 500-line file.
 - Use standard JSX syntax — NOT \`h()\` or \`React.createElement()\`
 - Use \`const\` and arrow functions — standard modern TypeScript
 - Keys are required on list items
+
+### Multi-feature apps
+
+When a project has **multiple features**, use \`src/App.tsx\` as a **tabbed navigation shell** with shadcn Tabs. Each feature is a self-contained component.
+
+**Pattern — App.tsx as navigation shell:**
+\`\`\`tsx
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import SprintBoard from './components/SprintBoard'
+import CapacityPlanner from './components/CapacityPlanner'
+
+export default function App() {
+  return (
+    <div className="flex flex-col gap-6 p-6">
+      <div className="space-y-1">
+        <h2 className="text-2xl font-bold tracking-tight">Engineering Hub</h2>
+        <p className="text-sm text-muted-foreground">Tools and dashboards</p>
+      </div>
+      <Tabs defaultValue="sprint-board">
+        <TabsList>
+          <TabsTrigger value="sprint-board">Sprint Board</TabsTrigger>
+          <TabsTrigger value="capacity">Capacity Planner</TabsTrigger>
+        </TabsList>
+        <TabsContent value="sprint-board"><SprintBoard /></TabsContent>
+        <TabsContent value="capacity"><CapacityPlanner /></TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+\`\`\`
+
+**Adding a new feature to an existing project:**
+1. \`write_file\` — create \`src/components/NewFeature.tsx\` with the full feature UI
+2. \`edit_file\` — update \`src/App.tsx\` to add the import and a new TabsTrigger + TabsContent entry
+
+**For a single-feature project**, you can write a simpler App.tsx without tabs. Once the user asks for a second feature, refactor into the tabbed shell and move the first feature into its own component file.
 
 ### Validation Workflow
 After writing or editing files under \`src/\`, **always** call \`read_lints\` to check for TypeScript errors:
@@ -160,6 +200,17 @@ model Lead {
 
 That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
 
+### Additive schema management
+
+The schema is **cumulative** — models from different features coexist in one file. Follow these rules:
+
+1. **Before writing the schema, ALWAYS \`read_file\` the current \`.shogo/server/schema.prisma\`** to see what models already exist
+2. **If models already exist, APPEND your new models** — include ALL existing models in your write. Never drop models the user has already built.
+3. **Use relations across features** when it makes sense — e.g. an \`Engineer\` model created for a capacity planner can be referenced by an on-call scheduler via a relation field
+4. **NEVER write a schema that removes existing models** — the database preserves data across changes, and dropping models deletes user data
+
+Adding models is safe and cheap — the server regenerates incrementally and \`db push\` adds new tables without touching existing ones.
+
 Each model gets full CRUD at \`/api/{model-name-plural}\`:
 
 - \`GET /api/leads\` — list all
@@ -193,9 +244,9 @@ useEffect(() => {
 
 ### Full-stack workflow
 
-1. Write \`.shogo/server/schema.prisma\` with your models
+1. \`read_file\` the current schema, then write \`.shogo/server/schema.prisma\` with **ALL** models (existing + new)
 2. Seed initial data using the web tool: \`web({ url: "http://localhost:${SKILL_PORT}/api/leads", method: "POST", body: { name: "Acme Corp", email: "hello@acme.com" } })\`
-3. Write \`src/App.tsx\` with UI that fetches from the skill server
+3. Create a feature component under \`src/components/\`, then update \`src/App.tsx\` to include it
 4. If building a reusable template, save a skill file: \`write_file({ path: "skills/lead-tracking.md", content: "..." })\`
 
 The skill server starts automatically when the schema is saved. The app can immediately \`fetch()\` from it.
@@ -347,18 +398,42 @@ export const CANVAS_V2_EXAMPLES = `## App Examples
 User: "Show me our key metrics — 1,500 users, $45K revenue, 342 sessions"
 
 \`\`\`
-write_file({ path: "src/App.tsx", content: \`import { useState } from 'react'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+write_file({ path: "src/components/MetricCard.tsx", content: \`import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { TrendingUp } from 'lucide-react'
 
-export default function App() {
-  const metrics = [
-    { label: 'Users', value: '1,500', trend: '+12%' },
-    { label: 'Revenue', value: '$45K', trend: '+8%' },
-    { label: 'Sessions', value: '342', trend: '+5%' },
-  ]
+interface MetricCardProps {
+  label: string
+  value: string
+  trend: string
+}
 
+export default function MetricCard({ label, value, trend }: MetricCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardDescription>{label}</CardDescription>
+        <CardTitle className="text-3xl">{value}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center gap-1 text-sm text-emerald-600">
+          <TrendingUp className="h-4 w-4" />
+          {trend}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}\`})
+
+write_file({ path: "src/components/Dashboard.tsx", content: \`import MetricCard from './MetricCard'
+import { Badge } from '@/components/ui/badge'
+
+const metrics = [
+  { label: 'Users', value: '1,500', trend: '+12%' },
+  { label: 'Revenue', value: '$45K', trend: '+8%' },
+  { label: 'Sessions', value: '342', trend: '+5%' },
+]
+
+export default function Dashboard() {
   return (
     <div className="flex flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
@@ -369,23 +444,16 @@ export default function App() {
         <Badge variant="outline">Live</Badge>
       </div>
       <div className="grid grid-cols-3 gap-4">
-        {metrics.map(m => (
-          <Card key={m.label}>
-            <CardHeader className="pb-2">
-              <CardDescription>{m.label}</CardDescription>
-              <CardTitle className="text-3xl">{m.value}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-1 text-sm text-emerald-600">
-                <TrendingUp className="h-4 w-4" />
-                {m.trend}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+        {metrics.map(m => <MetricCard key={m.label} {...m} />)}
       </div>
     </div>
   )
+}\`})
+
+write_file({ path: "src/App.tsx", content: \`import Dashboard from './components/Dashboard'
+
+export default function App() {
+  return <Dashboard />
 }\`})
 \`\`\`
 
@@ -396,29 +464,21 @@ User: "Build a lead tracker"
 \`\`\`
 write_file({ path: ".shogo/server/schema.prisma", content: "datasource db {\\n  provider = \\"sqlite\\"\\n}\\n\\ngenerator client {\\n  provider = \\"prisma-client\\"\\n  output   = \\"./generated/prisma\\"\\n}\\n\\nmodel Lead {\\n  id        String   @id @default(cuid())\\n  name      String\\n  email     String\\n  status    String   @default(\\"new\\")\\n  createdAt DateTime @default(now())\\n  updatedAt DateTime @updatedAt\\n}" })
 
-write_file({ path: "src/App.tsx", content: \`import { useState, useEffect } from 'react'
+write_file({ path: "src/components/AddLeadForm.tsx", content: \`import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Users, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 
-export default function App() {
-  const [leads, setLeads] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+interface AddLeadFormProps {
+  onAdd: (lead: any) => void
+}
+
+export default function AddLeadForm({ onAdd }: AddLeadFormProps) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
 
-  useEffect(() => {
-    fetch('/api/leads')
-      .then(r => r.json())
-      .then(res => { setLeads(res.items || []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
-
-  function addLead() {
+  function handleSubmit() {
     if (!name.trim() || !email.trim()) return
     fetch('/api/leads', {
       method: 'POST',
@@ -426,8 +486,89 @@ export default function App() {
       body: JSON.stringify({ name, email })
     })
     .then(r => r.json())
-    .then(res => { setLeads(prev => [...prev, res.data]); setName(''); setEmail('') })
+    .then(res => { onAdd(res.data); setName(''); setEmail('') })
   }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Add Lead</CardTitle>
+        <CardDescription>Enter new lead details</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex gap-2">
+          <Input value={name} onChange={e => setName(e.target.value)} placeholder="Name" />
+          <Input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
+          <Button onClick={handleSubmit}><Plus className="h-4 w-4 mr-1" /> Add</Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}\`})
+
+write_file({ path: "src/components/LeadTable.tsx", content: \`import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import { Users } from 'lucide-react'
+
+interface LeadTableProps {
+  leads: any[]
+}
+
+export default function LeadTable({ leads }: LeadTableProps) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>All Leads</CardTitle>
+        <CardDescription>Your complete lead directory</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {leads.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <Users className="h-12 w-12 text-muted-foreground/50 mb-4" />
+            <h3 className="text-lg font-semibold">No leads yet</h3>
+            <p className="text-sm text-muted-foreground">Add your first lead above.</p>
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {leads.map(l => (
+                <TableRow key={l.id} className="hover:bg-muted/50 transition-colors">
+                  <TableCell className="font-medium">{l.name}</TableCell>
+                  <TableCell className="text-muted-foreground">{l.email}</TableCell>
+                  <TableCell><Badge variant={l.status === 'new' ? 'default' : 'secondary'}>{l.status}</Badge></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  )
+}\`})
+
+write_file({ path: "src/components/LeadTracker.tsx", content: \`import { useState, useEffect } from 'react'
+import { Skeleton } from '@/components/ui/skeleton'
+import AddLeadForm from './AddLeadForm'
+import LeadTable from './LeadTable'
+
+export default function LeadTracker() {
+  const [leads, setLeads] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/leads')
+      .then(r => r.json())
+      .then(res => { setLeads(res.items || []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
 
   if (loading) return (
     <div className="flex flex-col gap-4 p-6">
@@ -442,57 +583,16 @@ export default function App() {
         <h2 className="text-2xl font-bold tracking-tight">Lead Tracker</h2>
         <p className="text-sm text-muted-foreground">Manage your sales leads</p>
       </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Add Lead</CardTitle>
-          <CardDescription>Enter new lead details</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-2">
-            <Input value={name} onChange={e => setName(e.target.value)} placeholder="Name" />
-            <Input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
-            <Button onClick={addLead}><Plus className="h-4 w-4 mr-1" /> Add</Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>All Leads</CardTitle>
-          <CardDescription>Your complete lead directory</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {leads.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Users className="h-12 w-12 text-muted-foreground/50 mb-4" />
-              <h3 className="text-lg font-semibold">No leads yet</h3>
-              <p className="text-sm text-muted-foreground">Add your first lead above.</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {leads.map(l => (
-                  <TableRow key={l.id} className="hover:bg-muted/50 transition-colors">
-                    <TableCell className="font-medium">{l.name}</TableCell>
-                    <TableCell className="text-muted-foreground">{l.email}</TableCell>
-                    <TableCell><Badge variant={l.status === 'new' ? 'default' : 'secondary'}>{l.status}</Badge></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <AddLeadForm onAdd={lead => setLeads(prev => [...prev, lead])} />
+      <LeadTable leads={leads} />
     </div>
   )
+}\`})
+
+write_file({ path: "src/App.tsx", content: \`import LeadTracker from './components/LeadTracker'
+
+export default function App() {
+  return <LeadTracker />
 }\`})
 \`\`\`
 `
@@ -503,7 +603,7 @@ export default function App() {
 
 export const CANVAS_FILE_REFERENCE = `## Frontend App Reference
 
-Your workspace is a Vite + React app. Edit \`src/App.tsx\` to build your UI. Additional components go in \`src/components/\`.
+Your workspace is a Vite + React app. Build features as components under \`src/components/\` and import them in \`src/App.tsx\`.
 
 ### Available imports
 - \`react\` — React, useState, useEffect, useMemo, useCallback, useRef, useReducer

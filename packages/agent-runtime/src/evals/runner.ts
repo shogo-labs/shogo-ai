@@ -457,7 +457,8 @@ export async function runEval(
   }
 
   const toolErrorCount = toolCalls.filter(t => t.error).length
-  const toolErrorPenalty = toolErrorCount * 2
+  const toolErrorPenaltyRaw = toolErrorCount * 2
+  const toolErrorPenalty = Math.min(toolErrorPenaltyRaw, Math.ceil(eval_.maxScore * 0.2))
   const antiPenalty = triggeredAntiPatterns.length * 10
   const finalScore = Math.max(0, totalScore - antiPenalty - toolErrorPenalty)
   const percentage = (finalScore / eval_.maxScore) * 100

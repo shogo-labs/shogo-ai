@@ -25,6 +25,11 @@ import {
   type SubagentStreamCallbacks,
   type CustomAgentDef,
 } from './subagent'
+import {
+  findActualString, preserveQuoteStyle, stripTrailingWhitespace,
+  applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
+  type LineEndingType,
+} from './edit-file-utils'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
 import { CodeIndexEngine } from './code-index-engine'
@@ -253,7 +258,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, {
           offset: startLine + 1,
           limit: Math.min(endLine, lines.length) - startLine,
-        })
+        }, undefined)
         return textResult({
           content: numberedLines.join('\n'),
           totalLines: lines.length,
@@ -262,7 +267,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount)
+      ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, undefined, fullContent)
       const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
       if (totalLineCount > 500) {
         result.totalLines = totalLineCount
@@ -322,6 +327,48 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
  * If the file is .shogo/server/schema.prisma, sync the skill server and
  * return an enriched result.  Otherwise returns null (caller uses default).
  */
+/**
+ * Scan canvas/src files for fetch('/api/...') calls that don't match any
+ * active server route. Returns per-file orphaned route info.
+ */
+function findOrphanedFetches(
+  workspaceDir: string,
+  activeRoutes: string[],
+): { route: string; file: string }[] {
+  const routeSet = new Set(activeRoutes.map(r => r.toLowerCase()))
+  const fetchPattern = /fetch\(\s*[`"'](?:https?:\/\/localhost:\d+)?\/api\/([^`"'/\s?]+)/g
+  const orphaned: { route: string; file: string }[] = []
+
+  const scanDir = (dir: string) => {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== 'generated' && entry.name !== '.shogo') {
+          scanDir(full)
+        } else if (entry.isFile() && /\.(tsx?|jsx?)$/.test(entry.name)) {
+          try {
+            const content = readFileSync(full, 'utf-8')
+            for (const m of content.matchAll(fetchPattern)) {
+              if (!routeSet.has(m[1].toLowerCase())) {
+                const relPath = full.startsWith(workspaceDir)
+                  ? full.slice(workspaceDir.length + 1)
+                  : full
+                orphaned.push({ route: `/api/${m[1]}`, file: relPath })
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  scanDir(join(workspaceDir, 'src'))
+  const canvasDir = join(workspaceDir, 'canvas')
+  if (existsSync(canvasDir)) scanDir(canvasDir)
+
+  return orphaned
+}
+
 async function maybeSchemaSync(
   ctx: ToolContext,
   filePath: string,
@@ -338,15 +385,29 @@ async function maybeSchemaSync(
   try {
     const syncResult = await ctx.skillServerManager.sync()
     const routes = ctx.skillServerManager.getActiveRoutes()
-    return {
+    const activeRoutePaths = routes.map(r => `/api/${r}`)
+
+    const orphaned = findOrphanedFetches(ctx.workspaceDir, routes)
+
+    const result: Record<string, unknown> = {
       ...baseResult,
       skillServer: {
         synced: syncResult.ok,
         phase: syncResult.phase,
-        activeRoutes: routes.map(r => `/api/${r}`),
+        activeRoutes: activeRoutePaths,
         ...(syncResult.error ? { error: syncResult.error } : {}),
       },
     }
+
+    if (orphaned.length > 0) {
+      const unique = [...new Map(orphaned.map(o => [`${o.route}::${o.file}`, o])).values()]
+      ;(result.skillServer as Record<string, unknown>).orphanedFetches = unique
+      ;(result.skillServer as Record<string, unknown>).warning =
+        `Your schema is missing models for ${new Set(unique.map(o => o.route)).size} route(s) that your UI code fetches. ` +
+        `These fetch calls will fail at runtime. Either add the missing models to the schema or remove the fetch calls.`
+    }
+
+    return result
   } catch (err: any) {
     return {
       ...baseResult,
@@ -475,16 +536,19 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
   return null
 }
 
+const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024 // 1 GiB
+
 function createEditFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'edit_file',
     description:
-      'REQUIRED tool for modifying existing files — always use this instead of write_file for changes. ' +
-      'Makes targeted search-and-replace edits without rewriting the whole file. ' +
-      'The old_string must match exactly and uniquely in the file (unless replace_all is true). ' +
-      'Include 3-5 surrounding lines in old_string for uniqueness. ' +
-      'If it fails, read the file first to get the exact text, then retry with a longer old_string. ' +
-      'Use replace_all: true for renaming a variable or string throughout a file.',
+      'Performs exact string replacements in files.\n\n' +
+      'Usage:\n' +
+      '- You must use read_file at least once before editing. This tool will error if you attempt an edit without reading.\n' +
+      '- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears in the file content.\n' +
+      '- ALWAYS prefer editing existing files. NEVER use write_file for existing files unless replacing the entire content.\n' +
+      '- The edit will FAIL if old_string is not unique. Provide more surrounding context to make it unique, or use replace_all.\n' +
+      '- Use replace_all for renaming a variable or string across the file.',
     label: 'Edit File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -500,28 +564,77 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'old_string and new_string must differ' })
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+
+      // Jupyter notebook redirect
+      if (filePath.endsWith('.ipynb')) {
+        return textResult({ error: 'File is a Jupyter Notebook. Use the notebook_edit tool instead.' })
+      }
+
+      // Create file on edit: if file doesn't exist and old_string is empty,
+      // create it with new_string as content (matches Claude Code behavior)
       if (!existsSync(resolved)) {
+        if (old_string === '') {
+          mkdirSync(dirname(resolved), { recursive: true })
+          writeFileSync(resolved, new_string, 'utf-8')
+          const newMtime = Math.floor(statSync(resolved).mtimeMs)
+          ctx.fileStateCache?.recordEdit(filePath, new_string, newMtime)
+          ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
+          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+            ctx.lspManager.notifyFileChanged(resolved, new_string)
+            ctx.lspManager.notifyFileSaved?.(resolved)
+          }
+          return textResult({ ok: true, path: filePath, created: true })
+        }
         return textResult({ error: `File not found: ${filePath}` })
       }
-      const content = readFileSync(resolved, 'utf-8')
 
-      // Exact match path (fast)
-      const exactOccurrences = content.split(old_string).length - 1
-      if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
-        const updated = replace_all
-          ? content.split(old_string).join(new_string)
-          : content.replace(old_string, new_string)
-        writeFileSync(resolved, updated, 'utf-8')
-        ctx.fileStateCache?.invalidate(filePath)
-        ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-        if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
-          ctx.lspManager.notifyFileChanged(resolved, updated)
-        }
-        const base = { ok: true, path: filePath, replacements: replace_all ? exactOccurrences : 1 }
-        const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
-        return textResult(schemaResult ?? base)
+      // File size guard
+      const stats = statSync(resolved)
+      if (stats.size > MAX_EDIT_FILE_SIZE) {
+        return textResult({
+          error: `File too large to edit (${(stats.size / 1024 / 1024).toFixed(0)} MB). Max: 1 GB.`,
+        })
       }
 
+      // Read-before-edit enforcement — block only if never read at all
+      const readRecord = ctx.fileStateCache?.getRecord(filePath)
+      if (ctx.fileStateCache && !readRecord) {
+        return textResult({
+          error: 'File has not been read yet. Read it first with read_file before editing.',
+        })
+      }
+
+      // Staleness detection — content-comparison fallback only for full reads
+      if (readRecord && ctx.fileStateCache?.isStale(filePath, resolved)) {
+        const isFullRead = !readRecord.partial
+        if (isFullRead && readRecord.content) {
+          const currentContent = readFileSync(resolved, 'utf-8')
+          if (currentContent === readRecord.content) {
+            // mtime changed but content is identical — safe to proceed
+          } else {
+            return textResult({
+              error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
+            })
+          }
+        } else {
+          return textResult({
+            error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
+          })
+        }
+      }
+
+      // Read with encoding + line-ending detection
+      const { content, encoding, lineEndings } = readFileWithMetadata(resolved)
+      const isMarkdown = /\.(md|mdx)$/i.test(filePath)
+      const cleanNewString = isMarkdown ? new_string : stripTrailingWhitespace(new_string)
+
+      // --- Match pipeline ---
+      // 1. Exact match
+      const exactOccurrences = content.split(old_string).length - 1
+      if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
+        const updated = applyEditToFile(content, old_string, cleanNewString, replace_all)
+        return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, replace_all ? exactOccurrences : 1)
+      }
       if (exactOccurrences > 1 && !replace_all) {
         return textResult({
           error: `old_string found ${exactOccurrences} times in ${filePath}. ` +
@@ -529,30 +642,32 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      // Fuzzy match path — try whitespace/line-ending normalization
+      // 2. Curly quote normalization
       if (!replace_all) {
-        const fuzzy = fuzzyFindInContent(content, old_string)
-        if (fuzzy) {
-          const updated = content.substring(0, fuzzy.index) + new_string + content.substring(fuzzy.index + fuzzy.match.length)
-          writeFileSync(resolved, updated, 'utf-8')
-          ctx.fileStateCache?.invalidate(filePath)
-          ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
-            ctx.lspManager.notifyFileChanged(resolved, updated)
-          }
-          const base = { ok: true, path: filePath, replacements: 1, note: 'Matched with whitespace normalization' }
-          const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
-          return textResult(schemaResult ?? base)
+        const actualString = findActualString(content, old_string)
+        if (actualString && actualString !== old_string) {
+          const adjustedNew = preserveQuoteStyle(old_string, actualString, cleanNewString)
+          const updated = applyEditToFile(content, actualString, adjustedNew, false)
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with quote normalization')
         }
       }
 
-      // Provide helpful context on failure
+      // 3. Fuzzy match (whitespace/line-ending normalization)
+      if (!replace_all) {
+        const fuzzy = fuzzyFindInContent(content, old_string)
+        if (fuzzy) {
+          const updated = content.substring(0, fuzzy.index) + cleanNewString + content.substring(fuzzy.index + fuzzy.match.length)
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with whitespace normalization')
+        }
+      }
+
+      // No match — provide helpful context
       const lines = content.split('\n')
       const needleFirst = old_string.split('\n')[0]?.trim()
       const nearbyLines: string[] = []
       if (needleFirst) {
         for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes(needleFirst)) {
+          if (lines[i]!.includes(needleFirst)) {
             const start = Math.max(0, i - 1)
             const end = Math.min(lines.length, i + 3)
             nearbyLines.push(`Lines ${start + 1}-${end}: ${lines.slice(start, end).join('\n')}`)
@@ -569,6 +684,38 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       })
     },
   }
+}
+
+async function commitEdit(
+  ctx: ToolContext,
+  filePath: string,
+  resolved: string,
+  originalContent: string,
+  updated: string,
+  encoding: BufferEncoding,
+  lineEndings: LineEndingType,
+  replacements: number,
+  note?: string,
+): Promise<AgentToolResult<any>> {
+  writeWithMetadata(resolved, updated, encoding, lineEndings)
+
+  // Post-edit state tracking (recordEdit instead of invalidate)
+  const newMtime = Math.floor(statSync(resolved).mtimeMs)
+  if (ctx.fileStateCache) {
+    ctx.fileStateCache.recordEdit(filePath, updated, newMtime)
+  }
+
+  ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
+  if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+    ctx.lspManager.notifyFileChanged(resolved, updated)
+    ctx.lspManager.notifyFileSaved?.(resolved)
+  }
+
+  const patch = getStructuredPatch(filePath, originalContent, updated)
+  const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
+  if (note) base.note = note
+  const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
+  return textResult(schemaResult ?? base)
 }
 
 // ---------------------------------------------------------------------------

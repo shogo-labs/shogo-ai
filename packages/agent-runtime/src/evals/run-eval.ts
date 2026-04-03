@@ -344,7 +344,10 @@ function writeEvalLog(
     lines.push('## Penalties')
     lines.push('')
     if (toolErrCount > 0) {
-      lines.push(`- ⚠️ Tool errors: ${toolErrCount} failed tool call${toolErrCount !== 1 ? 's' : ''} (−${toolErrCount * 2} points)`)
+      const rawPenalty = toolErrCount * 2
+      const cappedPenalty = Math.min(rawPenalty, Math.ceil(ev.maxScore * 0.2))
+      const capNote = rawPenalty > cappedPenalty ? ` (capped from ${rawPenalty})` : ''
+      lines.push(`- ⚠️ Tool errors: ${toolErrCount} failed tool call${toolErrCount !== 1 ? 's' : ''} (−${cappedPenalty} points${capNote})`)
     }
     for (const ap of result.triggeredAntiPatterns) {
       lines.push(`- ⚠️ Anti-pattern: ${ap} (−10 points)`)
@@ -539,17 +542,15 @@ async function runEvalOnWorker(
     if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
 
     if (existsSync(worker.dir)) {
-      const safeDirs = ['canvas', 'files', '.shogo/server']
-      for (const sub of safeDirs) {
-        const p = join(worker.dir, sub)
-        try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}
-      }
-      const keepFiles = new Set(['sessions.db', 'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json'])
+      const keepEntries = new Set([
+        'node_modules', 'sessions.db', 'tsconfig.json',
+        'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json',
+      ])
       try {
         for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
-          if (entry.isFile() && !keepFiles.has(entry.name)) {
-            try { rmSync(join(worker.dir, entry.name), { force: true }) } catch {}
-          }
+          if (keepEntries.has(entry.name)) continue
+          const fullPath = join(worker.dir, entry.name)
+          try { rmSync(fullPath, { recursive: true, force: true }) } catch {}
         }
       } catch {}
     }
@@ -660,7 +661,7 @@ async function runEvalOnWorker(
             desc: 'Can list and create records via API',
             pts: 2,
             passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
-            skip: runtimeResults.serverHealthy === null,
+            skip: runtimeResults.serverHealthy === null || !runtimeResults.workspaceIntegrity?.schemaHasModels,
           },
           {
             id: 'runtime-canvas-port',
@@ -697,7 +698,8 @@ async function runEvalOnWorker(
 
         // For fullstack evals (useSkillServer), runtime failures are penalties
         // that deduct from the static score — a broken server can't pass.
-        if (isFullstack) {
+        const hasModels = runtimeResults.workspaceIntegrity?.schemaHasModels === true
+        if (isFullstack && hasModels) {
           let penalty = 0
           if (runtimeResults.serverHealthy === false) {
             penalty += Math.ceil(ev.maxScore * 0.25)
@@ -709,6 +711,17 @@ async function runEvalOnWorker(
             result.score = Math.max(0, result.score - penalty)
             result.runtimeWarnings.push(`Runtime penalty: −${penalty} pts (server/CRUD failures)`)
           }
+        }
+
+        // Canvas-API contract: penalise when the UI fetches routes that don't
+        // exist. Each unique orphaned route costs 2 pts, capped at 20% of maxScore.
+        const orphaned = runtimeResults.canvasOrphanedFetches ?? []
+        if (orphaned.length > 0) {
+          const uniqueOrphaned = new Set(orphaned.map(r => r.toLowerCase()))
+          const rawPenalty = uniqueOrphaned.size * 2
+          const contractPenalty = Math.min(rawPenalty, Math.ceil(ev.maxScore * 0.2))
+          result.score = Math.max(0, result.score - contractPenalty)
+          result.runtimeWarnings.push(`Canvas-API contract penalty: −${contractPenalty} pts (${uniqueOrphaned.size} orphaned route${uniqueOrphaned.size !== 1 ? 's' : ''})`)
         }
 
         result.percentage = result.maxScore > 0 ? (result.score / result.maxScore) * 100 : 0
@@ -1013,7 +1026,7 @@ async function main() {
   console.log(`  Failed tool calls:  ${totalFailed}`)
   console.log(`  Avg tools/eval:     ${(totalToolCalls / results.length).toFixed(1)}`)
   console.log(`  Success rate:       ${totalToolCalls > 0 ? ((1 - totalFailed / totalToolCalls) * 100).toFixed(1) : 100}%`)
-  console.log(`  Error penalty:      −${totalFailed * 2} points (${totalFailed} × 2)`)
+  console.log(`  Error penalty:      −${totalFailed * 2} points raw (${totalFailed} × 2), capped at 20% per eval`)
   console.log('')
 
   if (totalFailed > 0) {

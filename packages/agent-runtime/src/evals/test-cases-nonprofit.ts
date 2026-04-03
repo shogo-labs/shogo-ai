@@ -24,6 +24,7 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  lastSchemaPreservesModel,
 } from './eval-helpers'
 import { buildSkillServerSchema } from '../workspace-defaults'
 
@@ -623,7 +624,7 @@ const PHASE_2: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: Fundraising (npo-fundraising) — Level 3, 45 points
+// Phase 3: Fundraising (npo-fundraising) — Level 3, 48 points
 // ---------------------------------------------------------------------------
 
 const PHASE_3: AgentEval = {
@@ -665,7 +666,7 @@ const PHASE_3: AgentEval = {
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
   useSkillServer: true,
-  maxScore: 45,
+  maxScore: 48,
   validationCriteria: [
     {
       id: 'donor-schema',
@@ -770,6 +771,13 @@ const PHASE_3: AgentEval = {
         const code = allCanvasCode(r)
         return code.includes('tax') || code.includes('receipt') || code.includes('deductible')
       },
+    },
+    {
+      id: 'prior-models-preserved',
+      description: 'Schema preserves Grant model from prior phase',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => lastSchemaPreservesModel(r, 'Grant'),
     },
   ],
   tags: ['nonprofit'],

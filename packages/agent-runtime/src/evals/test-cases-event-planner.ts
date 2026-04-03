@@ -25,6 +25,7 @@ import {
   toolCallCount,
   responseContains,
   toolCallsJson,
+  lastSchemaPreservesModel,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -415,7 +416,7 @@ const PHASE_2: AgentEval = {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: Day-of Operations (event-day-of) — Level 4 (rubric 46 pts)
+// Phase 3: Day-of Operations (event-day-of) — Level 4 (rubric 49 pts)
 // ---------------------------------------------------------------------------
 
 const PHASE_3: AgentEval = {
@@ -455,7 +456,7 @@ const PHASE_3: AgentEval = {
   initialMode: 'canvas' as const,
   useRuntimeTemplate: true,
   useSkillServer: true,
-  maxScore: 46,
+  maxScore: 49,
   validationCriteria: [
     {
       id: 'timeline-ui',
@@ -558,6 +559,13 @@ const PHASE_3: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) => canvasCodeFetches(r),
+    },
+    {
+      id: 'prior-models-preserved',
+      description: 'Schema preserves Event model from prior phase',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => lastSchemaPreservesModel(r, 'Event'),
     },
   ],
   tags: ['event-planner'],

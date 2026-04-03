@@ -147,3 +147,21 @@ export function lastSkillServerExecSucceeded(result: EvalResult): boolean {
     !last.stdout.includes('404 Not Found') &&
     !last.stdout.includes('Cannot connect')
 }
+
+// ---------------------------------------------------------------------------
+// Schema validation
+// ---------------------------------------------------------------------------
+
+/**
+ * True if the last schema write in this eval still contains `modelName`.
+ * Returns true when no schema was written (prior models are untouched on disk).
+ */
+export function lastSchemaPreservesModel(result: EvalResult, modelName: string): boolean {
+  const schemaWrites = result.toolCalls
+    .filter(t => t.name === 'write_file')
+    .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
+  if (schemaWrites.length === 0) return true
+  const last = schemaWrites[schemaWrites.length - 1]
+  const content = String((last.input as any).content ?? '')
+  return content.includes(`model ${modelName}`)
+}
