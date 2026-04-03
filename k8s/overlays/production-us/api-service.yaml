@@ -286,4 +286,4 @@ spec:
             limits:
               memory: "6Gi"
               cpu: "3"
-      timeoutSeconds: 600
+      timeoutSeconds: 1800

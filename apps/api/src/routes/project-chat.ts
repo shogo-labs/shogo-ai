@@ -109,7 +109,7 @@ async function trackUsageFromStream(
   let reasoningStartedAt: number | null = null
   let streamInterrupted = false
 
-  const PER_CHUNK_IDLE_TIMEOUT_MS = 120_000
+  const PER_CHUNK_IDLE_TIMEOUT_MS = 600_000
 
   try {
     while (true) {
@@ -671,11 +671,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Retry configuration for transient errors during cold starts.
       // Uses exponential backoff: 500ms, 1s, 2s, 4s, 4s... (capped at 4s)
-      // Max 30 retries (~45 seconds total) with explicit 120s fetch timeout
+      // Max 30 retries (~45 seconds total) with explicit 30min fetch timeout
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const FETCH_TIMEOUT_MS = 600_000
+      const FETCH_TIMEOUT_MS = 1_800_000
       let lastError: Error | null = null
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

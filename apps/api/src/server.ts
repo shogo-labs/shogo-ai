@@ -2158,7 +2158,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const MAX_RETRIES = 24
   const BASE_DELAY_MS = 500
   const MAX_DELAY_MS = 5000
-  const FETCH_TIMEOUT_MS = 120_000
+  const FETCH_TIMEOUT_MS = 1_800_000
   let lastError: Error | null = null
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -6047,7 +6047,7 @@ export default {
     message: handleInstanceWsMessage,
     close: handleInstanceWsClose,
   },
-  idleTimeout: 120,
+  idleTimeout: 300,
 }
 
 // Pre-warm Claude Code after server is listening.
