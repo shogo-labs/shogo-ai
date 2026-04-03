@@ -1,26 +1,31 @@
 /**
  * Custom file watcher for the API server.
  *
- * Replaces `bun --watch` to avoid the EBUSY / integer-overflow crash on Windows
- * caused by heavy filesystem activity in the workspaces/ directory.
+ * Uses chokidar instead of raw fs.watch for reliable file-watching on Windows.
+ * chokidar deduplicates events, waits for writes to finish, and avoids the
+ * phantom-change storms that plague fs.watch({ recursive: true }) on NTFS.
  *
  * Only watches apps/api/src and packages/ — ignores workspaces/, node_modules/, etc.
  */
 
 import { spawn, type Subprocess } from "bun";
-import { watch, type FSWatcher } from "fs";
+import chokidar from "chokidar";
 import { resolve, relative, sep } from "path";
+import { createConnection } from "net";
 
 const ROOT = resolve(import.meta.dir, "..");
 const ENTRY = resolve(ROOT, "apps/api/src/entry.ts");
+const API_PORT = Number(process.env.API_PORT ?? 8002);
 
 const WATCH_DIRS = [
   resolve(ROOT, "apps/api/src"),
   resolve(ROOT, "packages"),
 ];
 
-const IGNORE = ["node_modules", ".git", "dist", "build", "generated", "workspaces", ".canvas-state.json"];
-const EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".json"]);
+const DEBOUNCE_MS = 800;
+const KILL_TIMEOUT_MS = 5_000;
+const PORT_WAIT_MS = 10_000;
+const PORT_POLL_INTERVAL_MS = 300;
 
 let child: Subprocess | null = null;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -28,8 +33,28 @@ let generation = 0;
 let waitingForChange = false;
 let restarting = false;
 let restartQueued = false;
-const DEBOUNCE_MS = 300;
-const KILL_TIMEOUT_MS = 5_000;
+
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((res) => {
+    const socket = createConnection({ port, host: "127.0.0.1" });
+    socket.once("connect", () => {
+      socket.destroy();
+      res(false);
+    });
+    socket.once("error", () => {
+      res(true);
+    });
+  });
+}
+
+async function waitForPortRelease(port: number): Promise<boolean> {
+  const deadline = Date.now() + PORT_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (await isPortFree(port)) return true;
+    await new Promise((r) => setTimeout(r, PORT_POLL_INTERVAL_MS));
+  }
+  return false;
+}
 
 async function startServer() {
   if (restarting) {
@@ -52,6 +77,13 @@ async function startServer() {
 
       await oldChild.exited;
       clearTimeout(killTimeout);
+    }
+
+    const portFree = await waitForPortRelease(API_PORT);
+    if (!portFree) {
+      console.log(`[watch-api] Port ${API_PORT} still in use after ${PORT_WAIT_MS / 1000}s — waiting for file change to retry...`);
+      waitingForChange = true;
+      return;
     }
 
     waitingForChange = false;
@@ -81,49 +113,53 @@ async function startServer() {
   }
 }
 
-function shouldIgnore(filename: string | null): boolean {
-  if (!filename) return true;
-  if (IGNORE.some((dir) => filename.includes(dir))) return true;
-  const ext = filename.slice(filename.lastIndexOf("."));
-  return !EXTENSIONS.has(ext);
-}
-
-function scheduleRestart(file: string) {
+function scheduleRestart(filePath: string) {
   if (restartTimer) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
-    const rel = relative(ROOT, file);
+    const rel = relative(ROOT, filePath);
     console.log(`[watch-api] Change detected: ${rel} — restarting...`);
     startServer();
   }, DEBOUNCE_MS);
 }
 
-const watchers: FSWatcher[] = [];
+const watcher = chokidar.watch(WATCH_DIRS, {
+  ignored: [
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/generated/**",
+    "**/workspaces/**",
+    "**/.canvas-state.json",
+  ],
+  ignoreInitial: true,
+  awaitWriteFinish: {
+    stabilityThreshold: 300,
+    pollInterval: 100,
+  },
+});
 
-for (const dir of WATCH_DIRS) {
-  try {
-    const w = watch(dir, { recursive: true }, (_event, filename) => {
-      if (!shouldIgnore(filename)) {
-        scheduleRestart(resolve(dir, filename ?? ""));
-      }
-    });
-    watchers.push(w);
+watcher.on("change", (filePath) => scheduleRestart(filePath));
+watcher.on("add", (filePath) => scheduleRestart(filePath));
+watcher.on("unlink", (filePath) => scheduleRestart(filePath));
+
+watcher.on("ready", () => {
+  for (const dir of WATCH_DIRS) {
     console.log(`[watch-api] Watching ${relative(ROOT, dir)}${sep}`);
-  } catch (err: any) {
-    console.warn(`[watch-api] Could not watch ${dir}: ${err.message}`);
   }
+  console.log("[watch-api] Starting API server...");
+  startServer();
+});
+
+watcher.on("error", (err) => {
+  console.warn(`[watch-api] Watcher error: ${err.message}`);
+});
+
+function cleanup() {
+  watcher.close();
+  child?.kill();
+  process.exit(0);
 }
 
-process.on("SIGINT", () => {
-  for (const w of watchers) w.close();
-  child?.kill();
-  process.exit(0);
-});
-
-process.on("SIGTERM", () => {
-  for (const w of watchers) w.close();
-  child?.kill();
-  process.exit(0);
-});
-
-console.log("[watch-api] Starting API server...");
-startServer();
+process.on("SIGINT", cleanup);
+process.on("SIGTERM", cleanup);
