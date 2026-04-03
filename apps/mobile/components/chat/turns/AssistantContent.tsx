@@ -7,12 +7,13 @@
  * Preserves the natural ordering from the AI SDK message.parts array.
  */
 
-import { useState, useCallback, useMemo, useRef } from "react"
+import { useState, useCallback, useMemo, useRef, useEffect } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
+import { SubagentCard } from "./SubagentCard"
 import { ExecWidget } from "./ExecWidget"
 import {
   ConnectToolWidget,
@@ -30,6 +31,7 @@ import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
+import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 
 export interface AssistantContentProps {
   message: UIMessage
@@ -141,7 +143,8 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn"])
+const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -188,6 +191,37 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
     }
 
     i = j
+  }
+
+  return result
+}
+
+interface SubagentExtraction {
+  parts: MessagePart[]
+  tool: ToolCallData
+}
+
+/**
+ * Extract sub-agent content parts from the ordered parts list.
+ * Parts appearing after a task/agent_spawn tool are considered sub-agent parts.
+ * Returns a map of task tool ID -> { parts, tool }.
+ */
+function extractSubagentParts(
+  orderedParts: MessagePart[],
+): Map<string, SubagentExtraction> {
+  const result = new Map<string, SubagentExtraction>()
+  let activeTaskId: string | null = null
+
+  for (const part of orderedParts) {
+    if (part.type === "tool" && TASK_TOOL_NAMES.has(part.tool.toolName)) {
+      activeTaskId = part.tool.id
+      result.set(activeTaskId, { parts: [], tool: part.tool })
+      continue
+    }
+
+    if (activeTaskId) {
+      result.get(activeTaskId)!.parts.push(part)
+    }
   }
 
   return result
@@ -284,10 +318,50 @@ export function AssistantContent({
     return fn
   }, [toggleTool])
 
+  const orderedParts = useMemo(() => extractOrderedParts(message), [message])
+
+  const subagentPartsMap = useMemo(
+    () => extractSubagentParts(orderedParts),
+    [orderedParts],
+  )
+
+  const subagentPartIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const { parts } of subagentPartsMap.values()) {
+      for (const p of parts) ids.add(p.id)
+    }
+    return ids
+  }, [subagentPartsMap])
+
+  useEffect(() => {
+    for (const [toolId, { parts, tool }] of subagentPartsMap) {
+      const args = tool.args as Record<string, unknown> | undefined
+      const agentType = (args?.subagent_type as string)
+        ?? (args?.type as string)
+        ?? "task"
+      const description = (args?.description as string)
+        ?? (args?.prompt as string)
+        ?? ""
+      const isDone = tool.state === "success"
+      const isError = tool.state === "error"
+
+      subagentStreamStore.init(toolId, {
+        agentId: toolId,
+        agentType,
+        description,
+        status: isError ? "error" : isDone ? "completed" : "running",
+        ...(isDone || isError ? {
+          summary: (tool.result as Record<string, unknown> | undefined)?.summary as string | undefined,
+        } : {}),
+      })
+      subagentStreamStore.setParts(toolId, parts)
+    }
+  }, [subagentPartsMap])
+
   const groupedParts = useMemo(() => {
-    const parts = extractOrderedParts(message)
-    return groupConsecutiveParts(parts)
-  }, [message])
+    const filtered = orderedParts.filter((p) => !subagentPartIds.has(p.id))
+    return groupConsecutiveParts(filtered)
+  }, [orderedParts, subagentPartIds])
 
   if (groupedParts.length === 0) {
     return null
@@ -333,6 +407,10 @@ export function AssistantContent({
         }
 
         if (part.type === "tool") {
+          if (TASK_TOOL_NAMES.has(part.tool.toolName)) {
+            return <SubagentCard key={part.id} tool={part.tool} />
+          }
+
           if (part.tool.toolName === "ask_user") {
             const isPending = part.tool.result === undefined
             const isExpanded = isPending || expandedTools.has(part.id)

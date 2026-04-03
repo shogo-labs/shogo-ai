@@ -87,6 +87,7 @@ import {
   type ToolCallData,
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
+import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
 import { PlanCard, type PlanData } from "./PlanCard"
@@ -1195,6 +1196,32 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
+      // Track sub-agent lifecycle in the shared stream store
+      if (dataPart.type === "data-subagent-start") {
+        const { name, description } = (dataPart as any).data ?? {}
+        const activeId = Array.from(activeSubagents.keys()).find(
+          (id) => activeSubagents.get(id)?.status === "running",
+        )
+        if (activeId) {
+          subagentStreamStore.init(activeId, {
+            agentId: activeId,
+            agentType: name || "task",
+            description: description || "",
+            status: "running",
+          })
+        }
+      }
+
+      if (dataPart.type === "data-subagent-end") {
+        const { name, summary: endSummary } = (dataPart as any).data ?? {}
+        const activeId = Array.from(activeSubagents.keys()).find(
+          (id) => activeSubagents.get(id)?.agentType === name,
+        )
+        if (activeId) {
+          subagentStreamStore.updateStatus(activeId, "completed", endSummary)
+        }
+      }
+
       if (dataPart.type === "data-tool-error" && !toolErrorBanner) {
         const { toolkitName, error: errText, isAuthError: authErr } = (dataPart as any).data ?? {}
         setToolErrorBanner({
@@ -1619,11 +1646,12 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isStreaming, activeSubagents, recentTools.length])
 
-  // Clear accumulated tools when a new stream starts
+  // Clear accumulated tools and sub-agent store when a new stream starts
   const prevIsStreamingRef = useRef(false)
   useEffect(() => {
     if (isStreaming && !prevIsStreamingRef.current) {
       setAccumulatedSubagentTools([])
+      subagentStreamStore.clear()
     }
     prevIsStreamingRef.current = isStreaming
   }, [isStreaming])

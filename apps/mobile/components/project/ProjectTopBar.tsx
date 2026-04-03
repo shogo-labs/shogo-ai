@@ -88,6 +88,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   // { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },
+  { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'monitor', label: 'Monitor', icon: Activity },
   { id: 'plans', label: 'Plans', icon: ClipboardList },
 ]
