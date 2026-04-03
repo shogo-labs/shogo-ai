@@ -706,6 +706,12 @@ app.onError((err, c) => {
 // Process-level handlers: catch unhandled promise rejections and uncaught
 // exceptions that escape Hono's error boundary. Log them instead of crashing.
 process.on('unhandledRejection', (reason: any) => {
+  // AbortSignal.timeout() DOMExceptions are noisy and expected during cold
+  // starts / retries — log a single line instead of the full object.
+  if (reason?.name === 'TimeoutError' || reason?.name === 'AbortError') {
+    console.warn('[API] Suppressed timeout rejection:', reason.message)
+    return
+  }
   console.error('[API] Unhandled promise rejection:', reason?.message || reason)
   if (reason?.stack) {
     console.error('[API] Stack:', reason.stack)
@@ -2225,8 +2231,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
       if ((isTransient || isTimeout) && attempt < MAX_RETRIES) {
         const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
-        if (attempt === 1) {
-          console.log(`[AgentProxy] ${c.req.method} ${path} connection failed, retrying (cold start?)...`)
+        if (attempt <= 2) {
+          console.log(`[AgentProxy] ${c.req.method} ${path} ${isTimeout ? 'timeout' : 'connection failed'}, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`)
         }
         await new Promise(resolve => setTimeout(resolve, delay))
         continue

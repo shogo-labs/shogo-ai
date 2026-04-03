@@ -36,6 +36,7 @@ import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecur
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
+import { resolveRgPath } from './rg-resolve'
 
 const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
@@ -561,7 +562,8 @@ function createGrepTool(ctx: ToolContext): AgentTool {
         : ctx.workspaceDir
 
       const sq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
-      const args = ['rg', '--json', '-e', sq(pattern), '--max-count', String(max_results)]
+      const rgBin = resolveRgPath().replace(/\\/g, '/')
+      const args = [sq(rgBin), '--json', '-e', sq(pattern), '--max-count', String(max_results)]
       if (context_lines > 0) args.push('-C', String(context_lines))
       if (include) args.push('--glob', sq(include))
       args.push('--', sq(targetPath))
