@@ -186,6 +186,7 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
 const RUNTIME_TEMPLATE_SKIP = new Set([
   'dist',
+  'node_modules',
   '.shogo',
   // Prisma generated files and lock are workspace-specific
   'src/generated',
