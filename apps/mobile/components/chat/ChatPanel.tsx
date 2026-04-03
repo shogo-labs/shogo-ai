@@ -1420,7 +1420,7 @@ export const ChatPanel = observer(function ChatPanel({
   // Idle timeout to force-complete hung streams
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageContentRef = useRef<string>("")
-  const IDLE_TIMEOUT_MS = 180000
+  const IDLE_TIMEOUT_MS = 600_000
 
   useEffect(() => {
     const currentContent = messages

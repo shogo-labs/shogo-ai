@@ -14,9 +14,9 @@ metadata:
   name: shogo-ingress
   namespace: shogo-system
   annotations:
-    # Increase timeout for long-running MCP operations
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Increase timeout for long-running agent operations and streaming
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "1800"
     nginx.ingress.kubernetes.io/proxy-body-size: "12m"
 spec:
   ingressClassName: nginx
