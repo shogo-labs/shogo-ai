@@ -77,6 +77,14 @@ export interface SessionManagerConfig {
   pruneIntervalSeconds: number
   /** Tool result pruning config (false to disable) */
   pruning?: Partial<PruningConfig> | false
+  /** Model context window size in tokens for auto-compact threshold (default: 200000) */
+  contextWindowTokens?: number
+  /** Max output tokens reserved for the model response (default: 16384) */
+  maxOutputTokens?: number
+  /** Buffer tokens reserved for system prompt and safety margin (default: 15000) */
+  bufferTokens?: number
+  /** Max consecutive summarization failures before circuit breaker trips (default: 3) */
+  maxSummarizeFailures?: number
 }
 
 export interface ManagedSession {
@@ -132,9 +140,30 @@ export class SessionManager {
   private pruneTimer: ReturnType<typeof setInterval> | null = null
   private summarizeFn: SummarizeFn | null = null
   private persistence: SessionPersistence | null = null
+  private consecutiveSummarizeFailures = 0
+  private circuitBreakerTripped = false
 
   constructor(config: Partial<SessionManagerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
+  }
+
+  /** Token threshold above which Layer 4 autocompact triggers */
+  get autocompactThreshold(): number {
+    const contextWindow = this.config.contextWindowTokens ?? 200_000
+    const maxOutput = this.config.maxOutputTokens ?? 16_384
+    const buffer = this.config.bufferTokens ?? 15_000
+    return contextWindow - maxOutput - buffer
+  }
+
+  /** Whether the summarization circuit breaker has tripped */
+  get isSummarizeCircuitOpen(): boolean {
+    return this.circuitBreakerTripped
+  }
+
+  /** Reset the circuit breaker (e.g. after a model change or manual override) */
+  resetCircuitBreaker(): void {
+    this.consecutiveSummarizeFailures = 0
+    this.circuitBreakerTripped = false
   }
 
   /** Set the summarization function (called during compaction) */
@@ -284,18 +313,20 @@ export class SessionManager {
   /**
    * Compact a session by summarizing old messages and keeping only recent ones.
    * If no summarizeFn is set, uses a simple text extraction fallback.
+   *
+   * Includes a circuit breaker: after maxSummarizeFailures consecutive failures
+   * the summarizer is bypassed and fallback is used until resetCircuitBreaker().
+   *
    * @param extraContext Optional extra context (e.g. file state summary) appended to the compacted summary.
+   * @param aggressiveKeep Override keepRecentMessages (for reactive compaction after errors).
    */
-  async compact(id: string, extraContext?: string): Promise<CompactionResult | null> {
+  async compact(id: string, extraContext?: string, aggressiveKeep?: number): Promise<CompactionResult | null> {
     const session = this.sessions.get(id)
     if (!session) return null
 
-    const { keepRecentMessages } = this.config
+    const keepRecentMessages = aggressiveKeep ?? this.config.keepRecentMessages
     if (session.messages.length <= keepRecentMessages) return null
 
-    // Find a safe split point that preserves complete turns.
-    // Never split in the middle of an assistant->toolResult sequence since
-    // orphaned toolResult messages create invalid Anthropic API history.
     let splitIndex = session.messages.length - keepRecentMessages
     while (splitIndex > 0 && splitIndex < session.messages.length) {
       const msg = session.messages[splitIndex]
@@ -303,8 +334,6 @@ export class SessionManager {
       splitIndex++
     }
 
-    // If we walked past all messages without finding a user turn boundary,
-    // fall back to the original target but skip any leading toolResult messages.
     if (splitIndex >= session.messages.length - 1) {
       splitIndex = Math.max(0, session.messages.length - keepRecentMessages)
       while (splitIndex < session.messages.length && session.messages[splitIndex].role === 'toolResult') {
@@ -318,11 +347,23 @@ export class SessionManager {
     if (toCompact.length === 0) return null
 
     let summary: string
-    if (this.summarizeFn) {
+    const maxFailures = this.config.maxSummarizeFailures ?? 3
+    const useLlm = this.summarizeFn && !this.circuitBreakerTripped
+
+    if (useLlm) {
       try {
-        summary = await this.summarizeFn(toCompact)
+        summary = await this.summarizeFn!(toCompact)
+        this.consecutiveSummarizeFailures = 0
       } catch (err: any) {
-        console.error(`[SessionManager] Summarization failed for ${id}:`, err.message)
+        this.consecutiveSummarizeFailures++
+        console.error(
+          `[SessionManager] Summarization failed for ${id} (${this.consecutiveSummarizeFailures}/${maxFailures}):`,
+          err.message,
+        )
+        if (this.consecutiveSummarizeFailures >= maxFailures) {
+          this.circuitBreakerTripped = true
+          console.warn(`[SessionManager] Circuit breaker tripped — falling back to extractive summary`)
+        }
         summary = this.fallbackSummarize(toCompact)
       }
     } else {
@@ -559,5 +600,119 @@ export function pruneToolResults(
     }
 
     return msg
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Layer 1: Tool Result Budget
+// ---------------------------------------------------------------------------
+
+const TOOL_RESULT_BUDGET_RATIO = 0.4
+const BUDGET_PROTECTED_TURNS = 3
+
+/**
+ * Proportionally shrink old tool results so they don't consume more than
+ * TOOL_RESULT_BUDGET_RATIO of the total context budget. Recent turns
+ * (within BUDGET_PROTECTED_TURNS) are never touched.
+ */
+export function applyToolResultBudget(
+  messages: Message[],
+  contextBudgetChars: number,
+): Message[] {
+  const maxBudget = Math.floor(contextBudgetChars * TOOL_RESULT_BUDGET_RATIO)
+
+  const turnBoundaries: number[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') turnBoundaries.push(i)
+  }
+  const protectedStart = turnBoundaries.length >= BUDGET_PROTECTED_TURNS
+    ? turnBoundaries[BUDGET_PROTECTED_TURNS - 1]
+    : 0
+
+  const eligibleIndices: number[] = []
+  let totalEligibleChars = 0
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.role !== 'toolResult' || i >= protectedStart) continue
+    const chars = msg.content
+      .filter((c): c is TextContent => c.type === 'text')
+      .reduce((sum, c) => sum + c.text.length, 0)
+    if (chars > 0) {
+      eligibleIndices.push(i)
+      totalEligibleChars += chars
+    }
+  }
+
+  if (totalEligibleChars <= maxBudget || eligibleIndices.length === 0) return messages
+
+  const perResultBudget = Math.floor(maxBudget / eligibleIndices.length)
+  const eligibleSet = new Set(eligibleIndices)
+
+  return messages.map((msg, idx) => {
+    if (!eligibleSet.has(idx)) return msg
+    const trm = msg as ToolResultMessage
+    return {
+      ...trm,
+      content: trm.content.map((c) => {
+        if (c.type !== 'text' || c.text.length <= perResultBudget) return c
+        const headSize = Math.floor(perResultBudget * 0.7)
+        const tailSize = perResultBudget - headSize - 60
+        if (tailSize <= 0) {
+          return { type: 'text' as const, text: c.text.substring(0, perResultBudget) + '\n[... truncated ...]' }
+        }
+        return {
+          type: 'text' as const,
+          text: c.text.substring(0, headSize)
+            + `\n\n[... ${c.text.length - headSize - tailSize} chars trimmed for budget ...]\n\n`
+            + c.text.substring(c.text.length - tailSize),
+        }
+      }),
+    } as ToolResultMessage
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3: Snip Consumed Results
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace tool results that have already been processed by a subsequent
+ * assistant message with a short placeholder. The assistant's own summary
+ * of the tool output is sufficient context — the raw output is redundant.
+ *
+ * Only snips results older than `protectedTurns` assistant turns from the end.
+ */
+export function snipConsumedResults(
+  messages: Message[],
+  protectedTurns = 3,
+): Message[] {
+  const turnBoundaries: number[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') turnBoundaries.push(i)
+  }
+  const protectedStart = turnBoundaries.length >= protectedTurns
+    ? turnBoundaries[protectedTurns - 1]
+    : 0
+
+  return messages.map((msg, idx) => {
+    if (msg.role !== 'toolResult') return msg
+    if (idx >= protectedStart) return msg
+
+    const hasFollowingAssistant = messages
+      .slice(idx + 1)
+      .some(m => m.role === 'assistant')
+
+    if (!hasFollowingAssistant) return msg
+
+    const totalChars = (msg as ToolResultMessage).content
+      .filter((c): c is TextContent => c.type === 'text')
+      .reduce((sum, c) => sum + c.text.length, 0)
+
+    if (totalChars < 200) return msg
+
+    return {
+      ...msg,
+      content: [{ type: 'text', text: `[Tool output processed — ${totalChars} chars, see assistant response]` }],
+    } as ToolResultMessage
   })
 }

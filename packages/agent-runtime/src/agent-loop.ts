@@ -94,6 +94,12 @@ export interface AgentLoopOptions {
   orchestration?: OrchestrationOptions | false
   /** AbortSignal for external cancellation (e.g., user stop). */
   signal?: AbortSignal
+  /**
+   * Layer 5: Reactive compaction callback. When the LLM returns a 413 or
+   * context-overflow error, this is called to aggressively compact history.
+   * Returns the new compacted history to retry with. Capped at 1 retry.
+   */
+  onContextOverflow?: () => Promise<Message[] | null>
 }
 
 export interface ToolCallRecord {
@@ -277,6 +283,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   }
 
   let promptError: Error | undefined
+  let reactiveRetried = false
   try {
     if (abortTriggered) {
       promptError = new Error('Aborted before prompt')
@@ -285,7 +292,25 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     }
   } catch (err: any) {
     if (!abortTriggered) {
-      promptError = err
+      // Layer 5: Reactive compaction on context overflow / 413
+      if (options.onContextOverflow && !reactiveRetried && isContextOverflowError(err)) {
+        reactiveRetried = true
+        console.warn(`[AgentLoop] Context overflow detected — attempting reactive compaction`)
+        try {
+          const compactedHistory = await options.onContextOverflow()
+          if (compactedHistory) {
+            agent.state.messages = [...compactedHistory]
+            await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
+          } else {
+            promptError = err
+          }
+        } catch (retryErr: any) {
+          console.error(`[AgentLoop] Reactive compaction retry failed:`, retryErr.message)
+          promptError = retryErr
+        }
+      } else {
+        promptError = err
+      }
     }
   } finally {
     signal?.removeEventListener('abort', onAbort)
@@ -336,4 +361,16 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   await onAgentEnd?.(result)
 
   return result
+}
+
+function isContextOverflowError(err: any): boolean {
+  if (!err) return false
+  const status = err.status ?? err.statusCode ?? err.code
+  if (status === 413) return true
+  const msg = String(err.message || err).toLowerCase()
+  return (
+    msg.includes('context') && (msg.includes('overflow') || msg.includes('too long') || msg.includes('exceed'))
+  ) || msg.includes('prompt is too long')
+    || msg.includes('maximum context length')
+    || msg.includes('request too large')
 }
