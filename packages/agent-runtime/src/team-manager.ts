@@ -375,6 +375,16 @@ export class TeamManager {
       .run(JSON.stringify(toBlockedBy), Math.floor(Date.now() / 1000), toId)
   }
 
+  getRecentMessages(teamId: string, limit: number = 50): MailboxMessage[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM team_mailbox
+       WHERE team_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    ).all(teamId, limit) as any[]
+    return rows.reverse().map(r => this.rowToMailbox(r))
+  }
+
   // -------------------------------------------------------------------------
   // Row mappers
   // -------------------------------------------------------------------------

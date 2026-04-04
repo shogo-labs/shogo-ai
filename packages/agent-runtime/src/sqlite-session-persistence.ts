@@ -39,6 +39,16 @@ const SUBAGENT_TRANSCRIPTS_SCHEMA = `
   )
 `
 
+const AGENT_REGISTRY_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS agent_registry (
+    name TEXT PRIMARY KEY,
+    config TEXT NOT NULL,
+    metrics TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )
+`
+
 const TEAM_COORDINATION_SCHEMA = `
   CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY,
@@ -111,6 +121,7 @@ export class SqliteSessionPersistence implements SessionPersistence {
         this.db.exec('PRAGMA foreign_keys = ON')
         this.db.exec(SCHEMA)
         this.db.exec(SUBAGENT_TRANSCRIPTS_SCHEMA)
+        this.db.exec(AGENT_REGISTRY_SCHEMA)
         this.db.exec(TEAM_COORDINATION_SCHEMA)
         lastError = null
         break
@@ -216,6 +227,46 @@ export class SqliteSessionPersistence implements SessionPersistence {
       description: r.description,
       createdAt: r.created_at,
     }))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agent Registry Persistence
+  // ---------------------------------------------------------------------------
+
+  saveAgentType(name: string, config: Record<string, any>, metrics: Record<string, any>): void {
+    const now = Math.floor(Date.now() / 1000)
+    this.db.prepare(
+      `INSERT OR REPLACE INTO agent_registry (name, config, metrics, created_at, updated_at)
+       VALUES (?, ?, ?, COALESCE((SELECT created_at FROM agent_registry WHERE name = ?), ?), ?)`,
+    ).run(name, JSON.stringify(config), JSON.stringify(metrics), name, now, now)
+  }
+
+  deleteAgentType(name: string): boolean {
+    const result = this.db.prepare('DELETE FROM agent_registry WHERE name = ?').run(name)
+    return result.changes > 0
+  }
+
+  loadAgentTypes(): Array<{ name: string; config: Record<string, any>; metrics: Record<string, any> }> {
+    const rows = this.db.prepare('SELECT name, config, metrics FROM agent_registry').all() as
+      Array<{ name: string; config: string; metrics: string }>
+    const result: Array<{ name: string; config: Record<string, any>; metrics: Record<string, any> }> = []
+    for (const row of rows) {
+      try {
+        result.push({
+          name: row.name,
+          config: JSON.parse(row.config),
+          metrics: JSON.parse(row.metrics),
+        })
+      } catch { /* skip corrupt rows */ }
+    }
+    return result
+  }
+
+  updateAgentMetrics(name: string, metrics: Record<string, any>): void {
+    const now = Math.floor(Date.now() / 1000)
+    this.db.prepare(
+      'UPDATE agent_registry SET metrics = ?, updated_at = ? WHERE name = ?',
+    ).run(JSON.stringify(metrics), now, name)
   }
 
   /** Expose the raw database handle (for TeamManager and other coordination layers) */

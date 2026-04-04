@@ -7,7 +7,7 @@
  * its own context window, restricted tools, and optional model override.
  * Subagents cannot spawn further subagents (no infinite nesting).
  *
- * Built-in types: code_agent, canvas_agent, explore, general-purpose.
+ * Built-in types: explore, general-purpose.
  * Custom types loaded from .shogo/agents/<name>.md at startup.
  */
 
@@ -68,13 +68,14 @@ export interface SubagentConfig {
 }
 
 export interface SubagentResult {
-  text: string
   toolCalls: number
   iterations: number
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** The subagent's final text response (last assistant message content). */
+  responseText: string
   /** Conversation messages produced during this run (for resume support). */
   newMessages?: Message[]
   /** Unique agent ID for transcript persistence and resume. */
@@ -82,8 +83,8 @@ export interface SubagentResult {
 }
 
 export interface SubagentStreamCallbacks {
-  onStart?: (name: string, description: string) => void
-  onEnd?: (name: string, summary: string) => void
+  onStart?: (name: string, description: string, agentId: string) => void
+  onEnd?: (name: string) => void
   onTextDelta?: (delta: string) => void
   onThinkingStart?: () => void
   onThinkingDelta?: (delta: string) => void
@@ -100,82 +101,20 @@ export interface SubagentStreamCallbacks {
 // Built-in Subagent Definitions
 // ---------------------------------------------------------------------------
 
-import { CODE_AGENT_CODING_GUIDE } from './code-agent-prompt'
-
-export const CODE_AGENT_SYSTEM_PROMPT = `You are code_agent — a coding subagent that writes scripts and executes commands.
-
-## Your Scope
-You work within the project/ directory. You can write and run scripts, install packages, and execute commands. All file operations are relative to the project directory.
-
-## Available Tools
-You have: edit_file, glob, grep, ls, read_file, write_file, exec, todo_write, web, search_files.
-
-${CODE_AGENT_CODING_GUIDE}`
-
-import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
-
-export const CANVAS_AGENT_SYSTEM_PROMPT = `You are canvas_agent — a focused subagent for building view-only displays with canvas components that can show live integration data.
-
-## Your Scope
-You build agent dashboards and displays using canvas_* tools. Canvas components are declarative and view-only — you describe what to show, and the UI renders it. No interactive components (Button, TextField, Select, Checkbox) are available, but you CAN bind live data from integrations using canvas_api_bind and auto-refresh metrics with canvas_api_hooks.
-
-## Available Tools
-canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, read_file, tool_search.
-
-You also have direct access to all installed integration tools (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS, GOOGLECALENDAR_LIST_EVENTS, SLACK_LIST_MESSAGES). You can call these tools directly to preview data and understand its shape before building the canvas.
-
-## CRITICAL: Live Data Binding with Integrations
-
-When the delegation prompt mentions connected integrations (Gmail, GitHub, Slack, Calendar, Jira, etc.), you MUST use \`canvas_api_bind\` to show REAL live data from those services. NEVER use \`canvas_data\` or \`canvas_api_seed\` to populate fake/sample data for integrations that are already connected.
-
-**Mandatory workflow when integrations are mentioned:**
-1. Call \`tool_search({ query: "<integration name>" })\` to discover available Composio action names (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS)
-2. Optionally call the integration tool directly (e.g., \`GMAIL_FETCH_EMAILS({ max_results: 5 })\`) to preview the data shape and understand available fields
-3. Call \`canvas_create\` to create the surface
-4. Call \`canvas_api_bind\` for EACH integration, mapping the discovered tool names to CRUD bindings with \`dataPath\` to auto-load data
-5. Call \`canvas_update\` to build the component tree with data bindings pointing to the dataPath locations
-
-**Example canvas_api_bind call:**
-\`\`\`
-canvas_api_bind({
-  surfaceId: "dashboard",
-  model: "Email",
-  fields: [
-    { name: "id", type: "String" },
-    { name: "subject", type: "String" },
-    { name: "from", type: "String" },
-    { name: "date", type: "String" }
-  ],
-  bindings: { list: { tool: "GMAIL_FETCH_EMAILS", params: { max_results: 10 } } },
-  dataPath: "/emails"
-})
-\`\`\`
-
-Then in canvas_update, bind components to \`{ "path": "/emails" }\` for DataList or \`{ "path": "/emails" }\` for Table rows.
-
-${BASIC_CANVAS_TOOLS_GUIDE}
-
-${BASIC_CANVAS_EXAMPLES}
-
-## Final Reminder
-- Return a summary of what you built and what data sources are bound.
-- Canvas is view-only for user interaction, but supports live data binding from integrations via canvas_api_bind.
-- **NEVER use canvas_data or canvas_api_seed with fake data when the prompt mentions connected integrations. Use canvas_api_bind to show real data.**
-- Canvas is declarative and view-only. For interactive needs, explain the current limitations to the user.`
-
 export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search and analyze the codebase efficiently.
 
 ## Your Scope
 Read-only codebase exploration. Find files, search for patterns, read code, and return specific findings with file references.
 
 ## Available Tools
-read_file, glob, grep, ls — all read-only.
+read_file, glob, grep, ls, web — read-only exploration tools.
 
 ## Guidelines
 - Use glob to find files by pattern first.
 - Use grep to search for specific patterns, symbols, or strings.
 - Use ls to understand directory structure.
 - Read files to understand implementation details.
+- Use web to look up documentation or external references when needed.
 - Be thorough but concise in your findings.
 - Always include specific file paths and line references.
 - Return a structured summary of what you found.`
@@ -185,6 +124,7 @@ export const GENERAL_PURPOSE_SYSTEM_PROMPT = `You are a general-purpose subagent
 ## Guidelines
 - Plan your approach before acting.
 - Use the most appropriate tool for each step.
+- Use web to look up documentation or external references when needed.
 - Be thorough but efficient.
 - Return a clear summary of what you did and the results.`
 
@@ -194,56 +134,13 @@ export function getBuiltinSubagentConfig(
   allTools: AgentTool[],
 ): SubagentConfig | null {
   switch (name) {
-    case 'code_agent': {
-      let dynamicContext = ''
-      // APP_MODE_DISABLED: template context injection removed
-      const projectDir = join(ctx.workspaceDir, 'project')
-      if (existsSync(projectDir)) {
-        try {
-          const entries = readdirSync(projectDir).filter(e => !e.startsWith('.') && e !== 'node_modules').slice(0, 25)
-          if (entries.length > 0) {
-            dynamicContext += `\n## Project Structure (top-level)\n\`\`\`\n${entries.join('\n')}\n\`\`\`\n`
-          }
-        } catch { /* non-fatal */ }
-      }
-      return {
-        name: 'code_agent',
-        description: 'Coding subagent that writes scripts and executes commands in project/',
-        systemPrompt: CODE_AGENT_SYSTEM_PROMPT + dynamicContext,
-        toolNames: [
-          'edit_file', 'glob', 'grep', 'ls', 'read_file', 'write_file', 'exec',
-          'todo_write', 'web', 'search_files',
-          // APP_MODE_DISABLED: 'template_list', 'template_copy',
-        ],
-        disallowedTools: ['task', 'skill', 'code_agent'],
-        workingDir: projectDir,
-        maxTurns: 50,
-        loopDetection: { maxIdenticalCalls: 5 },
-      }
-    }
-    case 'canvas_agent':
-      return {
-        name: 'canvas_agent',
-        description: 'Declarative UI subagent for building canvas dashboards and displays',
-        systemPrompt: CANVAS_AGENT_SYSTEM_PROMPT,
-        toolNames: [
-          'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch',
-          'canvas_delete', 'canvas_components', 'canvas_inspect',
-          'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
-          'canvas_api_hooks', 'canvas_api_bind', 'read_file',
-          'tool_search',
-        ],
-        includeInstalledTools: true,
-        disallowedTools: ['task', 'skill', 'code_agent'],
-        maxTurns: 50,
-      }
     case 'explore':
       return {
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
         systemPrompt: EXPLORE_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'glob', 'grep', 'ls'],
-        disallowedTools: ['task', 'skill', 'code_agent'],
+        toolNames: ['read_file', 'glob', 'grep', 'ls', 'web'],
+        disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
         maxTurns: 5,
       }
@@ -252,7 +149,7 @@ export function getBuiltinSubagentConfig(
         name: 'general-purpose',
         description: 'Full-capability subagent for complex multi-step tasks',
         systemPrompt: GENERAL_PURPOSE_SYSTEM_PROMPT,
-        disallowedTools: ['task', 'skill', 'code_agent'],
+        disallowedTools: ['task', 'skill'],
       }
     default:
       return null
@@ -381,6 +278,8 @@ export interface SubagentRunOptions {
   history?: Message[]
   /** Fork context — when present, the subagent inherits the parent's full context. */
   forkContext?: ForkContext
+  /** Custom stream function for testing — replaces the real LLM call. */
+  streamFn?: import('@mariozechner/pi-agent-core').StreamFn
 }
 
 /**
@@ -416,7 +315,8 @@ export async function runSubagent(
   callbacks?: SubagentStreamCallbacks,
   options?: SubagentRunOptions,
 ): Promise<SubagentResult> {
-  callbacks?.onStart?.(config.name, config.description)
+  const agentId = createAgentId(config.name)
+  callbacks?.onStart?.(config.name, config.description, agentId)
 
   const forkCtx = options?.forkContext
   const isFork = !!forkCtx
@@ -469,7 +369,7 @@ export async function runSubagent(
     // Strip orchestration tools from non-fork subagents (no infinite nesting)
     const disallowed = new Set([
       ...(config.disallowedTools || []),
-      'task', 'code_agent',
+      'task',
       'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
     ])
     tools = tools.filter(t => !disallowed.has(t.name))
@@ -479,12 +379,9 @@ export async function runSubagent(
     }
   }
 
-  const model = resolveModelTier(config.modelTier, config.model || parentCtx.config.model.name)
+  const model = resolveModelTier(config.modelTier, config.model || parentCtx.effectiveModel || parentCtx.config.model.name)
   const provider = config.provider || parentCtx.config.model.provider
   const maxIterations = config.maxTurns || (isFork ? 200 : 10)
-
-  // Generate agent ID for transcript persistence
-  const agentId = createAgentId(config.name)
 
   try {
     const result = await runAgentLoop({
@@ -498,6 +395,7 @@ export async function runSubagent(
       maxTokens: config.maxTokens,
       thinkingLevel,
       loopDetection: config.loopDetection,
+      streamFn: options?.streamFn,
       onToolCall: callbacks?.onToolCall,
       onTextDelta: callbacks?.onTextDelta,
       onThinkingStart: callbacks?.onThinkingStart,
@@ -510,8 +408,7 @@ export async function runSubagent(
       onToolCallEnd: callbacks?.onToolCallEnd,
     })
 
-    const summary = result.text || '(no text output)'
-    callbacks?.onEnd?.(config.name, summary)
+    callbacks?.onEnd?.(config.name)
 
     // Persist transcript if session persistence is available
     if (parentCtx.sessionPersistence && parentCtx.sessionId && result.newMessages) {
@@ -529,27 +426,27 @@ export async function runSubagent(
     }
 
     return {
-      text: summary,
       toolCalls: result.toolCalls.length,
       iterations: result.iterations,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       cacheReadTokens: result.cacheReadTokens,
       cacheWriteTokens: result.cacheWriteTokens,
+      responseText: result.text,
       newMessages: result.newMessages,
       agentId,
     }
   } catch (err: any) {
-    const errorMsg = `Subagent ${config.name} failed: ${err.message}`
-    callbacks?.onEnd?.(config.name, errorMsg)
+    console.error(`Subagent ${config.name} failed: ${err.message}`)
+    callbacks?.onEnd?.(config.name)
     return {
-      text: errorMsg,
       toolCalls: 0,
       iterations: 0,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      responseText: `Subagent failed: ${err.message}`,
       newMessages: [],
       agentId,
     }

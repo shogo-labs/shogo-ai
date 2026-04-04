@@ -3,15 +3,16 @@
 /**
  * SubagentCard Component (React Native)
  *
- * Renders a 2-row card for task/Task tool calls, visually distinct from
- * regular tool widgets. Top row shows agent name/type, bottom row shows
- * live status. Pressable to navigate to the full sub-agent stream view.
+ * Renders a compact card for agent_spawn / task tool calls.
+ * Sub-agent content (text, tool calls, reasoning) is nested inside
+ * the tool output via AI SDK preliminary tool results. The card
+ * shows a summary of activity; pressing navigates to the Agents panel.
  */
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { Bot, CheckCircle2, XCircle, ChevronRight } from "lucide-react-native"
+import { Bot, CheckCircle2, XCircle, ChevronRight, GitFork, Wrench } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import type { ToolCallData } from "../tools/types"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
@@ -42,18 +43,12 @@ function PulsingDot() {
 
 function getAgentLabel(tool: ToolCallData): string {
   const args = tool.args as Record<string, unknown> | undefined
-
-  // Static mode: task tool uses description / subagent_type
   const desc = args?.description as string | undefined
   if (desc) return desc
-
   const subagentType = args?.subagent_type as string | undefined
   if (subagentType) return subagentType
-
-  // Dynamic mode: agent_spawn uses type
   const agentType = args?.type as string | undefined
   if (agentType) return agentType
-
   return "Sub-agent"
 }
 
@@ -64,25 +59,48 @@ function getAgentType(tool: ToolCallData): string {
     ?? "task"
 }
 
-function getStatusText(tool: ToolCallData, elapsed: number): string {
-  if (tool.state === "error") {
-    return tool.error ?? "Failed"
+function isForkMode(tool: ToolCallData): boolean {
+  const args = tool.args as Record<string, unknown> | undefined
+  return tool.toolName === "agent_spawn" && !args?.type && !args?.subagent_type
+}
+
+interface SubagentOutputParts {
+  parts: any[]
+  toolCount: number
+  lastText: string | null
+}
+
+function parseOutputParts(result: unknown): SubagentOutputParts {
+  const r = result as Record<string, unknown> | undefined
+  const parts = (r?.parts as any[]) ?? []
+  let toolCount = 0
+  let lastText: string | null = null
+  for (const p of parts) {
+    if (p?.type === "tool") toolCount++
+    if (p?.type === "text" && p.text) lastText = p.text
   }
+  return { parts, toolCount, lastText }
+}
+
+function getStatusText(tool: ToolCallData, elapsed: number, output: SubagentOutputParts): string {
+  if (tool.state === "error") return tool.error ?? "Failed"
 
   if (tool.state === "success") {
-    const result = tool.result as Record<string, unknown> | undefined
-    const summary = result?.summary as string | undefined
-    if (summary) {
-      return summary.length > 80 ? summary.slice(0, 77) + "..." : summary
-    }
-    return "Completed"
+    const r = tool.result as Record<string, unknown> | undefined
+    const iters = r?.iterations as number | undefined
+    const tc = r?.toolCalls as number | undefined ?? output.toolCount
+    const parts: string[] = []
+    if (tc > 0) parts.push(`${tc} tool${tc > 1 ? "s" : ""}`)
+    if (iters && iters > 1) parts.push(`${iters} iterations`)
+    return parts.length > 0 ? `Completed - ${parts.join(", ")}` : "Completed"
   }
 
+  const suffix = output.toolCount > 0 ? ` - ${output.toolCount} tools` : ""
   const secs = Math.floor(elapsed / 1000)
-  if (secs < 60) return `Running... ${secs}s`
+  if (secs < 60) return `Running... ${secs}s${suffix}`
   const mins = Math.floor(secs / 60)
   const rem = secs % 60
-  return `Running... ${mins}m ${rem}s`
+  return `Running... ${mins}m ${rem}s${suffix}`
 }
 
 export function SubagentCard({ tool, className }: SubagentCardProps) {
@@ -108,7 +126,11 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
 
   const agentLabel = getAgentLabel(tool)
   const agentType = getAgentType(tool)
-  const statusText = getStatusText(tool, elapsed)
+  const fork = isForkMode(tool)
+  const output = useMemo(() => parseOutputParts(tool.result), [tool.result])
+  const statusText = getStatusText(tool, elapsed, output)
+
+  const Icon = fork ? GitFork : Bot
 
   return (
     <Pressable
@@ -121,7 +143,7 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
       <View className="px-3 py-3 gap-2">
         {/* Top row: agent identity + status icon */}
         <View className="flex-row items-center gap-2">
-          <Bot className="w-4 h-4 text-muted-foreground" size={16} />
+          <Icon className="w-4 h-4 text-muted-foreground" size={16} />
           <Text
             className="flex-1 text-xs font-semibold text-foreground"
             numberOfLines={1}
@@ -129,7 +151,7 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
             {agentLabel}
           </Text>
           <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60">
-            {agentType}
+            {fork ? "fork" : agentType}
           </Text>
           {isRunning && <PulsingDot />}
           {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-muted-foreground" size={14} />}
@@ -138,6 +160,9 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
 
         {/* Bottom row: status + navigate hint */}
         <View className="flex-row items-center gap-2">
+          {isRunning && output.toolCount > 0 && (
+            <Wrench className="w-3 h-3 text-muted-foreground/60" size={12} />
+          )}
           <Text
             className="flex-1 text-[11px] text-muted-foreground"
             numberOfLines={1}
