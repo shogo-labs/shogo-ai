@@ -71,6 +71,7 @@ import { FileStateCache } from './file-state-cache'
 import { createCodeAgentTool, type CodeAgentConfig } from './code-agent'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
+import { TeamManager } from './team-manager'
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -183,6 +184,8 @@ export interface GatewayConfig {
   canvasMode?: 'json' | 'code'
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
+  /** Enable coordinator mode (leader only delegates, never does work directly) */
+  coordinatorMode?: boolean
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
@@ -297,6 +300,7 @@ export class AgentGateway {
   private canvasBuildManager: CanvasBuildManager | null = null
   /** Dynamic sub-agent registry and lifecycle manager */
   public agentManager = new AgentManager()
+  private teamManager?: TeamManager
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -552,6 +556,10 @@ export class AgentGateway {
     this.sessionPersistence = new SqliteSessionPersistence(this.workspaceDir)
     this.sessionManager.setPersistence(this.sessionPersistence)
     await this.sessionManager.restoreSessions()
+
+    if (this.sessionPersistence) {
+      this.teamManager = new TeamManager(this.sessionPersistence)
+    }
 
     // Wire up LLM-powered summarization for context compaction
     this.sessionManager.setSummarizeFn(async (messages) => {
@@ -1209,7 +1217,7 @@ export class AgentGateway {
       ].join('\n')
       this.promptOverrides.set('mcp_discovery_guide', skillOverride)
     }
-    let systemPrompt = this.loadBootstrapContext()
+    let systemPrompt = this.loadBootstrapContext(sessionId)
     if (activeSkill) {
       this.promptOverrides.delete('mcp_discovery_guide')
     }
@@ -1238,6 +1246,11 @@ export class AgentGateway {
         'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
       ].join('\n')
       systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
+    }
+
+    if (this.config.coordinatorMode) {
+      const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
+      systemPrompt += '\n\n' + COORDINATOR_SYSTEM_PROMPT
     }
 
     const session = this.sessionManager.getOrCreate(sessionId)
@@ -1281,6 +1294,7 @@ export class AgentGateway {
       agentManager: this.agentManager,
       skillServerManager: this.skillServerManager,
       sessionPersistence: this.sessionPersistence ?? undefined,
+      teamManager: this.teamManager,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1364,6 +1378,11 @@ export class AgentGateway {
         'skill',
       ])
       assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
+    }
+
+    if (this.config.coordinatorMode) {
+      const { COORDINATOR_READONLY_TOOLS } = await import('./coordinator-prompt')
+      assembledTools = assembledTools.filter(t => COORDINATOR_READONLY_TOOLS.has(t.name))
     }
 
     let staticTools = assembledTools
@@ -1826,7 +1845,7 @@ export class AgentGateway {
     }
   }
 
-  private buildSWEPrompt(): string {
+  private buildSWEPrompt(sessionId?: string): string {
     const parts: string[] = []
 
     const now = new Date()
@@ -1848,6 +1867,11 @@ export class AgentGateway {
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     parts.push(SUBAGENT_GUIDE)
 
+    if (sessionId) {
+      const teamCtx = this.buildTeamContext(sessionId)
+      if (teamCtx) parts.push(teamCtx)
+    }
+
     return parts.join('\n\n---\n\n')
   }
 
@@ -1856,7 +1880,7 @@ export class AgentGateway {
    * Includes workspace context, coding guide, and skills — but skips personality,
    * canvas, templates, memory, and other Shogo-specific sections.
    */
-  private buildGeneralPrompt(): string {
+  private buildGeneralPrompt(sessionId?: string): string {
     const parts: string[] = []
 
     const now = new Date()
@@ -1887,15 +1911,20 @@ export class AgentGateway {
 
     parts.push(SUBAGENT_GUIDE)
 
+    if (sessionId) {
+      const teamCtx = this.buildTeamContext(sessionId)
+      if (teamCtx) parts.push(teamCtx)
+    }
+
     return parts.join('\n\n---\n\n')
   }
 
-  private loadBootstrapContext(): string {
+  private loadBootstrapContext(sessionId?: string): string {
     if (this.config.promptProfile === 'swe') {
-      return this.buildSWEPrompt()
+      return this.buildSWEPrompt(sessionId)
     }
     if (this.config.promptProfile === 'general') {
-      return this.buildGeneralPrompt()
+      return this.buildGeneralPrompt(sessionId)
     }
 
     // =========================================================================
@@ -2104,7 +2133,59 @@ When integrations are connected, use \`tool_search\` to discover available actio
       dynamicParts.push(skillServerSection)
     }
 
+    // 12. Active team context (persisted in SQLite, survives session resets)
+    if (sessionId) {
+      const teamCtx = this.buildTeamContext(sessionId)
+      if (teamCtx) dynamicParts.push(teamCtx)
+    }
+
     return [...stableParts, ...dynamicParts].join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a system prompt section describing active teams, their members,
+   * and task state.  Queried from the persistent SQLite TeamManager so
+   * the agent retains awareness across conversation / pipeline resets.
+   */
+  private buildTeamContext(sessionId: string): string | null {
+    if (!this.teamManager) return null
+
+    const teams = this.teamManager.listTeams(sessionId)
+    if (teams.length === 0) return null
+
+    const sections: string[] = ['## Active Team Context']
+
+    for (const team of teams) {
+      const members = this.teamManager.listMembers(team.id)
+      const tasks = this.teamManager.listTasks(team.id)
+
+      sections.push(`### Team: ${team.name} (id: \`${team.id}\`)`)
+      if (team.description) sections.push(team.description)
+
+      if (members.length > 0) {
+        sections.push('**Members:**')
+        for (const m of members) {
+          const status = m.isActive ? 'active' : 'inactive'
+          sections.push(`- \`${m.name}\` (agent: \`${m.agentId}\`, ${status})`)
+        }
+      }
+
+      if (tasks.length > 0) {
+        sections.push('**Tasks:**')
+        for (const t of tasks) {
+          const deps = t.blockedBy.length > 0 ? ` [blocked by: ${t.blockedBy.join(', ')}]` : ''
+          const owner = t.owner ? ` (owner: ${t.owner})` : ''
+          sections.push(`- #${t.id} ${t.subject} — **${t.status}**${owner}${deps}`)
+        }
+      }
+    }
+
+    sections.push(
+      '',
+      'Use `send_team_message`, `task_create`, `task_update`, `task_list`, `team_delete` and other team tools to interact with this team.',
+    )
+
+    return sections.join('\n')
   }
 
   /**
