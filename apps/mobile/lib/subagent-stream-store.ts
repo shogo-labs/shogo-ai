@@ -20,7 +20,6 @@ export interface SubagentStreamData {
   agentType: string
   description: string
   status: "running" | "completed" | "error"
-  summary?: string
   parts: SubagentStreamPart[]
 }
 
@@ -77,10 +76,10 @@ export const subagentStreamStore = {
     notify()
   },
 
-  updateStatus(toolId: string, status: SubagentStreamData["status"], summary?: string) {
+  updateStatus(toolId: string, status: SubagentStreamData["status"]) {
     const entry = store.get(toolId)
     if (!entry) return
-    store.set(toolId, { ...entry, status, ...(summary !== undefined ? { summary } : {}) })
+    store.set(toolId, { ...entry, status })
     notify()
   },
 

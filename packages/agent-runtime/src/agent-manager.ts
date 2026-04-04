@@ -8,8 +8,6 @@
  * Lets the main agent create and manage specialist sub-agents at runtime.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import {
@@ -74,6 +72,8 @@ export interface AgentTypeInfo {
   description: string
   builtin: boolean
   metrics: AgentTypeMetrics
+  toolNames?: string[]
+  systemPrompt?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,17 @@ const DEFAULT_MAX_SYSTEM_PROMPT_LENGTH = 4000
 const INSTANCE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
 // ---------------------------------------------------------------------------
+// Persistence interface (satisfied by SqliteSessionPersistence)
+// ---------------------------------------------------------------------------
+
+export interface AgentRegistryPersistence {
+  saveAgentType(name: string, config: Record<string, any>, metrics: Record<string, any>): void
+  deleteAgentType(name: string): boolean
+  loadAgentTypes(): Array<{ name: string; config: Record<string, any>; metrics: Record<string, any> }>
+  updateAgentMetrics(name: string, metrics: Record<string, any>): void
+}
+
+// ---------------------------------------------------------------------------
 // AgentManager
 // ---------------------------------------------------------------------------
 
@@ -94,6 +105,7 @@ export class AgentManager {
   private registry = new Map<string, RegisteredAgent>()
   private instances = new Map<string, ManagedInstance>()
   private totalSpawns = 0
+  private db: AgentRegistryPersistence | null = null
 
   private maxAgentTypes: number
   private maxConcurrentInstances: number
@@ -113,6 +125,27 @@ export class AgentManager {
     this.maxTotalSpawns = options?.maxTotalSpawns
       ?? (parseInt(process.env.MAX_TOTAL_SPAWNS || '', 10) || DEFAULT_MAX_TOTAL_SPAWNS)
     this.maxSystemPromptLength = options?.maxSystemPromptLength ?? DEFAULT_MAX_SYSTEM_PROMPT_LENGTH
+  }
+
+  /**
+   * Attach DB persistence and hydrate the in-memory registry from it.
+   * Call this once after the SQLite session persistence is initialized.
+   */
+  attachPersistence(db: AgentRegistryPersistence): void {
+    this.db = db
+    this.registry.clear()
+    try {
+      for (const row of db.loadAgentTypes()) {
+        this.registry.set(row.name, {
+          config: row.config as SubagentConfig,
+          createdAt: Date.now(),
+          persisted: true,
+          metrics: { ...emptyMetrics(), ...row.metrics },
+        })
+      }
+    } catch (err: any) {
+      console.warn('[AgentManager] Failed to load registry from DB:', err.message)
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -136,16 +169,23 @@ export class AgentManager {
     }
 
     const existing = this.registry.get(config.name)
+    const metrics = existing?.metrics ?? emptyMetrics()
     this.registry.set(config.name, {
       config,
       createdAt: existing?.createdAt ?? Date.now(),
       persisted: persist,
-      metrics: existing?.metrics ?? emptyMetrics(),
+      metrics,
     })
+    if (persist && this.db) {
+      try { this.db.saveAgentType(config.name, config as any, metrics) } catch { /* non-fatal */ }
+    }
     return { ok: true }
   }
 
   unregister(name: string): boolean {
+    if (this.db) {
+      try { this.db.deleteAgentType(name) } catch { /* non-fatal */ }
+    }
     return this.registry.delete(name)
   }
 
@@ -154,7 +194,7 @@ export class AgentManager {
   }
 
   listTypes(ctx?: ToolContext, allTools?: AgentTool[]): AgentTypeInfo[] {
-    const builtinNames = ['explore', 'general-purpose', 'code_agent', 'canvas_agent']
+    const builtinNames = ['explore', 'general-purpose']
     const result: AgentTypeInfo[] = []
 
     for (const bn of builtinNames) {
@@ -164,6 +204,8 @@ export class AgentManager {
         description: cfg?.description ?? bn,
         builtin: true,
         metrics: this.registry.get(bn)?.metrics ?? emptyMetrics(),
+        toolNames: cfg?.toolNames,
+        systemPrompt: cfg?.systemPrompt,
       })
     }
 
@@ -174,6 +216,8 @@ export class AgentManager {
         description: reg.config.description,
         builtin: false,
         metrics: reg.metrics,
+        toolNames: reg.config.toolNames,
+        systemPrompt: reg.config.systemPrompt,
       })
     }
 
@@ -245,6 +289,7 @@ export class AgentManager {
           regEntry.metrics.totalOutputTokens += result.outputTokens
           regEntry.metrics.totalToolCalls += result.toolCalls
           regEntry.metrics.totalWallTimeMs += Date.now() - startTime
+          this.flushMetrics(type, regEntry.metrics)
         }
         this.cleanupStaleInstances()
         return result
@@ -254,12 +299,13 @@ export class AgentManager {
         if (inst) {
           inst.status = 'failed'
           inst.completedAt = Date.now()
-          inst.result = { text: err.message, toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+          inst.result = { responseText: err.message, toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
         }
         if (regEntry) {
           regEntry.metrics.totalRuns++
           regEntry.metrics.failures++
           regEntry.metrics.totalWallTimeMs += Date.now() - startTime
+          this.flushMetrics(type, regEntry.metrics)
         }
         this.cleanupStaleInstances()
         return inst!.result!
@@ -308,59 +354,13 @@ export class AgentManager {
   }
 
   // -------------------------------------------------------------------------
-  // Persistence
-  // -------------------------------------------------------------------------
-
-  persistToWorkspace(workspaceDir: string): void {
-    const agentsDir = join(workspaceDir, '.shogo', 'agents')
-    for (const [, reg] of this.registry) {
-      if (!reg.persisted) continue
-      if (!existsSync(agentsDir)) mkdirSync(agentsDir, { recursive: true })
-      const filePath = join(agentsDir, `${reg.config.name}.md`)
-      const frontmatter = [
-        '---',
-        `name: ${reg.config.name}`,
-        `description: ${reg.config.description}`,
-        ...(reg.config.toolNames ? [`tools: [${reg.config.toolNames.join(', ')}]`] : []),
-        ...(reg.config.model ? [`model: ${reg.config.model}`] : []),
-        ...(reg.config.maxTurns ? [`maxTurns: ${reg.config.maxTurns}`] : []),
-        '---',
-      ].join('\n')
-      writeFileSync(filePath, `${frontmatter}\n${reg.config.systemPrompt}`, 'utf-8')
-    }
-  }
-
-  saveMetrics(workspaceDir: string): void {
-    const shogoDir = join(workspaceDir, '.shogo')
-    if (!existsSync(shogoDir)) mkdirSync(shogoDir, { recursive: true })
-    const metricsPath = join(shogoDir, 'agent-metrics.json')
-    const data: Record<string, AgentTypeMetrics> = {}
-    for (const [name, reg] of this.registry) {
-      if (reg.metrics.totalRuns > 0) {
-        data[name] = reg.metrics
-      }
-    }
-    writeFileSync(metricsPath, JSON.stringify(data, null, 2), 'utf-8')
-  }
-
-  loadMetrics(workspaceDir: string): void {
-    const metricsPath = join(workspaceDir, '.shogo', 'agent-metrics.json')
-    if (!existsSync(metricsPath)) return
-    try {
-      const raw = readFileSync(metricsPath, 'utf-8')
-      const data = JSON.parse(raw) as Record<string, AgentTypeMetrics>
-      for (const [name, metrics] of Object.entries(data)) {
-        const reg = this.registry.get(name)
-        if (reg) {
-          reg.metrics = metrics
-        }
-      }
-    } catch { /* non-fatal */ }
-  }
-
-  // -------------------------------------------------------------------------
   // Internal
   // -------------------------------------------------------------------------
+
+  private flushMetrics(type: string, metrics: AgentTypeMetrics): void {
+    if (!this.db) return
+    try { this.db.updateAgentMetrics(type, metrics) } catch { /* non-fatal */ }
+  }
 
   private cleanupStaleInstances(): void {
     const now = Date.now()

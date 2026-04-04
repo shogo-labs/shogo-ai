@@ -33,6 +33,7 @@ export interface TeammateLoopConfig {
   provider?: string
   maxTurnsPerWake?: number
   initialPrompt?: string
+  uiWriter?: { write(chunk: Record<string, any>): void }
 }
 
 export interface TeammateLoopCallbacks {
@@ -113,13 +114,13 @@ async function waitForNextPromptOrShutdown(
   while (!lifecycleSignal.aborted) {
     const messages = teamManager.readUnread(agentId)
 
-    const shutdown = messages.find(m => m.messageType === 'shutdown_request')
+    const shutdown = messages.find((m: MailboxMessage) => m.messageType === 'shutdown_request')
     if (shutdown) return { type: 'shutdown', message: shutdown }
 
-    const leaderMsg = messages.find(m => m.messageType === 'text' && m.fromAgent.startsWith('team-lead@'))
+    const leaderMsg = messages.find((m: MailboxMessage) => m.messageType === 'text' && m.fromAgent.startsWith('team-lead@'))
     if (leaderMsg) return { type: 'message', message: leaderMsg }
 
-    const peerMsg = messages.find(m => m.messageType === 'text' || m.messageType === 'task_assignment')
+    const peerMsg = messages.find((m: MailboxMessage) => m.messageType === 'text' || m.messageType === 'task_assignment')
     if (peerMsg) return { type: 'message', message: peerMsg }
 
     const task = teamManager.findAvailableTask(teamId)
@@ -181,6 +182,19 @@ export function startTeammateLoop(
               : 'Continue with your current tasks.'
           history = allMessages.slice(0, lastUserIdx)
         }
+        const w = config.uiWriter
+        const aid = config.agentId
+        const tid = config.teamId
+        let tmTextId: string | null = null
+        let tmReasoningId: string | null = null
+
+        function closeTmText() {
+          if (tmTextId && w) {
+            w.write({ type: 'data-teammate-text', data: { agentId: aid, teamId: tid, phase: 'end', textId: tmTextId } })
+            tmTextId = null
+          }
+        }
+
         const result = await runAgentLoop({
           provider: config.provider || modelConfig?.provider || 'anthropic',
           model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
@@ -191,12 +205,46 @@ export function startTeammateLoop(
           maxIterations: config.maxTurnsPerWake || 50,
           signal: workAbort.signal,
           thinkingLevel: 'low',
+          onTextDelta: w ? (delta) => {
+            if (!tmTextId) {
+              tmTextId = `tm-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              w.write({ type: 'data-teammate-text', data: { agentId: aid, teamId: tid, phase: 'start', textId: tmTextId } })
+            }
+            w.write({ type: 'data-teammate-text', data: { agentId: aid, teamId: tid, phase: 'delta', textId: tmTextId, delta } })
+          } : undefined,
+          onThinkingStart: w ? () => {
+            closeTmText()
+            tmReasoningId = `tm-reason-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+            w.write({ type: 'data-teammate-text', data: { agentId: aid, teamId: tid, phase: 'reasoning-start', textId: tmReasoningId } })
+          } : undefined,
+          onThinkingDelta: w ? (delta) => {
+            if (tmReasoningId) {
+              w.write({ type: 'data-teammate-text', data: { agentId: aid, teamId: tid, phase: 'reasoning-delta', textId: tmReasoningId, delta } })
+            }
+          } : undefined,
+          onThinkingEnd: w ? () => {
+            if (tmReasoningId) {
+              w.write({ type: 'data-teammate-text', data: { agentId: aid, teamId: tid, phase: 'reasoning-end', textId: tmReasoningId } })
+              tmReasoningId = null
+            }
+          } : undefined,
+          onBeforeToolCall: w ? async (toolName, args, toolCallId) => {
+            closeTmText()
+            w.write({ type: 'data-teammate-tool', data: { agentId: aid, teamId: tid, toolName, toolCallId, phase: 'start', args } })
+          } : undefined,
+          onAfterToolCall: w ? async (toolName, _args, result, isError, toolCallId) => {
+            const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
+            w.write({ type: 'data-teammate-tool', data: { agentId: aid, teamId: tid, toolCallId, phase: 'output', toolName, result: parsed, isError } })
+          } : undefined,
         })
+
+        closeTmText()
 
         if (result.newMessages) {
           allMessages.push(...result.newMessages)
         }
         callbacks?.onTurnComplete?.(config.agentId, result.toolCalls.length)
+        w?.write({ type: 'data-team-activity', data: { event: 'turn-complete', agentId: aid, teamId: tid, toolCalls: result.toolCalls.length } })
       } catch (err: any) {
         if (err.name === 'AbortError' || lifecycleAbort.signal.aborted) break
         console.error(`[Teammate:${config.name}] Turn error:`, err.message)
@@ -223,6 +271,7 @@ export function startTeammateLoop(
         summary: 'idle',
       })
       callbacks?.onIdle?.(config.agentId)
+      config.uiWriter?.write({ type: 'data-team-activity', data: { event: 'idle', agentId: config.agentId, teamId: config.teamId } })
 
       const wake = await waitForNextPromptOrShutdown(
         config.agentId,
@@ -239,6 +288,7 @@ export function startTeammateLoop(
           `SHUTDOWN REQUEST: ${wake.message!.message}\nPlease wrap up your work and respond with SendMessage using shutdown_response type.`,
         ))
         callbacks?.onWake?.(config.agentId, 'shutdown_request')
+        config.uiWriter?.write({ type: 'data-team-activity', data: { event: 'wake', agentId: config.agentId, teamId: config.teamId, reason: 'shutdown_request' } })
         teamManager.setMemberActive(config.agentId, true)
         continue
       }
@@ -249,6 +299,7 @@ export function startTeammateLoop(
           wake.message!.message,
         ))
         callbacks?.onWake?.(config.agentId, 'message')
+        config.uiWriter?.write({ type: 'data-team-activity', data: { event: 'wake', agentId: config.agentId, teamId: config.teamId, reason: 'message' } })
         teamManager.setMemberActive(config.agentId, true)
         continue
       }
@@ -256,12 +307,14 @@ export function startTeammateLoop(
       if (wake.type === 'task') {
         allMessages.push(wrapAsTaskAssignment(wake.task!))
         callbacks?.onWake?.(config.agentId, 'task_claim')
+        config.uiWriter?.write({ type: 'data-team-activity', data: { event: 'wake', agentId: config.agentId, teamId: config.teamId, reason: 'task_claim' } })
         teamManager.setMemberActive(config.agentId, true)
         continue
       }
     }
 
     callbacks?.onShutdown?.(config.agentId)
+    config.uiWriter?.write({ type: 'data-team-activity', data: { event: 'shutdown', agentId: config.agentId, teamId: config.teamId } })
   })
 
   return {

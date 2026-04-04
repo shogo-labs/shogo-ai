@@ -86,9 +86,6 @@ You can create, manage, and delegate tasks to specialist sub-agents at runtime.
 These are always available via \`agent_spawn\`:
 - **explore** — Fast, read-only codebase search using a cheaper model. Use for ANY codebase exploration or search. Significantly cheaper than doing it yourself.
 - **general-purpose** — Full-capability agent with all tools, for complex multi-step tasks.
-- **code_agent** — Scoped to the project/ directory, for code writing and execution.
-- **canvas_agent** — Canvas tools + integrations, for building dashboards and displays.
-
 Custom agents defined in \`.shogo/agents/\` are also available by name.
 
 ### Creating New Agents

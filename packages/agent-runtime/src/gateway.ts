@@ -68,7 +68,6 @@ import {
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
-import { createCodeAgentTool, type CodeAgentConfig } from './code-agent'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
@@ -558,6 +557,7 @@ export class AgentGateway {
     await this.sessionManager.restoreSessions()
 
     if (this.sessionPersistence) {
+      this.agentManager.attachPersistence(this.sessionPersistence)
       this.teamManager = new TeamManager(this.sessionPersistence)
     }
 
@@ -1296,6 +1296,7 @@ export class AgentGateway {
       sessionPersistence: this.sessionPersistence ?? undefined,
       teamManager: this.teamManager,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
+      effectiveModel: modelId,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1346,23 +1347,6 @@ export class AgentGateway {
     }
     if (this.config.canvasMode === 'code') {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
-    }
-
-    // Inject code_agent tool when in app mode
-    if ((this.config.activeMode || 'canvas') === 'app') {
-      const proxyUrl = process.env.AI_PROXY_URL
-      const proxyToken = process.env.AI_PROXY_TOKEN
-      const codeAgentConfig: CodeAgentConfig = {
-        workspaceDir: this.workspaceDir,
-        aiProxy: proxyUrl && proxyToken ? { url: proxyUrl, token: proxyToken } : null,
-        getModelTier: () => {
-          const m = session.modelOverride || this.config.model.name
-          if (m.includes('haiku')) return 'haiku'
-          if (m.includes('opus')) return 'opus'
-          return 'sonnet'
-        },
-      }
-      assembledTools.push(createCodeAgentTool(codeAgentConfig))
     }
 
     // Interaction mode tool restrictions
@@ -1502,6 +1486,32 @@ export class AgentGateway {
     // Populate fork-mode context so subagent tools can access the parent's state
     toolContext.renderedSystemPrompt = systemPrompt
     toolContext.sessionMessages = history
+
+    // Emit team snapshot + agent registry for UI hydration on reload
+    if (uiWriter && this.teamManager) {
+      try {
+        const teams = this.teamManager.listTeams(sessionId)
+        for (const team of teams) {
+          uiWriter.write({
+            type: 'data-team-snapshot',
+            data: {
+              team,
+              members: this.teamManager.listMembers(team.id),
+              tasks: this.teamManager.listTasks(team.id),
+              messages: this.teamManager.getRecentMessages(team.id, 50),
+            },
+          })
+        }
+      } catch (err: any) {
+        console.warn(`${this.logPrefix} Failed to emit team snapshot:`, err.message)
+      }
+    }
+    if (uiWriter && this.agentManager) {
+      try {
+        const types = this.agentManager.listTypes()
+        uiWriter.write({ type: 'data-agent-types', data: { types } })
+      } catch { /* ignore */ }
+    }
 
     // Typing indicator: send once before the turn and periodically
     let typingInterval: ReturnType<typeof setInterval> | undefined

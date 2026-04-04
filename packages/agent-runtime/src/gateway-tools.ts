@@ -117,6 +117,8 @@ export interface ToolContext {
   teamContext?: { teamId: string; agentId: string; isLeader: boolean }
   /** Active teammate loop handles (for lifecycle management) */
   teammateHandles?: Map<string, TeammateLoopHandle>
+  /** Effective model ID for this turn (accounts for session modelOverride + alias resolution) */
+  effectiveModel?: string
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -1465,16 +1467,29 @@ const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
 const WEB_CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
 
 let _webCacheRedis: Redis | null = null
+let _webCacheRedisFailed = false
 function getWebCacheRedis(): Redis | null {
-  if (!WEB_CACHE_REDIS_URL) return null
+  if (!WEB_CACHE_REDIS_URL || _webCacheRedisFailed) return null
   if (!_webCacheRedis) {
     const Redis = require('ioredis').default as new (...args: any[]) => Redis
     _webCacheRedis = new Redis(WEB_CACHE_REDIS_URL, {
       maxRetriesPerRequest: 1,
       connectTimeout: 3000,
       lazyConnect: true,
+      retryStrategy(times: number) {
+        if (times > 3) return null // stop retrying after 3 attempts
+        return Math.min(times * 500, 2000)
+      },
     })
-    _webCacheRedis.connect().catch(() => {})
+    _webCacheRedis.on('error', () => {})
+    _webCacheRedis.on('end', () => {
+      _webCacheRedisFailed = true
+      _webCacheRedis = null
+    })
+    _webCacheRedis.connect().catch(() => {
+      _webCacheRedisFailed = true
+      _webCacheRedis = null
+    })
   }
   return _webCacheRedis
 }
@@ -3798,7 +3813,9 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
       const result = am.register(config, persist)
       if (!result.ok) return textResult({ error: result.error })
 
-      if (persist) am.persistToWorkspace(ctx.workspaceDir)
+      const types = am.listTypes()
+      ctx.uiWriter?.write({ type: 'data-agent-types', data: { types } })
+
       return textResult({ ok: true, name, description, persisted: !!persist })
     },
   }
@@ -3810,7 +3827,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
     description:
       'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
       'Use background: true for async execution, then check with agent_status/agent_result. ' +
-      'Built-in types: explore, general-purpose, code_agent, canvas_agent. ' +
+      'Built-in types: explore, general-purpose. ' +
       'Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
@@ -3824,7 +3841,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       background: Type.Optional(Type.Boolean({ description: 'If true, run asynchronously (default: false — blocks until done)' })),
       resume: Type.Optional(Type.String({ description: 'Instance ID to resume (sends follow-up to existing agent)' })),
     }),
-    execute: async (_id, params) => {
+    execute: async (toolCallId, params) => {
       const {
         type,
         prompt,
@@ -3867,9 +3884,9 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         }
 
         const w = ctx.uiWriter
-        const callbacks = buildSpawnCallbacks(w)
+        const spawn = buildSpawnCallbacks(w, toolCallId)
         const forkDirective = buildForkDirective(prompt)
-        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), callbacks, { forkContext })
+        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
           w.write({
@@ -3886,13 +3903,14 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
           })
         }
 
+        const accumulated = spawn?.getAccumulatedOutput()
         return textResult({
           mode: 'fork',
           agent_id: result.agentId,
-          summary: result.text,
-          tokens: { input: result.inputTokens, output: result.outputTokens },
           toolCalls: result.toolCalls,
           iterations: result.iterations,
+          tokens: { input: result.inputTokens, output: result.outputTokens },
+          parts: accumulated?.parts,
         })
       }
 
@@ -3915,9 +3933,9 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       }
 
       const w = ctx.uiWriter
-      const callbacks = buildSpawnCallbacks(w)
+      const spawn = buildSpawnCallbacks(w, toolCallId)
 
-      const spawnResult = am.spawn(type, prompt, ctx, allToolsGetter(), callbacks, { history })
+      const spawnResult = am.spawn(type, prompt, ctx, allToolsGetter(), spawn?.callbacks, { history })
       if (!spawnResult.ok) return textResult({ error: spawnResult.error })
 
       const instanceId = spawnResult.instanceId
@@ -3946,97 +3964,123 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         })
       }
 
+      const accumulated = spawn?.getAccumulatedOutput()
       return textResult({
         instance_id: instanceId,
         agent_id: result.agentId,
         status: inst.status,
-        summary: result.text,
-        tokens: { input: result.inputTokens, output: result.outputTokens },
         toolCalls: result.toolCalls,
         iterations: result.iterations,
+        tokens: { input: result.inputTokens, output: result.outputTokens },
+        parts: accumulated?.parts,
       })
     },
   }
 }
 
-function buildSpawnCallbacks(w: any): SubagentStreamCallbacks | undefined {
+/**
+ * Build sub-agent stream callbacks that accumulate content into an internal
+ * parts[] array and periodically emit it as a preliminary tool output.
+ *
+ * Uses the AI SDK's preliminary tool results pattern: the sub-agent's content
+ * lives INSIDE the agent_spawn tool's output (tool-output-available with
+ * preliminary: true), keeping it completely separate from the parent's
+ * text/tool events. Each sub-agent is scoped to its own spawnToolCallId,
+ * so multiple concurrent sub-agents work correctly.
+ */
+export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[] } } | undefined {
   if (!w) return undefined
-  let spawnTextId: string | null = null
-  let spawnReasoningId: string | null = null
-  const spawnFlushGates = new Map<string, Promise<void>>()
-  const spawnStreamedToolCalls = new Set<string>()
 
-  function closeSpawnText() {
-    if (spawnTextId) {
-      w.write({ type: 'text-end', id: spawnTextId })
-      spawnTextId = null
+  const parts: any[] = []
+  let agentId: string | null = null
+  let lastEmitTime = 0
+  let pendingEmit: ReturnType<typeof setTimeout> | null = null
+  const THROTTLE_MS = 150
+
+  function emitPreliminary(force?: boolean) {
+    const now = Date.now()
+    if (!force && now - lastEmitTime < THROTTLE_MS) {
+      if (!pendingEmit) {
+        pendingEmit = setTimeout(() => {
+          pendingEmit = null
+          emitPreliminary(true)
+        }, THROTTLE_MS - (now - lastEmitTime))
+      }
+      return
     }
+    if (pendingEmit) { clearTimeout(pendingEmit); pendingEmit = null }
+    lastEmitTime = now
+    w.write({
+      type: 'tool-output-available',
+      toolCallId: spawnToolCallId,
+      output: { agentId, parts: [...parts] },
+      dynamic: true,
+      preliminary: true,
+    })
   }
 
-  return {
-    onStart: (name: string, desc: string) => {
-      w.write({ type: 'data-subagent-start', data: { name, description: desc } })
+  const callbacks: SubagentStreamCallbacks = {
+    onStart: (_name: string, _desc: string, id: string) => {
+      agentId = id
     },
-    onEnd: (name: string, summary: string) => {
-      closeSpawnText()
-      w.write({ type: 'data-subagent-end', data: { name, summary: summary.substring(0, 500) } })
+    onEnd: (_name: string) => {
+      // Flush any pending throttled emit so the last snapshot arrives
+      if (pendingEmit) { clearTimeout(pendingEmit); pendingEmit = null }
+      emitPreliminary(true)
     },
     onTextDelta: (delta: string) => {
-      if (!spawnTextId) {
-        spawnTextId = `spawn-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-        w.write({ type: 'text-start', id: spawnTextId })
-      }
-      w.write({ type: 'text-delta', id: spawnTextId, delta })
+      const last = parts[parts.length - 1]
+      if (last?.type === 'text') { last.text += delta }
+      else { parts.push({ type: 'text', text: delta, id: `sa-text-${parts.length}` }) }
+      emitPreliminary()
     },
     onThinkingStart: () => {
-      closeSpawnText()
-      spawnReasoningId = `spawn-reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      w.write({ type: 'reasoning-start', id: spawnReasoningId })
+      parts.push({ type: 'reasoning', text: '', isStreaming: true, id: `sa-reason-${parts.length}` })
+      emitPreliminary()
     },
     onThinkingDelta: (delta: string) => {
-      if (spawnReasoningId) {
-        w.write({ type: 'reasoning-delta', id: spawnReasoningId, delta })
-      }
+      const last = parts[parts.length - 1]
+      if (last?.type === 'reasoning') last.text += delta
     },
     onThinkingEnd: () => {
-      if (spawnReasoningId) {
-        w.write({ type: 'reasoning-end', id: spawnReasoningId })
-        spawnReasoningId = null
-      }
+      const last = parts[parts.length - 1]
+      if (last?.type === 'reasoning') last.isStreaming = false
+      emitPreliminary(true)
     },
     onToolCallStart: (toolName: string, toolCallId: string) => {
-      closeSpawnText()
-      w.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
-      spawnStreamedToolCalls.add(toolCallId)
+      parts.push({ type: 'tool', id: toolCallId, tool: { id: toolCallId, toolName, state: 'streaming', args: undefined, result: undefined } })
+      emitPreliminary()
     },
-    onToolCallDelta: (_toolName: string, delta: string, toolCallId: string) => {
-      w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: delta })
+    onToolCallDelta: (_toolName: string, _delta: string, _toolCallId: string) => {
+      // streaming args — we'll set final args in onBeforeToolCall
     },
     onToolCallEnd: (_toolName: string, _toolCallId: string) => {},
     onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
-      if (!spawnStreamedToolCalls.has(toolCallId)) {
-        w.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
-        w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
+      let p = parts.find((p: any) => p.type === 'tool' && p.id === toolCallId)
+      if (!p) {
+        p = { type: 'tool', id: toolCallId, tool: { id: toolCallId, toolName, state: 'streaming', args, result: undefined } }
+        parts.push(p)
+      } else {
+        p.tool.args = args
       }
-      spawnStreamedToolCalls.delete(toolCallId)
-      w.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
-      spawnFlushGates.set(toolCallId, new Promise(resolve => setTimeout(resolve, 30)))
+      emitPreliminary(true)
     },
     onAfterToolCall: async (_toolName: string, _args: any, result: any, isError: boolean, toolCallId: string) => {
-      const gate = spawnFlushGates.get(toolCallId)
-      if (gate) {
-        await gate
-        spawnFlushGates.delete(toolCallId)
-      }
       const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
-      w.write({
-        type: 'tool-output-available',
-        toolCallId,
-        output: isError
+      const p = parts.find((p: any) => p.type === 'tool' && p.id === toolCallId)
+      if (p) {
+        p.tool.result = isError
           ? { error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) }
-          : (parsed ?? { success: true }),
-      })
+          : (parsed ?? { success: true })
+        p.tool.state = isError ? 'error' : 'success'
+      }
+      emitPreliminary(true)
     },
+  }
+
+  return {
+    callbacks,
+    getAccumulatedOutput: () => ({ agentId, parts: [...parts] }),
   }
 }
 
@@ -4061,7 +4105,7 @@ function createAgentStatusTool(ctx: ToolContext): AgentTool {
           type: inst.type,
           status: inst.status,
           elapsed_ms: Date.now() - inst.startedAt,
-          ...(inst.result ? { summary_preview: inst.result.text.substring(0, 200) } : {}),
+          ...(inst.result ? { toolCalls: inst.result.toolCalls, iterations: inst.result.iterations } : {}),
         })
       }
 
@@ -4149,14 +4193,15 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
         })
       }
 
+      const responseText = r?.responseText || '(Subagent completed but returned no output.)'
       return textResult({
         instance_id: inst.id,
         type: inst.type,
         status: inst.status,
-        summary: r?.text ?? '(no output)',
-        tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
+        response: responseText,
         toolCalls: r?.toolCalls ?? 0,
         iterations: r?.iterations ?? 0,
+        tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
       })
     },
   }
@@ -4174,6 +4219,8 @@ function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]
 
       const types = am.listTypes(ctx, allToolsGetter())
       const instances = am.listInstances()
+
+      ctx.uiWriter?.write({ type: 'data-agent-types', data: { types } })
 
       return textResult({ types, active_instances: instances.filter(i => i.status === 'running').length, total_instances: instances.length })
     },
@@ -4216,6 +4263,11 @@ function createTeamCreateTool(ctx: ToolContext): AgentTool {
       ctx.teamContext = { teamId: team_name, agentId: leaderAgentId, isLeader: true }
       if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
 
+      ctx.uiWriter?.write({
+        type: 'data-team-created',
+        data: { teamId: team.id, name: team.name, description, leaderId: leaderAgentId },
+      })
+
       return textResult({
         ok: true,
         team_id: team.id,
@@ -4252,6 +4304,8 @@ function createTeamDeleteTool(ctx: ToolContext): AgentTool {
       tm.deleteTeam(team_id)
       if (ctx.teamContext?.teamId === team_id) ctx.teamContext = undefined
 
+      ctx.uiWriter?.write({ type: 'data-team-deleted', data: { teamId: team_id } })
+
       return textResult({ ok: true, deleted: team_id })
     },
   }
@@ -4280,6 +4334,12 @@ function createTaskCreateTool(ctx: ToolContext): AgentTool {
           tm.blockTask(depId, task.id)
         }
       }
+
+      const finalTask = blocked_by?.length ? tm.getTask(task.id) ?? task : task
+      ctx.uiWriter?.write({
+        type: 'data-team-task',
+        data: { teamId: tc.teamId, task: { id: finalTask.id, subject: finalTask.subject, description: finalTask.description, status: finalTask.status, owner: finalTask.owner, blockedBy: finalTask.blockedBy } },
+      })
 
       return textResult({ ok: true, task_id: task.id, subject: task.subject, status: task.status })
     },
@@ -4364,6 +4424,11 @@ function createTaskUpdateTool(ctx: ToolContext): AgentTool {
         })
       }
 
+      ctx.uiWriter?.write({
+        type: 'data-team-task',
+        data: { teamId: task.teamId, task: { id: task.id, subject: task.subject, description: task.description, status: task.status, owner: task.owner, blockedBy: task.blockedBy } },
+      })
+
       return textResult({ ok: true, task_id: task.id, status: task.status, owner: task.owner })
     },
   }
@@ -4399,6 +4464,11 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
         type: msgType,
         message,
         summary,
+      })
+
+      ctx.uiWriter?.write({
+        type: 'data-team-message',
+        data: { teamId: tc.teamId, from: tc.agentId, to: toAgent, messageType: msgType, message, summary },
       })
 
       // Handle shutdown response (approved) — kill the teammate
@@ -4736,7 +4806,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           description: `Executing skill: ${found.description}`,
           systemPrompt: content,
           model: undefined,
-          disallowedTools: ['task', 'code_agent'],
+          disallowedTools: ['task'],
         }
 
         const builtIn = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
@@ -4750,7 +4820,8 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           skill: skillName,
           mode: 'fork',
           agent: agentType,
-          result: result.text,
+          toolCalls: result.toolCalls,
+          iterations: result.iterations,
         })
       }
 

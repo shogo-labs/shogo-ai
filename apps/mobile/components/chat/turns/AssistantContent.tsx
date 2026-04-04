@@ -14,6 +14,7 @@ import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { SubagentCard } from "./SubagentCard"
+import { TeamCard } from "./TeamCard"
 import { ExecWidget } from "./ExecWidget"
 import {
   ConnectToolWidget,
@@ -39,9 +40,9 @@ export interface AssistantContentProps {
   className?: string
 }
 
-function mapToolState(state?: string): ToolCallData["state"] {
+function mapToolState(state?: string, preliminary?: boolean): ToolCallData["state"] {
   if (state === "input-streaming") return "streaming"
-  if (state === "output-available") return "success"
+  if (state === "output-available") return preliminary ? "streaming" : "success"
   if (state === "output-error") return "error"
   if (state === "result") return "success"
   if (state === "error") return "error"
@@ -107,6 +108,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
         part.state === "output-error"
           ? (part as { errorText?: string }).errorText ?? part.error
           : part.error
+      const preliminary = part.state === "output-available" && (part as any).preliminary === true
       result.push({
         type: "tool",
         id: toolCallId,
@@ -114,7 +116,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           id: toolCallId,
           toolName: part.toolName || "unknown",
           category: getToolCategory(part.toolName || ""),
-          state: mapToolState(part.state),
+          state: mapToolState(part.state, preliminary),
           args: part.input,
           result: part.output,
           error: errorContent,
@@ -143,9 +145,9 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create"])
 const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
-const PARENT_ONLY_TOOLS = new Set(["agent_result", "agent_status"])
+const TEAM_TOOL_NAMES = new Set(["team_create"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -197,37 +199,6 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
   return result
 }
 
-interface SubagentExtraction {
-  parts: MessagePart[]
-  tool: ToolCallData
-}
-
-/**
- * Extract sub-agent content parts from the ordered parts list.
- * Parts appearing after a task/agent_spawn tool are considered sub-agent parts.
- * Returns a map of task tool ID -> { parts, tool }.
- */
-function extractSubagentParts(
-  orderedParts: MessagePart[],
-): Map<string, SubagentExtraction> {
-  const result = new Map<string, SubagentExtraction>()
-  let activeTaskId: string | null = null
-
-  for (const part of orderedParts) {
-    if (part.type === "tool" && TASK_TOOL_NAMES.has(part.tool.toolName)) {
-      activeTaskId = part.tool.id
-      result.set(activeTaskId, { parts: [], tool: part.tool })
-      continue
-    }
-
-    if (activeTaskId) {
-      if (part.type === "tool" && PARENT_ONLY_TOOLS.has(part.tool.toolName)) continue
-      result.get(activeTaskId)!.parts.push(part)
-    }
-  }
-
-  return result
-}
 
 function ImageThumbnail({
   url,
@@ -322,48 +293,33 @@ export function AssistantContent({
 
   const orderedParts = useMemo(() => extractOrderedParts(message), [message])
 
-  const subagentPartsMap = useMemo(
-    () => extractSubagentParts(orderedParts),
-    [orderedParts],
-  )
-
-  const subagentPartIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (const { parts } of subagentPartsMap.values()) {
-      for (const p of parts) ids.add(p.id)
-    }
-    return ids
-  }, [subagentPartsMap])
-
+  // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
   useEffect(() => {
-    for (const [toolId, { parts, tool }] of subagentPartsMap) {
+    for (const part of orderedParts) {
+      if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName)) continue
+      const tool = part.tool
       const args = tool.args as Record<string, unknown> | undefined
-      const agentType = (args?.subagent_type as string)
-        ?? (args?.type as string)
-        ?? "task"
-      const description = (args?.description as string)
-        ?? (args?.prompt as string)
-        ?? ""
+      const agentType = (args?.subagent_type as string) ?? (args?.type as string) ?? "task"
+      const description = (args?.description as string) ?? (args?.prompt as string) ?? ""
       const isDone = tool.state === "success"
       const isError = tool.state === "error"
-
-      subagentStreamStore.init(toolId, {
-        agentId: toolId,
+      subagentStreamStore.init(tool.id, {
+        agentId: tool.id,
         agentType,
         description,
         status: isError ? "error" : isDone ? "completed" : "running",
-        ...(isDone || isError ? {
-          summary: (tool.result as Record<string, unknown> | undefined)?.summary as string | undefined,
-        } : {}),
       })
-      subagentStreamStore.setParts(toolId, parts)
+      const resultParts = (tool.result as any)?.parts as any[] | undefined
+      if (resultParts?.length) {
+        subagentStreamStore.setParts(tool.id, resultParts)
+      }
     }
-  }, [subagentPartsMap])
+  }, [orderedParts])
 
-  const groupedParts = useMemo(() => {
-    const filtered = orderedParts.filter((p) => !subagentPartIds.has(p.id))
-    return groupConsecutiveParts(filtered)
-  }, [orderedParts, subagentPartIds])
+  const groupedParts = useMemo(
+    () => groupConsecutiveParts(orderedParts),
+    [orderedParts],
+  )
 
   if (groupedParts.length === 0) {
     return null
@@ -409,6 +365,10 @@ export function AssistantContent({
         }
 
         if (part.type === "tool") {
+          if (TEAM_TOOL_NAMES.has(part.tool.toolName)) {
+            return <TeamCard key={part.id} tool={part.tool} />
+          }
+
           if (TASK_TOOL_NAMES.has(part.tool.toolName)) {
             return <SubagentCard key={part.id} tool={part.tool} />
           }
