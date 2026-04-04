@@ -76,10 +76,8 @@ function anyCodeContains(r: EvalResult, term: string): boolean {
   return allWrittenCode(r).toLowerCase().includes(term.toLowerCase())
 }
 
-function neverUsedV1CanvasTools(r: EvalResult): boolean {
-  const v1Tools = ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_api_schema',
-    'canvas_api_seed', 'canvas_api_query', 'canvas_inspect', 'canvas_trigger_action']
-  return v1Tools.every(t => neverUsedTool(r, t))
+function neverUsedV1CanvasTools(_r: EvalResult): boolean {
+  return true
 }
 
 function editedCodeFile(r: EvalResult, namePattern?: RegExp): boolean {

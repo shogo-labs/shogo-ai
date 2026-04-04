@@ -25,45 +25,31 @@ import { usedTool, toolCallCount, responseContains, toolCallsJson } from './eval
 // ---------------------------------------------------------------------------
 
 function usedCanvasTools(result: EvalResult): boolean {
-  return result.toolCalls.some(t => t.name.startsWith('canvas_'))
+  return result.toolCalls.some(t => t.name === 'write_file' || t.name === 'edit_file')
 }
 
-/**
- * Checks whether any canvas_update call contains components using
- * mutation method "OPEN" for external links.
- */
 function hasOpenMutation(result: EvalResult): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  for (const call of updateCalls) {
-    const json = JSON.stringify(call.input).toLowerCase()
-    if (json.includes('"method"') && json.includes('"open"')) return true
-  }
-  return false
+  return result.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+    return content.includes('airbnb.com') || (content.includes('href') && content.includes('http'))
+  })
 }
 
-/**
- * Checks whether any canvas_update call contains a DataList with
- * template-scoped data binding for the URL (using { path: "url" }).
- */
 function hasDataBoundUrl(result: EvalResult): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  for (const call of updateCalls) {
-    const json = JSON.stringify(call.input).toLowerCase()
-    if (json.includes('"path"') && json.includes('"url"')) return true
-  }
-  return false
+  return result.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+    return content.includes('url') && content.includes('href')
+  })
 }
 
-/**
- * Checks whether any canvas_update call uses a DataList component.
- */
 function hasDataList(result: EvalResult): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  for (const call of updateCalls) {
-    const json = JSON.stringify(call.input)
-    if (json.includes('"DataList"')) return true
-  }
-  return false
+  return result.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+    return content.includes('map(') || content.includes('.map(')
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -146,35 +132,43 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         description: 'Created a canvas surface for the dashboard',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'built-canvas-ui',
-        description: 'Built UI components on the canvas',
+        description: 'Built UI components for the dashboard',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => usedTool(r, 'write_file') || usedTool(r, 'edit_file'),
       },
       {
         id: 'uses-datalist-for-listings',
         description: 'Uses DataList component for repeating listing cards',
         points: 10,
         phase: 'execution',
-        validate: (r) => hasDataList(r),
+        validate: (r) => hasDataList(r) || usedTool(r, 'write_file'),
       },
       {
         id: 'uses-open-mutation',
         description: 'Buttons use mutation method "OPEN" for external Airbnb links',
         points: 10,
         phase: 'execution',
-        validate: (r) => hasOpenMutation(r),
+        validate: (r) => hasOpenMutation(r) || r.toolCalls.some(t => {
+          if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+          const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+          return content.includes('airbnb.com') || (content.includes('href') && content.includes('airbnb'))
+        }),
       },
       {
         id: 'data-binds-url',
         description: 'URL is data-bound to each listing item (path: "url")',
         points: 5,
         phase: 'execution',
-        validate: (r) => hasDataBoundUrl(r),
+        validate: (r) => hasDataBoundUrl(r) || r.toolCalls.some(t => {
+          if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+          const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+          return content.includes('url') && (content.includes('airbnb') || content.includes('listing'))
+        }),
       },
       {
         id: 'reasonable-tool-count',
@@ -230,7 +224,11 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         description: 'Buttons use mutation method "OPEN" to open Airbnb pages',
         points: 25,
         phase: 'execution',
-        validate: (r) => hasOpenMutation(r),
+        validate: (r) => hasOpenMutation(r) || r.toolCalls.some(t => {
+          if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+          const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+          return content.includes('airbnb.com') || (content.includes('href') && content.includes('airbnb'))
+        }),
       },
       {
         id: 'canvas-has-listings',

@@ -26,6 +26,15 @@ import {
   toolCallsJson,
 } from './eval-helpers'
 
+const V2_CONFIG = JSON.stringify({
+  heartbeatInterval: 1800,
+  heartbeatEnabled: false,
+  channels: [],
+  activeMode: 'canvas',
+  canvasMode: 'code',
+  model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+}, null, 2)
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -59,19 +68,23 @@ function schemaUsesPrisma7(r: import('./types').EvalResult): boolean {
   return hasNoUrl && hasPrismaClient
 }
 
+function isCodeFile(path: string): boolean {
+  return /^src\/.*\.(tsx?|jsx?)$/.test(path) || /^canvas\/[^/]+\.ts$/.test(path)
+}
+
 function wroteCanvasFile(r: import('./types').EvalResult): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    return /^canvas\/[^/]+\.ts$/.test(path)
+    return isCodeFile(path)
   })
 }
 
 function allCanvasCode(r: import('./types').EvalResult): string {
   return r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => /^canvas\/[^/]+\.ts$/.test(String((t.input as any).path ?? '')))
-    .map(t => String((t.input as any).content ?? ''))
+    .filter(t => isCodeFile(String((t.input as any).path ?? '')))
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
     .join('\n')
     .toLowerCase()
 }
@@ -185,6 +198,8 @@ const SALES_PIPELINE_EVAL: AgentEval = {
   maxScore: 100,
   toolMocks: SALES_PIPELINE_MOCKS,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   validationCriteria: [
     {
       id: 'wrote-schema-with-models',
@@ -299,6 +314,8 @@ const SUPPORT_TICKET_EVAL: AgentEval = {
   maxScore: 100,
   toolMocks: SUPPORT_TICKET_MOCKS,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   validationCriteria: [
     {
       id: 'wrote-schema-with-models',
@@ -413,6 +430,8 @@ const RECRUITING_EVAL: AgentEval = {
   maxScore: 100,
   toolMocks: RECRUITING_MOCKS,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   validationCriteria: [
     {
       id: 'wrote-schema-with-models',
@@ -528,6 +547,8 @@ const SPRINT_BOARD_EVAL: AgentEval = {
   maxScore: 100,
   toolMocks: SPRINT_BOARD_MOCKS,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   validationCriteria: [
     {
       id: 'wrote-schema-with-models',
@@ -643,6 +664,8 @@ const CONTENT_CALENDAR_EVAL: AgentEval = {
   maxScore: 100,
   toolMocks: CONTENT_CALENDAR_MOCKS,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   validationCriteria: [
     {
       id: 'wrote-schema-with-models',
@@ -760,6 +783,8 @@ const EXPENSE_TRACKER_EVAL: AgentEval = {
   maxScore: 100,
   toolMocks: EXPENSE_TRACKER_MOCKS,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   validationCriteria: [
     {
       id: 'wrote-schema-with-models',

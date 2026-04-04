@@ -10,102 +10,7 @@
  * Source: 14 optimized programs from DSPy bootstrap optimization
  */
 
-export const OPTIMIZED_CANVAS_EXAMPLES = `### Optimized Planning Examples
-
-These examples show the optimal tool sequence for common canvas requests. Canvas is view-only (no interactive components) but supports live data binding from integrations via canvas_api_bind.
-
-**Example 1:** "Show me the current weather forecast"
-- Surface: \`weather-forecast\`
-- Needs API: No (display only)
-- Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Grid, Card, Metric, Text, Icon, Badge, Alert
-
-**Example 2:** "Build an email dashboard with metrics, tabs, and email tables"
-- Surface: \`email-dashboard\`
-- Needs API: No (display only)
-- Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Row, Grid, Card, Metric, Tabs, TabPanel, Table, Text, Badge
-- Tabs pattern: Use TabPanel children with title prop (e.g. { component: "TabPanel", title: "Important", children: [...] })
-
-**Example 3:** "Create a sales analytics dashboard with revenue chart and top products"
-- Surface: \`sales-analytics\`
-- Needs API: No (display only)
-- Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
-
-**Example 4:** "Show me an expense dashboard with total spent, budget remaining, and a breakdown of expenses"
-- Surface: \`expense-dashboard\`
-- Needs API: Yes (structured data with multiple records)
-- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_update, canvas_inspect
-- Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses change.
-- Components: Column, Row, Grid, Card, Metric, DataList, Text, Badge
-
-**Example 5:** "Connect my Gmail and show my latest emails"
-- Surface: \`email-dashboard\`
-- Needs API: Yes (live integration data via canvas_api_bind)
-- Tools: tool_install, canvas_create, canvas_api_bind, canvas_update
-- Pattern: tool_install({ name: "gmail" }) → canvas_api_bind({ model: "Email", ..., dataPath: "/emails" }) → canvas_update with DataList bound to /emails
-- Components: Column, Row, Grid, Metric, Card, DataList, Text, Badge
-
-### Reference Component Tree — Integration Data Dashboard
-
-This shows a FULL component tree for a dashboard displaying live integration data via canvas_api_bind. The DataList binds to data loaded by canvas_api_bind's dataPath, and per-item bindings (NO leading /) read fields from each item.
-
-\`\`\`json
-canvas_update({ surfaceId: "expense-dashboard", components: [
-  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "expenses_card"] },
-  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
-  { "id": "title", "component": "Text", "text": "Expense Dashboard", "variant": "h2" },
-  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
-  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_budget", "m_remaining"] },
-  { "id": "m_total", "component": "Metric", "label": "Total Spent", "value": { "path": "/summary/totalSpent" }, "unit": "$", "trendValue": "+$48 this week" },
-  { "id": "m_budget", "component": "Metric", "label": "Budget", "value": 1000, "unit": "$", "description": "Monthly limit" },
-  { "id": "m_remaining", "component": "Metric", "label": "Remaining", "value": { "path": "/summary/remaining" }, "unit": "$", "trendValue": "-4.8%" },
-  { "id": "expenses_card", "component": "Card", "title": "Recent Expenses", "description": "Your spending history", "child": "expense_list" },
-  { "id": "expense_list", "component": "DataList", "children": { "path": "/expenses", "templateId": "expense_item" }, "emptyText": "No expenses yet" },
-  { "id": "expense_item", "component": "Card", "child": "expense_row" },
-  { "id": "expense_row", "component": "Row", "children": ["expense_info", "expense_amount"], "align": "center", "justify": "between" },
-  { "id": "expense_info", "component": "Column", "children": ["expense_desc", "expense_meta"], "gap": "xs" },
-  { "id": "expense_desc", "component": "Text", "text": { "path": "description" }, "weight": "medium" },
-  { "id": "expense_meta", "component": "Row", "children": ["expense_cat", "expense_date"], "gap": "sm" },
-  { "id": "expense_cat", "component": "Badge", "text": { "path": "category" }, "variant": "secondary" },
-  { "id": "expense_date", "component": "Text", "text": { "path": "date" }, "variant": "caption" },
-  { "id": "expense_amount", "component": "Text", "text": { "path": "amount" }, "variant": "large" }
-]})
-\`\`\`
-
-Key data binding patterns: (1) root-level \`{ "path": "/summary/totalSpent" }\` for Metrics, (2) DataList \`{ "path": "/expenses", "templateId": "expense_item" }\` iterates the array, (3) per-item \`{ "path": "description" }\` (NO leading /) reads from the current item. This same pattern works for canvas_api_bind (live data) and canvas_api_query (local data).
-
-### Work Output Examples (Agent Does The Work, Canvas Shows Results)
-
-These examples show the correct pattern when a user asks you to CREATE something. You do the work first, then use canvas as a read-only display of what you produced. Do NOT build interactive builder UIs.
-
-**Example 6:** "Create a Google Ads campaign for $20/day targeting sign-ups for shogo.ai"
-- Agent DOES: Research best practices with \`web\`, draft campaign structure, write campaign plan to \`write_file\`
-- Canvas shows: READ-ONLY summary — campaign name, ad groups, keywords, bid strategy, budget, ad copy
-- Surface: \`campaign-summary\`
-- Needs API: No (display only — the agent already did the work)
-- Tools: web, write_file, canvas_create, canvas_data, canvas_update
-- Components: Column, Row, Text, Badge, Grid, Metric, Card, Table
-- WRONG approach: Building a "Campaign Builder" form with text fields and dropdowns for the user to fill in
-
-**Example 7:** "Draft 3 email templates for user onboarding"
-- Agent DOES: Write the actual email templates (subject, body, CTA), save to files or memory
-- Canvas shows: READ-ONLY display of all 3 templates side by side for review
-- Surface: \`onboarding-emails\`
-- Needs API: No (display only)
-- Tools: write_file, canvas_create, canvas_data, canvas_update
-- Components: Column, Row, Text, Badge, Card, Tabs, TabPanel
-- WRONG approach: Building an "Email Template Editor" with editable text fields
-
-**Example 8:** "Create templates to build marketing campaigns"
-- Agent DOES: Create actual template documents/files with campaign structures, checklists, copy frameworks
-- Canvas shows: READ-ONLY overview of templates created, with content preview
-- Surface: \`campaign-templates\`
-- Needs API: No (display only)
-- Tools: write_file, canvas_create, canvas_data, canvas_update
-- Components: Column, Text, Card, Tabs, TabPanel, Table, Badge
-- WRONG approach: Building a "Template Manager" or "Campaign Launcher" dashboard with interactive forms`
+export const OPTIMIZED_CANVAS_EXAMPLES = ``
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 
@@ -189,9 +94,7 @@ Always check \`list_files\` first when users mention uploaded files, then use \`
 - "What's in the file I uploaded?" → \`list_files, read_file\` (~1 iteration)
 - "Find revenue numbers in my data" → \`search_files\` (~1 iteration)
 - "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
-- "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
-- "Show me a dashboard of my project tasks with status and priority" → \`canvas_create, canvas_data, canvas_update, canvas_inspect\` (~1 iteration)
-- "Connect my Gmail and show recent emails" → \`tool_install, canvas_create, canvas_api_bind, canvas_update\` (~1 iteration)`
+- "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
 
@@ -367,10 +270,6 @@ credentials or API keys — authentication is handled automatically.
 - Call \`tool_install({ name: "<integration-slug>" })\` — no credentials or args needed
 - Tools become available immediately with auto-auth
 
-Managed integrations auto-bind by default: the toolkit's read operations are
-automatically discovered and bound to the canvas for live data display.
-Just call \`tool_install({ name: "googlecalendar" })\` then use \`canvas_api_bind\` to wire the data to your surface.
-
 ### MCP Servers (mcp_search / mcp_install)
 
 MCP (Model Context Protocol) servers are standalone tool servers for databases,
@@ -381,9 +280,6 @@ MCP servers may require configuration (environment variables, API keys).
 - Call \`mcp_install({ name: "<server-id>" })\` for catalog servers
 - Call \`mcp_install({ name: "<name>", url: "<url>" })\` for remote servers
 - Pass \`env\` for API keys or connection strings when needed
-
-For MCP servers, use \`canvas_api_bind\` to manually wire tool CRUD operations
-to the canvas after install, or use the tools to fetch data and push via \`canvas_data\`.
 
 ### Skills
 
@@ -417,12 +313,8 @@ Search for tools when any of these situations apply:
    rather than placeholder/sample content.
 4. **Missing capability**: The task requires tools you don't currently have
    (e.g. database queries, browser automation, file access).
-5. **Data population**: Before seeding any canvas with fabricated data, consider
-   whether a real data source could provide the information.
-
 **DEFAULT BEHAVIOR**: Always prefer real data. Only use fabricated/sample data
-when the user explicitly requests demo data or the request is for a generic dashboard
-with no natural real data source. When in doubt, ask the user.
+when the user explicitly requests demo data. When in doubt, ask the user.
 
 Do NOT substitute with placeholder/seeded data when a real integration exists.
 

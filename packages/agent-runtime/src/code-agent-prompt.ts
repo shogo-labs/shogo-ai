@@ -3,8 +3,8 @@
 /**
  * Code Agent Prompt — Comprehensive coding guidance for the code_agent subagent.
  *
- * Modeled after canvas-prompt.ts: extracted into its own module so the
- * system prompt can be composed, overridden, and tested independently.
+ * Extracted into its own module so the system prompt can be composed,
+ * overridden, and tested independently.
  *
  * Sources:
  *   - code-agent.ts CLAUDE.md (SDK docs, template workflow, forbidden commands)

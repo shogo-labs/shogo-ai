@@ -45,8 +45,6 @@ const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'work
 
 const FILE_MODIFYING_TOOLS = new Set([
   'write_file', 'exec',
-  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_hooks', 'canvas_api_bind',
   'tool_install', 'mcp_install',
 ])
 

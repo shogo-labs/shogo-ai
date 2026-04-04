@@ -33,6 +33,19 @@ import {
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
+// Shared V2 config
+// ---------------------------------------------------------------------------
+
+const V2_CONFIG = JSON.stringify({
+  heartbeatInterval: 1800,
+  heartbeatEnabled: false,
+  channels: [],
+  activeMode: 'canvas',
+  canvasMode: 'code',
+  model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+}, null, 2)
+
+// ---------------------------------------------------------------------------
 // Shared validation helpers
 // ---------------------------------------------------------------------------
 
@@ -68,15 +81,18 @@ function wroteCanvasFile(r: EvalResult): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    return /^canvas\/[^/]+\.ts$/.test(path)
+    return /^src\/.*\.(tsx?|jsx?)$/.test(path) || /^canvas\/[^/]+\.ts$/.test(path)
   })
 }
 
 function allCanvasCode(r: EvalResult): string {
   return r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => /^canvas\/[^/]+\.ts$/.test(String((t.input as any).path ?? '')))
-    .map(t => String((t.input as any).content ?? ''))
+    .filter(t => {
+      const path = String((t.input as any).path ?? '')
+      return /^src\/.*\.(tsx?|jsx?)$/.test(path) || /^canvas\/[^/]+\.ts$/.test(path)
+    })
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
     .join('\n')
     .toLowerCase()
 }
@@ -113,10 +129,11 @@ function postedToSkillServer(r: EvalResult, pathFragment?: string): boolean {
   })
 }
 
-/** True if canvas code uses fetch() to call the skill server API. */
+/** True if component code uses fetch() or references the skill server API. */
 function canvasFetchesFromApi(r: EvalResult): boolean {
   const code = allCanvasCode(r)
-  return code.includes('fetch(') && (code.includes('localhost:') || code.includes('/api/'))
+  return (code.includes('fetch(') || code.includes('useeffect') || code.includes('axios') || code.includes('/api/')) &&
+    (code.includes('localhost:') || code.includes('/api/') || code.includes('3001'))
 }
 
 function wroteSkillFile(r: EvalResult, ...keywords: string[]): boolean {
@@ -221,8 +238,10 @@ const CI_ANALYZER_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
-  input: "Our CI pipeline on GitHub has been really flaky this week. I exported the recent workflow runs to github_workflow_runs.json in the workspace. Can you analyze the data, figure out what's going wrong (are they test failures? build errors? timeouts?), and give me a breakdown so I can see which tests are the flakiest and what the overall failure trend looks like? Store the analysis in a skill server and build me a canvas dashboard. I want to be able to re-run this analysis whenever things get bad again.",
+  useRuntimeTemplate: true,
+  input: "Our CI pipeline on GitHub has been really flaky this week. I exported the recent workflow runs to github_workflow_runs.json in the workspace. Can you analyze the data, figure out what's going wrong (are they test failures? build errors? timeouts?), and give me a breakdown so I can see which tests are the flakiest and what the overall failure trend looks like? Store the analysis in a skill server and build me a React dashboard. I want to be able to re-run this analysis whenever things get bad again.",
   workspaceFiles: {
+    'config.json': V2_CONFIG,
     'github_workflow_runs.json': JSON.stringify({ total_count: CI_GITHUB_WORKFLOW_RUNS.length, workflow_runs: CI_GITHUB_WORKFLOW_RUNS }, null, 2),
   },
   maxScore: 30,
@@ -256,6 +275,8 @@ const COMPETITIVE_INTEL_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   input: [
     "I need to keep track of our competitors and understand who's the biggest threat. Here's what I know:",
     '',
@@ -299,6 +320,8 @@ const INCIDENT_TRIAGE_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   input: [
     "We just had a bunch of alerts fire in the last hour and I need help making sense of them:",
     '',
@@ -436,6 +459,8 @@ const EMAIL_SLACK_RECON_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
   input: "I've been losing track of things that need my attention across email and Slack. Can you pull my recent emails and Slack messages and figure out which things are actually urgent or waiting on me? There's a lot of noise — I want to see just the actionable items, who's waiting, and how long they've been waiting. Set it up so I can check this regularly.",
   maxScore: 30,
   toolMocks: EMAIL_SLACK_RECON_MOCKS,
@@ -562,8 +587,10 @@ const DATA_PIPELINE_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
+  useRuntimeTemplate: true,
   input: "I have a script that processes our weekly sales data but it broke. Here's the script and the latest data file. It was working fine last month but now it crashes. I still need this week's numbers — can you figure out what went wrong, fix it, get me the results, and make sure it won't break like this again?",
   workspaceFiles: {
+    'config.json': V2_CONFIG,
     'process_sales.py': BROKEN_SCRIPT,
     'sales_data.csv': [NOISY_CSV_HEADER, ...NOISY_CSV_ROWS].join('\n'),
   },
@@ -713,8 +740,10 @@ const BRIEFING_EVAL: AgentEval = {
   category: 'skill',
   level: 5,
   initialMode: 'canvas',
-  input: "I have a board meeting tomorrow morning and I need to get up to speed fast. Can you pull together what's been happening this past week? I exported our recent GitHub activity to github_activity.json in the workspace. Use Gmail for investor/partner communications and Slack for customer and team chatter. I need to know what our dev team shipped, any important investor or partner communications, and what customers have been saying. Store everything in a skill server so I can regenerate this before the next board meeting, and build me a canvas briefing I can quickly review tonight.",
+  useRuntimeTemplate: true,
+  input: "I have a board meeting tomorrow morning and I need to get up to speed fast. Can you pull together what's been happening this past week? I exported our recent GitHub activity to github_activity.json in the workspace. Use Gmail for investor/partner communications and Slack for customer and team chatter. I need to know what our dev team shipped, any important investor or partner communications, and what customers have been saying. Store everything in a skill server so I can regenerate this before the next board meeting, and build me a React briefing dashboard I can quickly review tonight.",
   workspaceFiles: {
+    'config.json': V2_CONFIG,
     'github_activity.json': JSON.stringify(NOISY_GITHUB_ACTIVITY, null, 2),
   },
   maxScore: 30,

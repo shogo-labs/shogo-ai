@@ -73,23 +73,7 @@ def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
     instead of structural or harness-based metrics.
     """
 
-    if track_name == "canvas":
-        from canvas_dataset import get_canvas_dataset
-        from canvas_metrics import canvas_quality
-        from canvas_signatures import CanvasPlanning, CanvasE2E
-        from e2e_metrics import canvas_e2e_quality
-
-        data = get_canvas_dataset()
-        subtracks = []
-        if "planning" in data:
-            train, test = data["planning"]
-            subtracks.append(SubTrack("planning", CanvasPlanning, canvas_quality, train, test))
-        if "e2e" in data:
-            train, test = data["e2e"]
-            subtracks.append(SubTrack("e2e", CanvasE2E, canvas_e2e_quality, train, test))
-        return subtracks
-
-    elif track_name == "memory":
+    if track_name == "memory":
         from memory_dataset import get_memory_dataset
         from memory_metrics import memory_write_quality, memory_retrieval_quality
         from memory_signatures import MemoryWriteDecision, MemoryRetrieval

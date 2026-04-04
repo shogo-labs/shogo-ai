@@ -755,27 +755,18 @@ Old instructions.
   // -----------------------------------------------------------------------
 
   describe('subagent configs', () => {
-    test('code_agent is scoped to project/ directory', () => {
+    test('code_agent is no longer a builtin subagent', () => {
       const ctx = createCtx()
       const tools = createTools(ctx)
       const config = getBuiltinSubagentConfig('code_agent', ctx, tools)
-      expect(config).not.toBeNull()
-      expect(config!.name).toBe('code_agent')
-      expect(config!.workingDir).toBe(join(TEST_DIR, 'project'))
-      expect(config!.toolNames).toContain('edit_file')
-      expect(config!.toolNames).toContain('exec')
-      expect(config!.toolNames).not.toContain('canvas_create')
+      expect(config).toBeNull()
     })
 
-    test('canvas_agent has canvas tools', () => {
+    test('canvas_agent is no longer a builtin subagent', () => {
       const ctx = createCtx()
       const tools = createTools(ctx)
       const config = getBuiltinSubagentConfig('canvas_agent', ctx, tools)
-      expect(config).not.toBeNull()
-      expect(config!.toolNames).toContain('canvas_create')
-      expect(config!.toolNames).toContain('canvas_update')
-      expect(config!.toolNames).toContain('read_file')
-      expect(config!.toolNames).not.toContain('exec')
+      expect(config).toBeNull()
     })
 
     test('explore agent is read-only with haiku model', () => {

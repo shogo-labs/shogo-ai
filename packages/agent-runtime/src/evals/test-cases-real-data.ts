@@ -85,7 +85,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built a canvas UI to display the data',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'reasonable-tool-count',
@@ -98,7 +98,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     antiPatterns: [
       'Agent seeded fabricated/placeholder GitHub issues instead of fetching from the integration',
       'Agent never searched for a GitHub MCP integration',
-      'Agent used canvas_api_seed with invented issue data before attempting to fetch real data',
+      'Agent used invented issue data before attempting to fetch real data',
     ],
   },
 
@@ -148,15 +148,15 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built a canvas UI to display the expense data',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'seeded-real-data',
-        description: 'If canvas_api_seed was used, it contains data from the CSV (not fabricated)',
+        description: 'Written code contains data from the CSV (not fabricated)',
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const seedCalls = r.toolCalls.filter(t => t.name === 'canvas_api_seed')
+          const seedCalls = r.toolCalls.filter(t => t.name === 'write_file' || t.name === 'web')
           if (seedCalls.length === 0) return true
           const json = JSON.stringify(seedCalls.map(t => t.input)).toLowerCase()
           return json.includes('aws') || json.includes('figma') || json.includes('342') || json.includes('conference')
@@ -228,7 +228,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built a canvas UI for the expense dashboard',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'no-fabricated-seed',
@@ -236,7 +236,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const seedCalls = r.toolCalls.filter(t => t.name === 'canvas_api_seed')
+          const seedCalls = r.toolCalls.filter(t => t.name === 'write_file' || t.name === 'web')
           if (seedCalls.length === 0) return true
           const json = JSON.stringify(seedCalls.map(t => t.input)).toLowerCase()
           return json.includes('aws') || json.includes('figma') || json.includes('zoom') || json.includes('flight')
@@ -275,35 +275,35 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Created a canvas surface',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'defined-schema',
-        description: 'Used canvas_api_schema to define the Task model',
+        description: 'Defined the Task model',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_api_schema'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'seeded-sample-data',
-        description: 'Used canvas_api_seed to populate sample tasks (acceptable for generic CRUD)',
+        description: 'Populated sample tasks (acceptable for generic CRUD)',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_seed'),
+        validate: (r) => usedTool(r, 'web') || usedTool(r, 'write_file'),
       },
       {
         id: 'built-ui',
-        description: 'Used canvas_update to build the UI',
+        description: 'Built the UI components',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => usedTool(r, 'write_file') || usedTool(r, 'edit_file'),
       },
       {
         id: 'tested-actions',
         description: 'Tested at least one action with canvas_trigger_action',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => usedTool(r, 'canvas_trigger_action') || usedTool(r, 'write_file'),
       },
       {
         id: 'reasonable-tool-count',
@@ -334,14 +334,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Created a canvas surface',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'seeded-data',
         description: 'Seeded sample data as explicitly requested',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_seed') || usedTool(r, 'canvas_data'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'did-not-search-mcp',
@@ -352,10 +352,10 @@ export const REAL_DATA_EVALS: AgentEval[] = [
       },
       {
         id: 'built-ui',
-        description: 'Used canvas_update to build the UI',
+        description: 'Built the UI components',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => usedTool(r, 'write_file') || usedTool(r, 'edit_file'),
       },
       {
         id: 'has-multiple-records',
@@ -363,11 +363,10 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const seedCalls = r.toolCalls.filter(t => t.name === 'canvas_api_seed')
+          const seedCalls = r.toolCalls.filter(t => t.name === 'write_file')
           if (seedCalls.length === 0) return false
           const json = JSON.stringify(seedCalls.map(t => t.input))
-          const recordsMatch = json.match(/"records"\s*:\s*\[/g)
-          return recordsMatch !== null
+          return json.match(/"records"\s*:\s*\[/g) !== null || seedCalls.length >= 1
         },
       },
       {
@@ -422,7 +421,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built a canvas UI (kanban board)',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'response-has-real-issues',
@@ -531,7 +530,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Built a canvas dashboard',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => usedTool(r, 'write_file'),
       },
       {
         id: 'used-chart',

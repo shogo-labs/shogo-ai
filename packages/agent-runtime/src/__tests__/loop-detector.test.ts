@@ -69,9 +69,9 @@ describe('LoopDetector', () => {
   test('different inputs with same outputs do NOT trigger identical_outputs', () => {
     const detector = new LoopDetector({ maxIdenticalOutputs: 3 })
 
-    detector.recordAndCheck('canvas_api_seed', { model: 'Restaurant', records: [{ name: 'A' }] }, { ok: true, inserted: 5 })
-    detector.recordAndCheck('canvas_api_seed', { model: 'Hotel', records: [{ name: 'B' }] }, { ok: true, inserted: 5 })
-    const r3 = detector.recordAndCheck('canvas_api_seed', { model: 'Activity', records: [{ name: 'C' }] }, { ok: true, inserted: 5 })
+    detector.recordAndCheck('write_file', { path: 'restaurant.ts', content: 'A' }, { ok: true, inserted: 5 })
+    detector.recordAndCheck('write_file', { path: 'hotel.ts', content: 'B' }, { ok: true, inserted: 5 })
+    const r3 = detector.recordAndCheck('write_file', { path: 'activity.ts', content: 'C' }, { ok: true, inserted: 5 })
 
     expect(r3.loopDetected).toBe(false)
   })
