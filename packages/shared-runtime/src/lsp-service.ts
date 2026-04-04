@@ -9,7 +9,7 @@
  */
 
 import { spawn, type Subprocess } from 'bun'
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -85,6 +85,8 @@ export interface TSLanguageServerOptions {
   defaultLanguageId?: string
   /** Label for log messages (default: 'LSP') */
   label?: string
+  /** Extra fields merged into LSP initializationOptions */
+  initializationOptions?: Record<string, unknown>
 }
 
 export class TSLanguageServer {
@@ -107,6 +109,7 @@ export class TSLanguageServer {
   private initPromise: Promise<void> | null = null
   private openDocVersions = new Map<string, number>()
   private diagnosticsByUri = new Map<string, LSPDiagnostic[]>()
+  private extraInitOptions: Record<string, unknown>
 
   constructor(projectDir: string, opts?: TSLanguageServerOptions) {
     this.projectDir = projectDir
@@ -115,6 +118,7 @@ export class TSLanguageServer {
     this.fallbackBinNames = opts?.fallbackBinNames ?? ['typescript-language-server']
     this.defaultLanguageId = opts?.defaultLanguageId ?? 'typescript'
     this.label = opts?.label ?? 'LSP'
+    this.extraInitOptions = opts?.initializationOptions ?? {}
   }
 
   async start(): Promise<void> {
@@ -344,7 +348,7 @@ export class TSLanguageServer {
             configuration: true,
           },
         },
-        initializationOptions: {},
+        initializationOptions: { ...this.extraInitOptions },
       })
 
       this.send({ jsonrpc: '2.0', method: 'initialized', params: {} })
@@ -629,15 +633,45 @@ export class WorkspaceLSPManager {
   }
 
   private async startTS(): Promise<void> {
+    this.ensureTsconfigWatchExclusions()
     this.tsServer = new TSLanguageServer(this.projectDir, {
       serverBin: this.tsServerBin,
       fallbackBinNames: ['typescript-language-server'],
       serverArgs: ['--log-level', '1'],
       defaultLanguageId: 'typescript',
       label: 'LSP-TS',
+      initializationOptions: {
+        maxTsServerMemory: 512,
+        disableAutomaticTypingAcquisition: true,
+        tsserver: {
+          useSyntaxServer: 'never',
+        },
+      },
     })
     await this.tsServer.start()
     await this.tsServer.initialize()
+  }
+
+  /**
+   * Ensure the workspace tsconfig.json has watchOptions.excludeDirectories
+   * so tsserver doesn't watch node_modules (tens of thousands of files).
+   */
+  private ensureTsconfigWatchExclusions(): void {
+    const tsconfigPath = join(this.projectDir, 'tsconfig.json')
+    try {
+      if (!existsSync(tsconfigPath)) return
+      const raw = readFileSync(tsconfigPath, 'utf-8')
+      const config = JSON.parse(raw)
+      if (config.watchOptions?.excludeDirectories?.length) return
+      config.watchOptions = {
+        ...config.watchOptions,
+        excludeDirectories: ['**/node_modules'],
+      }
+      writeFileSync(tsconfigPath, JSON.stringify(config, null, 2) + '\n', 'utf-8')
+      console.log('[LSP-TS] Added watchOptions.excludeDirectories to tsconfig.json')
+    } catch {
+      // Non-fatal — tsconfig may have comments or be malformed
+    }
   }
 
   private async detectPyright(): Promise<void> {
