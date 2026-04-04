@@ -813,8 +813,8 @@ Old instructions.
   // -----------------------------------------------------------------------
 
   describe('custom agents', () => {
-    test('loads .claude/agents/<name>.md files', () => {
-      const agentsDir = join(TEST_DIR, '.claude', 'agents')
+    test('loads .shogo/agents/<name>.md files', () => {
+      const agentsDir = join(TEST_DIR, '.shogo', 'agents')
       mkdirSync(agentsDir, { recursive: true })
       writeFileSync(join(agentsDir, 'reviewer.md'), `---
 name: reviewer
@@ -840,13 +840,13 @@ Focus on:
       expect(agents[0].systemPrompt).toContain('code reviewer')
     })
 
-    test('returns empty when .claude/agents/ does not exist', () => {
+    test('returns empty when .shogo/agents/ does not exist', () => {
       const agents = loadCustomAgents(TEST_DIR)
       expect(agents).toHaveLength(0)
     })
 
     test('skips agents without name or description', () => {
-      const agentsDir = join(TEST_DIR, '.claude', 'agents')
+      const agentsDir = join(TEST_DIR, '.shogo', 'agents')
       mkdirSync(agentsDir, { recursive: true })
       writeFileSync(join(agentsDir, 'incomplete.md'), `---
 name: incomplete

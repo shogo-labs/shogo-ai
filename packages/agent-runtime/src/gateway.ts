@@ -29,7 +29,7 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createTools, createHeartbeatTools, createDynamicModeTools, textResult } from './gateway-tools'
+import { createTools, createHeartbeatTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -69,7 +69,7 @@ import {
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
 import { createCodeAgentTool, type CodeAgentConfig } from './code-agent'
-import { STATIC_SUBAGENT_GUIDE, DYNAMIC_SUBAGENT_GUIDE } from './subagent-prompts'
+import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
 
 function isComposioTool(name: string): boolean {
@@ -183,8 +183,6 @@ export interface GatewayConfig {
   canvasMode?: 'json' | 'code'
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
-  /** Sub-agent mode: 'static' = predefined types (Cursor/Claude Code style), 'dynamic' = agent creates its own specialists at runtime */
-  subagentMode?: 'static' | 'dynamic'
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
@@ -455,7 +453,6 @@ export class AgentGateway {
       canvasMode: 'code',
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
-      subagentMode: 'dynamic',
     }
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
@@ -1283,6 +1280,7 @@ export class AgentGateway {
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
       skillServerManager: this.skillServerManager,
+      sessionPersistence: this.sessionPersistence ?? undefined,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1303,9 +1301,7 @@ export class AgentGateway {
 
     const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
-      : this.config.subagentMode === 'dynamic'
-        ? createDynamicModeTools(toolContext)
-        : createTools(toolContext)
+      : createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
@@ -1483,6 +1479,10 @@ export class AgentGateway {
         history = snipConsumedResults(history)
       }
     }
+
+    // Populate fork-mode context so subagent tools can access the parent's state
+    toolContext.renderedSystemPrompt = systemPrompt
+    toolContext.sessionMessages = history
 
     // Typing indicator: send once before the turn and periodically
     let typingInterval: ReturnType<typeof setInterval> | undefined
@@ -1846,7 +1846,7 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
-    parts.push(this.config.subagentMode === 'dynamic' ? DYNAMIC_SUBAGENT_GUIDE : STATIC_SUBAGENT_GUIDE)
+    parts.push(SUBAGENT_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }
@@ -1885,7 +1885,7 @@ export class AgentGateway {
       }
     }
 
-    parts.push(this.config.subagentMode === 'dynamic' ? DYNAMIC_SUBAGENT_GUIDE : STATIC_SUBAGENT_GUIDE)
+    parts.push(SUBAGENT_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }
@@ -2009,8 +2009,8 @@ When integrations are connected, use \`tool_search\` to discover available actio
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
 
-    // 5b. Sub-agent orchestration guide (stable per config — changes only on mode switch)
-    stableParts.push(this.config.subagentMode === 'dynamic' ? DYNAMIC_SUBAGENT_GUIDE : STATIC_SUBAGENT_GUIDE)
+    // 5b. Sub-agent orchestration guide
+    stableParts.push(SUBAGENT_GUIDE)
 
     // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
 

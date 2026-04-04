@@ -95,7 +95,6 @@ export interface WorkerSetupOptions {
   model?: string
   mode?: string
   promptProfile?: string
-  subagentMode?: 'static' | 'dynamic'
   evalLabel?: string
   mocks?: Record<string, unknown>
   verbose?: boolean
@@ -471,19 +470,6 @@ export async function configureWorkerForTask(
       })
     } catch (e: any) {
       console.warn(`      [setup] Prompt profile set failed: ${e.message}`)
-    }
-  }
-
-  if (opts.subagentMode) {
-    if (opts.verbose) console.log(`      [setup] Setting subagentMode to ${opts.subagentMode}...`)
-    try {
-      await fetch(`${base}/agent/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subagentMode: opts.subagentMode }),
-      })
-    } catch (e: any) {
-      console.warn(`      [setup] subagentMode set failed: ${e.message}`)
     }
   }
 

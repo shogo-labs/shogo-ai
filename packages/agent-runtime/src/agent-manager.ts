@@ -5,10 +5,7 @@
  *
  * Provides runtime registration of custom agent types, instance lifecycle
  * management (spawn, cancel, status), and per-type performance metrics.
- * Used by the "dynamic" subagentMode to let the main agent create and
- * manage its own specialist sub-agents.
- *
- * Also used by "static" mode for background task tracking.
+ * Lets the main agent create and manage specialist sub-agents at runtime.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
@@ -315,7 +312,7 @@ export class AgentManager {
   // -------------------------------------------------------------------------
 
   persistToWorkspace(workspaceDir: string): void {
-    const agentsDir = join(workspaceDir, '.claude', 'agents')
+    const agentsDir = join(workspaceDir, '.shogo', 'agents')
     for (const [, reg] of this.registry) {
       if (!reg.persisted) continue
       if (!existsSync(agentsDir)) mkdirSync(agentsDir, { recursive: true })

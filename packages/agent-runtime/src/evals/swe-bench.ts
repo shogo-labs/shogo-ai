@@ -69,7 +69,6 @@ const buildFlag = args.includes('--build')
 const gradeFlag = args.includes('--grade')
 const gradeOnlyFlag = args.includes('--grade-only')
 const noSweImagesFlag = args.includes('--no-swe-images')
-const subagentModeArg = getArg(args, 'subagent-mode') as 'static' | 'dynamic' | undefined
 const predictionsArg = getArg(args, 'predictions')
 
 const BASE_PORT = 7200
@@ -290,7 +289,6 @@ async function runInstance(
     model: modelArg,
     mode: 'none',
     promptProfile: 'swe',
-    subagentMode: subagentModeArg,
     evalLabel: undefined,
     verbose: verboseFlag,
   })

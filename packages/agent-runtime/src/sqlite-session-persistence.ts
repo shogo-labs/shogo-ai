@@ -17,11 +17,24 @@
 import { Database } from 'bun:sqlite'
 import { join } from 'path'
 import type { SessionPersistence, SerializedSession } from './session-manager'
+import type { Message } from '@mariozechner/pi-ai'
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     data TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  )
+`
+
+const SUBAGENT_TRANSCRIPTS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS subagent_transcripts (
+    agent_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent_type TEXT NOT NULL,
+    description TEXT,
+    messages TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
   )
 `
@@ -43,6 +56,7 @@ export class SqliteSessionPersistence implements SessionPersistence {
         this.db.exec('PRAGMA busy_timeout = 5000')
         this.db.exec('PRAGMA synchronous = NORMAL')
         this.db.exec(SCHEMA)
+        this.db.exec(SUBAGENT_TRANSCRIPTS_SCHEMA)
         lastError = null
         break
       } catch (err: any) {
@@ -96,6 +110,57 @@ export class SqliteSessionPersistence implements SessionPersistence {
       }
     }
     return sessions
+  }
+
+  // ---------------------------------------------------------------------------
+  // Subagent Transcript Persistence
+  // ---------------------------------------------------------------------------
+
+  async saveSubagentTranscript(
+    agentId: string,
+    sessionId: string,
+    agentType: string,
+    description: string,
+    messages: Message[],
+  ): Promise<void> {
+    const now = Math.floor(Date.now() / 1000)
+    this.db.prepare(
+      `INSERT OR REPLACE INTO subagent_transcripts
+       (agent_id, session_id, agent_type, description, messages, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(agentId, sessionId, agentType, description, JSON.stringify(messages), now, now)
+  }
+
+  async loadSubagentTranscript(
+    agentId: string,
+  ): Promise<{ agentType: string; description: string; messages: Message[] } | null> {
+    const row = this.db.prepare(
+      'SELECT agent_type, description, messages FROM subagent_transcripts WHERE agent_id = ?',
+    ).get(agentId) as { agent_type: string; description: string; messages: string } | null
+    if (!row) return null
+    try {
+      return {
+        agentType: row.agent_type,
+        description: row.description,
+        messages: JSON.parse(row.messages),
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async listSubagentTranscripts(
+    sessionId: string,
+  ): Promise<Array<{ agentId: string; agentType: string; description: string; createdAt: number }>> {
+    const rows = this.db.prepare(
+      'SELECT agent_id, agent_type, description, created_at FROM subagent_transcripts WHERE session_id = ? ORDER BY created_at DESC',
+    ).all(sessionId) as Array<{ agent_id: string; agent_type: string; description: string; created_at: number }>
+    return rows.map(r => ({
+      agentId: r.agent_id,
+      agentType: r.agent_type,
+      description: r.description,
+      createdAt: r.created_at,
+    }))
   }
 
   /** Close the database connection (call on shutdown) */

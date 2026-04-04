@@ -8,7 +8,7 @@
  * Subagents cannot spawn further subagents (no infinite nesting).
  *
  * Built-in types: code_agent, canvas_agent, explore, general-purpose.
- * Custom types loaded from .claude/agents/<name>.md at startup.
+ * Custom types loaded from .shogo/agents/<name>.md at startup.
  */
 
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
@@ -77,6 +77,8 @@ export interface SubagentResult {
   cacheWriteTokens: number
   /** Conversation messages produced during this run (for resume support). */
   newMessages?: Message[]
+  /** Unique agent ID for transcript persistence and resume. */
+  agentId?: string
 }
 
 export interface SubagentStreamCallbacks {
@@ -258,7 +260,7 @@ export function getBuiltinSubagentConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Custom Subagent Loader (.claude/agents/<name>.md)
+// Custom Subagent Loader (.shogo/agents/<name>.md)
 // ---------------------------------------------------------------------------
 
 export interface CustomAgentDef {
@@ -272,7 +274,7 @@ export interface CustomAgentDef {
 }
 
 export function loadCustomAgents(workspaceDir: string): CustomAgentDef[] {
-  const agentsDir = join(workspaceDir, '.claude', 'agents')
+  const agentsDir = join(workspaceDir, '.shogo', 'agents')
   if (!existsSync(agentsDir)) return []
 
   const agents: CustomAgentDef[] = []
@@ -361,9 +363,49 @@ const READONLY_TOOLS = new Set([
 // Subagent Execution
 // ---------------------------------------------------------------------------
 
+import type { ThinkingLevel } from './agent-loop'
+
+export interface ForkContext {
+  /** Parent's fully rendered system prompt (byte-exact for prompt cache reuse). */
+  systemPrompt: string
+  /** Parent's current conversation history. */
+  parentMessages: Message[]
+  /** Parent's exact tool array (used directly, no filtering). */
+  parentTools: AgentTool[]
+  /** Inherit thinking level from parent. */
+  thinkingLevel?: ThinkingLevel
+}
+
 export interface SubagentRunOptions {
   /** Pre-existing conversation history for resume support. */
   history?: Message[]
+  /** Fork context — when present, the subagent inherits the parent's full context. */
+  forkContext?: ForkContext
+}
+
+/**
+ * Filters out assistant messages that contain tool_use blocks without matching
+ * tool_result messages. This prevents API errors when passing parent history
+ * to fork subagents, since incomplete tool calls cause invalid conversation state.
+ *
+ * Adapted for Pi AI message types (role-based with content blocks).
+ */
+export function filterIncompleteToolCalls(messages: Message[]): Message[] {
+  const idsWithResults = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role === 'toolResult') {
+      idsWithResults.add(msg.toolCallId)
+    }
+  }
+  return messages.filter(msg => {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const hasIncomplete = msg.content.some(
+        (block: any) => block.type === 'toolCall' && block.id && !idsWithResults.has(block.id),
+      )
+      if (hasIncomplete) return false
+    }
+    return true
+  })
 }
 
 export async function runSubagent(
@@ -376,10 +418,15 @@ export async function runSubagent(
 ): Promise<SubagentResult> {
   callbacks?.onStart?.(config.name, config.description)
 
+  const forkCtx = options?.forkContext
+  const isFork = !!forkCtx
+
   const subCtx: ToolContext = {
     ...parentCtx,
     workspaceDir: config.workingDir || parentCtx.workspaceDir,
     fileStateCache: parentCtx.fileStateCache?.clone(),
+    renderedSystemPrompt: undefined,
+    sessionMessages: undefined,
   }
 
   // Ensure working directory exists
@@ -387,52 +434,69 @@ export async function runSubagent(
     mkdirSync(config.workingDir, { recursive: true })
   }
 
-  // Build tool set: filter from parent tools based on config
   let tools: AgentTool[]
-  if (config.toolNames && config.toolNames.length > 0) {
-    const allowSet = new Set(config.toolNames)
-    tools = allParentTools.filter(t => allowSet.has(t.name))
+  let systemPrompt: string
+  let history: Message[]
+  let thinkingLevel: ThinkingLevel = 'medium'
 
-    if (config.includeInstalledTools) {
-      const alreadyIncluded = new Set(tools.map(t => t.name))
-      const dynamicTools = allParentTools.filter(t =>
-        !alreadyIncluded.has(t.name) && !CORE_GATEWAY_TOOLS.has(t.name),
-      )
-      tools.push(...dynamicTools)
-    }
+  if (isFork) {
+    // Fork mode: use parent's exact system prompt, tools, and filtered history.
+    // This enables prompt cache reuse and full context awareness.
+    systemPrompt = forkCtx.systemPrompt
+    tools = forkCtx.parentTools
+    history = filterIncompleteToolCalls(forkCtx.parentMessages)
+    if (forkCtx.thinkingLevel) thinkingLevel = forkCtx.thinkingLevel
   } else {
-    tools = [...allParentTools]
-  }
+    // Normal mode: build tool set from config
+    systemPrompt = config.systemPrompt
+    history = options?.history || []
 
-  // Always strip task/skill/code_agent + dynamic-mode agent tools from subagent tools
-  const disallowed = new Set([
-    ...(config.disallowedTools || []),
-    'task', 'code_agent',
-    'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
-  ])
-  tools = tools.filter(t => !disallowed.has(t.name))
+    if (config.toolNames && config.toolNames.length > 0) {
+      const allowSet = new Set(config.toolNames)
+      tools = allParentTools.filter(t => allowSet.has(t.name))
 
-  // Readonly mode: strip all write/mutating tools
-  if (config.readonly) {
-    tools = tools.filter(t => READONLY_TOOLS.has(t.name))
+      if (config.includeInstalledTools) {
+        const alreadyIncluded = new Set(tools.map(t => t.name))
+        const dynamicTools = allParentTools.filter(t =>
+          !alreadyIncluded.has(t.name) && !CORE_GATEWAY_TOOLS.has(t.name),
+        )
+        tools.push(...dynamicTools)
+      }
+    } else {
+      tools = [...allParentTools]
+    }
+
+    // Strip orchestration tools from non-fork subagents (no infinite nesting)
+    const disallowed = new Set([
+      ...(config.disallowedTools || []),
+      'task', 'code_agent',
+      'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
+    ])
+    tools = tools.filter(t => !disallowed.has(t.name))
+
+    if (config.readonly) {
+      tools = tools.filter(t => READONLY_TOOLS.has(t.name))
+    }
   }
 
   const model = resolveModelTier(config.modelTier, config.model || parentCtx.config.model.name)
   const provider = config.provider || parentCtx.config.model.provider
-  const maxIterations = config.maxTurns || 10
-  const history = options?.history || []
+  const maxIterations = config.maxTurns || (isFork ? 200 : 10)
+
+  // Generate agent ID for transcript persistence
+  const agentId = createAgentId(config.name)
 
   try {
     const result = await runAgentLoop({
       provider,
       model,
-      system: config.systemPrompt,
+      system: systemPrompt,
       history,
       prompt,
       tools,
       maxIterations,
       maxTokens: config.maxTokens,
-      thinkingLevel: 'medium',
+      thinkingLevel,
       loopDetection: config.loopDetection,
       onToolCall: callbacks?.onToolCall,
       onTextDelta: callbacks?.onTextDelta,
@@ -449,6 +513,21 @@ export async function runSubagent(
     const summary = result.text || '(no text output)'
     callbacks?.onEnd?.(config.name, summary)
 
+    // Persist transcript if session persistence is available
+    if (parentCtx.sessionPersistence && parentCtx.sessionId && result.newMessages) {
+      try {
+        await parentCtx.sessionPersistence.saveSubagentTranscript(
+          agentId,
+          parentCtx.sessionId,
+          config.name,
+          config.description,
+          result.newMessages,
+        )
+      } catch (err: any) {
+        console.warn(`[Subagent] Failed to persist transcript for ${agentId}:`, err.message)
+      }
+    }
+
     return {
       text: summary,
       toolCalls: result.toolCalls.length,
@@ -458,6 +537,7 @@ export async function runSubagent(
       cacheReadTokens: result.cacheReadTokens,
       cacheWriteTokens: result.cacheWriteTokens,
       newMessages: result.newMessages,
+      agentId,
     }
   } catch (err: any) {
     const errorMsg = `Subagent ${config.name} failed: ${err.message}`
@@ -471,8 +551,21 @@ export async function runSubagent(
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       newMessages: [],
+      agentId,
     }
   }
+}
+
+/**
+ * Generates a unique agent ID for transcript persistence.
+ * Format: a-{label}-{16 hex chars}
+ */
+export function createAgentId(label?: string): string {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+  const slug = label ? label.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 20) : 'agent'
+  return `a-${slug}-${hex}`
 }
 
 // ---------------------------------------------------------------------------

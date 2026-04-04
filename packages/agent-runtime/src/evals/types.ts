@@ -43,6 +43,7 @@ export type EvalCategory =
   | 'content-creator'
   | 'nonprofit'
   | 'event-planner'
+  | 'subagent-coordination'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
