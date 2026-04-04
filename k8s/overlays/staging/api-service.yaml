@@ -25,6 +25,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -254,6 +257,12 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: LOAD_TEST_SECRET
+                  optional: true
+            - name: EVAL_CALLBACK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: EVAL_CALLBACK_SECRET
                   optional: true
             - name: EMAIL_PROVIDER
               value: "smtp"

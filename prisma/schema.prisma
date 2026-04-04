@@ -1259,3 +1259,67 @@ enum InstanceStatus {
   online
   offline
 }
+
+// =============================================================================
+// EVAL RUNS (Agent eval tracking — local + K8s Job support)
+// =============================================================================
+
+model EvalRun {
+  id            String    @id @default(cuid())
+  track         String
+  model         String
+  workers       Int       @default(1)
+  status        String    @default("pending")
+  triggeredBy   String?
+  pid           Int?
+  jobName       String?
+  error         String?   @db.Text
+  summary       Json?
+  cost          Json?
+  byCategory    Json?
+  resources     Json?
+  progress      Json?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  results       EvalRunResult[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("eval_runs")
+}
+
+model EvalRunResult {
+  id            String   @id @default(cuid())
+  runId         String
+  evalId        String
+  name          String
+  category      String
+  level         Int?
+  passed        Boolean
+  score         Int
+  maxScore      Int
+  percentage    Float
+  durationMs      Int
+  tokens          Json?
+  toolCallCount   Int       @default(0)
+  failedToolCalls Int       @default(0)
+  iterations      Int       @default(0)
+  phaseScores     Json?
+  pipeline        String?
+  pipelinePhase   Int?
+  criteria        Json?
+  antiPatterns    Json?
+  errors          Json?
+  warnings        Json?
+  log             String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  run           EvalRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([evalId])
+  @@map("eval_run_results")
+}

@@ -109,6 +109,31 @@ const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
+const runIdArg = getArg(args, 'run-id')
+const callbackUrlArg = getArg(args, 'callback-url')
+const callbackSecret = process.env.EVAL_CALLBACK_SECRET || 'dev-eval-secret'
+
+const useCallback = !!(runIdArg && callbackUrlArg)
+
+async function postCallback(path: string, body: any, timeoutMs = 30_000): Promise<void> {
+  if (!useCallback) return
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    await fetch(`${callbackUrlArg}/api/internal${path}`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${callbackSecret}`,
+      },
+      body: JSON.stringify(body),
+    })
+    clearTimeout(timer)
+  } catch (err: any) {
+    console.warn(`[callback] Failed to POST ${path}: ${err.message}`)
+  }
+}
 
 const BASE_PORT = 6400
 const SKILL_SERVER_BASE_PORT = 4100
@@ -158,9 +183,10 @@ function getEvals(track: string): AgentEval[] {
     case 'subagent-coordination': return SUBAGENT_COORDINATION_EVALS
     case 'teammate-coordination': return TEAMMATE_COORDINATION_EVALS
     case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
+    case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
     case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
       process.exit(1)
   }
 }
@@ -432,8 +458,9 @@ function writeEvalLog(
     lines.push('')
   }
 
-  writeFileSync(logPath, lines.join('\n'), 'utf-8')
-  return logPath
+  const content = lines.join('\n')
+  writeFileSync(logPath, content, 'utf-8')
+  return content
 }
 
 function archiveWorkspaceAsTemplate(
@@ -926,6 +953,27 @@ async function main() {
   let nextItemIndex = 0
   let globalEvalIndex = 0
 
+  const workerStatus: Record<number, {
+    workerId: number
+    containerName: string
+    status: 'idle' | 'running' | 'done'
+    currentEval?: string
+    currentEvalName?: string
+    pipeline?: string
+    pipelinePhase?: number
+    pipelineTotal?: number
+    evalsCompleted: number
+    startedAt?: string
+  }> = {}
+  for (const w of workers) {
+    workerStatus[w.id] = {
+      workerId: w.id,
+      containerName: w.containerName,
+      status: 'idle',
+      evalsCompleted: 0,
+    }
+  }
+
   async function ensureWorkerHealthy(worker: DockerWorker) {
     if (!(await isWorkerHealthy(worker))) {
       if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
@@ -938,13 +986,66 @@ async function main() {
     }
   }
 
+  const evalLogs: Record<string, string> = {}
+
+  function buildProgressPayload() {
+    const progressData = results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed }))
+    return {
+      results: progressData,
+      totalEvals: evals.length,
+      queueLength: workQueue.length,
+      queueRemaining: Math.max(0, workQueue.length - nextItemIndex),
+      workers: Object.values(workerStatus),
+    }
+  }
+
+  async function reportProgress() {
+    const payload = buildProgressPayload()
+    try { writeFileSync(partialPath, JSON.stringify(payload.results, null, 2)) } catch {}
+    if (useCallback) {
+      await postCallback(`/evals/${runIdArg}/progress`, payload)
+    }
+  }
+
   async function runAndRecord(worker: DockerWorker, ev: AgentEval, skipCleanup: boolean) {
     const idx = globalEvalIndex++
+    workerStatus[worker.id] = {
+      ...workerStatus[worker.id],
+      status: 'running',
+      currentEval: ev.id,
+      currentEvalName: ev.name,
+      startedAt: new Date().toISOString(),
+    }
+    await reportProgress()
     await ensureWorkerHealthy(worker)
     const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, { skipCleanup })
     results.push(result)
-    try { writeEvalLog(result, runDir) } catch {}
-    try { writeFileSync(partialPath, JSON.stringify(results.map(rr => ({ id: rr.eval.id, score: rr.score, max: rr.maxScore, passed: rr.passed })), null, 2)) } catch {}
+    workerStatus[worker.id].evalsCompleted++
+    let logContent: string | undefined
+    try {
+      logContent = writeEvalLog(result, runDir)
+      evalLogs[result.eval.id] = logContent
+    } catch {}
+    await reportProgress()
+    if (useCallback) {
+      await postCallback(`/evals/${runIdArg}/result`, {
+        result: {
+          eval: { id: result.eval.id, name: result.eval.name, category: result.eval.category, level: result.eval.level, pipeline: result.eval.pipeline, pipelinePhase: result.eval.pipelinePhase },
+          passed: result.passed,
+          score: result.score,
+          maxScore: result.maxScore,
+          percentage: result.percentage,
+          timing: result.timing,
+          metrics: { tokens: result.metrics.tokens, toolCallCount: result.metrics.toolCallCount, failedToolCalls: result.metrics.failedToolCalls, iterations: result.metrics.iterations },
+          phaseScores: result.phaseScores ?? null,
+          criteriaResults: result.criteriaResults,
+          triggeredAntiPatterns: result.triggeredAntiPatterns,
+          errors: result.errors,
+          runtimeWarnings: result.runtimeWarnings,
+        },
+        log: logContent ?? null,
+      })
+    }
     return result
   }
 
@@ -954,10 +1055,16 @@ async function main() {
 
       try {
         if (item.type === 'standalone') {
+          workerStatus[worker.id].pipeline = undefined
+          workerStatus[worker.id].pipelinePhase = undefined
+          workerStatus[worker.id].pipelineTotal = undefined
           await runAndRecord(worker, item.eval, false)
         } else {
           console.log(`[Worker ${worker.id}] Pipeline "${item.name}" — ${item.phases.length} phases`)
           for (let p = 0; p < item.phases.length; p++) {
+            workerStatus[worker.id].pipeline = item.name
+            workerStatus[worker.id].pipelinePhase = p + 1
+            workerStatus[worker.id].pipelineTotal = item.phases.length
             await runAndRecord(worker, item.phases[p], p > 0)
           }
           console.log(`[Worker ${worker.id}] Pipeline "${item.name}" complete`)
@@ -966,6 +1073,13 @@ async function main() {
         console.error(`[Worker ${worker.id}] Work item failed: ${err?.message || err}`)
       }
     }
+    workerStatus[worker.id].status = 'done'
+    workerStatus[worker.id].currentEval = undefined
+    workerStatus[worker.id].currentEvalName = undefined
+    workerStatus[worker.id].pipeline = undefined
+    workerStatus[worker.id].pipelinePhase = undefined
+    workerStatus[worker.id].pipelineTotal = undefined
+    await reportProgress()
   }
 
   await Promise.all(workers.map(w => workerLoop(w)))
@@ -1176,6 +1290,10 @@ async function main() {
   console.log(`Results: ${summaryPath}`)
   console.log(`Logs:    ${join(runDir, 'logs')}`)
 
+  if (useCallback) {
+    await postCallback(`/evals/${runIdArg}/complete`, { suite: exportData, logs: evalLogs }, 60_000)
+  }
+
   if (saveWorkspacesFlag) {
     console.log('')
     console.log('SAVED WORKSPACES (template format)')
@@ -1197,8 +1315,11 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0)
 }
 
-main().catch(err => {
+main().catch(async err => {
   console.error('Fatal:', err)
+  if (useCallback) {
+    await postCallback(`/evals/${runIdArg}/fail`, { error: String(err?.message ?? err) })
+  }
   globalWorkers.forEach(stopWorker)
   globalWorkers = []
   if (!localFlag) cleanupDockerEnvFile()

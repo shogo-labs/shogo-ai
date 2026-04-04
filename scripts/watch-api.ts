@@ -130,6 +130,7 @@ const watcher = chokidar.watch(WATCH_DIRS, {
     "**/build/**",
     "**/generated/**",
     "**/workspaces/**",
+    "**/eval-outputs/**",
     "**/.canvas-state.json",
   ],
   ignoreInitial: true,

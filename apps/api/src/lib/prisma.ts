@@ -19,9 +19,22 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-// In SQLite mode, String[] fields are stored as JSON strings.
-// This recursively converts any array values in create/update data payloads
-// so callers don't need to know about the storage difference.
+// Fields that are String[] in PostgreSQL but stored as JSON strings in SQLite.
+const ARRAY_FIELDS = new Set([
+  'schemas', 'affectedPackages', 'applicablePatterns', 'acceptanceCriteria',
+  'given', 'then', 'completedTasks', 'failedTasks', 'tags', 'supportedConfig',
+])
+
+// Fields that are Json? in PostgreSQL but stored as String? in SQLite.
+const JSON_OBJECT_FIELDS = new Set([
+  'summary', 'cost', 'byCategory', 'resources', 'progress',
+  'tokens', 'phaseScores', 'criteria', 'antiPatterns',
+])
+
+// In SQLite mode, String[] fields are stored as JSON strings, and
+// Json? fields are stored as String?. This recursively converts values
+// in create/update data payloads so callers don't need to know about
+// the storage difference.
 function stringifyArrays(data: any): any {
   if (data == null || typeof data !== 'object') return data
   if (data instanceof Date || data instanceof Buffer || data instanceof Uint8Array) return data
@@ -33,23 +46,20 @@ function stringifyArrays(data: any): any {
   }
   const result: any = {}
   for (const [key, value] of Object.entries(data)) {
-    result[key] = stringifyArrays(value)
+    if (JSON_OBJECT_FIELDS.has(key) && value != null && typeof value === 'object') {
+      result[key] = JSON.stringify(value)
+    } else {
+      result[key] = stringifyArrays(value)
+    }
   }
   return result
 }
-
-// Fields that are String[] in PostgreSQL but stored as JSON strings in SQLite.
-// We parse them back into arrays on read so the API returns the same shape.
-const ARRAY_FIELDS = new Set([
-  'schemas', 'affectedPackages', 'applicablePatterns', 'acceptanceCriteria',
-  'given', 'then', 'completedTasks', 'failedTasks', 'tags', 'supportedConfig',
-])
 
 function parseArrayFields(record: any): any {
   if (record == null || typeof record !== 'object') return record
   if (Array.isArray(record)) return record.map(parseArrayFields)
   for (const [key, value] of Object.entries(record)) {
-    if (ARRAY_FIELDS.has(key) && typeof value === 'string') {
+    if ((ARRAY_FIELDS.has(key) || JSON_OBJECT_FIELDS.has(key)) && typeof value === 'string') {
       try { record[key] = JSON.parse(value) } catch { /* leave as-is */ }
     } else if (value && typeof value === 'object') {
       record[key] = parseArrayFields(value)
