@@ -190,6 +190,19 @@ export interface CriterionResult {
   pointsEarned: number
 }
 
+export interface ContainerResourceMetrics {
+  /** Peak CPU usage in millicores (1000m = 1 CPU core). */
+  peakCpuMillicores: number
+  /** Average CPU usage in millicores. */
+  avgCpuMillicores: number
+  /** Peak memory usage in MiB. */
+  peakMemoryMiB: number
+  /** Average memory usage in MiB. */
+  avgMemoryMiB: number
+  /** Number of samples collected during the eval. */
+  samples: number
+}
+
 export interface EvalMetrics {
   toolCallCount: number
   successfulToolCalls: number
@@ -197,11 +210,20 @@ export interface EvalMetrics {
   iterations: number
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
   timing: { totalMs: number }
+  /** Docker container CPU/memory stats collected during the eval run. */
+  resourceMetrics?: ContainerResourceMetrics
 }
 
 // ---------------------------------------------------------------------------
 // Aggregated suite
 // ---------------------------------------------------------------------------
+
+export interface ResourceSummary {
+  peakCpuMillicores: number
+  avgCpuMillicores: number
+  peakMemoryMiB: number
+  avgMemoryMiB: number
+}
 
 export interface EvalSuiteResult {
   name: string
@@ -219,6 +241,7 @@ export interface EvalSuiteResult {
   }
   byCategory: Record<string, CategorySummary>
   cost: CostSummary
+  resources?: ResourceSummary
 }
 
 export interface CategorySummary {

@@ -87,8 +87,9 @@ import { ADVERSARIAL_EVALS } from './test-cases-adversarial'
 import { CROSS_CUTTING_EVALS } from './test-cases-cross-cutting'
 import { SUBAGENT_COORDINATION_EVALS } from './test-cases-subagent-coordination'
 import { buildMockPayload } from './tool-mocks'
-import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
+import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary } from './types'
 import { runRuntimeChecks } from './runtime-checks'
+import { DockerStatsCollector, formatMillicores } from './docker-stats-collector'
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -273,6 +274,13 @@ function writeEvalLog(
   const totalIn = t.input + t.cacheRead + t.cacheWrite
   lines.push(`| Tokens (in) | ${totalIn.toLocaleString()} total — ${t.input.toLocaleString()} new, ${t.cacheRead.toLocaleString()} cached, ${t.cacheWrite.toLocaleString()} cache-write |`)
   lines.push(`| Tokens (out) | ${t.output.toLocaleString()} |`)
+  const rm = result.metrics.resourceMetrics
+  if (rm) {
+    lines.push(`| Peak CPU | ${formatMillicores(rm.peakCpuMillicores)} |`)
+    lines.push(`| Avg CPU | ${formatMillicores(rm.avgCpuMillicores)} |`)
+    lines.push(`| Peak RAM | ${rm.peakMemoryMiB} MiB |`)
+    lines.push(`| Avg RAM | ${rm.avgMemoryMiB} MiB |`)
+  }
   lines.push('')
 
   // Conversation history
@@ -599,6 +607,9 @@ async function runEvalOnWorker(
   const startTime = Date.now()
   console.log(`[${evalLabel}] Worker ${worker.id}: ${ev.name}`)
 
+  const statsCollector = !localFlag ? new DockerStatsCollector(worker.containerName) : null
+  statsCollector?.start()
+
   try {
     const result = await runEval(ev, {
       agentEndpoint: `http://localhost:${worker.port}/agent/chat`,
@@ -606,6 +617,11 @@ async function runEvalOnWorker(
       verbose: verboseFlag,
       workspaceDir: worker.dir,
     })
+
+    const resourceMetrics = statsCollector?.stop() ?? null
+    if (resourceMetrics) {
+      result.metrics.resourceMetrics = resourceMetrics
+    }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1)
     const status = result.passed ? 'PASS' : 'FAIL'
@@ -762,6 +778,7 @@ async function runEvalOnWorker(
 
     return result
   } catch (err: any) {
+    const resourceMetrics = statsCollector?.stop() ?? null
     console.error(`[${evalLabel}] ERROR ${ev.name}: ${err.message}`)
     return {
       eval: ev,
@@ -782,6 +799,7 @@ async function runEvalOnWorker(
         iterations: 0,
         tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         timing: { totalMs: Date.now() - startTime },
+        ...(resourceMetrics ? { resourceMetrics } : {}),
       },
       errors: [err.message],
     }
@@ -1031,6 +1049,32 @@ async function main() {
   console.log(`  Error penalty:      −${totalFailed * 2} points raw (${totalFailed} × 2), capped at 20% per eval`)
   console.log('')
 
+  // Resource usage summary (Docker mode only)
+  const resourceResults = results.filter(r => r.metrics.resourceMetrics)
+  let resourceSummary: ResourceSummary | undefined
+  if (resourceResults.length > 0) {
+    const peakCpu = Math.max(...resourceResults.map(r => r.metrics.resourceMetrics!.peakCpuMillicores))
+    const avgCpu = resourceResults.reduce((s, r) => s + r.metrics.resourceMetrics!.avgCpuMillicores, 0) / resourceResults.length
+    const peakMem = Math.max(...resourceResults.map(r => r.metrics.resourceMetrics!.peakMemoryMiB))
+    const avgMem = resourceResults.reduce((s, r) => s + r.metrics.resourceMetrics!.avgMemoryMiB, 0) / resourceResults.length
+
+    resourceSummary = {
+      peakCpuMillicores: Math.round(peakCpu),
+      avgCpuMillicores: Math.round(avgCpu),
+      peakMemoryMiB: Math.round(peakMem * 10) / 10,
+      avgMemoryMiB: Math.round(avgMem * 10) / 10,
+    }
+
+    console.log('RESOURCE USAGE')
+    console.log('-'.repeat(40))
+    console.log(`  Peak CPU:           ${formatMillicores(resourceSummary.peakCpuMillicores)}`)
+    console.log(`  Avg CPU:            ${formatMillicores(resourceSummary.avgCpuMillicores)}`)
+    console.log(`  Peak Memory:        ${resourceSummary.peakMemoryMiB} MiB`)
+    console.log(`  Avg Memory:         ${resourceSummary.avgMemoryMiB} MiB`)
+    console.log(`  Samples:            ${resourceResults.length} evals tracked`)
+    console.log('')
+  }
+
   if (totalFailed > 0) {
     const errorsByTool = new Map<string, { count: number; evals: string[] }>()
     for (const r of results) {
@@ -1121,6 +1165,7 @@ async function main() {
       totalCost,
       costPerEval: totalCost / results.length,
     },
+    ...(resourceSummary ? { resources: resourceSummary } : {}),
   }
   const summaryPath = join(runDir, 'results.json')
   writeFileSync(summaryPath, JSON.stringify(exportData, null, 2))
