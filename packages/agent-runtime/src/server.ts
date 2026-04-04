@@ -2247,13 +2247,18 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
-  // Ensure workspace has node_modules (template copy may include them;
-  // otherwise install now — before canvas build manager tries `bun run build`).
-  try {
-    await ensureWorkspaceDeps(WORKSPACE_DIR)
-    logTiming('Workspace deps ready')
-  } catch (err: any) {
-    console.error('[agent-runtime] Workspace deps install failed:', err.message)
+  // Ensure workspace has node_modules. If S3 sync is restoring deps in the
+  // background, skip the blocking install here — deps will be available
+  // before the gateway starts (startGateway awaits waitForDeps).
+  if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
+    logTiming('Deps restoring in background — skipping blocking install')
+  } else {
+    try {
+      await ensureWorkspaceDeps(WORKSPACE_DIR)
+      logTiming('Workspace deps ready')
+    } catch (err: any) {
+      console.error('[agent-runtime] Workspace deps install failed:', err.message)
+    }
   }
 
   // Write .mcp.json (function logs timing internally)
@@ -2290,6 +2295,20 @@ async function startGateway(): Promise<void> {
   logTiming('Starting agent gateway...')
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
+
+  // Wait for background deps restoration before starting the gateway.
+  // The gateway initializes the LSP and canvas build which need node_modules.
+  if (s3SyncInstance && !s3SyncInstance.areDepsReady()) {
+    logTiming('Waiting for background deps before starting gateway...')
+    await s3SyncInstance.waitForDeps()
+    logTiming('Background deps ready')
+    // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
+    try {
+      await ensureWorkspaceDeps(WORKSPACE_DIR)
+    } catch (err: any) {
+      console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
+    }
+  }
 
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
   agentGateway.setLogCallback((line) => {

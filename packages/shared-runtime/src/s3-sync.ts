@@ -109,6 +109,10 @@ export class S3Sync {
   private currentLockfileHash: string = ''
   /** Whether deps need to be uploaded (lockfile changed since last deps upload) */
   private depsNeedUpload: boolean = false
+  /** Resolves when background deps restoration completes (or immediately if not needed) */
+  private _depsReadyPromise: Promise<void> | null = null
+  private _depsReadyResolve: (() => void) | null = null
+  private _depsReady: boolean = true
 
   constructor(config: S3SyncConfig) {
     this.config = {
@@ -164,6 +168,33 @@ export class S3Sync {
       this.depsNeedUpload = false
       console.log(`[S3Sync] Marked deps as pre-seeded (lockfile hash: ${hash})`)
     }
+  }
+
+  /** Wait for background deps restoration to complete. Resolves immediately if deps are already ready. */
+  async waitForDeps(): Promise<void> {
+    if (this._depsReady) return
+    if (this._depsReadyPromise) await this._depsReadyPromise
+  }
+
+  /** Check synchronously whether deps are available. */
+  areDepsReady(): boolean {
+    return this._depsReady
+  }
+
+  /** Create a pending deps-ready gate. Call resolveDepsReady() when deps are available. */
+  private beginDepsRestore(): void {
+    this._depsReady = false
+    this._depsReadyPromise = new Promise<void>((resolve) => {
+      this._depsReadyResolve = resolve
+    })
+  }
+
+  /** Mark deps as ready, resolving any waiters. */
+  private resolveDepsReady(): void {
+    this._depsReady = true
+    this._depsReadyResolve?.()
+    this._depsReadyResolve = null
+    this._depsReadyPromise = null
   }
 
   // ===========================================================================
@@ -343,24 +374,34 @@ export class S3Sync {
     await unlink(tempProject).catch(() => {})
     this.stats.projectExtractMs = projectExtractMs
 
-    // Step 2: Restore deps from cache
+    // Step 2: Restore deps from cache (non-blocking)
+    // Fire off deps restoration in the background so the pod can accept
+    // requests immediately after source files are extracted. Callers that
+    // need node_modules (canvas build, LSP, ensureWorkspaceDeps) should
+    // await waitForDeps() before proceeding.
+    this.beginDepsRestore()
     const depsStart = Date.now()
-    console.log(`[S3Sync] [downloadLayered] Step 2/2: Restoring deps from cache...`)
-    await this.restoreDeps()
-    console.log(`[S3Sync] [downloadLayered] Deps restore completed in ${Date.now() - depsStart}ms`)
+    console.log(`[S3Sync] [downloadLayered] Step 2/2: Restoring deps in background...`)
+    this.restoreDeps()
+      .then(() => {
+        console.log(`[S3Sync] [downloadLayered] Background deps restore completed in ${Date.now() - depsStart}ms`)
+      })
+      .catch((err) => {
+        console.error(`[S3Sync] [downloadLayered] Background deps restore failed (${Date.now() - depsStart}ms):`, err.message)
+      })
+      .finally(() => {
+        this.resolveDepsReady()
+      })
 
     const totalMs = Date.now() - totalStart
-    const countStart = Date.now()
     const projectFileCount = await this.countFilesExcluding(this.config.localDir, ['node_modules'])
-    const totalFileCount = await this.countFiles(this.config.localDir)
-    const countMs = Date.now() - countStart
     
-    this.stats.downloaded = totalFileCount
+    this.stats.downloaded = projectFileCount
     this.stats.lastSync = new Date()
     this.stats.archiveSize = projectData.length
 
-    console.log(`[S3Sync] [downloadLayered] ⚡ COMPLETE in ${totalMs}ms — ${projectFileCount} source files, ${totalFileCount} total (file count took ${countMs}ms)`)
-    console.log(`[S3Sync] [downloadLayered] Breakdown: s3Response=${s3ResponseMs}ms, streamRead=${streamMs}ms, extract=${projectExtractMs}ms, deps=${Date.now() - depsStart}ms`)
+    console.log(`[S3Sync] [downloadLayered] ⚡ Source files ready in ${totalMs}ms — ${projectFileCount} source files (deps restoring in background)`)
+    console.log(`[S3Sync] [downloadLayered] Breakdown: s3Response=${s3ResponseMs}ms, streamRead=${streamMs}ms, extract=${projectExtractMs}ms`)
     return this.getStats()
   }
 
@@ -396,11 +437,15 @@ export class S3Sync {
       return
     }
 
-    // Check if node_modules already exists and matches
+    // Check if node_modules already exists and matches the expected lockfile hash
     const localHash = await this.computeLockfileHash()
-    if (localHash === lockfileHash && existsSync(join(this.config.localDir, 'node_modules', '.package-lock.json')) ||
-        existsSync(join(this.config.localDir, 'node_modules', '.cache'))) {
-      console.log(`[S3Sync] [restoreDeps] node_modules already present from previous extract — skipping download`)
+    if ((localHash === lockfileHash) &&
+        (existsSync(join(this.config.localDir, 'node_modules', '.package-lock.json')) ||
+         existsSync(join(this.config.localDir, 'node_modules', '.cache')))) {
+      console.log(`[S3Sync] [restoreDeps] node_modules already present and hash matches — skipping download`)
+      this.stats.depsCacheHit = true
+      this.currentLockfileHash = lockfileHash
+      return
     }
 
     // Download deps archive
