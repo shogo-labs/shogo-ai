@@ -34,6 +34,17 @@ export type EvalCategory =
   | 'tau2-bench'
   | 'terminal-bench'
   | 'feature-bench'
+  | 'subagent'
+  | 'business-user'
+  | 'adversarial'
+  | 'freelancer'
+  | 'cross-cutting'
+  | 'startup-cto'
+  | 'content-creator'
+  | 'nonprofit'
+  | 'event-planner'
+  | 'subagent-coordination'
+  | 'teammate-coordination'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -57,8 +68,18 @@ export interface AgentEval {
   toolMocks?: import('./tool-mocks').ToolMockMap
   /** Files to write into the workspace before running the eval (path relative to workspace root -> content) */
   workspaceFiles?: Record<string, string>
+  /** Seed workspace with the runtime template (Vite + React + Tailwind + shadcn/ui). Provides index.html, package.json, tsconfig, etc. */
+  useRuntimeTemplate?: boolean
+  /** Seed .shogo/server/ with the canonical skill server scaffold (shogo.config.json, prisma.config.ts, base schema). */
+  useSkillServer?: boolean
   /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
   initialMode?: 'canvas' | 'app' | 'none'
+  /** Pipeline name — evals sharing a pipeline run sequentially on one worker, each inheriting the prior phase's workspace. */
+  pipeline?: string
+  /** 1-based ordering within a pipeline. Phase 1 gets full workspace setup; phase 2+ skip cleanup and use pipelineFiles. */
+  pipelinePhase?: number
+  /** Files to overlay when running in pipeline mode (delta only — new data files the agent wouldn't produce). */
+  pipelineFiles?: Record<string, string>
   /** Arbitrary tags for filtering (e.g. 'view-only', 'interactive') */
   tags?: string[]
   /** Agent mode required for this eval (e.g. 'basic', 'advanced') */
@@ -90,6 +111,22 @@ export interface ToolCallRecord {
   error?: boolean
 }
 
+export interface ModelCheckResult {
+  model: string
+  canList: boolean
+  canCreate: boolean
+  roundTripOk: boolean
+}
+
+export interface WorkspaceIntegrity {
+  schema: boolean
+  schemaHasModels: boolean
+  generated: boolean
+  server: boolean
+  db: boolean
+  prismaClient: boolean
+}
+
 export interface RuntimeCheckResults {
   /** Whether the skill server /health endpoint responded with { ok: true }. null = no skill server. */
   serverHealthy: boolean | null
@@ -98,8 +135,22 @@ export interface RuntimeCheckResults {
   canListModels: boolean
   /** Whether POST /api/{model} succeeded for at least one model. */
   canCreateRecord: boolean
+  /** Per-model CRUD results. */
+  modelResults: ModelCheckResult[]
+  /** Models from schema that have no corresponding route. */
+  missingRoutes: string[]
+  /** Canvas fetch() URLs that don't match any discovered route. */
+  canvasOrphanedFetches: string[]
+  /** Whether all canvas fetch() URLs target valid routes. null = no canvas fetches. */
+  canvasFetchesValid: boolean | null
+  /** Workspace file integrity (schema, generated/, server, db, prisma client). */
+  workspaceIntegrity: WorkspaceIntegrity | null
   /** Whether canvas code references the correct skill server port. null = no canvas. */
   canvasPortCorrect: boolean | null
+  /** Whether all src/ TS/TSX files transpile without syntax errors. null = no src/ files. */
+  canvasCompiles: boolean | null
+  /** Individual compile errors (file path + message) when canvasCompiles is false. */
+  canvasCompileErrors: string[]
   errors: string[]
 }
 
@@ -140,6 +191,19 @@ export interface CriterionResult {
   pointsEarned: number
 }
 
+export interface ContainerResourceMetrics {
+  /** Peak CPU usage in millicores (1000m = 1 CPU core). */
+  peakCpuMillicores: number
+  /** Average CPU usage in millicores. */
+  avgCpuMillicores: number
+  /** Peak memory usage in MiB. */
+  peakMemoryMiB: number
+  /** Average memory usage in MiB. */
+  avgMemoryMiB: number
+  /** Number of samples collected during the eval. */
+  samples: number
+}
+
 export interface EvalMetrics {
   toolCallCount: number
   successfulToolCalls: number
@@ -147,11 +211,20 @@ export interface EvalMetrics {
   iterations: number
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
   timing: { totalMs: number }
+  /** Docker container CPU/memory stats collected during the eval run. */
+  resourceMetrics?: ContainerResourceMetrics
 }
 
 // ---------------------------------------------------------------------------
 // Aggregated suite
 // ---------------------------------------------------------------------------
+
+export interface ResourceSummary {
+  peakCpuMillicores: number
+  avgCpuMillicores: number
+  peakMemoryMiB: number
+  avgMemoryMiB: number
+}
 
 export interface EvalSuiteResult {
   name: string
@@ -169,6 +242,7 @@ export interface EvalSuiteResult {
   }
   byCategory: Record<string, CategorySummary>
   cost: CostSummary
+  resources?: ResourceSummary
 }
 
 export interface CategorySummary {

@@ -17,6 +17,8 @@ export interface FileReadRecord {
   lineCount: number
   readAt: number
   partial?: { offset: number; limit: number }
+  /** Full file content at read time — used for staleness content-comparison fallback */
+  content?: string
 }
 
 export class FileStateCache {
@@ -27,12 +29,25 @@ export class FileStateCache {
     mtime: number,
     lineCount: number,
     partial?: { offset: number; limit: number },
+    content?: string,
   ): void {
     const existing = this.reads.get(path)
     if (existing && !partial && existing.partial) {
       // Full read supersedes a previous partial read
     }
-    this.reads.set(path, { path, mtime, lineCount, readAt: Date.now(), partial })
+    this.reads.set(path, {
+      path, mtime: Math.floor(mtime), lineCount, readAt: Date.now(), partial,
+      content: partial ? undefined : content,
+    })
+  }
+
+  /**
+   * Record post-edit state so subsequent staleness checks work
+   * within the same turn (instead of just invalidating).
+   */
+  recordEdit(path: string, content: string, mtime: number): void {
+    const lineCount = content.split('\n').length
+    this.reads.set(path, { path, mtime: Math.floor(mtime), lineCount, readAt: Date.now(), content })
   }
 
   hasBeenRead(path: string): boolean {
@@ -52,7 +67,7 @@ export class FileStateCache {
     const record = this.reads.get(path)
     if (!record) return false
     try {
-      const currentMtime = statSync(resolvedPath).mtimeMs
+      const currentMtime = Math.floor(statSync(resolvedPath).mtimeMs)
       return currentMtime !== record.mtime
     } catch {
       return true

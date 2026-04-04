@@ -286,7 +286,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
 // Skill Server Seed
 // ---------------------------------------------------------------------------
 
-const SKILL_SERVER_SCHEMA = `datasource db {
+export const SKILL_SERVER_SCHEMA_HEADER = `datasource db {
   provider = "sqlite"
 }
 
@@ -294,12 +294,23 @@ generator client {
   provider = "prisma-client"
   output   = "./generated/prisma"
 }
+`
 
+const SKILL_SERVER_SCHEMA = SKILL_SERVER_SCHEMA_HEADER + `
 // Add your models below. Each model gets CRUD routes at /api/{model-name-plural}.
 // The skill server auto-regenerates when you save this file.
 `
 
-const SKILL_SERVER_PRISMA_CONFIG = `import { defineConfig } from 'prisma/config'
+/**
+ * Build a complete skill server Prisma schema from model definitions.
+ * Prepends the canonical datasource+generator header so callers
+ * don't need to duplicate it.
+ */
+export function buildSkillServerSchema(models: string): string {
+  return SKILL_SERVER_SCHEMA_HEADER + '\n' + models.trim() + '\n'
+}
+
+export const SKILL_SERVER_PRISMA_CONFIG = `import { defineConfig } from 'prisma/config'
 
 export default defineConfig({
   schema: './schema.prisma',
@@ -311,34 +322,38 @@ export default defineConfig({
 
 const SKILL_SERVER_PORT = Number(process.env.SKILL_SERVER_PORT) || 4100
 
-const SKILL_SERVER_CONFIG = JSON.stringify(
-  {
-    schema: './schema.prisma',
-    outputs: [
-      {
-        dir: './generated',
-        generate: ['routes', 'hooks', 'types'],
-      },
-      {
-        dir: '.',
-        generate: ['server'],
-        serverConfig: {
-          routesPath: './generated',
-          dbPath: './db',
-          port: SKILL_SERVER_PORT,
-          skipStatic: true,
+export function buildSkillServerConfig(port = SKILL_SERVER_PORT): string {
+  return JSON.stringify(
+    {
+      schema: './schema.prisma',
+      outputs: [
+        {
+          dir: './generated',
+          generate: ['routes', 'hooks', 'types'],
         },
-      },
-      {
-        dir: '.',
-        generate: ['db'],
-        dbProvider: 'sqlite',
-      },
-    ],
-  },
-  null,
-  2,
-)
+        {
+          dir: '.',
+          generate: ['server'],
+          serverConfig: {
+            routesPath: './generated',
+            dbPath: './db',
+            port,
+            skipStatic: true,
+          },
+        },
+        {
+          dir: '.',
+          generate: ['db'],
+          dbProvider: 'sqlite',
+        },
+      ],
+    },
+    null,
+    2,
+  )
+}
+
+const SKILL_SERVER_CONFIG = buildSkillServerConfig()
 
 /**
  * Seed the skill server skeleton in .shogo/server/.

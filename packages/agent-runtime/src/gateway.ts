@@ -68,6 +68,9 @@ import {
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
+import { SUBAGENT_GUIDE } from './subagent-prompts'
+import { AgentManager } from './agent-manager'
+import { TeamManager } from './team-manager'
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -180,6 +183,8 @@ export interface GatewayConfig {
   canvasMode?: 'json' | 'code'
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
+  /** Enable coordinator mode (leader only delegates, never does work directly) */
+  coordinatorMode?: boolean
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
@@ -292,6 +297,9 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /** Dynamic sub-agent registry and lifecycle manager */
+  public agentManager = new AgentManager()
+  private teamManager?: TeamManager
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -547,6 +555,11 @@ export class AgentGateway {
     this.sessionPersistence = new SqliteSessionPersistence(this.workspaceDir)
     this.sessionManager.setPersistence(this.sessionPersistence)
     await this.sessionManager.restoreSessions()
+
+    if (this.sessionPersistence) {
+      this.agentManager.attachPersistence(this.sessionPersistence)
+      this.teamManager = new TeamManager(this.sessionPersistence)
+    }
 
     // Wire up LLM-powered summarization for context compaction
     this.sessionManager.setSummarizeFn(async (messages) => {
@@ -1204,7 +1217,7 @@ export class AgentGateway {
       ].join('\n')
       this.promptOverrides.set('mcp_discovery_guide', skillOverride)
     }
-    let systemPrompt = this.loadBootstrapContext()
+    let systemPrompt = this.loadBootstrapContext(sessionId)
     if (activeSkill) {
       this.promptOverrides.delete('mcp_discovery_guide')
     }
@@ -1233,6 +1246,11 @@ export class AgentGateway {
         'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
       ].join('\n')
       systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
+    }
+
+    if (this.config.coordinatorMode) {
+      const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
+      systemPrompt += '\n\n' + COORDINATOR_SYSTEM_PROMPT
     }
 
     const session = this.sessionManager.getOrCreate(sessionId)
@@ -1273,7 +1291,12 @@ export class AgentGateway {
         : undefined,
       lspManager: this.lspManager ?? undefined,
       fileStateCache: this.fileStateCache,
+      agentManager: this.agentManager,
+      skillServerManager: this.skillServerManager,
+      sessionPersistence: this.sessionPersistence ?? undefined,
+      teamManager: this.teamManager,
       codeIndexEngine: this.codeIndexEngine ?? undefined,
+      effectiveModel: modelId,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1341,6 +1364,11 @@ export class AgentGateway {
       assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
     }
 
+    if (this.config.coordinatorMode) {
+      const { COORDINATOR_READONLY_TOOLS } = await import('./coordinator-prompt')
+      assembledTools = assembledTools.filter(t => COORDINATOR_READONLY_TOOLS.has(t.name))
+    }
+
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
@@ -1363,10 +1391,12 @@ export class AgentGateway {
           }
         }
 
+        const realExecute = tool.execute
         return {
           ...tool,
-          execute: async (_id: string, params: any) => {
+          execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
             const result = mockFn(params)
+            if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
             return textResult(result)
           },
         }
@@ -1451,6 +1481,36 @@ export class AgentGateway {
         history = microcompact(history).messages
         history = snipConsumedResults(history)
       }
+    }
+
+    // Populate fork-mode context so subagent tools can access the parent's state
+    toolContext.renderedSystemPrompt = systemPrompt
+    toolContext.sessionMessages = history
+
+    // Emit team snapshot + agent registry for UI hydration on reload
+    if (uiWriter && this.teamManager) {
+      try {
+        const teams = this.teamManager.listTeams(sessionId)
+        for (const team of teams) {
+          uiWriter.write({
+            type: 'data-team-snapshot',
+            data: {
+              team,
+              members: this.teamManager.listMembers(team.id),
+              tasks: this.teamManager.listTasks(team.id),
+              messages: this.teamManager.getRecentMessages(team.id, 50),
+            },
+          })
+        }
+      } catch (err: any) {
+        console.warn(`${this.logPrefix} Failed to emit team snapshot:`, err.message)
+      }
+    }
+    if (uiWriter && this.agentManager) {
+      try {
+        const types = this.agentManager.listTypes()
+        uiWriter.write({ type: 'data-agent-types', data: { types } })
+      } catch { /* ignore */ }
     }
 
     // Typing indicator: send once before the turn and periodically
@@ -1795,7 +1855,7 @@ export class AgentGateway {
     }
   }
 
-  private buildSWEPrompt(): string {
+  private buildSWEPrompt(sessionId?: string): string {
     const parts: string[] = []
 
     const now = new Date()
@@ -1815,6 +1875,12 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(SUBAGENT_GUIDE)
+
+    if (sessionId) {
+      const teamCtx = this.buildTeamContext(sessionId)
+      if (teamCtx) parts.push(teamCtx)
+    }
 
     return parts.join('\n\n---\n\n')
   }
@@ -1824,7 +1890,7 @@ export class AgentGateway {
    * Includes workspace context, coding guide, and skills — but skips personality,
    * canvas, templates, memory, and other Shogo-specific sections.
    */
-  private buildGeneralPrompt(): string {
+  private buildGeneralPrompt(sessionId?: string): string {
     const parts: string[] = []
 
     const now = new Date()
@@ -1853,15 +1919,22 @@ export class AgentGateway {
       }
     }
 
+    parts.push(SUBAGENT_GUIDE)
+
+    if (sessionId) {
+      const teamCtx = this.buildTeamContext(sessionId)
+      if (teamCtx) parts.push(teamCtx)
+    }
+
     return parts.join('\n\n---\n\n')
   }
 
-  private loadBootstrapContext(): string {
+  private loadBootstrapContext(sessionId?: string): string {
     if (this.config.promptProfile === 'swe') {
-      return this.buildSWEPrompt()
+      return this.buildSWEPrompt(sessionId)
     }
     if (this.config.promptProfile === 'general') {
-      return this.buildGeneralPrompt()
+      return this.buildGeneralPrompt(sessionId)
     }
 
     // =========================================================================
@@ -1884,13 +1957,14 @@ export class AgentGateway {
       if (this.config.canvasMode === 'code') {
         stableParts.push(`\n## Canvas Mode — React App
 
-You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. Edit \`src/App.tsx\` to build your UI and add components under \`src/components/\`. The app auto-builds and renders in the preview panel.
+You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. The app auto-builds and renders in the preview panel.
 
 **Your workflow:**
-1. Understand what the user wants to display or build
-2. If the app needs persistent data, create a skill server by writing \`.shogo/server/schema.prisma\`
-3. Write React code in \`src/App.tsx\` (and \`src/components/\`) that fetches from the skill server
-4. Use \`edit_file\` to update existing files
+1. **Read existing state** — check \`.shogo/server/schema.prisma\` and \`src/App.tsx\` to understand what's already built
+2. If the app needs persistent data, **ADD** models to the schema — never replace existing models
+3. Create new feature components under \`src/components/\` — one file per feature
+4. Update \`src/App.tsx\` to add a tab/section for the new feature — don't rewrite the whole file
+5. Use \`edit_file\` to update existing files, \`write_file\` only for new files
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
@@ -1973,6 +2047,9 @@ When integrations are connected, use \`tool_search\` to discover available actio
       'The message should explain what went wrong AND how to fix it.',
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
+
+    // 5b. Sub-agent orchestration guide
+    stableParts.push(SUBAGENT_GUIDE)
 
     // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
 
@@ -2066,7 +2143,59 @@ When integrations are connected, use \`tool_search\` to discover available actio
       dynamicParts.push(skillServerSection)
     }
 
+    // 12. Active team context (persisted in SQLite, survives session resets)
+    if (sessionId) {
+      const teamCtx = this.buildTeamContext(sessionId)
+      if (teamCtx) dynamicParts.push(teamCtx)
+    }
+
     return [...stableParts, ...dynamicParts].join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a system prompt section describing active teams, their members,
+   * and task state.  Queried from the persistent SQLite TeamManager so
+   * the agent retains awareness across conversation / pipeline resets.
+   */
+  private buildTeamContext(sessionId: string): string | null {
+    if (!this.teamManager) return null
+
+    const teams = this.teamManager.listTeams(sessionId)
+    if (teams.length === 0) return null
+
+    const sections: string[] = ['## Active Team Context']
+
+    for (const team of teams) {
+      const members = this.teamManager.listMembers(team.id)
+      const tasks = this.teamManager.listTasks(team.id)
+
+      sections.push(`### Team: ${team.name} (id: \`${team.id}\`)`)
+      if (team.description) sections.push(team.description)
+
+      if (members.length > 0) {
+        sections.push('**Members:**')
+        for (const m of members) {
+          const status = m.isActive ? 'active' : 'inactive'
+          sections.push(`- \`${m.name}\` (agent: \`${m.agentId}\`, ${status})`)
+        }
+      }
+
+      if (tasks.length > 0) {
+        sections.push('**Tasks:**')
+        for (const t of tasks) {
+          const deps = t.blockedBy.length > 0 ? ` [blocked by: ${t.blockedBy.join(', ')}]` : ''
+          const owner = t.owner ? ` (owner: ${t.owner})` : ''
+          sections.push(`- #${t.id} ${t.subject} — **${t.status}**${owner}${deps}`)
+        }
+      }
+    }
+
+    sections.push(
+      '',
+      'Use `send_team_message`, `task_create`, `task_update`, `task_list`, `team_delete` and other team tools to interact with this team.',
+    )
+
+    return sections.join('\n')
   }
 
   /**
@@ -2077,35 +2206,102 @@ When integrations are connected, use \`tool_search\` to discover available actio
   private buildSkillServerPromptSection(): string | null {
     if (this.config.shellEnabled === false) return null
 
-    if (this.skillServerManager.isRunning) {
-      return [
-        '## Skill Server',
-        '',
-        `A skill server is running at **${this.skillServerManager.url}**.`,
-        '',
-        'This is a Hono API backed by SQLite. To see what endpoints exist,',
-        'read `.shogo/server/schema.prisma` — each Prisma model has CRUD routes at',
-        '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
-        '',
-        'Use the `web` tool with the full URL (e.g. `web({ url: "' + this.skillServerManager.url + '/api/leads" })`) to interact with it.',
-        '',
-        'To add new models or change the schema, just edit `.shogo/server/schema.prisma`.',
-        'Code generation, database migration, and server restart happen **automatically** when the schema file changes.',
-        '',
-        'Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts` (beforeCreate, afterUpdate, etc.).',
-      ].join('\n')
-    }
-
     const phase = this.skillServerManager.phase
     const genError = this.skillServerManager.lastGenerateError
+    const activeRoutes = this.skillServerManager.getActiveRoutes()
+    const schemaModels = this.skillServerManager.getSchemaModels()
+    const url = this.skillServerManager.url
 
-    if (phase === 'generating') {
-      return [
-        '## Skill Server (Generating...)',
+    const regenGuide = [
+      '### How schema regeneration works',
+      '',
+      'When you write or edit `.shogo/server/schema.prisma` using `write_file` or `edit_file`,',
+      'the tool **automatically** runs the full pipeline before returning:',
+      '1. Runs `shogo generate` — creates routes, types, hooks, server, Prisma client, and pushes the DB schema',
+      '2. Restarts the server process so it loads the new routes',
+      '3. Returns the list of **active routes** in the tool response',
+      '',
+      '**The tool response tells you exactly which routes are live.** Use those exact paths in your code.',
+      '',
+      '**Important:** Write your **complete schema in one save** — include ALL models you need.',
+      'Do NOT make multiple rapid edits to the schema.',
+      '',
+      'If you ever see a route 404 or need to force a refresh, use the `skill_server_sync` tool:',
+      '```',
+      'skill_server_sync({})',
+      '```',
+      'It returns the current phase, active routes, and schema models.',
+      '',
+      '**Do NOT** manually run `prisma generate`, `shogo generate`, or `npm run db:generate` — it is all automatic.',
+    ].join('\n')
+
+    if (this.skillServerManager.isRunning) {
+      const lines = [
+        '## Skill Server',
         '',
-        'The skill server is currently regenerating from your schema changes.',
-        'It will be available shortly at `http://localhost:' + this.skillServerManager.port + '`.',
-      ].join('\n')
+        `A skill server is running at **${url}** (status: **healthy**).`,
+        '',
+        'This is a Hono API backed by SQLite. Each Prisma model gets CRUD routes at',
+        '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
+      ]
+
+      if (activeRoutes.length > 0) {
+        lines.push('')
+        lines.push('**Currently active routes:**')
+        for (const r of activeRoutes) {
+          lines.push(`- \`${url}/api/${r}\``)
+        }
+      }
+
+      const pendingModels = schemaModels.filter(m => {
+        const kebab = m.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()
+        let expected: string
+        if (kebab.endsWith('y')) expected = kebab.slice(0, -1) + 'ies'
+        else if (kebab.endsWith('s') || kebab.endsWith('x') || kebab.endsWith('ch') || kebab.endsWith('sh')) expected = kebab + 'es'
+        else expected = kebab + 's'
+        return !activeRoutes.includes(expected)
+      })
+
+      if (pendingModels.length > 0) {
+        lines.push('')
+        lines.push(`**Schema models without routes yet (regeneration pending):** ${pendingModels.join(', ')}`)
+        lines.push('These routes will appear after the regeneration pipeline finishes.')
+      }
+
+      lines.push('')
+      lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it.`)
+      lines.push('')
+      lines.push('To add new models or change the schema, edit `.shogo/server/schema.prisma`.')
+      lines.push('Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts`.')
+      lines.push('')
+      lines.push(regenGuide)
+
+      return lines.join('\n')
+    }
+
+    if (phase === 'generating' || phase === 'restarting') {
+      const lines = [
+        `## Skill Server (${phase === 'generating' ? 'Generating...' : 'Restarting...'})`,
+        '',
+        `The skill server is currently ${phase}. It will be available shortly at \`${url}\`.`,
+      ]
+
+      if (activeRoutes.length > 0) {
+        lines.push('')
+        lines.push('**Routes from last generation:**')
+        for (const r of activeRoutes) lines.push(`- \`/api/${r}\``)
+        lines.push('')
+        lines.push('These may 404 until the restart completes. Wait a few seconds and retry.')
+      }
+
+      if (schemaModels.length > 0) {
+        lines.push('')
+        lines.push(`**Schema models:** ${schemaModels.join(', ')}`)
+      }
+
+      lines.push('')
+      lines.push(regenGuide)
+      return lines.join('\n')
     }
 
     if (phase === 'crashed' && genError) {
@@ -2117,6 +2313,8 @@ When integrations are connected, use \`tool_search\` to discover available actio
         genError,
         '```',
         'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
+        '',
+        regenGuide,
       ].join('\n')
     }
 
@@ -2149,10 +2347,12 @@ When integrations are connected, use \`tool_search\` to discover available actio
       '```',
       '',
       'That\'s it — **everything else is automatic**: dependency install, code generation,',
-      'database creation, and server startup on `http://localhost:' + this.skillServerManager.port + '`.',
+      `database creation, and server startup on \`${url}\`.`,
       'Each model gets full CRUD at `/api/{model-name-plural}`.',
       '',
       'Custom logic goes in `.shogo/server/generated/{model}.hooks.ts`.',
+      '',
+      regenGuide,
     ].join('\n')
   }
 
@@ -2371,6 +2571,22 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
   getSkillServerPort(): number | null {
     return this.skillServerManager.isRunning ? this.skillServerManager.port : null
+  }
+
+  getSkillServerPhase(): string {
+    return this.skillServerManager.phase
+  }
+
+  getSkillServerActiveRoutes(): string[] {
+    return this.skillServerManager.getActiveRoutes()
+  }
+
+  getSkillServerSchemaModels(): string[] {
+    return this.skillServerManager.getSchemaModels()
+  }
+
+  async syncSkillServer(): Promise<{ ok: boolean; phase: string }> {
+    return this.skillServerManager.sync()
   }
 
   getMcpClientManager(): MCPClientManager {

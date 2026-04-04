@@ -296,6 +296,15 @@ function checkAntiPattern(
     return hasSendToAgent && hasApiSchema
   }
 
+  if (p.includes('delegated-trivial')) {
+    return toolCalls.some(t => t.name === 'task' || t.name === 'agent_spawn')
+  }
+
+  if (p.includes('homework') && p.includes('prisma') && p.includes('over-engineer')) {
+    const json = JSON.stringify(toolCalls).toLowerCase()
+    return json.includes('prisma') && (json.includes('schema.prisma') || json.includes('model '))
+  }
+
   return false
 }
 
@@ -447,8 +456,11 @@ export async function runEval(
     }
   }
 
+  const toolErrorCount = toolCalls.filter(t => t.error).length
+  const toolErrorPenaltyRaw = toolErrorCount * 2
+  const toolErrorPenalty = Math.min(toolErrorPenaltyRaw, Math.ceil(eval_.maxScore * 0.2))
   const antiPenalty = triggeredAntiPatterns.length * 10
-  const finalScore = Math.max(0, totalScore - antiPenalty)
+  const finalScore = Math.max(0, totalScore - antiPenalty - toolErrorPenalty)
   const percentage = (finalScore / eval_.maxScore) * 100
   const passed = percentage >= 70 && triggeredAntiPatterns.length === 0
 

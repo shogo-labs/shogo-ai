@@ -65,11 +65,11 @@ const DEFAULT_PRUNING: PruningConfig = {
 export interface SessionManagerConfig {
   /** Max session idle time before expiry in seconds (default: 3600 = 1 hour) */
   sessionTtlSeconds: number
-  /** Max messages before triggering compaction (default: 30) */
+  /** @deprecated No longer used — compaction is purely token-based via autocompactThreshold */
   maxMessages: number
   /** Estimated tokens per message for cost tracking (default: 150) */
   estimatedTokensPerMessage: number
-  /** Max estimated tokens before forcing compaction (default: 30000) */
+  /** @deprecated Use contextWindowTokens/maxOutputTokens/bufferTokens instead */
   maxEstimatedTokens: number
   /** Number of recent messages to keep uncompacted (default: 10) */
   keepRecentMessages: number
@@ -290,11 +290,9 @@ export class SessionManager {
     return this.sessions.delete(id)
   }
 
-  /** Check if a session needs compaction */
+  /** Check if a session needs compaction (purely token-based, no message count limit) */
   needsCompaction(session: ManagedSession): boolean {
-    if (session.messages.length > this.config.maxMessages) return true
-    const estimatedTokens = this.estimateTokens(session)
-    return estimatedTokens > this.config.maxEstimatedTokens
+    return this.estimateTokens(session) > this.autocompactThreshold
   }
 
   /** Estimate the token count for a session's context */
