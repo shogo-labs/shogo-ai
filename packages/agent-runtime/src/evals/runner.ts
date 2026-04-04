@@ -263,39 +263,6 @@ function checkAntiPattern(
     return toolCalls.length === 0
   }
 
-  if (p.includes('canvas without') || p.includes('ui instead of work') || p.includes('interactive ui instead')) {
-    const canvasCalls = toolCalls.filter(t => t.name.startsWith('canvas_'))
-    const workCalls = toolCalls.filter(t =>
-      !t.name.startsWith('canvas_') &&
-      t.name !== 'memory_read' &&
-      t.name !== 'memory_search'
-    )
-    return canvasCalls.length > 3 && workCalls.length < 2
-  }
-
-  if (p.includes('form field') || p.includes('builder ui') || p.includes('self-service')) {
-    const updateCalls = toolCalls.filter(t => t.name === 'canvas_update')
-    for (const call of updateCalls) {
-      const input = JSON.stringify(call.input ?? '')
-      const hasTextField = input.includes('"TextField"')
-      const hasSelect = input.includes('"Select"')
-      const hasFormInputs = hasTextField || hasSelect
-      const hasApiSchema = toolCalls.some(t => t.name === 'canvas_api_schema')
-      if (hasFormInputs && hasApiSchema) return true
-    }
-    return false
-  }
-
-  if (p.includes('sendtoagent for simple crud') || p.includes('sendtoagent for crud')) {
-    const hasSendToAgent = toolCalls.some(t => {
-      if (t.name !== 'canvas_update') return false
-      const input = JSON.stringify(t.input ?? '')
-      return input.includes('"sendToAgent"')
-    })
-    const hasApiSchema = toolCalls.some(t => t.name === 'canvas_api_schema')
-    return hasSendToAgent && hasApiSchema
-  }
-
   if (p.includes('delegated-trivial')) {
     return toolCalls.some(t => t.name === 'task' || t.name === 'agent_spawn')
   }

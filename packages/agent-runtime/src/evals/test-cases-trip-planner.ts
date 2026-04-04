@@ -36,26 +36,22 @@ function allContent(result: EvalResult): string {
   return (result.responseText + JSON.stringify(result.toolCalls)).toLowerCase()
 }
 
-/** True if any canvas_update contains an OPEN mutation (for external links). */
+/** True if any written code contains Airbnb links. */
 function canvasHasOpenMutation(result: EvalResult): boolean {
-  const updates = result.toolCalls.filter(t => t.name === 'canvas_update')
-  for (const call of updates) {
-    const json = JSON.stringify(call.input).toLowerCase()
-    if (json.includes('"method"') && json.includes('"open"')) return true
-  }
-  return false
+  return result.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+    return content.includes('airbnb.com') || (content.includes('href') && content.includes('airbnb'))
+  })
 }
 
-/** True if any canvas_update or canvas_data contains an Airbnb URL. */
+/** True if any written code contains an Airbnb URL. */
 function canvasHasAirbnbLinks(result: EvalResult): boolean {
-  const canvasCalls = result.toolCalls.filter(
-    t => t.name === 'canvas_update' || t.name === 'canvas_data',
-  )
-  for (const call of canvasCalls) {
-    const json = JSON.stringify(call.input).toLowerCase()
-    if (json.includes('airbnb.com/rooms')) return true
-  }
-  return false
+  return result.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    const content = String((t.input as any).content ?? (t.input as any).new_string ?? '').toLowerCase()
+    return content.includes('airbnb.com/rooms') || content.includes('airbnb.com')
+  })
 }
 
 // ---------------------------------------------------------------------------

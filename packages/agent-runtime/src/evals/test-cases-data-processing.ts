@@ -32,10 +32,11 @@ function wroteSchemaFile(r: { toolCalls: Array<{ name: string; input: unknown }>
 }
 
 function wroteCanvasFile(r: { toolCalls: Array<{ name: string; input: unknown }> }): boolean {
-  return r.toolCalls.some(t =>
-    t.name === 'write_file' &&
-    String((t.input as any)?.path ?? '').startsWith('canvas/'),
-  )
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    const path = String((t.input as any)?.path ?? '')
+    return /^src\/.*\.(tsx?|jsx?)$/.test(path) || path.startsWith('canvas/')
+  })
 }
 
 function wroteScript(r: { toolCalls: Array<{ name: string; input: unknown }> }): boolean {

@@ -363,15 +363,12 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(63)
+      expect(createTools(createCtx())).toHaveLength(58)
       expect(createTools(createCtx()).find((t) => t.name === 'cron')).toBeUndefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
-      expect(createTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeDefined()
-      expect(createTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeDefined()
-      expect(createTools(createCtx()).find((t) => t.name === 'canvas_data')).toBeDefined()
-      expect(createTools(createCtx()).find((t) => t.name === 'canvas_delete')).toBeDefined()
-      expect(createTools(createCtx()).find((t) => t.name === 'canvas_action_wait')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeUndefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeUndefined()
     })
 
     test('createHeartbeatTools excludes exec and send_message', () => {

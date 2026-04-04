@@ -453,33 +453,76 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
 // Fixture: Stripe Revenue Dashboard (Case 7)
 // ---------------------------------------------------------------------------
 
+const STRIPE_BALANCE_RESPONSE = {
+  available: [{ amount: 1250000, currency: 'usd' }],
+  pending: [{ amount: 35000, currency: 'usd' }],
+}
+
+const STRIPE_PAYMENTS_RESPONSE = {
+  data: [
+    { id: 'pi_001', amount: 29900, currency: 'usd', status: 'succeeded', customer_email: 'enterprise@bigcorp.com', description: 'Pro Plan - Annual', created: 1740100800 },
+    { id: 'pi_002', amount: 9900, currency: 'usd', status: 'succeeded', customer_email: 'team@startup.io', description: 'Team Plan - Monthly', created: 1740014400 },
+    { id: 'pi_003', amount: 4900, currency: 'usd', status: 'succeeded', customer_email: 'dev@indie.dev', description: 'Pro Plan - Monthly', created: 1739928000 },
+    { id: 'pi_004', amount: 29900, currency: 'usd', status: 'succeeded', customer_email: 'ops@midmarket.com', description: 'Pro Plan - Annual', created: 1739841600 },
+    { id: 'pi_005', amount: 9900, currency: 'usd', status: 'succeeded', customer_email: 'cto@growthco.com', description: 'Team Plan - Monthly', created: 1739755200 },
+    { id: 'pi_006', amount: 4900, currency: 'usd', status: 'succeeded', customer_email: 'founder@newapp.co', description: 'Pro Plan - Monthly', created: 1739668800 },
+    { id: 'pi_007', amount: 14900, currency: 'usd', status: 'succeeded', customer_email: 'admin@agency.com', description: 'Agency Plan - Monthly', created: 1739582400 },
+    { id: 'pi_008', amount: 9900, currency: 'usd', status: 'succeeded', customer_email: 'lead@saasco.com', description: 'Team Plan - Monthly', created: 1739496000 },
+  ],
+  has_more: false,
+}
+
 export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'static',
+    description: 'Search for tools by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'stripe',
+      results: [
+        { name: 'Stripe', qualifiedName: 'stripe', description: 'Stripe — managed OAuth integration. Access payments, customers, invoices.', source: 'managed', authType: 'oauth', composioToolkit: 'stripe' },
+      ],
+      message: 'Found 1 tool(s). Use tool_install to add one.',
+    },
+  },
+  tool_install: {
+    type: 'static',
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'stripe',
+      toolCount: 4,
+      connected: true,
+      authStatus: 'active',
+      tools: ['STRIPE_RETRIEVE_BALANCE', 'STRIPE_LIST_CHARGES', 'STRIPE_CREATE_INVOICE', 'STRIPE_LIST_CUSTOMERS'],
+      message: 'Installed stripe with 4 tool(s). Auth is active — connected and ready.',
+    },
+  },
   STRIPE_GET_BALANCE: {
     type: 'static',
     description: 'Get the current Stripe account balance. Returns available and pending amounts by currency.',
     paramKeys: [],
-    response: {
-      available: [{ amount: 1250000, currency: 'usd' }],
-      pending: [{ amount: 35000, currency: 'usd' }],
-    },
+    response: STRIPE_BALANCE_RESPONSE,
+  },
+  STRIPE_RETRIEVE_BALANCE: {
+    type: 'static',
+    description: 'Retrieve the current Stripe account balance. Returns available and pending amounts by currency.',
+    paramKeys: [],
+    response: STRIPE_BALANCE_RESPONSE,
   },
   STRIPE_LIST_PAYMENTS: {
     type: 'static',
     description: 'List recent Stripe payments/charges. Returns an array of payment objects with amount, currency, status, customer_email, and created timestamp.',
     paramKeys: ['limit', 'starting_after', 'status'],
-    response: {
-      data: [
-        { id: 'pi_001', amount: 29900, currency: 'usd', status: 'succeeded', customer_email: 'enterprise@bigcorp.com', description: 'Pro Plan - Annual', created: 1740100800 },
-        { id: 'pi_002', amount: 9900, currency: 'usd', status: 'succeeded', customer_email: 'team@startup.io', description: 'Team Plan - Monthly', created: 1740014400 },
-        { id: 'pi_003', amount: 4900, currency: 'usd', status: 'succeeded', customer_email: 'dev@indie.dev', description: 'Pro Plan - Monthly', created: 1739928000 },
-        { id: 'pi_004', amount: 29900, currency: 'usd', status: 'succeeded', customer_email: 'ops@midmarket.com', description: 'Pro Plan - Annual', created: 1739841600 },
-        { id: 'pi_005', amount: 9900, currency: 'usd', status: 'succeeded', customer_email: 'cto@growthco.com', description: 'Team Plan - Monthly', created: 1739755200 },
-        { id: 'pi_006', amount: 4900, currency: 'usd', status: 'succeeded', customer_email: 'founder@newapp.co', description: 'Pro Plan - Monthly', created: 1739668800 },
-        { id: 'pi_007', amount: 14900, currency: 'usd', status: 'succeeded', customer_email: 'admin@agency.com', description: 'Agency Plan - Monthly', created: 1739582400 },
-        { id: 'pi_008', amount: 9900, currency: 'usd', status: 'succeeded', customer_email: 'lead@saasco.com', description: 'Team Plan - Monthly', created: 1739496000 },
-      ],
-      has_more: false,
-    },
+    response: STRIPE_PAYMENTS_RESPONSE,
+  },
+  STRIPE_LIST_CHARGES: {
+    type: 'static',
+    description: 'List recent Stripe charges. Returns an array of charge objects with amount, currency, status, customer_email, and created timestamp.',
+    paramKeys: ['limit', 'starting_after', 'status'],
+    response: STRIPE_PAYMENTS_RESPONSE,
   },
 }
 
@@ -2393,9 +2436,7 @@ SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture: canvas_api_bind — bind installed tool to canvas CRUD
-// Assumes Google Calendar Composio is already installed. Agent must bind
-// calendar events to the canvas so the UI can display them.
+// Fixture: Composio Google Calendar — installed tool provides real data
 // ---------------------------------------------------------------------------
 
 export const CANVAS_API_BIND_MOCKS: ToolMockMap = {
@@ -2437,30 +2478,10 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
       successful: true,
     },
   },
-  canvas_create: {
-    type: 'static',
-    description: 'Create a new canvas surface.',
-    paramKeys: ['title', 'content'],
-    response: { ok: true, surfaceId: 'surface-cal-1', url: '/canvas/surface-cal-1' },
-  },
-  canvas_api_bind: {
-    type: 'static',
-    description: 'Bind CRUD API routes to installed tools so the canvas can display live data.',
-    paramKeys: ['surfaceId', 'model', 'fields', 'bindings', 'cache', 'dataPath'],
-    response: {
-      ok: true,
-      surfaceId: 'surface-cal-1',
-      model: 'CalendarEvent',
-      endpoint: '/api/calendarevents',
-      methods: ['GET /api/calendarevents', 'GET /api/calendarevents/:id'],
-      dataPath: '/events',
-      message: 'Bound CalendarEvent CRUD to Composio Google Calendar tools. The canvas can now fetch live data. Data auto-loaded at "/events".',
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
-// Fixture: Full lifecycle — search → install → use → bind to canvas
+// Fixture: Full lifecycle — search → install → use → write React component
 // Tests the complete agent flow from having no tools to displaying live data.
 // ---------------------------------------------------------------------------
 
@@ -2504,37 +2525,17 @@ GITHUB_LIST_ISSUES: {
       successful: true,
     },
   },
-  canvas_create: {
-    type: 'static',
-    description: 'Create a new canvas surface.',
-    paramKeys: ['title', 'content'],
-    response: { ok: true, surfaceId: 'surface-gh-1', url: '/canvas/surface-gh-1' },
-  },
-  canvas_api_bind: {
-    type: 'static',
-    description: 'Bind CRUD API routes to installed tools.',
-    paramKeys: ['surfaceId', 'model', 'fields', 'bindings', 'cache', 'dataPath'],
-    response: {
-      ok: true,
-      surfaceId: 'surface-gh-1',
-      model: 'GitHubIssue',
-      endpoint: '/api/githubissues',
-      methods: ['GET /api/githubissues', 'GET /api/githubissues/:id', 'POST /api/githubissues'],
-      dataPath: '/issues',
-      message: 'Bound GitHubIssue CRUD to GitHub tools. Data auto-loaded at "/issues".',
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
-// Fixture: Composio auto-bind — install triggers auto-bind deferred
-// Tests that agent trusts auto-bind and creates canvas efficiently.
+// Fixture: Composio auto-install — install and fetch calendar data
+// Tests that agent installs integration and writes a React component.
 // ---------------------------------------------------------------------------
 
 export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
   tool_install: {
     type: 'static',
-    description: 'Install a tool. Auto-bind discovers CRUD operations automatically.',
+    description: 'Install a tool.',
     paramKeys: ['name'],
     response: {
       ok: true, server: 'composio', source: 'managed', integration: 'googlecalendar', toolCount: 4,
@@ -2542,12 +2543,6 @@ export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
       tools: ['GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', 'GOOGLECALENDAR_CREATE_EVENT', 'GOOGLECALENDAR_LIST_CALENDARS', 'GOOGLECALENDAR_DELETE_EVENT'],
       authStatus: 'active',
       message: 'Installed googlecalendar with 4 tool(s). Auth is active.',
-      autoBind: {
-        ok: true, deferred: true,
-        surfaceId: '(next canvas)',
-        entity: 'CalendarEvent',
-        message: 'Auto-bind ready — "CalendarEvent" CRUD binding will apply automatically to the next canvas you create.',
-      },
     },
   },
   GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
@@ -2565,18 +2560,6 @@ export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
       },
       successful: true,
     },
-  },
-  canvas_create: {
-    type: 'static',
-    description: 'Create a new canvas surface.',
-    paramKeys: ['surfaceId', 'title'],
-    response: { ok: true, surfaceId: 'app', url: '/canvas/app' },
-  },
-  canvas_update: {
-    type: 'static',
-    description: 'Update canvas components.',
-    paramKeys: ['surfaceId', 'components'],
-    response: { ok: true, surfaceId: 'app', status: 'rendered', componentsUpdated: 5 },
   },
 }
 
@@ -3178,7 +3161,7 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
       {
         match: { path: '.shogo/skills/github-ops/SKILL.md' },
         response: {
-          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on canvas\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via tool_search.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build canvas** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
+          content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on dashboard\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, write_file, edit_file, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via tool_search.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build dashboard** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
           path: '.shogo/skills/github-ops/SKILL.md',
           size: 612,
         },
@@ -3239,7 +3222,7 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
       {
         match: { path: '.shogo/skills/health-check/SKILL.md' },
         response: {
-          content: '---\nname: health-check\nversion: 2.0.0\ndescription: Run health checks on web services and APIs\ntrigger: "health check|site status|is it down|uptime"\ntools: [web, canvas_create, canvas_update, send_message]\n---\n\n# Health Check\n\nRun health checks on configured endpoints:\n\n1. **Load config** — Read endpoint list from memory (key: health_check_endpoints)\n2. **Check** — For each endpoint, call web({ url }) and record status code and response time\n3. **Build canvas** — Dashboard with: status badge per service, response time chart, uptime percentage\n4. **Alert** — For any non-200 status: send_message with details\n5. **Persist** — Log results to memory for trend tracking',
+          content: '---\nname: health-check\nversion: 2.0.0\ndescription: Run health checks on web services and APIs\ntrigger: "health check|site status|is it down|uptime"\ntools: [web, write_file, edit_file, send_message]\n---\n\n# Health Check\n\nRun health checks on configured endpoints:\n\n1. **Load config** — Read endpoint list from memory (key: health_check_endpoints)\n2. **Check** — For each endpoint, call web({ url }) and record status code and response time\n3. **Build dashboard** — Dashboard with: status badge per service, response time chart, uptime percentage\n4. **Alert** — For any non-200 status: send_message with details\n5. **Persist** — Log results to memory for trend tracking',
           path: '.shogo/skills/health-check/SKILL.md',
           size: 520,
         },

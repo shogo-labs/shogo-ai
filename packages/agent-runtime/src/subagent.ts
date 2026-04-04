@@ -30,8 +30,6 @@ const CORE_GATEWAY_TOOLS = new Set([
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
-  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
-  'canvas_inspect', 'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
 ])

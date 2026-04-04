@@ -1,21 +1,212 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Multi-turn Conversation Eval Test Cases
+ * Multi-turn Conversation Eval Test Cases — Canvas V2 (Code Mode)
  *
  * Tests the agent's ability to handle multi-step conversations,
- * maintain context, and plan tool sequences efficiently.
+ * maintain context, and build / edit React components efficiently.
+ *
+ * In V2 Code Mode the agent writes standard Vite + React + TypeScript
+ * to src/ using write_file / edit_file and verifies with read_lint.
  */
 
-import type { AgentEval } from './types'
-import { usedTool, usedToolInFinalTurn } from './eval-helpers'
+import type { AgentEval, EvalResult } from './types'
+import { usedTool, neverUsedTool, toolCallCount } from './eval-helpers'
+
+// ---------------------------------------------------------------------------
+// Shared V2 config
+// ---------------------------------------------------------------------------
+
+const V2_CONFIG = JSON.stringify({
+  heartbeatInterval: 1800,
+  heartbeatEnabled: false,
+  channels: [],
+  activeMode: 'canvas',
+  canvasMode: 'code',
+  model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+}, null, 2)
+
+// ---------------------------------------------------------------------------
+// Helpers (same pattern as canvas-v2-lint / complex)
+// ---------------------------------------------------------------------------
+
+function isCodeFile(path: string): boolean {
+  return /^src\/.*\.(tsx?|jsx?)$/.test(path)
+}
+
+function wroteCodeFile(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    return isCodeFile(String((t.input as any).path ?? ''))
+  })
+}
+
+function editedCodeFile(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'edit_file') return false
+    return isCodeFile(String((t.input as any).path ?? ''))
+  })
+}
+
+function wroteOrEditedCode(r: EvalResult): boolean {
+  return wroteCodeFile(r) || editedCodeFile(r)
+}
+
+function allWrittenCode(r: EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => isCodeFile(String((t.input as any).path ?? '')))
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .join('\n')
+    .toLowerCase()
+}
+
+function anyCodeContains(r: EvalResult, term: string): boolean {
+  return allWrittenCode(r).includes(term.toLowerCase())
+}
+
+function allToolCallsJson(r: EvalResult): string {
+  return JSON.stringify(r.toolCalls).toLowerCase()
+}
+
+function wroteSchema(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    return String((t.input as any).path ?? '').includes('schema.prisma')
+  })
+}
+
+function neverUsedV1CanvasTools(_r: EvalResult): boolean {
+  return true
+}
+
+// Pre-seeded workspace files for incremental-update evals
+const COUNTER_TSX = `import { useState } from 'react'
+
+export default function Counter() {
+  const [count] = useState(0)
+  return (
+    <div className="p-8 text-center">
+      <h1 className="text-4xl font-bold">{count}</h1>
+      <p className="text-gray-500 mt-2">Counter</p>
+    </div>
+  )
+}
+`
+
+const SALES_DASHBOARD_TSX = `import React from 'react'
+
+const metrics = [
+  { label: 'Revenue', value: '$125K' },
+  { label: 'Orders', value: '847' },
+  { label: 'Avg Order', value: '$148' },
+]
+
+export default function SalesDashboard() {
+  return (
+    <div className="p-8">
+      <h1 className="text-2xl font-bold mb-6">Q4 Sales Dashboard</h1>
+      <div className="grid grid-cols-3 gap-4">
+        {metrics.map((m) => (
+          <div key={m.label} className="bg-white rounded-lg shadow p-4 text-center">
+            <p className="text-gray-500 text-sm">{m.label}</p>
+            <p className="text-3xl font-bold">{m.value}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+`
+
+const CONTACT_LIST_TSX = `import React from 'react'
+
+const contacts = [
+  { name: 'Alice Johnson', email: 'alice@example.com', phone: '555-0101' },
+  { name: 'Bob Smith', email: 'bob@example.com', phone: '555-0102' },
+  { name: 'Carol Davis', email: 'carol@example.com', phone: '555-0103' },
+]
+
+export default function ContactList() {
+  return (
+    <div className="p-8">
+      <h1 className="text-2xl font-bold mb-4">Contacts</h1>
+      <table className="w-full">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left p-2">Name</th>
+            <th className="text-left p-2">Email</th>
+            <th className="text-left p-2">Phone</th>
+          </tr>
+        </thead>
+        <tbody>
+          {contacts.map((c) => (
+            <tr key={c.email} className="border-b">
+              <td className="p-2">{c.name}</td>
+              <td className="p-2">{c.email}</td>
+              <td className="p-2">{c.phone}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+`
+
+const EXPENSE_DASHBOARD_TSX = `import React from 'react'
+
+const categories = [
+  { name: 'Travel', amount: 3200 },
+  { name: 'Software', amount: 2100 },
+  { name: 'Hardware', amount: 1800 },
+  { name: 'Food', amount: 1400 },
+]
+
+export default function ExpenseDashboard() {
+  return (
+    <div className="p-8">
+      <h1 className="text-2xl font-bold mb-6">Expense Dashboard</h1>
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="bg-white rounded-lg shadow p-4 text-center">
+          <p className="text-gray-500 text-sm">Total Spend</p>
+          <p className="text-3xl font-bold">$8,500</p>
+        </div>
+        <div className="bg-white rounded-lg shadow p-4 text-center">
+          <p className="text-gray-500 text-sm">Expenses</p>
+          <p className="text-3xl font-bold">34</p>
+        </div>
+      </div>
+      <h2 className="text-lg font-semibold mb-3">By Category</h2>
+      <div className="space-y-2">
+        {categories.map((c) => (
+          <div key={c.name} className="flex justify-between bg-gray-50 p-3 rounded">
+            <span>{c.name}</span>
+            <span className="font-medium">\${c.amount.toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+`
+
+// ---------------------------------------------------------------------------
+// Test Cases
+// ---------------------------------------------------------------------------
 
 export const MULTITURN_EVALS: AgentEval[] = [
   {
     id: 'multiturn-canvas-then-modify',
-    name: 'Multi-turn: Build canvas then modify it',
+    name: 'Multi-turn: Build component then modify it',
     category: 'multiturn',
     level: 3,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: {
+      'config.json': V2_CONFIG,
+      'src/components/Counter.tsx': COUNTER_TSX,
+    },
     conversationHistory: [
       {
         role: 'user',
@@ -26,28 +217,35 @@ export const MULTITURN_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-canvas-data',
-        description: 'Used canvas_data to update the counter value',
+        id: 'used-edit-file',
+        description: 'Used edit_file or write_file to update the counter',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_data'),
+        validate: (r) => wroteOrEditedCode(r),
       },
       {
         id: 'updated-to-42',
         description: 'Set the value to 42',
         points: 30,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('42'),
+        validate: (r) => anyCodeContains(r, '42'),
       },
       {
-        id: 'did-not-recreate',
-        description: 'Did NOT recreate the surface from scratch (efficient)',
-        points: 30,
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 15,
         phase: 'execution',
-        validate: (r) => !usedToolInFinalTurn(r, 'canvas_create'),
+        validate: (r) => neverUsedV1CanvasTools(r),
+      },
+      {
+        id: 'reasonable-tools',
+        description: 'Completed in <= 8 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.finalTurnToolCalls.length <= 8,
       },
     ],
-    antiPatterns: ['Recreated surface unnecessarily'],
+    antiPatterns: ['Recreated component from scratch unnecessarily'],
   },
 
   {
@@ -55,21 +253,24 @@ export const MULTITURN_EVALS: AgentEval[] = [
     name: 'Multi-turn: Store preference then use it',
     category: 'multiturn',
     level: 3,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       {
         role: 'user',
         content: 'Remember that I always want weather in Celsius, not Fahrenheit.',
       },
     ],
-    input: 'Show me the current temperature — it\'s 25°C outside. Make it look nice.',
+    input: 'Show me the current temperature — it\'s 25°C outside. Build a nice React component for it.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-canvas-tools',
-        description: 'Built a canvas to display the temperature',
+        id: 'wrote-code-file',
+        description: 'Built a React component to display the temperature',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create') || usedTool(r, 'canvas_update'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'used-celsius',
@@ -77,20 +278,26 @@ export const MULTITURN_EVALS: AgentEval[] = [
         points: 35,
         phase: 'execution',
         validate: (r) => {
-          const canvasCalls = r.toolCalls.filter(t => t.name.startsWith('canvas'))
-          const canvasJson = JSON.stringify(canvasCalls).toLowerCase()
+          const code = allWrittenCode(r)
           const text = r.responseText.toLowerCase()
-          const usesCelsius = canvasJson.includes('celsius') || canvasJson.includes('°c') || canvasJson.includes('25')
-          const noFahrenheit = !canvasJson.includes('fahrenheit') && !text.includes('fahrenheit')
+          const usesCelsius = code.includes('celsius') || code.includes('°c') || code.includes('25')
+          const noFahrenheit = !code.includes('fahrenheit') && !text.includes('fahrenheit')
           return usesCelsius && noFahrenheit
         },
       },
       {
         id: 'responded-helpfully',
-        description: 'Gave a helpful response about the canvas',
-        points: 35,
+        description: 'Gave a helpful response about the component',
+        points: 20,
         phase: 'execution',
         validate: (r) => r.responseText.length > 20,
+      },
+      {
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
     ],
   },
@@ -100,6 +307,12 @@ export const MULTITURN_EVALS: AgentEval[] = [
     name: 'Multi-turn: Progressively build a dashboard',
     category: 'multiturn',
     level: 4,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: {
+      'config.json': V2_CONFIG,
+      'src/components/SalesDashboard.tsx': SALES_DASHBOARD_TSX,
+    },
     conversationHistory: [
       {
         role: 'user',
@@ -114,164 +327,192 @@ export const MULTITURN_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-canvas-update',
-        description: 'Used canvas_update to add the chart',
+        id: 'used-edit-or-write',
+        description: 'Used edit_file or write_file to add the chart',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => wroteOrEditedCode(r),
       },
       {
         id: 'has-chart',
-        description: 'Added a Chart component',
+        description: 'Added chart-related JSX or component',
         points: 30,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Chart"'),
-      },
-      {
-        id: 'efficient-update',
-        description: 'Did not rebuild the entire dashboard from scratch',
-        points: 20,
-        phase: 'execution',
         validate: (r) => {
-          const createCalls = r.finalTurnToolCalls.filter(t => t.name === 'canvas_create')
-          return createCalls.length === 0
+          const code = allWrittenCode(r)
+          return code.includes('chart') || code.includes('svg') || code.includes('canvas') ||
+                 code.includes('bar') || code.includes('line') || code.includes('trend')
         },
       },
       {
-        id: 'reasonable-tools',
-        description: 'Used <= 6 tool calls for this incremental update',
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
         points: 20,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 6,
+        validate: (r) => neverUsedV1CanvasTools(r),
+      },
+      {
+        id: 'reasonable-tools',
+        description: 'Used <= 10 tool calls for this incremental update',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => r.finalTurnToolCalls.length <= 10,
       },
     ],
   },
 
-  // ---- Build Then Add CRUD (n8n progressive workflow building) ----
   {
     id: 'multiturn-upgrade-to-crud',
-    name: 'Multi-turn: Upgrade display canvas to CRUD app',
+    name: 'Multi-turn: Upgrade display component to CRUD app',
     category: 'multiturn',
     level: 3,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: {
+      'config.json': V2_CONFIG,
+      'src/components/ContactList.tsx': CONTACT_LIST_TSX,
+    },
     conversationHistory: [
       {
         role: 'user',
         content: 'Show me a contact list with name, email, and phone — use some fake data.',
       },
     ],
-    input: 'Now make it so I can actually add and delete contacts too. Keep the sample data.',
+    input: 'Now make it so I can actually add and delete contacts too. Keep the sample data. Set up a Prisma schema for contacts.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-api-schema',
-        description: 'Used canvas_api_schema to add CRUD backend',
-        points: 30,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_api_schema'),
-      },
-      {
-        id: 'used-api-seed',
-        description: 'Used canvas_api_seed to populate contacts',
-        points: 20,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_api_seed'),
-      },
-      {
-        id: 'did-not-recreate-surface',
-        description: 'Did NOT recreate the surface from scratch',
+        id: 'wrote-schema',
+        description: 'Wrote a Prisma schema for contacts',
         points: 25,
-        phase: 'execution',
-        validate: (r) => !usedToolInFinalTurn(r, 'canvas_create'),
+        phase: 'intention',
+        validate: (r) => wroteSchema(r),
       },
       {
-        id: 'has-contact-model',
-        description: 'API schema defines a Contact model',
+        id: 'updated-component',
+        description: 'Updated or rewrote the contact list component with CRUD',
+        points: 25,
+        phase: 'intention',
+        validate: (r) => wroteOrEditedCode(r),
+      },
+      {
+        id: 'has-add-delete',
+        description: 'Code has add and delete functionality (useState, onClick, form)',
         points: 25,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const code = allWrittenCode(r)
+          return (code.includes('usestate') || code.includes('onclick') || code.includes('onsubmit')) &&
+                 (code.includes('add') || code.includes('delete') || code.includes('remove'))
+        },
+      },
+      {
+        id: 'has-contact-model',
+        description: 'Schema or code defines a contact with email/phone',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = allToolCallsJson(r)
           return json.includes('contact') && (json.includes('email') || json.includes('phone'))
         },
+      },
+      {
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
     ],
   },
 
-  // ---- Memory Then Canvas Using Context (OpenClaw + Odin AI) ----
   {
     id: 'multiturn-memory-then-canvas',
     name: 'Multi-turn: Use memorized KPIs to build dashboard',
     category: 'multiturn',
     level: 3,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       {
         role: 'user',
         content: 'Remember that our team tracks these KPIs: MRR, churn rate, NPS score, and active users.',
       },
     ],
-    input: 'Now show me those KPIs in a nice visual layout with some sample numbers.',
+    input: 'Now build a React dashboard component showing those KPIs in a nice visual layout with some sample numbers.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
+        id: 'wrote-code-file',
+        description: 'Created a React component',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
-      },
-      {
-        id: 'used-canvas-update',
-        description: 'Added components to the canvas',
-        points: 15,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'has-mrr',
         description: 'Dashboard includes MRR metric',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('mrr'),
+        validate: (r) => anyCodeContains(r, 'mrr'),
       },
       {
         id: 'has-churn',
         description: 'Dashboard includes churn rate metric',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('churn'),
+        validate: (r) => anyCodeContains(r, 'churn'),
       },
       {
         id: 'has-nps',
         description: 'Dashboard includes NPS score metric',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('nps'),
+        validate: (r) => anyCodeContains(r, 'nps'),
       },
       {
         id: 'has-active-users',
         description: 'Dashboard includes active users metric',
-        points: 20,
+        points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('active') && json.includes('user')
+          const code = allWrittenCode(r)
+          return code.includes('active') && code.includes('user')
         },
+      },
+      {
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => neverUsedV1CanvasTools(r),
+      },
+      {
+        id: 'reasonable-tools',
+        description: 'Completed in <= 15 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.finalTurnToolCalls.length <= 15,
       },
     ],
   },
 
-  // ---- Support Ticket Escalation Flow (n8n + Odin AI) ----
   {
     id: 'multiturn-incident-escalation',
-    name: 'Multi-turn: Log incident and show status canvas',
+    name: 'Multi-turn: Log incident and show status component',
     category: 'multiturn',
     level: 3,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       {
         role: 'user',
         content: 'I built a support ticket app. A new critical ticket just came in: "Production database is down" from customer Acme Corp.',
       },
     ],
-    input: 'Log this as an active incident and show me a status page with the details.',
+    input: 'Log this as an active incident to your memory and build me a React status page component showing the incident details — severity, customer, description, and current status.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -282,11 +523,11 @@ export const MULTITURN_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'write_file'),
       },
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas for incident status',
+        id: 'wrote-code-file',
+        description: 'Created a React component for incident status',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'memory-has-incident',
@@ -294,43 +535,48 @@ export const MULTITURN_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = allToolCallsJson(r)
           return json.includes('database') && json.includes('down')
         },
       },
       {
-        id: 'canvas-has-badge',
-        description: 'Canvas includes a Badge for severity',
+        id: 'has-severity-indicator',
+        description: 'Component has severity/critical indicator',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Badge"'),
-      },
-      {
-        id: 'canvas-has-customer',
-        description: 'Canvas references customer Acme Corp',
-        points: 10,
-        phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('acme')
+          const code = allWrittenCode(r)
+          return code.includes('critical') || code.includes('severity') || code.includes('warning') || code.includes('red')
         },
       },
       {
+        id: 'has-customer',
+        description: 'Component references customer Acme Corp',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => anyCodeContains(r, 'acme'),
+      },
+      {
         id: 'reasonable-tools',
-        description: 'Completed in <= 10 tool calls',
+        description: 'Completed in <= 15 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 10,
+        validate: (r) => r.finalTurnToolCalls.length <= 15,
       },
     ],
   },
 
-  // ---- Iterative Dashboard Refinement (Odin AI task automator) ----
   {
     id: 'multiturn-iterative-refinement',
     name: 'Multi-turn: Iteratively refine expense dashboard',
     category: 'multiturn',
     level: 4,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: {
+      'config.json': V2_CONFIG,
+      'src/components/ExpenseDashboard.tsx': EXPENSE_DASHBOARD_TSX,
+    },
     conversationHistory: [
       {
         role: 'user',
@@ -341,51 +587,54 @@ export const MULTITURN_EVALS: AgentEval[] = [
         content: 'Add a breakdown by category — Travel, Software, Hardware, and Food.',
       },
     ],
-    input: 'Now add a warning at the top that we\'re at 85% of budget. Make it stand out — yellow or something.',
+    input: 'Now add a warning at the top that we\'re at 85% of budget. Make it stand out — yellow or red background with bold text.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-canvas-update',
-        description: 'Used canvas_update to add the alert',
+        id: 'used-edit-or-write',
+        description: 'Used edit_file or write_file to add the alert',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => wroteOrEditedCode(r),
       },
       {
-        id: 'has-alert',
-        description: 'Added an Alert component',
+        id: 'has-warning-content',
+        description: 'Code has warning/alert about budget',
         points: 25,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Alert"'),
-      },
-      {
-        id: 'has-warning-severity',
-        description: 'Alert has warning severity or yellow color',
-        points: 15,
-        phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('warning') || json.includes('yellow')
+          const code = allWrittenCode(r)
+          return (code.includes('warning') || code.includes('alert') || code.includes('85%') || code.includes('budget'))
         },
       },
       {
-        id: 'did-not-recreate',
-        description: 'Did not rebuild the dashboard from scratch',
+        id: 'has-visual-emphasis',
+        description: 'Warning has visual emphasis (yellow, red, bold, bg-)',
         points: 15,
         phase: 'execution',
-        validate: (r) => !usedToolInFinalTurn(r, 'canvas_create'),
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return code.includes('yellow') || code.includes('red') || code.includes('bold') ||
+                 code.includes('bg-') || code.includes('font-bold')
+        },
+      },
+      {
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tools',
-        description: 'Used <= 6 tool calls for this incremental update',
+        description: 'Used <= 10 tool calls for this incremental update',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 6,
+        validate: (r) => r.finalTurnToolCalls.length <= 10,
       },
     ],
   },
 
-  // ---- Personality Then Behavioral Verification (OpenClaw + Odin AI) ----
   {
     id: 'multiturn-personality-verify',
     name: 'Multi-turn: Verify behavior after personality update',

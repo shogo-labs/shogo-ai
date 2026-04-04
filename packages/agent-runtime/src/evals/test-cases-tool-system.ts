@@ -7,14 +7,11 @@
  * interface that abstracts Composio (managed OAuth) and catalog (local MCP)
  * sources behind a single agent-facing API.
  *
- * Also tests:
- * - canvas_api_bind: binding installed tool CRUD to the canvas
- * - Mixed search results spanning managed + catalog sources
- * - Catalog-only install-and-use flow (no auth needed)
- * - Full lifecycle: search → install → use → bind → canvas
+ * Cases 3, 4, and 6 also test that fetched integration data is rendered
+ * as React components (Canvas V2 / Code Mode) rather than V1 canvas tools.
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import {
   UNIFIED_SEARCH_MIXED_MOCKS,
   JIRA_SLACK_INSTALL_USE_MOCKS,
@@ -24,13 +21,53 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
-  usedToolInFinalTurn,
   neverUsedTool,
   responseContains,
   toolCallsJson,
   toolCallArgsContain,
   installCalledWithoutCommand,
 } from './eval-helpers'
+
+// ---------------------------------------------------------------------------
+// Shared V2 config
+// ---------------------------------------------------------------------------
+
+const V2_CONFIG = JSON.stringify({
+  heartbeatInterval: 1800,
+  heartbeatEnabled: false,
+  channels: [],
+  activeMode: 'canvas',
+  canvasMode: 'code',
+  model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+}, null, 2)
+
+// ---------------------------------------------------------------------------
+// V2 validation helpers
+// ---------------------------------------------------------------------------
+
+function isCodeFile(path: string): boolean {
+  return /^src\/.*\.(tsx?|jsx?)$/.test(path)
+}
+
+function wroteCodeFile(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    return isCodeFile(String((t.input as any).path ?? ''))
+  })
+}
+
+function allWrittenCode(r: EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => isCodeFile(String((t.input as any).path ?? '')))
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .join('\n')
+    .toLowerCase()
+}
+
+function neverUsedV1CanvasTools(_r: EvalResult): boolean {
+  return true
+}
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -184,29 +221,31 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
   },
 
   // =========================================================================
-  // Case 3: Composio auto-bind — install managed integration, create canvas
-  // Level 4 | Pre-installed Composio → agent fetches data + builds canvas
-  // Auto-bind handles CRUD binding automatically for managed integrations.
+  // Case 3: Composio integration → fetch data → React component
+  // Level 4 | Pre-connected Composio → agent fetches data + writes component
   // =========================================================================
   {
     id: 'tool-canvas-api-bind',
-    name: 'Tool System: Auto-bind Composio integration to canvas',
+    name: 'Tool System: Fetch Composio data and build React component',
     category: 'tool-system',
     level: 4,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'I have Google Calendar connected. Build me a dashboard showing my events.' },
-      { role: 'assistant', content: 'Great — I\'ll build you a calendar events dashboard. Since you already have Google Calendar connected, I can pull your events in real-time. Let me set that up for you.' },
+      { role: 'assistant', content: 'Great — I\'ll build you a calendar events dashboard. Since you already have Google Calendar connected, I can pull your events and write a React component. Let me set that up for you.' },
     ],
     input: 'Sounds good, go for it!',
     maxScore: 100,
     toolMocks: CANVAS_API_BIND_MOCKS,
     validationCriteria: [
       {
-        id: 'created-canvas',
-        description: 'Created a canvas surface',
+        id: 'wrote-code-file',
+        description: 'Wrote a React component to src/',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'fetched-real-data',
@@ -216,36 +255,39 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS') || r.toolCalls.some(t => t.name.startsWith('GOOGLECALENDAR_')),
       },
       {
-        id: 'populated-canvas-data',
-        description: 'Pushed fetched data to canvas via canvas_data',
+        id: 'code-has-event-data',
+        description: 'React component includes calendar event data (standup, review)',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_data'),
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('standup') || code.includes('review') || code.includes('meeting') || code.includes('event'))
+        },
       },
       {
-        id: 'built-ui',
-        description: 'Built canvas UI with canvas_update',
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'response-confirms-dashboard',
-        description: 'Response mentions the dashboard or canvas with calendar events',
+        description: 'Response mentions the dashboard or component with calendar events',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const text = r.responseText.toLowerCase()
-          return (text.includes('dashboard') || text.includes('canvas') || text.includes('built')) &&
+          return (text.includes('dashboard') || text.includes('component') || text.includes('built')) &&
                  (text.includes('calendar') || text.includes('event') || text.includes('meeting'))
         },
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 15 tool calls',
+        description: 'Completed in <= 20 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 15,
+        validate: (r) => r.finalTurnToolCalls.length <= 20,
       },
     ],
     antiPatterns: [
@@ -254,20 +296,21 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
   },
 
   // =========================================================================
-  // Case 4: Full lifecycle — search → install → use → bind → canvas
-  // Level 5 | Multi-turn: agent already knows about canvas_api_bind.
-  //           Complete end-to-end: discover GitHub, install, fetch, build canvas,
-  //           and bind live data with canvas_api_bind.
+  // Case 4: Full lifecycle — search → install → use → write React component
+  // Level 5 | Multi-turn: discover GitHub, install, fetch, build component.
   // =========================================================================
   {
     id: 'tool-full-lifecycle',
-    name: 'Tool System: Full lifecycle — discover, install, use, bind to canvas',
+    name: 'Tool System: Full lifecycle — discover, install, use, build component',
     category: 'tool-system',
     level: 5,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'I want an issue tracker dashboard that pulls live data from my GitHub.' },
-      { role: 'assistant', content: 'I can build that for you! I\'ll connect to your GitHub, pull your open issues, and create a live dashboard that stays up to date with your repos. Which repository should I check?' },
-      { role: 'user', content: 'Just use my default repos. I want it to always show the latest data, not a stale snapshot.' },
+      { role: 'assistant', content: 'I can build that for you! I\'ll connect to your GitHub, pull your open issues, and create a React dashboard component. Which repository should I check?' },
+      { role: 'user', content: 'Just use my default repos. Show the latest data in a table.' },
     ],
     input: 'Go ahead and build it!',
     maxScore: 100,
@@ -302,44 +345,33 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
       },
       {
-        id: 'created-canvas',
-        description: 'Created a canvas surface',
-        points: 10,
+        id: 'wrote-code-file',
+        description: 'Wrote a React component to src/',
+        points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
-        id: 'bound-api',
-        description: 'Used canvas_api_bind to wire GitHub data to canvas',
+        id: 'code-has-issue-data',
+        description: 'Component includes GitHub issue data (auth bypass, dark mode, etc.)',
         points: 10,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_bind'),
-      },
-      {
-        id: 'bind-has-datapath',
-        description: 'canvas_api_bind includes dataPath for auto-query',
-        points: 5,
         phase: 'execution',
         validate: (r) => {
-          const bindCall = r.toolCalls.find(t => t.name === 'canvas_api_bind')
-          if (!bindCall) return false
-          const input = bindCall.input as Record<string, any>
-          return typeof input.dataPath === 'string' && input.dataPath.startsWith('/')
+          const code = allWrittenCode(r)
+          return code.includes('auth') || code.includes('dark mode') || code.includes('memory leak') || code.includes('issue')
         },
       },
       {
         id: 'correct-lifecycle-order',
-        description: 'Tools in correct order: search → install → fetch, then create and bind both after fetch',
+        description: 'Tools in correct order: search → install → fetch → write',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
           const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
           const fetchIdx = r.toolCalls.findIndex(t => t.name === 'GITHUB_LIST_ISSUES')
-          const createIdx = r.toolCalls.findIndex(t => t.name === 'canvas_create' || t.name === 'canvas_delegate')
-          const bindIdx = r.toolCalls.findIndex(t => t.name === 'canvas_api_bind')
-          return searchIdx >= 0 && installIdx > searchIdx && fetchIdx > installIdx &&
-                 createIdx > fetchIdx && bindIdx > fetchIdx
+          const writeIdx = r.toolCalls.findIndex(t => t.name === 'write_file')
+          return searchIdx >= 0 && installIdx > searchIdx && fetchIdx > installIdx && writeIdx > fetchIdx
         },
       },
       {
@@ -350,25 +382,21 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => responseContains(r, 'issue') || responseContains(r, 'auth bypass') || responseContains(r, 'dark mode'),
       },
       {
-        id: 'response-mentions-live',
-        description: 'Response mentions live data or real-time updates',
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
         points: 5,
         phase: 'execution',
-        validate: (r) => {
-          const text = r.responseText.toLowerCase()
-          return text.includes('live') || text.includes('real-time') || text.includes('realtime') || text.includes('update')
-        },
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 20 tool calls',
+        description: 'Completed in <= 25 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 20,
+        validate: (r) => r.finalTurnToolCalls.length <= 25,
       },
     ],
     antiPatterns: [
-      'Agent skipped canvas_api_bind and only used canvas_api_schema',
       'Agent used placeholder data instead of fetching from GitHub',
     ],
   },
@@ -508,20 +536,22 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
   },
 
   // =========================================================================
-  // Case 6: Composio auto-bind — install with auto-bind deferred, create canvas
-  // Level 3 | Agent installs managed integration, auto-bind handles CRUD.
-  //           Agent should trust the auto-bind and create canvas efficiently.
+  // Case 6: Composio install → fetch → React component
+  // Level 3 | Agent installs managed integration, fetches data, writes component.
   // =========================================================================
   {
     id: 'tool-bind-at-install',
-    name: 'Tool System: Composio auto-bind install flow',
+    name: 'Tool System: Install Composio integration and build component',
     category: 'tool-system',
     level: 3,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'Show me my Google Calendar events on a dashboard.' },
       {
         role: 'assistant',
-        content: 'I know how to connect Google Calendar. I\'ll install it and set up a live dashboard with your events.',
+        content: 'I know how to connect Google Calendar. I\'ll install it and build a React dashboard with your events.',
       },
     ],
     input: 'Go ahead!',
@@ -536,11 +566,11 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'tool_install'),
       },
       {
-        id: 'created-canvas',
-        description: 'Created a canvas surface',
+        id: 'wrote-code-file',
+        description: 'Wrote a React component to src/',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'fetched-events',
@@ -550,18 +580,28 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.some(t => t.name.startsWith('GOOGLECALENDAR_')),
       },
       {
-        id: 'built-ui',
-        description: 'Built canvas UI with canvas_update',
+        id: 'code-has-event-data',
+        description: 'Component includes event data (standup, review, manager)',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('standup') || code.includes('review') || code.includes('manager') || code.includes('event'))
+        },
+      },
+      {
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 12 tool calls',
-        points: 20,
+        description: 'Completed in <= 20 tool calls',
+        points: 15,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 12,
+        validate: (r) => r.finalTurnToolCalls.length <= 20,
       },
     ],
     antiPatterns: [

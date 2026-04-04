@@ -31,15 +31,12 @@ import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createTools, createHeartbeatTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
-import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
-import { CanvasStreamParser } from './canvas-stream-parser'
-import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
 import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES, CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
@@ -1345,10 +1342,6 @@ export class AgentGateway {
     if (this.config.memoryEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
     }
-    if (this.config.canvasMode === 'code') {
-      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
-    }
-
     // Interaction mode tool restrictions
     if (interactionMode === 'ask') {
       assembledTools = []
@@ -1358,7 +1351,6 @@ export class AgentGateway {
         'web', 'browser',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
-        'canvas_inspect', 'canvas_components',
         'skill',
       ])
       assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
@@ -1549,9 +1541,6 @@ export class AgentGateway {
     // tool events into a single render that skips the loading state.
     const toolFlushGates = new Map<string, Promise<void>>()
 
-    // Canvas streaming: track active parsers and which tool calls already
-    // sent their tool-input-start via the streaming path.
-    const canvasParsers = new Map<string, CanvasStreamParser>()
     const streamedToolCalls = new Set<string>()
 
     const turnAbort = new AbortController()
@@ -1625,37 +1614,13 @@ export class AgentGateway {
             uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
             streamedToolCalls.add(toolCallId)
           }
-          if (toolName === 'canvas_update') {
-            const manager = getDynamicAppManager()
-            const parser = new CanvasStreamParser({
-              onSurfaceId: () => {},
-              onComponents: (components) => {
-                const sid = parser.getSurfaceId()
-                if (sid) {
-                  manager.streamPreviewComponents(sid, components as any)
-                  if (uiWriter) {
-                    uiWriter.write({
-                      type: 'data-canvas-preview',
-                      data: { surfaceId: sid, components },
-                    } as any)
-                  }
-                }
-              },
-            })
-            canvasParsers.set(toolCallId, parser)
-          }
         },
         onToolCallDelta: (toolName, delta, toolCallId) => {
           if (uiWriter) {
             uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: delta })
           }
-          const parser = canvasParsers.get(toolCallId)
-          if (parser) {
-            parser.feed(delta)
-          }
         },
         onToolCallEnd: (_toolName, toolCallId) => {
-          canvasParsers.delete(toolCallId)
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
           if (uiWriter && uiTextId) {
@@ -1724,11 +1689,6 @@ export class AgentGateway {
               toolName, args, result, isError, toolCallId, workspaceDir: this.workspaceDir,
             })
           )
-          if (!isError && toolName.startsWith('mcp_')) {
-            try {
-              getDynamicAppManager().handleToolCallInvalidation(toolName)
-            } catch { /* non-critical */ }
-          }
         },
         onAgentEnd: async (loopResult) => {
           await hookEmitter.emit(
@@ -1972,28 +1932,6 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
         stableParts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
         stableParts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
         stableParts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
-      } else {
-        stableParts.push(`\n## Canvas Mode — Declarative Agent Display
-
-You are in canvas mode. You have all canvas tools available directly — use them to build and update canvas surfaces.
-
-**Your workflow in canvas mode:**
-1. Understand what the user wants to display or build
-2. Do any prerequisite work (fetch data, run commands, search the web, read files, etc.)
-3. Use \`canvas_create\` to create surfaces, \`canvas_update\` to build component trees, \`canvas_data\` / \`canvas_data_patch\` to populate data
-4. Use \`canvas_api_bind\` to connect live integration data (Gmail, GitHub, Calendar, etc.)
-5. Use \`canvas_api_hooks\` for auto-refresh and \`canvas_api_schema\` / \`canvas_api_seed\` for structured data models
-6. Use \`canvas_components\` to discover available components and \`canvas_inspect\` to debug existing surfaces
-
-**Live data from integrations:**
-When integrations are connected, use \`tool_search\` to discover available actions, then \`canvas_api_bind\` to bind live data directly to canvas components.
-
-**Canvas is view-only** — declarative components for displaying your work output.
-
-**IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
-`)
-        stableParts.push(BASIC_CANVAS_TOOLS_GUIDE)
-        stableParts.push(BASIC_CANVAS_EXAMPLES)
       }
     } else {
       stableParts.push(CANVAS_FILE_REFERENCE)
@@ -2090,9 +2028,6 @@ When integrations are connected, use \`tool_search\` to discover available actio
           `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
           'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
           'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
-          '',
-          'Canvas surfaces have been pre-built for this template. Use canvas tools directly (canvas_create, canvas_update, etc.)',
-          'to update or add surfaces as needed.',
           '',
         ].join('\n'))
       }

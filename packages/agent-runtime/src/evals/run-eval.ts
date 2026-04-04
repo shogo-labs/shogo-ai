@@ -46,7 +46,6 @@ loadEnvFromDisk(REPO_ROOT)
 
 import { runEval } from './runner'
 import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
-import { CANVAS_EVALS } from './test-cases-canvas'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
 import { PERSONALITY_EVALS } from './test-cases-personality'
@@ -141,7 +140,7 @@ const CONTAINER_SKILL_PORT = 4100
 
 function getEvals(track: string): AgentEval[] {
   switch (track) {
-    case 'canvas': return CANVAS_EVALS
+    case 'canvas': return CANVAS_V2_EVALS
     case 'complex': return COMPLEX_EVALS
     case 'memory': return MEMORY_EVALS
     case 'personality': return PERSONALITY_EVALS
@@ -504,16 +503,6 @@ function archiveWorkspaceAsTemplate(
   const shogSrc = join(workspaceDir, '.shogo')
   if (existsSync(shogSrc)) {
     cpSync(shogSrc, join(destDir, '.shogo'), { recursive: true })
-  }
-
-  const canvasSrc = join(workspaceDir, 'canvas')
-  if (existsSync(canvasSrc)) {
-    cpSync(canvasSrc, join(destDir, 'canvas'), { recursive: true })
-  }
-
-  const canvasState = join(workspaceDir, '.canvas-state.json')
-  if (existsSync(canvasState)) {
-    cpSync(canvasState, join(destDir, '.canvas-state.json'))
   }
 
   const memorySrc = join(workspaceDir, 'memory')
