@@ -145,6 +145,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
 
 const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn"])
 const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
+const PARENT_ONLY_TOOLS = new Set(["agent_result", "agent_status"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -220,6 +221,7 @@ function extractSubagentParts(
     }
 
     if (activeTaskId) {
+      if (part.type === "tool" && PARENT_ONLY_TOOLS.has(part.tool.toolName)) continue
       result.get(activeTaskId)!.parts.push(part)
     }
   }

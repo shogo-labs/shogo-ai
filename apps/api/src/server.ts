@@ -6047,7 +6047,7 @@ export default {
     message: handleInstanceWsMessage,
     close: handleInstanceWsClose,
   },
-  idleTimeout: 300,
+  idleTimeout: 255,
 }
 
 // Pre-warm Claude Code after server is listening.

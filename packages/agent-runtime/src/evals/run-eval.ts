@@ -268,7 +268,10 @@ function writeEvalLog(
   lines.push(`| Score | **${result.score}/${result.maxScore}** (${result.percentage.toFixed(1)}%) |`)
   lines.push(`| Duration | ${(result.timing.durationMs / 1000).toFixed(1)}s |`)
   lines.push(`| Tool Calls | ${result.metrics.toolCallCount} (${result.metrics.failedToolCalls} failed) |`)
-  lines.push(`| Tokens | ${result.metrics.tokens.input} in / ${result.metrics.tokens.output} out |`)
+  const t = result.metrics.tokens
+  const totalIn = t.input + t.cacheRead + t.cacheWrite
+  lines.push(`| Tokens (in) | ${totalIn.toLocaleString()} total — ${t.input.toLocaleString()} new, ${t.cacheRead.toLocaleString()} cached, ${t.cacheWrite.toLocaleString()} cache-write |`)
+  lines.push(`| Tokens (out) | ${t.output.toLocaleString()} |`)
   lines.push('')
 
   // Conversation history
@@ -606,8 +609,11 @@ async function runEvalOnWorker(
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1)
     const status = result.passed ? 'PASS' : 'FAIL'
-    const tokInfo = result.metrics.tokens.total > 0
-      ? ` [${result.metrics.tokens.input}+${result.metrics.tokens.output} tok]`
+    const t = result.metrics.tokens
+    const totalIn = t.input + t.cacheRead + t.cacheWrite
+    const tokInfo = t.total > 0
+      ? ` [${totalIn.toLocaleString()}+${t.output.toLocaleString()} tok` +
+        (t.cacheRead > 0 ? ` (${t.cacheRead.toLocaleString()} cached)` : '') + ']'
       : ''
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
 
@@ -1053,11 +1059,13 @@ async function main() {
   const cacheHitRate = (totalInput + totalCacheRead + totalCacheWrite) > 0
     ? (totalCacheRead / (totalInput + totalCacheRead + totalCacheWrite) * 100).toFixed(1)
     : '0.0'
+  const totalInputAll = totalInput + totalCacheRead + totalCacheWrite
   console.log('COST')
   console.log('-'.repeat(40))
-  console.log(`  Input tokens:       ${totalInput.toLocaleString()}`)
-  console.log(`  Cache read tokens:  ${totalCacheRead.toLocaleString()} (${cacheHitRate}% hit rate)`)
-  console.log(`  Cache write tokens: ${totalCacheWrite.toLocaleString()}`)
+  console.log(`  Total input tokens: ${totalInputAll.toLocaleString()}`)
+  console.log(`    New (uncached):   ${totalInput.toLocaleString()}`)
+  console.log(`    Cache read:       ${totalCacheRead.toLocaleString()} (${cacheHitRate}% hit rate)`)
+  console.log(`    Cache write:      ${totalCacheWrite.toLocaleString()}`)
   console.log(`  Output tokens:      ${totalOutput.toLocaleString()}`)
   console.log(`  Total cost:         $${totalCost.toFixed(4)}`)
   console.log(`  Cost/eval:          $${(totalCost / results.length).toFixed(4)}`)
@@ -1074,9 +1082,9 @@ async function main() {
   }
 
   console.log('INDIVIDUAL RESULTS')
-  console.log('-'.repeat(70))
-  console.log('  Name'.padEnd(42) + 'Score'.padEnd(10) + 'Intent'.padEnd(10) + 'Exec'.padEnd(10) + 'Tools')
-  console.log('-'.repeat(70))
+  console.log('-'.repeat(100))
+  console.log('  Name'.padEnd(42) + 'Score'.padEnd(10) + 'Intent'.padEnd(10) + 'Exec'.padEnd(10) + 'Tools'.padEnd(8) + 'Tokens (in/out)')
+  console.log('-'.repeat(100))
   for (const r of results) {
     const status = r.passed ? 'PASS' : 'FAIL'
     const name = `${status} ${r.eval.name}`.slice(0, 40)
@@ -1084,7 +1092,11 @@ async function main() {
     const intent = r.phaseScores ? `${r.phaseScores.intention.percentage.toFixed(0)}%` : '-'
     const exec = r.phaseScores ? `${r.phaseScores.execution.percentage.toFixed(0)}%` : '-'
     const tools = String(r.metrics.toolCallCount)
-    console.log(`  ${name.padEnd(40)} ${score.padEnd(10)} ${intent.padEnd(10)} ${exec.padEnd(10)} ${tools}`)
+    const rt = r.metrics.tokens
+    const rTotalIn = rt.input + rt.cacheRead + rt.cacheWrite
+    const tokStr = `${rTotalIn.toLocaleString()}/${rt.output.toLocaleString()}` +
+      (rt.cacheRead > 0 ? ` (${(rt.cacheRead / rTotalIn * 100).toFixed(0)}% cached)` : '')
+    console.log(`  ${name.padEnd(40)} ${score.padEnd(10)} ${intent.padEnd(10)} ${exec.padEnd(10)} ${tools.padEnd(8)} ${tokStr}`)
   }
 
   // Save results

@@ -4121,6 +4121,21 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       if (!inst) return textResult({ error: 'Instance lost' })
       const result = await inst.promise
 
+      if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+        w.write({
+          type: 'data-usage',
+          data: {
+            inputTokens: result.inputTokens,
+            outputTokens: result.outputTokens,
+            cacheReadTokens: result.cacheReadTokens,
+            cacheWriteTokens: result.cacheWriteTokens,
+            iterations: result.iterations,
+            toolCallCount: result.toolCalls,
+            subagent: type,
+          },
+        })
+      }
+
       return textResult({
         instance_id: instanceId,
         status: inst.status,
@@ -4225,6 +4240,23 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
       }
 
       const r = inst.result
+
+      const w = ctx.uiWriter
+      if (w && r && (r.inputTokens > 0 || r.outputTokens > 0)) {
+        w.write({
+          type: 'data-usage',
+          data: {
+            inputTokens: r.inputTokens,
+            outputTokens: r.outputTokens,
+            cacheReadTokens: r.cacheReadTokens,
+            cacheWriteTokens: r.cacheWriteTokens,
+            iterations: r.iterations,
+            toolCallCount: r.toolCalls,
+            subagent: inst.type,
+          },
+        })
+      }
+
       return textResult({
         instance_id: inst.id,
         type: inst.type,
