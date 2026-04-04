@@ -39,6 +39,59 @@ const SUBAGENT_TRANSCRIPTS_SCHEMA = `
   )
 `
 
+const TEAM_COORDINATION_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS teams (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    leader_session_id TEXT NOT NULL,
+    leader_agent_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    config TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS team_members (
+    agent_id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT,
+    model TEXT,
+    color TEXT,
+    is_active INTEGER DEFAULT 1,
+    joined_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    subscriptions TEXT DEFAULT '[]',
+    UNIQUE(team_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS team_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    subject TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    owner TEXT,
+    blocks TEXT DEFAULT '[]',
+    blocked_by TEXT DEFAULT '[]',
+    active_form TEXT,
+    metadata TEXT DEFAULT '{}',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS team_mailbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    to_agent TEXT NOT NULL,
+    from_agent TEXT NOT NULL,
+    message_type TEXT NOT NULL DEFAULT 'text',
+    message TEXT NOT NULL,
+    summary TEXT,
+    is_read INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_mailbox_recipient ON team_mailbox(to_agent, is_read, created_at);
+`
+
 export class SqliteSessionPersistence implements SessionPersistence {
   private db!: Database
 
@@ -55,8 +108,10 @@ export class SqliteSessionPersistence implements SessionPersistence {
         this.db.exec('PRAGMA journal_mode = WAL')
         this.db.exec('PRAGMA busy_timeout = 5000')
         this.db.exec('PRAGMA synchronous = NORMAL')
+        this.db.exec('PRAGMA foreign_keys = ON')
         this.db.exec(SCHEMA)
         this.db.exec(SUBAGENT_TRANSCRIPTS_SCHEMA)
+        this.db.exec(TEAM_COORDINATION_SCHEMA)
         lastError = null
         break
       } catch (err: any) {
@@ -161,6 +216,11 @@ export class SqliteSessionPersistence implements SessionPersistence {
       description: r.description,
       createdAt: r.created_at,
     }))
+  }
+
+  /** Expose the raw database handle (for TeamManager and other coordination layers) */
+  getDb(): Database {
+    return this.db
   }
 
   /** Close the database connection (call on shutdown) */

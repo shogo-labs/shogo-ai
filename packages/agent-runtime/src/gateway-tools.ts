@@ -44,6 +44,8 @@ import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
 import { resolveRgPath } from './rg-resolve'
+import type { TeamManager } from './team-manager'
+import type { TeammateLoopHandle } from './teammate-loop'
 
 const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
@@ -109,6 +111,12 @@ export interface ToolContext {
   sessionMessages?: import('@mariozechner/pi-ai').Message[]
   /** Session persistence layer (for subagent transcript storage) */
   sessionPersistence?: import('./sqlite-session-persistence').SqliteSessionPersistence
+  /** Team coordination manager (for teammate swarm features) */
+  teamManager?: TeamManager
+  /** Current team context (set when agent is part of a team) */
+  teamContext?: { teamId: string; agentId: string; isLeader: boolean }
+  /** Active teammate loop handles (for lifecycle management) */
+  teammateHandles?: Map<string, TeammateLoopHandle>
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -4172,6 +4180,246 @@ function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]
   }
 }
 
+function ensureTeamContext(ctx: ToolContext): { teamId: string; agentId: string; isLeader: boolean } | null {
+  if (ctx.teamContext) return ctx.teamContext
+  const tm = ctx.teamManager
+  if (!tm || !ctx.sessionId) return null
+  const teams = tm.listTeams(ctx.sessionId)
+  if (teams.length === 0) return null
+  const team = teams[0]!
+  ctx.teamContext = { teamId: team.id, agentId: team.leaderAgentId, isLeader: true }
+  if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
+  return ctx.teamContext
+}
+
+function createTeamCreateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_create',
+    description: 'Create a team of long-lived agent teammates for complex multi-step projects. Teammates persist across turns, communicate via messages, and claim tasks from a shared queue.',
+    label: 'Create Team',
+    parameters: Type.Object({
+      team_name: Type.String({ description: 'Slug name for the team (e.g. "frontend-refactor")' }),
+      description: Type.Optional(Type.String({ description: 'Brief description of the team\'s purpose' })),
+    }),
+    execute: async (_id, params) => {
+      const { team_name, description } = params as { team_name: string; description?: string }
+      const tm = ctx.teamManager
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+      if (!ctx.sessionId) return textResult({ error: 'Session ID required for team creation' })
+
+      const existing = tm.getTeam(team_name)
+      if (existing) return textResult({ error: `Team "${team_name}" already exists` })
+
+      const leaderAgentId = `team-lead@${team_name}`
+      const team = tm.createTeam(team_name, ctx.sessionId, leaderAgentId, { description })
+
+      ctx.teamContext = { teamId: team_name, agentId: leaderAgentId, isLeader: true }
+      if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
+
+      return textResult({
+        ok: true,
+        team_id: team.id,
+        name: team.name,
+        leader: leaderAgentId,
+        hint: 'Use agent_spawn to add teammates, task_create to define work, send_team_message to communicate.',
+      })
+    },
+  }
+}
+
+function createTeamDeleteTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_delete',
+    description: 'Delete a team and kill all running teammates. Cascading delete removes all tasks and messages.',
+    label: 'Delete Team',
+    parameters: Type.Object({
+      team_id: Type.String({ description: 'Team ID to delete' }),
+    }),
+    execute: async (_id, params) => {
+      const { team_id } = params as { team_id: string }
+      const tm = ctx.teamManager
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+
+      if (ctx.teammateHandles) {
+        for (const [id, handle] of ctx.teammateHandles) {
+          if (handle.teamId === team_id) {
+            handle.kill()
+            ctx.teammateHandles.delete(id)
+          }
+        }
+      }
+
+      tm.deleteTeam(team_id)
+      if (ctx.teamContext?.teamId === team_id) ctx.teamContext = undefined
+
+      return textResult({ ok: true, deleted: team_id })
+    },
+  }
+}
+
+function createTaskCreateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_create',
+    description: 'Create a task in the team\'s shared task queue. Teammates will automatically claim available tasks when idle.',
+    label: 'Create Task',
+    parameters: Type.Object({
+      subject: Type.String({ description: 'Brief title of the task' }),
+      description: Type.String({ description: 'Detailed description of what needs to be done' }),
+      blocked_by: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that must complete before this task can start' })),
+    }),
+    execute: async (_id, params) => {
+      const { subject, description, blocked_by } = params as { subject: string; description: string; blocked_by?: number[] }
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm || !tc) return textResult({ error: 'Not in a team context. Use team_create first.' })
+
+      const task = tm.createTask(tc.teamId, { subject, description })
+
+      if (blocked_by?.length) {
+        for (const depId of blocked_by) {
+          tm.blockTask(depId, task.id)
+        }
+      }
+
+      return textResult({ ok: true, task_id: task.id, subject: task.subject, status: task.status })
+    },
+  }
+}
+
+function createTaskGetTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_get',
+    description: 'Get detailed information about a specific task including its dependencies.',
+    label: 'Get Task',
+    parameters: Type.Object({
+      task_id: Type.Number({ description: 'Task ID to retrieve' }),
+    }),
+    execute: async (_id, params) => {
+      const { task_id } = params as { task_id: number }
+      const tm = ctx.teamManager
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+      const task = tm.getTask(task_id)
+      if (!task) return textResult({ error: `Task ${task_id} not found` })
+      return textResult(task)
+    },
+  }
+}
+
+function createTaskListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_list',
+    description: 'List all tasks in the team\'s queue with their status, owner, and dependencies.',
+    label: 'List Tasks',
+    parameters: Type.Object({}),
+    execute: async (_id, _params) => {
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm || !tc) return textResult({ error: 'Not in a team context.' })
+      const tasks = tm.listTasks(tc.teamId)
+      return textResult({ tasks: tasks.map(t => ({ id: t.id, subject: t.subject, status: t.status, owner: t.owner, blockedBy: t.blockedBy })) })
+    },
+  }
+}
+
+function createTaskUpdateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_update',
+    description: 'Update a task\'s status, description, owner, or dependencies. Use to mark tasks in_progress or completed.',
+    label: 'Update Task',
+    parameters: Type.Object({
+      task_id: Type.Number({ description: 'Task ID to update' }),
+      status: Type.Optional(Type.String({ description: 'New status: pending, in_progress, completed, deleted' })),
+      subject: Type.Optional(Type.String({ description: 'Updated subject' })),
+      description: Type.Optional(Type.String({ description: 'Updated description' })),
+      owner: Type.Optional(Type.String({ description: 'Agent ID to assign as owner' })),
+      add_blocks: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that this task blocks' })),
+      add_blocked_by: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that block this task' })),
+    }),
+    execute: async (_id, params) => {
+      const { task_id, ...updates } = params as any
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+
+      if (updates.status === 'in_progress' && !updates.owner && tc) {
+        updates.owner = tc.agentId
+      }
+
+      const task = tm.updateTask(task_id, {
+        status: updates.status,
+        subject: updates.subject,
+        description: updates.description,
+        owner: updates.owner,
+        addBlocks: updates.add_blocks,
+        addBlockedBy: updates.add_blocked_by,
+      })
+
+      if (!task) return textResult({ error: `Task ${task_id} not found` })
+
+      if (updates.owner && tc) {
+        tm.writeMessage(tc.teamId, updates.owner, tc.agentId, {
+          type: 'task_assignment',
+          message: JSON.stringify({ taskId: task.id, subject: task.subject, description: task.description }),
+          summary: `Assigned: ${task.subject}`,
+        })
+      }
+
+      return textResult({ ok: true, task_id: task.id, status: task.status, owner: task.owner })
+    },
+  }
+}
+
+function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'send_team_message',
+    description: 'Send a message to a teammate, the team lead, or broadcast to all team members. Use structured message types for shutdown negotiation.',
+    label: 'Send Team Message',
+    parameters: Type.Object({
+      to: Type.String({ description: 'Recipient: teammate name, "team-lead", or "*" for broadcast' }),
+      message: Type.String({ description: 'Message text or JSON for structured messages' }),
+      summary: Type.Optional(Type.String({ description: 'Brief summary of the message' })),
+      message_type: Type.Optional(Type.String({ description: 'Message type: text, shutdown_request, shutdown_response (default: text)' })),
+    }),
+    execute: async (_id, params) => {
+      const { to, message, summary, message_type } = params as { to: string; message: string; summary?: string; message_type?: string }
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm || !tc) return textResult({ error: 'Not in a team context.' })
+
+      let toAgent = to
+      if (to === 'team-lead') {
+        toAgent = `team-lead@${tc.teamId}`
+      } else if (to !== '*' && !to.includes('@')) {
+        toAgent = `${to}@${tc.teamId}`
+      }
+
+      const msgType = (message_type || 'text') as any
+
+      tm.writeMessage(tc.teamId, toAgent, tc.agentId, {
+        type: msgType,
+        message,
+        summary,
+      })
+
+      // Handle shutdown response (approved) — kill the teammate
+      if (msgType === 'shutdown_response') {
+        try {
+          const parsed = JSON.parse(message)
+          if (parsed.approve && ctx.teammateHandles) {
+            const handle = ctx.teammateHandles.get(tc.agentId)
+            if (handle) {
+              handle.kill()
+              ctx.teammateHandles.delete(tc.agentId)
+            }
+          }
+        } catch { /* not JSON, ignore */ }
+      }
+
+      return textResult({ ok: true, sent_to: toAgent, type: msgType })
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -4239,6 +4487,15 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   tools.push(createAgentCancelTool(ctx))
   tools.push(createAgentResultTool(ctx))
   tools.push(createAgentListTool(ctx, allToolsGetter))
+
+  // Team coordination tools
+  tools.push(createTeamCreateTool(ctx))
+  tools.push(createTeamDeleteTool(ctx))
+  tools.push(createTaskCreateTool(ctx))
+  tools.push(createTaskGetTool(ctx))
+  tools.push(createTaskListTool(ctx))
+  tools.push(createTaskUpdateTool(ctx))
+  tools.push(createSendTeamMessageTool(ctx))
 
   if (extraTools) {
     tools.push(...extraTools)

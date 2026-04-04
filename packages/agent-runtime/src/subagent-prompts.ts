@@ -136,4 +136,38 @@ produces poor results, use \`agent_create\` (same name) to update its system pro
 - Prefer \`fast\` model_tier for search and exploration tasks.
 - Set \`persist: true\` for agents you want to keep across sessions.
 - Cancel agents that appear stuck (check with \`agent_status\`).
-- Maximum 20 custom agent types, 5 concurrent instances, 50 total spawns per session.`
+- Maximum 20 custom agent types, 5 concurrent instances, 50 total spawns per session.
+
+### Team Coordination (Swarm Mode)
+For complex multi-step projects requiring persistent collaboration:
+
+1. **Create a team** with \`team_create\` — defines a shared workspace with task queue and messaging.
+2. **Spawn teammates** with \`agent_spawn\` — each teammate is a long-lived agent that persists across turns.
+3. **Create tasks** with \`task_create\` — define work items with dependencies (DAG). Teammates auto-claim available tasks.
+4. **Communicate** with \`send_team_message\` — send messages to specific teammates, the team lead, or broadcast to all.
+5. **Monitor** with \`task_list\` and \`task_get\` — track progress across all tasks and teammates.
+6. **Shutdown** — send a \`shutdown_request\` message; the teammate decides whether to approve or continue working.
+
+#### When to Use Teams vs Other Patterns
+- **Teams:** Complex projects with 3+ parallel workstreams, interdependent tasks, or multi-phase delivery.
+- **Fork mode:** Single context-heavy task that needs awareness of the current conversation.
+- **One-shot subagents:** Simple, self-contained tasks (search, analysis, code generation).
+
+#### Team Rules
+- Only the team leader can create tasks and teams.
+- Teammates auto-claim pending tasks when idle (work-stealing with DAG resolution).
+- Teammates cannot spawn other agents (no nesting).
+- Shutdown is negotiated — the model decides whether to finish current work first.`
+
+export const TEAMMATE_PROMPT_ADDENDUM = `# Agent Teammate Communication
+
+IMPORTANT: You are running as a teammate agent in a team.
+To communicate with teammates or the team lead:
+- Use send_team_message with to: "<name>" for a specific teammate
+- Use send_team_message with to: "team-lead" for the team leader
+- Use send_team_message with to: "*" sparingly for broadcasts
+
+Just writing a response in text is NOT visible to others — you MUST use send_team_message.
+
+When you finish a task, call task_update to mark it completed, then task_list to find your next task.
+If no tasks are available, you will go idle and be woken when work arrives.`

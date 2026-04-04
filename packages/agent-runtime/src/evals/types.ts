@@ -44,6 +44,7 @@ export type EvalCategory =
   | 'nonprofit'
   | 'event-planner'
   | 'subagent-coordination'
+  | 'teammate-coordination'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
