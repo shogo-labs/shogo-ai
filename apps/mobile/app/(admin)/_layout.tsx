@@ -27,6 +27,7 @@ import {
   Shield,
   Menu,
   X,
+  FlaskConical,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -43,6 +44,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
+  { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
 
 const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' }
@@ -50,6 +52,7 @@ const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, lab
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
 
 const LOCAL_SETTINGS_ITEMS = [
@@ -337,6 +340,8 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
+  if (pathname.startsWith('/evals/')) return 'Eval Detail'
+  if (pathname.includes('evals')) return 'Evals'
   if (pathname.includes('general')) return 'General'
   if (pathname.includes('settings')) return 'AI Settings'
   return 'Dashboard'

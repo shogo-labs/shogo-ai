@@ -51,6 +51,7 @@ import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
 import { evalOutputRoutes } from './routes/eval-outputs'
+import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
@@ -1318,6 +1319,13 @@ app.route('/api', agentTemplateRoutes())
 
 // Eval output listing + import — for local dev/testing
 app.route('/api', evalOutputRoutes())
+
+// Eval admin — run management, results viewer, trigger (super-admin only)
+app.route('/api/admin/evals', evalAdminRoutes())
+
+// Eval internal callbacks — progress/complete/fail from run-eval.ts (secret-authenticated)
+app.use('/api/internal/evals/*', bodyLimit({ maxSize: 50 * 1024 * 1024 }))
+app.route('/api/internal', evalInternalRoutes())
 
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
