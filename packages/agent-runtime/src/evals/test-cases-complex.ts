@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Complex Multi-Tool Eval Test Cases
+ * Complex Multi-Tool Eval Test Cases — Canvas V2 (Code Mode)
  *
- * These test cases exercise advanced agentic patterns:
- * - Multi-canvas (multiple surfaces for different views)
- * - web -> canvas (pull live data and render it)
- * - MCP integration -> canvas (external services populate dashboards)
+ * These test cases exercise advanced agentic patterns in Code Mode:
+ * - Multi-file React apps (multiple components for different views)
+ * - web -> code (pull live data and render it in React components)
+ * - MCP integration -> code (external services populate dashboards)
  * - Memory persistence (store findings for later recall)
- * - Cross-tool orchestration (combining exec, web, MCP, canvas, messaging)
- * - CRUD + verification (every case includes trigger+inspect)
+ * - Cross-tool orchestration (combining exec, web, MCP, write_file, messaging)
+ * - Verification via read_file / read_lint
  *
  * All external tools are mocked via the tool-mocks infrastructure so these
  * evals run fast, deterministically, and without credentials.
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
+import type { ToolMockMap } from './tool-mocks'
 import {
   COMPETITIVE_INTEL_MOCKS,
   GITHUB_TRIAGE_MOCKS,
@@ -26,7 +27,94 @@ import {
   STRIPE_REVENUE_MOCKS,
   PR_REVIEW_MOCKS,
 } from './tool-mocks'
-import { usedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
+import { usedTool, neverUsedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
+
+// ---------------------------------------------------------------------------
+// Shared V2 config — canvasMode: 'code' + activeMode: 'canvas'
+// ---------------------------------------------------------------------------
+
+const V2_CONFIG = JSON.stringify({
+  heartbeatInterval: 1800,
+  heartbeatEnabled: false,
+  channels: [],
+  activeMode: 'canvas',
+  canvasMode: 'code',
+  model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+}, null, 2)
+
+// ---------------------------------------------------------------------------
+// Validation helpers (Code Mode)
+// ---------------------------------------------------------------------------
+
+function isCodeFile(path: string): boolean {
+  return /^src\/.*\.(tsx?|jsx?)$/.test(path)
+}
+
+function wroteCodeFile(r: EvalResult, namePattern?: RegExp): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    const path = String((t.input as any).path ?? '')
+    if (!isCodeFile(path)) return false
+    return namePattern ? namePattern.test(path) : true
+  })
+}
+
+function allWrittenCode(r: EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => isCodeFile(String((t.input as any).path ?? '')))
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .join('\n')
+    .toLowerCase()
+}
+
+function anyCodeContains(r: EvalResult, term: string): boolean {
+  return allWrittenCode(r).includes(term.toLowerCase())
+}
+
+function codeFileCount(r: EvalResult): number {
+  const paths = new Set<string>()
+  for (const t of r.toolCalls) {
+    if (t.name !== 'write_file') continue
+    const path = String((t.input as any).path ?? '')
+    if (isCodeFile(path)) paths.add(path)
+  }
+  return paths.size
+}
+
+function wroteSchema(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
+    const path = String((t.input as any).path ?? '')
+    return path.includes('schema.prisma')
+  })
+}
+
+function neverUsedV1CanvasTools(r: EvalResult): boolean {
+  const v1Tools = ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_api_schema',
+    'canvas_api_seed', 'canvas_api_query', 'canvas_inspect', 'canvas_trigger_action']
+  return v1Tools.every(t => neverUsedTool(r, t))
+}
+
+function wroteMemoryFile(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    const path = String((t.input as any).path ?? '')
+    return path.includes('memory') || path.includes('.shogo') || path.includes('notes') || path.includes('log')
+  })
+}
+
+function usedVerification(r: EvalResult): boolean {
+  return usedTool(r, 'read_file') || usedTool(r, 'read_lint')
+}
+
+// Merge skill-server passthrough mocks with eval-specific mocks
+function withSkillServerMocks(evalMocks: ToolMockMap): ToolMockMap {
+  return {
+    ...evalMocks,
+    exec: evalMocks.exec ?? { type: 'static', response: 'Done.' },
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -36,19 +124,22 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 1: Competitive Intelligence Dashboard
-  // Level 4 | web + multi-canvas + memory | Multi-turn
+  // Level 4 | web + multi-file React + memory | Multi-turn
   // =========================================================================
   {
     id: 'complex-competitive-intel',
     name: 'Complex: Competitive intelligence dashboard',
     category: 'complex',
     level: 4,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'I want to track our competitors — Vercel, Netlify, and Render. Can you keep an eye on their pricing and features for me?' },
     ],
-    input: 'Great — go ahead and fetch their current pricing pages, store what you find in your memory, and build me two canvas dashboards: one with a side-by-side pricing comparison table showing plan costs and key limits, and another with a feature matrix showing what each provider offers (checkmarks or yes/no). Make sure everything renders correctly.',
+    input: 'Great — go ahead and fetch their current pricing pages, store what you find in your memory, and build me two dashboard views: one with a side-by-side pricing comparison table showing plan costs and key limits, and another with a feature matrix showing what each provider offers (checkmarks or yes/no). Write React components for both views and make sure everything renders correctly.',
     maxScore: 100,
-    toolMocks: COMPETITIVE_INTEL_MOCKS,
+    toolMocks: withSkillServerMocks(COMPETITIVE_INTEL_MOCKS),
     validationCriteria: [
       {
         id: 'used-web-fetch',
@@ -58,27 +149,27 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
-        id: 'used-canvas-create-multi',
-        description: 'Used canvas_create at least 2 times (multi-canvas)',
+        id: 'wrote-multiple-components',
+        description: 'Wrote at least 2 src/*.tsx files (multi-view)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'canvas_create') >= 2,
+        validate: (r) => codeFileCount(r) >= 2,
       },
       {
-        id: 'used-write-file',
+        id: 'used-write-file-memory',
         description: 'Used write_file to store findings to memory',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemoryFile(r),
       },
       {
         id: 'has-all-companies',
-        description: 'Canvas data references all 3 companies',
+        description: 'Code references all 3 companies',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('vercel') && json.includes('netlify') && json.includes('render')
+          const code = allWrittenCode(r)
+          return code.includes('vercel') && code.includes('netlify') && code.includes('render')
         },
       },
       {
@@ -87,33 +178,33 @@ export const COMPLEX_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return (json.includes('20') || json.includes('19') || json.includes('25'))
+          const code = allWrittenCode(r)
+          return code.includes('20') || code.includes('19') || code.includes('25')
         },
       },
       {
-        id: 'has-table-or-metric',
-        description: 'Has Table or Metric components for comparison',
+        id: 'has-table-jsx',
+        description: 'Has table or grid component in JSX',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls)
-          return json.includes('"Table"') || json.includes('"Metric"')
+          const code = allWrittenCode(r)
+          return code.includes('<table') || code.includes('<tr') || code.includes('grid') || code.includes('<td')
         },
       },
       {
-        id: 'used-canvas-update',
-        description: 'Used canvas_update to build UI',
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
         points: 5,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify',
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => usedVerification(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -123,21 +214,24 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 25,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch competitor data'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch competitor data', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 2: GitHub Issue Triage Board
-  // Level 4 | MCP GitHub + canvas + heartbeat
+  // Level 4 | MCP GitHub + React code + skill server schema
   // =========================================================================
   {
     id: 'complex-github-triage',
     name: 'Complex: GitHub issue triage board',
     category: 'complex',
     level: 4,
-    input: 'I need a triage board for my GitHub issues. Pull the open issues using the GitHub integration, categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a canvas dashboard with the issues organized by severity. Set up a CRUD API so I can update issue status, seed it with the fetched issues, and set up a heartbeat or cron job to periodically re-fetch. Test that I can change an issue\'s status.',
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'I need a triage board for my GitHub issues. Pull the open issues using the GitHub integration, categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a React dashboard with the issues organized by severity columns. Set up a Prisma schema for persisting issue data with a status field, and write the components so I can see all issues at a glance. Verify everything looks good.',
     maxScore: 100,
-    toolMocks: GITHUB_TRIAGE_MOCKS,
+    toolMocks: withSkillServerMocks(GITHUB_TRIAGE_MOCKS),
     validationCriteria: [
       {
         id: 'used-github-issues',
@@ -147,59 +241,63 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
       },
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
-        points: 5,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
-      },
-      {
-        id: 'used-api-schema',
-        description: 'Used canvas_api_schema to define Issue model',
+        id: 'wrote-src-file',
+        description: 'Wrote at least one src/*.tsx component',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_api_schema'),
+        validate: (r) => wroteCodeFile(r),
+      },
+      {
+        id: 'wrote-schema',
+        description: 'Wrote a Prisma schema for issue data',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => wroteSchema(r),
       },
       {
         id: 'has-severity-categorization',
-        description: 'Canvas has severity categorization (critical, high, medium, low)',
+        description: 'Code has severity categorization (critical, high, medium, low)',
         points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('critical') || code.includes('p0')) &&
+                 (code.includes('high') || code.includes('medium') || code.includes('low'))
+        },
+      },
+      {
+        id: 'has-issue-data',
+        description: 'Code references issue data from mock (login bug, API timeout, etc.)',
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = toolCallsJson(r)
-          return (json.includes('critical') || json.includes('p0')) &&
-                 (json.includes('high') || json.includes('medium') || json.includes('low'))
+          return json.includes('login') || json.includes('api') || json.includes('bug')
         },
       },
       {
-        id: 'used-api-seed',
-        description: 'Seeded issue data via canvas_api_seed',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_seed'),
-      },
-      {
-        id: 'setup-scheduling',
-        description: 'Set up heartbeat or cron for periodic refresh',
+        id: 'has-status-field',
+        description: 'Schema or code includes a status field for tracking',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          return usedTool(r, 'cron') || usedTool(r, 'write_file')
+          const all = `${allWrittenCode(r)}\n${toolCallsJson(r)}`
+          return all.includes('status')
         },
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to test status update',
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => usedVerification(r),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify',
-        points: 10,
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 5,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -209,24 +307,27 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 20,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch GitHub issues'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch GitHub issues', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 3: Daily News Research Brief
-  // Level 4 | web + canvas + memory + write_file | Multi-turn
+  // Level 4 | web + React code + memory + write_file | Multi-turn
   // =========================================================================
   {
     id: 'complex-news-brief',
     name: 'Complex: Daily news research brief',
     category: 'complex',
     level: 4,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'I want a daily brief on AI infrastructure news.' },
     ],
-    input: 'Focus on these topics: GPU cloud pricing, open-source LLM releases, and inference optimization. Check TechCrunch, The Verge, and Hacker News for the latest. Fetch each source, store a summary in your memory as a daily log, and build me a canvas dashboard with: a "Key Takeaways" section at the top, a table of all the articles (title, source, summary), and a topic distribution breakdown. Set up a CRUD API for the articles so I can mark ones I\'ve read. Verify everything works.',
+    input: 'Focus on these topics: GPU cloud pricing, open-source LLM releases, and inference optimization. Check TechCrunch, The Verge, and Hacker News for the latest. Fetch each source, store a summary in your memory as a daily log, and build me a React dashboard with: a "Key Takeaways" section at the top, a table of all the articles (title, source, summary), and a topic distribution breakdown. Set up a Prisma schema for the articles so they can be tracked. Verify everything looks correct.',
     maxScore: 100,
-    toolMocks: NEWS_BRIEF_MOCKS,
+    toolMocks: withSkillServerMocks(NEWS_BRIEF_MOCKS),
     validationCriteria: [
       {
         id: 'used-web-fetch',
@@ -236,67 +337,70 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
-        id: 'used-write-file',
+        id: 'used-write-file-memory',
         description: 'Used write_file to log the daily brief to memory',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemoryFile(r),
       },
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
+        id: 'wrote-src-file',
+        description: 'Wrote at least one src/*.tsx component',
         points: 5,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'has-article-table',
-        description: 'Canvas has DataList or Table with articles',
+        description: 'Code has a table or list for articles',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls)
-          return json.includes('"Table"') || json.includes('"DataList"')
+          const code = allWrittenCode(r)
+          return code.includes('<table') || code.includes('<tr') || code.includes('<li') || code.includes('.map(')
         },
       },
       {
         id: 'references-sources',
-        description: 'Data references multiple news sources',
+        description: 'Code references multiple news sources',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          const sources = [json.includes('techcrunch'), json.includes('verge'), json.includes('ycombinator') || json.includes('hacker')]
+          const code = allWrittenCode(r)
+          const sources = [code.includes('techcrunch'), code.includes('verge'), code.includes('ycombinator') || code.includes('hacker')]
           return sources.filter(Boolean).length >= 2
         },
       },
       {
-        id: 'used-api-schema',
-        description: 'Used canvas_api_schema + canvas_api_seed for article CRUD',
+        id: 'wrote-schema',
+        description: 'Wrote a Prisma schema for article data',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_schema') && usedTool(r, 'canvas_api_seed'),
+        validate: (r) => wroteSchema(r),
       },
       {
-        id: 'used-canvas-update',
-        description: 'Used canvas_update to build the dashboard',
-        points: 5,
+        id: 'has-key-takeaways',
+        description: 'Code has a key takeaways or summary section',
+        points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return code.includes('takeaway') || code.includes('summary') || code.includes('highlight') || code.includes('key ')
+        },
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify',
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => usedVerification(r),
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to test interaction',
-        points: 10,
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 5,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -306,21 +410,24 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 22,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch news sources'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch news sources', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 4: API Health Monitor
-  // Level 4 | web + multi-canvas + exec
+  // Level 4 | web + multi-file React + data display
   // =========================================================================
   {
     id: 'complex-api-health',
     name: 'Complex: API health monitor dashboard',
     category: 'complex',
     level: 4,
-    input: 'Monitor these 3 API endpoints and show me a status dashboard:\n- https://api.example.com/health (production)\n- https://api.staging.example.com/health (staging)\n- https://api.internal.example.com/health (internal)\n\nFetch each endpoint to get their health status, then build two canvas dashboards: Canvas 1 should be a status page with green/red indicators per endpoint and uptime metrics. Canvas 2 should show response time data and a chart of the latest check results. Set up a CRUD API to track historical checks and seed it with the current results. Verify the dashboards render correctly.',
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'Monitor these 3 API endpoints and show me a status dashboard:\n- https://api.example.com/health (production)\n- https://api.staging.example.com/health (staging)\n- https://api.internal.example.com/health (internal)\n\nFetch each endpoint to get their health status, then build a React dashboard with: a status page with green/red indicators per endpoint and uptime metrics, plus a section showing response time data. Write the components to src/ and verify they render without lint errors.',
     maxScore: 100,
-    toolMocks: API_HEALTH_MOCKS,
+    toolMocks: withSkillServerMocks(API_HEALTH_MOCKS),
     validationCriteria: [
       {
         id: 'used-web-fetch',
@@ -330,59 +437,67 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
-        id: 'used-canvas-create-multi',
-        description: 'Used canvas_create at least 2 times (multi-canvas)',
+        id: 'wrote-multiple-components',
+        description: 'Wrote at least 2 src/*.tsx files',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'canvas_create') >= 2,
+        validate: (r) => codeFileCount(r) >= 2,
       },
       {
         id: 'has-status-indicators',
-        description: 'Has status indicators (healthy/degraded/down)',
+        description: 'Code has status indicators (healthy/degraded/down or green/red)',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('healthy') || json.includes('degraded') || json.includes('status')
+          const code = allWrittenCode(r)
+          return (code.includes('healthy') || code.includes('green') || code.includes('degraded') || code.includes('status'))
         },
       },
       {
         id: 'has-response-time',
-        description: 'Has response time data (45, 230, 12 or similar)',
+        description: 'Code has response time data (45, 230, latency, etc.)',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('responsetime') || json.includes('response_time') || json.includes('latency') || json.includes('45') || json.includes('230')
+          const code = allWrittenCode(r)
+          return code.includes('responsetime') || code.includes('response_time') || code.includes('latency') || code.includes('45') || code.includes('230')
         },
       },
       {
-        id: 'has-metric-components',
-        description: 'Has Metric components for uptime',
+        id: 'has-uptime-metrics',
+        description: 'Code has uptime or metric display',
         points: 10,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return code.includes('uptime') || code.includes('99.9') || code.includes('%')
+        },
       },
       {
-        id: 'used-api-schema',
-        description: 'Used canvas_api_schema for historical data tracking',
+        id: 'references-all-endpoints',
+        description: 'Code references production, staging, and internal',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_schema'),
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('production') || code.includes('prod')) &&
+                 (code.includes('staging') || code.includes('stag')) &&
+                 (code.includes('internal') || code.includes('intern'))
+        },
       },
       {
-        id: 'used-canvas-update',
-        description: 'Used canvas_update to build dashboards',
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
         points: 5,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify',
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => usedVerification(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -392,21 +507,24 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 25,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch API endpoints'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch API endpoints', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 5: Sentry Error Triage + Fix Tracker
-  // Level 4 | MCP Sentry + canvas + memory
+  // Level 4 | MCP Sentry + React code + memory
   // =========================================================================
   {
     id: 'complex-sentry-triage',
     name: 'Complex: Sentry error triage + fix tracker',
     category: 'complex',
     level: 4,
-    input: 'Pull the top errors from Sentry using the Sentry integration and build me a triage tracker. I need a canvas with a CRUD table where each error shows its title, occurrence count, last seen date, and a status field (New/Investigating/Fixed). Seed all the Sentry errors into the CRUD API. Then test the workflow by marking one of the errors as "Fixed" using canvas_trigger_action, verify with canvas_inspect that the status changed, and log the triage action to your memory.',
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'Pull the top errors from Sentry using the Sentry integration and build me a triage tracker. I need a React component with a table where each error shows its title, occurrence count, last seen date, and a status field (New/Investigating/Fixed). Set up a Prisma schema for persisting error triage data. Write the code with proper state management so status can be toggled. Verify the code is lint-free, and log the triage session to your memory.',
     maxScore: 100,
-    toolMocks: SENTRY_TRIAGE_MOCKS,
+    toolMocks: withSkillServerMocks(SENTRY_TRIAGE_MOCKS),
     validationCriteria: [
       {
         id: 'used-sentry-issues',
@@ -416,87 +534,93 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'SENTRY_LIST_ISSUES'),
       },
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
-        points: 5,
+        id: 'wrote-src-file',
+        description: 'Wrote at least one src/*.tsx component',
+        points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
-        id: 'used-api-schema-with-status',
-        description: 'Used canvas_api_schema with status field',
+        id: 'wrote-schema',
+        description: 'Wrote a Prisma schema with status field',
         points: 10,
         phase: 'intention',
         validate: (r) => {
+          if (!wroteSchema(r)) return false
           const json = toolCallsJson(r)
-          return usedTool(r, 'canvas_api_schema') && json.includes('status')
+          return json.includes('status')
         },
       },
       {
-        id: 'seeded-errors',
-        description: 'Seeded errors via canvas_api_seed',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_seed'),
-      },
-      {
-        id: 'has-table-with-fields',
-        description: 'Has Table with error title, count, last seen, status',
+        id: 'has-error-table',
+        description: 'Code has a table with error title, count, last seen, status',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls)
-          return json.includes('"Table"') && toolCallsJson(r).includes('count')
+          const code = allWrittenCode(r)
+          return (code.includes('<table') || code.includes('<tr') || code.includes('.map(')) && code.includes('count')
         },
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to mark an error as Fixed',
+        id: 'has-status-management',
+        description: 'Code has state management for status (useState, onClick, etc.)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('usestate') || code.includes('setstate') || code.includes('onclick') || code.includes('onchange'))
+        },
+      },
+      {
+        id: 'has-status-values',
+        description: 'Code includes status values (New, Investigating, Fixed)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('new') || code.includes('investigating') || code.includes('fixed'))
+        },
+      },
+      {
+        id: 'used-write-file-memory',
+        description: 'Logged triage action to memory via write_file',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => wroteMemoryFile(r),
+      },
+      {
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify code',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
-      },
-      {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify status change',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
-      },
-      {
-        id: 'used-write-file',
-        description: 'Used write_file to log triage action to memory',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => usedVerification(r),
       },
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 20 tool calls',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 20,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch Sentry errors'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch Sentry errors', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 6: Meeting Prep Command Center
-  // Level 5 | MCP Google Calendar + web + multi-canvas
+  // Level 5 | MCP Google Calendar + web + multi-file React
   // =========================================================================
   {
     id: 'complex-meeting-prep',
     name: 'Complex: Meeting prep command center',
     category: 'complex',
     level: 5,
-    input: 'Prepare me for my meetings today. Use the Google Calendar integration to get my schedule, then research each external attendee\'s company by fetching their website. Build two canvases: Canvas 1 should be today\'s schedule as a timeline with meeting titles, times, and attendees. Canvas 2 should have research cards for each company — what they do, their size, and recent news. Write prep notes to your memory. Verify both canvases render.',
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'Prepare me for my meetings today. Use the Google Calendar integration to get my schedule, then research each external attendee\'s company by fetching their website. Build two React components: one showing today\'s schedule as a timeline with meeting titles, times, and attendees, and another with research cards for each company — what they do, their size, and recent news. Write prep notes to your memory. Verify the code.',
     maxScore: 100,
-    toolMocks: MEETING_PREP_MOCKS,
+    toolMocks: withSkillServerMocks(MEETING_PREP_MOCKS),
     validationCriteria: [
       {
         id: 'used-calendar',
@@ -513,53 +637,53 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => toolCallCount(r, 'web') >= 2,
       },
       {
-        id: 'used-canvas-create-multi',
-        description: 'Used canvas_create at least 2 times (multi-canvas)',
+        id: 'wrote-multiple-components',
+        description: 'Wrote at least 2 src/*.tsx files (schedule + research)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'canvas_create') >= 2,
+        validate: (r) => codeFileCount(r) >= 2,
       },
       {
         id: 'has-schedule-data',
-        description: 'Canvas 1 has meeting schedule with times',
+        description: 'Code has meeting schedule (planning, partnership, demo)',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return (json.includes('q1 planning') || json.includes('planning')) &&
-                 (json.includes('partnership') || json.includes('demo'))
+          const code = allWrittenCode(r)
+          return (code.includes('q1 planning') || code.includes('planning')) &&
+                 (code.includes('partnership') || code.includes('demo'))
         },
       },
       {
         id: 'has-company-research',
-        description: 'Canvas 2 has attendee/company research',
+        description: 'Code has attendee/company research cards',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('acme') || json.includes('partnerco') || json.includes('vcfirm')
+          const code = allWrittenCode(r)
+          return code.includes('acme') || code.includes('partnerco') || code.includes('vcfirm')
         },
       },
       {
-        id: 'used-write-file',
-        description: 'Used write_file for prep notes in memory',
+        id: 'used-write-file-memory',
+        description: 'Wrote prep notes to memory via write_file',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemoryFile(r),
       },
       {
-        id: 'used-canvas-update',
-        description: 'Used canvas_update to build layouts',
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
         points: 5,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify both canvases',
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => usedVerification(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -569,24 +693,27 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 25,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch calendar events'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch calendar events', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 7: Stripe Revenue Dashboard + Invoice Manager
-  // Level 5 | MCP Stripe + canvas + memory | Multi-turn
+  // Level 5 | MCP Stripe + React code + skill server schema | Multi-turn
   // =========================================================================
   {
     id: 'complex-stripe-revenue',
     name: 'Complex: Stripe revenue dashboard + invoice manager',
     category: 'complex',
     level: 5,
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
     conversationHistory: [
       { role: 'user', content: 'I need to see my Stripe revenue and manage invoices.' },
     ],
-    input: 'My MRR is about $12,500 from 180 customers. Use the Stripe integration to pull my current balance and recent payments. Build me a canvas dashboard with: revenue metrics at the top (MRR, balance, pending, customer count), a table of recent payments, and a CRUD section for invoice management where I can create new invoices (client, amount, status, due date). Seed a few sample invoices. Then test by creating a draft invoice for "Test Client" at $500 via canvas_trigger_action, verify with canvas_inspect, and log the revenue snapshot to memory.',
+    input: 'My MRR is about $12,500 from 180 customers. Use the Stripe integration to pull my current balance and recent payments. Build me a React dashboard with: revenue metrics at the top (MRR, balance, pending, customer count), a table of recent payments, and an invoice management section with a form to create new invoices (client, amount, status, due date). Set up a Prisma schema for invoices. Use proper React state for the form. Verify everything is lint-free and log the revenue snapshot to memory.',
     maxScore: 100,
-    toolMocks: STRIPE_REVENUE_MOCKS,
+    toolMocks: withSkillServerMocks(STRIPE_REVENUE_MOCKS),
     validationCriteria: [
       {
         id: 'used-stripe-tools',
@@ -596,64 +723,71 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'STRIPE_GET_BALANCE') || usedTool(r, 'STRIPE_LIST_PAYMENTS'),
       },
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
+        id: 'wrote-src-file',
+        description: 'Wrote at least one src/*.tsx component',
         points: 5,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
-        id: 'used-api-schema',
-        description: 'Used canvas_api_schema for invoice model',
+        id: 'wrote-schema',
+        description: 'Wrote a Prisma schema for invoice model',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_api_schema'),
+        validate: (r) => wroteSchema(r),
       },
       {
-        id: 'has-metric-components',
-        description: 'Has Metric components for revenue KPIs',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
-      },
-      {
-        id: 'has-payments-table',
-        description: 'Has Table for recent payments',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
-      },
-      {
-        id: 'used-api-seed',
-        description: 'Seeded sample invoices',
-        points: 5,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_seed'),
-      },
-      {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to create a draft invoice',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
-      },
-      {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify invoice was created',
+        id: 'has-revenue-metrics',
+        description: 'Code has revenue metrics (MRR, balance, customers)',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
+          const code = allWrittenCode(r)
+          return (code.includes('mrr') || code.includes('revenue') || code.includes('12,500') || code.includes('12500')) &&
+                 (code.includes('balance') || code.includes('customer'))
         },
       },
       {
-        id: 'used-write-file',
+        id: 'has-payments-table',
+        description: 'Code has a table for recent payments',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('<table') || code.includes('<tr') || code.includes('.map(')) && code.includes('payment')
+        },
+      },
+      {
+        id: 'has-invoice-form',
+        description: 'Code has a form with state management for invoices',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allWrittenCode(r)
+          return (code.includes('<form') || code.includes('<input') || code.includes('onsubmit') || code.includes('handlesubmit')) &&
+                 (code.includes('usestate') || code.includes('onchange'))
+        },
+      },
+      {
+        id: 'used-write-file-memory',
         description: 'Logged revenue snapshot to memory via write_file',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemoryFile(r),
+      },
+      {
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedVerification(r),
+      },
+      {
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -663,72 +797,76 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 25,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch Stripe data'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch Stripe data', 'Used V1 canvas tools instead of file tools'],
   },
 
   // =========================================================================
   // Case 8: Multi-Repo PR Review Queue
-  // Level 5 | MCP GitHub + web + canvas + send_message
+  // Level 5 | MCP GitHub + web + React code + send_message
   // =========================================================================
   {
     id: 'complex-pr-review-queue',
     name: 'Complex: Multi-repo PR review queue',
     category: 'complex',
     level: 5,
-    input: 'I manage 3 repos: frontend, backend, and infra. Use the GitHub integration to pull open PRs from each repo. Build me a unified PR review queue canvas with a CRUD table showing: repo name, PR title, author, CI status, and age. Add "Approve" and "Request Changes" mutation buttons for each PR. For any PR that\'s been open more than 2 days with no review, send a Discord alert using send_message. Seed the PRs into the CRUD API. Then test the approve action on one of the PRs and verify with canvas_inspect.',
+    initialMode: 'canvas',
+    useRuntimeTemplate: true,
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    input: 'I manage 3 repos: frontend, backend, and infra. Use the GitHub integration to pull open PRs from each repo. Build me a unified PR review queue in React with a table showing: repo name, PR title, author, CI status, and age. Add action buttons for "Approve" and "Request Changes" with proper click handlers. For any PR that\'s been open more than 2 days with no review, send a Discord alert using send_message. Set up a Prisma schema for tracking PR reviews. Verify the code.',
     maxScore: 100,
-    toolMocks: PR_REVIEW_MOCKS,
+    toolMocks: withSkillServerMocks(PR_REVIEW_MOCKS),
     validationCriteria: [
       {
-        id: 'used-github-issues-multi',
+        id: 'used-github-multi',
         description: 'Used GITHUB_LIST_ISSUES or GITHUB_LIST_PULL_REQUESTS at least 2 times (multi-repo)',
         points: 10,
         phase: 'intention',
         validate: (r) => (toolCallCount(r, 'GITHUB_LIST_ISSUES') + toolCallCount(r, 'GITHUB_LIST_PULL_REQUESTS')) >= 2,
       },
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
+        id: 'wrote-src-file',
+        description: 'Wrote at least one src/*.tsx component',
         points: 5,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
+        validate: (r) => wroteCodeFile(r),
       },
       {
-        id: 'used-api-schema',
-        description: 'Used canvas_api_schema for PR model',
+        id: 'wrote-schema',
+        description: 'Wrote a Prisma schema for PR review tracking',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_api_schema'),
+        validate: (r) => wroteSchema(r),
       },
       {
         id: 'has-pr-data-multi-repo',
-        description: 'Seeded PRs from multiple repos',
+        description: 'Code references PRs from multiple repos',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          const repos = [json.includes('frontend'), json.includes('backend'), json.includes('infra')]
+          const code = allWrittenCode(r)
+          const repos = [code.includes('frontend'), code.includes('backend'), code.includes('infra')]
           return repos.filter(Boolean).length >= 2
         },
       },
       {
         id: 'has-table-with-fields',
-        description: 'Canvas has Table with PR title, repo, author, CI status',
+        description: 'Code has a table with PR title, repo, author, CI status',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls)
-          return json.includes('"Table"')
+          const code = allWrittenCode(r)
+          return (code.includes('<table') || code.includes('<tr') || code.includes('.map('))
         },
       },
       {
-        id: 'has-mutation-buttons',
-        description: 'Has action/mutation buttons (approve, request changes)',
+        id: 'has-action-buttons',
+        description: 'Code has approve / request changes buttons with handlers',
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const json = toolCallsJson(r)
-          return json.includes('approve') || json.includes('request') || json.includes('action')
+          const code = allWrittenCode(r)
+          return (code.includes('approve') || code.includes('request')) &&
+                 (code.includes('onclick') || code.includes('button') || code.includes('<button'))
         },
       },
       {
@@ -739,22 +877,18 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'send_message'),
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to test approve',
+        id: 'used-verification',
+        description: 'Used read_file or read_lint to verify',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => usedVerification(r),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify',
-        points: 10,
+        id: 'never-used-v1-tools',
+        description: 'Never used V1 canvas tools',
+        points: 5,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'reasonable-tool-count',
@@ -764,6 +898,6 @@ export const COMPLEX_EVALS: AgentEval[] = [
         validate: (r) => r.toolCalls.length <= 25,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not fetch PRs from GitHub'],
+    antiPatterns: ['No tool calls at all', 'Did not fetch PRs from GitHub', 'Used V1 canvas tools instead of file tools'],
   },
 ]

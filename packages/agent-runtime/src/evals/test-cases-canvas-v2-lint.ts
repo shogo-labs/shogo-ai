@@ -41,38 +41,39 @@ const SKILL_SERVER_MOCKS: ToolMockMap = {
 
 const LINT_ANTI_PATTERNS = [
   'used v1 canvas tools instead of file tools',
-  'wrote JSX syntax instead of h() calls',
   'ignored lint errors and responded without fixing',
 ]
 
 // ---------------------------------------------------------------------------
-// Canvas-v2 validation helpers (shared with test-cases-canvas-v2.ts)
+// Canvas-v2 validation helpers (aligned with test-cases-canvas-v2.ts)
 // ---------------------------------------------------------------------------
 
-const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
+function isCodeFile(path: string): boolean {
+  return /^src\/.*\.(tsx?|jsx?)$/.test(path)
+}
 
-function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
+function wroteCodeFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
+    if (!isCodeFile(path)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
 
-function allCanvasCode(r: EvalResult): string {
+function allWrittenCode(r: EvalResult): string {
   return r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => {
       const path = String((t.input as any).path ?? '')
-      return path.match(/^canvas\/[^/]+\.ts$/)
+      return isCodeFile(path)
     })
     .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
     .join('\n')
 }
 
-function anyCanvasCodeContains(r: EvalResult, term: string): boolean {
-  return allCanvasCode(r).toLowerCase().includes(term.toLowerCase())
+function anyCodeContains(r: EvalResult, term: string): boolean {
+  return allWrittenCode(r).toLowerCase().includes(term.toLowerCase())
 }
 
 function neverUsedV1CanvasTools(r: EvalResult): boolean {
@@ -81,21 +82,21 @@ function neverUsedV1CanvasTools(r: EvalResult): boolean {
   return v1Tools.every(t => neverUsedTool(r, t))
 }
 
-function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
+function editedCodeFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'edit_file') return false
     const path = String((t.input as any).path ?? '')
-    if (!path.match(/^canvas\/[^/]+\.ts$/)) return false
+    if (!isCodeFile(path)) return false
     return namePattern ? namePattern.test(path) : true
   })
 }
 
-function canvasFileCount(r: EvalResult): number {
+function codeFileCount(r: EvalResult): number {
   const paths = new Set<string>()
   for (const t of r.toolCalls) {
     if (t.name !== 'write_file') continue
     const path = String((t.input as any).path ?? '')
-    if (path.match(/^canvas\/[^/]+\.ts$/)) paths.add(path)
+    if (isCodeFile(path)) paths.add(path)
   }
   return paths.size
 }
@@ -108,7 +109,7 @@ function schemaContainsModel(r: EvalResult, modelName: string): boolean {
 }
 
 function canvasCodeFetches(r: EvalResult): boolean {
-  const code = allCanvasCode(r).toLowerCase()
+  const code = allWrittenCode(r).toLowerCase()
   return code.includes('fetch(') && (code.includes('localhost:') || code.includes('/api/'))
 }
 
@@ -147,14 +148,8 @@ function selfCorrectedIfNeeded(r: EvalResult): boolean {
   })
 }
 
-// Aliases for backward-compatible naming in eval criteria
-const lastCanvasWriteIsClean = lastReadLintsClean
-const usedCanvasLint = usedReadLints
-const allCanvasWritesClean = lastReadLintsClean
-
-function countDistinctIconRefs(r: EvalResult): number {
-  const code = allCanvasCode(r)
-  const iconPattern = /h\(\s*([A-Z][a-zA-Z]+)\s*,/g
+function countDistinctIconImports(r: EvalResult): number {
+  const code = allWrittenCode(r)
   const uiComponents = new Set([
     'Card', 'CardHeader', 'CardTitle', 'CardDescription', 'CardContent', 'CardFooter',
     'Button', 'Badge', 'Input', 'Label', 'Textarea', 'Checkbox', 'Switch',
@@ -172,113 +167,136 @@ function countDistinctIconRefs(r: EvalResult): number {
     'Popover', 'PopoverTrigger', 'PopoverContent',
     'ResponsiveContainer', 'LineChart', 'BarChart', 'AreaChart', 'PieChart',
     'Line', 'Bar', 'Area', 'Pie', 'Cell', 'XAxis', 'YAxis', 'CartesianGrid',
-    'RechartsTooltip', 'Legend', 'Fragment',
-    'Column', 'Row', 'Grid', 'CanvasCard', 'CanvasScrollArea',
-    'Metric', 'DataList', 'DynText', 'DynBadge', 'DynImage', 'DynIcon',
-    'DynTable', 'DynChart', 'DynTabs', 'DynTabPanel', 'DynAccordion', 'DynAccordionItem',
+    'RechartsTooltip', 'Legend',
   ])
+  const jsxTagPattern = /<([A-Z][a-zA-Z]+)/g
   const icons = new Set<string>()
   let match
-  while ((match = iconPattern.exec(code)) !== null) {
+  while ((match = jsxTagPattern.exec(code)) !== null) {
     if (!uiComponents.has(match[1])) icons.add(match[1])
   }
   return icons.size
 }
 
 // ---------------------------------------------------------------------------
-// Pre-seeded canvas files for edit evals
+// Pre-seeded source files for edit evals (standard React JSX)
 // ---------------------------------------------------------------------------
 
-const BROKEN_DASHBOARD_JS = `var _countState = useState(0)
-var count = _countState[0], setCount = _countState[1]
+const BROKEN_DASHBOARD_TSX = `import { useState } from 'react'
+import { Card, CardHeader, CardTitle, CardDescrption, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { RefreshCcw } from 'lucide-react'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 
-var _savedState = useLocalStorage('dashboard-prefs', {})
-var prefs = _savedState[0], setPrefs = _savedState[1]
-
-var metrics = [
+const metrics = [
   { label: 'Users', value: 1234 },
   { label: 'Revenue', value: '$45K' },
   { label: 'Growth', value: '+12%' },
 ]
 
-function handleRefresh() {
-  setCount(count + 1)
+export default function Dashboard() {
+  const [count, setCount] = useState(0)
+  const [prefs, setPrefs] = useLocalStorage('dashboard-prefs', {})
+
+  function handleRefresh() {
+    setCount(count + 1)
+  }
+
+  return (
+    <div className="flex flex-col gap-6 p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold">Dashboard</h2>
+        <Button onClick={handleRefresh}>
+          <RefreshCcw className="w-4 h-4 mr-2" />
+          Refresh ({count})
+        </Button>
+      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Metrics</CardTitle>
+          <CardDescrption>Key performance indicators</CardDescrption>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4">
+            {metrics.map((m, i) => (
+              <div key={i} className="text-center">
+                <p className="text-2xl font-bold">{m.value}</p>
+                <p className="text-sm text-muted-foreground">{m.label}</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}`
+
+const WORKING_TRACKER_TSX = `import { useState } from 'react'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+
+interface Item {
+  id: number
+  name: string
+  status: string
+  hours: number
 }
 
-return h('div', { className: 'flex flex-col gap-6 p-4' }, [
-  h('div', { className: 'flex items-center justify-between' }, [
-    h('h2', { className: 'text-2xl font-semibold' }, 'Dashboard'),
-    h(Button, { onClick: handleRefresh }, [
-      h(RefreshCcw, { className: 'w-4 h-4 mr-2' }),
-      'Refresh (' + count + ')'
-    ]),
-  ]),
-  h(Card, {}, [
-    h(CardHeader, {}, [
-      h(CardTitle, {}, 'Metrics'),
-      h(CardDescrption, {}, 'Key performance indicators'),
-    ]),
-    h(CardContent, {},
-      h('div', { className: 'grid grid-cols-3 gap-4' },
-        metrics.map(function(m, i) {
-          return h('div', { key: i, className: 'text-center' }, [
-            h('p', { className: 'text-2xl font-bold' }, m.value),
-            h('p', { className: 'text-sm text-muted-foreground' }, m.label),
-          ])
-        })
-      )
-    ),
-  ]),
-])`
+export default function Tracker() {
+  const [items, setItems] = useState<Item[]>([
+    { id: 1, name: 'Task A', status: 'active', hours: 3.5 },
+    { id: 2, name: 'Task B', status: 'completed', hours: 7.0 },
+    { id: 3, name: 'Task C', status: 'active', hours: 1.5 },
+    { id: 4, name: 'Task D', status: 'paused', hours: 2.0 },
+  ])
+  const [newName, setNewName] = useState('')
 
-const WORKING_TRACKER_JS = `var _items = useState([
-  { id: 1, name: 'Task A', status: 'active', hours: 3.5 },
-  { id: 2, name: 'Task B', status: 'completed', hours: 7.0 },
-  { id: 3, name: 'Task C', status: 'active', hours: 1.5 },
-  { id: 4, name: 'Task D', status: 'paused', hours: 2.0 },
-])
-var items = _items[0], setItems = _items[1]
+  function addItem() {
+    if (!newName.trim()) return
+    setItems([...items, { id: Date.now(), name: newName, status: 'active', hours: 0 }])
+    setNewName('')
+  }
 
-var _newName = useState('')
-var newName = _newName[0], setNewName = _newName[1]
+  const totalHours = items.reduce((sum, i) => sum + i.hours, 0)
 
-function addItem() {
-  if (!newName.trim()) return
-  var next = { id: Date.now(), name: newName, status: 'active', hours: 0 }
-  setItems(items.concat([next]))
-  setNewName('')
-}
-
-var totalHours = items.reduce(function(sum, i) { return sum + i.hours }, 0)
-
-return h('div', { className: 'flex flex-col gap-6 p-4' }, [
-  h('h2', { className: 'text-2xl font-semibold' }, 'Time Tracker'),
-  h(Card, {}, [
-    h(CardContent, { className: 'pt-6' }, [
-      h('div', { className: 'flex gap-2 mb-4' }, [
-        h(Input, { value: newName, onChange: function(e) { setNewName(e.target.value) }, placeholder: 'New task name' }),
-        h(Button, { onClick: addItem }, 'Add'),
-      ]),
-      h(Table, {}, [
-        h(TableHeader, {}, h(TableRow, {}, [
-          h(TableHead, {}, 'Name'),
-          h(TableHead, {}, 'Status'),
-          h(TableHead, {}, 'Hours'),
-        ])),
-        h(TableBody, {},
-          items.map(function(item) {
-            return h(TableRow, { key: item.id }, [
-              h(TableCell, {}, item.name),
-              h(TableCell, {}, h(Badge, { variant: item.status === 'completed' ? 'default' : 'secondary' }, item.status)),
-              h(TableCell, {}, item.hours.toFixed(1)),
-            ])
-          })
-        ),
-      ]),
-      h('p', { className: 'text-sm text-muted-foreground mt-4' }, 'Total: ' + totalHours.toFixed(1) + ' hours'),
-    ]),
-  ]),
-])`
+  return (
+    <div className="flex flex-col gap-6 p-4">
+      <h2 className="text-2xl font-semibold">Time Tracker</h2>
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex gap-2 mb-4">
+            <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New task name" />
+            <Button onClick={addItem}>Add</Button>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Hours</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell>{item.name}</TableCell>
+                  <TableCell>
+                    <Badge variant={item.status === 'completed' ? 'default' : 'secondary'}>{item.status}</Badge>
+                  </TableCell>
+                  <TableCell>{item.hours.toFixed(1)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <p className="text-sm text-muted-foreground mt-4">Total: {totalHours.toFixed(1)} hours</p>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}`
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -299,11 +317,11 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.ts file',
+        id: 'wrote-code-file',
+        description: 'Wrote src/*.tsx file',
         points: 15,
         phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'never-v1',
@@ -314,27 +332,27 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'uses-multiple-icons',
-        description: 'Canvas code references 5+ distinct Lucide icons',
+        description: 'Code references 5+ distinct Lucide icons',
         points: 20,
         phase: 'execution',
-        validate: (r) => countDistinctIconRefs(r) >= 5,
+        validate: (r) => countDistinctIconImports(r) >= 5,
       },
       {
         id: 'has-button-for-each',
-        description: 'Button appears 5+ times in canvas code',
+        description: 'Button appears 5+ times in code',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return (code.match(/Button/g) || []).length >= 5
         },
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas write is lint-clean',
+        description: 'Final code is lint-clean',
         points: 25,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
       {
         id: 'self-corrected-if-needed',
@@ -360,11 +378,11 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.ts file',
+        id: 'wrote-code-file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'never-v1',
@@ -379,7 +397,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           const chartTypes = ['LineChart', 'BarChart', 'AreaChart', 'PieChart', 'ComposedChart', 'ResponsiveContainer']
           return chartTypes.filter(c => code.includes(c)).length >= 3
         },
@@ -390,16 +408,16 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return (code.match(/\{/g) || []).length >= 10
         },
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas write is lint-clean',
+        description: 'Final code is lint-clean',
         points: 25,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
       {
         id: 'self-corrected-if-needed',
@@ -409,13 +427,13 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         validate: (r) => selfCorrectedIfNeeded(r),
       },
       {
-        id: 'uses-h-correctly',
-        description: 'Uses h() calls, no raw JSX',
+        id: 'uses-jsx',
+        description: 'Uses JSX syntax with React components',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
-          return code.includes('h(') && !/<[A-Z][a-zA-Z]+/.test(code)
+          const code = allWrittenCode(r)
+          return /<[A-Z][a-zA-Z]+/.test(code) && (code.includes('return (') || code.includes('return('))
         },
       },
     ],
@@ -435,11 +453,11 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.ts file',
+        id: 'wrote-code-file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'never-v1',
@@ -454,7 +472,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('Accordion') && code.includes('AccordionItem') && code.includes('AccordionTrigger')
         },
       },
@@ -464,7 +482,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('Dialog') && code.includes('DialogContent') && code.includes('DialogTitle')
         },
       },
@@ -474,7 +492,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('TooltipProvider') && code.includes('Tooltip') && code.includes('TooltipTrigger') && code.includes('TooltipContent')
         },
       },
@@ -484,7 +502,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('DropdownMenu') && code.includes('DropdownMenuTrigger') && code.includes('DropdownMenuContent')
         },
       },
@@ -494,7 +512,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('Sheet') && code.includes('SheetContent')
         },
       },
@@ -504,16 +522,16 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('Popover') && code.includes('PopoverTrigger') && code.includes('PopoverContent')
         },
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas write is lint-clean',
+        description: 'Final code is lint-clean',
         points: 20,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
     ],
   },
@@ -528,7 +546,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     input: 'The dashboard preview is broken. Fix whatever is wrong with it.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/dashboard.ts': BROKEN_DASHBOARD_JS,
+      'src/components/Dashboard.tsx': BROKEN_DASHBOARD_TSX,
     },
     initialMode: 'canvas',
     antiPatterns: LINT_ANTI_PATTERNS,
@@ -555,22 +573,9 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         validate: (r) => usedReadLints(r),
       },
       {
-        id: 'fixed-icon-name',
-        description: 'Fixed RefreshCcw to a valid icon',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'edit_file') return false
-            const oldStr = String((t.input as any).old_string ?? '')
-            return oldStr.includes('RefreshCcw')
-          })
-        },
-      },
-      {
         id: 'fixed-component-name',
         description: 'Fixed CardDescrption to CardDescription',
-        points: 15,
+        points: 20,
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls.some(t => {
@@ -584,7 +589,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       {
         id: 'fixed-hook',
         description: 'Fixed or removed useLocalStorage',
-        points: 15,
+        points: 20,
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls.some(t => {
@@ -596,10 +601,10 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas edit is lint-clean',
-        points: 15,
+        description: 'Final code is lint-clean',
+        points: 20,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
       {
         id: 'reasonable-tools',
@@ -611,25 +616,25 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     ],
   },
 
-  // Eval 5: Three interconnected canvases
+  // Eval 5: Three interconnected components
   {
     id: 'canvas-v2-lint-multi-surface-consistency',
-    name: 'Canvas V2 Lint: Multi-surface project management',
+    name: 'Canvas V2 Lint: Multi-page project management',
     category: 'canvas-v2',
     tags: ['lint', 'multi-surface', 'complex'],
     level: 4,
-    input: 'Build a project management app with 3 pages: (1) a dashboard showing project metrics and a chart, (2) a team members page with a table and add-member form, (3) a settings page with theme toggle and notification preferences. Each page should have its own canvas file.',
+    input: 'Build a project management app with 3 pages: (1) a dashboard showing project metrics and a chart, (2) a team members page with a table and add-member form, (3) a settings page with theme toggle and notification preferences. Each page should have its own component file.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
     antiPatterns: LINT_ANTI_PATTERNS,
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'wrote-three-surfaces',
-        description: 'Wrote 3+ distinct canvas files',
+        id: 'wrote-three-files',
+        description: 'Wrote 3+ distinct src/ component files',
         points: 15,
         phase: 'intention',
-        validate: (r) => canvasFileCount(r) >= 3,
+        validate: (r) => codeFileCount(r) >= 3,
       },
       {
         id: 'never-v1',
@@ -640,12 +645,12 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'dashboard-has-chart',
-        description: 'Dashboard canvas has a chart component',
+        description: 'Dashboard component has a chart',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const writes = r.toolCalls.filter(t =>
-            t.name === 'write_file' && /canvas\/dashboard/.test(String((t.input as any).path ?? ''))
+            t.name === 'write_file' && /dashboard/i.test(String((t.input as any).path ?? ''))
           )
           const code = writes.map(t => String((t.input as any).content ?? '')).join('\n').toLowerCase()
           return code.includes('chart') || code.includes('responsivecontainer')
@@ -653,12 +658,12 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'team-has-table',
-        description: 'Team canvas has Table component',
+        description: 'Team component has Table',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const writes = r.toolCalls.filter(t =>
-            t.name === 'write_file' && /canvas\/team/.test(String((t.input as any).path ?? ''))
+            t.name === 'write_file' && /team/i.test(String((t.input as any).path ?? ''))
           )
           const code = writes.map(t => String((t.input as any).content ?? '')).join('\n')
           return code.includes('Table')
@@ -666,23 +671,23 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
       },
       {
         id: 'settings-has-switch',
-        description: 'Settings canvas has Switch or Checkbox',
+        description: 'Settings component has Switch or Checkbox',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const writes = r.toolCalls.filter(t =>
-            t.name === 'write_file' && /canvas\/setting/.test(String((t.input as any).path ?? ''))
+            t.name === 'write_file' && /setting/i.test(String((t.input as any).path ?? ''))
           )
           const code = writes.map(t => String((t.input as any).content ?? '')).join('\n')
           return code.includes('Switch') || code.includes('Checkbox')
         },
       },
       {
-        id: 'all-surfaces-lint-clean',
-        description: 'All canvas writes are lint-clean',
+        id: 'all-files-lint-clean',
+        description: 'All code is lint-clean',
         points: 25,
         phase: 'execution',
-        validate: (r) => allCanvasWritesClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
       {
         id: 'used-read-lints',
@@ -723,11 +728,11 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         validate: (r) => schemaContainsModel(r, 'Notification'),
       },
       {
-        id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.ts file',
+        id: 'wrote-code-file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'never-v1',
@@ -742,13 +747,13 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
-          return code.includes('useState') && code.includes('useEffect') && code.includes('useCallback')
+          const code = allWrittenCode(r).toLowerCase()
+          return code.includes('usestate') && code.includes('useeffect') && code.includes('usecallback')
         },
       },
       {
         id: 'code-fetches',
-        description: 'Canvas code fetches from API',
+        description: 'Code fetches from API',
         points: 10,
         phase: 'execution',
         validate: (r) => canvasCodeFetches(r),
@@ -759,7 +764,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r).toLowerCase()
+          const code = allWrittenCode(r).toLowerCase()
           return code.includes('filter') || code.includes('reduce') || code.includes('group')
         },
       },
@@ -768,24 +773,24 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         description: 'Code uses Badge component',
         points: 10,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Badge'),
+        validate: (r) => anyCodeContains(r, 'Badge'),
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas write is lint-clean',
+        description: 'Final code is lint-clean',
         points: 25,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
     ],
   },
 
-  // Eval 7: var/function scoping traps
+  // Eval 7: Timer with useEffect cleanup
   {
     id: 'canvas-v2-lint-var-scope-traps',
-    name: 'Canvas V2 Lint: Pomodoro timer (scoping traps)',
+    name: 'Canvas V2 Lint: Pomodoro timer (effect cleanup)',
     category: 'canvas-v2',
-    tags: ['lint', 'scoping', 'interactive'],
+    tags: ['lint', 'effects', 'interactive'],
     level: 4,
     input: 'Build a pomodoro timer with start/pause/reset buttons, a circular progress indicator, and session history. The timer should count down from 25 minutes.',
     workspaceFiles: { 'config.json': V2_CONFIG },
@@ -794,11 +799,11 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'wrote-canvas-file',
-        description: 'Wrote canvas/*.ts file',
+        id: 'wrote-code-file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
+        validate: (r) => wroteCodeFile(r),
       },
       {
         id: 'never-v1',
@@ -813,8 +818,8 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
-          return code.includes('setInterval') || code.includes('setTimeout')
+          const code = allWrittenCode(r).toLowerCase()
+          return code.includes('setinterval') || code.includes('settimeout')
         },
       },
       {
@@ -823,9 +828,9 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
-          return code.includes('useEffect') &&
-            (code.includes('clearInterval') || code.includes('clearTimeout') || code.includes('return function'))
+          const code = allWrittenCode(r).toLowerCase()
+          return code.includes('useeffect') &&
+            (code.includes('clearinterval') || code.includes('cleartimeout') || code.includes('return ()'))
         },
       },
       {
@@ -834,27 +839,23 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return (code.match(/Button/g) || []).length >= 3
         },
       },
       {
-        id: 'uses-var-not-const',
-        description: 'Uses var for top-level declarations (not const/let)',
+        id: 'uses-useState',
+        description: 'Uses useState for state management',
         points: 15,
         phase: 'execution',
-        validate: (r) => {
-          const code = allCanvasCode(r)
-          const varCount = (code.match(/^var\s/gm) || []).length
-          return varCount >= 2
-        },
+        validate: (r) => anyCodeContains(r, 'useState'),
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas write is lint-clean',
+        description: 'Final code is lint-clean',
         points: 25,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
     ],
   },
@@ -869,7 +870,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     input: 'Add a download button to the tracker that exports data as CSV. Use a download icon.',
     workspaceFiles: {
       'config.json': V2_CONFIG,
-      'canvas/tracker.ts': WORKING_TRACKER_JS,
+      'src/components/Tracker.tsx': WORKING_TRACKER_TSX,
     },
     initialMode: 'canvas',
     antiPatterns: LINT_ANTI_PATTERNS,
@@ -877,10 +878,10 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-edit-file',
-        description: 'Used edit_file on tracker',
+        description: 'Used edit_file on Tracker',
         points: 15,
         phase: 'intention',
-        validate: (r) => editedCanvasFile(r, /tracker/),
+        validate: (r) => editedCodeFile(r, /[Tt]racker/),
       },
       {
         id: 'read-first',
@@ -889,7 +890,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         phase: 'intention',
         validate: (r) => {
           const firstEditIdx = r.toolCalls.findIndex(t =>
-            t.name === 'edit_file' && String((t.input as any).path ?? '').includes('tracker')
+            t.name === 'edit_file' && /[Tt]racker/.test(String((t.input as any).path ?? ''))
           )
           if (firstEditIdx === -1) return false
           return r.toolCalls.slice(0, firstEditIdx).some(t =>
@@ -904,7 +905,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           const edits = r.toolCalls.filter(t =>
-            t.name === 'edit_file' && String((t.input as any).path ?? '').includes('tracker')
+            t.name === 'edit_file' && /[Tt]racker/.test(String((t.input as any).path ?? ''))
           )
           return edits.some(t => {
             const newStr = String((t.input as any).new_string ?? '')
@@ -918,16 +919,16 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r).toLowerCase()
+          const code = allWrittenCode(r).toLowerCase()
           return code.includes('csv') || code.includes('download') || code.includes('blob') || code.includes('createobjecturl')
         },
       },
       {
         id: 'no-lint-errors-in-final',
-        description: 'Final canvas write/edit is lint-clean',
+        description: 'Final code is lint-clean',
         points: 25,
         phase: 'execution',
-        validate: (r) => lastCanvasWriteIsClean(r),
+        validate: (r) => lastReadLintsClean(r),
       },
       {
         id: 'did-not-break-existing',
@@ -935,7 +936,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const code = allCanvasCode(r)
+          const code = allWrittenCode(r)
           return code.includes('useState') && (code.includes('Table') || code.includes('Card'))
         },
       },
