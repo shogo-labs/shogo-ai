@@ -35,6 +35,11 @@ describe('SessionManager', () => {
       maxEstimatedTokens: 50_000,
       keepRecentMessages: 2,
       pruneIntervalSeconds: 999,
+      // Set a low autocompact threshold so tests can trigger it
+      contextWindowTokens: 2_000,
+      maxOutputTokens: 500,
+      bufferTokens: 500,
+      // autocompactThreshold = 2000 - 500 - 500 = 1000 tokens
     })
   })
 
@@ -74,11 +79,12 @@ describe('SessionManager', () => {
       expect(s.totalMessages).toBe(1)
     })
 
-    test('returns true when compaction needed', () => {
-      for (let i = 0; i < 6; i++) {
-        sm.addMessages('s1', user(`msg ${i}`))
+    test('returns true when estimated tokens exceed autocompact threshold', () => {
+      // autocompactThreshold = 1000 tokens; each large message ≈ 1000+ chars ≈ 250+ tokens
+      for (let i = 0; i < 5; i++) {
+        sm.addMessages('s1', user('x'.repeat(1000)))
       }
-      const needsCompact = sm.addMessages('s1', user('overflow'))
+      const needsCompact = sm.addMessages('s1', user('x'.repeat(1000)))
       expect(needsCompact).toBe(true)
     })
 

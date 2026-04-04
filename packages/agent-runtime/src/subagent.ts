@@ -7,13 +7,14 @@
  * its own context window, restricted tools, and optional model override.
  * Subagents cannot spawn further subagents (no infinite nesting).
  *
- * Built-in types: code_agent, canvas_agent, explore, general-purpose.
- * Custom types loaded from .claude/agents/<name>.md at startup.
+ * Built-in types: explore, general-purpose.
+ * Custom types loaded from .shogo/agents/<name>.md at startup.
  */
 
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
 
@@ -39,6 +40,8 @@ const CORE_GATEWAY_TOOLS = new Set([
 // Types
 // ---------------------------------------------------------------------------
 
+export type ModelTierName = 'fast' | 'default' | 'capable'
+
 export interface SubagentConfig {
   name: string
   description: string
@@ -51,6 +54,8 @@ export interface SubagentConfig {
   includeInstalledTools?: boolean
   model?: string
   provider?: string
+  /** Model tier shorthand — resolved to a concrete model name via resolveModelTier(). */
+  modelTier?: ModelTierName
   maxTurns?: number
   /** Override working directory for file tools (scoping). */
   workingDir?: string
@@ -58,21 +63,28 @@ export interface SubagentConfig {
   maxTokens?: number
   /** Override loop detector config. Pass false to disable. */
   loopDetection?: Partial<LoopDetectorConfig> | false
+  /** When true, strip all write/mutating tools — only read-only tools are available. */
+  readonly?: boolean
 }
 
 export interface SubagentResult {
-  text: string
   toolCalls: number
   iterations: number
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** The subagent's final text response (last assistant message content). */
+  responseText: string
+  /** Conversation messages produced during this run (for resume support). */
+  newMessages?: Message[]
+  /** Unique agent ID for transcript persistence and resume. */
+  agentId?: string
 }
 
 export interface SubagentStreamCallbacks {
-  onStart?: (name: string, description: string) => void
-  onEnd?: (name: string, summary: string) => void
+  onStart?: (name: string, description: string, agentId: string) => void
+  onEnd?: (name: string) => void
   onTextDelta?: (delta: string) => void
   onThinkingStart?: () => void
   onThinkingDelta?: (delta: string) => void
@@ -89,82 +101,20 @@ export interface SubagentStreamCallbacks {
 // Built-in Subagent Definitions
 // ---------------------------------------------------------------------------
 
-import { CODE_AGENT_CODING_GUIDE } from './code-agent-prompt'
-
-export const CODE_AGENT_SYSTEM_PROMPT = `You are code_agent — a coding subagent that writes scripts and executes commands.
-
-## Your Scope
-You work within the project/ directory. You can write and run scripts, install packages, and execute commands. All file operations are relative to the project directory.
-
-## Available Tools
-You have: edit_file, glob, grep, ls, read_file, write_file, exec, todo_write, web, search_files.
-
-${CODE_AGENT_CODING_GUIDE}`
-
-import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
-
-export const CANVAS_AGENT_SYSTEM_PROMPT = `You are canvas_agent — a focused subagent for building view-only displays with canvas components that can show live integration data.
-
-## Your Scope
-You build agent dashboards and displays using canvas_* tools. Canvas components are declarative and view-only — you describe what to show, and the UI renders it. No interactive components (Button, TextField, Select, Checkbox) are available, but you CAN bind live data from integrations using canvas_api_bind and auto-refresh metrics with canvas_api_hooks.
-
-## Available Tools
-canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, read_file, tool_search.
-
-You also have direct access to all installed integration tools (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS, GOOGLECALENDAR_LIST_EVENTS, SLACK_LIST_MESSAGES). You can call these tools directly to preview data and understand its shape before building the canvas.
-
-## CRITICAL: Live Data Binding with Integrations
-
-When the delegation prompt mentions connected integrations (Gmail, GitHub, Slack, Calendar, Jira, etc.), you MUST use \`canvas_api_bind\` to show REAL live data from those services. NEVER use \`canvas_data\` or \`canvas_api_seed\` to populate fake/sample data for integrations that are already connected.
-
-**Mandatory workflow when integrations are mentioned:**
-1. Call \`tool_search({ query: "<integration name>" })\` to discover available Composio action names (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS)
-2. Optionally call the integration tool directly (e.g., \`GMAIL_FETCH_EMAILS({ max_results: 5 })\`) to preview the data shape and understand available fields
-3. Call \`canvas_create\` to create the surface
-4. Call \`canvas_api_bind\` for EACH integration, mapping the discovered tool names to CRUD bindings with \`dataPath\` to auto-load data
-5. Call \`canvas_update\` to build the component tree with data bindings pointing to the dataPath locations
-
-**Example canvas_api_bind call:**
-\`\`\`
-canvas_api_bind({
-  surfaceId: "dashboard",
-  model: "Email",
-  fields: [
-    { name: "id", type: "String" },
-    { name: "subject", type: "String" },
-    { name: "from", type: "String" },
-    { name: "date", type: "String" }
-  ],
-  bindings: { list: { tool: "GMAIL_FETCH_EMAILS", params: { max_results: 10 } } },
-  dataPath: "/emails"
-})
-\`\`\`
-
-Then in canvas_update, bind components to \`{ "path": "/emails" }\` for DataList or \`{ "path": "/emails" }\` for Table rows.
-
-${BASIC_CANVAS_TOOLS_GUIDE}
-
-${BASIC_CANVAS_EXAMPLES}
-
-## Final Reminder
-- Return a summary of what you built and what data sources are bound.
-- Canvas is view-only for user interaction, but supports live data binding from integrations via canvas_api_bind.
-- **NEVER use canvas_data or canvas_api_seed with fake data when the prompt mentions connected integrations. Use canvas_api_bind to show real data.**
-- Canvas is declarative and view-only. For interactive needs, explain the current limitations to the user.`
-
 export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search and analyze the codebase efficiently.
 
 ## Your Scope
 Read-only codebase exploration. Find files, search for patterns, read code, and return specific findings with file references.
 
 ## Available Tools
-read_file, glob, grep, ls — all read-only.
+read_file, glob, grep, ls, web — read-only exploration tools.
 
 ## Guidelines
 - Use glob to find files by pattern first.
 - Use grep to search for specific patterns, symbols, or strings.
 - Use ls to understand directory structure.
 - Read files to understand implementation details.
+- Use web to look up documentation or external references when needed.
 - Be thorough but concise in your findings.
 - Always include specific file paths and line references.
 - Return a structured summary of what you found.`
@@ -174,6 +124,7 @@ export const GENERAL_PURPOSE_SYSTEM_PROMPT = `You are a general-purpose subagent
 ## Guidelines
 - Plan your approach before acting.
 - Use the most appropriate tool for each step.
+- Use web to look up documentation or external references when needed.
 - Be thorough but efficient.
 - Return a clear summary of what you did and the results.`
 
@@ -183,56 +134,13 @@ export function getBuiltinSubagentConfig(
   allTools: AgentTool[],
 ): SubagentConfig | null {
   switch (name) {
-    case 'code_agent': {
-      let dynamicContext = ''
-      // APP_MODE_DISABLED: template context injection removed
-      const projectDir = join(ctx.workspaceDir, 'project')
-      if (existsSync(projectDir)) {
-        try {
-          const entries = readdirSync(projectDir).filter(e => !e.startsWith('.') && e !== 'node_modules').slice(0, 25)
-          if (entries.length > 0) {
-            dynamicContext += `\n## Project Structure (top-level)\n\`\`\`\n${entries.join('\n')}\n\`\`\`\n`
-          }
-        } catch { /* non-fatal */ }
-      }
-      return {
-        name: 'code_agent',
-        description: 'Coding subagent that writes scripts and executes commands in project/',
-        systemPrompt: CODE_AGENT_SYSTEM_PROMPT + dynamicContext,
-        toolNames: [
-          'edit_file', 'glob', 'grep', 'ls', 'read_file', 'write_file', 'exec',
-          'todo_write', 'web', 'search_files',
-          // APP_MODE_DISABLED: 'template_list', 'template_copy',
-        ],
-        disallowedTools: ['task', 'skill', 'code_agent'],
-        workingDir: projectDir,
-        maxTurns: 50,
-        loopDetection: { maxIdenticalCalls: 5 },
-      }
-    }
-    case 'canvas_agent':
-      return {
-        name: 'canvas_agent',
-        description: 'Declarative UI subagent for building canvas dashboards and displays',
-        systemPrompt: CANVAS_AGENT_SYSTEM_PROMPT,
-        toolNames: [
-          'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch',
-          'canvas_delete', 'canvas_components', 'canvas_inspect',
-          'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
-          'canvas_api_hooks', 'canvas_api_bind', 'read_file',
-          'tool_search',
-        ],
-        includeInstalledTools: true,
-        disallowedTools: ['task', 'skill', 'code_agent'],
-        maxTurns: 50,
-      }
     case 'explore':
       return {
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
         systemPrompt: EXPLORE_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'glob', 'grep', 'ls'],
-        disallowedTools: ['task', 'skill', 'code_agent'],
+        toolNames: ['read_file', 'glob', 'grep', 'ls', 'web'],
+        disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
         maxTurns: 5,
       }
@@ -241,7 +149,7 @@ export function getBuiltinSubagentConfig(
         name: 'general-purpose',
         description: 'Full-capability subagent for complex multi-step tasks',
         systemPrompt: GENERAL_PURPOSE_SYSTEM_PROMPT,
-        disallowedTools: ['task', 'skill', 'code_agent'],
+        disallowedTools: ['task', 'skill'],
       }
     default:
       return null
@@ -249,7 +157,7 @@ export function getBuiltinSubagentConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Custom Subagent Loader (.claude/agents/<name>.md)
+// Custom Subagent Loader (.shogo/agents/<name>.md)
 // ---------------------------------------------------------------------------
 
 export interface CustomAgentDef {
@@ -263,7 +171,7 @@ export interface CustomAgentDef {
 }
 
 export function loadCustomAgents(workspaceDir: string): CustomAgentDef[] {
-  const agentsDir = join(workspaceDir, '.claude', 'agents')
+  const agentsDir = join(workspaceDir, '.shogo', 'agents')
   if (!existsSync(agentsDir)) return []
 
   const agents: CustomAgentDef[] = []
@@ -322,8 +230,82 @@ function parseAgentFrontmatter(raw: string): CustomAgentDef {
 }
 
 // ---------------------------------------------------------------------------
+// Model Tier Resolution
+// ---------------------------------------------------------------------------
+
+import { CONCURRENT_SAFE_TOOLS } from './tool-orchestration'
+
+const MODEL_TIER_MAP: Record<ModelTierName, string> = {
+  fast: 'claude-haiku-4-5',
+  default: '', // sentinel — uses parent model
+  capable: 'claude-sonnet-4-6',
+}
+
+export function resolveModelTier(tier: ModelTierName | undefined, parentModel: string): string {
+  if (!tier || tier === 'default') return parentModel
+  return MODEL_TIER_MAP[tier] || parentModel
+}
+
+// ---------------------------------------------------------------------------
+// Read-only tool set (used by readonly mode)
+// ---------------------------------------------------------------------------
+
+const READONLY_TOOLS = new Set([
+  ...CONCURRENT_SAFE_TOOLS,
+  'ask_user',
+  'todo_write',
+])
+
+// ---------------------------------------------------------------------------
 // Subagent Execution
 // ---------------------------------------------------------------------------
+
+import type { ThinkingLevel } from './agent-loop'
+
+export interface ForkContext {
+  /** Parent's fully rendered system prompt (byte-exact for prompt cache reuse). */
+  systemPrompt: string
+  /** Parent's current conversation history. */
+  parentMessages: Message[]
+  /** Parent's exact tool array (used directly, no filtering). */
+  parentTools: AgentTool[]
+  /** Inherit thinking level from parent. */
+  thinkingLevel?: ThinkingLevel
+}
+
+export interface SubagentRunOptions {
+  /** Pre-existing conversation history for resume support. */
+  history?: Message[]
+  /** Fork context — when present, the subagent inherits the parent's full context. */
+  forkContext?: ForkContext
+  /** Custom stream function for testing — replaces the real LLM call. */
+  streamFn?: import('@mariozechner/pi-agent-core').StreamFn
+}
+
+/**
+ * Filters out assistant messages that contain tool_use blocks without matching
+ * tool_result messages. This prevents API errors when passing parent history
+ * to fork subagents, since incomplete tool calls cause invalid conversation state.
+ *
+ * Adapted for Pi AI message types (role-based with content blocks).
+ */
+export function filterIncompleteToolCalls(messages: Message[]): Message[] {
+  const idsWithResults = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role === 'toolResult') {
+      idsWithResults.add(msg.toolCallId)
+    }
+  }
+  return messages.filter(msg => {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const hasIncomplete = msg.content.some(
+        (block: any) => block.type === 'toolCall' && block.id && !idsWithResults.has(block.id),
+      )
+      if (hasIncomplete) return false
+    }
+    return true
+  })
+}
 
 export async function runSubagent(
   config: SubagentConfig,
@@ -331,13 +313,20 @@ export async function runSubagent(
   parentCtx: ToolContext,
   allParentTools: AgentTool[],
   callbacks?: SubagentStreamCallbacks,
+  options?: SubagentRunOptions,
 ): Promise<SubagentResult> {
-  callbacks?.onStart?.(config.name, config.description)
+  const agentId = createAgentId(config.name)
+  callbacks?.onStart?.(config.name, config.description, agentId)
+
+  const forkCtx = options?.forkContext
+  const isFork = !!forkCtx
 
   const subCtx: ToolContext = {
     ...parentCtx,
     workspaceDir: config.workingDir || parentCtx.workspaceDir,
     fileStateCache: parentCtx.fileStateCache?.clone(),
+    renderedSystemPrompt: undefined,
+    sessionMessages: undefined,
   }
 
   // Ensure working directory exists
@@ -345,46 +334,68 @@ export async function runSubagent(
     mkdirSync(config.workingDir, { recursive: true })
   }
 
-  // Build tool set: filter from parent tools based on config
   let tools: AgentTool[]
-  if (config.toolNames && config.toolNames.length > 0) {
-    const allowSet = new Set(config.toolNames)
-    tools = allParentTools.filter(t => allowSet.has(t.name))
+  let systemPrompt: string
+  let history: Message[]
+  let thinkingLevel: ThinkingLevel = 'medium'
 
-    if (config.includeInstalledTools) {
-      const alreadyIncluded = new Set(tools.map(t => t.name))
-      const dynamicTools = allParentTools.filter(t =>
-        !alreadyIncluded.has(t.name) && !CORE_GATEWAY_TOOLS.has(t.name),
-      )
-      tools.push(...dynamicTools)
-    }
+  if (isFork) {
+    // Fork mode: use parent's exact system prompt, tools, and filtered history.
+    // This enables prompt cache reuse and full context awareness.
+    systemPrompt = forkCtx.systemPrompt
+    tools = forkCtx.parentTools
+    history = filterIncompleteToolCalls(forkCtx.parentMessages)
+    if (forkCtx.thinkingLevel) thinkingLevel = forkCtx.thinkingLevel
   } else {
-    tools = [...allParentTools]
+    // Normal mode: build tool set from config
+    systemPrompt = config.systemPrompt
+    history = options?.history || []
+
+    if (config.toolNames && config.toolNames.length > 0) {
+      const allowSet = new Set(config.toolNames)
+      tools = allParentTools.filter(t => allowSet.has(t.name))
+
+      if (config.includeInstalledTools) {
+        const alreadyIncluded = new Set(tools.map(t => t.name))
+        const dynamicTools = allParentTools.filter(t =>
+          !alreadyIncluded.has(t.name) && !CORE_GATEWAY_TOOLS.has(t.name),
+        )
+        tools.push(...dynamicTools)
+      }
+    } else {
+      tools = [...allParentTools]
+    }
+
+    // Strip orchestration tools from non-fork subagents (no infinite nesting)
+    const disallowed = new Set([
+      ...(config.disallowedTools || []),
+      'task',
+      'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
+    ])
+    tools = tools.filter(t => !disallowed.has(t.name))
+
+    if (config.readonly) {
+      tools = tools.filter(t => READONLY_TOOLS.has(t.name))
+    }
   }
 
-  // Always strip task/skill/code_agent from subagent tools to prevent nesting
-  const disallowed = new Set([
-    ...(config.disallowedTools || []),
-    'task', 'code_agent',
-  ])
-  tools = tools.filter(t => !disallowed.has(t.name))
-
-  const model = config.model || parentCtx.config.model.name
+  const model = resolveModelTier(config.modelTier, config.model || parentCtx.effectiveModel || parentCtx.config.model.name)
   const provider = config.provider || parentCtx.config.model.provider
-  const maxIterations = config.maxTurns || 10
+  const maxIterations = config.maxTurns || (isFork ? 200 : 10)
 
   try {
     const result = await runAgentLoop({
       provider,
       model,
-      system: config.systemPrompt,
-      history: [],
+      system: systemPrompt,
+      history,
       prompt,
       tools,
       maxIterations,
       maxTokens: config.maxTokens,
-      thinkingLevel: 'medium',
+      thinkingLevel,
       loopDetection: config.loopDetection,
+      streamFn: options?.streamFn,
       onToolCall: callbacks?.onToolCall,
       onTextDelta: callbacks?.onTextDelta,
       onThinkingStart: callbacks?.onThinkingStart,
@@ -397,29 +408,76 @@ export async function runSubagent(
       onToolCallEnd: callbacks?.onToolCallEnd,
     })
 
-    const summary = result.text || '(no text output)'
-    callbacks?.onEnd?.(config.name, summary)
+    callbacks?.onEnd?.(config.name)
+
+    // Persist transcript if session persistence is available
+    if (parentCtx.sessionPersistence && parentCtx.sessionId && result.newMessages) {
+      try {
+        await parentCtx.sessionPersistence.saveSubagentTranscript(
+          agentId,
+          parentCtx.sessionId,
+          config.name,
+          config.description,
+          result.newMessages,
+        )
+      } catch (err: any) {
+        console.warn(`[Subagent] Failed to persist transcript for ${agentId}:`, err.message)
+      }
+    }
 
     return {
-      text: summary,
       toolCalls: result.toolCalls.length,
       iterations: result.iterations,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       cacheReadTokens: result.cacheReadTokens,
       cacheWriteTokens: result.cacheWriteTokens,
+      responseText: result.text,
+      newMessages: result.newMessages,
+      agentId,
     }
   } catch (err: any) {
-    const errorMsg = `Subagent ${config.name} failed: ${err.message}`
-    callbacks?.onEnd?.(config.name, errorMsg)
+    console.error(`Subagent ${config.name} failed: ${err.message}`)
+    callbacks?.onEnd?.(config.name)
     return {
-      text: errorMsg,
       toolCalls: 0,
       iterations: 0,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      responseText: `Subagent failed: ${err.message}`,
+      newMessages: [],
+      agentId,
     }
   }
+}
+
+/**
+ * Generates a unique agent ID for transcript persistence.
+ * Format: a-{label}-{16 hex chars}
+ */
+export function createAgentId(label?: string): string {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+  const slug = label ? label.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 20) : 'agent'
+  return `a-${slug}-${hex}`
+}
+
+// ---------------------------------------------------------------------------
+// Parallel Sub-Agent Execution
+// ---------------------------------------------------------------------------
+
+export async function runSubagentsParallel(
+  configs: Array<{ config: SubagentConfig; prompt: string }>,
+  parentCtx: ToolContext,
+  allParentTools: AgentTool[],
+  callbacks?: SubagentStreamCallbacks,
+): Promise<SubagentResult[]> {
+  return Promise.all(
+    configs.map(({ config, prompt }) =>
+      runSubagent(config, prompt, parentCtx, allParentTools, callbacks),
+    ),
+  )
 }

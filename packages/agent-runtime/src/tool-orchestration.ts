@@ -46,6 +46,13 @@ export const CONCURRENT_SAFE_TOOLS = new Set([
   'get_canvas_runtime_errors',
   'web_search',
   'notify_user_error',
+  'task',
+  'task_status',
+  'agent_spawn',
+  'agent_status',
+  'agent_result',
+  'agent_list',
+  'agent_cancel',
 ])
 
 export function isConcurrencySafe(toolName: string): boolean {

@@ -87,6 +87,8 @@ import {
   type ToolCallData,
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
+import { subagentStreamStore } from "../../lib/subagent-stream-store"
+import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
 import { PlanCard, type PlanData } from "./PlanCard"
@@ -1195,6 +1197,87 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
+      // Team coordination events
+      if (dataPart.type === "data-team-snapshot") {
+        const d = (dataPart as any).data
+        if (d) teamStore.hydrate(d)
+      }
+      if (dataPart.type === "data-team-created") {
+        const { teamId, name, description, leaderId } = (dataPart as any).data ?? {}
+        if (teamId) teamStore.initTeam(teamId, name, description, leaderId)
+      }
+      if (dataPart.type === "data-team-deleted") {
+        const { teamId } = (dataPart as any).data ?? {}
+        if (teamId) teamStore.deleteTeam(teamId)
+      }
+      if (dataPart.type === "data-team-activity") {
+        const { event, agentId: aid, teamId: tid, reason } = (dataPart as any).data ?? {}
+        if (event === "idle") teamStore.updateMemberStatus(aid, tid, "idle")
+        else if (event === "wake") teamStore.updateMemberStatus(aid, tid, "active")
+        else if (event === "shutdown") teamStore.updateMemberStatus(aid, tid, "shutdown")
+        else if (event === "member-joined") {
+          const { name: mName, color } = (dataPart as any).data ?? {}
+          teamStore.upsertMember(tid, { agentId: aid, teamId: tid, name: mName, color, status: "active", joinedAt: Date.now() })
+        }
+      }
+      if (dataPart.type === "data-team-task") {
+        const { teamId: tid, task } = (dataPart as any).data ?? {}
+        if (tid && task) teamStore.upsertTask(tid, task)
+      }
+      if (dataPart.type === "data-team-message") {
+        const d = (dataPart as any).data
+        if (d?.teamId) {
+          teamStore.addMessage(d.teamId, {
+            from: d.from,
+            to: d.to,
+            messageType: d.messageType,
+            message: d.message,
+            summary: d.summary,
+            timestamp: Date.now(),
+          })
+        }
+      }
+      if (dataPart.type === "data-teammate-text") {
+        const { agentId: aid, teamId: tid, phase, textId, delta } = (dataPart as any).data ?? {}
+        if (phase === "start") {
+          teamStore.appendMemberStreamPart(aid, tid, { type: "text", text: "", id: textId })
+        } else if (phase === "delta" && delta) {
+          teamStore.updateMemberStreamPart(aid, tid, textId, (p) =>
+            p.type === "text" ? { ...p, text: p.text + delta } : p,
+          )
+        } else if (phase === "reasoning-start") {
+          teamStore.appendMemberStreamPart(aid, tid, { type: "reasoning", text: "", isStreaming: true, id: textId })
+        } else if (phase === "reasoning-delta" && delta) {
+          teamStore.updateMemberStreamPart(aid, tid, textId, (p) =>
+            p.type === "reasoning" ? { ...p, text: p.text + delta } : p,
+          )
+        } else if (phase === "reasoning-end") {
+          teamStore.updateMemberStreamPart(aid, tid, textId, (p) =>
+            p.type === "reasoning" ? { ...p, isStreaming: false } : p,
+          )
+        }
+      }
+      if (dataPart.type === "data-teammate-tool") {
+        const { agentId: aid, teamId: tid, toolCallId, toolName, phase, args, result, isError } = (dataPart as any).data ?? {}
+        if (phase === "start") {
+          teamStore.appendMemberStreamPart(aid, tid, {
+            type: "tool",
+            id: toolCallId,
+            tool: { id: toolCallId, toolName, args, state: "streaming" as any, category: "other" as any, timestamp: Date.now() },
+          })
+        } else if (phase === "output") {
+          teamStore.updateMemberStreamPart(aid, tid, toolCallId, (p) =>
+            p.type === "tool"
+              ? { ...p, tool: { ...p.tool, state: isError ? "error" : "success", result } }
+              : p,
+          )
+        }
+      }
+      if (dataPart.type === "data-agent-types") {
+        const { types } = (dataPart as any).data ?? {}
+        if (types) teamStore.setAgentTypes(types)
+      }
+
       if (dataPart.type === "data-tool-error" && !toolErrorBanner) {
         const { toolkitName, error: errText, isAuthError: authErr } = (dataPart as any).data ?? {}
         setToolErrorBanner({
@@ -1619,11 +1702,12 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isStreaming, activeSubagents, recentTools.length])
 
-  // Clear accumulated tools when a new stream starts
+  // Clear accumulated tools and sub-agent store when a new stream starts
   const prevIsStreamingRef = useRef(false)
   useEffect(() => {
     if (isStreaming && !prevIsStreamingRef.current) {
       setAccumulatedSubagentTools([])
+      teamStore.clear()
     }
     prevIsStreamingRef.current = isStreaming
   }, [isStreaming])
@@ -1783,6 +1867,7 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     hasReceivedPartsRef.current = false
     processedProgressEventsRef.current.clear()
+    subagentStreamStore.clear()
     setIsInitialLoadComplete(false)
   }, [currentSessionId])
 

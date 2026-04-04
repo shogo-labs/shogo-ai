@@ -7,12 +7,14 @@
  * Preserves the natural ordering from the AI SDK message.parts array.
  */
 
-import { useState, useCallback, useMemo, useRef } from "react"
+import { useState, useCallback, useMemo, useRef, useEffect } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
+import { SubagentCard } from "./SubagentCard"
+import { TeamCard } from "./TeamCard"
 import { ExecWidget } from "./ExecWidget"
 import {
   ConnectToolWidget,
@@ -30,6 +32,7 @@ import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
+import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 
 export interface AssistantContentProps {
   message: UIMessage
@@ -37,9 +40,9 @@ export interface AssistantContentProps {
   className?: string
 }
 
-function mapToolState(state?: string): ToolCallData["state"] {
+function mapToolState(state?: string, preliminary?: boolean): ToolCallData["state"] {
   if (state === "input-streaming") return "streaming"
-  if (state === "output-available") return "success"
+  if (state === "output-available") return preliminary ? "streaming" : "success"
   if (state === "output-error") return "error"
   if (state === "result") return "success"
   if (state === "error") return "error"
@@ -105,6 +108,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
         part.state === "output-error"
           ? (part as { errorText?: string }).errorText ?? part.error
           : part.error
+      const preliminary = part.state === "output-available" && (part as any).preliminary === true
       result.push({
         type: "tool",
         id: toolCallId,
@@ -112,7 +116,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           id: toolCallId,
           toolName: part.toolName || "unknown",
           category: getToolCategory(part.toolName || ""),
-          state: mapToolState(part.state),
+          state: mapToolState(part.state, preliminary),
           args: part.input,
           result: part.output,
           error: errorContent,
@@ -141,7 +145,9 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create"])
+const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
+const TEAM_TOOL_NAMES = new Set(["team_create"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -192,6 +198,7 @@ function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
 
   return result
 }
+
 
 function ImageThumbnail({
   url,
@@ -284,10 +291,35 @@ export function AssistantContent({
     return fn
   }, [toggleTool])
 
-  const groupedParts = useMemo(() => {
-    const parts = extractOrderedParts(message)
-    return groupConsecutiveParts(parts)
-  }, [message])
+  const orderedParts = useMemo(() => extractOrderedParts(message), [message])
+
+  // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
+  useEffect(() => {
+    for (const part of orderedParts) {
+      if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName)) continue
+      const tool = part.tool
+      const args = tool.args as Record<string, unknown> | undefined
+      const agentType = (args?.subagent_type as string) ?? (args?.type as string) ?? "task"
+      const description = (args?.description as string) ?? (args?.prompt as string) ?? ""
+      const isDone = tool.state === "success"
+      const isError = tool.state === "error"
+      subagentStreamStore.init(tool.id, {
+        agentId: tool.id,
+        agentType,
+        description,
+        status: isError ? "error" : isDone ? "completed" : "running",
+      })
+      const resultParts = (tool.result as any)?.parts as any[] | undefined
+      if (resultParts?.length) {
+        subagentStreamStore.setParts(tool.id, resultParts)
+      }
+    }
+  }, [orderedParts])
+
+  const groupedParts = useMemo(
+    () => groupConsecutiveParts(orderedParts),
+    [orderedParts],
+  )
 
   if (groupedParts.length === 0) {
     return null
@@ -333,6 +365,14 @@ export function AssistantContent({
         }
 
         if (part.type === "tool") {
+          if (TEAM_TOOL_NAMES.has(part.tool.toolName)) {
+            return <TeamCard key={part.id} tool={part.tool} />
+          }
+
+          if (TASK_TOOL_NAMES.has(part.tool.toolName)) {
+            return <SubagentCard key={part.id} tool={part.tool} />
+          }
+
           if (part.tool.toolName === "ask_user") {
             const isPending = part.tool.result === undefined
             const isExpanded = isPending || expandedTools.has(part.id)

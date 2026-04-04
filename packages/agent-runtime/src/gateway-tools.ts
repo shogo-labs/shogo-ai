@@ -21,8 +21,15 @@ import {
   getBuiltinSubagentConfig,
   loadCustomAgents,
   type SubagentConfig,
+  type SubagentResult,
+  type SubagentStreamCallbacks,
   type CustomAgentDef,
 } from './subagent'
+import {
+  findActualString, preserveQuoteStyle, stripTrailingWhitespace,
+  applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
+  type LineEndingType,
+} from './edit-file-utils'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
 import { CodeIndexEngine } from './code-index-engine'
@@ -37,6 +44,8 @@ import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { FileStateCache } from './file-state-cache'
 import { resolveRgPath } from './rg-resolve'
+import type { TeamManager } from './team-manager'
+import type { TeammateLoopHandle } from './teammate-loop'
 
 const CANVAS_CODE_RE = /^canvas\/[^/]+\.(js|jsx|ts|tsx)$/
 import {
@@ -92,6 +101,24 @@ export interface ToolContext {
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
   /** Tracks which files the agent has read, their mtimes, and line counts */
   fileStateCache?: FileStateCache
+  /** Dynamic sub-agent registry and lifecycle manager */
+  agentManager?: import('./agent-manager').AgentManager
+  /** Skill server manager — exposed so tools can sync/query the skill server */
+  skillServerManager?: import('./skill-server-manager').SkillServerManager
+  /** Parent's fully rendered system prompt (for fork mode context sharing) */
+  renderedSystemPrompt?: string
+  /** Parent's current conversation history (for fork mode context sharing) */
+  sessionMessages?: import('@mariozechner/pi-ai').Message[]
+  /** Session persistence layer (for subagent transcript storage) */
+  sessionPersistence?: import('./sqlite-session-persistence').SqliteSessionPersistence
+  /** Team coordination manager (for teammate swarm features) */
+  teamManager?: TeamManager
+  /** Current team context (set when agent is part of a team) */
+  teamContext?: { teamId: string; agentId: string; isLeader: boolean }
+  /** Active teammate loop handles (for lifecycle management) */
+  teammateHandles?: Map<string, TeammateLoopHandle>
+  /** Effective model ID for this turn (accounts for session modelOverride + alias resolution) */
+  effectiveModel?: string
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -247,7 +274,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, {
           offset: startLine + 1,
           limit: Math.min(endLine, lines.length) - startLine,
-        })
+        }, undefined)
         return textResult({
           content: numberedLines.join('\n'),
           totalLines: lines.length,
@@ -256,7 +283,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount)
+      ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, undefined, fullContent)
       const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
       if (totalLineCount > 500) {
         result.totalLines = totalLineCount
@@ -305,7 +332,146 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ctx.lspManager.notifyFileChanged(resolved, finalContent)
       }
 
-      return textResult({ ok: true, path: filePath, bytes: content.length })
+      const base = { ok: true, path: filePath, bytes: content.length }
+      const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
+      return textResult(schemaResult ?? base)
+    },
+  }
+}
+
+/**
+ * If the file is .shogo/server/schema.prisma, sync the skill server and
+ * return an enriched result.  Otherwise returns null (caller uses default).
+ */
+/**
+ * Scan canvas/src files for fetch('/api/...') calls that don't match any
+ * active server route. Returns per-file orphaned route info.
+ */
+function findOrphanedFetches(
+  workspaceDir: string,
+  activeRoutes: string[],
+): { route: string; file: string }[] {
+  const routeSet = new Set(activeRoutes.map(r => r.toLowerCase()))
+  const fetchPattern = /fetch\(\s*[`"'](?:https?:\/\/localhost:\d+)?\/api\/([^`"'/\s?]+)/g
+  const orphaned: { route: string; file: string }[] = []
+
+  const scanDir = (dir: string) => {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== 'generated' && entry.name !== '.shogo') {
+          scanDir(full)
+        } else if (entry.isFile() && /\.(tsx?|jsx?)$/.test(entry.name)) {
+          try {
+            const content = readFileSync(full, 'utf-8')
+            for (const m of content.matchAll(fetchPattern)) {
+              if (!routeSet.has(m[1].toLowerCase())) {
+                const relPath = full.startsWith(workspaceDir)
+                  ? full.slice(workspaceDir.length + 1)
+                  : full
+                orphaned.push({ route: `/api/${m[1]}`, file: relPath })
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  scanDir(join(workspaceDir, 'src'))
+  const canvasDir = join(workspaceDir, 'canvas')
+  if (existsSync(canvasDir)) scanDir(canvasDir)
+
+  return orphaned
+}
+
+async function maybeSchemaSync(
+  ctx: ToolContext,
+  filePath: string,
+  resolved: string,
+  baseResult: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const isSchemaWrite = filePath === '.shogo/server/schema.prisma' ||
+    resolved.endsWith('.shogo/server/schema.prisma')
+  if (!isSchemaWrite || !ctx.skillServerManager) return null
+
+  const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
+  if (!/^model\s+\w+/m.test(content)) return null
+
+  try {
+    const syncResult = await ctx.skillServerManager.sync()
+    const routes = ctx.skillServerManager.getActiveRoutes()
+    const activeRoutePaths = routes.map(r => `/api/${r}`)
+
+    const orphaned = findOrphanedFetches(ctx.workspaceDir, routes)
+
+    const result: Record<string, unknown> = {
+      ...baseResult,
+      skillServer: {
+        synced: syncResult.ok,
+        phase: syncResult.phase,
+        activeRoutes: activeRoutePaths,
+        ...(syncResult.error ? { error: syncResult.error } : {}),
+      },
+    }
+
+    if (orphaned.length > 0) {
+      const unique = [...new Map(orphaned.map(o => [`${o.route}::${o.file}`, o])).values()]
+      ;(result.skillServer as Record<string, unknown>).orphanedFetches = unique
+      ;(result.skillServer as Record<string, unknown>).warning =
+        `Your schema is missing models for ${new Set(unique.map(o => o.route)).size} route(s) that your UI code fetches. ` +
+        `These fetch calls will fail at runtime. Either add the missing models to the schema or remove the fetch calls.`
+    }
+
+    return result
+  } catch (err: any) {
+    return {
+      ...baseResult,
+      skillServer: {
+        synced: false,
+        error: err.message,
+        hint: 'Schema saved but regeneration failed. Check the schema for errors.',
+      },
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill Server Sync Tool
+// ---------------------------------------------------------------------------
+
+function createSkillServerSyncTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'skill_server_sync',
+    description:
+      'Force the skill server to regenerate routes from schema.prisma and restart. ' +
+      'Use this when routes are returning 404 after a schema change, or to verify the server is healthy. ' +
+      'Returns the current phase and list of active API routes.',
+    label: 'Skill Server Sync',
+    parameters: Type.Object({}),
+    execute: async () => {
+      if (!ctx.skillServerManager) {
+        return textResult({ ok: false, error: 'Skill server manager not available' })
+      }
+
+      try {
+        const result = await ctx.skillServerManager.sync()
+        const routes = ctx.skillServerManager.getActiveRoutes()
+        const models = ctx.skillServerManager.getSchemaModels()
+        return textResult({
+          ok: result.ok,
+          phase: result.phase,
+          activeRoutes: routes.map(r => `/api/${r}`),
+          schemaModels: models,
+          url: ctx.skillServerManager.url,
+        })
+      } catch (err: any) {
+        return textResult({
+          ok: false,
+          error: err.message,
+          phase: ctx.skillServerManager.phase,
+        })
+      }
     },
   }
 }
@@ -386,16 +552,19 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
   return null
 }
 
+const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024 // 1 GiB
+
 function createEditFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'edit_file',
     description:
-      'REQUIRED tool for modifying existing files — always use this instead of write_file for changes. ' +
-      'Makes targeted search-and-replace edits without rewriting the whole file. ' +
-      'The old_string must match exactly and uniquely in the file (unless replace_all is true). ' +
-      'Include 3-5 surrounding lines in old_string for uniqueness. ' +
-      'If it fails, read the file first to get the exact text, then retry with a longer old_string. ' +
-      'Use replace_all: true for renaming a variable or string throughout a file.',
+      'Performs exact string replacements in files.\n\n' +
+      'Usage:\n' +
+      '- You must use read_file at least once before editing. This tool will error if you attempt an edit without reading.\n' +
+      '- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears in the file content.\n' +
+      '- ALWAYS prefer editing existing files. NEVER use write_file for existing files unless replacing the entire content.\n' +
+      '- The edit will FAIL if old_string is not unique. Provide more surrounding context to make it unique, or use replace_all.\n' +
+      '- Use replace_all for renaming a variable or string across the file.',
     label: 'Edit File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -411,26 +580,77 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'old_string and new_string must differ' })
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+
+      // Jupyter notebook redirect
+      if (filePath.endsWith('.ipynb')) {
+        return textResult({ error: 'File is a Jupyter Notebook. Use the notebook_edit tool instead.' })
+      }
+
+      // Create file on edit: if file doesn't exist and old_string is empty,
+      // create it with new_string as content (matches Claude Code behavior)
       if (!existsSync(resolved)) {
+        if (old_string === '') {
+          mkdirSync(dirname(resolved), { recursive: true })
+          writeFileSync(resolved, new_string, 'utf-8')
+          const newMtime = Math.floor(statSync(resolved).mtimeMs)
+          ctx.fileStateCache?.recordEdit(filePath, new_string, newMtime)
+          ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
+          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+            ctx.lspManager.notifyFileChanged(resolved, new_string)
+            ctx.lspManager.notifyFileSaved?.(resolved)
+          }
+          return textResult({ ok: true, path: filePath, created: true })
+        }
         return textResult({ error: `File not found: ${filePath}` })
       }
-      const content = readFileSync(resolved, 'utf-8')
 
-      // Exact match path (fast)
-      const exactOccurrences = content.split(old_string).length - 1
-      if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
-        const updated = replace_all
-          ? content.split(old_string).join(new_string)
-          : content.replace(old_string, new_string)
-        writeFileSync(resolved, updated, 'utf-8')
-        ctx.fileStateCache?.invalidate(filePath)
-        ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-        if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
-          ctx.lspManager.notifyFileChanged(resolved, updated)
-        }
-        return textResult({ ok: true, path: filePath, replacements: replace_all ? exactOccurrences : 1 })
+      // File size guard
+      const stats = statSync(resolved)
+      if (stats.size > MAX_EDIT_FILE_SIZE) {
+        return textResult({
+          error: `File too large to edit (${(stats.size / 1024 / 1024).toFixed(0)} MB). Max: 1 GB.`,
+        })
       }
 
+      // Read-before-edit enforcement — block only if never read at all
+      const readRecord = ctx.fileStateCache?.getRecord(filePath)
+      if (ctx.fileStateCache && !readRecord) {
+        return textResult({
+          error: 'File has not been read yet. Read it first with read_file before editing.',
+        })
+      }
+
+      // Staleness detection — content-comparison fallback only for full reads
+      if (readRecord && ctx.fileStateCache?.isStale(filePath, resolved)) {
+        const isFullRead = !readRecord.partial
+        if (isFullRead && readRecord.content) {
+          const currentContent = readFileSync(resolved, 'utf-8')
+          if (currentContent === readRecord.content) {
+            // mtime changed but content is identical — safe to proceed
+          } else {
+            return textResult({
+              error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
+            })
+          }
+        } else {
+          return textResult({
+            error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
+          })
+        }
+      }
+
+      // Read with encoding + line-ending detection
+      const { content, encoding, lineEndings } = readFileWithMetadata(resolved)
+      const isMarkdown = /\.(md|mdx)$/i.test(filePath)
+      const cleanNewString = isMarkdown ? new_string : stripTrailingWhitespace(new_string)
+
+      // --- Match pipeline ---
+      // 1. Exact match
+      const exactOccurrences = content.split(old_string).length - 1
+      if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
+        const updated = applyEditToFile(content, old_string, cleanNewString, replace_all)
+        return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, replace_all ? exactOccurrences : 1)
+      }
       if (exactOccurrences > 1 && !replace_all) {
         return textResult({
           error: `old_string found ${exactOccurrences} times in ${filePath}. ` +
@@ -438,28 +658,32 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      // Fuzzy match path — try whitespace/line-ending normalization
+      // 2. Curly quote normalization
       if (!replace_all) {
-        const fuzzy = fuzzyFindInContent(content, old_string)
-        if (fuzzy) {
-          const updated = content.substring(0, fuzzy.index) + new_string + content.substring(fuzzy.index + fuzzy.match.length)
-          writeFileSync(resolved, updated, 'utf-8')
-          ctx.fileStateCache?.invalidate(filePath)
-          ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
-            ctx.lspManager.notifyFileChanged(resolved, updated)
-          }
-          return textResult({ ok: true, path: filePath, replacements: 1, note: 'Matched with whitespace normalization' })
+        const actualString = findActualString(content, old_string)
+        if (actualString && actualString !== old_string) {
+          const adjustedNew = preserveQuoteStyle(old_string, actualString, cleanNewString)
+          const updated = applyEditToFile(content, actualString, adjustedNew, false)
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with quote normalization')
         }
       }
 
-      // Provide helpful context on failure
+      // 3. Fuzzy match (whitespace/line-ending normalization)
+      if (!replace_all) {
+        const fuzzy = fuzzyFindInContent(content, old_string)
+        if (fuzzy) {
+          const updated = content.substring(0, fuzzy.index) + cleanNewString + content.substring(fuzzy.index + fuzzy.match.length)
+          return commitEdit(ctx, filePath, resolved, content, updated, encoding, lineEndings, 1, 'Matched with whitespace normalization')
+        }
+      }
+
+      // No match — provide helpful context
       const lines = content.split('\n')
       const needleFirst = old_string.split('\n')[0]?.trim()
       const nearbyLines: string[] = []
       if (needleFirst) {
         for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes(needleFirst)) {
+          if (lines[i]!.includes(needleFirst)) {
             const start = Math.max(0, i - 1)
             const end = Math.min(lines.length, i + 3)
             nearbyLines.push(`Lines ${start + 1}-${end}: ${lines.slice(start, end).join('\n')}`)
@@ -476,6 +700,38 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       })
     },
   }
+}
+
+async function commitEdit(
+  ctx: ToolContext,
+  filePath: string,
+  resolved: string,
+  originalContent: string,
+  updated: string,
+  encoding: BufferEncoding,
+  lineEndings: LineEndingType,
+  replacements: number,
+  note?: string,
+): Promise<AgentToolResult<any>> {
+  writeWithMetadata(resolved, updated, encoding, lineEndings)
+
+  // Post-edit state tracking (recordEdit instead of invalidate)
+  const newMtime = Math.floor(statSync(resolved).mtimeMs)
+  if (ctx.fileStateCache) {
+    ctx.fileStateCache.recordEdit(filePath, updated, newMtime)
+  }
+
+  ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
+  if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+    ctx.lspManager.notifyFileChanged(resolved, updated)
+    ctx.lspManager.notifyFileSaved?.(resolved)
+  }
+
+  const patch = getStructuredPatch(filePath, originalContent, updated)
+  const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
+  if (note) base.note = note
+  const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
+  return textResult(schemaResult ?? base)
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,16 +1467,29 @@ const WEB_CACHE_REDIS_URL = process.env.WEB_CACHE_REDIS_URL
 const WEB_CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
 
 let _webCacheRedis: Redis | null = null
+let _webCacheRedisFailed = false
 function getWebCacheRedis(): Redis | null {
-  if (!WEB_CACHE_REDIS_URL) return null
+  if (!WEB_CACHE_REDIS_URL || _webCacheRedisFailed) return null
   if (!_webCacheRedis) {
     const Redis = require('ioredis').default as new (...args: any[]) => Redis
     _webCacheRedis = new Redis(WEB_CACHE_REDIS_URL, {
       maxRetriesPerRequest: 1,
       connectTimeout: 3000,
       lazyConnect: true,
+      retryStrategy(times: number) {
+        if (times > 3) return null // stop retrying after 3 attempts
+        return Math.min(times * 500, 2000)
+      },
     })
-    _webCacheRedis.connect().catch(() => {})
+    _webCacheRedis.on('error', () => {})
+    _webCacheRedis.on('end', () => {
+      _webCacheRedisFailed = true
+      _webCacheRedis = null
+    })
+    _webCacheRedis.connect().catch(() => {
+      _webCacheRedisFailed = true
+      _webCacheRedis = null
+    })
   }
   return _webCacheRedis
 }
@@ -3499,177 +3768,187 @@ function createMcpUninstallTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
-// Task Tool (subagent spawning)
+// Agent Orchestration Tools (agent_create, agent_spawn, agent_status, etc.)
 // ---------------------------------------------------------------------------
 
-let cachedCustomAgents: CustomAgentDef[] | null = null
+import { AgentManager } from './agent-manager'
+import type { ModelTierName, ForkContext } from './subagent'
+import { isInForkChild, buildForkDirective } from './subagent-prompts'
 
-function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+function createAgentCreateTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'task',
+    name: 'agent_create',
     description:
-      'Spawn a subagent for parallel or focused work in an isolated context. ' +
-      'Built-in types: explore (fast read-only codebase search, uses Haiku), general-purpose (all tools). ' +
-      'Also available: code_agent (scoped to project/), canvas_agent (canvas tools + integrations). ' +
-      'Custom agents from .claude/agents/ are also available. ' +
-      'Note: the main agent has all tools directly — subagents are optional for parallelism or isolation.',
-    label: 'Task',
+      'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. ' +
+      'Use the same name to update an existing type. Set persist: true to save across sessions.',
+    label: 'Create Agent',
     parameters: Type.Object({
-      description: Type.String({ description: 'Short 3-5 word task description' }),
-      prompt: Type.String({ description: 'Detailed task for the subagent' }),
-      subagent_type: Type.Optional(Type.String({
-        description: 'Agent type: explore, general-purpose, code_agent, canvas_agent, or custom name',
-      })),
-      model: Type.Optional(Type.String({ description: 'Model override (e.g. claude-haiku-4-5)' })),
+      name: Type.String({ description: 'Unique agent type name (e.g. "test-writer", "pr-reviewer")' }),
+      description: Type.String({ description: 'Short description of what this agent does' }),
+      system_prompt: Type.String({ description: 'System prompt for the agent (max 4000 chars)' }),
+      tools: Type.Optional(Type.Array(Type.String(), { description: 'Tool names this agent can use. Omit for all tools.' })),
+      model_tier: Type.Optional(Type.String({ description: 'Model tier: fast, default, or capable' })),
       max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
+      readonly: Type.Optional(Type.Boolean({ description: 'If true, only read-only tools are available' })),
+      persist: Type.Optional(Type.Boolean({ description: 'If true, save to .shogo/agents/ for future sessions' })),
     }),
-    execute: async (_toolCallId, params, context) => {
+    execute: async (_id, params) => {
+      const { name, description, system_prompt, tools, model_tier, max_turns, readonly: ro, persist } = params as {
+        name: string; description: string; system_prompt: string;
+        tools?: string[]; model_tier?: string; max_turns?: number; readonly?: boolean; persist?: boolean
+      }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const config: SubagentConfig = {
+        name,
+        description,
+        systemPrompt: system_prompt,
+        toolNames: tools,
+        modelTier: (model_tier as ModelTierName) || 'default',
+        maxTurns: max_turns || 10,
+        readonly: ro,
+      }
+
+      const result = am.register(config, persist)
+      if (!result.ok) return textResult({ error: result.error })
+
+      const types = am.listTypes()
+      ctx.uiWriter?.write({ type: 'data-agent-types', data: { types } })
+
+      return textResult({ ok: true, name, description, persisted: !!persist })
+    },
+  }
+}
+
+function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+  return {
+    name: 'agent_spawn',
+    description:
+      'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
+      'Use background: true for async execution, then check with agent_status/agent_result. ' +
+      'Built-in types: explore, general-purpose. ' +
+      'Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+    label: 'Spawn Agent',
+    parameters: Type.Object({
+      type: Type.Optional(Type.String({
+        description: 'Agent type name (built-in or created with agent_create). Omit for fork mode (inherits full context).',
+      })),
+      prompt: Type.String({ description: 'Task prompt for the agent' }),
+      model_tier: Type.Optional(Type.String({ description: 'Model tier: fast (cheap), default (parent), capable (best)' })),
+      max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10, fork: 200)' })),
+      readonly: Type.Optional(Type.Boolean({ description: 'If true, only read-only tools are available' })),
+      background: Type.Optional(Type.Boolean({ description: 'If true, run asynchronously (default: false — blocks until done)' })),
+      resume: Type.Optional(Type.String({ description: 'Instance ID to resume (sends follow-up to existing agent)' })),
+    }),
+    execute: async (toolCallId, params) => {
       const {
-        description: taskDesc,
+        type,
         prompt,
-        subagent_type: agentType = 'general-purpose',
-        model,
+        model_tier,
         max_turns,
+        readonly: readonlyMode,
+        background,
+        resume,
       } = params as {
-        description: string; prompt: string;
-        subagent_type?: string; model?: string; max_turns?: number
+        type?: string; prompt: string; model_tier?: string; max_turns?: number;
+        readonly?: boolean; background?: boolean; resume?: string
       }
 
-      let config: SubagentConfig | null = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
-
-      if (!config) {
-        if (!cachedCustomAgents) {
-          cachedCustomAgents = loadCustomAgents(ctx.workspaceDir)
+      // --- Fork mode: type is omitted ---
+      if (!type) {
+        if (!ctx.renderedSystemPrompt || !ctx.sessionMessages) {
+          return textResult({ error: 'Fork mode requires parent context (renderedSystemPrompt + sessionMessages). Not available in this context.' })
         }
-        const custom = cachedCustomAgents.find(a => a.name === agentType)
-        if (custom) {
-          config = {
-            name: custom.name,
-            description: custom.description,
-            systemPrompt: custom.systemPrompt,
-            toolNames: custom.tools,
-            disallowedTools: [...(custom.disallowedTools || []), 'task', 'code_agent'],
-            model: custom.model,
-            maxTurns: custom.maxTurns,
-          }
-        }
-      }
 
-      if (!config) {
+        // Recursive fork guard
+        if (isInForkChild(ctx.sessionMessages)) {
+          return textResult({ error: 'Cannot fork from within a fork. Execute the task directly instead.' })
+        }
+
+        const forkConfig: SubagentConfig = {
+          name: 'fork',
+          description: 'Context-aware forked worker',
+          systemPrompt: '', // overridden by forkContext
+          maxTurns: max_turns || 200,
+        }
+        if (model_tier && (model_tier === 'fast' || model_tier === 'default' || model_tier === 'capable')) {
+          forkConfig.modelTier = model_tier as ModelTierName
+        }
+
+        const forkContext: import('./subagent').ForkContext = {
+          systemPrompt: ctx.renderedSystemPrompt,
+          parentMessages: ctx.sessionMessages,
+          parentTools: allToolsGetter(),
+          thinkingLevel: 'medium',
+        }
+
+        const w = ctx.uiWriter
+        const spawn = buildSpawnCallbacks(w, toolCallId)
+        const forkDirective = buildForkDirective(prompt)
+        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
+
+        if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+          w.write({
+            type: 'data-usage',
+            data: {
+              inputTokens: result.inputTokens,
+              outputTokens: result.outputTokens,
+              cacheReadTokens: result.cacheReadTokens,
+              cacheWriteTokens: result.cacheWriteTokens,
+              iterations: result.iterations,
+              toolCallCount: result.toolCalls,
+              subagent: 'fork',
+            },
+          })
+        }
+
+        const accumulated = spawn?.getAccumulatedOutput()
         return textResult({
-          error: `Unknown subagent type: ${agentType}. Available: code_agent, canvas_agent, explore, general-purpose`,
+          mode: 'fork',
+          agent_id: result.agentId,
+          toolCalls: result.toolCalls,
+          iterations: result.iterations,
+          tokens: { input: result.inputTokens, output: result.outputTokens },
+          parts: accumulated?.parts,
         })
       }
 
-      if (model) config.model = model
-      if (max_turns) config.maxTurns = max_turns
+      // --- Normal mode: type is specified ---
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
 
-      const w = ctx.uiWriter
-      let subReasoningId: string | null = null
-      let subTextId: string | null = null
-      const subFlushGates = new Map<string, Promise<void>>()
-      const subCanvasParsers = new Map<string, CanvasStreamParser>()
-      const subStreamedToolCalls = new Set<string>()
+      const history = resume ? am.getInstanceMessages(resume) ?? undefined : undefined
 
-      function closeSubText() {
-        if (subTextId) {
-          w!.write({ type: 'text-end', id: subTextId })
-          subTextId = null
+      // Apply optional overrides before spawn
+      if (model_tier || max_turns || readonlyMode) {
+        const config = am.getConfig(type) || getBuiltinSubagentConfig(type, ctx, allToolsGetter())
+        if (config) {
+          if (model_tier && (model_tier === 'fast' || model_tier === 'default' || model_tier === 'capable')) {
+            config.modelTier = model_tier as ModelTierName
+          }
+          if (max_turns) config.maxTurns = max_turns
+          if (readonlyMode) config.readonly = true
         }
       }
 
-      const callbacks = w ? {
-        onStart: (name: string, desc: string) => {
-          w.write({ type: 'data-subagent-start', data: { name, description: desc } })
-        },
-        onEnd: (name: string, summary: string) => {
-          closeSubText()
-          w.write({ type: 'data-subagent-end', data: { name, summary: summary.substring(0, 500) } })
-        },
-        onTextDelta: (delta: string) => {
-          if (!subTextId) {
-            subTextId = `sub-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-            w.write({ type: 'text-start', id: subTextId })
-          }
-          w.write({ type: 'text-delta', id: subTextId, delta })
-        },
-        onThinkingStart: () => {
-          closeSubText()
-          subReasoningId = `sub-reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-          w.write({ type: 'reasoning-start', id: subReasoningId })
-        },
-        onThinkingDelta: (delta: string) => {
-          if (subReasoningId) {
-            w.write({ type: 'reasoning-delta', id: subReasoningId, delta })
-          }
-        },
-        onThinkingEnd: () => {
-          if (subReasoningId) {
-            w.write({ type: 'reasoning-end', id: subReasoningId })
-            subReasoningId = null
-          }
-        },
-        onToolCallStart: (toolName: string, toolCallId: string) => {
-          closeSubText()
-          w.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
-          subStreamedToolCalls.add(toolCallId)
-          if (toolName === 'canvas_update') {
-            const manager = getDynamicAppManager()
-            const parser = new CanvasStreamParser({
-              onSurfaceId: () => {},
-              onComponents: (components) => {
-                const sid = parser.getSurfaceId()
-                if (sid) {
-                  manager.streamPreviewComponents(sid, components as any)
-                  w.write({
-                    type: 'data-canvas-preview',
-                    data: { surfaceId: sid, components },
-                  } as any)
-                }
-              },
-            })
-            subCanvasParsers.set(toolCallId, parser)
-          }
-        },
-        onToolCallDelta: (toolName: string, delta: string, toolCallId: string) => {
-          w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: delta })
-          const parser = subCanvasParsers.get(toolCallId)
-          if (parser) {
-            parser.feed(delta)
-          }
-        },
-        onToolCallEnd: (_toolName: string, toolCallId: string) => {
-          subCanvasParsers.delete(toolCallId)
-        },
-        onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
-          if (!subStreamedToolCalls.has(toolCallId)) {
-            w.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
-            w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
-          }
-          subStreamedToolCalls.delete(toolCallId)
-          w.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
-          subFlushGates.set(toolCallId, new Promise(resolve => setTimeout(resolve, 30)))
-        },
-        onAfterToolCall: async (toolName: string, args: any, result: any, isError: boolean, toolCallId: string) => {
-          const gate = subFlushGates.get(toolCallId)
-          if (gate) {
-            await gate
-            subFlushGates.delete(toolCallId)
-          }
-          const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
-          w.write({
-            type: 'tool-output-available',
-            toolCallId,
-            output: isError
-              ? { error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) }
-              : (parsed ?? { success: true }),
-          })
-        },
-      } : undefined
+      const w = ctx.uiWriter
+      const spawn = buildSpawnCallbacks(w, toolCallId)
 
-      const result = await runSubagent(config, prompt, ctx, allToolsGetter(), callbacks)
+      const spawnResult = am.spawn(type, prompt, ctx, allToolsGetter(), spawn?.callbacks, { history })
+      if (!spawnResult.ok) return textResult({ error: spawnResult.error })
 
-      // Emit subagent token usage so it's tracked by the SSE consumer (eval runner, server.ts billing)
+      const instanceId = spawnResult.instanceId
+
+      if (background) {
+        return textResult({ instance_id: instanceId, status: 'running', hint: 'Use agent_status or agent_result to check progress' })
+      }
+
+      // Synchronous: wait for completion
+      const inst = am.getInstance(instanceId)
+      if (!inst) return textResult({ error: 'Instance lost' })
+      const result = await inst.promise
+
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
         w.write({
           type: 'data-usage',
@@ -3680,20 +3959,619 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
             cacheWriteTokens: result.cacheWriteTokens,
             iterations: result.iterations,
             toolCallCount: result.toolCalls,
-            subagent: config.name,
+            subagent: type,
           },
         })
       }
 
+      const accumulated = spawn?.getAccumulatedOutput()
       return textResult({
-        subagent: config.name,
-        summary: result.text,
+        instance_id: instanceId,
+        agent_id: result.agentId,
+        status: inst.status,
         toolCalls: result.toolCalls,
         iterations: result.iterations,
         tokens: { input: result.inputTokens, output: result.outputTokens },
+        parts: accumulated?.parts,
       })
     },
   }
+}
+
+/**
+ * Build sub-agent stream callbacks that accumulate content into an internal
+ * parts[] array and periodically emit it as a preliminary tool output.
+ *
+ * Uses the AI SDK's preliminary tool results pattern: the sub-agent's content
+ * lives INSIDE the agent_spawn tool's output (tool-output-available with
+ * preliminary: true), keeping it completely separate from the parent's
+ * text/tool events. Each sub-agent is scoped to its own spawnToolCallId,
+ * so multiple concurrent sub-agents work correctly.
+ */
+export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[] } } | undefined {
+  if (!w) return undefined
+
+  const parts: any[] = []
+  let agentId: string | null = null
+  let lastEmitTime = 0
+  let pendingEmit: ReturnType<typeof setTimeout> | null = null
+  const THROTTLE_MS = 150
+
+  function emitPreliminary(force?: boolean) {
+    const now = Date.now()
+    if (!force && now - lastEmitTime < THROTTLE_MS) {
+      if (!pendingEmit) {
+        pendingEmit = setTimeout(() => {
+          pendingEmit = null
+          emitPreliminary(true)
+        }, THROTTLE_MS - (now - lastEmitTime))
+      }
+      return
+    }
+    if (pendingEmit) { clearTimeout(pendingEmit); pendingEmit = null }
+    lastEmitTime = now
+    w.write({
+      type: 'tool-output-available',
+      toolCallId: spawnToolCallId,
+      output: { agentId, parts: [...parts] },
+      dynamic: true,
+      preliminary: true,
+    })
+  }
+
+  const callbacks: SubagentStreamCallbacks = {
+    onStart: (_name: string, _desc: string, id: string) => {
+      agentId = id
+    },
+    onEnd: (_name: string) => {
+      // Flush any pending throttled emit so the last snapshot arrives
+      if (pendingEmit) { clearTimeout(pendingEmit); pendingEmit = null }
+      emitPreliminary(true)
+    },
+    onTextDelta: (delta: string) => {
+      const last = parts[parts.length - 1]
+      if (last?.type === 'text') { last.text += delta }
+      else { parts.push({ type: 'text', text: delta, id: `sa-text-${parts.length}` }) }
+      emitPreliminary()
+    },
+    onThinkingStart: () => {
+      parts.push({ type: 'reasoning', text: '', isStreaming: true, id: `sa-reason-${parts.length}` })
+      emitPreliminary()
+    },
+    onThinkingDelta: (delta: string) => {
+      const last = parts[parts.length - 1]
+      if (last?.type === 'reasoning') last.text += delta
+    },
+    onThinkingEnd: () => {
+      const last = parts[parts.length - 1]
+      if (last?.type === 'reasoning') last.isStreaming = false
+      emitPreliminary(true)
+    },
+    onToolCallStart: (toolName: string, toolCallId: string) => {
+      parts.push({ type: 'tool', id: toolCallId, tool: { id: toolCallId, toolName, state: 'streaming', args: undefined, result: undefined } })
+      emitPreliminary()
+    },
+    onToolCallDelta: (_toolName: string, _delta: string, _toolCallId: string) => {
+      // streaming args — we'll set final args in onBeforeToolCall
+    },
+    onToolCallEnd: (_toolName: string, _toolCallId: string) => {},
+    onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
+      let p = parts.find((p: any) => p.type === 'tool' && p.id === toolCallId)
+      if (!p) {
+        p = { type: 'tool', id: toolCallId, tool: { id: toolCallId, toolName, state: 'streaming', args, result: undefined } }
+        parts.push(p)
+      } else {
+        p.tool.args = args
+      }
+      emitPreliminary(true)
+    },
+    onAfterToolCall: async (_toolName: string, _args: any, result: any, isError: boolean, toolCallId: string) => {
+      const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
+      const p = parts.find((p: any) => p.type === 'tool' && p.id === toolCallId)
+      if (p) {
+        p.tool.result = isError
+          ? { error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) }
+          : (parsed ?? { success: true })
+        p.tool.state = isError ? 'error' : 'success'
+      }
+      emitPreliminary(true)
+    },
+  }
+
+  return {
+    callbacks,
+    getAccumulatedOutput: () => ({ agentId, parts: [...parts] }),
+  }
+}
+
+function createAgentStatusTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_status',
+    description: 'Check the status of agent instances. Omit instance_id to see all.',
+    label: 'Agent Status',
+    parameters: Type.Object({
+      instance_id: Type.Optional(Type.String({ description: 'Specific instance ID to check' })),
+    }),
+    execute: async (_id, params) => {
+      const { instance_id } = params as { instance_id?: string }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      if (instance_id) {
+        const inst = am.getInstance(instance_id)
+        if (!inst) return textResult({ error: `Unknown instance: ${instance_id}` })
+        return textResult({
+          id: inst.id,
+          type: inst.type,
+          status: inst.status,
+          elapsed_ms: Date.now() - inst.startedAt,
+          ...(inst.result ? { toolCalls: inst.result.toolCalls, iterations: inst.result.iterations } : {}),
+        })
+      }
+
+      return textResult({ instances: am.listInstances() })
+    },
+  }
+}
+
+function createAgentCancelTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_cancel',
+    description: 'Cancel a running agent instance.',
+    label: 'Cancel Agent',
+    parameters: Type.Object({
+      instance_id: Type.String({ description: 'Instance ID to cancel' }),
+    }),
+    execute: async (_id, params) => {
+      const { instance_id } = params as { instance_id: string }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const cancelled = am.cancel(instance_id)
+      return textResult({ ok: cancelled, instance_id })
+    },
+  }
+}
+
+function createAgentResultTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_result',
+    description:
+      'Wait for and retrieve the result of an agent instance. Blocks until the agent completes ' +
+      'by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
+    label: 'Agent Result',
+    parameters: Type.Object({
+      instance_id: Type.String({ description: 'Instance ID to retrieve result for' }),
+      timeout_ms: Type.Optional(Type.Number({
+        description: 'Max milliseconds to wait for completion. Defaults to 120000 (2 min). Set to 0 for immediate (non-blocking) check.',
+        default: 120_000,
+      })),
+    }),
+    execute: async (_id, params) => {
+      const { instance_id, timeout_ms = 120_000 } = params as { instance_id: string; timeout_ms?: number }
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const inst = am.getInstance(instance_id)
+      if (!inst) return textResult({ error: `Unknown instance: ${instance_id}` })
+
+      if (inst.status === 'running' && timeout_ms > 0) {
+        const timeout = new Promise<null>(r => setTimeout(() => r(null), timeout_ms))
+        const winner = await Promise.race([inst.promise.then(r => r), timeout])
+        if (!winner) {
+          const elapsed = Date.now() - inst.startedAt
+          return textResult({
+            status: 'running',
+            elapsed_ms: elapsed,
+            recent_activity: inst.recentActivity.slice(-5).map(a => `${a.tool}: ${a.summary}`),
+            hint: `Agent still running after ${Math.round(elapsed / 1000)}s. Call again to keep waiting.`,
+          })
+        }
+      } else if (inst.status === 'running') {
+        return textResult({
+          status: 'running',
+          recent_activity: inst.recentActivity.slice(-5).map(a => `${a.tool}: ${a.summary}`),
+          hint: 'Agent is still running. Call again with timeout_ms > 0 to wait.',
+        })
+      }
+
+      const r = inst.result
+
+      const w = ctx.uiWriter
+      if (w && r && (r.inputTokens > 0 || r.outputTokens > 0)) {
+        w.write({
+          type: 'data-usage',
+          data: {
+            inputTokens: r.inputTokens,
+            outputTokens: r.outputTokens,
+            cacheReadTokens: r.cacheReadTokens,
+            cacheWriteTokens: r.cacheWriteTokens,
+            iterations: r.iterations,
+            toolCallCount: r.toolCalls,
+            subagent: inst.type,
+          },
+        })
+      }
+
+      const responseText = r?.responseText || '(Subagent completed but returned no output.)'
+      return textResult({
+        instance_id: inst.id,
+        type: inst.type,
+        status: inst.status,
+        response: responseText,
+        toolCalls: r?.toolCalls ?? 0,
+        iterations: r?.iterations ?? 0,
+        tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
+      })
+    },
+  }
+}
+
+function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+  return {
+    name: 'agent_list',
+    description: 'List all registered agent types (built-in and custom) with performance metrics.',
+    label: 'List Agents',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const am = ctx.agentManager
+      if (!am) return textResult({ error: 'AgentManager not available' })
+
+      const types = am.listTypes(ctx, allToolsGetter())
+      const instances = am.listInstances()
+
+      ctx.uiWriter?.write({ type: 'data-agent-types', data: { types } })
+
+      return textResult({ types, active_instances: instances.filter(i => i.status === 'running').length, total_instances: instances.length })
+    },
+  }
+}
+
+function ensureTeamContext(ctx: ToolContext): { teamId: string; agentId: string; isLeader: boolean } | null {
+  if (ctx.teamContext) return ctx.teamContext
+  const tm = ctx.teamManager
+  if (!tm || !ctx.sessionId) return null
+  const teams = tm.listTeams(ctx.sessionId)
+  if (teams.length === 0) return null
+  const team = teams[0]!
+  ctx.teamContext = { teamId: team.id, agentId: team.leaderAgentId, isLeader: true }
+  if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
+  return ctx.teamContext
+}
+
+function createTeamCreateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_create',
+    description: 'Create a team of long-lived agent teammates for complex multi-step projects. Teammates persist across turns, communicate via messages, and claim tasks from a shared queue.',
+    label: 'Create Team',
+    parameters: Type.Object({
+      team_name: Type.String({ description: 'Slug name for the team (e.g. "frontend-refactor")' }),
+      description: Type.Optional(Type.String({ description: 'Brief description of the team\'s purpose' })),
+    }),
+    execute: async (_id, params) => {
+      const { team_name, description } = params as { team_name: string; description?: string }
+      const tm = ctx.teamManager
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+      if (!ctx.sessionId) return textResult({ error: 'Session ID required for team creation' })
+
+      const existing = tm.getTeam(team_name)
+      if (existing) return textResult({ error: `Team "${team_name}" already exists` })
+
+      const leaderAgentId = `team-lead@${team_name}`
+      const team = tm.createTeam(team_name, ctx.sessionId, leaderAgentId, { description })
+
+      ctx.teamContext = { teamId: team_name, agentId: leaderAgentId, isLeader: true }
+      if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
+
+      ctx.uiWriter?.write({
+        type: 'data-team-created',
+        data: { teamId: team.id, name: team.name, description, leaderId: leaderAgentId },
+      })
+
+      return textResult({
+        ok: true,
+        team_id: team.id,
+        name: team.name,
+        leader: leaderAgentId,
+        hint: 'Use agent_spawn to add teammates, task_create to define work, send_team_message to communicate.',
+      })
+    },
+  }
+}
+
+function createTeamDeleteTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_delete',
+    description: 'Delete a team and kill all running teammates. Cascading delete removes all tasks and messages.',
+    label: 'Delete Team',
+    parameters: Type.Object({
+      team_id: Type.String({ description: 'Team ID to delete' }),
+    }),
+    execute: async (_id, params) => {
+      const { team_id } = params as { team_id: string }
+      const tm = ctx.teamManager
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+
+      if (ctx.teammateHandles) {
+        for (const [id, handle] of ctx.teammateHandles) {
+          if (handle.teamId === team_id) {
+            handle.kill()
+            ctx.teammateHandles.delete(id)
+          }
+        }
+      }
+
+      tm.deleteTeam(team_id)
+      if (ctx.teamContext?.teamId === team_id) ctx.teamContext = undefined
+
+      ctx.uiWriter?.write({ type: 'data-team-deleted', data: { teamId: team_id } })
+
+      return textResult({ ok: true, deleted: team_id })
+    },
+  }
+}
+
+function createTaskCreateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_create',
+    description: 'Create a task in the team\'s shared task queue. Teammates will automatically claim available tasks when idle.',
+    label: 'Create Task',
+    parameters: Type.Object({
+      subject: Type.String({ description: 'Brief title of the task' }),
+      description: Type.String({ description: 'Detailed description of what needs to be done' }),
+      blocked_by: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that must complete before this task can start' })),
+    }),
+    execute: async (_id, params) => {
+      const { subject, description, blocked_by } = params as { subject: string; description: string; blocked_by?: number[] }
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm || !tc) return textResult({ error: 'Not in a team context. Use team_create first.' })
+
+      const task = tm.createTask(tc.teamId, { subject, description })
+
+      if (blocked_by?.length) {
+        for (const depId of blocked_by) {
+          tm.blockTask(depId, task.id)
+        }
+      }
+
+      const finalTask = blocked_by?.length ? tm.getTask(task.id) ?? task : task
+      ctx.uiWriter?.write({
+        type: 'data-team-task',
+        data: { teamId: tc.teamId, task: { id: finalTask.id, subject: finalTask.subject, description: finalTask.description, status: finalTask.status, owner: finalTask.owner, blockedBy: finalTask.blockedBy } },
+      })
+
+      return textResult({ ok: true, task_id: task.id, subject: task.subject, status: task.status })
+    },
+  }
+}
+
+function createTaskGetTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_get',
+    description: 'Get detailed information about a specific task including its dependencies.',
+    label: 'Get Task',
+    parameters: Type.Object({
+      task_id: Type.Number({ description: 'Task ID to retrieve' }),
+    }),
+    execute: async (_id, params) => {
+      const { task_id } = params as { task_id: number }
+      const tm = ctx.teamManager
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+      const task = tm.getTask(task_id)
+      if (!task) return textResult({ error: `Task ${task_id} not found` })
+      return textResult(task)
+    },
+  }
+}
+
+function createTaskListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_list',
+    description: 'List all tasks in the team\'s queue with their status, owner, and dependencies.',
+    label: 'List Tasks',
+    parameters: Type.Object({}),
+    execute: async (_id, _params) => {
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm || !tc) return textResult({ error: 'Not in a team context.' })
+      const tasks = tm.listTasks(tc.teamId)
+      return textResult({ tasks: tasks.map(t => ({ id: t.id, subject: t.subject, status: t.status, owner: t.owner, blockedBy: t.blockedBy })) })
+    },
+  }
+}
+
+function createTaskUpdateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_update',
+    description: 'Update a task\'s status, description, owner, or dependencies. Use to mark tasks in_progress or completed.',
+    label: 'Update Task',
+    parameters: Type.Object({
+      task_id: Type.Number({ description: 'Task ID to update' }),
+      status: Type.Optional(Type.String({ description: 'New status: pending, in_progress, completed, deleted' })),
+      subject: Type.Optional(Type.String({ description: 'Updated subject' })),
+      description: Type.Optional(Type.String({ description: 'Updated description' })),
+      owner: Type.Optional(Type.String({ description: 'Agent ID to assign as owner' })),
+      add_blocks: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that this task blocks' })),
+      add_blocked_by: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that block this task' })),
+    }),
+    execute: async (_id, params) => {
+      const { task_id, ...updates } = params as any
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm) return textResult({ error: 'Team coordination not available' })
+
+      if (updates.status === 'in_progress' && !updates.owner && tc) {
+        updates.owner = tc.agentId
+      }
+
+      const task = tm.updateTask(task_id, {
+        status: updates.status,
+        subject: updates.subject,
+        description: updates.description,
+        owner: updates.owner,
+        addBlocks: updates.add_blocks,
+        addBlockedBy: updates.add_blocked_by,
+      })
+
+      if (!task) return textResult({ error: `Task ${task_id} not found` })
+
+      if (updates.owner && tc) {
+        tm.writeMessage(tc.teamId, updates.owner, tc.agentId, {
+          type: 'task_assignment',
+          message: JSON.stringify({ taskId: task.id, subject: task.subject, description: task.description }),
+          summary: `Assigned: ${task.subject}`,
+        })
+      }
+
+      ctx.uiWriter?.write({
+        type: 'data-team-task',
+        data: { teamId: task.teamId, task: { id: task.id, subject: task.subject, description: task.description, status: task.status, owner: task.owner, blockedBy: task.blockedBy } },
+      })
+
+      return textResult({ ok: true, task_id: task.id, status: task.status, owner: task.owner })
+    },
+  }
+}
+
+function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'send_team_message',
+    description: 'Send a message to a teammate, the team lead, or broadcast to all team members. Use structured message types for shutdown negotiation.',
+    label: 'Send Team Message',
+    parameters: Type.Object({
+      to: Type.String({ description: 'Recipient: teammate name, "team-lead", or "*" for broadcast' }),
+      message: Type.String({ description: 'Message text or JSON for structured messages' }),
+      summary: Type.Optional(Type.String({ description: 'Brief summary of the message' })),
+      message_type: Type.Optional(Type.String({ description: 'Message type: text, shutdown_request, shutdown_response (default: text)' })),
+    }),
+    execute: async (_id, params) => {
+      const { to, message, summary, message_type } = params as { to: string; message: string; summary?: string; message_type?: string }
+      const tm = ctx.teamManager
+      const tc = ensureTeamContext(ctx)
+      if (!tm || !tc) return textResult({ error: 'Not in a team context.' })
+
+      let toAgent = to
+      if (to === 'team-lead') {
+        toAgent = `team-lead@${tc.teamId}`
+      } else if (to !== '*' && !to.includes('@')) {
+        toAgent = `${to}@${tc.teamId}`
+      }
+
+      const msgType = (message_type || 'text') as any
+
+      tm.writeMessage(tc.teamId, toAgent, tc.agentId, {
+        type: msgType,
+        message,
+        summary,
+      })
+
+      ctx.uiWriter?.write({
+        type: 'data-team-message',
+        data: { teamId: tc.teamId, from: tc.agentId, to: toAgent, messageType: msgType, message, summary },
+      })
+
+      // Handle shutdown response (approved) — kill the teammate
+      if (msgType === 'shutdown_response') {
+        try {
+          const parsed = JSON.parse(message)
+          if (parsed.approve && ctx.teammateHandles) {
+            const handle = ctx.teammateHandles.get(tc.agentId)
+            if (handle) {
+              handle.kill()
+              ctx.teammateHandles.delete(tc.agentId)
+            }
+          }
+        } catch { /* not JSON, ignore */ }
+      }
+
+      return textResult({ ok: true, sent_to: toAgent, type: msgType })
+    },
+  }
+}
+
+/** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
+export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
+  const pe = ctx.permissionEngine
+  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+
+  const tools: AgentTool[] = [
+    g(createExecTool(ctx), 'shell'),
+    g(createReadFileTool(ctx), 'file_read'),
+    g(createWriteFileTool(ctx), 'file_write'),
+    g(createEditFileTool(ctx), 'file_write'),
+    g(createGlobTool(ctx), 'file_read'),
+    g(createGrepTool(ctx), 'file_read'),
+    g(createLsTool(ctx), 'file_read'),
+    g(createListFilesTool(ctx), 'file_read'),
+    g(createDeleteFileTool(ctx), 'file_delete'),
+    g(createSearchFilesTool(ctx), 'file_read'),
+    g(createCodeSearchTool(ctx), 'file_read'),
+    g(createWebTool(), 'network'),
+    g(createBrowserTool(ctx), 'network'),
+    createMemoryReadTool(ctx),
+    createMemorySearchTool(ctx),
+    createTodoWriteTool(ctx),
+    createAskUserTool(ctx),
+    createNotifyUserErrorTool(),
+    createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
+    createChannelDisconnectTool(ctx),
+    createChannelListTool(ctx),
+    createCanvasCreateTool(),
+    createCanvasUpdateTool(),
+    createCanvasDataTool(),
+    createCanvasDataPatchTool(),
+    createCanvasDeleteTool(),
+    createCanvasActionWaitTool(),
+    createCanvasComponentsTool({ basic: true }),
+    createCanvasApiSchemaTool(),
+    createCanvasApiSeedTool(),
+    createCanvasApiQueryTool(),
+    createCanvasApiHooksTool(),
+    createCanvasApiBindTool(ctx),
+    createCanvasTriggerActionTool(),
+    createCanvasInspectTool(),
+    createReadLintsTool(ctx),
+    createSkillServerSyncTool(ctx),
+    createToolSearchTool(ctx),
+    createToolInstallTool(ctx),
+    createToolUninstallTool(ctx),
+    createMcpSearchTool(),
+    createMcpInstallTool(ctx),
+    createMcpUninstallTool(ctx),
+    g(createGenerateImageTool(ctx), 'network'),
+    g(createTranscribeAudioTool(ctx), 'network'),
+    createHeartbeatConfigureTool(ctx),
+    createHeartbeatStatusTool(ctx),
+    createCreatePlanTool(ctx),
+  ]
+
+  const allToolsGetter = () => tools
+  tools.push(createSkillTool(ctx, allToolsGetter))
+
+  // Agent orchestration tools
+  tools.push(createAgentCreateTool(ctx))
+  tools.push(createAgentSpawnTool(ctx, allToolsGetter))
+  tools.push(createAgentStatusTool(ctx))
+  tools.push(createAgentCancelTool(ctx))
+  tools.push(createAgentResultTool(ctx))
+  tools.push(createAgentListTool(ctx, allToolsGetter))
+
+  // Team coordination tools
+  tools.push(createTeamCreateTool(ctx))
+  tools.push(createTeamDeleteTool(ctx))
+  tools.push(createTaskCreateTool(ctx))
+  tools.push(createTaskGetTool(ctx))
+  tools.push(createTaskListTool(ctx))
+  tools.push(createTaskUpdateTool(ctx))
+  tools.push(createSendTeamMessageTool(ctx))
+
+  if (extraTools) {
+    tools.push(...extraTools)
+  }
+
+  return tools
 }
 
 // ---------------------------------------------------------------------------
@@ -3928,7 +4806,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           description: `Executing skill: ${found.description}`,
           systemPrompt: content,
           model: undefined,
-          disallowedTools: ['task', 'code_agent'],
+          disallowedTools: ['task'],
         }
 
         const builtIn = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
@@ -3942,7 +4820,8 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           skill: skillName,
           mode: 'fork',
           agent: agentType,
-          result: result.text,
+          toolCalls: result.toolCalls,
+          iterations: result.iterations,
         })
       }
 
@@ -3996,7 +4875,7 @@ export const ALL_TOOL_NAMES = [
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
-  'canvas_inspect', 'read_lints',
+  'canvas_inspect', 'read_lints', 'skill_server_sync',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
@@ -4965,74 +5844,6 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       })
     },
   }
-}
-
-/** All gateway tools (unified set for all agents) */
-export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
-  const pe = ctx.permissionEngine
-  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
-
-  const tools: AgentTool[] = [
-    g(createExecTool(ctx), 'shell'),
-    g(createReadFileTool(ctx), 'file_read'),
-    g(createWriteFileTool(ctx), 'file_write'),
-    g(createEditFileTool(ctx), 'file_write'),
-    g(createGlobTool(ctx), 'file_read'),
-    g(createGrepTool(ctx), 'file_read'),
-    g(createLsTool(ctx), 'file_read'),
-    g(createListFilesTool(ctx), 'file_read'),
-    g(createDeleteFileTool(ctx), 'file_delete'),
-    g(createSearchFilesTool(ctx), 'file_read'),
-    g(createCodeSearchTool(ctx), 'file_read'),
-    g(createWebTool(), 'network'),
-    g(createBrowserTool(ctx), 'network'),
-    createMemoryReadTool(ctx),
-    createMemorySearchTool(ctx),
-    createTodoWriteTool(ctx),
-    createAskUserTool(ctx),
-    createNotifyUserErrorTool(),
-    createSendMessageTool(ctx),
-    createChannelConnectTool(ctx),
-    createChannelDisconnectTool(ctx),
-    createChannelListTool(ctx),
-    createCanvasCreateTool(),
-    createCanvasUpdateTool(),
-    createCanvasDataTool(),
-    createCanvasDataPatchTool(),
-    createCanvasDeleteTool(),
-    createCanvasActionWaitTool(),
-    createCanvasComponentsTool({ basic: true }),
-    createCanvasApiSchemaTool(),
-    createCanvasApiSeedTool(),
-    createCanvasApiQueryTool(),
-    createCanvasApiHooksTool(),
-    createCanvasApiBindTool(ctx),
-    createCanvasTriggerActionTool(),
-    createCanvasInspectTool(),
-    createReadLintsTool(ctx),
-    // APP_MODE_DISABLED: createTemplateListTool(), createTemplateCopyTool(ctx),
-    createToolSearchTool(ctx),
-    createToolInstallTool(ctx),
-    createToolUninstallTool(ctx),
-    createMcpSearchTool(),
-    createMcpInstallTool(ctx),
-    createMcpUninstallTool(ctx),
-    g(createGenerateImageTool(ctx), 'network'),
-    g(createTranscribeAudioTool(ctx), 'network'),
-    createHeartbeatConfigureTool(ctx),
-    createHeartbeatStatusTool(ctx),
-    createCreatePlanTool(ctx),
-  ]
-
-  // Self-referencing getter for tools that need the full tool list (skill)
-  const allToolsGetter = () => tools
-  tools.push(createSkillTool(ctx, allToolsGetter))
-
-  if (extraTools) {
-    tools.push(...extraTools)
-  }
-
-  return tools
 }
 
 /** Reduced tool set for heartbeat ticks (no exec, no send_message, no planning tools) */
