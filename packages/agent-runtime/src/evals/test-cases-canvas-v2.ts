@@ -447,7 +447,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.ts file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -511,7 +511,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.ts file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -589,7 +589,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.ts file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -665,7 +665,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.ts file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -874,7 +874,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
       },
       {
         id: 'wrote-canvas',
-        description: 'Wrote canvas/*.ts file',
+        description: 'Wrote src/*.tsx file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
