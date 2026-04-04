@@ -3,14 +3,13 @@
 /**
  * Sub-Agent Eval Test Cases
  *
- * Tests sub-agent orchestration in both static and dynamic modes.
- * Run with subagentMode: 'static' and subagentMode: 'dynamic' to compare.
+ * Tests sub-agent orchestration capabilities.
  *
  * Categories:
  * - exploration: Can the agent use sub-agents for codebase search?
  * - delegation: Can the agent decompose and delegate multi-step tasks?
  * - cost-awareness: Does the agent pick the cheapest model tier for simple work?
- * - dynamic-creation (dynamic mode only): Can the agent create effective specialists?
+ * - dynamic-creation: Can the agent create effective specialists?
  */
 
 import type { AgentEval, EvalResult } from './types'
@@ -292,7 +291,6 @@ export const subagentEvals: AgentEval[] = [
       },
     ],
     maxScore: 10,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -350,7 +348,6 @@ export const subagentEvals: AgentEval[] = [
       },
     ],
     maxScore: 13,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -388,11 +385,10 @@ export const subagentEvals: AgentEval[] = [
       },
     ],
     maxScore: 7,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
-  // E4 (dynamic mode only): agent creation
+  // E4: Agent creation
   // =========================================================================
   {
     id: 'subagent-dynamic-create',
@@ -444,11 +440,10 @@ export const subagentEvals: AgentEval[] = [
       },
     ],
     maxScore: 10,
-    tags: ['dynamic'],
   },
 
   // =========================================================================
-  // E4-static: Delegate code review to sub-agent (static mode equivalent)
+  // E5: Delegate code review to sub-agent
   // =========================================================================
   {
     id: 'subagent-static-review',
@@ -496,11 +491,10 @@ export const subagentEvals: AgentEval[] = [
       },
     ],
     maxScore: 9,
-    tags: ['static'],
   },
 
   // =========================================================================
-  // E5: Background execution
+  // E6: Background execution
   // =========================================================================
   {
     id: 'subagent-background',
@@ -544,7 +538,6 @@ export const subagentEvals: AgentEval[] = [
       },
     ],
     maxScore: 10,
-    tags: ['static', 'dynamic'],
   },
 ]
 

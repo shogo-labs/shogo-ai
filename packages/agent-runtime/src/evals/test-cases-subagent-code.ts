@@ -5,10 +5,6 @@
  *
  * Tests the agent's ability to decompose coding tasks, delegate work to
  * sub-agents, and assemble correct multi-file output.
- *
- * Run in both subagentMode: 'static' and 'dynamic' for A/B comparison:
- *   bun run src/evals/run-eval.ts --track subagent-code --subagent-mode static
- *   bun run src/evals/run-eval.ts --track subagent-code --subagent-mode dynamic
  */
 
 import type { AgentEval, EvalResult } from './types'
@@ -93,7 +89,6 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 10,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -205,7 +200,6 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 12,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -295,7 +289,6 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 12,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -380,7 +373,6 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 10,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -463,7 +455,6 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 15,
-    tags: ['static', 'dynamic'],
   },
 ]
 

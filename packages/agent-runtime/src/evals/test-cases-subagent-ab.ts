@@ -5,13 +5,6 @@
  *
  * Tests the agent's ability to create specialist sub-agents that connect
  * to external services (Jira, GitHub) and produce synthesized reports.
- * The key differentiator between static and dynamic mode: in dynamic mode
- * the agent should create custom specialist agents; in static mode it
- * delegates to built-in types.
- *
- * Run in both subagentMode for A/B comparison:
- *   bun run src/evals/run-eval.ts --track subagent-ab --subagent-mode static --model sonnet
- *   bun run src/evals/run-eval.ts --track subagent-ab --subagent-mode dynamic --model sonnet
  */
 
 import type { AgentEval, EvalResult } from './types'
@@ -126,7 +119,6 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 40,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -195,7 +187,6 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 22,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -263,7 +254,6 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 24,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -318,7 +308,6 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 22,
-    tags: ['static', 'dynamic'],
   },
 
   // =========================================================================
@@ -388,7 +377,6 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
     ],
     maxScore: 24,
-    tags: ['static', 'dynamic'],
   },
 ]
 
