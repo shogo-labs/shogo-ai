@@ -16,6 +16,9 @@
  *   bundle/             — compiled JS entry points
  *   node_modules/       — only native/external packages
  *   prisma/             — local SQLite schema
+ *   canvas-runtime/     — canvas-globals.d.ts for LSP linting
+ *   runtime-template/   — Vite scaffold for new projects
+ *   templates/          — agent templates
  *   package.json        — minimal manifest for external deps
  *   prisma.config.local.ts
  *
@@ -194,30 +197,17 @@ function main() {
     })
   }
 
-  // --- Build & copy canvas-runtime (Vite SPA for Canvas v2 code mode) ---
-  console.log(`[${stepOffset + 4}/${stepOffset + 7}] Building canvas-runtime...`)
+  // --- Copy canvas-runtime type definitions (used by LSP for canvas code linting) ---
+  console.log(`[${stepOffset + 4}/${stepOffset + 7}] Copying canvas-runtime...`)
   const canvasRuntimeDir = path.join(REPO_ROOT, 'packages', 'canvas-runtime')
   const canvasRuntimeDest = path.join(RESOURCES_DIR, 'canvas-runtime')
-  if (fs.existsSync(canvasRuntimeDir)) {
-    try {
-      execSync('bun run build', { cwd: canvasRuntimeDir, stdio: 'inherit' })
-      const distDir = path.join(canvasRuntimeDir, 'dist')
-      if (fs.existsSync(distDir)) {
-        fs.cpSync(distDir, canvasRuntimeDest, { recursive: true })
-        const globalsDts = path.join(canvasRuntimeDir, 'src', 'canvas-globals.d.ts')
-        if (fs.existsSync(globalsDts)) {
-          fs.copyFileSync(globalsDts, path.join(canvasRuntimeDest, 'canvas-globals.d.ts'))
-        }
-        console.log('  ✓ Built and copied canvas-runtime')
-      } else {
-        console.warn('  ⚠ canvas-runtime dist not found after build')
-      }
-    } catch (err) {
-      console.error('  ✗ Failed to build canvas-runtime:', err.message)
-      process.exit(1)
-    }
+  fs.mkdirSync(canvasRuntimeDest, { recursive: true })
+  const globalsDts = path.join(canvasRuntimeDir, 'src', 'canvas-globals.d.ts')
+  if (fs.existsSync(globalsDts)) {
+    fs.copyFileSync(globalsDts, path.join(canvasRuntimeDest, 'canvas-globals.d.ts'))
+    console.log('  ✓ Copied canvas-globals.d.ts')
   } else {
-    console.warn('  ⚠ canvas-runtime package not found at', canvasRuntimeDir)
+    console.warn('  ⚠ canvas-globals.d.ts not found at', globalsDts)
   }
 
   // --- Copy runtime template (Vite scaffold for new projects) ---

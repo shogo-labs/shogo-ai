@@ -249,9 +249,6 @@ export async function startLocalServer(): Promise<void> {
     AGENT_RUNTIME_ENTRY: IS_DEV
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')
       : path.join(bundleDir, 'agent-runtime.js'),
-    MCP_SERVER_PATH: IS_DEV
-      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'mcp-server.ts')
-      : path.join(bundleDir, 'mcp-server.js'),
     CANVAS_RUNTIME_DIST: IS_DEV
       ? path.join(projectRoot, 'packages', 'canvas-runtime', 'dist')
       : path.join(projectRoot, 'canvas-runtime'),
