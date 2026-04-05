@@ -11,7 +11,6 @@
  * Entry points bundled:
  *   1. apps/api/src/entry.ts       → bundle/api.js        (~17 MB)
  *   2. packages/agent-runtime/src/server.ts → bundle/agent-runtime.js (~14 MB)
- *   3. packages/agent-runtime/src/tools/mcp-server.ts → bundle/mcp-server.js (~134 KB)
  *
  * Structure created inside apps/desktop/resources/:
  *   bundle/             — compiled JS entry points
@@ -78,11 +77,6 @@ const ENTRY_POINTS = [
     name: 'agent-runtime',
     input: 'packages/agent-runtime/src/server.ts',
     output: 'agent-runtime.js',
-  },
-  {
-    name: 'mcp-server',
-    input: 'packages/agent-runtime/src/tools/mcp-server.ts',
-    output: 'mcp-server.js',
   },
 ]
 

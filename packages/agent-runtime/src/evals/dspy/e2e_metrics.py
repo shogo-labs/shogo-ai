@@ -17,7 +17,7 @@ metric functions bound to a pool instance.
 import dspy
 from validate import (
     validate_canvas,
-    validate_skill_creation,
+    validate_skill_write,
     validate_multiturn_plan,
 )
 
@@ -54,9 +54,9 @@ def canvas_e2e_quality(example: dspy.Example, prediction: dspy.Prediction, trace
 # Skill Creation E2E (harness-based, original)
 # ---------------------------------------------------------------------------
 
-def skill_create_e2e_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+def skill_write_e2e_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
     """Validate skill creation output: YAML structure, triggers, tools."""
-    result = validate_skill_creation(prediction)
+    result = validate_skill_write(prediction)
     return result.get("score", 0.0)
 
 

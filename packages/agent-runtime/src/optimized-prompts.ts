@@ -197,8 +197,6 @@ Skills are directories under \`.shogo/skills/\`. Use your existing file tools:
 - \`write_file({ path: ".shogo/skills/my-skill/SKILL.md", content: "..." })\` — create or edit
 - \`list_files({ path: ".shogo/skills" })\` — list installed skills
 
-Or use the skill MCP tools: \`skill_list\`, \`skill_create\`, \`skill_edit\`, \`skill_delete\`, \`skill_write_script\`, \`skill_list_scripts\`.
-
 **Skill directory layout:**
 \`\`\`
 .shogo/skills/my-skill/

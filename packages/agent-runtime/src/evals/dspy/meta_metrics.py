@@ -20,7 +20,7 @@ ALL_VALID_TOOLS = {
     "glob", "grep", "ls", "web", "browser",
     "memory_read", "memory_search",
     "send_message", "cron", "read_lints",
-    "identity_set", "skill_create",
+    "identity_set",
 }
 
 

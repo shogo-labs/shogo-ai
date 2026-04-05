@@ -105,9 +105,9 @@ def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
 
     elif track_name == "skill":
         from skill_dataset import get_skill_dataset
-        from skill_metrics import skill_match_quality, skill_create_quality
+        from skill_metrics import skill_match_quality, skill_write_quality
         from skill_signatures import SkillMatcher, SkillCreation
-        from e2e_metrics import skill_create_e2e_quality
+        from e2e_metrics import skill_write_e2e_quality
 
         data = get_skill_dataset()
         subtracks = []
@@ -116,8 +116,8 @@ def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
             subtracks.append(SubTrack("match", SkillMatcher, skill_match_quality, train, test))
         if "create" in data:
             train, test = data["create"]
-            subtracks.append(SubTrack("create", SkillCreation, skill_create_quality, train, test))
-            subtracks.append(SubTrack("create_e2e", SkillCreation, skill_create_e2e_quality, train, test))
+            subtracks.append(SubTrack("write", SkillCreation, skill_write_quality, train, test))
+            subtracks.append(SubTrack("write_e2e", SkillCreation, skill_write_e2e_quality, train, test))
         return subtracks
 
     elif track_name == "multiturn":

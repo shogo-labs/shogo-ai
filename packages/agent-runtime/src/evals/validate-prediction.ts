@@ -232,7 +232,7 @@ async function main() {
     case 'canvas_interaction':
       result = await validateCanvasInteraction(input)
       break
-    case 'skill_create':
+    case 'skill_write':
       result = validateSkill(input)
       break
     case 'multiturn_plan':
