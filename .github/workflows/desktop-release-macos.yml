@@ -104,6 +104,8 @@ jobs:
 
       - name: Install monorepo dependencies
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         run: cd packages/sdk && bun run build
