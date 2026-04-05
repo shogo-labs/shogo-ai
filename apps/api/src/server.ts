@@ -843,12 +843,18 @@ app.use(
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
+    // Heartbeat sync is called by the runtime with x-runtime-token auth
+    if (path.endsWith('/heartbeat/sync')) return next()
     return requireAuth(c, next)
   }
 )
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
   if (isAllowedUnauthWebchatProxyPath(path)) {
+    return next()
+  }
+  // Heartbeat sync uses runtime-token auth (called by the agent runtime)
+  if (path.endsWith('/heartbeat/sync')) {
     return next()
   }
   return requireProjectAccess(c, next)
@@ -3554,18 +3560,23 @@ app.get('/api/projects/:projectId/heartbeat', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
+  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
+  const select: Record<string, boolean> = {
+    heartbeatEnabled: true,
+    heartbeatInterval: true,
+    nextHeartbeatAt: true,
+    modelName: true,
+  }
+  if (!isLocal) {
+    select.lastHeartbeatAt = true
+    select.quietHoursStart = true
+    select.quietHoursEnd = true
+    select.quietHoursTimezone = true
+  }
+
   const config = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
-    select: {
-      heartbeatEnabled: true,
-      heartbeatInterval: true,
-      nextHeartbeatAt: true,
-      lastHeartbeatAt: true,
-      quietHoursStart: true,
-      quietHoursEnd: true,
-      quietHoursTimezone: true,
-      modelName: true,
-    },
+    select,
   })
 
   if (!config) {
@@ -3588,9 +3599,11 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
   if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
     data.heartbeatInterval = body.heartbeatInterval
   }
-  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
+  }
 
   const existing = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
@@ -3620,22 +3633,74 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
     data.nextHeartbeatAt = null
   }
 
+  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
+  const updateSelect: Record<string, boolean> = {
+    heartbeatEnabled: true,
+    heartbeatInterval: true,
+    nextHeartbeatAt: true,
+    modelName: true,
+  }
+  if (!isLocal) {
+    updateSelect.lastHeartbeatAt = true
+    updateSelect.quietHoursStart = true
+    updateSelect.quietHoursEnd = true
+    updateSelect.quietHoursTimezone = true
+  }
+
   const updated = await prisma.agentConfig.update({
     where: { projectId: authResult.projectId },
     data,
-    select: {
-      heartbeatEnabled: true,
-      heartbeatInterval: true,
-      nextHeartbeatAt: true,
-      lastHeartbeatAt: true,
-      quietHoursStart: true,
-      quietHoursEnd: true,
-      quietHoursTimezone: true,
-      modelName: true,
-    },
+    select: updateSelect,
   })
 
   return c.json(updated)
+})
+
+// Sync heartbeat config from runtime config.json to DB (local mode).
+// Authenticated via x-runtime-token so the agent runtime can call it.
+app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
+  const projectId = c.req.param('projectId')
+  const token = c.req.header('x-runtime-token')
+
+  const { deriveRuntimeToken } = await import('./lib/runtime-token')
+  if (!token || token !== deriveRuntimeToken(projectId)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const body = await c.req.json()
+  const data: Record<string, any> = {}
+
+  if (typeof body.heartbeatEnabled === 'boolean') {
+    data.heartbeatEnabled = body.heartbeatEnabled
+  }
+  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
+    data.heartbeatInterval = body.heartbeatInterval
+  }
+
+  const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
+  const enabled = data.heartbeatEnabled ?? existing?.heartbeatEnabled ?? false
+  const interval = data.heartbeatInterval ?? existing?.heartbeatInterval ?? 1800
+
+  if (enabled) {
+    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
+    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
+  } else {
+    data.nextHeartbeatAt = null
+  }
+
+  await prisma.agentConfig.upsert({
+    where: { projectId },
+    update: data,
+    create: {
+      projectId,
+      heartbeatEnabled: enabled,
+      heartbeatInterval: interval,
+      nextHeartbeatAt: data.nextHeartbeatAt,
+      channels: [],
+    },
+  })
+
+  return c.json({ ok: true })
 })
 
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
@@ -6111,5 +6176,18 @@ if (isKubernetes()) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
     }
   }, 2000)
+}
+
+// Start local heartbeat scheduler (local dev only)
+if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { startLocalHeartbeatScheduler } = await import('./lib/local-heartbeat-scheduler')
+      await startLocalHeartbeatScheduler(getRuntimeManager())
+      console.log('[LocalHeartbeat] Local heartbeat scheduler started')
+    } catch (err: any) {
+      console.error('[LocalHeartbeat] Failed to start (non-fatal):', err.message)
+    }
+  }, 3000)
 }
 

@@ -361,6 +361,26 @@ app.patch('/agent/config', async (c) => {
     Object.assign(fileConfig, body)
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
     agentGateway?.reloadConfig()
+
+    // Sync heartbeat fields to the API's agent_configs DB table so the
+    // local scheduler picks them up. Fire-and-forget.
+    if ('heartbeatEnabled' in body || 'heartbeatInterval' in body) {
+      const toolsProxyUrl = process.env.TOOLS_PROXY_URL
+      const projectId = state.currentProjectId || process.env.PROJECT_ID
+      const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+      if (toolsProxyUrl && projectId && runtimeToken) {
+        const apiBase = toolsProxyUrl.replace(/\/api(\/.*)?$/, '/api')
+        fetch(`${apiBase}/projects/${projectId}/heartbeat/sync`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
+          body: JSON.stringify({
+            heartbeatEnabled: fileConfig.heartbeatEnabled,
+            heartbeatInterval: fileConfig.heartbeatInterval,
+          }),
+        }).catch(() => {})
+      }
+    }
+
     return c.json({ ok: true })
   } catch (error: any) {
     return c.json({ error: error.message || 'Failed to update config' }, 500)
