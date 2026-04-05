@@ -10,6 +10,8 @@ import {
   RefreshControl,
   ActivityIndicator,
   useWindowDimensions,
+  TextInput,
+  Modal,
 } from 'react-native'
 import {
   FlaskConical,
@@ -19,11 +21,16 @@ import {
   Clock,
   DollarSign,
   ChevronDown,
-  Loader2,
   Activity,
   BarChart3,
   Users,
   AlertTriangle,
+  MoreHorizontal,
+  Pencil,
+  Tag,
+  Trash2,
+  X,
+  Check,
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -50,6 +57,8 @@ interface RunSummary {
   model: string
   workers: number
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  label: string | null
+  tags: string[]
   triggeredBy: string | null
   error: string | null
   timestamp: string
@@ -157,25 +166,123 @@ async function fetchJson<T>(path: string): Promise<T | null> {
   }
 }
 
+async function patchRun(id: string, body: { label?: string | null; tags?: string[] }): Promise<RunSummary | null> {
+  try {
+    const res = await fetch(`${API_BASE}/runs/${id}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    return json.data ?? null
+  } catch {
+    return null
+  }
+}
+
+async function deleteRun(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/runs/${id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    const json = await res.json()
+    return json.ok === true
+  } catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Chip (shared)
+// Select Dropdown (uses Modal to escape z-index stacking issues)
 // ---------------------------------------------------------------------------
 
-function Chip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+function Select<T extends string>({
+  value,
+  options,
+  onChange,
+  placeholder,
+  renderLabel,
+  className: extraClass,
+}: {
+  value: T
+  options: readonly T[]
+  onChange: (v: T) => void
+  placeholder?: string
+  renderLabel?: (v: T) => string
+  className?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [layout, setLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const triggerRef = useRef<View>(null)
+  const label = renderLabel ? renderLabel(value) : value
+
+  const measureAndOpen = () => {
+    if (triggerRef.current) {
+      triggerRef.current.measureInWindow((x, y, width, height) => {
+        setLayout({ x, y, width, height })
+        setOpen(true)
+      })
+    } else {
+      setOpen(true)
+    }
+  }
+
   return (
-    <Pressable
-      onPress={onPress}
-      className={cn(
-        'px-3 py-1.5 rounded-md border',
-        selected
-          ? 'bg-primary/10 border-primary/30'
-          : 'border-border active:bg-muted/50',
-      )}
-    >
-      <Text className={cn('text-xs font-medium', selected ? 'text-primary' : 'text-foreground')}>
-        {label}
-      </Text>
-    </Pressable>
+    <View className={extraClass} ref={triggerRef}>
+      <Pressable
+        onPress={measureAndOpen}
+        className="flex-row items-center justify-between px-3 py-2 rounded-lg border border-border bg-card min-w-[120px]"
+      >
+        <Text className="text-sm text-foreground" numberOfLines={1}>
+          {label || placeholder || 'Select...'}
+        </Text>
+        <ChevronDown
+          size={14}
+          className="text-muted-foreground ml-2"
+          style={{ transform: [{ rotate: open ? '180deg' : '0deg' }] }}
+        />
+      </Pressable>
+
+      <Modal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}>
+        <Pressable
+          className="flex-1"
+          onPress={() => setOpen(false)}
+        >
+          <View
+            className="bg-card border border-border rounded-lg shadow-lg max-h-64 overflow-hidden"
+            style={{
+              position: 'absolute',
+              top: layout ? layout.y + layout.height + 4 : 100,
+              left: layout?.x ?? 16,
+              width: layout ? Math.max(layout.width, 160) : 200,
+            }}
+          >
+            <ScrollView nestedScrollEnabled>
+              {options.map((opt) => (
+                <Pressable
+                  key={opt}
+                  onPress={() => { onChange(opt); setOpen(false) }}
+                  className={cn(
+                    'px-3 py-2.5 border-b border-border/30 active:bg-muted',
+                    opt === value && 'bg-primary/5',
+                  )}
+                >
+                  <Text className={cn(
+                    'text-sm',
+                    opt === value ? 'text-primary font-medium' : 'text-foreground',
+                  )}>
+                    {renderLabel ? renderLabel(opt) : opt}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+    </View>
   )
 }
 
@@ -202,53 +309,41 @@ function FilterBar({
 }) {
   const availableTracks = useMemo(() => {
     const set = new Set(runs.map((r) => r.track))
-    return Array.from(set).sort()
+    return ['all', ...Array.from(set).sort()] as string[]
   }, [runs])
 
+  const statusOptions = ['all', 'completed', 'failed', 'cancelled'] as const
+  const sortOptions = ['newest', 'passRate', 'cost', 'duration'] as const
+  const sortLabels: Record<SortMode, string> = { newest: 'Newest', passRate: 'Pass Rate', cost: 'Cost', duration: 'Duration' }
+
   return (
-    <View className="gap-3 mb-4">
+    <View className="flex-row flex-wrap gap-3 mb-4 items-end">
       <View className="gap-1">
-        <Text className="text-xs font-medium text-muted-foreground">Track</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View className="flex-row gap-1.5">
-            <Chip label="All" selected={trackFilter === 'all'} onPress={() => setTrackFilter('all')} />
-            {availableTracks.map((t) => (
-              <Chip key={t} label={t} selected={trackFilter === t} onPress={() => setTrackFilter(t)} />
-            ))}
-          </View>
-        </ScrollView>
+        <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Track</Text>
+        <Select
+          value={trackFilter}
+          options={availableTracks}
+          onChange={setTrackFilter}
+          renderLabel={(v) => v === 'all' ? 'All Tracks' : v}
+        />
       </View>
-
       <View className="gap-1">
-        <Text className="text-xs font-medium text-muted-foreground">Status</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View className="flex-row gap-1.5">
-            {(['all', 'completed', 'failed', 'cancelled'] as const).map((s) => (
-              <Chip
-                key={s}
-                label={s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
-                selected={statusFilter === s}
-                onPress={() => setStatusFilter(s)}
-              />
-            ))}
-          </View>
-        </ScrollView>
+        <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Status</Text>
+        <Select
+          value={statusFilter}
+          options={statusOptions}
+          onChange={setStatusFilter}
+          renderLabel={(v) => v === 'all' ? 'All Statuses' : v.charAt(0).toUpperCase() + v.slice(1)}
+        />
       </View>
-
       <View className="gap-1">
-        <Text className="text-xs font-medium text-muted-foreground">Sort</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View className="flex-row gap-1.5">
-            {([
-              ['newest', 'Newest'],
-              ['passRate', 'Pass Rate'],
-              ['cost', 'Cost'],
-              ['duration', 'Duration'],
-            ] as const).map(([key, label]) => (
-              <Chip key={key} label={label} selected={sortMode === key} onPress={() => setSortMode(key)} />
-            ))}
-          </View>
-        </ScrollView>
+        <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Sort</Text>
+        <Select
+          value={sortMode}
+          options={sortOptions}
+          onChange={setSortMode}
+          renderLabel={(v) => sortLabels[v]}
+        />
       </View>
     </View>
   )
@@ -260,12 +355,14 @@ function FilterBar({
 
 function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
   const [expanded, setExpanded] = useState(false)
-  const [track, setTrack] = useState('agentic')
-  const [model, setModel] = useState('sonnet')
-  const [workers, setWorkers] = useState(2)
+  const [track, setTrack] = useState<string>('agentic')
+  const [model, setModel] = useState<string>('sonnet')
+  const [workers, setWorkers] = useState<string>('2')
   const [localMode, setLocalMode] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const workerOptions = ['1', '2', '3', '4'] as const
 
   const handleSubmit = async () => {
     setSubmitting(true)
@@ -275,7 +372,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track, model, workers, local: localMode }),
+        body: JSON.stringify({ track, model, workers: Number(workers), local: localMode }),
       })
       const json = await res.json()
       if (!json.ok) {
@@ -309,78 +406,18 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
 
       {expanded && (
         <View className="px-4 pb-4 gap-3 border-t border-border pt-3">
-          <View className="gap-1">
-            <Text className="text-xs font-medium text-muted-foreground">Track</Text>
-            <View className="flex-row flex-wrap gap-1.5">
-              {TRACK_OPTIONS.map((t) => (
-                <Pressable
-                  key={t}
-                  onPress={() => setTrack(t)}
-                  className={cn(
-                    'px-3 py-1.5 rounded-md border',
-                    track === t
-                      ? 'bg-primary/10 border-primary/30'
-                      : 'border-border active:bg-muted/50'
-                  )}
-                >
-                  <Text className={cn(
-                    'text-xs font-medium',
-                    track === t ? 'text-primary' : 'text-foreground'
-                  )}>
-                    {t}
-                  </Text>
-                </Pressable>
-              ))}
+          <View className="flex-row flex-wrap gap-3">
+            <View className="gap-1 flex-1 min-w-[160px]">
+              <Text className="text-xs font-medium text-muted-foreground">Track</Text>
+              <Select value={track} options={TRACK_OPTIONS} onChange={setTrack} />
             </View>
-          </View>
-
-          <View className="gap-1">
-            <Text className="text-xs font-medium text-muted-foreground">Model</Text>
-            <View className="flex-row gap-2">
-              {MODEL_OPTIONS.map((m) => (
-                <Pressable
-                  key={m}
-                  onPress={() => setModel(m)}
-                  className={cn(
-                    'px-4 py-2 rounded-lg border',
-                    model === m
-                      ? 'bg-primary/10 border-primary/30'
-                      : 'border-border active:bg-muted/50'
-                  )}
-                >
-                  <Text className={cn(
-                    'text-sm font-medium',
-                    model === m ? 'text-primary' : 'text-foreground'
-                  )}>
-                    {m}
-                  </Text>
-                </Pressable>
-              ))}
+            <View className="gap-1 min-w-[120px]">
+              <Text className="text-xs font-medium text-muted-foreground">Model</Text>
+              <Select value={model} options={MODEL_OPTIONS} onChange={setModel} />
             </View>
-          </View>
-
-          <View className="gap-1">
-            <Text className="text-xs font-medium text-muted-foreground">Workers</Text>
-            <View className="flex-row gap-2">
-              {[1, 2, 3, 4].map((w) => (
-                <Pressable
-                  key={w}
-                  onPress={() => setWorkers(w)}
-                  className={cn(
-                    'h-9 w-9 rounded-lg border items-center justify-center',
-                    workers === w
-                      ? 'bg-primary/10 border-primary/30'
-                      : 'border-border active:bg-muted/50'
-                  )}
-                >
-                  <Text className={cn(
-                    'text-sm font-medium',
-                    workers === w ? 'text-primary' : 'text-foreground'
-                  )}>
-                    {w}
-                  </Text>
-                </Pressable>
-              ))}
+            <View className="gap-1 min-w-[90px]">
+              <Text className="text-xs font-medium text-muted-foreground">Workers</Text>
+              <Select value={workers} options={workerOptions} onChange={setWorkers} />
             </View>
           </View>
 
@@ -570,109 +607,371 @@ function ActiveRunBanner({ data, onCancel }: { data: ActiveRunData; onCancel: ()
 }
 
 // ---------------------------------------------------------------------------
+// Tag Input
+// ---------------------------------------------------------------------------
+
+function TagInput({
+  tags,
+  onSave,
+}: {
+  tags: string[]
+  onSave: (tags: string[]) => void
+}) {
+  const [draft, setDraft] = useState('')
+
+  const addTag = () => {
+    const trimmed = draft.trim().toLowerCase()
+    if (trimmed && !tags.includes(trimmed)) {
+      onSave([...tags, trimmed])
+    }
+    setDraft('')
+  }
+
+  const removeTag = (tag: string) => {
+    onSave(tags.filter((t) => t !== tag))
+  }
+
+  return (
+    <View className="gap-2">
+      <View className="flex-row flex-wrap gap-1.5">
+        {tags.map((tag) => (
+          <View key={tag} className="flex-row items-center gap-1 px-2 py-1 rounded-md bg-primary/10 border border-primary/20">
+            <Text className="text-[11px] font-medium text-primary">{tag}</Text>
+            <Pressable onPress={() => removeTag(tag)} hitSlop={6}>
+              <X size={10} className="text-primary/60" />
+            </Pressable>
+          </View>
+        ))}
+      </View>
+      <View className="flex-row gap-2">
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          onSubmitEditing={addTag}
+          placeholder="Add tag..."
+          className="flex-1 px-3 py-1.5 rounded-lg border border-border bg-background text-sm text-foreground"
+          placeholderTextColor="#999"
+          autoCapitalize="none"
+        />
+        {draft.trim() && (
+          <Pressable onPress={addTag} className="px-2.5 py-1.5 rounded-lg bg-primary/10 items-center justify-center">
+            <Check size={14} className="text-primary" />
+          </Pressable>
+        )}
+      </View>
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Delete Confirmation Modal
+// ---------------------------------------------------------------------------
+
+function DeleteConfirmModal({
+  visible,
+  runLabel,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
+  visible: boolean
+  runLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+  deleting: boolean
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View className="flex-1 items-center justify-center bg-black/50 px-6">
+        <View className="bg-card rounded-2xl border border-border p-6 w-full max-w-sm">
+          <View className="flex-row items-center gap-2 mb-3">
+            <Trash2 size={18} className="text-destructive" />
+            <Text className="text-base font-semibold text-foreground">Delete Eval Run</Text>
+          </View>
+          <Text className="text-sm text-muted-foreground mb-5">
+            Are you sure you want to delete "{runLabel}"? This will permanently remove the run and all its results.
+          </Text>
+          <View className="flex-row gap-3 justify-end">
+            <Pressable
+              onPress={onCancel}
+              disabled={deleting}
+              className="px-4 py-2 rounded-lg border border-border active:bg-muted/50"
+            >
+              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={deleting}
+              className={cn('px-4 py-2 rounded-lg bg-destructive active:opacity-80', deleting && 'opacity-50')}
+            >
+              <Text className="text-sm font-semibold text-white">
+                {deleting ? 'Deleting...' : 'Delete'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Run Card
 // ---------------------------------------------------------------------------
 
-function RunCard({ run }: { run: RunSummary }) {
+function RunCard({
+  run,
+  onUpdate,
+  onDelete,
+}: {
+  run: RunSummary
+  onUpdate: (updated: RunSummary) => void
+  onDelete: (id: string) => void
+}) {
   const router = useRouter()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuLayout, setMenuLayout] = useState<{ y: number; height: number } | null>(null)
+  const menuAnchorRef = useRef<View>(null)
+  const [editingLabel, setEditingLabel] = useState(false)
+  const [editingTags, setEditingTags] = useState(false)
+  const [labelDraft, setLabelDraft] = useState(run.label ?? '')
+  const [showDelete, setShowDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
   const s = run.summary
   const passRate = s.total > 0 ? (s.passed / s.total) * 100 : 0
   const barColor = passRate >= 80 ? 'bg-emerald-500' : passRate >= 60 ? 'bg-yellow-500' : 'bg-red-500'
   const badge = STATUS_BADGE[run.status] ?? STATUS_BADGE.completed
+  const displayTitle = run.label || run.track
+  const canManage = run.status !== 'running' && run.status !== 'pending'
+
+  const saveLabel = async () => {
+    setEditingLabel(false)
+    const trimmed = labelDraft.trim() || null
+    if (trimmed === run.label) return
+    const updated = await patchRun(run.id, { label: trimmed })
+    if (updated) onUpdate(updated)
+  }
+
+  const saveTags = async (tags: string[]) => {
+    const updated = await patchRun(run.id, { tags })
+    if (updated) onUpdate(updated)
+  }
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    const ok = await deleteRun(run.id)
+    setDeleting(false)
+    setShowDelete(false)
+    if (ok) onDelete(run.id)
+  }
 
   return (
-    <Pressable
-      onPress={() => router.push(`/(admin)/evals/${encodeURIComponent(run.dirName)}` as any)}
-      className="rounded-xl border border-border bg-card p-4 active:bg-muted/30"
-    >
-      <View className="flex-row items-center justify-between mb-3">
-        <View className="flex-row items-center gap-2 flex-1">
-          <View className={cn(
-            'h-2.5 w-2.5 rounded-full',
-            passRate >= 80 ? 'bg-emerald-500' : passRate >= 60 ? 'bg-yellow-500' : 'bg-red-500'
-          )} />
-          <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-            {run.track}
-          </Text>
-          <View className="px-2 py-0.5 rounded-md bg-muted">
-            <Text className="text-[10px] font-medium text-muted-foreground">{run.model}</Text>
+    <>
+      <Pressable
+        onPress={() => router.push(`/(admin)/evals/${encodeURIComponent(run.dirName)}` as any)}
+        className="rounded-xl border border-border bg-card p-4 active:bg-muted/30"
+      >
+        <View className="flex-row items-center justify-between mb-3">
+          <View className="flex-row items-center gap-2 flex-1">
+            <View className={cn(
+              'h-2.5 w-2.5 rounded-full',
+              passRate >= 80 ? 'bg-emerald-500' : passRate >= 60 ? 'bg-yellow-500' : 'bg-red-500'
+            )} />
+            {editingLabel ? (
+              <TextInput
+                value={labelDraft}
+                onChangeText={setLabelDraft}
+                onBlur={saveLabel}
+                onSubmitEditing={saveLabel}
+                autoFocus
+                className="text-sm font-semibold text-foreground border-b border-primary px-1 py-0 min-w-[100px]"
+                placeholder={run.track}
+                placeholderTextColor="#999"
+              />
+            ) : (
+              <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                {displayTitle}
+              </Text>
+            )}
+            {run.label && (
+              <View className="px-1.5 py-0.5 rounded bg-muted">
+                <Text className="text-[9px] font-medium text-muted-foreground">{run.track}</Text>
+              </View>
+            )}
+            <View className="px-2 py-0.5 rounded-md bg-muted">
+              <Text className="text-[10px] font-medium text-muted-foreground">{run.model}</Text>
+            </View>
+            <View className={cn('px-2 py-0.5 rounded-full', badge.bg)}>
+              <Text className={cn('text-[10px] font-medium', badge.text)}>{badge.label}</Text>
+            </View>
           </View>
-          <View className={cn('px-2 py-0.5 rounded-full', badge.bg)}>
-            <Text className={cn('text-[10px] font-medium', badge.text)}>{badge.label}</Text>
+          <View className="flex-row items-center gap-2">
+            <Text className="text-xs text-muted-foreground">{formatTimestamp(run.timestamp)}</Text>
+            {canManage && (
+              <View>
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation()
+                    if (menuOpen) { setMenuOpen(false); return }
+                    if (menuAnchorRef.current) {
+                      menuAnchorRef.current.measureInWindow((_x, y, _w, h) => {
+                        setMenuLayout({ y, height: h })
+                        setMenuOpen(true)
+                      })
+                    } else {
+                      setMenuOpen(true)
+                    }
+                  }}
+                  className="p-1.5 rounded-md active:bg-muted/50"
+                  hitSlop={4}
+                  ref={menuAnchorRef}
+                >
+                  <MoreHorizontal size={14} className="text-muted-foreground" />
+                </Pressable>
+                <Modal visible={menuOpen} transparent animationType="none" onRequestClose={() => setMenuOpen(false)}>
+                  <Pressable className="flex-1" onPress={() => setMenuOpen(false)}>
+                    <View
+                      className="bg-card border border-border rounded-lg shadow-lg min-w-[140px] overflow-hidden"
+                      style={{
+                        position: 'absolute',
+                        top: menuLayout ? menuLayout.y + menuLayout.height + 4 : 100,
+                        right: 16,
+                      }}
+                    >
+                      <Pressable
+                        onPress={() => {
+                          setMenuOpen(false)
+                          setLabelDraft(run.label ?? '')
+                          setEditingLabel(true)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Pencil size={13} className="text-muted-foreground" />
+                        <Text className="text-sm text-foreground">Rename</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setMenuOpen(false)
+                          setEditingTags(!editingTags)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted border-t border-border/30"
+                      >
+                        <Tag size={13} className="text-muted-foreground" />
+                        <Text className="text-sm text-foreground">Edit Tags</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setMenuOpen(false)
+                          setShowDelete(true)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted border-t border-border/30"
+                      >
+                        <Trash2 size={13} className="text-destructive" />
+                        <Text className="text-sm text-destructive">Delete</Text>
+                      </Pressable>
+                    </View>
+                  </Pressable>
+                </Modal>
+              </View>
+            )}
           </View>
         </View>
-        <Text className="text-xs text-muted-foreground">{formatTimestamp(run.timestamp)}</Text>
-      </View>
 
-      {run.status === 'failed' && run.error && (
-        <View className="flex-row items-start gap-1.5 mb-3 px-1">
-          <AlertTriangle size={12} className="text-destructive mt-0.5" />
-          <Text className="text-xs text-destructive flex-1" numberOfLines={2}>
-            {run.error}
-          </Text>
-        </View>
-      )}
+        {run.tags.length > 0 && !editingTags && (
+          <View className="flex-row flex-wrap gap-1 mb-2">
+            {run.tags.map((tag) => (
+              <View key={tag} className="px-2 py-0.5 rounded-md bg-primary/8 border border-primary/15">
+                <Text className="text-[10px] font-medium text-primary">{tag}</Text>
+              </View>
+            ))}
+          </View>
+        )}
 
-      <View className="gap-1.5 mb-3">
-        <View className="flex-row items-center justify-between">
-          <Text className="text-xs font-medium text-muted-foreground">Pass Rate</Text>
-          <Text className="text-xs font-semibold text-foreground">
-            {s.passed}/{s.total} ({passRate.toFixed(1)}%)
-          </Text>
-        </View>
-        <View className="h-2 bg-muted rounded-full overflow-hidden">
-          <View className={cn('h-full rounded-full', barColor)} style={{ width: `${Math.min(passRate, 100)}%` }} />
-        </View>
-      </View>
+        {editingTags && (
+          <Pressable onPress={(e) => e.stopPropagation()} className="mb-3">
+            <TagInput tags={run.tags} onSave={saveTags} />
+          </Pressable>
+        )}
 
-      <View className="flex-row flex-wrap gap-x-4 gap-y-1">
-        <View className="flex-row items-center gap-1">
-          <FlaskConical size={11} className="text-muted-foreground" />
-          <Text className="text-[11px] text-muted-foreground">
-            Avg {s.avgScore.toFixed(1)} pts
-          </Text>
-        </View>
-        <View className="flex-row items-center gap-1">
-          <DollarSign size={11} className="text-muted-foreground" />
-          <Text className="text-[11px] text-muted-foreground">
-            ${run.cost.totalCost.toFixed(4)}
-          </Text>
-        </View>
-        <View className="flex-row items-center gap-1">
-          <Clock size={11} className="text-muted-foreground" />
-          <Text className="text-[11px] text-muted-foreground">
-            {formatDuration(run.durationMs)}
-          </Text>
-        </View>
-        <View className="flex-row items-center gap-1">
-          <Users size={11} className="text-muted-foreground" />
-          <Text className="text-[11px] text-muted-foreground">
-            {run.workers} worker{run.workers !== 1 ? 's' : ''}
-          </Text>
-        </View>
-        <View className="flex-row items-center gap-1">
-          <Activity size={11} className="text-muted-foreground" />
-          <Text className="text-[11px] text-muted-foreground">
-            {fmtTokens(run.cost.totalInputTokens + run.cost.totalOutputTokens)} tokens
-          </Text>
-        </View>
-      </View>
-
-      {Object.keys(run.byCategory).length > 1 && (
-        <View className="mt-3 pt-3 border-t border-border/50 flex-row flex-wrap gap-x-3 gap-y-1">
-          {Object.entries(run.byCategory).slice(0, 6).map(([cat, cs]) => (
-            <Text key={cat} className="text-[10px] text-muted-foreground">
-              {cat}: {cs.passed}/{cs.total}
+        {run.status === 'failed' && run.error && (
+          <View className="flex-row items-start gap-1.5 mb-3 px-1">
+            <AlertTriangle size={12} className="text-destructive mt-0.5" />
+            <Text className="text-xs text-destructive flex-1" numberOfLines={2}>
+              {run.error}
             </Text>
-          ))}
-          {Object.keys(run.byCategory).length > 6 && (
-            <Text className="text-[10px] text-muted-foreground">
-              +{Object.keys(run.byCategory).length - 6} more
+          </View>
+        )}
+
+        <View className="gap-1.5 mb-3">
+          <View className="flex-row items-center justify-between">
+            <Text className="text-xs font-medium text-muted-foreground">Pass Rate</Text>
+            <Text className="text-xs font-semibold text-foreground">
+              {s.passed}/{s.total} ({passRate.toFixed(1)}%)
             </Text>
-          )}
+          </View>
+          <View className="h-2 bg-muted rounded-full overflow-hidden">
+            <View className={cn('h-full rounded-full', barColor)} style={{ width: `${Math.min(passRate, 100)}%` }} />
+          </View>
         </View>
-      )}
-    </Pressable>
+
+        <View className="flex-row flex-wrap gap-x-4 gap-y-1">
+          <View className="flex-row items-center gap-1">
+            <FlaskConical size={11} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">
+              Avg {s.avgScore.toFixed(1)} pts
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-1">
+            <DollarSign size={11} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">
+              ${run.cost.totalCost.toFixed(4)}
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-1">
+            <Clock size={11} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">
+              {formatDuration(run.durationMs)}
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-1">
+            <Users size={11} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">
+              {run.workers} worker{run.workers !== 1 ? 's' : ''}
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-1">
+            <Activity size={11} className="text-muted-foreground" />
+            <Text className="text-[11px] text-muted-foreground">
+              {fmtTokens(run.cost.totalInputTokens + run.cost.totalOutputTokens)} tokens
+            </Text>
+          </View>
+        </View>
+
+        {Object.keys(run.byCategory).length > 1 && (
+          <View className="mt-3 pt-3 border-t border-border/50 flex-row flex-wrap gap-x-3 gap-y-1">
+            {Object.entries(run.byCategory).slice(0, 6).map(([cat, cs]) => (
+              <Text key={cat} className="text-[10px] text-muted-foreground">
+                {cat}: {cs.passed}/{cs.total}
+              </Text>
+            ))}
+            {Object.keys(run.byCategory).length > 6 && (
+              <Text className="text-[10px] text-muted-foreground">
+                +{Object.keys(run.byCategory).length - 6} more
+              </Text>
+            )}
+          </View>
+        )}
+      </Pressable>
+
+      <DeleteConfirmModal
+        visible={showDelete}
+        runLabel={displayTitle}
+        onConfirm={handleDelete}
+        onCancel={() => setShowDelete(false)}
+        deleting={deleting}
+      />
+    </>
   )
 }
 
@@ -726,6 +1025,14 @@ export default function EvalsPage() {
     setRefreshing(false)
   }
 
+  const handleRunUpdate = useCallback((updated: RunSummary) => {
+    setRuns((prev) => prev.map((r) => r.id === updated.id ? updated : r))
+  }, [])
+
+  const handleRunDelete = useCallback((id: string) => {
+    setRuns((prev) => prev.filter((r) => r.id !== id))
+  }, [])
+
   const filteredRuns = useMemo(() => {
     let result = runs
 
@@ -760,7 +1067,6 @@ export default function EvalsPage() {
       contentContainerStyle={{
         padding: isWide ? 32 : 16,
         paddingBottom: 40,
-        maxWidth: 1200,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={
@@ -828,7 +1134,12 @@ export default function EvalsPage() {
           ) : (
             <View className="gap-3">
               {filteredRuns.map((run) => (
-                <RunCard key={run.dirName} run={run} />
+                <RunCard
+                  key={run.dirName}
+                  run={run}
+                  onUpdate={handleRunUpdate}
+                  onDelete={handleRunDelete}
+                />
               ))}
             </View>
           )}

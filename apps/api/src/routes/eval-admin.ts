@@ -86,6 +86,8 @@ function mapRunSummary(r: any) {
     model: r.model,
     workers: r.workers,
     status: r.status,
+    label: r.label ?? null,
+    tags: Array.isArray(r.tags) ? r.tags : [],
     triggeredBy: r.triggeredBy ?? null,
     error: r.error ?? null,
     timestamp: r.startedAt?.toISOString() ?? r.createdAt.toISOString(),
@@ -759,6 +761,50 @@ export function evalAdminRoutes(): Hono {
       data: { status: 'cancelled', completedAt: new Date() },
     })
 
+    return c.json({ ok: true })
+  })
+
+  // PATCH /runs/:id — Update label and/or tags on a run
+  router.patch('/runs/:id', async (c) => {
+    const id = c.req.param('id')
+    const body = await c.req.json() as { label?: string | null; tags?: string[] }
+
+    const run = await prisma.evalRun.findUnique({ where: { id } })
+    if (!run) {
+      return c.json({ ok: false, error: 'Run not found' }, 404)
+    }
+
+    const data: Record<string, any> = {}
+    if ('label' in body) data.label = body.label ?? null
+    if ('tags' in body) {
+      if (!Array.isArray(body.tags)) {
+        return c.json({ ok: false, error: 'tags must be an array of strings' }, 400)
+      }
+      data.tags = body.tags.filter((t): t is string => typeof t === 'string' && t.length > 0)
+    }
+
+    if (Object.keys(data).length === 0) {
+      return c.json({ ok: false, error: 'No fields to update' }, 400)
+    }
+
+    const updated = await prisma.evalRun.update({ where: { id }, data })
+    return c.json({ ok: true, data: mapRunSummary(updated) })
+  })
+
+  // DELETE /runs/:id — Delete a completed/failed/cancelled run and its results
+  router.delete('/runs/:id', async (c) => {
+    const id = c.req.param('id')
+    const run = await prisma.evalRun.findUnique({ where: { id } })
+
+    if (!run) {
+      return c.json({ ok: false, error: 'Run not found' }, 404)
+    }
+
+    if (run.status === 'running' || run.status === 'pending') {
+      return c.json({ ok: false, error: 'Cannot delete a running or pending eval run. Cancel it first.' }, 409)
+    }
+
+    await prisma.evalRun.delete({ where: { id } })
     return c.json({ ok: true })
   })
 

@@ -10,6 +10,8 @@ import {
   RefreshControl,
   ActivityIndicator,
   useWindowDimensions,
+  TextInput,
+  Modal,
 } from 'react-native'
 import {
   ArrowLeft,
@@ -31,6 +33,10 @@ import {
   MemoryStick,
   Zap,
   Download,
+  Pencil,
+  Tag,
+  Trash2,
+  Check,
 } from 'lucide-react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -86,6 +92,8 @@ interface RunDetail {
   model: string
   workers: number
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  label: string | null
+  tags: string[]
   triggeredBy: string | null
   error: string | null
   timestamp: string
@@ -176,6 +184,142 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return n.toLocaleString()
+}
+
+async function patchRun(id: string, body: { label?: string | null; tags?: string[] }): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/runs/${id}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+async function deleteRunApi(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/runs/${id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    const json = await res.json()
+    return json.ok === true
+  } catch {
+    return false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tag Input (detail page)
+// ---------------------------------------------------------------------------
+
+function DetailTagInput({
+  tags,
+  onSave,
+}: {
+  tags: string[]
+  onSave: (tags: string[]) => void
+}) {
+  const [draft, setDraft] = useState('')
+
+  const addTag = () => {
+    const trimmed = draft.trim().toLowerCase()
+    if (trimmed && !tags.includes(trimmed)) {
+      onSave([...tags, trimmed])
+    }
+    setDraft('')
+  }
+
+  const removeTag = (tag: string) => {
+    onSave(tags.filter((t) => t !== tag))
+  }
+
+  return (
+    <View className="gap-2">
+      <View className="flex-row flex-wrap gap-1.5">
+        {tags.map((tag) => (
+          <View key={tag} className="flex-row items-center gap-1 px-2 py-1 rounded-md bg-primary/10 border border-primary/20">
+            <Text className="text-[11px] font-medium text-primary">{tag}</Text>
+            <Pressable onPress={() => removeTag(tag)} hitSlop={6}>
+              <X size={10} className="text-primary/60" />
+            </Pressable>
+          </View>
+        ))}
+      </View>
+      <View className="flex-row gap-2">
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          onSubmitEditing={addTag}
+          placeholder="Add tag..."
+          className="flex-1 px-3 py-1.5 rounded-lg border border-border bg-background text-sm text-foreground"
+          placeholderTextColor="#999"
+          autoCapitalize="none"
+        />
+        {draft.trim() ? (
+          <Pressable onPress={addTag} className="px-2.5 py-1.5 rounded-lg bg-primary/10 items-center justify-center">
+            <Check size={14} className="text-primary" />
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Delete Confirmation Modal
+// ---------------------------------------------------------------------------
+
+function DeleteConfirmModal({
+  visible,
+  runLabel,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
+  visible: boolean
+  runLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+  deleting: boolean
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View className="flex-1 items-center justify-center bg-black/50 px-6">
+        <View className="bg-card rounded-2xl border border-border p-6 w-full max-w-sm">
+          <View className="flex-row items-center gap-2 mb-3">
+            <Trash2 size={18} className="text-destructive" />
+            <Text className="text-base font-semibold text-foreground">Delete Eval Run</Text>
+          </View>
+          <Text className="text-sm text-muted-foreground mb-5">
+            Are you sure you want to delete &quot;{runLabel}&quot;? This will permanently remove the run and all its results.
+          </Text>
+          <View className="flex-row gap-3 justify-end">
+            <Pressable
+              onPress={onCancel}
+              disabled={deleting}
+              className="px-4 py-2 rounded-lg border border-border active:bg-muted/50"
+            >
+              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={deleting}
+              className={cn('px-4 py-2 rounded-lg bg-destructive active:opacity-80', deleting && 'opacity-50')}
+            >
+              <Text className="text-sm font-semibold text-white">
+                {deleting ? 'Deleting...' : 'Delete'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +1007,12 @@ export default function EvalRunDetail() {
   const [filter, setFilter] = useState<'all' | 'passed' | 'failed'>('all')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  const [editingLabel, setEditingLabel] = useState(false)
+  const [labelDraft, setLabelDraft] = useState('')
+  const [editingTags, setEditingTags] = useState(false)
+  const [showDelete, setShowDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
   const loadData = useCallback(async () => {
     if (!runId) return
     const detail = await fetchJson<RunDetail>(`/runs/${encodeURIComponent(runId)}`)
@@ -888,6 +1038,30 @@ export default function EvalRunDetail() {
     setRefreshing(false)
   }
 
+  const saveLabel = async () => {
+    if (!data) return
+    setEditingLabel(false)
+    const trimmed = labelDraft.trim() || null
+    if (trimmed === data.label) return
+    const ok = await patchRun(data.id, { label: trimmed })
+    if (ok) setData((prev) => prev ? { ...prev, label: trimmed } : prev)
+  }
+
+  const saveTags = async (tags: string[]) => {
+    if (!data) return
+    const ok = await patchRun(data.id, { tags })
+    if (ok) setData((prev) => prev ? { ...prev, tags } : prev)
+  }
+
+  const handleDelete = async () => {
+    if (!data) return
+    setDeleting(true)
+    const ok = await deleteRunApi(data.id)
+    setDeleting(false)
+    setShowDelete(false)
+    if (ok) router.back()
+  }
+
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
@@ -911,8 +1085,10 @@ export default function EvalRunDetail() {
 
   const isRunning = data.status === 'running'
   const isComplete = data.status === 'completed'
+  const canManage = !isRunning && data.status !== 'pending'
   const s = data.summary
   const passRate = s.total > 0 ? (s.passed / s.total) * 100 : 0
+  const displayTitle = data.label || data.track
 
   const pipelineGroups = new Map<string, EvalResultItem[]>()
   const standaloneEvals: EvalResultItem[] = []
@@ -933,12 +1109,12 @@ export default function EvalRunDetail() {
   })
 
   return (
+    <>
     <ScrollView
       className="flex-1 bg-background"
       contentContainerStyle={{
         padding: isWide ? 32 : 16,
         paddingBottom: 40,
-        maxWidth: 1200,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={
@@ -954,22 +1130,101 @@ export default function EvalRunDetail() {
       </Pressable>
 
       <View className="mb-2">
-        <View className="flex-row items-center gap-2 mb-1">
-          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
-            {data.track}
-          </Text>
-          <View className="px-2 py-0.5 rounded-md bg-muted">
-            <Text className="text-xs font-medium text-muted-foreground">{data.model}</Text>
-          </View>
-          {isRunning && (
-            <View className="px-2 py-0.5 rounded-md bg-primary/10">
-              <Text className="text-xs font-medium text-primary">Running</Text>
+        <View className="flex-row items-center justify-between mb-1">
+          <View className="flex-row items-center gap-2 flex-1">
+            {editingLabel ? (
+              <TextInput
+                value={labelDraft}
+                onChangeText={setLabelDraft}
+                onBlur={saveLabel}
+                onSubmitEditing={saveLabel}
+                autoFocus
+                className={cn('font-bold text-foreground border-b border-primary px-1 py-0 min-w-[120px]', isWide ? 'text-2xl' : 'text-xl')}
+                placeholder={data.track}
+                placeholderTextColor="#999"
+              />
+            ) : (
+              <Pressable
+                onPress={canManage ? () => { setLabelDraft(data.label ?? ''); setEditingLabel(true) } : undefined}
+                className="flex-row items-center gap-1.5"
+              >
+                <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+                  {displayTitle}
+                </Text>
+                {canManage && <Pencil size={14} className="text-muted-foreground" />}
+              </Pressable>
+            )}
+            {data.label && (
+              <View className="px-1.5 py-0.5 rounded bg-muted">
+                <Text className="text-[10px] font-medium text-muted-foreground">{data.track}</Text>
+              </View>
+            )}
+            <View className="px-2 py-0.5 rounded-md bg-muted">
+              <Text className="text-xs font-medium text-muted-foreground">{data.model}</Text>
             </View>
+            {isRunning && (
+              <View className="px-2 py-0.5 rounded-md bg-primary/10">
+                <Text className="text-xs font-medium text-primary">Running</Text>
+              </View>
+            )}
+          </View>
+          {canManage && (
+            <Pressable
+              onPress={() => setShowDelete(true)}
+              className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 bg-destructive/5 active:bg-destructive/10"
+            >
+              <Trash2 size={13} className="text-destructive" />
+              <Text className="text-xs font-medium text-destructive">Delete</Text>
+            </Pressable>
           )}
         </View>
         <Text className="text-sm text-muted-foreground">
           {formatTimestamp(data.timestamp)}
         </Text>
+
+        {/* Tags */}
+        {canManage && (
+          <View className="mt-2">
+            {editingTags ? (
+              <View className="gap-2">
+                <DetailTagInput tags={data.tags} onSave={saveTags} />
+                <Pressable onPress={() => setEditingTags(false)} className="self-start">
+                  <Text className="text-xs text-primary font-medium">Done</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View className="flex-row items-center gap-2">
+                {data.tags.length > 0 && (
+                  <View className="flex-row flex-wrap gap-1">
+                    {data.tags.map((tag) => (
+                      <View key={tag} className="px-2 py-0.5 rounded-md bg-primary/8 border border-primary/15">
+                        <Text className="text-[10px] font-medium text-primary">{tag}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                <Pressable
+                  onPress={() => setEditingTags(true)}
+                  className="flex-row items-center gap-1 px-2 py-1 rounded-md active:bg-muted/50"
+                >
+                  <Tag size={11} className="text-muted-foreground" />
+                  <Text className="text-[10px] font-medium text-muted-foreground">
+                    {data.tags.length > 0 ? 'Edit' : 'Add tags'}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+        )}
+        {!canManage && data.tags.length > 0 && (
+          <View className="flex-row flex-wrap gap-1 mt-2">
+            {data.tags.map((tag) => (
+              <View key={tag} className="px-2 py-0.5 rounded-md bg-primary/8 border border-primary/15">
+                <Text className="text-[10px] font-medium text-primary">{tag}</Text>
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       <RunMetadata data={data} />
@@ -1088,5 +1343,14 @@ export default function EvalRunDetail() {
         </View>
       )}
     </ScrollView>
+
+    <DeleteConfirmModal
+      visible={showDelete}
+      runLabel={displayTitle}
+      onConfirm={handleDelete}
+      onCancel={() => setShowDelete(false)}
+      deleting={deleting}
+    />
+    </>
   )
 }

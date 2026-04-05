@@ -401,7 +401,6 @@ export default function AdminUsersPage() {
     <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-2')}>
       <View
         className="flex-1"
-        style={isWide ? { maxWidth: 1200, width: '100%', alignSelf: 'center' } : undefined}
       >
         <FlatList
           data={data?.users ?? []}

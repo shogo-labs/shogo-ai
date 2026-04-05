@@ -929,7 +929,6 @@ export default function InfrastructurePage() {
       contentContainerStyle={{
         padding: isWide ? 32 : 16,
         paddingBottom: 40,
-        maxWidth: isWide ? 1200 : undefined,
         width: '100%',
         alignSelf: 'center' as const,
       }}

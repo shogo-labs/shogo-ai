@@ -1270,6 +1270,8 @@ model EvalRun {
   model         String
   workers       Int       @default(1)
   status        String    @default("pending")
+  label         String?
+  tags          String[]  @default([])
   triggeredBy   String?
   pid           Int?
   jobName       String?
