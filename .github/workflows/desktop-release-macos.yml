@@ -121,6 +121,11 @@ jobs:
       - name: Bundle API server into resources
         run: node apps/desktop/scripts/bundle-api.mjs
 
+      - name: Create seed database (SQLite)
+        run: bunx prisma db push --schema=prisma/schema.local.prisma --accept-data-loss
+        env:
+          DATABASE_URL: file:./apps/desktop/resources/seed.db
+
       - name: Install desktop dependencies
         working-directory: apps/desktop
         run: npm install
