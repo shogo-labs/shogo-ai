@@ -154,6 +154,7 @@ model Project {
   templateId         String?
   knativeServiceName String?
   settings           Json?
+  lastMessageAt      DateTime?
 
   // Relations
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

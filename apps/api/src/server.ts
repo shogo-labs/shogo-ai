@@ -4874,6 +4874,13 @@ app.post('/api/chat', async (c) => {
                     },
                   })
                   console.log(`[/api/chat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+
+                  if (session.contextId && session.contextType === 'project') {
+                    await prisma.project.update({
+                      where: { id: session.contextId },
+                      data: { lastMessageAt: new Date() },
+                    }).catch(() => {})
+                  }
                 }
               } catch (persistError: any) {
                 console.error(`[/api/chat] ⚠️ Failed to persist assistant message:`, persistError.message)

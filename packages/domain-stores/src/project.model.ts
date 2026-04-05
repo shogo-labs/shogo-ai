@@ -45,6 +45,7 @@ export const ProjectModel = types
     thumbnailUrl: types.optional(types.string, ""),
     templateId: types.optional(types.string, ""),
     settings: types.frozen<Record<string, unknown> | null>(null),
+    lastMessageAt: types.optional(types.number, 0),
     workspace: types.safeReference(types.late(() => require("./workspace.model").WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),

@@ -460,7 +460,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         rmSync(nodeModulesDir, { recursive: true, force: true })
       }
 
-      const cmdName = pkg.isWindows ? 'npm.cmd' : 'bun'
+      const cmdName = pkg.isWindows ? 'npm.cmd' : pkg.bunBinary
       console.log(`[RuntimeManager] Installing dependencies for ${projectId} (${cmdName})...`)
       try {
         await pkg.installAsync(projectDir)
@@ -739,7 +739,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       const devArgs = existsSync(viteBin)
         ? [viteBin, '--port', String(port), '--host', '0.0.0.0']
         : ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
-      proc = spawn('bun', devArgs, {
+      proc = spawn(pkg.bunBinary, devArgs, {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
@@ -894,7 +894,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           }
         }
         
-        const agentProc = spawn('bun', ['run', runtimeServerPath], {
+        const agentProc = spawn(pkg.bunBinary, ['run', runtimeServerPath], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
