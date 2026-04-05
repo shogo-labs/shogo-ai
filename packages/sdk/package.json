@@ -74,7 +74,7 @@
     "@playwright/test": "^1.40.0",
     "@prisma/internals": "^7.3.0",
     "@types/node": "^25.5.0",
-    "@types/nodemailer": "^7.0.11",
+    "@types/nodemailer": "^8.0.0",
     "@types/react": "^19.0.0",
     "mobx": "^6.13.5",
     "nodemailer": "^8.0.3",
