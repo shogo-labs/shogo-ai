@@ -91,7 +91,8 @@ import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
-import { PlanCard, type PlanData } from "./PlanCard"
+import { type PlanData } from "./PlanCard"
+import { ContextTracker } from "./ContextTracker"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 
@@ -231,6 +232,8 @@ export interface ChatPanelProps {
   onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
   buildPlanRequest?: { plan: PlanData; agentMode: AgentMode; nonce: number } | null
+  /** Called when a new plan is created (so the Plans panel can refresh) */
+  onPlanCreated?: () => void
 }
 
 // ============================================================
@@ -555,6 +558,7 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
   buildPlanRequest,
+  onPlanCreated,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -818,6 +822,14 @@ export const ChatPanel = observer(function ChatPanel({
     ccSessionIdRef.current = ccSessionId
   }, [ccSessionId])
 
+  const sessionContextUsage = (currentSession as any)?.contextUsageTokens
+  const sessionContextWindow = (currentSession as any)?.contextWindowTokens
+  useEffect(() => {
+    if (sessionContextUsage > 0 && sessionContextWindow > 0) {
+      setContextUsage({ inputTokens: sessionContextUsage, contextWindowTokens: sessionContextWindow })
+    }
+  }, [sessionContextUsage, sessionContextWindow])
+
   // Subagent progress tracking
   const [activeSubagents, setActiveSubagents] = useState<Map<string, SubagentProgress>>(new Map())
   const [recentTools, setRecentTools] = useState<RecentToolCall[]>([])
@@ -827,6 +839,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
+  const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
 
   useEffect(() => {
     if (!toolErrorBanner) return
@@ -1296,6 +1309,7 @@ export const ChatPanel = observer(function ChatPanel({
         const planData = (dataPart as any).data
         if (planData) {
           setPendingPlan(planData)
+          onPlanCreated?.()
         }
       }
 
@@ -1311,6 +1325,33 @@ export const ChatPanel = observer(function ChatPanel({
             reason: req.reason ?? '',
             timeout: req.timeout ?? 60,
           })
+        }
+      }
+
+      if ((dataPart as any).type === "data-context-usage") {
+        const ctx = (dataPart as any).data
+        if (ctx?.inputTokens && ctx?.contextWindowTokens) {
+          setContextUsage({
+            inputTokens: ctx.inputTokens,
+            contextWindowTokens: ctx.contextWindowTokens,
+          })
+        }
+      }
+
+      if ((dataPart as any).type === "data-usage") {
+        const usage = (dataPart as any).data
+        const ctxTokens = usage?.estimatedContextTokens || usage?.inputTokens
+        const ctxWindow = usage?.contextWindowTokens
+        if (ctxTokens && ctxWindow) {
+          setContextUsage({ inputTokens: ctxTokens, contextWindowTokens: ctxWindow })
+          if (currentSessionId) {
+            studioChat.chatSessionCollection
+              .update(currentSessionId, {
+                contextUsageTokens: ctxTokens,
+                contextWindowTokens: ctxWindow,
+              } as any)
+              .catch((err: any) => console.warn("[ChatPanel] Failed to persist context usage:", err))
+          }
         }
       }
     },
@@ -1869,7 +1910,36 @@ export const ChatPanel = observer(function ChatPanel({
     processedProgressEventsRef.current.clear()
     subagentStreamStore.clear()
     setIsInitialLoadComplete(false)
+    setPendingPlan(null)
   }, [currentSessionId])
+
+  // Re-hydrate pendingPlan from persisted messages on session restore
+  useEffect(() => {
+    if (!isInitialLoadComplete || isStreaming || pendingPlan) return
+    if (messages.length === 0) return
+    const lastMsg = messages[messages.length - 1]
+    if (lastMsg.role !== "assistant") return
+    const parts = (lastMsg as any).parts as any[] | undefined
+    if (!parts) return
+    const planTool = parts.find(
+      (p: any) =>
+        (p.type === "tool-invocation" && p.toolInvocation?.toolName === "create_plan" && p.toolInvocation?.state === "result") ||
+        (p.type === "dynamic-tool" && p.toolName === "create_plan" && (p.state === "output-available" || p.state === "result"))
+    )
+    if (!planTool) return
+    const args =
+      planTool.type === "tool-invocation"
+        ? planTool.toolInvocation?.args
+        : planTool.input ?? planTool.args
+    if (!args) return
+    setPendingPlan({
+      name: args.name ?? "Plan",
+      overview: args.overview ?? "",
+      plan: args.plan ?? "",
+      todos: args.todos ?? [],
+      filepath: args.filepath,
+    })
+  }, [isInitialLoadComplete, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effect 2: Sync MobX → AI SDK state when data arrives
   useEffect(() => {
@@ -2315,6 +2385,7 @@ export const ChatPanel = observer(function ChatPanel({
     error: error?.message ?? null,
     agentUrl: resolvedAgentUrl,
     addToolOutput: (params) => addToolOutput(params as any),
+    confirmPlan: pendingPlan ? handleConfirmPlan : null,
   }
 
   const handleCompactSubmit = useCallback(
@@ -2469,15 +2540,6 @@ export const ChatPanel = observer(function ChatPanel({
                   <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-50" />
                 </View>
               </View>
-            )}
-
-            {/* Plan Card (shown when agent produces a plan, or briefly after confirmation) */}
-            {(pendingPlan || confirmedPlan) && (
-              <PlanCard
-                plan={(pendingPlan ?? confirmedPlan)!}
-                onConfirm={pendingPlan ? handleConfirmPlan : undefined}
-                isConfirmed={!pendingPlan && !!confirmedPlan}
-              />
             )}
 
           </ScrollView>
@@ -2664,6 +2726,16 @@ export const ChatPanel = observer(function ChatPanel({
                 }
               }}
             />
+          )}
+
+          {/* Context usage tracker */}
+          {contextUsage && (
+            <View className="items-center pb-1 max-w-3xl w-full self-center">
+              <ContextTracker
+                inputTokens={contextUsage.inputTokens}
+                contextWindowTokens={contextUsage.contextWindowTokens}
+              />
+            </View>
           )}
 
           {/* Input */}

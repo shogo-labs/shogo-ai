@@ -33,6 +33,7 @@ import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
+import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 
 export interface AssistantContentProps {
@@ -146,7 +147,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create", "browser"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create", "browser", "create_plan"])
 const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 const MIN_GROUP_SIZE = 2
@@ -423,6 +424,29 @@ export function AssistantContent({
           if (part.tool.toolName === "generate_image") {
             return (
               <GenerateImageWidget key={part.id} tool={part.tool} />
+            )
+          }
+
+          if (part.tool.toolName === "create_plan") {
+            const args = part.tool.args as Record<string, unknown> | undefined
+            const planData: PlanData | null = args
+              ? {
+                  name: (args.name as string) ?? "Plan",
+                  overview: (args.overview as string) ?? "",
+                  plan: (args.plan as string) ?? "",
+                  todos: (args.todos as PlanData["todos"]) ?? [],
+                  filepath: args.filepath as string | undefined,
+                }
+              : null
+            if (!planData) return null
+            const isPending = part.tool.state === "success" && !!chatContext?.confirmPlan
+            return (
+              <PlanCard
+                key={part.id}
+                plan={planData}
+                onConfirm={isPending ? chatContext!.confirmPlan! : undefined}
+                isConfirmed={false}
+              />
             )
           }
 

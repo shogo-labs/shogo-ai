@@ -51,6 +51,7 @@ interface PlansPanelProps {
   projectId: string
   agentUrl?: string | null
   onBuildPlan?: (plan: PlanData, agentMode: AgentMode) => void
+  refreshTrigger?: number
 }
 
 function formatDate(iso: string): string {
@@ -95,7 +96,7 @@ function extractTodos(
   return todos
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansPanelProps) {
+export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshTrigger }: PlansPanelProps) {
   const [plans, setPlans] = useState<PlanSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null)
@@ -170,7 +171,7 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
     if (visible) {
       fetchPlans()
     }
-  }, [visible, fetchPlans])
+  }, [visible, fetchPlans, refreshTrigger])
 
   useEffect(() => {
     if (selectedPlan) {

@@ -261,7 +261,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         break
       }
 
-      case 'turn_end':
+      case 'turn_end': {
         iterations++
         onIteration?.(iterations)
         if (iterations >= maxIterations && !abortTriggered) {
@@ -269,6 +269,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           agent.abort()
         }
         break
+      }
     }
   })
 

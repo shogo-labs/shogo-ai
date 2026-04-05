@@ -80,6 +80,9 @@ export interface ChatContextValue {
 
   /** Provide a tool output for a client-side tool call (e.g. ask_user responses) */
   addToolOutput?: (params: { toolCallId: string; output: string }) => void
+
+  /** Confirm and execute a pending plan. Null when no plan is pending. */
+  confirmPlan?: (() => void) | null
 }
 
 // ============================================================================

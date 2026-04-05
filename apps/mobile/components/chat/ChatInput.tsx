@@ -687,7 +687,7 @@ export function ChatInput({
         />
 
         {/* Bottom toolbar */}
-        <View className="flex-row items-center justify-between pr-2">
+        <View className="flex-row items-center justify-between pr-1">
           {/* Left side buttons */}
           <View className="flex-row items-center gap-1">
             {/* Attach button */}
@@ -696,17 +696,17 @@ export function ChatInput({
               disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
               role="button"
               accessibilityLabel="Attach file"
-              className="min-h-11 min-w-11 rounded-full items-center justify-center active:opacity-70"
+              className="min-h-8 min-w-8 rounded-full items-center justify-center active:opacity-70"
               android_ripple={{ color: "rgba(128,128,128,0.25)" }}
             >
               <Plus
                 className={cn(
-                  "h-4 w-4",
+                  "h-3 w-3",
                   disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES
                     ? "text-muted-foreground/40"
                     : "text-muted-foreground"
                 )}
-                size={16}
+                size={12}
               />
             </Pressable>
 
@@ -722,7 +722,7 @@ export function ChatInput({
                   {...triggerProps}
                   disabled={disabled || isStreaming}
                   className={cn(
-                    "h-7 flex-row items-center gap-1 rounded-md px-2",
+                    "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                     interactionMode === "agent" && "bg-muted/50",
                     interactionMode === "plan" &&
                       "border border-amber-500/45 bg-amber-500/12",
@@ -733,12 +733,12 @@ export function ChatInput({
                 >
                   <currentInteractionConfig.Icon
                     className={cn(
-                      "h-3 w-3",
+                      "h-2.5 w-2.5",
                       interactionMode === "agent" && "text-muted-foreground",
                       interactionMode === "plan" && "text-amber-400",
                       interactionMode === "ask" && "text-emerald-400"
                     )}
-                    size={12}
+                    size={10}
                   />
                   <Text
                     className={cn(
@@ -752,12 +752,12 @@ export function ChatInput({
                   </Text>
                   <ChevronDown
                     className={cn(
-                      "h-2.5 w-2.5",
+                      "h-2 w-2",
                       interactionMode === "agent" && "text-muted-foreground/60",
                       interactionMode === "plan" && "text-amber-400/80",
                       interactionMode === "ask" && "text-emerald-400/80"
                     )}
-                    size={10}
+                    size={8}
                   />
                 </Pressable>
               )}
@@ -841,12 +841,12 @@ export function ChatInput({
                 <Pressable
                   {...triggerProps}
                   disabled={disabled || isStreaming}
-                  className="h-7 flex-row items-center gap-1 rounded-md px-2"
+                  className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                 >
                   <Text className="text-xs text-muted-foreground">
                     {currentAgentConfig.label}
                   </Text>
-                  <ChevronDown className="h-2.5 w-2.5 text-muted-foreground/60" size={10} />
+                  <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
                 </Pressable>
               )}
             >
@@ -936,11 +936,11 @@ export function ChatInput({
                 onPress={onStop}
                 accessibilityLabel="Stop"
                 testID="stop-streaming"
-                className="h-8 w-8 rounded-full bg-destructive items-center justify-center active:opacity-70"
+                className="h-6 w-6 rounded-full bg-destructive items-center justify-center active:opacity-70"
               >
                 <Square
-                  className="h-3 w-3 text-destructive-foreground"
-                  size={12}
+                  className="h-2.5 w-2.5 text-destructive-foreground"
+                  size={10}
                 />
               </Pressable>
             )}
@@ -956,13 +956,13 @@ export function ChatInput({
                 role="button"
                 accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
                 className={cn(
-                  "h-8 w-8 rounded-full items-center justify-center bg-primary",
+                  "h-6 w-6 rounded-full items-center justify-center bg-primary",
                   (disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)) && "opacity-50"
                 )}
               >
                 <ArrowUp
-                  className="h-4 w-4 text-primary-foreground"
-                  size={16}
+                  className="h-3 w-3 text-primary-foreground"
+                  size={12}
                 />
               </Pressable>
             )}
