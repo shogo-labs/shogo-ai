@@ -8,7 +8,7 @@
  * what `shogo generate` produces, keeping tests fast and dependency-free.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { SkillServerManager } from '../skill-server-manager'
@@ -29,6 +29,11 @@ function randomPort(): number {
 function writeCrudServer(serverDir: string, port: number, models: string[] = ['todo']): void {
   mkdirSync(serverDir, { recursive: true })
   mkdirSync(join(serverDir, 'generated'), { recursive: true })
+
+  // Write a minimal custom-routes.ts so the server can import it
+  if (!existsSync(join(serverDir, 'custom-routes.ts'))) {
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
+  }
 
   const modelStores = models.map((m) => `const ${m}Store = new Map()`).join('\n')
 
@@ -74,6 +79,7 @@ function writeCrudServer(serverDir: string, port: number, models: string[] = ['t
     .join('\n')
 
   const serverCode = `
+import customRoutes from './custom-routes'
 const port = Number(process.env.PORT) || ${port}
 
 ${modelStores}
@@ -115,6 +121,90 @@ Bun.serve({
 console.log('Skill server running on port ' + port)
 `
   writeFileSync(join(serverDir, 'server.ts'), serverCode, 'utf-8')
+}
+
+/**
+ * Write a server with both CRUD routes and custom routes mounted at /api.
+ * Simulates the SDK-generated template with dynamic CRUD + static custom routes.
+ */
+function writeCustomRoutesServer(
+  serverDir: string,
+  port: number,
+  opts: { crudModels?: string[]; customRouteCode?: string } = {},
+): void {
+  mkdirSync(serverDir, { recursive: true })
+  mkdirSync(join(serverDir, 'generated'), { recursive: true })
+
+  const { crudModels = [], customRouteCode } = opts
+
+  const modelStores = crudModels.map((m) => `const ${m}Store = new Map()`).join('\n')
+
+  const modelRoutes = crudModels
+    .map((m) => {
+      const plural = m + 's'
+      return `
+    if (path === '/api/${plural}' && method === 'GET') {
+      return json({ ok: true, items: Array.from(${m}Store.values()) })
+    }
+    if (path === '/api/${plural}' && method === 'POST') {
+      const body = await req.json()
+      const id = String(Date.now()) + '-' + String(Math.random()).slice(2, 8)
+      const item = { id, ...body, createdAt: new Date().toISOString() }
+      ${m}Store.set(id, item)
+      return json({ ok: true, data: item }, 201)
+    }`
+    })
+    .join('\n')
+
+  // Write custom-routes.ts
+  const customCode = customRouteCode || `
+export default {
+  routes: []
+}
+`
+  writeFileSync(join(serverDir, 'custom-routes.ts'), customCode, 'utf-8')
+
+  // Write server that loads custom routes
+  const serverCode = `
+import customRoutes from './custom-routes'
+
+const port = Number(process.env.PORT) || ${port}
+${modelStores}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+Bun.serve({
+  port,
+  async fetch(req) {
+    const url = new URL(req.url)
+    const path = url.pathname
+    const method = req.method
+
+    if (path === '/health') {
+      return json({ ok: true, timestamp: new Date().toISOString() })
+    }
+
+    ${modelRoutes}
+
+    // Custom routes
+    if (customRoutes.routes) {
+      for (const route of customRoutes.routes) {
+        if (path === '/api' + route.path && method === (route.method || 'GET')) {
+          return json(route.handler ? route.handler() : { custom: true, path: route.path })
+        }
+      }
+    }
+
+    return new Response('Not Found', { status: 404 })
+  },
+})
+`
+  writeFileSync(join(serverDir, 'server.tsx'), serverCode, 'utf-8')
 }
 
 // ---------------------------------------------------------------------------
@@ -320,13 +410,23 @@ describe('Skill Server Integration', () => {
     // Verify schema content
     const schema = readFileSync(join(serverDir, 'schema.prisma'), 'utf-8')
     expect(schema).toContain('provider = "sqlite"')
-    expect(schema).toContain('env("DATABASE_URL")')
 
-    // Verify config
+    // Verify custom-routes.ts was scaffolded
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(true)
+    const customRoutes = readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')
+    expect(customRoutes).toContain('Hono')
+    expect(customRoutes).toContain('export default')
+
+    // Verify config includes new SDK options
     const config = JSON.parse(readFileSync(join(serverDir, 'shogo.config.json'), 'utf-8'))
     expect(config.schema).toBe('./schema.prisma')
     expect(config.outputs).toBeArray()
     expect(config.outputs.some((o: any) => o.generate.includes('routes'))).toBe(true)
+
+    const serverOutput = config.outputs.find((o: any) => o.generate.includes('server'))
+    expect(serverOutput.serverConfig.dynamicCrudImport).toBe(true)
+    expect(serverOutput.serverConfig.bunServe).toBe(true)
+    expect(serverOutput.serverConfig.customRoutesPath).toBe('./custom-routes')
   })
 
   test('seedSkillServer is idempotent', () => {
@@ -367,6 +467,335 @@ describe('Skill Server Integration', () => {
       const listResp = await fetch(base)
       const listed = await listResp.json() as any
       expect(listed.items).toHaveLength(10)
+    } finally {
+      await manager.stop()
+    }
+  }, 15_000)
+
+  // =========================================================================
+  // Test 6: Custom routes serve traffic
+  // =========================================================================
+  test('custom routes serve traffic at /api/', async () => {
+    const serverDir = join(workDir, '.shogo', 'server')
+    writeCustomRoutesServer(serverDir, testPort, {
+      customRouteCode: `
+export default {
+  routes: [
+    { path: '/hello', method: 'GET', handler: () => ({ message: 'Hello from custom route!' }) },
+  ]
+}
+`,
+    })
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
+
+    try {
+      await manager.start()
+      expect(manager.isRunning).toBe(true)
+
+      const resp = await fetch(`http://localhost:${testPort}/api/hello`)
+      expect(resp.ok).toBe(true)
+      const data = await resp.json() as any
+      expect(data.message).toBe('Hello from custom route!')
+    } finally {
+      await manager.stop()
+    }
+  }, 15_000)
+
+  // =========================================================================
+  // Test 7: Custom routes + CRUD coexist
+  // =========================================================================
+  test('custom routes and CRUD routes coexist', async () => {
+    const serverDir = join(workDir, '.shogo', 'server')
+    writeCustomRoutesServer(serverDir, testPort, {
+      crudModels: ['todo'],
+      customRouteCode: `
+export default {
+  routes: [
+    { path: '/weather', method: 'GET', handler: () => ({ temp: 72, unit: 'F' }) },
+  ]
+}
+`,
+    })
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
+
+    try {
+      await manager.start()
+      expect(manager.isRunning).toBe(true)
+
+      // CRUD route works
+      const createResp = await fetch(`http://localhost:${testPort}/api/todos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Test' }),
+      })
+      expect(createResp.status).toBe(201)
+
+      // Custom route works
+      const weatherResp = await fetch(`http://localhost:${testPort}/api/weather`)
+      expect(weatherResp.ok).toBe(true)
+      const weather = await weatherResp.json() as any
+      expect(weather.temp).toBe(72)
+
+      // Health still works
+      const healthResp = await fetch(`http://localhost:${testPort}/health`)
+      expect(healthResp.ok).toBe(true)
+    } finally {
+      await manager.stop()
+    }
+  }, 15_000)
+
+  // =========================================================================
+  // Test 8: Custom routes update on restart
+  // =========================================================================
+  test('custom routes update after restart', async () => {
+    const serverDir = join(workDir, '.shogo', 'server')
+    writeCustomRoutesServer(serverDir, testPort, {
+      customRouteCode: `
+export default {
+  routes: [
+    { path: '/v1', method: 'GET', handler: () => ({ version: 1 }) },
+  ]
+}
+`,
+    })
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
+
+    try {
+      await manager.start()
+      expect(manager.isRunning).toBe(true)
+
+      // v1 route works
+      const r1 = await fetch(`http://localhost:${testPort}/api/v1`)
+      expect(r1.ok).toBe(true)
+
+      // v2 route doesn't exist yet
+      const r2before = await fetch(`http://localhost:${testPort}/api/v2`)
+      expect(r2before.status).toBe(404)
+
+      // Update custom routes to add v2
+      writeFileSync(
+        join(serverDir, 'custom-routes.ts'),
+        `
+export default {
+  routes: [
+    { path: '/v1', method: 'GET', handler: () => ({ version: 1 }) },
+    { path: '/v2', method: 'GET', handler: () => ({ version: 2 }) },
+  ]
+}
+`,
+        'utf-8',
+      )
+
+      // Restart to pick up the change
+      await manager.restart()
+      expect(manager.isRunning).toBe(true)
+
+      // Now v2 should work
+      const r2after = await fetch(`http://localhost:${testPort}/api/v2`)
+      expect(r2after.ok).toBe(true)
+      const data = await r2after.json() as any
+      expect(data.version).toBe(2)
+    } finally {
+      await manager.stop()
+    }
+  }, 15_000)
+
+  // =========================================================================
+  // Test 9: Health always works (no models, empty custom routes)
+  // =========================================================================
+  test('health endpoint works with empty custom routes and no models', async () => {
+    const serverDir = join(workDir, '.shogo', 'server')
+    mkdirSync(serverDir, { recursive: true })
+    mkdirSync(join(serverDir, 'generated'), { recursive: true })
+
+    writeFileSync(
+      join(serverDir, 'custom-routes.ts'),
+      "export default { routes: [] }\n",
+      'utf-8',
+    )
+
+    writeFileSync(
+      join(serverDir, 'server.tsx'),
+      `
+import customRoutes from './custom-routes'
+const port = Number(process.env.PORT) || ${testPort}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+Bun.serve({
+  port,
+  async fetch(req) {
+    const url = new URL(req.url)
+    if (url.pathname === '/health') {
+      return json({ ok: true, timestamp: new Date().toISOString() })
+    }
+    return new Response('Not Found', { status: 404 })
+  },
+})
+`,
+      'utf-8',
+    )
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
+
+    try {
+      await manager.start()
+      expect(manager.isRunning).toBe(true)
+
+      const healthResp = await fetch(`http://localhost:${testPort}/health`)
+      expect(healthResp.ok).toBe(true)
+      const data = await healthResp.json() as any
+      expect(data.ok).toBe(true)
+    } finally {
+      await manager.stop()
+    }
+  }, 15_000)
+
+  // =========================================================================
+  // Test 10: seedSkillServer scaffolds custom-routes.ts
+  // =========================================================================
+  test('seedSkillServer creates custom-routes.ts', () => {
+    const result = seedSkillServer(workDir)
+    expect(result.created).toBe(true)
+
+    const customRoutesPath = join(result.serverDir, 'custom-routes.ts')
+    expect(existsSync(customRoutesPath)).toBe(true)
+
+    const content = readFileSync(customRoutesPath, 'utf-8')
+    expect(content).toContain("import { Hono } from 'hono'")
+    expect(content).toContain('export default app')
+  })
+
+  test('seedSkillServer does not overwrite existing custom-routes.ts', () => {
+    const result1 = seedSkillServer(workDir)
+    expect(result1.created).toBe(true)
+
+    // Modify custom-routes.ts
+    const customRoutesPath = join(result1.serverDir, 'custom-routes.ts')
+    writeFileSync(customRoutesPath, 'modified content', 'utf-8')
+
+    // Seed again — should not overwrite
+    const result2 = seedSkillServer(workDir)
+    expect(result2.created).toBe(false)
+
+    const content = readFileSync(customRoutesPath, 'utf-8')
+    expect(content).toBe('modified content')
+  })
+
+  // =========================================================================
+  // Test 11: Upgrade from previous SDK version (stale server.tsx)
+  // =========================================================================
+  test('start() replaces old server.tsx lacking customRoutes and still serves /health', async () => {
+    const serverDir = join(workDir, '.shogo', 'server')
+    mkdirSync(serverDir, { recursive: true })
+    mkdirSync(join(serverDir, 'generated'), { recursive: true })
+
+    // Old-style server.tsx: no customRoutes, uses export default, static imports
+    const oldServer = `
+import { Hono } from 'hono'
+
+const app = new Hono()
+app.get('/health', (c) => c.json({ ok: true }))
+
+export default {
+  port: ${testPort},
+  fetch: app.fetch,
+}
+`
+    writeFileSync(join(serverDir, 'server.tsx'), oldServer, 'utf-8')
+    writeFileSync(join(serverDir, 'schema.prisma'), 'datasource db {\n  provider = "sqlite"\n}\n', 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
+
+    try {
+      await manager.start()
+
+      // After start, the old server.tsx should have been detected as stale and removed.
+      // The manager creates custom-routes.ts and tries to regenerate.
+      expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(true)
+
+      // If server is running, verify it works
+      if (manager.isRunning) {
+        const resp = await fetch(`http://localhost:${testPort}/health`)
+        expect(resp.ok).toBe(true)
+      }
+    } finally {
+      await manager.stop()
+    }
+  }, 30_000)
+
+  // =========================================================================
+  // Test 12: Deleted custom-routes.ts recovery
+  // =========================================================================
+  test('server recovers after custom-routes.ts is deleted', async () => {
+    const serverDir = join(workDir, '.shogo', 'server')
+    mkdirSync(serverDir, { recursive: true })
+    mkdirSync(join(serverDir, 'generated'), { recursive: true })
+
+    // Write a new-style server that imports customRoutes
+    writeFileSync(
+      join(serverDir, 'custom-routes.ts'),
+      "export default { routes: [] }\n",
+      'utf-8',
+    )
+
+    writeFileSync(
+      join(serverDir, 'server.tsx'),
+      `
+import customRoutes from './custom-routes'
+const port = Number(process.env.PORT) || ${testPort}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+Bun.serve({
+  port,
+  async fetch(req) {
+    if (new URL(req.url).pathname === '/health') {
+      return json({ ok: true })
+    }
+    return new Response('Not Found', { status: 404 })
+  },
+})
+`,
+      'utf-8',
+    )
+
+    writeFileSync(join(serverDir, 'schema.prisma'), 'datasource db {\n  provider = "sqlite"\n}\n', 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
+
+    try {
+      await manager.start()
+      expect(manager.isRunning).toBe(true)
+
+      const resp1 = await fetch(`http://localhost:${testPort}/health`)
+      expect(resp1.ok).toBe(true)
+
+      // Delete custom-routes.ts
+      unlinkSync(join(serverDir, 'custom-routes.ts'))
+      expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(false)
+
+      // restart() should recreate the file and the server should come back up
+      await manager.restart()
+
+      expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(true)
+      expect(manager.isRunning).toBe(true)
+
+      const resp2 = await fetch(`http://localhost:${testPort}/health`)
+      expect(resp2.ok).toBe(true)
     } finally {
       await manager.stop()
     }

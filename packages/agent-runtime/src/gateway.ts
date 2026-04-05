@@ -1927,6 +1927,7 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
 5. Use \`edit_file\` to update existing files, \`write_file\` only for new files
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
+**IMPORTANT:** NEVER create a custom HTTP server (\`server.ts\`, \`server.tsx\`, Hono, Express, etc.). The skill server is always running. For custom API routes, edit \`.shogo/server/custom-routes.ts\`. For persistent data, write \`.shogo/server/schema.prisma\`.
 `)
         stableParts.push(this.promptOverrides.get('canvas_v2_guide') ?? CANVAS_V2_GUIDE)
         stableParts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
@@ -2203,11 +2204,17 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
         lines.push('These routes will appear after the regeneration pipeline finishes.')
       }
 
+      if (this.skillServerManager.hasCustomRoutes) {
+        lines.push('')
+        lines.push('**Custom routes** are active — `.shogo/server/custom-routes.ts` is mounted at `/api/` alongside the CRUD routes.')
+      }
+
       lines.push('')
       lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it.`)
       lines.push('')
       lines.push('To add new models or change the schema, edit `.shogo/server/schema.prisma`.')
       lines.push('Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts`.')
+      lines.push('For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `.shogo/server/custom-routes.ts` (it already exists).')
       lines.push('')
       lines.push(regenGuide)
 
@@ -2286,6 +2293,7 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
       'Each model gets full CRUD at `/api/{model-name-plural}`.',
       '',
       'Custom logic goes in `.shogo/server/generated/{model}.hooks.ts`.',
+      'For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `.shogo/server/custom-routes.ts` (it already exists).',
       '',
       regenGuide,
     ].join('\n')

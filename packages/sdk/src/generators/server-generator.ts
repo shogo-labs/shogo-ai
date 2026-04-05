@@ -30,6 +30,15 @@ export interface ServerGeneratorConfig {
   staticDir?: string
   /** Skip static file serving (useful for API-only servers) */
   skipStatic?: boolean
+  /** Path to custom routes file (e.g. './custom-routes'). When set, the
+   *  server statically imports and mounts the file at the API base path. */
+  customRoutesPath?: string
+  /** Use dynamic import() for CRUD routes + Prisma so the server starts
+   *  even before any schema models are generated. */
+  dynamicCrudImport?: boolean
+  /** Emit Bun.serve() instead of export default { port, fetch } to avoid
+   *  the Bun 1.3 double-bind issue. */
+  bunServe?: boolean
 }
 
 /**
@@ -45,6 +54,9 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
     apiBasePath = '/api',
     staticDir = './dist',
     skipStatic = false,
+    customRoutesPath,
+    dynamicCrudImport = false,
+    bunServe = false,
   } = config
 
   const lines: string[] = [
@@ -64,8 +76,16 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   if (!skipStatic) {
     lines.push("import { serveStatic } from 'hono/bun'")
   }
-  lines.push(`import { createAllRoutes } from '${routesPath}'`)
-  lines.push(`import { prisma } from '${dbPath}'`)
+
+  if (!dynamicCrudImport) {
+    lines.push(`import { createAllRoutes } from '${routesPath}'`)
+    lines.push(`import { prisma } from '${dbPath}'`)
+  }
+
+  if (customRoutesPath) {
+    lines.push(`import customRoutes from '${customRoutesPath}'`)
+  }
+
   lines.push('')
   lines.push('const app = new Hono()')
   lines.push('')
@@ -86,9 +106,26 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   lines.push("app.get('/health', (c) => c.json({ ok: true, timestamp: new Date().toISOString() }))")
   lines.push('')
 
-  lines.push('// Mount SDK-generated API routes')
-  lines.push(`app.route('${apiBasePath}', createAllRoutes(prisma))`)
+  if (dynamicCrudImport) {
+    lines.push('// CRUD routes (available after schema.prisma has models)')
+    lines.push('try {')
+    lines.push(`  const { createAllRoutes } = await import('${routesPath}')`)
+    lines.push(`  const { prisma } = await import('${dbPath}')`)
+    lines.push(`  app.route('${apiBasePath}', createAllRoutes(prisma))`)
+    lines.push('} catch {')
+    lines.push('  // No generated routes yet — CRUD routes will appear after schema.prisma is written')
+    lines.push('}')
+  } else {
+    lines.push('// Mount SDK-generated API routes')
+    lines.push(`app.route('${apiBasePath}', createAllRoutes(prisma))`)
+  }
   lines.push('')
+
+  if (customRoutesPath) {
+    lines.push('// Custom API routes (always mounted)')
+    lines.push(`app.route('${apiBasePath}', customRoutes)`)
+    lines.push('')
+  }
 
   if (!skipStatic) {
     lines.push('// Serve static files in production')
@@ -101,10 +138,14 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   lines.push('console.log(`🚀 Server running on http://localhost:${port}`)')
   lines.push('')
 
-  lines.push('export default {')
-  lines.push('  port,')
-  lines.push('  fetch: app.fetch,')
-  lines.push('}')
+  if (bunServe) {
+    lines.push('Bun.serve({ port, fetch: app.fetch })')
+  } else {
+    lines.push('export default {')
+    lines.push('  port,')
+    lines.push('  fetch: app.fetch,')
+    lines.push('}')
+  }
   lines.push('')
 
   return lines.join('\n')

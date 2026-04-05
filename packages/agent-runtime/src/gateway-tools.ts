@@ -374,9 +374,14 @@ async function maybeSchemaSync(
   resolved: string,
   baseResult: Record<string, unknown>,
 ): Promise<Record<string, unknown> | null> {
+  if (!ctx.skillServerManager) return null
+
+  const customRoutesResult = await maybeCustomRoutesSync(ctx, filePath, resolved, baseResult)
+  if (customRoutesResult) return customRoutesResult
+
   const isSchemaWrite = filePath === '.shogo/server/schema.prisma' ||
     resolved.endsWith('.shogo/server/schema.prisma')
-  if (!isSchemaWrite || !ctx.skillServerManager) return null
+  if (!isSchemaWrite) return null
 
   const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
   if (!/^model\s+\w+/m.test(content)) return null
@@ -414,6 +419,39 @@ async function maybeSchemaSync(
         synced: false,
         error: err.message,
         hint: 'Schema saved but regeneration failed. Check the schema for errors.',
+      },
+    }
+  }
+}
+
+async function maybeCustomRoutesSync(
+  ctx: ToolContext,
+  filePath: string,
+  _resolved: string,
+  baseResult: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const isCustomRoutesWrite =
+    /\.shogo\/server\/custom-routes\.tsx?$/.test(filePath)
+  if (!isCustomRoutesWrite || !ctx.skillServerManager) return null
+
+  try {
+    await ctx.skillServerManager.restart()
+    return {
+      ...baseResult,
+      skillServer: {
+        customRoutesMounted: true,
+        phase: ctx.skillServerManager.phase,
+        url: ctx.skillServerManager.url,
+        hint: 'Custom routes are now live. They are mounted at /api/ alongside CRUD routes.',
+      },
+    }
+  } catch (err: any) {
+    return {
+      ...baseResult,
+      skillServer: {
+        customRoutesMounted: false,
+        error: err.message,
+        hint: 'Custom routes file saved but server restart failed.',
       },
     }
   }

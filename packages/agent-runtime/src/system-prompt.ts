@@ -347,6 +347,8 @@ The skill server is the **default** persistence layer. Use it whenever you have 
 
 **NEVER hardcode data into canvas files.** Canvas code should always \`fetch()\` from \`/api/...\` endpoints (relative URL — never \`http://localhost\` in React code).
 
+**NEVER create a custom HTTP server.** Do not write \`server.ts\`, \`server.tsx\`, or import Hono/Express/Fastify. The skill server is always running. For persistent CRUD data, write \`.shogo/server/schema.prisma\`. For external API calls (Meta Ads, Gmail, etc.), use the Integration Tools SDK (\`useTools()\` from \`@shogo-ai/sdk/tools\`) in React code. For custom API routes beyond CRUD (proxies, aggregation, webhooks), **edit** \`.shogo/server/custom-routes.ts\` (it already exists) — never create a standalone server.
+
 `
 
 export const TOOL_USAGE = `## Tool Usage

@@ -133,7 +133,7 @@ function postedToSkillServer(r: EvalResult, pathFragment?: string): boolean {
 function canvasFetchesFromApi(r: EvalResult): boolean {
   const code = allCanvasCode(r)
   return (code.includes('fetch(') || code.includes('useeffect') || code.includes('axios') || code.includes('/api/')) &&
-    (code.includes('localhost:') || code.includes('/api/') || code.includes('3001'))
+    (code.includes('/api/') || code.includes('localhost:4100'))
 }
 
 function wroteSkillFile(r: EvalResult, ...keywords: string[]): boolean {
@@ -763,6 +763,566 @@ const BRIEFING_EVAL: AgentEval = {
   antiPatterns: ['Unnecessary clarification questions instead of building', 'Tool loop or repeated identical calls'],
 }
 
+// =========================================================================
+// EVAL 7: No Custom Server — Agent Must Use Skill Server
+// =========================================================================
+
+// ---------------------------------------------------------------------------
+// Shared anti-pattern helpers for custom server detection
+// ---------------------------------------------------------------------------
+
+/** True if the agent wrote .shogo/server/custom-routes.ts (the approved convention). */
+function wroteCustomRoutes(r: EvalResult): boolean {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .some(t => {
+      const path = String((t.input as any).path ?? '').toLowerCase()
+      return /\.shogo\/server\/custom-routes\.tsx?$/.test(path) || path === 'custom-routes.ts' || path === 'custom-routes.tsx'
+    })
+}
+
+/** Content of the custom-routes file (if written). */
+function customRoutesCode(r: EvalResult): string {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => {
+      const path = String((t.input as any).path ?? '').toLowerCase()
+      return /custom-routes\.tsx?$/.test(path)
+    })
+    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .join('\n')
+    .toLowerCase()
+}
+
+/** True if the agent wrote a custom server file (server.ts, server.tsx, etc.) at the project root. */
+function wroteCustomServer(r: EvalResult): boolean {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .some(t => {
+      const path = String((t.input as any).path ?? '').toLowerCase()
+      return /^server\.(ts|tsx|js|mjs)$/.test(path) ||
+        /^src\/server\.(ts|tsx|js|mjs)$/.test(path) ||
+        /^api\/.*\.(ts|tsx|js|mjs)$/.test(path)
+    })
+}
+
+/** True if any written file (excluding custom-routes.ts) imports Hono, Express, Fastify, or Koa. */
+function wroteCustomHttpServer(r: EvalResult): boolean {
+  const allCode = r.toolCalls
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
+    .filter(t => {
+      const path = String((t.input as any).path ?? '').toLowerCase()
+      return !/custom-routes\.tsx?$/.test(path)
+    })
+    .map(t => {
+      const input = t.input as Record<string, any>
+      return String(input.content ?? input.new_string ?? '')
+    })
+    .join('\n')
+    .toLowerCase()
+  return /import.*from\s+['"]hono['"]/.test(allCode) ||
+    /import.*from\s+['"]express['"]/.test(allCode) ||
+    /import.*from\s+['"]fastify['"]/.test(allCode) ||
+    /import.*from\s+['"]koa['"]/.test(allCode) ||
+    /require\(['"]express['"]\)/.test(allCode) ||
+    /new hono\b/.test(allCode) ||
+    /bun\.serve\b/.test(allCode)
+}
+
+/** True if canvas code uses the Integration Tools SDK (useTools / ToolsClient). */
+function canvasUsesToolsSdk(r: EvalResult): boolean {
+  const code = allCanvasCode(r)
+  return code.includes('usetools') || code.includes('toolsclient') || code.includes('@shogo-ai/sdk/tools')
+}
+
+/** True if canvas code calls a specific integration tool via execute(). */
+function canvasExecutesTool(r: EvalResult, toolPrefix: string): boolean {
+  const code = allCanvasCode(r)
+  return code.includes(`execute('${toolPrefix}`) || code.includes(`execute("${toolPrefix}`)
+}
+
+// =========================================================================
+// EVAL 7a: External API Integration — Use Tools SDK, Not Custom Server
+// Reproduces the real bug: user needs Meta Ads data in dashboard, agent
+// should use useTools()/execute() from @shogo-ai/sdk/tools, NOT create
+// a custom Hono server to proxy the Facebook Graph API.
+// =========================================================================
+
+const META_ADS_INTEGRATION_MOCKS: ToolMockMap = {
+  ...makeSkillServerMocks(['Campaign'], {
+    Campaign: [{ name: 'Summer Sale Push', platform: 'meta', budget: 5000, spend: 3200, impressions: 450000, clicks: 12500, conversions: 380, status: 'active' }],
+  }),
+  tool_search: {
+    type: 'static',
+    response: {
+      results: [
+        { name: 'meta_ads', displayName: 'Meta Ads', description: 'Manage Facebook and Instagram ad campaigns', installed: true },
+      ],
+    },
+  },
+  tool_install: {
+    type: 'static',
+    response: {
+      ok: true,
+      tools: [
+        { name: 'METAADS_GET_INSIGHTS', description: 'Get ad insights and performance metrics' },
+        { name: 'METAADS_LIST_CAMPAIGNS', description: 'List all campaigns in an ad account' },
+        { name: 'METAADS_UPDATE_CAMPAIGN', description: 'Update campaign status or budget' },
+      ],
+    },
+  },
+  METAADS_GET_INSIGHTS: {
+    type: 'static',
+    response: {
+      ok: true,
+      data: JSON.stringify({
+        data: [
+          { campaign_name: 'Summer Sale Push', spend: '3200.00', impressions: '450000', clicks: '12500', conversions: '380', cpc: '0.26', ctr: '2.78', date_start: '2026-03-01', date_stop: '2026-03-31' },
+          { campaign_name: 'Brand Awareness Q2', spend: '6100.00', impressions: '890000', clicks: '15000', conversions: '210', cpc: '0.41', ctr: '1.69', date_start: '2026-03-01', date_stop: '2026-03-31' },
+        ],
+      }),
+    },
+  },
+  METAADS_LIST_CAMPAIGNS: {
+    type: 'static',
+    response: {
+      ok: true,
+      data: JSON.stringify({
+        data: [
+          { id: 'camp_1', name: 'Summer Sale Push', status: 'ACTIVE', daily_budget: '500' },
+          { id: 'camp_2', name: 'Brand Awareness Q2', status: 'ACTIVE', daily_budget: '800' },
+          { id: 'camp_3', name: 'Retargeting Flow', status: 'PAUSED', daily_budget: '200' },
+        ],
+      }),
+    },
+  },
+}
+
+const META_ADS_INTEGRATION_EVAL: AgentEval = {
+  id: 'adv-meta-ads-no-custom-server',
+  name: 'Advanced: Meta Ads dashboard uses Tools SDK or custom-routes instead of custom server',
+  category: 'skill',
+  level: 4,
+  initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
+  input: [
+    'I have Meta Ads connected. Build me a dashboard that shows my ad campaign performance.',
+    'I want to see spend, impressions, clicks, CTR, CPC for each campaign, and a chart of spending trends.',
+    'I should be able to pause/resume campaigns from the dashboard too.',
+  ].join('\n'),
+  maxScore: 30,
+  toolMocks: META_ADS_INTEGRATION_MOCKS,
+  validationCriteria: [
+    {
+      id: 'used-meta-ads-tool',
+      description: 'Called METAADS_GET_INSIGHTS or METAADS_LIST_CAMPAIGNS to fetch data',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => usedTool(r, 'METAADS_GET_INSIGHTS') || usedTool(r, 'METAADS_LIST_CAMPAIGNS'),
+    },
+    {
+      id: 'built-canvas',
+      description: 'Built a canvas dashboard component',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => wroteCanvasFile(r),
+    },
+    {
+      id: 'canvas-uses-tools-sdk-or-custom-routes',
+      description: 'Canvas uses useTools()/@shogo-ai/sdk/tools OR agent wrote custom-routes.ts',
+      points: 5,
+      phase: 'execution',
+      validate: (r) => canvasUsesToolsSdk(r) || wroteCustomRoutes(r),
+    },
+    {
+      id: 'canvas-calls-metaads-or-custom-routes',
+      description: 'Canvas calls METAADS_ tools via execute() OR custom-routes proxies Meta API',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => canvasExecutesTool(r, 'METAADS') || (wroteCustomRoutes(r) && (customRoutesCode(r).includes('meta') || customRoutesCode(r).includes('facebook') || customRoutesCode(r).includes('campaign'))),
+    },
+    {
+      id: 'canvas-has-metrics',
+      description: 'Canvas displays CTR/CPC/spend metrics',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => {
+        const c = allCanvasCode(r)
+        return c.includes('cpc') || c.includes('ctr') || c.includes('spend')
+      },
+    },
+    {
+      id: 'no-custom-server-file',
+      description: 'Did NOT create a custom server.ts/server.tsx file',
+      points: 5,
+      phase: 'execution',
+      validate: (r) => !wroteCustomServer(r),
+    },
+    {
+      id: 'no-http-framework',
+      description: 'Did NOT import Hono/Express/Fastify outside of custom-routes.ts',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => !wroteCustomHttpServer(r),
+    },
+    {
+      id: 'no-direct-graph-api-in-canvas',
+      description: 'Canvas does NOT call graph.facebook.com directly (should use tools SDK or custom-routes)',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => {
+        const code = allCanvasCode(r)
+        return !code.includes('graph.facebook.com') && !code.includes('graph.facebook')
+      },
+    },
+  ],
+  antiPatterns: [
+    'Created a custom Hono or Express server to proxy the Facebook Graph API (custom-routes.ts is acceptable)',
+    'Wrote to server.ts or server.tsx',
+    'Called graph.facebook.com directly from React code instead of using the tools SDK or custom-routes',
+  ],
+}
+
+// =========================================================================
+// EVAL 7b: CRUD Dashboard — Skill Server Instead of Custom Server
+// Tests that when the user needs persistent data (not external API),
+// the agent uses the skill server schema, not a custom Hono server.
+// =========================================================================
+
+const CRUD_DASHBOARD_MOCKS = makeSkillServerMocks(
+  ['Campaign'],
+  { Campaign: [{ name: 'Summer Sale Push', platform: 'meta', budget: 5000, spend: 3200, impressions: 450000, clicks: 12500, conversions: 380, status: 'active' }] },
+)
+
+const CRUD_DASHBOARD_EVAL: AgentEval = {
+  id: 'adv-crud-no-custom-server',
+  name: 'Advanced: CRUD dashboard uses skill server instead of custom Hono server',
+  category: 'skill',
+  level: 4,
+  initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
+  input: [
+    'I need a dashboard to manually track my ad campaigns. I want to store:',
+    '',
+    '- Campaign name, platform (meta/google), budget, spend, impressions, clicks, conversions, status',
+    '- Calculate CPC, CTR, and ROAS automatically in the UI',
+    '',
+    "Here's my current data to seed:",
+    '- Summer Sale Push: Meta, $5K budget, $3.2K spent, 450K impressions, 12.5K clicks, 380 conversions, active',
+    '- Brand Awareness Q2: Google, $8K budget, $6.1K spent, 890K impressions, 15K clicks, 210 conversions, active',
+    '- Retargeting Flow: Meta, $2K budget, $1.8K spent, 120K impressions, 8.2K clicks, 520 conversions, paused',
+    '',
+    'I want to be able to add new campaigns and update metrics as they come in.',
+  ].join('\n'),
+  maxScore: 30,
+  toolMocks: CRUD_DASHBOARD_MOCKS,
+  validationCriteria: [
+    {
+      id: 'wrote-schema',
+      description: 'Wrote schema.prisma with Campaign model',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => wroteSchemaWithAnyModels(r, 1),
+    },
+    {
+      id: 'schema-has-campaign-fields',
+      description: 'Schema includes campaign-related fields (budget, spend, impressions)',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => schemaContainsFields(r, 'budget') || schemaContainsFields(r, 'spend') || schemaContainsFields(r, 'impressions'),
+    },
+    {
+      id: 'posted-campaigns',
+      description: 'POSTed campaign records to skill server',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => postedToSkillServer(r, 'campaign'),
+    },
+    {
+      id: 'built-canvas',
+      description: 'Built canvas dashboard component',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => wroteCanvasFile(r),
+    },
+    {
+      id: 'canvas-wired',
+      description: 'Canvas fetches data from /api/ endpoints',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => canvasFetchesFromApi(r),
+    },
+    {
+      id: 'canvas-has-metrics',
+      description: 'Canvas computes or displays CPC/CTR/ROAS metrics',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => {
+        const c = allCanvasCode(r)
+        return c.includes('cpc') || c.includes('ctr') || c.includes('roas') || c.includes('cost per')
+      },
+    },
+    {
+      id: 'no-custom-server-file',
+      description: 'Did NOT create a custom server.ts/server.tsx file',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => !wroteCustomServer(r),
+    },
+    {
+      id: 'no-http-framework',
+      description: 'Did NOT import Hono/Express/Fastify to build a custom server',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => !wroteCustomHttpServer(r),
+    },
+    {
+      id: 'no-wrong-port',
+      description: 'Canvas does NOT reference localhost:3001 or localhost:8080',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => {
+        const code = allCanvasCode(r)
+        return !code.includes('localhost:3001') && !code.includes('localhost:8080') && !code.includes('localhost:3000')
+      },
+    },
+  ],
+  antiPatterns: [
+    'Created a custom Hono or Express server instead of using the skill server',
+    'Wrote to server.ts or server.tsx',
+    'Referenced localhost:3001 or localhost:8080 in canvas code',
+  ],
+}
+
+// =========================================================================
+// EVAL 8: Custom Routes Proxy — No Schema Needed
+// Tests that the agent uses custom-routes.ts (by editing, not creating) to
+// proxy an external API when no database is needed.
+// =========================================================================
+
+const CUSTOM_ROUTES_PROXY_MOCKS: ToolMockMap = {
+  web: {
+    type: 'pattern',
+    patterns: [
+      { match: { url: 'health' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
+      { match: { url: 'weather' }, response: { content: JSON.stringify({ temp: 72, condition: 'sunny', city: 'London' }), status: 200 } },
+      { match: { url: '/api/' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
+    ],
+    default: { content: JSON.stringify({ ok: true }), status: 200 },
+  },
+}
+
+const CUSTOM_ROUTES_PROXY_EVAL: AgentEval = {
+  id: 'adv-custom-routes-proxy',
+  name: 'Advanced: Custom routes proxy for external API (no schema needed)',
+  category: 'skill',
+  level: 4,
+  initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
+  input: [
+    "I need a backend endpoint that proxies requests to the OpenWeather API.",
+    "The frontend should call our server at /api/weather?city=London and get back the weather data.",
+    "Don't need a database for this — just a simple proxy.",
+    "Build me a nice weather dashboard that shows current conditions.",
+  ].join('\n'),
+  maxScore: 30,
+  toolMocks: CUSTOM_ROUTES_PROXY_MOCKS,
+  validationCriteria: [
+    {
+      id: 'edited-custom-routes',
+      description: 'Edited .shogo/server/custom-routes.ts (not created a new server)',
+      points: 6,
+      phase: 'execution',
+      validate: (r) => wroteCustomRoutes(r),
+    },
+    {
+      id: 'custom-routes-has-weather',
+      description: 'Custom routes file has a /weather route',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => {
+        const code = customRoutesCode(r)
+        return code.includes('weather')
+      },
+    },
+    {
+      id: 'custom-routes-imports-hono',
+      description: 'Custom routes file imports Hono',
+      points: 2,
+      phase: 'execution',
+      validate: (r) => {
+        const code = customRoutesCode(r)
+        return code.includes('hono')
+      },
+    },
+    {
+      id: 'built-canvas',
+      description: 'Built a weather dashboard canvas',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => wroteCanvasFile(r),
+    },
+    {
+      id: 'canvas-fetches-api-weather',
+      description: 'Canvas fetches from /api/weather (relative URL)',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => {
+        const code = allCanvasCode(r)
+        return code.includes('/api/weather')
+      },
+    },
+    {
+      id: 'no-custom-server-file',
+      description: 'Did NOT create a custom server.ts/server.tsx file',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => !wroteCustomServer(r),
+    },
+    {
+      id: 'no-schema-written',
+      description: 'Did NOT write schema.prisma (no database needed)',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => !wroteSchema(r),
+    },
+    {
+      id: 'no-http-framework-outside-cr',
+      description: 'Did NOT import Hono/Express outside of custom-routes.ts',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => !wroteCustomHttpServer(r),
+    },
+  ],
+  antiPatterns: [
+    'Created a custom Hono or Express server instead of editing custom-routes.ts',
+    'Wrote schema.prisma when no database was needed',
+    'Called openweathermap.org directly from React instead of through the proxy',
+  ],
+}
+
+// =========================================================================
+// EVAL 9: CRUD + Custom Routes Combined
+// Tests that the agent can combine schema-based CRUD with custom routes for
+// enrichment endpoints in a single project.
+// =========================================================================
+
+const CRUD_PLUS_CUSTOM_ROUTES_MOCKS: ToolMockMap = {
+  ...makeSkillServerMocks(['Contact'], {
+    Contact: [
+      { name: 'Jane Smith', email: 'jane@example.com', company: 'Acme Corp', status: 'lead' },
+    ],
+  }),
+  web: {
+    type: 'pattern',
+    patterns: [
+      { match: { url: 'health' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
+      { match: { url: 'enrich' }, response: { content: JSON.stringify({ ok: true, data: { company: 'Acme Corp', industry: 'SaaS', employees: 150, funding: 'Series B' } }), status: 200 } },
+      { match: { url: 'contact' }, response: { content: JSON.stringify({ ok: true, items: [{ id: 'c1', name: 'Jane Smith', email: 'jane@example.com', company: 'Acme Corp', status: 'lead' }] }), status: 200 } },
+    ],
+    default: { content: JSON.stringify({ ok: true }), status: 200 },
+  },
+}
+
+const CRUD_PLUS_CUSTOM_ROUTES_EVAL: AgentEval = {
+  id: 'adv-crud-plus-custom-routes',
+  name: 'Advanced: CRM with CRUD + custom enrichment route',
+  category: 'skill',
+  level: 5,
+  initialMode: 'canvas',
+  useRuntimeTemplate: true,
+  workspaceFiles: { 'config.json': V2_CONFIG },
+  input: [
+    "Build me a CRM dashboard. I need to store contacts in a database (name, email, company, status).",
+    "Also add an endpoint that enriches contact data by calling the Clearbit API when I click 'enrich' on a contact.",
+    "The enrichment should add company info like industry, employee count, and funding stage.",
+  ].join('\n'),
+  maxScore: 30,
+  toolMocks: CRUD_PLUS_CUSTOM_ROUTES_MOCKS,
+  validationCriteria: [
+    {
+      id: 'wrote-schema-contact',
+      description: 'Wrote schema.prisma with a Contact model',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => wroteSchema(r, 'Contact'),
+    },
+    {
+      id: 'schema-has-contact-fields',
+      description: 'Schema has name, email, company fields',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => schemaContainsFields(r, 'name', 'email', 'company'),
+    },
+    {
+      id: 'edited-custom-routes',
+      description: 'Edited custom-routes.ts with an /enrich route',
+      points: 5,
+      phase: 'execution',
+      validate: (r) => {
+        const code = customRoutesCode(r)
+        return wroteCustomRoutes(r) && code.includes('enrich')
+      },
+    },
+    {
+      id: 'built-canvas',
+      description: 'Built a CRM canvas dashboard',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => wroteCanvasFile(r),
+    },
+    {
+      id: 'canvas-fetches-crud',
+      description: 'Canvas fetches from /api/contacts (CRUD)',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => {
+        const code = allCanvasCode(r)
+        return code.includes('/api/contact')
+      },
+    },
+    {
+      id: 'canvas-fetches-enrich',
+      description: 'Canvas fetches from /api/enrich (custom route)',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => {
+        const code = allCanvasCode(r)
+        return code.includes('/api/enrich')
+      },
+    },
+    {
+      id: 'no-custom-server-file',
+      description: 'Did NOT create a custom server.ts/server.tsx file',
+      points: 4,
+      phase: 'execution',
+      validate: (r) => !wroteCustomServer(r),
+    },
+    {
+      id: 'no-http-framework-outside-cr',
+      description: 'Did NOT import Hono/Express outside of custom-routes.ts',
+      points: 3,
+      phase: 'execution',
+      validate: (r) => !wroteCustomHttpServer(r),
+    },
+    {
+      id: 'response-mentions-both',
+      description: 'Response mentions both CRUD and enrichment',
+      points: 2,
+      phase: 'execution',
+      validate: (r) => responseContains(r, 'contact') && responseContains(r, 'enrich'),
+    },
+  ],
+  antiPatterns: [
+    'Created a custom server instead of using skill server + custom-routes.ts',
+    'Did not write a schema when one was needed for contacts',
+    'Called Clearbit directly from React instead of through the proxy',
+  ],
+}
+
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
@@ -774,4 +1334,8 @@ export const SKILL_SERVER_ADVANCED_EVALS: AgentEval[] = [
   EMAIL_SLACK_RECON_EVAL,
   DATA_PIPELINE_EVAL,
   BRIEFING_EVAL,
+  META_ADS_INTEGRATION_EVAL,
+  CRUD_DASHBOARD_EVAL,
+  CUSTOM_ROUTES_PROXY_EVAL,
+  CRUD_PLUS_CUSTOM_ROUTES_EVAL,
 ]

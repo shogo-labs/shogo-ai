@@ -23,7 +23,7 @@
 
 import { execSync, spawn, type ChildProcess } from 'child_process'
 import { join, resolve, dirname } from 'path'
-import { existsSync, watch, mkdirSync, writeFileSync, readFileSync, cpSync, type FSWatcher, appendFileSync } from 'fs'
+import { existsSync, watch, mkdirSync, writeFileSync, readFileSync, cpSync, unlinkSync, type FSWatcher, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { pkg } from '@shogo/shared-runtime'
 
@@ -169,44 +169,88 @@ export class SkillServerManager {
     return null
   }
 
+  private get customRoutesPath(): string {
+    return join(this.serverDir, 'custom-routes.ts')
+  }
+
+  private get customRoutesTsxPath(): string {
+    return join(this.serverDir, 'custom-routes.tsx')
+  }
+
+  get hasCustomRoutes(): boolean {
+    return existsSync(this.customRoutesPath) || existsSync(this.customRoutesTsxPath)
+  }
+
   private get logPath(): string {
     return join(this.serverDir, '.server.log')
   }
 
   /**
-   * Start the skill server. If only schema.prisma exists (no server.ts yet),
-   * runs code generation first. Then spawns the server.
+   * Scaffold `.shogo/server/custom-routes.ts` if it doesn't already exist.
+   * Called on startup so the agent can always "edit" the file rather than
+   * creating it from scratch.
+   */
+  private ensureCustomRoutes(): void {
+    if (this.hasCustomRoutes) return
+
+    mkdirSync(this.serverDir, { recursive: true })
+    const scaffold = [
+      "import { Hono } from 'hono'",
+      '',
+      'const app = new Hono()',
+      '',
+      '// Add custom API routes here. They are mounted at /api/.',
+      '// Example:',
+      "//   app.get('/hello', (c) => c.json({ message: 'Hello!' }))",
+      '//',
+      '// The server auto-restarts when you save this file.',
+      '',
+      'export default app',
+      '',
+    ].join('\n')
+    writeFileSync(this.customRoutesPath, scaffold, 'utf-8')
+    console.log(`[${LOG_PREFIX}] Scaffolded custom-routes.ts`)
+  }
+
+  /**
+   * Detect a server.tsx from a previous SDK version (missing custom-routes
+   * support, dynamic CRUD imports, or Bun.serve) and delete it so the next
+   * regenerate() recreates it with the current template.
+   */
+  private upgradeServerEntryIfNeeded(): void {
+    const entry = this.actualServerEntry
+    if (!entry) return
+
+    try {
+      const content = readFileSync(entry, 'utf-8')
+      if (!content.includes('customRoutes')) {
+        console.log(`[${LOG_PREFIX}] Detected stale server entry from previous SDK version, removing for regeneration...`)
+        unlinkSync(entry)
+      }
+    } catch {
+      // File doesn't exist or can't be read — regenerate will create it
+    }
+  }
+
+  /**
+   * Start the skill server. Always starts — the SDK generates a single smart
+   * template that works with or without models (dynamic CRUD imports).
    */
   async start(): Promise<{ started: boolean; port: number | null }> {
     if (this._phase === 'healthy' || this._phase === 'starting' || this._phase === 'generating') {
       return { started: true, port: this._port }
     }
 
-    const hasSchema = existsSync(this.schemaPath)
-    const hasServer = !!this.actualServerEntry
-
-    if (!hasSchema && !hasServer) {
-      console.log(`[${LOG_PREFIX}] No schema or server at ${this.serverDir} — skipping`)
-      this.startSchemaWatcher()
-      return { started: false, port: null }
-    }
-
+    this.ensureCustomRoutes()
+    this.upgradeServerEntryIfNeeded()
     this.intentionalStop = false
     this.crashCount = 0
 
-    if (hasSchema && !hasServer) {
-      const content = readFileSync(this.schemaPath, 'utf-8')
-      const hasModels = /^model\s+\w+/m.test(content)
-      if (hasModels) {
-        console.log(`[${LOG_PREFIX}] Schema with models found — running code generation...`)
-        const ok = await this.regenerate()
-        if (!ok) {
-          console.error(`[${LOG_PREFIX}] Code generation failed, cannot start server`)
-          this.startSchemaWatcher()
-          return { started: false, port: null }
-        }
-      } else {
-        console.log(`[${LOG_PREFIX}] Schema has no models yet — waiting for agent to write models...`)
+    if (!this.actualServerEntry) {
+      console.log(`[${LOG_PREFIX}] No server entry — running code generation...`)
+      const ok = await this.regenerate()
+      if (!ok) {
+        console.error(`[${LOG_PREFIX}] Code generation failed, cannot start server`)
         this.startSchemaWatcher()
         return { started: false, port: null }
       }
@@ -300,10 +344,37 @@ export class SkillServerManager {
     this._phase = 'restarting'
     this.crashCount = 0
     this.restarting = true
+    this.ensureCustomRoutes()
     await this.killProcess()
     await this.waitForPortRelease()
     await this.spawnServer()
     this.restarting = false
+  }
+
+  /**
+   * Ensure a minimal schema.prisma exists so `shogo generate` can produce
+   * at least the server template. The agent will later fill in models.
+   */
+  private ensureSchema(): void {
+    if (existsSync(this.schemaPath)) return
+
+    mkdirSync(this.serverDir, { recursive: true })
+    const minimalSchema = [
+      'datasource db {',
+      '  provider = "sqlite"',
+      '}',
+      '',
+      'generator client {',
+      '  provider = "prisma-client"',
+      '  output   = "./generated/prisma"',
+      '}',
+      '',
+      '// Add your models below. Each model gets CRUD routes at /api/{model-name-plural}.',
+      '// The skill server auto-regenerates when you save this file.',
+      '',
+    ].join('\n')
+    writeFileSync(this.schemaPath, minimalSchema, 'utf-8')
+    console.log(`[${LOG_PREFIX}] Created minimal schema.prisma`)
   }
 
   /**
@@ -314,15 +385,15 @@ export class SkillServerManager {
   async regenerate(): Promise<boolean> {
     this._phase = 'generating'
     this._lastGenerateError = null
-    console.log(`[${LOG_PREFIX}] Running code generation from schema...`)
+    console.log(`[${LOG_PREFIX}] Running code generation...`)
 
     try {
+      this.ensureSchema()
       this.sanitizeSchema()
       this.ensurePackageJson()
       this.ensureShogoConfig()
       this.installDeps()
       this.runShogoGenerate()
-      this.patchServerForBunRun()
 
       this._phase = 'idle'
       console.log(`[${LOG_PREFIX}] Code generation complete`)
@@ -356,31 +427,6 @@ export class SkillServerManager {
     }
   }
 
-  /**
-   * Bun 1.3 auto-detects `export default { fetch, port }` and calls
-   * Bun.serve() internally, but then its loader also calls Bun.serve()
-   * a second time → EADDRINUSE.  Replace the export default pattern with
-   * an explicit Bun.serve() call so only one listener is created.
-   */
-  private patchServerForBunRun(): void {
-    const entry = this.actualServerEntry
-    if (!entry) return
-
-    const code = readFileSync(entry, 'utf-8')
-    // Match `export default { ... port ... fetch ... }` at end of file
-    const exportDefaultRe = /export\s+default\s+\{[^}]*\bfetch\b[^}]*\bport\b[^}]*\}|export\s+default\s+\{[^}]*\bport\b[^}]*\bfetch\b[^}]*\}/s
-    if (!exportDefaultRe.test(code)) return
-
-    const patched = code.replace(
-      exportDefaultRe,
-      'Bun.serve({ port, fetch: app.fetch })',
-    )
-    if (patched !== code) {
-      writeFileSync(entry, patched, 'utf-8')
-      console.log(`[${LOG_PREFIX}] Patched server to use explicit Bun.serve() (avoids double-bind)`)
-    }
-  }
-
   private ensurePackageJson(): void {
     const pkgPath = join(this.serverDir, 'package.json')
     if (existsSync(pkgPath)) return
@@ -400,26 +446,29 @@ export class SkillServerManager {
 
   private ensureShogoConfig(): void {
     const configPath = join(this.serverDir, 'shogo.config.json')
-    if (!existsSync(configPath)) {
-      console.log(`[${LOG_PREFIX}] Creating shogo.config.json...`)
-      writeFileSync(configPath, JSON.stringify({
-        schema: './schema.prisma',
-        outputs: [
-          { dir: './generated', generate: ['routes', 'hooks', 'types'] },
-          {
-            dir: '.',
-            generate: ['server'],
-            serverConfig: {
-              routesPath: './generated',
-              dbPath: './db',
-              port: this._port,
-              skipStatic: true,
-            },
+
+    // Always rewrite the config to pick up the latest port and SDK options.
+    console.log(`[${LOG_PREFIX}] Writing shogo.config.json...`)
+    writeFileSync(configPath, JSON.stringify({
+      schema: './schema.prisma',
+      outputs: [
+        { dir: './generated', generate: ['routes', 'hooks', 'types'] },
+        {
+          dir: '.',
+          generate: ['server'],
+          serverConfig: {
+            routesPath: './generated',
+            dbPath: './db',
+            port: this._port,
+            skipStatic: true,
+            customRoutesPath: './custom-routes',
+            dynamicCrudImport: true,
+            bunServe: true,
           },
-          { dir: '.', generate: ['db'], dbProvider: 'sqlite' },
-        ],
-      }, null, 2), 'utf-8')
-    }
+        },
+        { dir: '.', generate: ['db'], dbProvider: 'sqlite' },
+      ],
+    }, null, 2), 'utf-8')
 
     const prismaConfigPath = join(this.serverDir, 'prisma.config.ts')
     if (!existsSync(prismaConfigPath)) {
@@ -618,6 +667,7 @@ export class SkillServerManager {
     this.restartTimer = setTimeout(async () => {
       this.restartTimer = null
       if (!this.intentionalStop) {
+        this.ensureCustomRoutes()
         await this.killProcess()
         await this.waitForPortRelease()
         await this.spawnServer()
@@ -690,8 +740,14 @@ export class SkillServerManager {
 
     try {
       this.schemaWatcher = watch(schemaDir, (_event, filename) => {
-        if (filename !== 'schema.prisma') return
         if (this.intentionalStop || this._phase === 'stopped') return
+
+        if (filename === 'custom-routes.ts' || filename === 'custom-routes.tsx') {
+          this.handleCustomRoutesChange()
+          return
+        }
+
+        if (filename !== 'schema.prisma') return
 
         if (this._phase === 'generating' || this._phase === 'restarting') {
           this.pendingSchemaChange = true
@@ -707,6 +763,22 @@ export class SkillServerManager {
     } catch (err: any) {
       console.error(`[${LOG_PREFIX}] Failed to watch schema dir:`, err.message)
     }
+  }
+
+  private customRoutesTimer: ReturnType<typeof setTimeout> | null = null
+
+  private handleCustomRoutesChange(): void {
+    if (this._phase === 'generating' || this._phase === 'restarting') return
+
+    if (this.customRoutesTimer) clearTimeout(this.customRoutesTimer)
+    this.customRoutesTimer = setTimeout(async () => {
+      this.customRoutesTimer = null
+      this.ensureCustomRoutes()
+      console.log(`[${LOG_PREFIX}] custom-routes changed, restarting...`)
+      if (this._phase === 'healthy') {
+        await this.restart()
+      }
+    }, RESTART_DEBOUNCE_MS)
   }
 
   private async handleSchemaChange(): Promise<void> {

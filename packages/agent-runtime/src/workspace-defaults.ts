@@ -339,6 +339,9 @@ export function buildSkillServerConfig(port = SKILL_SERVER_PORT): string {
             dbPath: './db',
             port,
             skipStatic: true,
+            customRoutesPath: './custom-routes',
+            dynamicCrudImport: true,
+            bunServe: true,
           },
         },
         {
@@ -360,11 +363,22 @@ const SKILL_SERVER_CONFIG = buildSkillServerConfig()
  * Creates schema.prisma, shogo.config.json, and necessary directories.
  * Only writes files that don't already exist.
  */
+export const CUSTOM_ROUTES_TEMPLATE = `import { Hono } from 'hono'
+const app = new Hono()
+// Add custom API routes here. They are mounted at /api/.
+export default app
+`
+
 export function seedSkillServer(workspaceDir: string): { created: boolean; serverDir: string } {
   const serverDir = join(workspaceDir, '.shogo', 'server')
   const schemaPath = join(serverDir, 'schema.prisma')
 
   if (existsSync(schemaPath)) {
+    // Even if the schema already existed, ensure custom-routes.ts is present
+    const customRoutesPath = join(serverDir, 'custom-routes.ts')
+    if (!existsSync(customRoutesPath)) {
+      writeFileSync(customRoutesPath, CUSTOM_ROUTES_TEMPLATE, 'utf-8')
+    }
     return { created: false, serverDir }
   }
 
@@ -375,6 +389,7 @@ export function seedSkillServer(workspaceDir: string): { created: boolean; serve
   writeFileSync(schemaPath, SKILL_SERVER_SCHEMA, 'utf-8')
   writeFileSync(join(serverDir, 'shogo.config.json'), SKILL_SERVER_CONFIG, 'utf-8')
   writeFileSync(join(serverDir, 'prisma.config.ts'), SKILL_SERVER_PRISMA_CONFIG, 'utf-8')
+  writeFileSync(join(serverDir, 'custom-routes.ts'), CUSTOM_ROUTES_TEMPLATE, 'utf-8')
 
   return { created: true, serverDir }
 }
