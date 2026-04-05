@@ -92,7 +92,6 @@ import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
-import { ContextTracker } from "./ContextTracker"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 
@@ -2728,16 +2727,6 @@ export const ChatPanel = observer(function ChatPanel({
             />
           )}
 
-          {/* Context usage tracker */}
-          {contextUsage && (
-            <View className="items-center pb-1 max-w-3xl w-full self-center">
-              <ContextTracker
-                inputTokens={contextUsage.inputTokens}
-                contextWindowTokens={contextUsage.contextWindowTokens}
-              />
-            </View>
-          )}
-
           {/* Input */}
           <View className="bg-transparent max-w-3xl w-full self-center">
             <ChatInput
@@ -2765,6 +2754,7 @@ export const ChatPanel = observer(function ChatPanel({
               onReorderQueuedMessage={handleReorderQueuedMessage}
               interactionMode={interactionMode}
               onInteractionModeChange={handleInteractionModeChange}
+              contextUsage={contextUsage}
             />
           </View>
         </KeyboardAvoidingView>
