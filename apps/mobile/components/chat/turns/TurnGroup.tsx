@@ -104,9 +104,9 @@ export function TurnGroup({
 
   return (
     <Motion.View
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "timing", duration: 300, easing: "easeOut" }}
+      transition={{ type: "spring", damping: 20, stiffness: 150 }}
       className={cn(
         "gap-2",
         turn.assistantMessage ? colors.border : "border-primary/30",
