@@ -10,6 +10,7 @@
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
+import { QuickActionChips } from "./QuickActionChips"
 import {
   Compass,
   Search,
@@ -93,12 +94,14 @@ const PHASE_TITLES: Record<string, string> = {
 export interface PhaseEmptyStateProps {
   phase: string | null
   onSuggestionClick?: (suggestion: string) => void
+  quickActions?: { label: string; prompt: string }[]
   className?: string
 }
 
 export function PhaseEmptyState({
   phase,
   onSuggestionClick,
+  quickActions,
   className,
 }: PhaseEmptyStateProps) {
   const phaseKey = phase || "discovery"
@@ -135,6 +138,15 @@ export function PhaseEmptyState({
       <Text className="text-xs text-gray-400 mb-4">
         Try one of these suggestions to get started
       </Text>
+
+      {/* Quick action chips */}
+      {quickActions && quickActions.length > 0 && (
+        <QuickActionChips
+          actions={quickActions}
+          onActionClick={onSuggestionClick}
+          className="mb-4"
+        />
+      )}
 
       {/* Suggestion chips */}
       <View className="flex-row flex-wrap justify-center gap-2 max-w-xs">

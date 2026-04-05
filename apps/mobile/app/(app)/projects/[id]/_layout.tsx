@@ -222,6 +222,7 @@ export default observer(function ProjectLayout() {
     heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
     imageGenEnabled: projectSettings.imageGenEnabled !== false,
     memoryEnabled: projectSettings.memoryEnabled !== false,
+    quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
   }), [projectSettings])
 
   const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {

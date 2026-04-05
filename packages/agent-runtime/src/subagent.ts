@@ -33,6 +33,7 @@ const CORE_GATEWAY_TOOLS = new Set([
   'heartbeat_configure', 'heartbeat_status',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
+  'quick_action',
 ])
 
 // ---------------------------------------------------------------------------
