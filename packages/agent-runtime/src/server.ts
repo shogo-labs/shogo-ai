@@ -1692,6 +1692,58 @@ app.post('/agent/skill-registry/install', async (c) => {
   return c.json({ ok: true, installed: skill.name, source })
 })
 
+// ---------------------------------------------------------------------------
+// Quick Actions
+// ---------------------------------------------------------------------------
+
+app.get('/agent/quick-actions', (c) => {
+  const filePath = join(WORKSPACE_DIR, '.shogo', 'quick-actions.json')
+  if (!existsSync(filePath)) {
+    return c.json({ actions: [] })
+  }
+  try {
+    const raw = JSON.parse(readFileSync(filePath, 'utf-8'))
+    const actions = Array.isArray(raw?.actions)
+      ? raw.actions.filter((a: any) => typeof a?.label === 'string' && typeof a?.prompt === 'string')
+      : []
+    return c.json({ actions })
+  } catch {
+    return c.json({ actions: [] })
+  }
+})
+
+app.delete('/agent/quick-actions/:label', (c) => {
+  const label = decodeURIComponent(c.req.param('label'))
+  if (!label) {
+    return c.json({ error: 'Label is required' }, 400)
+  }
+
+  const filePath = join(WORKSPACE_DIR, '.shogo', 'quick-actions.json')
+  if (!existsSync(filePath)) {
+    return c.json({ error: 'No quick actions file found' }, 404)
+  }
+
+  try {
+    const raw = JSON.parse(readFileSync(filePath, 'utf-8'))
+    if (!Array.isArray(raw?.actions)) {
+      return c.json({ error: 'Invalid quick actions file' }, 500)
+    }
+    const before = raw.actions.length
+    raw.actions = raw.actions.filter((a: any) => a?.label !== label)
+    if (raw.actions.length === before) {
+      return c.json({ error: `Quick action "${label}" not found` }, 404)
+    }
+    writeFileSync(filePath, JSON.stringify(raw, null, 2) + '\n', 'utf-8')
+    return c.json({ ok: true, removed: label })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
 app.get('/agent/templates', (c) => {
   return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
 })

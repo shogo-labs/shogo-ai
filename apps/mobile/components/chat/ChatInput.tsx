@@ -160,6 +160,8 @@ export interface ChatInputProps {
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
+  quickActions?: { label: string; prompt: string }[]
+  onQuickActionClick?: (prompt: string) => void
 }
 
 export function ChatInput({
@@ -178,6 +180,8 @@ export function ChatInput({
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
   contextUsage,
+  quickActions = [],
+  onQuickActionClick,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
@@ -242,6 +246,8 @@ export function ChatInput({
     () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
     [interactionMode]
   )
+
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false)
 
   // Skill picker state
   const [showSkillPicker, setShowSkillPicker] = useState(false)
@@ -813,6 +819,81 @@ export function ChatInput({
               </PopoverContent>
             </Popover>
 
+
+            {/* Quick Actions selector */}
+            {quickActions.length > 0 && (
+              <Popover
+                placement="top"
+                size="xs"
+                isOpen={quickActionsOpen}
+                onOpen={() => setQuickActionsOpen(true)}
+                onClose={() => setQuickActionsOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    disabled={disabled || isStreaming}
+                    className={cn(
+                      "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                      quickActionsOpen
+                        ? "border border-amber-500/45 bg-amber-500/12"
+                        : "bg-muted/50"
+                    )}
+                  >
+                    <Zap
+                      className={cn(
+                        "h-2.5 w-2.5",
+                        quickActionsOpen ? "text-amber-400" : "text-muted-foreground"
+                      )}
+                      size={10}
+                    />
+                    <Text
+                      className={cn(
+                        "text-xs",
+                        quickActionsOpen ? "text-amber-400" : "text-muted-foreground"
+                      )}
+                    >
+                      Actions
+                    </Text>
+                    <ChevronDown
+                      className={cn(
+                        "h-2 w-2",
+                        quickActionsOpen ? "text-amber-400/80" : "text-muted-foreground/60"
+                      )}
+                      size={8}
+                    />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-[280px] p-0">
+                  <View className="py-1">
+                    {quickActions.map((action) => (
+                      <Pressable
+                        key={action.label}
+                        onPress={() => {
+                          onQuickActionClick?.(action.prompt)
+                          setQuickActionsOpen(false)
+                        }}
+                        className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
+                      >
+                        <View className="w-8 items-center">
+                          <Zap className="h-3.5 w-3.5 text-amber-400" size={14} />
+                        </View>
+                        <View className="flex-1">
+                          <Text className="font-medium text-sm text-foreground">
+                            {action.label}
+                          </Text>
+                          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                            {action.prompt}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    ))}
+                  </View>
+                </PopoverContent>
+              </Popover>
+            )}
+
             {/* Model quality selector (Basic / Advanced) */}
             <Popover
               placement="top"
@@ -909,6 +990,7 @@ export function ChatInput({
                 </View>
               </PopoverContent>
             </Popover>
+
           </View>
 
           {/* Right side buttons */}

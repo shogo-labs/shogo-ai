@@ -58,6 +58,7 @@ import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { agentFetch } from "../../lib/agent-fetch"
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
@@ -591,6 +592,29 @@ export const ChatPanel = observer(function ChatPanel({
       }
     })
   }, [controlledIsCollapsed])
+
+  // Quick actions state
+  const [quickActions, setQuickActions] = useState<{ label: string; prompt: string }[]>([])
+
+  const fetchQuickActions = useCallback(async () => {
+    const url = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    if (!url) return
+    try {
+      const res = await agentFetch(`${url}/agent/quick-actions`)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data?.actions)) {
+          setQuickActions(data.actions)
+        }
+      }
+    } catch {
+      // Silently ignore — quick actions are non-critical
+    }
+  }, [localAgentUrl, projectId])
+
+  useEffect(() => {
+    fetchQuickActions()
+  }, [fetchQuickActions])
 
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
@@ -1452,6 +1476,8 @@ export const ChatPanel = observer(function ChatPanel({
           }
         }
       }
+
+      fetchQuickActions()
     },
   })
 
@@ -2521,7 +2547,7 @@ export const ChatPanel = observer(function ChatPanel({
                 <Text className="text-xs text-muted-foreground">Loading conversation...</Text>
               </View>
             ) : !isStreaming ? (
-              <PhaseEmptyState phase={phase} onSuggestionClick={handleSendMessage} />
+              <PhaseEmptyState phase={phase} onSuggestionClick={handleSendMessage} quickActions={quickActions} />
             ) : (
               <View className="gap-3">
                 {activeSubagents.size > 0 && (
@@ -2755,6 +2781,8 @@ export const ChatPanel = observer(function ChatPanel({
               interactionMode={interactionMode}
               onInteractionModeChange={handleInteractionModeChange}
               contextUsage={contextUsage}
+              quickActions={quickActions}
+              onQuickActionClick={(prompt) => handleSendMessage(prompt)}
             />
           </View>
         </KeyboardAvoidingView>

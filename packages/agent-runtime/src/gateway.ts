@@ -26,6 +26,7 @@ import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, type Skill } from './skills'
+import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
@@ -69,6 +70,19 @@ import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
+
+const QUICK_ACTION_GUIDE = `## Quick Actions
+
+You can register quick actions that appear as one-click prompt shortcuts in the user's chat UI.
+They are stored in \`.shogo/quick-actions.json\`.
+
+When you notice a user sending a prompt that looks like a repeatable workflow (committing code, running tests, deploying, generating reports, etc.), proactively offer to save it as a quick action using the \`quick_action\` tool.
+
+Example: if a user says "review all my pending changes and commit them", register:
+- label: "Commit" (1-2 words, max 20 chars)
+- prompt: "Please review all pending changes and commit them" (faithful to what the user said)
+
+Constraints: max 10 quick actions, labels must be unique. To view or edit existing actions, read/edit \`.shogo/quick-actions.json\` directly.`
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -178,6 +192,8 @@ export interface GatewayConfig {
   imageGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
   memoryEnabled?: boolean
+  /** Whether quick action registration is enabled (default: true) */
+  quickActionsEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
   /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
@@ -245,6 +261,7 @@ export class AgentGateway {
   private currentUserId: string | undefined
   private channels: Map<string, ChannelAdapter> = new Map()
   private skills: Skill[] = []
+  private quickActions: QuickAction[] = []
   private configSkills: Array<{ name: string; trigger?: string; description?: string }> = []
   private running = false
   private lastHeartbeatTick: Date | null = null
@@ -492,9 +509,10 @@ export class AgentGateway {
 
     migrateFromLegacySkills(this.workspaceDir)
     this.skills = loadAllSkills(this.workspaceDir)
+    this.quickActions = loadQuickActions(this.workspaceDir)
     this.configSkills = this.loadConfigSkills()
     setLoadedSkills(this.skills)
-    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills`)
+    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills, ${this.quickActions.length} quick actions`)
 
     // Load hooks
     try {
@@ -1243,8 +1261,9 @@ export class AgentGateway {
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
   ): Promise<string> {
-    // Reload skills from disk so any files created/edited/deleted by file tools are picked up
+    // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
+    this.quickActions = loadQuickActions(this.workspaceDir)
     setLoadedSkills(this.skills)
 
     // Start the skill server if it was just created (no-op if already running)
@@ -1405,6 +1424,9 @@ export class AgentGateway {
     }
     if (this.config.memoryEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
+    }
+    if (this.config.quickActionsEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'quick_action')
     }
     // Code analysis tools are only available via the code-reviewer subagent
     const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context'])
@@ -1982,6 +2004,14 @@ export class AgentGateway {
       }
     }
 
+    if (this.config.quickActionsEnabled !== false) {
+      parts.push(QUICK_ACTION_GUIDE)
+      if (this.quickActions.length > 0) {
+        const qaSection = buildQuickActionsPromptSection(this.quickActions)
+        if (qaSection) parts.push(qaSection)
+      }
+    }
+
     parts.push(SUBAGENT_GUIDE)
 
     if (sessionId) {
@@ -2060,6 +2090,9 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
       stableParts.push(BROWSER_TOOL_GUIDE)
     }
     stableParts.push(SELF_EVOLUTION_GUIDE)
+    if (this.config.quickActionsEnabled !== false) {
+      stableParts.push(QUICK_ACTION_GUIDE)
+    }
     stableParts.push(skillMatchingGuide)
     stableParts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
@@ -2186,6 +2219,14 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
       const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
         dynamicParts.push(skillsSection)
+      }
+    }
+
+    // 11b. Quick actions (can change when agent registers new ones)
+    if (this.config.quickActionsEnabled !== false && this.quickActions.length > 0) {
+      const qaSection = buildQuickActionsPromptSection(this.quickActions)
+      if (qaSection) {
+        dynamicParts.push(qaSection)
       }
     }
 
@@ -2772,6 +2813,7 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
     const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
     this.skills = loadAllSkills(this.workspaceDir)
+    this.quickActions = loadQuickActions(this.workspaceDir)
     setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 

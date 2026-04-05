@@ -35,6 +35,7 @@ import { IndexEngine, createDefaultConfig } from './index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
+import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { deriveApiUrl, derivePublicApiUrl } from './internal-api'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
@@ -335,6 +336,8 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
 
       const base: Record<string, unknown> = { ok: true, path: filePath, bytes: content.length }
       appendImpactHint(ctx, filePath, base)
+      const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
+      if (quickActionsResult) return textResult(quickActionsResult)
       const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
       return textResult(schemaResult ?? base)
     },
@@ -473,6 +476,28 @@ async function maybeCustomRoutesSync(
         hint: 'Custom routes file saved but server restart failed.',
       },
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quick Actions file linter (post-write validation)
+// ---------------------------------------------------------------------------
+
+function maybeValidateQuickActions(
+  filePath: string,
+  resolved: string,
+  baseResult: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const isQuickActions = filePath === '.shogo/quick-actions.json' ||
+    resolved.endsWith('.shogo/quick-actions.json')
+  if (!isQuickActions) return null
+
+  const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
+  const { valid, errors } = validateQuickActions(content)
+
+  return {
+    ...baseResult,
+    quickActionsLint: valid ? { valid: true } : { valid: false, errors },
   }
 }
 
@@ -771,6 +796,8 @@ async function commitEdit(
   const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
   if (note) base.note = note
   appendImpactHint(ctx, filePath, base)
+  const quickActionsResult = maybeValidateQuickActions(filePath, resolved, base)
+  if (quickActionsResult) return textResult(quickActionsResult)
   const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
   return textResult(schemaResult ?? base)
 }
@@ -3478,6 +3505,36 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Quick Action Tool
+// ---------------------------------------------------------------------------
+
+function createQuickActionTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'quick_action',
+    description:
+      'Register a quick action — a one-click prompt shortcut shown in the user\'s chat UI. ' +
+      'Use this when you notice a user sending a repeatable workflow prompt (commits, tests, deploys, etc.).',
+    label: 'Register Quick Action',
+    parameters: Type.Object({
+      label: Type.String({ description: 'Short display name (1-2 words, max 20 chars). Must be unique.' }),
+      prompt: Type.String({ description: 'The full message to send when clicked. Faithful to what the user would type.' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { label, prompt } = params as { label: string; prompt: string }
+      const result = addQuickAction(ctx.workspaceDir, { label: label.trim(), prompt: prompt.trim() })
+      if (!result.ok) {
+        return textResult({ ok: false, errors: result.errors })
+      }
+      return textResult({
+        ok: true,
+        registered: { label: label.trim(), prompt: prompt.trim() },
+        totalActions: result.actions.length,
+      })
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -3521,6 +3578,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
     createCreatePlanTool(ctx),
+    createQuickActionTool(ctx),
   ]
 
   const allToolsGetter = () => tools
@@ -3849,6 +3907,7 @@ export const ALL_TOOL_NAMES = [
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
   'transcribe_audio',
+  'quick_action',
 ] as const
 
 /**

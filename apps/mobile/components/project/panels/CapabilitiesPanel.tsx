@@ -21,6 +21,7 @@ import {
   Eye,
   EyeOff,
   Save,
+  Zap,
 } from 'lucide-react-native'
 import { TextInput } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -45,6 +46,7 @@ export interface CapabilitySettings {
   heartbeatEnabled: boolean
   imageGenEnabled: boolean
   memoryEnabled: boolean
+  quickActionsEnabled: boolean
 }
 
 interface CapabilityDef {
@@ -115,6 +117,14 @@ const CAPABILITIES: CapabilityDef[] = [
     icon: Brain,
     toolNames: ['memory_read', 'memory_write', 'memory_search'],
     warning: 'Disabling this means the agent cannot recall past conversations.',
+  },
+  {
+    key: 'quickActionsEnabled',
+    label: 'Quick Actions',
+    description: 'Register and suggest repeatable prompt shortcuts',
+    disabledDescription: 'No prompt shortcuts',
+    icon: Zap,
+    toolNames: ['quick_action'],
   },
 ]
 
