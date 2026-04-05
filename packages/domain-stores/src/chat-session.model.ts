@@ -27,6 +27,8 @@ export const ChatSessionModel = types
     contextId: types.optional(types.string, ""),
     phase: types.optional(types.string, ""),
     claudeCodeSessionId: types.optional(types.string, ""),
+    contextUsageTokens: types.optional(types.number, 0),
+    contextWindowTokens: types.optional(types.number, 0),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.optional(types.number, 0),
     lastActiveAt: types.optional(types.number, 0),

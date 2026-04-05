@@ -436,6 +436,8 @@ model ChatSession {
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int      @default(0)
+  contextUsageTokens  Int      @default(0)
+  contextWindowTokens Int      @default(0)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @default(now()) @updatedAt
   lastActiveAt        DateTime @default(now())

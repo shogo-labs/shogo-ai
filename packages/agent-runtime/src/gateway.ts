@@ -277,6 +277,8 @@ export class AgentGateway {
     cacheWriteTokens: number
     iterations: number
     toolCallCount: number
+    contextWindowTokens: number
+    estimatedContextTokens: number
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -1598,6 +1600,16 @@ export class AgentGateway {
 
     try {
       const hookEmitter = this.hookEmitter
+      let runningContextEstimate = this.sessionManager.estimateTokens(session)
+      const contextWindowTokens = this.sessionManager.contextWindowTokens
+
+      if (uiWriter) {
+        uiWriter.write({
+          type: 'data-context-usage',
+          data: { inputTokens: runningContextEstimate, contextWindowTokens },
+        } as any)
+      }
+
       const result = await runAgentLoop({
         provider,
         model: modelId,
@@ -1646,6 +1658,7 @@ export class AgentGateway {
           }
         },
         onTextDelta: (delta) => {
+          runningContextEstimate += Math.ceil(delta.length / 4)
           if (chunker) chunker.push(delta)
           if (uiWriter) {
             if (!uiTextId) {
@@ -1739,6 +1752,16 @@ export class AgentGateway {
               }
             }
           }
+          const argsStr = typeof args === 'string' ? args : JSON.stringify(args ?? '')
+          const resultStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+          runningContextEstimate += Math.ceil((argsStr.length + resultStr.length) / 4)
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-context-usage',
+              data: { inputTokens: runningContextEstimate, contextWindowTokens },
+            } as any)
+          }
+
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {
               toolName, args, result, isError, toolCallId, workspaceDir: this.workspaceDir,
@@ -1779,6 +1802,7 @@ export class AgentGateway {
       this.sessionManager.touch(sessionId)
 
       // Store usage for callers (server.ts includes it in the `finish` event)
+      const estimatedContextTokens = this.sessionManager.estimateTokens(session)
       this._lastTurnUsage = {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
@@ -1786,6 +1810,8 @@ export class AgentGateway {
         cacheWriteTokens: result.cacheWriteTokens,
         iterations: result.iterations,
         toolCallCount: result.toolCalls.length,
+        contextWindowTokens: this.sessionManager.contextWindowTokens,
+        estimatedContextTokens,
       }
 
       // UI notifications below may throw if the client disconnected (stop).

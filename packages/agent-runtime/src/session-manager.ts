@@ -147,6 +147,11 @@ export class SessionManager {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
+  /** Total context window size in tokens (from config, default 200k) */
+  get contextWindowTokens(): number {
+    return this.config.contextWindowTokens ?? 200_000
+  }
+
   /** Token threshold above which Layer 4 autocompact triggers */
   get autocompactThreshold(): number {
     const contextWindow = this.config.contextWindowTokens ?? 200_000

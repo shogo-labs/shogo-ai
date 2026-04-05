@@ -16,6 +16,8 @@ export interface ChatSessionType {
   contextId?: string
   phase?: string
   claudeCodeSessionId?: string
+  contextUsageTokens?: number
+  contextWindowTokens?: number
   createdAt: Date
   updatedAt: Date
   lastActiveAt: Date
@@ -28,6 +30,8 @@ export interface ChatSessionCreateInput {
   contextId?: string
   phase?: string
   claudeCodeSessionId?: string
+  contextUsageTokens?: number
+  contextWindowTokens?: number
   lastActiveAt?: Date
 }
 
@@ -38,5 +42,7 @@ export interface ChatSessionUpdateInput {
   contextId?: string
   phase?: string
   claudeCodeSessionId?: string
+  contextUsageTokens?: number
+  contextWindowTokens?: number
   lastActiveAt?: Date
 }

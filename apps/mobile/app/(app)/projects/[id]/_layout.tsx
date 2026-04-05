@@ -525,6 +525,7 @@ export default observer(function ProjectLayout() {
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
+  const [planRefreshNonce, setPlanRefreshNonce] = useState(0)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -840,6 +841,7 @@ export default observer(function ProjectLayout() {
       onCanvasPreview={handleCanvasPreview}
       onMessagesChange={setChatMessages}
       buildPlanRequest={buildPlanRequest}
+      onPlanCreated={() => setPlanRefreshNonce((n) => n + 1)}
       className="flex-1"
     />
   )
@@ -1056,7 +1058,7 @@ export default observer(function ProjectLayout() {
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} refreshTrigger={planRefreshNonce} />
             </View>
           </View>
 
