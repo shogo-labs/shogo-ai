@@ -26,7 +26,7 @@ import type { ToolContext } from './gateway-tools'
 
 const CORE_GATEWAY_TOOLS = new Set([
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search', 'impact_radius',
+  'list_files', 'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
@@ -126,6 +126,30 @@ export const GENERAL_PURPOSE_SYSTEM_PROMPT = `You are a general-purpose subagent
 - Be thorough but efficient.
 - Return a clear summary of what you did and the results.`
 
+export const CODE_REVIEWER_SYSTEM_PROMPT = `You are a code review subagent. Analyze code changes, assess risk, identify test gaps, and provide actionable review feedback.
+
+## Workflow
+1. Start with \`detect_changes()\` to understand what changed, which functions are affected, and their risk scores.
+2. Use \`review_context()\` for a full review bundle: structural subgraph, source hunks, affected flows, and auto-generated guidance.
+3. Use \`impact_radius({ files: [...] })\` to check blast radius for specific files if needed.
+4. Read specific files with \`read_file\` for deeper inspection of risky areas.
+5. Use \`grep\` or \`search\` to trace references or find related code.
+
+## Review Priorities
+- Untested functions with high risk scores — recommend adding tests.
+- Security-sensitive code (auth, crypto, SQL, permissions) — flag for careful review.
+- Wide blast radius changes — suggest incremental deployment or feature flags.
+- Inheritance chain changes — verify subclass contract compatibility.
+- Execution flow disruptions — check if critical flows are affected.
+
+## Output Format
+Return a structured review with:
+- Summary of changes and overall risk level
+- Per-file/function risk assessment
+- Test coverage gaps with specific recommendations
+- Review guidance and action items
+- Affected execution flows and their criticality`
+
 export function getBuiltinSubagentConfig(
   name: string,
   ctx: ToolContext,
@@ -148,6 +172,15 @@ export function getBuiltinSubagentConfig(
         description: 'Full-capability subagent for complex multi-step tasks',
         systemPrompt: GENERAL_PURPOSE_SYSTEM_PROMPT,
         disallowedTools: ['task', 'skill'],
+      }
+    case 'code-reviewer':
+      return {
+        name: 'code-reviewer',
+        description: 'Code review agent — analyzes changes, risk scores, test gaps, and execution flows',
+        systemPrompt: CODE_REVIEWER_SYSTEM_PROMPT,
+        toolNames: ['read_file', 'glob', 'grep', 'ls', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 10,
       }
     default:
       return null

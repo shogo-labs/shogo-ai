@@ -226,6 +226,14 @@ export const projectHooks: ProjectHooks = {
     
     if (!input.createdBy && userId) input.createdBy = userId
 
+    if (!input.settings) {
+      input.settings = JSON.stringify({
+        activeMode: 'none',
+        canvasMode: 'code',
+        canvasEnabled: false,
+      })
+    }
+
     return { ok: true, data: input }
   },
 

@@ -82,7 +82,7 @@ export class RuntimeManager implements IRuntimeManager {
   private cleanupStaleProcesses(): void {
     const rangesToClean = [
       { start: PORT_RANGE_START, end: PORT_RANGE_END },
-      { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET },
+      { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET + 1 },
     ]
 
     for (const range of rangesToClean) {
@@ -248,12 +248,14 @@ export class RuntimeManager implements IRuntimeManager {
 
       if (this.usedPorts.has(port)) continue
 
+      const skillServerPort = agentPort + 1
       const viteInUse = await this.isPortListening(port)
       const agentInUse = await this.isPortListening(agentPort)
+      const skillInUse = await this.isPortListening(skillServerPort)
 
-      if (!viteInUse && !agentInUse) {
+      if (!viteInUse && !agentInUse && !skillInUse) {
         this.usedPorts.add(port)
-        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}`)
+        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}/${skillServerPort}`)
         return port
       }
     }
@@ -806,6 +808,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           PORT: String(agentPort),
+          SKILL_SERVER_PORT: String(agentPort + 1),
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
           NODE_ENV: 'development',
         }

@@ -125,11 +125,11 @@ export class AgentClient {
    * Returns an EventSource — listen to `message` events for JSON payloads.
    */
   subscribeToCanvas(): EventSource {
-    return new EventSource(this.url('/agent/dynamic-app/stream'))
+    return new EventSource(this.url('/agent/canvas/stream'))
   }
 
   async getCanvasState(): Promise<CanvasState> {
-    return this.fetchJson<CanvasState>('/agent/dynamic-app/state')
+    return this.fetchJson<CanvasState>('/agent/canvas/state')
   }
 
   async dispatchAction(
@@ -137,7 +137,7 @@ export class AgentClient {
     actionName: string,
     context?: ActionContext,
   ): Promise<void> {
-    await this.fetchJson('/agent/dynamic-app/action', {
+    await this.fetchJson('/agent/canvas/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ surfaceId, name: actionName, context }),

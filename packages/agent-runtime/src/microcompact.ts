@@ -34,6 +34,7 @@ const FILE_CONTENT_TOOLS = new Set(['read_file'])
 const COMPACTABLE_TOOLS = new Set([
   'read_file', 'grep', 'glob', 'ls', 'list_files',
   'search', 'exec', 'web_search',
+  'impact_radius', 'detect_changes', 'review_context',
 ])
 
 /**

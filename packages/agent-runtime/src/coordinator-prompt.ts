@@ -35,6 +35,7 @@ You are operating in **coordinator mode**. Your role is to orchestrate workers, 
 ### Agent Types for Delegation
 - Use \`explore\` for codebase search and analysis (fast, cheap).
 - Use \`general-purpose\` for implementation tasks.
+- Use \`code-reviewer\` for code review: risk scoring, test gap analysis, and execution flow tracing.
 - Use fork mode (omit \`type\`) when the agent needs your full conversation context.
 - Create custom agent types with \`agent_create\` for specialized, repeatable tasks.
 

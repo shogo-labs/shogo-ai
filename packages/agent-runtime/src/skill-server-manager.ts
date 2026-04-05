@@ -586,6 +586,7 @@ export class SkillServerManager {
     proc.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
       if (line) {
+        console.error(`[${LOG_PREFIX}] ${line}`)
         try { appendFileSync(this.logPath, `[stderr] ${line}\n`) } catch {}
       }
     })

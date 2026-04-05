@@ -264,6 +264,7 @@ export class PreviewManager {
         ...process.env,
         NODE_ENV: 'development',
         VITE_RUNTIME_PORT: String(this.runtimePort),
+        VITE_SKILL_SERVER_PORT: process.env.SKILL_SERVER_PORT || '4100',
       },
     })
 
