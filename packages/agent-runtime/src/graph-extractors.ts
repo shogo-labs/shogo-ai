@@ -13,6 +13,7 @@
  */
 
 import { basename, extname } from 'path'
+import { CodeExtractor } from './code-extractor'
 import type { Extractor, ExtractedData } from './workspace-graph'
 
 // ---------------------------------------------------------------------------
@@ -236,5 +237,5 @@ function resolveRelativePath(fromFile: string, href: string): string | null {
  * Returns all built-in extractors.
  */
 export function createDefaultExtractors(): Extractor[] {
-  return [new MarkdownExtractor(), new ReferenceExtractor()]
+  return [new CodeExtractor(), new MarkdownExtractor(), new ReferenceExtractor()]
 }

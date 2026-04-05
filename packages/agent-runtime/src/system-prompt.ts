@@ -182,8 +182,11 @@ Use these **exact names** in the \`tools\` field:
 | \`send_message\` | Send a message through a channel |
 | \`channel_connect\` | Connect a messaging channel |
 | \`cron\` | Manage scheduled jobs |
+| \`impact_radius\` | Find blast radius of file changes |
 
-**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep + search, \`planning\` → todo_write, \`memory\` → memory_read + memory_search, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
+**Subagent types**: \`code-reviewer\` — spawns a review agent with \`detect_changes\`, \`review_context\`, and \`impact_radius\` for detailed code analysis, risk scoring, test gap detection, and execution flow tracing.
+
+**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep + search + impact_radius, \`code_analysis\` → impact_radius, \`planning\` → todo_write, \`memory\` → memory_read + memory_search, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
 
 ### Skills with Scripts
 

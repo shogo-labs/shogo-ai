@@ -286,6 +286,13 @@ search({ query: "revenue data Q1", source: "files" })
 
 **Strategy:** Start broad, then narrow. If results point to a specific directory, use \`path_filter\` to focus. Use \`source: "code"\` or \`source: "files"\` to narrow scope. Follow up with \`read_file\` to see full context of promising results.
 
+### Code Analysis & Review
+
+- \`impact_radius({ files: ["src/auth.ts"] })\` — find blast radius before making changes
+
+For detailed code review (risk scoring, test gap analysis, execution flow tracing), spawn the \`code-reviewer\` subagent:
+\`agent_spawn({ type: "code-reviewer", task: "Review the recent changes and check for risks and test gaps" })\`
+
 ### Debugging and Bug Fixing
 
 - Follow the traceback — error messages, class names, and function names mentioned in the error are your search terms. Use \`grep\` to locate them in the codebase.

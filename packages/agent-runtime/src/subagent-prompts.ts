@@ -86,6 +86,7 @@ You can create, manage, and delegate tasks to specialist sub-agents at runtime.
 These are always available via \`agent_spawn\`:
 - **explore** — Fast, read-only codebase search using a cheaper model. Use for ANY codebase exploration or search. Significantly cheaper than doing it yourself.
 - **general-purpose** — Full-capability agent with all tools, for complex multi-step tasks.
+- **code-reviewer** — Code review agent with \`detect_changes\`, \`review_context\`, and \`impact_radius\`. Use when reviewing code changes, assessing risk, or checking test coverage.
 Custom agents defined in \`.shogo/agents/\` are also available by name.
 
 ### Creating New Agents

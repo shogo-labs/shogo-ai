@@ -643,16 +643,35 @@ export class AgentGateway {
       try {
         const { WorkspaceGraph } = require('./workspace-graph')
         const { createDefaultExtractors } = require('./graph-extractors')
+        const { CodeExtractor } = require('./code-extractor')
         const graph = new WorkspaceGraph(engine)
-        for (const ext of createDefaultExtractors()) graph.registerExtractor(ext)
+        const extractors = createDefaultExtractors()
+        for (const ext of extractors) graph.registerExtractor(ext)
         engine.setGraph(graph)
         this.workspaceGraph = graph
-        // Build graph in background to avoid blocking startup
-        setTimeout(() => {
-          try { graph.buildGraph() } catch (e: any) {
-            console.warn(`${this.logPrefix} Graph build failed (non-fatal):`, e.message)
-          }
-        }, 5000)
+
+        // Pre-load Tree-sitter grammars then build graph + detect flows
+        const codeExt = extractors.find((e: any) => e instanceof CodeExtractor)
+        const preloadPromise = codeExt?.preload?.() ?? Promise.resolve()
+        preloadPromise.then(() => {
+          setTimeout(() => {
+            try {
+              graph.buildGraph()
+              // Detect execution flows after graph is built
+              try {
+                const { traceFlows, storeFlows } = require('./flow-detector')
+                const flows = traceFlows(graph)
+                storeFlows(graph, flows)
+              } catch (e: any) {
+                console.warn(`${this.logPrefix} Flow detection failed (non-fatal):`, e.message)
+              }
+            } catch (e: any) {
+              console.warn(`${this.logPrefix} Graph build failed (non-fatal):`, e.message)
+            }
+          }, 5000)
+        }).catch((e: any) => {
+          console.warn(`${this.logPrefix} Tree-sitter preload failed (non-fatal):`, e.message)
+        })
       } catch (err: any) {
         console.warn(`${this.logPrefix} Workspace graph init failed (non-fatal):`, err.message)
       }
@@ -1369,12 +1388,16 @@ export class AgentGateway {
     if (this.config.memoryEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
     }
+    // Code analysis tools are only available via the code-reviewer subagent
+    const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context'])
+    assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
+
     // Interaction mode tool restrictions
     if (interactionMode === 'ask') {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search',
+        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search', 'impact_radius',
         'web', 'browser',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
@@ -1676,6 +1699,11 @@ export class AgentGateway {
           )
         },
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+          if (isError) {
+            console.error(`${this.logPrefix} Tool error: ${toolName}`, JSON.stringify(result).substring(0, 500))
+          } else {
+            console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 300))
+          }
           // Wait for onBeforeToolCall's flush gate so the client receives
           // tool-input-start in a separate HTTP chunk before we send the output.
           const gate = toolFlushGates.get(toolCallId)

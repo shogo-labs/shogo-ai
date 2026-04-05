@@ -84,7 +84,7 @@ export function EditModeProvider({ agentUrl, onEditAction, children }: EditModeP
     }
     if (!agentUrl) return null
     try {
-      const res = await agentFetch(`${agentUrl}/agent/dynamic-app/edit`, {
+      const res = await agentFetch(`${agentUrl}/agent/canvas/edit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(action),

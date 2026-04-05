@@ -211,10 +211,11 @@ describe('ReferenceExtractor', () => {
 // ============================================================================
 
 describe('createDefaultExtractors', () => {
-  test('returns both extractors', () => {
+  test('returns all extractors', () => {
     const extractors = createDefaultExtractors()
-    expect(extractors.length).toBe(2)
-    expect(extractors[0].name).toBe('markdown')
-    expect(extractors[1].name).toBe('reference')
+    expect(extractors.length).toBe(3)
+    expect(extractors[0].name).toBe('code')
+    expect(extractors[1].name).toBe('markdown')
+    expect(extractors[2].name).toBe('reference')
   })
 })

@@ -61,7 +61,7 @@ export function useApiDataSource(
 
   const buildUrl = useCallback((api: string, params?: Record<string, unknown>): string => {
     if (!agentUrl) return ''
-    const base = `${agentUrl}/agent/dynamic-app/api/${surfaceId}${api}`
+    const base = `${agentUrl}/agent/canvas/api/${surfaceId}${api}`
     if (!params || Object.keys(params).length === 0) return base
     const searchParams = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {
@@ -161,7 +161,7 @@ export function useApiDataSource(
   ): Promise<{ ok: boolean; item?: unknown; error?: string }> => {
     if (!agentUrl) return { ok: false, error: 'No agent URL' }
 
-    const url = `${agentUrl}/agent/dynamic-app/api/${surfaceId}${endpoint}`
+    const url = `${agentUrl}/agent/canvas/api/${surfaceId}${endpoint}`
     try {
       const extraHeaders = options?.headers?.()
       const res = await fetch(url, {

@@ -161,7 +161,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
     setConnecting(true)
     receivedFirstMessage.current = false
 
-    const url = `${agentUrl}/agent/dynamic-app/stream`
+    const url = `${agentUrl}/agent/canvas/stream`
     const extraHeaders = options?.headers?.()
     const needsCredentials = options?.withCredentials
     const esInit: EventSourceInit & { headers?: Record<string, string> } = {}
@@ -251,7 +251,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
 
       try {
         const extraHeaders = options?.headers?.()
-        await fetch(`${agentUrl}/agent/dynamic-app/action`, {
+        await fetch(`${agentUrl}/agent/canvas/action`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...extraHeaders },
           body: JSON.stringify({
@@ -282,7 +282,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
       setActiveSurfaceId(surfaceId)
 
       if (options?.persist && agentUrl) {
-        fetch(`${agentUrl}/agent/dynamic-app/data-change`, {
+        fetch(`${agentUrl}/agent/canvas/data-change`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ surfaceId, path, value }),

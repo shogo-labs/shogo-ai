@@ -34,6 +34,8 @@ export interface GraphNode {
   lineEnd: number | null
   language: string | null
   parentName: string | null
+  params: string | null
+  returnType: string | null
   fileHash: string | null
   extra: Record<string, any>
   updatedAt: number
@@ -70,6 +72,8 @@ export interface ExtractedData {
     lineEnd?: number
     language?: string
     parentName?: string
+    params?: string
+    returnType?: string
     extra?: Record<string, any>
   }>
   edges: Array<{
@@ -131,6 +135,28 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_qualifie
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_qualified);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_kind ON graph_edges(kind);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_file ON graph_edges(file_path);
+
+CREATE TABLE IF NOT EXISTS flows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    entry_point_qn TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    node_count INTEGER NOT NULL,
+    file_count INTEGER NOT NULL,
+    criticality REAL NOT NULL DEFAULT 0.0,
+    path_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_flows_criticality ON flows(criticality DESC);
+CREATE INDEX IF NOT EXISTS idx_flows_entry ON flows(entry_point_qn);
+
+CREATE TABLE IF NOT EXISTS flow_memberships (
+    flow_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (flow_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_flow_memberships_node ON flow_memberships(node_id);
 `
 
 // ---------------------------------------------------------------------------
@@ -223,12 +249,13 @@ export class WorkspaceGraph {
 
         for (const node of data.nodes) {
           this.db.prepare(`
-            INSERT OR REPLACE INTO graph_nodes (kind, name, qualified_name, file_path, source, line_start, line_end, language, parent_name, extra, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO graph_nodes (kind, name, qualified_name, file_path, source, line_start, line_end, language, parent_name, params, return_type, extra, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             node.kind, node.name, node.qualifiedName, node.filePath,
             node.source, node.lineStart ?? null, node.lineEnd ?? null,
             node.language ?? null, node.parentName ?? null,
+            node.params ?? null, node.returnType ?? null,
             JSON.stringify(node.extra ?? {}), now,
           )
           nodesCreated++
@@ -311,12 +338,13 @@ export class WorkspaceGraph {
 
         for (const node of data.nodes) {
           this.db.prepare(`
-            INSERT OR REPLACE INTO graph_nodes (kind, name, qualified_name, file_path, source, line_start, line_end, language, parent_name, extra, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO graph_nodes (kind, name, qualified_name, file_path, source, line_start, line_end, language, parent_name, params, return_type, extra, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             node.kind, node.name, node.qualifiedName, node.filePath,
             node.source, node.lineStart ?? null, node.lineEnd ?? null,
             node.language ?? null, node.parentName ?? null,
+            node.params ?? null, node.returnType ?? null,
             JSON.stringify(node.extra ?? {}), now,
           )
           nodesCreated++
@@ -482,6 +510,59 @@ export class WorkspaceGraph {
   }
 
   // ---------------------------------------------------------------------------
+  // Node/Edge Queries for Flows & Risk
+  // ---------------------------------------------------------------------------
+
+  getNodesByKind(kinds: string[]): GraphNode[] {
+    if (kinds.length === 0) return []
+    const placeholders = kinds.map(() => '?').join(',')
+    const rows = this.db.prepare(
+      `SELECT * FROM graph_nodes WHERE kind IN (${placeholders})`
+    ).all(...kinds) as any[]
+    return rows.map(rowToNode)
+  }
+
+  getNodeByQualifiedName(qn: string): GraphNode | null {
+    const row = this.db.prepare('SELECT * FROM graph_nodes WHERE qualified_name = ?').get(qn) as any
+    return row ? rowToNode(row) : null
+  }
+
+  getNodeById(id: number): GraphNode | null {
+    const row = this.db.prepare('SELECT * FROM graph_nodes WHERE id = ?').get(id) as any
+    return row ? rowToNode(row) : null
+  }
+
+  getEdgesBySource(qn: string, kind?: string): GraphEdge[] {
+    const sql = kind
+      ? 'SELECT * FROM graph_edges WHERE source_qualified = ? AND kind = ?'
+      : 'SELECT * FROM graph_edges WHERE source_qualified = ?'
+    const rows = (kind
+      ? this.db.prepare(sql).all(qn, kind)
+      : this.db.prepare(sql).all(qn)) as any[]
+    return rows.map(rowToEdge)
+  }
+
+  getEdgesByTarget(qn: string, kind?: string): GraphEdge[] {
+    const sql = kind
+      ? 'SELECT * FROM graph_edges WHERE target_qualified = ? AND kind = ?'
+      : 'SELECT * FROM graph_edges WHERE target_qualified = ?'
+    const rows = (kind
+      ? this.db.prepare(sql).all(qn, kind)
+      : this.db.prepare(sql).all(qn)) as any[]
+    return rows.map(rowToEdge)
+  }
+
+  getAllCallTargets(): Set<string> {
+    const rows = this.db.prepare(
+      "SELECT DISTINCT target_qualified FROM graph_edges WHERE kind = 'CALLS'"
+    ).all() as { target_qualified: string }[]
+    return new Set(rows.map(r => r.target_qualified))
+  }
+
+  /** Expose the DB handle for flow/risk modules that need direct SQL. */
+  getDatabase(): Database { return this.db }
+
+  // ---------------------------------------------------------------------------
   // Internal Helpers
   // ---------------------------------------------------------------------------
 
@@ -539,6 +620,8 @@ function rowToNode(row: any): GraphNode {
     lineEnd: row.line_end,
     language: row.language,
     parentName: row.parent_name,
+    params: row.params ?? null,
+    returnType: row.return_type ?? null,
     fileHash: row.file_hash,
     extra: JSON.parse(row.extra || '{}'),
     updatedAt: row.updated_at,

@@ -35,6 +35,8 @@ export const CONCURRENT_SAFE_TOOLS = new Set([
   'list_files',
   'search',
   'impact_radius',
+  'detect_changes',
+  'review_context',
   'memory_read',
   'memory_search',
   'read_lints',

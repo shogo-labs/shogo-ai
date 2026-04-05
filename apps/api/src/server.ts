@@ -2142,9 +2142,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     }
   } else {
     const manager = getRuntimeManager()
-    const runtime = manager.status(projectId)
+    let runtime = manager.status(projectId)
     if (!runtime || !runtime.agentPort) {
-      return c.json({ error: { code: 'agent_not_running', message: 'Agent runtime is not running for this project' } }, 503)
+      try {
+        runtime = await manager.start(projectId)
+      } catch (error: any) {
+        console.error(`[AgentProxy] Failed to auto-start runtime for ${projectId}:`, error)
+        return c.json({ error: { code: 'agent_start_failed', message: error.message || 'Failed to start agent runtime' } }, 503)
+      }
     }
     podUrl = `http://localhost:${runtime.agentPort}`
   }

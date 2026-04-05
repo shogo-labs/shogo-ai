@@ -2576,7 +2576,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
     description:
       'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
       'Use background: true for async execution, then check with agent_status/agent_result. ' +
-      'Built-in types: explore, general-purpose. ' +
+      'Built-in types: explore, general-purpose, code-reviewer. ' +
       'Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
@@ -3256,6 +3256,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createDeleteFileTool(ctx), 'file_delete'),
     g(createSearchTool(ctx), 'file_read'),
     g(createImpactRadiusTool(ctx), 'file_read'),
+    g(createDetectChangesTool(ctx), 'file_read'),
+    g(createReviewContextTool(ctx), 'file_read'),
     g(createWebTool(), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
@@ -3583,7 +3585,8 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['list_files', 'delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
-  search: ['glob', 'grep', 'search'],
+  search: ['glob', 'grep', 'search', 'impact_radius'],
+  code_analysis: ['impact_radius'],
   planning: ['todo_write'],
   web: ['web'],
   web_fetch: ['web'],
@@ -3604,7 +3607,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search',
+  'list_files', 'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'read_lints', 'skill_server_sync',
@@ -3843,6 +3846,324 @@ function createImpactRadiusTool(ctx: ToolContext): AgentTool {
         total_impacted: result.totalImpacted,
         truncated: result.truncated,
         graph_stats: graph.getStats(),
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Detect Changes Tool
+// ---------------------------------------------------------------------------
+
+function createDetectChangesTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'detect_changes',
+    description:
+      'Analyze git changes and map them to code graph nodes. Shows which functions/classes changed, ' +
+      'their risk scores, affected execution flows, and test gaps. ' +
+      'Use before code review to understand change impact.',
+    label: 'Detect Changes',
+    parameters: Type.Object({
+      base: Type.Optional(Type.String({ description: 'Git ref to diff against (default: "HEAD~1")' })),
+      changed_files: Type.Optional(Type.Array(Type.String(), { description: 'Explicit file list (skips git diff if provided)' })),
+      include_source: Type.Optional(Type.Boolean({ description: 'Include source snippets for changed nodes (default: false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { base = 'HEAD~1', changed_files, include_source = false } = params as {
+        base?: string; changed_files?: string[]; include_source?: boolean
+      }
+
+      const graph = getOrCreateGraph(ctx)
+      if (!graph) {
+        return textResult({ error: 'Knowledge graph not available.' })
+      }
+
+      const { execSync } = require('child_process')
+      const { readFileSync } = require('fs')
+      const cwd = ctx.workspaceDir
+
+      let changedFilePaths: string[]
+      if (changed_files && changed_files.length > 0) {
+        changedFilePaths = changed_files
+      } else {
+        try {
+          const out = execSync(`git diff --name-only ${base}`, { cwd, encoding: 'utf-8' }).trim()
+          changedFilePaths = out ? out.split('\n').filter(Boolean) : []
+        } catch {
+          return textResult({ error: `Failed to run git diff against ${base}. Is this a git repo?` })
+        }
+      }
+
+      if (changedFilePaths.length === 0) {
+        return textResult({ summary: 'No changes detected', changed_files: [], risk_score: 0 })
+      }
+
+      // Parse line ranges from unified diff
+      let lineRanges: Map<string, Array<{ start: number; end: number }>> = new Map()
+      try {
+        const diffOut = execSync(`git diff --unified=0 ${base}`, { cwd, encoding: 'utf-8' })
+        let currentFile = ''
+        for (const line of diffOut.split('\n')) {
+          if (line.startsWith('+++ b/')) {
+            currentFile = line.slice(6)
+          } else if (line.startsWith('@@')) {
+            const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/)
+            if (match && currentFile) {
+              const start = parseInt(match[1], 10)
+              const count = parseInt(match[2] || '1', 10)
+              if (!lineRanges.has(currentFile)) lineRanges.set(currentFile, [])
+              lineRanges.get(currentFile)!.push({ start, end: start + count - 1 })
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+
+      // Map line ranges to graph nodes
+      const changedFunctions: any[] = []
+      const { computeRiskScore } = require('./risk-scorer')
+      const { getAffectedFlows } = require('./flow-detector')
+
+      for (const fp of changedFilePaths) {
+        const fileNodes = graph.getNodesByFile(fp)
+        const ranges = lineRanges.get(fp) || []
+
+        for (const node of fileNodes) {
+          if (node.kind === 'File') continue
+
+          const overlaps = ranges.length === 0 || ranges.some(r =>
+            node.lineStart != null && node.lineEnd != null &&
+            node.lineStart <= r.end && node.lineEnd >= r.start
+          )
+
+          if (overlaps) {
+            const risk = computeRiskScore(graph, node)
+            const testedBy = graph.getEdgesBySource(node.qualifiedName, 'TESTED_BY')
+            const entry: any = {
+              kind: node.kind, name: node.name, file: node.filePath,
+              lines: node.lineStart && node.lineEnd ? `${node.lineStart}-${node.lineEnd}` : null,
+              risk: Math.round(risk * 1000) / 1000,
+              tested: testedBy.length > 0,
+              test_count: testedBy.length,
+            }
+            if (include_source && node.lineStart && node.lineEnd) {
+              try {
+                const { join } = require('path')
+                const absPath = join(cwd, fp)
+                const lines = readFileSync(absPath, 'utf-8').split('\n')
+                const start = Math.max(0, node.lineStart - 1)
+                const end = Math.min(lines.length, node.lineEnd)
+                entry.source = lines.slice(start, end).join('\n').substring(0, 2000)
+              } catch { /* non-fatal */ }
+            }
+            changedFunctions.push(entry)
+          }
+        }
+      }
+
+      // Aggregate risk
+      const { computeFileSetRisk } = require('./risk-scorer')
+      const riskInfo = computeFileSetRisk(graph, changedFilePaths)
+
+      // Affected flows
+      const affectedFlows = getAffectedFlows(graph, changedFilePaths)
+
+      // Test gaps: changed non-test nodes without TESTED_BY
+      const testGaps = changedFunctions.filter(f => !f.tested && f.kind !== 'Test')
+
+      return textResult({
+        summary: `${changedFilePaths.length} files changed, ${changedFunctions.length} functions affected`,
+        risk_score: riskInfo.maxRisk,
+        avg_risk: riskInfo.avgRisk,
+        changed_files: changedFilePaths,
+        changed_functions: changedFunctions.slice(0, 100),
+        affected_flows: affectedFlows.slice(0, 20).map((f: any) => ({
+          name: f.name, criticality: f.criticality, node_count: f.node_count,
+        })),
+        test_gaps: testGaps.slice(0, 50).map((f: any) => ({
+          name: f.name, file: f.file, risk: f.risk,
+        })),
+        review_priorities: changedFunctions
+          .sort((a: any, b: any) => b.risk - a.risk)
+          .slice(0, 10)
+          .map((f: any) => ({ name: f.name, file: f.file, risk: f.risk, tested: f.tested })),
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Review Context Tool
+// ---------------------------------------------------------------------------
+
+function createReviewContextTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'review_context',
+    description:
+      'Get a comprehensive, token-optimized review bundle for changed files. ' +
+      'Includes structural subgraph, risk scores, affected flows, test gaps, ' +
+      'truncated source hunks around affected nodes, and review guidance. ' +
+      'Use this when reviewing a PR or set of changes.',
+    label: 'Review Context',
+    parameters: Type.Object({
+      changed_files: Type.Optional(Type.Array(Type.String(), { description: 'Explicit file list (skips git diff if provided)' })),
+      base: Type.Optional(Type.String({ description: 'Git ref to diff against (default: "HEAD~1")' })),
+      max_depth: Type.Optional(Type.Number({ description: 'Impact radius BFS depth (default: 2)' })),
+      include_source: Type.Optional(Type.Boolean({ description: 'Include source hunks (default: true)' })),
+      max_lines_per_file: Type.Optional(Type.Number({ description: 'Max source lines per file (default: 200)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const {
+        changed_files, base = 'HEAD~1', max_depth = 2,
+        include_source = true, max_lines_per_file = 200,
+      } = params as {
+        changed_files?: string[]; base?: string; max_depth?: number;
+        include_source?: boolean; max_lines_per_file?: number
+      }
+
+      const graph = getOrCreateGraph(ctx)
+      if (!graph) {
+        return textResult({ error: 'Knowledge graph not available.' })
+      }
+
+      const { execSync } = require('child_process')
+      const { readFileSync, existsSync } = require('fs')
+      const { join } = require('path')
+      const cwd = ctx.workspaceDir
+
+      // Step 1: Get changed files
+      let filePaths: string[]
+      if (changed_files && changed_files.length > 0) {
+        filePaths = changed_files
+      } else {
+        try {
+          const out = execSync(`git diff --name-only ${base}`, { cwd, encoding: 'utf-8' }).trim()
+          filePaths = out ? out.split('\n').filter(Boolean) : []
+        } catch {
+          return textResult({ error: `Failed to run git diff against ${base}.` })
+        }
+      }
+
+      if (filePaths.length === 0) {
+        return textResult({ summary: 'No changes detected' })
+      }
+
+      // Step 2: Impact radius
+      const impact = graph.getImpactRadius(filePaths, max_depth)
+
+      // Step 3: Risk + flows + test gaps
+      const { computeRiskScore, computeFileSetRisk } = require('./risk-scorer')
+      const { getAffectedFlows } = require('./flow-detector')
+
+      const riskInfo = computeFileSetRisk(graph, filePaths)
+      const affectedFlows = getAffectedFlows(graph, filePaths)
+
+      // Build per-node risk + test info for changed nodes
+      const changedNodeDetails: any[] = []
+      for (const node of impact.changedNodes) {
+        if (node.kind === 'File') continue
+        const risk = computeRiskScore(graph, node)
+        const testedBy = graph.getEdgesBySource(node.qualifiedName, 'TESTED_BY')
+        changedNodeDetails.push({
+          kind: node.kind, name: node.name, file: node.filePath,
+          lines: node.lineStart && node.lineEnd ? `${node.lineStart}-${node.lineEnd}` : null,
+          risk: Math.round(risk * 1000) / 1000,
+          tested: testedBy.length > 0,
+        })
+      }
+
+      // Step 4: Source hunks
+      const sourceHunks: any[] = []
+      if (include_source) {
+        for (const fp of filePaths) {
+          const absPath = join(cwd, fp)
+          if (!existsSync(absPath)) continue
+          try {
+            const content = readFileSync(absPath, 'utf-8')
+            const lines = content.split('\n')
+            const fileNodes = graph.getNodesByFile(fp).filter((n: any) => n.kind !== 'File')
+
+            if (fileNodes.length === 0) {
+              const truncated = lines.slice(0, max_lines_per_file).join('\n')
+              sourceHunks.push({ file: fp, lines: `1-${Math.min(lines.length, max_lines_per_file)}`, content: truncated })
+              continue
+            }
+
+            // Build merged ranges around affected nodes (+-2 lines context)
+            const ranges: Array<{ start: number; end: number }> = []
+            for (const node of fileNodes) {
+              if (node.lineStart == null || node.lineEnd == null) continue
+              ranges.push({
+                start: Math.max(1, node.lineStart - 2),
+                end: Math.min(lines.length, node.lineEnd + 2),
+              })
+            }
+            ranges.sort((a, b) => a.start - b.start)
+
+            // Merge overlapping ranges
+            const merged: typeof ranges = []
+            for (const r of ranges) {
+              if (merged.length > 0 && r.start <= merged[merged.length - 1].end + 1) {
+                merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, r.end)
+              } else {
+                merged.push({ ...r })
+              }
+            }
+
+            let totalLines = 0
+            for (const r of merged) {
+              if (totalLines >= max_lines_per_file) break
+              const chunk = lines.slice(r.start - 1, r.end).join('\n')
+              sourceHunks.push({ file: fp, lines: `${r.start}-${r.end}`, content: chunk })
+              totalLines += r.end - r.start + 1
+            }
+          } catch { /* non-fatal */ }
+        }
+      }
+
+      // Step 5: Review guidance
+      const guidance: string[] = []
+      const untestedFns = changedNodeDetails.filter(n => !n.tested && n.kind === 'Function')
+      if (untestedFns.length > 0) {
+        guidance.push(`${untestedFns.length} changed function(s) have no test coverage: ${untestedFns.map(n => n.name).join(', ')}`)
+      }
+      if (impact.impactedFiles.length > 5) {
+        guidance.push(`Wide blast radius: ${impact.impactedFiles.length} files impacted — consider incremental deployment`)
+      }
+      const inheritanceEdges = impact.edges.filter(e => e.kind === 'INHERITS')
+      if (inheritanceEdges.length > 0) {
+        guidance.push(`Inheritance chain affected — verify subclass contract compatibility`)
+      }
+      if (riskInfo.maxRisk > 0.7) {
+        guidance.push(`High risk score (${riskInfo.maxRisk}) — pay extra attention to security-sensitive functions`)
+      }
+      if (affectedFlows.length > 3) {
+        guidance.push(`${affectedFlows.length} execution flows affected — consider integration testing`)
+      }
+
+      return textResult({
+        changed_files: filePaths,
+        risk_score: riskInfo.maxRisk,
+        avg_risk: riskInfo.avgRisk,
+        changed_nodes: changedNodeDetails.slice(0, 50),
+        impacted_files: impact.impactedFiles.slice(0, 30),
+        impacted_nodes: impact.impactedNodes.slice(0, 30).map(n => ({
+          kind: n.kind, name: n.name, file: n.filePath,
+        })),
+        edges: impact.edges.slice(0, 60).map(e => ({
+          kind: e.kind,
+          from: e.sourceQualified.split('::').pop(),
+          to: e.targetQualified.split('::').pop(),
+        })),
+        source_hunks: sourceHunks.slice(0, 30),
+        affected_flows: affectedFlows.slice(0, 15).map((f: any) => ({
+          name: f.name, criticality: f.criticality, node_count: f.node_count, file_count: f.file_count,
+        })),
+        test_gaps: changedNodeDetails.filter(n => !n.tested && n.kind !== 'Test').slice(0, 30).map(n => ({
+          name: n.name, file: n.file, risk: n.risk,
+        })),
+        review_guidance: guidance,
+        total_impacted: impact.totalImpacted,
+        truncated: impact.truncated,
       })
     },
   }

@@ -5,6 +5,8 @@ import react from '@vitejs/plugin-react'
 import tsConfigPaths from 'vite-tsconfig-paths'
 import path from 'path'
 
+const skillServerPort = process.env.VITE_SKILL_SERVER_PORT || '3001'
+
 export default defineConfig({
   server: {
     port: 3000,
@@ -12,7 +14,7 @@ export default defineConfig({
     cors: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: `http://localhost:${skillServerPort}`,
         changeOrigin: true,
       },
     },

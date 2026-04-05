@@ -401,4 +401,108 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
       },
     ],
   },
+
+  // =========================================================================
+  // Case 6: detect_changes for code review preparation
+  // Level 2 | Agent uses detect_changes to analyze what changed
+  // =========================================================================
+  {
+    id: 'graph-detect-changes-review',
+    name: 'Knowledge Graph: uses detect_changes to analyze code changes',
+    category: 'tool-system',
+    level: 2,
+    input: 'I just made some changes to the auth module. Can you analyze what changed and tell me the risk level and if there are any test gaps?',
+    maxScore: 100,
+    workspaceFiles: GRAPH_WORKSPACE_FILES,
+    validationCriteria: [
+      {
+        id: 'used-detect-changes',
+        description: 'Used detect_changes or review_context tool',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'detect_changes') || usedTool(r, 'review_context'),
+      },
+      {
+        id: 'mentions-risk',
+        description: 'Response mentions risk or risk score',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'risk'),
+      },
+      {
+        id: 'mentions-test-gaps',
+        description: 'Response mentions test coverage or test gaps',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'test') || responseContains(r, 'coverage'),
+      },
+      {
+        id: 'read-or-searched-context',
+        description: 'Read files or used search/impact tools for additional context',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search') ||
+          usedTool(r, 'impact_radius') || usedTool(r, 'detect_changes') || usedTool(r, 'review_context'),
+      },
+      {
+        id: 'comprehensive-response',
+        description: 'Provides comprehensive analysis',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.responseText.length > 150,
+      },
+    ],
+  },
+
+  // =========================================================================
+  // Case 7: review_context for comprehensive PR review
+  // Level 2 | Agent uses review_context for full review bundle
+  // =========================================================================
+  {
+    id: 'graph-review-context-pr',
+    name: 'Knowledge Graph: uses review_context for PR review',
+    category: 'tool-system',
+    level: 2,
+    input: 'I need to review the recent changes to our codebase. Give me a comprehensive review of what changed, what the risks are, and what I should pay attention to.',
+    maxScore: 100,
+    workspaceFiles: GRAPH_WORKSPACE_FILES,
+    validationCriteria: [
+      {
+        id: 'used-review-context',
+        description: 'Used review_context or detect_changes tool',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'review_context') || usedTool(r, 'detect_changes'),
+      },
+      {
+        id: 'mentions-affected-files',
+        description: 'Response mentions specific affected files',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => responseContains(r, '.ts') || responseContains(r, '.py') || responseContains(r, 'file'),
+      },
+      {
+        id: 'mentions-guidance',
+        description: 'Response includes review guidance or recommendations',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'recommend') || responseContains(r, 'attention') ||
+          responseContains(r, 'review') || responseContains(r, 'guidance') || responseContains(r, 'suggest'),
+      },
+      {
+        id: 'mentions-risk-or-impact',
+        description: 'Mentions risk scores or impact',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'risk') || responseContains(r, 'impact'),
+      },
+      {
+        id: 'comprehensive-review',
+        description: 'Provides a comprehensive review (>200 chars)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.responseText.length > 200,
+      },
+    ],
+  },
 ]
