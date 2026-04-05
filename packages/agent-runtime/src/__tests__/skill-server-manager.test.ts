@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { SkillServerManager } from '../skill-server-manager'
@@ -31,11 +31,16 @@ function writeRoutableServer(serverDir: string, port: number, routes: string[] =
   mkdirSync(serverDir, { recursive: true })
   mkdirSync(join(serverDir, 'generated'), { recursive: true })
 
+  if (!existsSync(join(serverDir, 'custom-routes.ts'))) {
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
+  }
+
   writeFileSync(join(serverDir, 'routes.json'), JSON.stringify(routes), 'utf-8')
 
   const code = `
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import customRoutes from './custom-routes'
 
 const port = Number(process.env.PORT) || ${port}
 
@@ -69,7 +74,13 @@ Bun.serve({
 function writeHealthOnlyServer(serverDir: string, port: number): void {
   mkdirSync(serverDir, { recursive: true })
   mkdirSync(join(serverDir, 'generated'), { recursive: true })
+
+  if (!existsSync(join(serverDir, 'custom-routes.ts'))) {
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
+  }
+
   writeFileSync(join(serverDir, 'server.ts'), `
+import customRoutes from './custom-routes'
 Bun.serve({
   port: Number(process.env.PORT) || ${port},
   fetch(req) {
@@ -241,22 +252,25 @@ describe('SkillServerManager — empty schema handling', () => {
     rmSync(workDir, { recursive: true, force: true })
   })
 
-  test('start() skips generation when schema has no models', async () => {
+  test('start() generates server and starts even when schema has no models', async () => {
     writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
 
     const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
     const result = await manager.start()
 
-    expect(result.started).toBe(false)
-    expect(result.port).toBeNull()
-    // Phase should NOT be 'crashed' — it should be waiting for models
-    expect(manager.phase).not.toBe('crashed')
-    expect(manager.phase).not.toBe('generating')
+    // With the SDK's dynamicCrudImport, the server starts even without models.
+    // If the SDK CLI is available, generation succeeds and server starts.
+    // If not, generation may fail — but it attempted.
+    const attempted = manager.phase !== 'idle'
+    expect(attempted).toBe(true)
+
+    // Config files should have been created
+    expect(existsSync(join(serverDir, 'shogo.config.json'))).toBe(true)
 
     await manager.stop()
   })
 
-  test('start() attempts generation when schema has models and no server exists', async () => {
+  test('start() attempts generation when no server exists (with or without models)', async () => {
     writeFileSync(
       join(serverDir, 'schema.prisma'),
       SCHEMA_HEADER_CLEAN + CLIENT_MODEL,
@@ -521,11 +535,9 @@ describe('SkillServerManager — schema watcher', () => {
     rmSync(workDir, { recursive: true, force: true })
   })
 
-  test('schema watcher starts when start() finds no schema', async () => {
-    // No schema at all — watcher should be started for when agent creates one
+  test('schema watcher starts when start() is called (even without schema)', async () => {
     const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
-    const result = await manager.start()
-    expect(result.started).toBe(false)
+    await manager.start()
 
     // The schema dir should have been created by startSchemaWatcher
     expect(existsSync(serverDir)).toBe(true)
@@ -538,10 +550,11 @@ describe('SkillServerManager — schema watcher', () => {
     writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
 
     const manager = new SkillServerManager({ workspaceDir: workDir, port: testPort })
-    const result = await manager.start()
-    expect(result.started).toBe(false)
-    // phase should not be crashed — just waiting
-    expect(manager.phase).not.toBe('crashed')
+    await manager.start()
+
+    // Server should have attempted generation
+    const attempted = manager.phase !== 'idle'
+    expect(attempted).toBe(true)
 
     await manager.stop()
   })
@@ -862,9 +875,10 @@ describe('SkillServerManager — crash recovery', () => {
   test('handles server that fails health check', async () => {
     const serverDir = join(workDir, '.shogo', 'server')
     mkdirSync(serverDir, { recursive: true })
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
     writeFileSync(
       join(serverDir, 'server.ts'),
-      `Bun.serve({ port: ${testPort}, fetch() { return new Response('nope', { status: 500 }) } })`,
+      `import customRoutes from './custom-routes'\nBun.serve({ port: ${testPort}, fetch() { return new Response('nope', { status: 500 }) } })`,
       'utf-8',
     )
 
@@ -887,7 +901,8 @@ describe('SkillServerManager — crash recovery', () => {
   test('handles server that exits immediately', async () => {
     const serverDir = join(workDir, '.shogo', 'server')
     mkdirSync(serverDir, { recursive: true })
-    writeFileSync(join(serverDir, 'server.ts'), 'process.exit(1)', 'utf-8')
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
+    writeFileSync(join(serverDir, 'server.ts'), "import customRoutes from './custom-routes'\nprocess.exit(1)", 'utf-8')
 
     const manager = new SkillServerManager({
       workspaceDir: workDir,
@@ -930,5 +945,322 @@ describe('SkillServerManager — configuration', () => {
   test('url includes the configured port', () => {
     const manager = new SkillServerManager({ workspaceDir: '/tmp/test', port: 9999 })
     expect(manager.url).toBe('http://localhost:9999')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 11. Custom Routes Scaffolding
+// ---------------------------------------------------------------------------
+
+describe('SkillServerManager — custom routes scaffolding', () => {
+  let workDir: string
+  let serverDir: string
+
+  beforeEach(() => {
+    workDir = makeTempDir()
+    serverDir = join(workDir, '.shogo', 'server')
+  })
+
+  afterEach(async () => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  test('start() creates custom-routes.ts if it does not exist', async () => {
+    mkdirSync(serverDir, { recursive: true })
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
+    await manager.start()
+
+    const customRoutesPath = join(serverDir, 'custom-routes.ts')
+    expect(existsSync(customRoutesPath)).toBe(true)
+
+    const content = readFileSync(customRoutesPath, 'utf-8')
+    expect(content).toContain('Hono')
+    expect(content).toContain('export default')
+
+    await manager.stop()
+  })
+
+  test('start() does NOT overwrite existing custom-routes.ts', async () => {
+    mkdirSync(serverDir, { recursive: true })
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const userCustomRoutes = "import { Hono } from 'hono'\nconst app = new Hono()\napp.get('/hello', (c) => c.json({ hi: true }))\nexport default app\n"
+    writeFileSync(join(serverDir, 'custom-routes.ts'), userCustomRoutes, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
+    await manager.start()
+
+    const content = readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')
+    expect(content).toBe(userCustomRoutes)
+
+    await manager.stop()
+  })
+
+  test('shogo.config.json includes dynamicCrudImport, bunServe, customRoutesPath', async () => {
+    mkdirSync(serverDir, { recursive: true })
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN + CLIENT_MODEL, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
+    await manager.regenerate().catch(() => {})
+
+    const configPath = join(serverDir, 'shogo.config.json')
+    expect(existsSync(configPath)).toBe(true)
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    const serverOutput = config.outputs.find((o: any) => o.generate.includes('server'))
+    expect(serverOutput).toBeDefined()
+    expect(serverOutput.serverConfig.dynamicCrudImport).toBe(true)
+    expect(serverOutput.serverConfig.bunServe).toBe(true)
+    expect(serverOutput.serverConfig.customRoutesPath).toBe('./custom-routes')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 12. No Runtime Patching Artifacts
+// ---------------------------------------------------------------------------
+
+describe('SkillServerManager — no runtime patching artifacts', () => {
+  let workDir: string
+  let serverDir: string
+
+  beforeEach(() => {
+    workDir = makeTempDir()
+    serverDir = join(workDir, '.shogo', 'server')
+  })
+
+  afterEach(async () => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  test('server.tsx does NOT contain old patch markers after start with existing server', async () => {
+    const port = randomPort()
+    writeHealthOnlyServer(serverDir, port)
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port })
+
+    try {
+      await manager.start()
+
+      const entry = existsSync(join(serverDir, 'server.tsx'))
+        ? join(serverDir, 'server.tsx')
+        : join(serverDir, 'server.ts')
+
+      if (existsSync(entry)) {
+        const code = readFileSync(entry, 'utf-8')
+        expect(code).not.toContain('// Mount custom routes (written by agent)')
+      }
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  test('SkillServerManager has no patchCustomRoutes method', () => {
+    const manager = new SkillServerManager({ workspaceDir: '/tmp/test', port: randomPort() })
+    expect((manager as any).patchCustomRoutes).toBeUndefined()
+  })
+
+  test('SkillServerManager has no patchServerForBunRun method', () => {
+    const manager = new SkillServerManager({ workspaceDir: '/tmp/test', port: randomPort() })
+    expect((manager as any).patchServerForBunRun).toBeUndefined()
+  })
+
+  test('SkillServerManager has no deleteServerEntry method', () => {
+    const manager = new SkillServerManager({ workspaceDir: '/tmp/test', port: randomPort() })
+    expect((manager as any).deleteServerEntry).toBeUndefined()
+  })
+
+  test('SkillServerManager has no ensureMinimalServer method', () => {
+    const manager = new SkillServerManager({ workspaceDir: '/tmp/test', port: randomPort() })
+    expect((manager as any).ensureMinimalServer).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 13. Upgrade from Previous SDK Version
+// ---------------------------------------------------------------------------
+
+describe('SkillServerManager — upgrade from previous SDK version', () => {
+  let workDir: string
+  let serverDir: string
+
+  beforeEach(() => {
+    workDir = makeTempDir()
+    serverDir = join(workDir, '.shogo', 'server')
+    mkdirSync(serverDir, { recursive: true })
+  })
+
+  afterEach(async () => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  test('start() removes stale server.tsx that lacks customRoutes import', async () => {
+    const port = randomPort()
+    const oldServerCode = `
+import { Hono } from 'hono'
+import { createAllRoutes } from './generated'
+import { prisma } from './db'
+
+const app = new Hono()
+app.route('/api', createAllRoutes(prisma))
+
+export default {
+  port: ${port},
+  fetch: app.fetch,
+}
+`
+    writeFileSync(join(serverDir, 'server.tsx'), oldServerCode, 'utf-8')
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port })
+
+    // start() should detect the stale server, delete it, and attempt regeneration
+    await manager.start()
+
+    // The old server.tsx should have been replaced — either regenerated or deleted
+    const entry = existsSync(join(serverDir, 'server.tsx'))
+      ? readFileSync(join(serverDir, 'server.tsx'), 'utf-8')
+      : existsSync(join(serverDir, 'server.ts'))
+        ? readFileSync(join(serverDir, 'server.ts'), 'utf-8')
+        : null
+
+    // If regeneration succeeded, the new server should have customRoutes
+    // If regeneration failed (no SDK installed), the old stale one should be gone
+    if (entry) {
+      expect(entry).toContain('customRoutes')
+    } else {
+      // Stale file was deleted even if regeneration couldn't produce a new one
+      expect(existsSync(join(serverDir, 'server.tsx'))).toBe(false)
+    }
+
+    await manager.stop()
+  })
+
+  test('start() does NOT remove server.tsx that already has customRoutes', async () => {
+    const port = randomPort()
+    const newServerCode = `
+import { Hono } from 'hono'
+import customRoutes from './custom-routes'
+
+const app = new Hono()
+app.get('/health', (c) => c.json({ ok: true }))
+app.route('/api', customRoutes)
+
+Bun.serve({ port: ${port}, fetch: app.fetch })
+`
+    writeFileSync(join(serverDir, 'server.tsx'), newServerCode, 'utf-8')
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port })
+    await manager.start()
+
+    // The server.tsx should NOT have been deleted
+    expect(existsSync(join(serverDir, 'server.tsx'))).toBe(true)
+    const content = readFileSync(join(serverDir, 'server.tsx'), 'utf-8')
+    expect(content).toContain('customRoutes')
+    expect(content).toContain('Bun.serve')
+
+    await manager.stop()
+  })
+
+  test('ensureCustomRoutes creates custom-routes.ts for old workspaces', async () => {
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+    // Simulate old workspace: schema exists but no custom-routes.ts
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(false)
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
+    await manager.start()
+
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(true)
+    const content = readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')
+    expect(content).toContain('Hono')
+    expect(content).toContain('export default')
+
+    await manager.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 14. Deleted custom-routes.ts Recovery
+// ---------------------------------------------------------------------------
+
+describe('SkillServerManager — deleted custom-routes.ts recovery', () => {
+  let workDir: string
+  let serverDir: string
+
+  beforeEach(() => {
+    workDir = makeTempDir()
+    serverDir = join(workDir, '.shogo', 'server')
+    mkdirSync(serverDir, { recursive: true })
+  })
+
+  afterEach(async () => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  test('restart() recreates custom-routes.ts if it was deleted', async () => {
+    const port = randomPort()
+    writeHealthOnlyServer(serverDir, port)
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "import { Hono } from 'hono'\nconst app = new Hono()\nexport default app\n", 'utf-8')
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port })
+    await manager.start()
+
+    // Delete the custom routes file
+    unlinkSync(join(serverDir, 'custom-routes.ts'))
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(false)
+
+    // restart() should recreate it
+    await manager.restart()
+
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(true)
+    const content = readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')
+    expect(content).toContain('Hono')
+    expect(content).toContain('export default')
+
+    await manager.stop()
+  })
+
+  test('handleCustomRoutesChange recreates custom-routes.ts on deletion', async () => {
+    const port = randomPort()
+    writeHealthOnlyServer(serverDir, port)
+    writeFileSync(join(serverDir, 'custom-routes.ts'), "import { Hono } from 'hono'\nconst app = new Hono()\nexport default app\n", 'utf-8')
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port })
+    await manager.start()
+
+    // Delete the custom routes file
+    unlinkSync(join(serverDir, 'custom-routes.ts'))
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(false)
+
+    // Trigger the handler directly (simulating what the watcher does)
+    ;(manager as any).handleCustomRoutesChange()
+
+    // RESTART_DEBOUNCE_MS is 1000ms, plus restart needs time to complete
+    await new Promise(resolve => setTimeout(resolve, 4000))
+
+    expect(existsSync(join(serverDir, 'custom-routes.ts'))).toBe(true)
+    const content = readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')
+    expect(content).toContain('Hono')
+
+    await manager.stop()
+  }, 10_000)
+
+  test('ensureCustomRoutes is idempotent — does not overwrite existing file', async () => {
+    const userContent = "import { Hono } from 'hono'\nconst app = new Hono()\napp.get('/my-route', (c) => c.json({ custom: true }))\nexport default app\n"
+    writeFileSync(join(serverDir, 'custom-routes.ts'), userContent, 'utf-8')
+    writeFileSync(join(serverDir, 'schema.prisma'), SCHEMA_HEADER_CLEAN, 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
+    ;(manager as any).ensureCustomRoutes()
+
+    const content = readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')
+    expect(content).toBe(userContent)
+
+    await manager.stop()
   })
 })

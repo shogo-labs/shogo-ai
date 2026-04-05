@@ -197,11 +197,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
   }
   models = models.filter(m => !excludeModels.includes(m.name))
 
-  if (models.length === 0) {
-    throw new Error('No models found to generate')
-  }
-
   const enums = dmmf.datamodel.enums
+  const hasModels = models.length > 0
 
   // New per-model mode with multiple outputs
   if (outputs && outputs.length > 0) {
@@ -211,8 +208,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       const ext = output.fileExtension || 'tsx'
       const indexFile = `${dir}/index.${ext}`
 
-      // Generate routes
-      if (output.generate.includes('routes')) {
+      // Generate routes (requires models)
+      if (hasModels && output.generate.includes('routes')) {
         if (perModel) {
           const { routes, hooks } = generateRoutes(models, { fileExtension: ext })
           
@@ -244,8 +241,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         }
       }
 
-      // Generate types
-      if (output.generate.includes('types')) {
+      // Generate types (requires models)
+      if (hasModels && output.generate.includes('types')) {
         if (perModel) {
           const typeFiles = generateTypesPerModel(models, enums, ext)
           for (const typeFile of typeFiles) {
@@ -280,8 +277,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         }
       }
 
-      // Generate stores (plain MobX)
-      if (output.generate.includes('stores')) {
+      // Generate stores (requires models)
+      if (hasModels && output.generate.includes('stores')) {
         if (perModel) {
           const storeFiles = generateStores(models, { fileExtension: ext })
           for (const storeFile of storeFiles) {
@@ -304,8 +301,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         }
       }
 
-      // Generate MST (MobX-State-Tree)
-      if (output.generate.includes('mst')) {
+      // Generate MST (requires models)
+      if (hasModels && output.generate.includes('mst')) {
         if (perModel) {
           // Generate MST models (pass enums for proper enum value generation)
           const mstModelFiles = generateMSTModels(models, models, enums, ext)
@@ -346,8 +343,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         }
       }
 
-      // Generate API client (fetch client for browser)
-      if (output.generate.includes('api-client')) {
+      // Generate API client (requires models)
+      if (hasModels && output.generate.includes('api-client')) {
         files.push({
           path: `${dir}/api-client.${ext}`,
           content: generateApiClient(models),
@@ -355,7 +352,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       }
 
       // Generate auth store (requires User model with email field)
-      if (output.generate.includes('auth')) {
+      if (hasModels && output.generate.includes('auth')) {
         if (hasUserModel(models)) {
           const userModel = getUserModel(models)!
           files.push({
@@ -378,8 +375,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         })
       }
 
-      // Generate database module (Prisma client)
-      if (output.generate.includes('db')) {
+      // Generate database module (requires models — the dynamic import in server handles absence)
+      if (hasModels && output.generate.includes('db')) {
         files.push({
           path: `${dir}/db.${ext}`,
           content: output.dbProvider === 'sqlite' ? generateSqliteDbModule() : generateDbModule(),
@@ -387,8 +384,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         })
       }
 
-      // Generate Docusaurus documentation site
-      if (output.generate.includes('docs')) {
+      // Generate Docusaurus documentation site (requires models)
+      if (hasModels && output.generate.includes('docs')) {
         // Scaffold the Docusaurus site (skipIfExists — won't overwrite user edits)
         const scaffoldFiles = generateDocsSiteScaffold({
           projectName: 'My App',
@@ -422,8 +419,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
         }
       }
 
-      // Generate admin routes (single file with unrestricted CRUD for all models)
-      if (output.generate.includes('admin-routes')) {
+      // Generate admin routes (requires models)
+      if (hasModels && output.generate.includes('admin-routes')) {
         const adminFile = generateAdminRoutes(models, { fileExtension: ext as 'ts' | 'tsx' })
         files.push({
           path: `${dir}/${adminFile.fileName}`,
@@ -442,6 +439,10 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
   // Legacy single-dir mode (backward compatible)
   if (!outputDir) {
     throw new Error('Either outputDir or outputs[] must be provided')
+  }
+
+  if (!hasModels) {
+    throw new Error('No models found to generate')
   }
 
   // Generate types (single file)

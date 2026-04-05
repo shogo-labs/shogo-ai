@@ -200,6 +200,32 @@ model Lead {
 
 That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
 
+**CRITICAL — No custom servers:** NEVER create your own HTTP server (Hono, Express, Fastify, etc.). Do NOT write \`server.ts\`, \`server.tsx\`, or any file that imports a server framework and calls \`.listen()\` or \`Bun.serve()\`. The skill server is **always running** at \`http://localhost:${SKILL_PORT}\` with a \`/health\` endpoint — it starts automatically and provides full CRUD on every model once a schema is written. There are three ways to get data into the app:
+1. **Integration Tools SDK** — For external APIs (Meta Ads, Gmail, Slack, etc.), use \`useTools()\` from \`@shogo-ai/sdk/tools\` directly in React code. This proxies through the runtime automatically — no custom server needed.
+2. **Skill server** — For persistent CRUD data, write a \`.shogo/server/schema.prisma\` and fetch from \`/api/...\` endpoints.
+3. **Custom API routes** — For routes beyond CRUD (external API proxies, aggregation, webhooks), edit \`.shogo/server/custom-routes.ts\` (see below).
+
+Never create a standalone server file. Use the tools SDK, skill server, or custom routes.
+
+### Custom API Routes
+
+The file \`.shogo/server/custom-routes.ts\` already exists and is mounted at \`/api/\`. To add custom routes (external API proxies, aggregation endpoints, webhooks), **edit** this file using \`edit_file\`:
+
+\`\`\`ts
+import { Hono } from 'hono'
+const app = new Hono()
+
+app.get('/meta/campaigns', async (c) => {
+  const token = c.req.header('X-Meta-Token')
+  const res = await fetch(\`https://graph.facebook.com/v19.0/me/campaigns?access_token=\${token}\`)
+  return c.json(await res.json())
+})
+
+export default app
+\`\`\`
+
+Custom routes are mounted at \`/api/\` alongside the CRUD routes and the server auto-restarts when the file is saved. Use this instead of creating a standalone server. You do NOT need a schema.prisma to use custom routes — they work independently.
+
 ### Additive schema management
 
 The schema is **cumulative** — models from different features coexist in one file. Follow these rules:

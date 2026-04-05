@@ -519,10 +519,12 @@ async function main() {
   }
   
   // ── Step 2: Run prisma generate + db push ──────────────────────────────
-  // Always regenerate the Prisma client and push schema changes to the database.
-  // This ensures the generated routes have matching DB tables and up-to-date types.
+  // Regenerate the Prisma client and push schema changes — but only when the
+  // schema actually defines models. A zero-model schema only needs server.tsx.
   const hasPrisma = existsSync(schemaPath)
-  if (hasPrisma) {
+  const schemaHasModels = hasPrisma && /^\s*model\s+\w+/m.test(readFileSync(schemaPath, 'utf-8'))
+
+  if (hasPrisma && schemaHasModels) {
     console.log('🔧 Updating Prisma client and database...')
     
     try {
@@ -546,6 +548,9 @@ async function main() {
       console.log('   ⊘ Skipping db push (no DATABASE_URL)')
     }
     
+    console.log('')
+  } else if (hasPrisma && !schemaHasModels) {
+    console.log('⊘ Schema has no models — skipping prisma generate/db push')
     console.log('')
   }
   
@@ -593,8 +598,12 @@ async function main() {
 
     // Report
     console.log('')
-    console.log(`✅ Generated ${result.files.length} files for ${result.models.length} models`)
-    console.log(`   Models: ${result.models.join(', ')}`)
+    if (result.models.length > 0) {
+      console.log(`✅ Generated ${result.files.length} files for ${result.models.length} models`)
+      console.log(`   Models: ${result.models.join(', ')}`)
+    } else {
+      console.log(`✅ Generated ${result.files.length} files (no models — server-only)`)
+    }
 
     if (result.warnings.length > 0) {
       console.log('')
