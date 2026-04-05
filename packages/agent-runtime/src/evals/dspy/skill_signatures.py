@@ -28,7 +28,8 @@ class SkillMatcher(dspy.Signature):
 class SkillCreation(dspy.Signature):
     """Generate a well-structured skill definition markdown file.
 
-    Skills are markdown files with YAML frontmatter containing:
+    Skills are created by writing `.shogo/skills/<name>/SKILL.md` via
+    `write_file`. The file uses YAML frontmatter containing:
     - name: kebab-case identifier
     - trigger: pipe-separated phrases OR regex pattern
     - tools: comma-separated tool names the skill needs

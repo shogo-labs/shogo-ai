@@ -2,7 +2,7 @@
 
 Two sub-track metric functions:
   - skill_match_quality: for SkillMatcher
-  - skill_create_quality: for SkillCreation
+  - skill_write_quality: for SkillCreation
 """
 
 import dspy
@@ -146,7 +146,7 @@ def skill_name_valid(example: dspy.Example, prediction: dspy.Prediction, trace=N
     return 0.2
 
 
-def skill_create_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+def skill_write_quality(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
     """Combined creation quality: triggers (35%) + tools (30%) + name (15%) + has body (20%)."""
     triggers = trigger_coverage(example, prediction, trace)
     tools = tools_appropriate(example, prediction, trace)

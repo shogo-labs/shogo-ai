@@ -21,7 +21,7 @@ def run_validation(track: str, prediction_data: dict, timeout: int = 30) -> dict
     """Execute the TS validation harness and return results.
 
     Args:
-        track: Validation type — one of 'canvas', 'skill_create',
+        track: Validation type — one of 'canvas', 'skill_write',
                'multiturn_plan'
         prediction_data: Dict of prediction fields to validate
         timeout: Subprocess timeout in seconds
@@ -87,9 +87,9 @@ def validate_canvas(prediction) -> dict:
     })
 
 
-def validate_skill_creation(prediction) -> dict:
+def validate_skill_write(prediction) -> dict:
     """Validate a skill creation prediction."""
-    return run_validation("skill_create", {
+    return run_validation("skill_write", {
         "skill_name": getattr(prediction, "skill_name", ""),
         "trigger_pattern": getattr(prediction, "trigger_pattern", ""),
         "required_tools": getattr(prediction, "required_tools", ""),

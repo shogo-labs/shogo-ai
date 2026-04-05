@@ -55,9 +55,6 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-const MCP_SERVER_PATH =
-  process.env.MCP_SERVER_PATH ||
-  resolve(MONOREPO_ROOT, 'packages/agent-runtime/src/tools/mcp-server.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 async function reportHeartbeatComplete(projectId: string): Promise<void> {
@@ -174,42 +171,6 @@ function ensureWorkspaceFiles(): void {
 }
 
 // AI proxy is configured by the shared framework (state.aiProxy)
-
-// =============================================================================
-// Write agent config files (.mcp.json)
-// =============================================================================
-
-function verifyMcpServerPath(): boolean {
-  if (!existsSync(MCP_SERVER_PATH)) {
-    console.error(`[agent-runtime] WARNING: MCP server not found at ${MCP_SERVER_PATH}`)
-    return false
-  }
-  return true
-}
-
-function writeAgentConfigFiles(): void {
-  const mcpServerValid = verifyMcpServerPath()
-  if (!mcpServerValid) {
-    logTiming('WARNING: MCP server path invalid — builder will use Write/Edit fallback')
-  }
-
-  const mcpConfig = {
-    mcpServers: {
-      shogo: {
-        command: 'bun',
-        args: ['run', MCP_SERVER_PATH],
-        env: {
-          PROJECT_ID: state.currentProjectId!,
-          WORKSPACE_DIR,
-          MCP_CONTEXT: 'agent',
-        },
-      },
-    },
-  }
-  const mcpJsonPath = resolve(WORKSPACE_DIR, '.mcp.json')
-  writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
-  logTiming('Wrote .mcp.json')
-}
 
 // =============================================================================
 // Agent Gateway Instance
@@ -2317,8 +2278,6 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
-  // Write .mcp.json (function logs timing internally)
-  writeAgentConfigFiles()
   logTiming('Essentials complete')
 
   // Auto-start preview server if an app project was restored from S3.
