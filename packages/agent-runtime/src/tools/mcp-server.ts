@@ -189,8 +189,8 @@ defineTool({
   },
 })
 
-const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron', 'audio']
-const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web', 'web_fetch', 'web_search', 'memory_read', 'send_message', 'cron', 'transcribe_audio']
+const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'heartbeat', 'audio']
+const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web', 'web_fetch', 'web_search', 'memory_read', 'send_message', 'heartbeat_configure', 'heartbeat_status', 'transcribe_audio']
 const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
@@ -200,7 +200,7 @@ const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   browser: ['browser', 'web'],
   memory: ['memory_read'],
   messaging: ['send_message'],
-  cron: ['cron'],
+  heartbeat: ['heartbeat_configure', 'heartbeat_status'],
 }
 
 function normalizeToolRefs(refs: string[]): string[] {

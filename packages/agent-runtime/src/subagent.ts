@@ -29,7 +29,8 @@ const CORE_GATEWAY_TOOLS = new Set([
   'list_files', 'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',
-  'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
+  'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
+  'heartbeat_configure', 'heartbeat_status',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
 ])
