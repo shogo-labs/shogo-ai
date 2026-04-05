@@ -319,6 +319,18 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
+// Read agent config
+app.get('/agent/config', (c) => {
+  const configPath = join(WORKSPACE_DIR, 'config.json')
+  try {
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      return c.json(config)
+    }
+  } catch {}
+  return c.json({})
+})
+
 // Update agent config — deep-merge fields into config.json and hot-reload the gateway
 app.patch('/agent/config', async (c) => {
   const body = await c.req.json() as Record<string, unknown>

@@ -20,6 +20,7 @@ interface BrowserScreenshotDetails {
   path?: string
   url?: string
   error?: string
+  base64?: string
 }
 
 function parseScreenshotResult(result: unknown): BrowserScreenshotDetails | null {
@@ -27,18 +28,25 @@ function parseScreenshotResult(result: unknown): BrowserScreenshotDetails | null
   const r = result as Record<string, unknown>
 
   if (r.details && typeof r.details === "object") {
-    return r.details as BrowserScreenshotDetails
+    const details = r.details as BrowserScreenshotDetails
+    if (Array.isArray(r.content)) {
+      const imgPart = (r.content as any[]).find((c: any) => c.type === "image")
+      if (imgPart?.data) details.base64 = imgPart.data
+    }
+    return details
   }
 
   if (Array.isArray(r.content)) {
+    const imgPart = (r.content as any[]).find((c: any) => c.type === "image")
     const textPart = (r.content as any[]).find((c: any) => c.type === "text")
+    let parsed: BrowserScreenshotDetails | null = null
     if (textPart?.text) {
-      try {
-        return JSON.parse(textPart.text)
-      } catch {
-        return null
-      }
+      try { parsed = JSON.parse(textPart.text) } catch { parsed = null }
     }
+    if (imgPart?.data) {
+      return { ...parsed, base64: imgPart.data }
+    }
+    return parsed
   }
 
   if (typeof r.path === "string") {
@@ -70,10 +78,13 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
   const details = useMemo(() => parseScreenshotResult(tool.result), [tool.result])
 
   const imageUrl = useMemo(() => {
+    if (details?.base64) {
+      return `data:image/png;base64,${details.base64}`
+    }
     const path = details?.path
     if (!path || !chatContext?.agentUrl) return null
     return `${chatContext.agentUrl}/agent/workspace/download/${path}?t=${Date.now()}`
-  }, [details?.path, chatContext?.agentUrl])
+  }, [details?.base64, details?.path, chatContext?.agentUrl])
 
   const pageUrl = details?.url
 

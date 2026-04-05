@@ -64,6 +64,7 @@ import {
   SELF_EVOLUTION_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
+import { BROWSER_TOOL_GUIDE } from './system-prompt'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
@@ -164,8 +165,12 @@ export interface GatewayConfig {
   activeMode?: VisualMode
   /** Modes this project is allowed to use (default: all modes for paid, ['canvas','none'] for basic) */
   allowedModes?: VisualMode[]
-  /** Whether web search & browser tools are enabled (default: true) */
+  /** Whether web search tool is enabled (default: true) */
   webEnabled?: boolean
+  /** Whether browser automation tool is enabled (default: true) */
+  browserEnabled?: boolean
+  /** Playwright browser extension token for CDP connect mode */
+  browserExtensionToken?: string
   /** Whether shell/exec tool is enabled (default: true) */
   shellEnabled?: boolean
   /** Whether cron/scheduling tool is enabled (default: true) */
@@ -1314,6 +1319,12 @@ export class AgentGateway {
       )
     }
 
+    if (this.config.browserExtensionToken) {
+      process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = this.config.browserExtensionToken
+    } else {
+      delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+    }
+
     const toolContext: ToolContext = {
       workspaceDir: this.workspaceDir,
       channels: this.channels,
@@ -1374,9 +1385,15 @@ export class AgentGateway {
       )
     }
 
+    // Suppress MCP Playwright tools — built-in browser tool has feature parity
+    assembledTools = assembledTools.filter(t => !t.name.startsWith('mcp_playwright_'))
+
     // Capability toggles (independent of mode)
     if (this.config.webEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'web' && t.name !== 'browser')
+      assembledTools = assembledTools.filter(t => t.name !== 'web')
+    }
+    if (this.config.browserEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'browser')
     }
     if (this.config.shellEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'exec')
@@ -1916,6 +1933,9 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.browserEnabled !== false) {
+      parts.push(BROWSER_TOOL_GUIDE)
+    }
     parts.push(SUBAGENT_GUIDE)
 
     if (sessionId) {
@@ -1951,6 +1971,9 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.browserEnabled !== false) {
+      parts.push(BROWSER_TOOL_GUIDE)
+    }
     parts.push(SELF_EVOLUTION_GUIDE)
 
     if (this.skills.length > 0) {
@@ -2033,6 +2056,9 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
     stableParts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
     if (this.config.memoryEnabled !== false) {
       stableParts.push(memoryGuide)
+    }
+    if (this.config.browserEnabled !== false) {
+      stableParts.push(BROWSER_TOOL_GUIDE)
     }
     stableParts.push(SELF_EVOLUTION_GUIDE)
     stableParts.push(skillMatchingGuide)
