@@ -947,9 +947,19 @@ export default observer(function ProjectLayout() {
 
             {/* Content — chat panel stays mounted across layout/tab changes */}
             <View className={cn('flex-1', isWide && 'flex-row')}>
-              {/* Full-screen chat with history sidebar (canvas disabled, Chat tab active) */}
-              {isChatFullscreen && (
-                <View className="flex-1 flex-row">
+              {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
+              <View
+                className={cn(
+                  'flex min-h-0 flex-col',
+                  isChatFullscreen
+                    ? 'flex-1 flex-row'
+                    : isWide
+                      ? 'w-[480px] shrink-0 bg-background z-10'
+                      : 'relative flex-1',
+                  !isChatFullscreen && chatHidden && 'hidden',
+                )}
+              >
+                {isChatFullscreen && (
                   <View className="w-[280px] bg-muted/50 dark:bg-black/30">
                     <ChatSessionSidebar
                       sessions={chatSessions}
@@ -961,40 +971,25 @@ export default observer(function ProjectLayout() {
                       isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
                     />
                   </View>
-                  <View className="flex-1">
-                    {chatPanel}
+                )}
+                {!isChatFullscreen && isWide && showChatSessions && (
+                  <View className="shrink-0 border-b border-border bg-background">
+                    <ChatSessionPicker
+                      sessions={chatSessions}
+                      currentSessionId={chatSessionId ?? undefined}
+                      onSelect={(sessionId) => {
+                        setChatSessionId(sessionId)
+                        setShowChatSessions(false)
+                      }}
+                      onCreate={handleCreateNewSession}
+                      onLoadMore={handleLoadMoreSessions}
+                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                    />
                   </View>
-                </View>
-              )}
-
-              {/* Left chat panel */}
-              {!isChatFullscreen && (
-                <View
-                  className={cn(
-                    'flex min-h-0 flex-col',
-                    isWide ? 'w-[480px] shrink-0 bg-background z-10' : 'relative flex-1',
-                    chatHidden && 'hidden',
-                  )}
-                >
-                  {isWide && showChatSessions && (
-                    <View className="shrink-0 border-b border-border bg-background">
-                      <ChatSessionPicker
-                        sessions={chatSessions}
-                        currentSessionId={chatSessionId ?? undefined}
-                        onSelect={(sessionId) => {
-                          setChatSessionId(sessionId)
-                          setShowChatSessions(false)
-                        }}
-                        onCreate={handleCreateNewSession}
-                        onLoadMore={handleLoadMoreSessions}
-                        hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                      />
-                    </View>
-                  )}
-                  <View className="min-h-0 flex-1">{chatPanel}</View>
-                </View>
-              )}
+                )}
+                <View className="min-h-0 flex-1">{chatPanel}</View>
+              </View>
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
