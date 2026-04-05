@@ -355,6 +355,11 @@ async function trackUsageFromStream(
         })
         assistantMessageId = message.id
         console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
+
+        prisma.project.update({
+          where: { id: project.id },
+          data: { lastMessageAt: new Date() },
+        }).catch(() => {})
       }
     } catch (err) {
       console.error("[ProjectChat] Failed to persist assistant message:", err)

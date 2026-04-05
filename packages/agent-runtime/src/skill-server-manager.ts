@@ -563,7 +563,7 @@ export class SkillServerManager {
     this._phase = 'starting'
     console.log(`[${LOG_PREFIX}] Spawning server on port ${this._port}...`)
 
-    const proc = spawn('bun', ['run', entry], {
+    const proc = spawn(pkg.bunBinary, ['run', entry], {
       cwd: this.serverDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {

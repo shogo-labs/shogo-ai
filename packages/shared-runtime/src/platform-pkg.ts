@@ -34,6 +34,11 @@ const DEFAULT_EXEC_TIMEOUT = 60_000
 export class PlatformPackageManager {
   readonly isWindows = IS_WINDOWS
 
+  /** Resolved path to the bun binary — prefers SHOGO_BUN_PATH (set by desktop app) over bare `bun`. */
+  get bunBinary(): string {
+    return process.env.SHOGO_BUN_PATH || 'bun'
+  }
+
   private shellOpt(): boolean | undefined {
     return IS_WINDOWS ? true : undefined
   }
@@ -63,15 +68,16 @@ export class PlatformPackageManager {
         cwd, timeout, stdio, env, shell: true,
       })
     } else {
+      const bun = this.bunBinary
       if (opts?.frozen) {
         try {
-          nodeExecSync('bun install --frozen-lockfile 2>&1', { cwd, timeout, stdio, env })
+          nodeExecSync(`"${bun}" install --frozen-lockfile 2>&1`, { cwd, timeout, stdio, env })
           return
         } catch {
           // fall through to plain install
         }
       }
-      nodeExecSync('bun install', { cwd, timeout, stdio, env })
+      nodeExecSync(`"${bun}" install`, { cwd, timeout, stdio, env })
     }
   }
 
@@ -82,7 +88,7 @@ export class PlatformPackageManager {
   installAsync(cwd: string, opts?: PkgInstallOptions): Promise<void> {
     const timeout = opts?.timeout ?? DEFAULT_INSTALL_TIMEOUT
     const env = this.spawnEnv(opts?.env)
-    const cmd = IS_WINDOWS ? 'npm.cmd' : 'bun'
+    const cmd = IS_WINDOWS ? 'npm.cmd' : this.bunBinary
     const args = IS_WINDOWS ? ['install', '--loglevel=error'] : ['install']
 
     return new Promise<void>((resolve, reject) => {
@@ -129,9 +135,10 @@ export class PlatformPackageManager {
     const env = this.spawnEnv(opts?.env)
 
     const argStr = args.length > 0 ? ` ${args.join(' ')}` : ''
+    const bun = this.bunBinary
     const cmd = IS_WINDOWS
       ? `npx ${tool}${argStr}`
-      : `${opts?.useBunFlag ? 'bunx --bun' : 'bunx'} ${tool}${argStr}`
+      : `"${bun}" x ${opts?.useBunFlag ? '--bun ' : ''}${tool}${argStr}`
 
     return nodeExecSync(cmd, {
       cwd, timeout, stdio, env,

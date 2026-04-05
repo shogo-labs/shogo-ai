@@ -232,13 +232,24 @@ export const chatMessageHooks: ChatMessageHooks = {
   },
 
   /**
-   * Update session updatedAt when message is created
-   * Note: updatedAt has @updatedAt so it auto-updates, but we call update to trigger it
+   * Update session updatedAt and project lastMessageAt when message is created
    */
   afterCreate: async (message, ctx) => {
+    const now = new Date()
     await ctx.prisma.chatSession.update({
       where: { id: message.sessionId },
-      data: { updatedAt: new Date() },
+      data: { updatedAt: now },
     })
+
+    const session = await ctx.prisma.chatSession.findUnique({
+      where: { id: message.sessionId },
+      select: { contextId: true, contextType: true },
+    })
+    if (session?.contextId && session.contextType === 'project') {
+      await ctx.prisma.project.update({
+        where: { id: session.contextId },
+        data: { lastMessageAt: now },
+      }).catch(() => {})
+    }
   },
 }

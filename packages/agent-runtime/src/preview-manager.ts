@@ -302,7 +302,7 @@ export class PreviewManager {
     const buildLogPath = join(this.projectDir, BUILD_LOG)
     console.log(`[${LOG_PREFIX}] Starting template API server on port ${API_SERVER_PORT}...`)
 
-    const proc = spawn('bun', ['run', 'server.tsx'], {
+    const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {
       cwd: this.projectDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {

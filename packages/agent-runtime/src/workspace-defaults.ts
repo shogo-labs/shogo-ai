@@ -255,8 +255,9 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
 
   console.log('[workspace-defaults] Installing workspace dependencies...')
   const { spawn } = await import('child_process')
+  const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn('bun', ['install', '--frozen-lockfile'], {
+    const proc = spawn(bunBin, ['install', '--frozen-lockfile'], {
       cwd: dir,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -267,7 +268,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
       if (code === 0) resolve()
       else {
         console.warn(`[workspace-defaults] bun install exited with code ${code}, retrying without --frozen-lockfile`)
-        const retry = spawn('bun', ['install'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+        const retry = spawn(bunBin, ['install'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
         retry.stderr?.on('data', () => {})
         retry.stdout?.on('data', () => {})
         retry.on('close', (c2) => {

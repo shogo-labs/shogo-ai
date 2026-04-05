@@ -716,7 +716,8 @@ export function evalAdminRoutes(): Hono {
     ]
     if (local) args.push('--local')
 
-    const child = spawn('bun', args, {
+    const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
+    const child = spawn(bunBin, args, {
       cwd: AGENT_RUNTIME_DIR,
       detached: true,
       stdio: 'ignore',

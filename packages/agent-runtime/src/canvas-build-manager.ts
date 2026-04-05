@@ -82,7 +82,8 @@ export class CanvasBuildManager {
 
     try {
       await new Promise<void>((resolve, reject) => {
-        const proc: ChildProcess = spawn('bun', ['run', 'build'], {
+        const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
+        const proc: ChildProcess = spawn(bunBin, ['run', 'build'], {
           cwd: this.workspaceDir,
           stdio: ['ignore', 'pipe', 'pipe'],
         })

@@ -145,6 +145,7 @@ model Project {
   templateId         String?
   knativeServiceName String?
   settings           String?
+  lastMessageAt      DateTime?
 
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)

@@ -1067,8 +1067,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     const all = projects?.all ?? []
     recentProjects = [...all]
       .sort((a: any, b: any) => {
-        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
-        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+        const aTime = a.lastMessageAt || a.updatedAt || 0
+        const bTime = b.lastMessageAt || b.updatedAt || 0
         return bTime - aTime
       })
       .slice(0, 5)
