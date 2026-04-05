@@ -1959,15 +1959,16 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ content: truncated, url: p.url(), title: await p.title() })
           }
           case 'screenshot': {
-            const screenshotPath = join(ctx.workspaceDir, 'screenshot.png')
+            const filename = `screenshot-${Date.now()}.png`
+            const screenshotPath = join(ctx.workspaceDir, filename)
             const buffer = await p.screenshot({ path: screenshotPath, fullPage: false })
             const base64 = Buffer.from(buffer).toString('base64')
             return {
               content: [
                 { type: 'image' as const, data: base64, mimeType: 'image/png' },
-                { type: 'text' as const, text: JSON.stringify({ ok: true, path: 'screenshot.png', url: p.url() }) },
+                { type: 'text' as const, text: JSON.stringify({ ok: true, path: filename, url: p.url() }) },
               ],
-              details: { ok: true, path: 'screenshot.png', url: p.url() },
+              details: { ok: true, path: filename, url: p.url() },
             }
           }
           case 'evaluate': {

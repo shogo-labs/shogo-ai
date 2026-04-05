@@ -28,6 +28,7 @@ import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { BrowserWidget } from "./BrowserWidget"
 import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
@@ -145,7 +146,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create", "browser"])
 const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 const MIN_GROUP_SIZE = 2
@@ -456,6 +457,17 @@ export function AssistantContent({
           if (part.tool.toolName === "edit_file" || part.tool.toolName === "Edit" || part.tool.toolName === "StrReplace") {
             return (
               <EditFileWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={expandedTools.has(part.id)}
+                onToggle={getToggle(part.id)}
+              />
+            )
+          }
+
+          if (part.tool.toolName === "browser") {
+            return (
+              <BrowserWidget
                 key={part.id}
                 tool={part.tool}
                 isExpanded={expandedTools.has(part.id)}
