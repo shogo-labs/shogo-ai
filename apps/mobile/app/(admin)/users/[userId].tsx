@@ -215,7 +215,7 @@ export default function AdminUserDetailPage() {
         />
       }
     >
-      <View style={isWide ? { maxWidth: 900, width: '100%' } : undefined}>
+      <View>
         <Pressable
           onPress={() => router.replace('/(admin)/users' as any)}
           className={cn(

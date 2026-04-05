@@ -104,7 +104,6 @@ export default function ToolUsageAnalytics() {
       contentContainerStyle={{
         padding: isWide ? 32 : 16,
         paddingBottom: 40,
-        maxWidth: 1200,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={
