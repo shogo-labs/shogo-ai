@@ -42,6 +42,7 @@ import {
   BarChart3,
   MessageSquare,
   Zap,
+  CreditCard,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -57,6 +58,10 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import {
+  getTotalCreditsForPlan,
+  formatCredits,
+} from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import {
@@ -86,9 +91,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'security' | 'analytics'
+type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'analytics'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'analytics']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'analytics']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -103,7 +108,8 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+  { id: 'billing', label: 'Billing', icon: CreditCard },
+  { id: 'analytics', label: 'Usage', icon: BarChart3 },
 ]
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
@@ -196,7 +202,10 @@ function SettingsSidebar({
     { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
     ...(showBilling
-      ? [{ id: 'analytics' as TabId, label: 'Analytics' }]
+      ? [
+          { id: 'billing' as TabId, label: 'Billing' },
+          { id: 'analytics' as TabId, label: 'Usage' },
+        ]
       : []),
   ]
 
@@ -2091,6 +2100,101 @@ function InviteMembersModal({
 }
 
 // ============================================================================
+// BILLING TAB
+// ============================================================================
+
+function BillingTab() {
+  const router = useRouter()
+  const workspace = useActiveWorkspace()
+  const { subscription, effectiveBalance } = useBillingData(workspace?.id)
+
+  const planId = subscription?.planId?.toLowerCase() ?? 'free'
+  const planLabel = planId.startsWith('enterprise')
+    ? 'Enterprise'
+    : planId.startsWith('business')
+      ? 'Business'
+      : planId.startsWith('pro')
+        ? 'Pro'
+        : planId.startsWith('basic')
+          ? 'Basic'
+          : 'Free'
+  const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
+  const totalCredits = getTotalCreditsForPlan(hasActiveSubscription ? subscription?.planId : undefined)
+  const creditsUsed = totalCredits - (effectiveBalance?.total ?? 0)
+  const usagePct = totalCredits > 0 ? Math.min(100, Math.round((creditsUsed / totalCredits) * 100)) : 0
+
+  if (!workspace?.id) {
+    return (
+      <View className="py-12 items-center">
+        <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+      </View>
+    )
+  }
+
+  return (
+    <View className="gap-4">
+      <View>
+        <Text className="text-lg font-bold text-foreground mb-1">Billing</Text>
+        <Text className="text-xs text-muted-foreground">
+          Manage your plan and view credit usage
+        </Text>
+      </View>
+
+      <Card>
+        <CardContent className="p-4 gap-3">
+          <View className="flex-row items-center justify-between">
+            <View className="gap-1">
+              <Text className="text-xs text-muted-foreground">Current Plan</Text>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-lg font-bold text-foreground">{planLabel}</Text>
+                {hasActiveSubscription && (
+                  <Badge variant="secondary">
+                    <Text className="text-xs">{subscription?.status === 'trialing' ? 'Trial' : 'Active'}</Text>
+                  </Badge>
+                )}
+              </View>
+            </View>
+            <CreditCard size={20} className="text-muted-foreground" />
+          </View>
+
+          <Separator />
+
+          <View className="gap-2">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted-foreground">Credits</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {formatCredits(effectiveBalance?.total ?? 0)} / {formatCredits(totalCredits)}
+              </Text>
+            </View>
+            <View className="h-2 bg-muted rounded-full overflow-hidden">
+              <View
+                className={cn('h-full rounded-full', usagePct > 80 ? 'bg-destructive' : 'bg-primary')}
+                style={{ width: `${Math.max(0, 100 - usagePct)}%` }}
+              />
+            </View>
+            <Text className="text-xs text-muted-foreground">
+              {effectiveBalance
+                ? `${formatCredits(effectiveBalance.dailyCredits)} daily + ${formatCredits(effectiveBalance.monthlyCredits)} monthly remaining`
+                : 'Loading...'}
+            </Text>
+          </View>
+
+          <Separator />
+
+          <Button
+            variant="default"
+            onPress={() => router.push('/(app)/billing' as any)}
+            className="mt-1"
+          >
+            <Text className="text-primary-foreground font-medium">Manage Plan</Text>
+          </Button>
+        </CardContent>
+      </Card>
+    </View>
+  )
+}
+
+// ============================================================================
 // WORKSPACE ANALYTICS TAB
 // ============================================================================
 
@@ -2108,9 +2212,9 @@ function WorkspaceAnalyticsTab() {
   const [logPage, setLogPage] = useState(1)
 
   const [overview, setOverview] = useState<{ data: any; loading: boolean }>({ data: null, loading: true })
-  const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
   const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
   const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
+  const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
   const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
 
   const loadAll = useCallback(async () => {
@@ -2118,25 +2222,37 @@ function WorkspaceAnalyticsTab() {
     const p = { period }
 
     setOverview(s => ({ ...s, loading: true }))
-    setUsage(s => ({ ...s, loading: true }))
     setUsageSummary(s => ({ ...s, loading: true }))
     setUsageLog(s => ({ ...s, loading: true }))
-    setChatStats(s => ({ ...s, loading: true }))
 
-    const [ov, us, uSum, uLog, ch] = await Promise.all([
+    const basicFetches = [
       api.getWorkspaceAnalytics<any>(http, workspaceId, 'overview', p).catch(() => null),
-      api.getWorkspaceAnalytics<UsageBreakdownData>(http, workspaceId, 'usage', p).catch(() => null),
       api.getWorkspaceAnalytics<UsageSummaryData>(http, workspaceId, 'usage-summary', p).catch(() => null),
       api.getWorkspaceAnalytics<UsageLogData>(http, workspaceId, 'usage-log', { ...p, page: String(logPage), limit: '50' }).catch(() => null),
-      api.getWorkspaceAnalytics<ChatAnalyticsData>(http, workspaceId, 'chat', p).catch(() => null),
-    ])
+    ] as const
 
-    setOverview({ data: ov, loading: false })
-    setUsage({ data: us, loading: false })
-    setUsageSummary({ data: uSum, loading: false })
-    setUsageLog({ data: uLog, loading: false })
-    setChatStats({ data: ch, loading: false })
-  }, [http, workspaceId, period, logPage])
+    if (isBusinessOrHigher) {
+      setUsage(s => ({ ...s, loading: true }))
+      setChatStats(s => ({ ...s, loading: true }))
+
+      const [ov, uSum, uLog, us, ch] = await Promise.all([
+        ...basicFetches,
+        api.getWorkspaceAnalytics<UsageBreakdownData>(http, workspaceId, 'usage', p).catch(() => null),
+        api.getWorkspaceAnalytics<ChatAnalyticsData>(http, workspaceId, 'chat', p).catch(() => null),
+      ])
+
+      setOverview({ data: ov, loading: false })
+      setUsageSummary({ data: uSum, loading: false })
+      setUsageLog({ data: uLog, loading: false })
+      setUsage({ data: us, loading: false })
+      setChatStats({ data: ch, loading: false })
+    } else {
+      const [ov, uSum, uLog] = await Promise.all(basicFetches)
+      setOverview({ data: ov, loading: false })
+      setUsageSummary({ data: uSum, loading: false })
+      setUsageLog({ data: uLog, loading: false })
+    }
+  }, [http, workspaceId, period, logPage, isBusinessOrHigher])
 
   useEffect(() => {
     loadAll()
@@ -2150,33 +2266,10 @@ function WorkspaceAnalyticsTab() {
     )
   }
 
-  if (!isBusinessOrHigher) {
-    return (
-      <View className="py-8 px-4 items-center gap-4">
-        <View className="w-12 h-12 rounded-full bg-primary/10 items-center justify-center">
-          <BarChart3 size={24} className="text-primary" />
-        </View>
-        <Text className="text-lg font-bold text-foreground text-center">
-          Team Analytics
-        </Text>
-        <Text className="text-sm text-muted-foreground text-center max-w-[340px]">
-          Workspace analytics — usage dashboards, per-member credit consumption, and growth charts — are available on Business plans and above.
-        </Text>
-        <Button
-          variant="default"
-          onPress={() => router.push('/(app)/billing')}
-          className="mt-2"
-        >
-          <Text className="text-primary-foreground font-medium">Upgrade to Business</Text>
-        </Button>
-      </View>
-    )
-  }
-
   return (
     <View className="gap-4">
       <View>
-        <Text className="text-lg font-bold text-foreground mb-1">Workspace Analytics</Text>
+        <Text className="text-lg font-bold text-foreground mb-1">Workspace Usage</Text>
         <Text className="text-xs text-muted-foreground mb-3">
           Usage metrics and credit consumption for this workspace
         </Text>
@@ -2191,7 +2284,7 @@ function WorkspaceAnalyticsTab() {
         <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} />
       </View>
 
-      {/* Usage table (summary + event log) */}
+      {/* Usage table (summary + event log) — available to all plans */}
       <UsageTableSection
         summaryData={usageSummary.data}
         logData={usageLog.data}
@@ -2201,11 +2294,33 @@ function WorkspaceAnalyticsTab() {
         logPage={logPage}
       />
 
-      {/* Chat analytics */}
-      <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
-
-      {/* Usage breakdown */}
-      <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+      {isBusinessOrHigher ? (
+        <>
+          <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
+          <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+        </>
+      ) : (
+        <Card>
+          <CardContent className="p-4 items-center gap-3">
+            <View className="w-10 h-10 rounded-full bg-primary/10 items-center justify-center">
+              <BarChart3 size={18} className="text-primary" />
+            </View>
+            <Text className="text-sm font-semibold text-foreground text-center">
+              Advanced Team Analytics
+            </Text>
+            <Text className="text-xs text-muted-foreground text-center max-w-[320px]">
+              Growth charts, per-member credit breakdown, and chat analytics are available on Business plans.
+            </Text>
+            <Button
+              variant="outline"
+              onPress={() => router.push('/(app)/billing' as any)}
+              className="mt-1"
+            >
+              <Text className="text-foreground font-medium text-sm">Upgrade to Business</Text>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </View>
   )
 }
@@ -2228,6 +2343,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'people' && !isLocal && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
+      {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && !isLocal && <WorkspaceAnalyticsTab />}
     </>
   )
@@ -2250,14 +2366,9 @@ export default observer(function SettingsPage() {
   )
 
   useEffect(() => {
-    if (params.tab === 'billing') {
-      router.replace('/(app)/billing' as any)
-    }
-  }, [params.tab, router])
-
-  useEffect(() => {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
     if (activeTab === 'analytics' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
