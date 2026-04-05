@@ -31,8 +31,7 @@ import {
   type LineEndingType,
 } from './edit-file-utils'
 import { MemorySearchEngine } from './memory-search'
-import { FileIndexEngine } from './file-index-engine'
-import { CodeIndexEngine } from './code-index-engine'
+import { IndexEngine, createDefaultConfig } from './index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
@@ -56,10 +55,10 @@ export interface ToolContext {
   /** Hot-connect a channel at runtime (called by channel_connect tool) */
   connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
   disconnectChannel?: (type: string) => Promise<void>
-  /** Lazily-initialized file index engine for RAG over workspace files */
-  fileIndexEngine?: FileIndexEngine
-  /** Lazily-initialized code index engine for semantic search over workspace source code */
-  codeIndexEngine?: CodeIndexEngine
+  /** Unified index engine for search over workspace code and user files */
+  indexEngine?: IndexEngine
+  /** Workspace knowledge graph for structural analysis and blast radius */
+  workspaceGraph?: import('./workspace-graph').WorkspaceGraph
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
   /** File watcher — notified when src/ files are written/edited/deleted to trigger rebuilds */
@@ -277,6 +276,25 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
   }
 }
 
+/**
+ * If the workspace graph is available, append a brief impact note to the
+ * tool result indicating how many files reference the changed file.
+ */
+function appendImpactHint(ctx: ToolContext, filePath: string, result: Record<string, unknown>): void {
+  try {
+    const graph = ctx.workspaceGraph
+    if (!graph) return
+
+    const impact = graph.getImpactRadius([filePath], 1, 20)
+    if (impact.impactedFiles.length > 0) {
+      result.impact_note = `This file is referenced by ${impact.impactedFiles.length} other file(s): ${
+        impact.impactedFiles.slice(0, 5).join(', ')
+      }${impact.impactedFiles.length > 5 ? ` and ${impact.impactedFiles.length - 5} more` : ''}. ` +
+        'Use impact_radius for full analysis.'
+    }
+  } catch { /* best-effort — do not fail the write */ }
+}
+
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
@@ -315,7 +333,8 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ctx.lspManager.notifyFileChanged(resolved, finalContent)
       }
 
-      const base = { ok: true, path: filePath, bytes: content.length }
+      const base: Record<string, unknown> = { ok: true, path: filePath, bytes: content.length }
+      appendImpactHint(ctx, filePath, base)
       const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
       return textResult(schemaResult ?? base)
     },
@@ -751,6 +770,7 @@ async function commitEdit(
   const patch = getStructuredPatch(filePath, originalContent, updated)
   const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
   if (note) base.note = note
+  appendImpactHint(ctx, filePath, base)
   const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
   return textResult(schemaResult ?? base)
 }
@@ -3234,8 +3254,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createLsTool(ctx), 'file_read'),
     g(createListFilesTool(ctx), 'file_read'),
     g(createDeleteFileTool(ctx), 'file_delete'),
-    g(createSearchFilesTool(ctx), 'file_read'),
-    g(createCodeSearchTool(ctx), 'file_read'),
+    g(createSearchTool(ctx), 'file_read'),
+    g(createImpactRadiusTool(ctx), 'file_read'),
     g(createWebTool(), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
@@ -3562,8 +3582,8 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
-  files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file', 'edit_file', 'read_lints'],
-  search: ['glob', 'grep', 'file_search'],
+  files: ['list_files', 'delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
+  search: ['glob', 'grep', 'search'],
   planning: ['todo_write'],
   web: ['web'],
   web_fetch: ['web'],
@@ -3584,7 +3604,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search_files', 'file_search',
+  'list_files', 'delete_file', 'search',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'read_lints', 'skill_server_sync',
@@ -3616,11 +3636,11 @@ export function resolveToolNames(refs: string[]): string[] {
 // File Management Tools (files/ directory with RAG search)
 // ---------------------------------------------------------------------------
 
-function getOrCreateFileIndex(ctx: ToolContext): FileIndexEngine {
-  if (!ctx.fileIndexEngine) {
-    ctx.fileIndexEngine = new FileIndexEngine(ctx.workspaceDir)
+function getOrCreateIndex(ctx: ToolContext): IndexEngine {
+  if (!ctx.indexEngine) {
+    ctx.indexEngine = new IndexEngine(createDefaultConfig(ctx.workspaceDir))
   }
-  return ctx.fileIndexEngine
+  return ctx.indexEngine
 }
 
 function createListFilesTool(ctx: ToolContext): AgentTool {
@@ -3714,26 +3734,39 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createSearchFilesTool(ctx: ToolContext): AgentTool {
+function createSearchTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'search_files',
+    name: 'search',
     description:
-      'Search across all indexed files in files/ using hybrid keyword + semantic search. ' +
-      'Supports .txt, .csv, and .md files. Returns relevant text chunks ranked by relevance.',
-    label: 'Search Files',
+      'Semantic search across the workspace. Searches code AND uploaded files by default. ' +
+      'Finds content by meaning, not just exact text. ' +
+      'Use for questions like "where is X implemented?", "find tests for Y", "what module handles Z?", ' +
+      'or "find revenue numbers in my data". ' +
+      'Returns ranked chunks with file paths and line numbers. ' +
+      'Prefer this over grep when exploring unfamiliar code or searching by concept rather than exact string. ' +
+      'Use source="code" to search only code, source="files" to search only uploaded files in files/.',
+    label: 'Search',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query (natural language or keywords)' }),
+      query: Type.String({ description: 'Natural language search query' }),
+      source: Type.Optional(Type.Union([
+        Type.Literal('all'),
+        Type.Literal('code'),
+        Type.Literal('files'),
+      ], { description: 'Which index to search: "all" (default), "code", or "files"' })),
       limit: Type.Optional(Type.Number({ description: 'Max results (default: 10)' })),
-      path_filter: Type.Optional(Type.String({ description: 'Filter to files matching this substring' })),
+      path_filter: Type.Optional(Type.String({ description: 'Restrict to files matching this substring (e.g. "test", "src/rules", "files/")' })),
+      file_extensions: Type.Optional(Type.Array(Type.String(), { description: 'Restrict to these extensions (e.g. [".py", ".ts", ".csv"])' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { query, limit = 10, path_filter } = params as {
-        query: string; limit?: number; path_filter?: string
+      const { query, source, limit = 10, path_filter, file_extensions } = params as {
+        query: string; source?: 'all' | 'code' | 'files'; limit?: number; path_filter?: string; file_extensions?: string[]
       }
-      const engine = getOrCreateFileIndex(ctx)
-      const results = await engine.search(query, limit, path_filter)
+      const engine = getOrCreateIndex(ctx)
+      const searchSource = source === 'all' || !source ? undefined : source
+      const results = await engine.search(query, { source: searchSource, limit, pathFilter: path_filter, extensions: file_extensions })
       return textResult({
         query,
+        source: source ?? 'all',
         results: results.map(r => ({
           path: r.path,
           chunk: r.chunk,
@@ -3742,55 +3775,74 @@ function createSearchFilesTool(ctx: ToolContext): AgentTool {
           matchType: r.matchType,
         })),
         count: results.length,
-        stats: engine.getStats(),
+        stats: engine.getStats(searchSource),
       })
     },
   }
 }
 
 // ---------------------------------------------------------------------------
-// Code Search Tool (workspace-wide semantic search)
+// Impact Radius Tool (knowledge graph blast-radius analysis)
 // ---------------------------------------------------------------------------
 
-function getOrCreateCodeIndex(ctx: ToolContext): CodeIndexEngine {
-  if (!ctx.codeIndexEngine) {
-    ctx.codeIndexEngine = new CodeIndexEngine(ctx.workspaceDir)
+function getOrCreateGraph(ctx: ToolContext): import('./workspace-graph').WorkspaceGraph | null {
+  if (ctx.workspaceGraph) return ctx.workspaceGraph
+
+  try {
+    const engine = getOrCreateIndex(ctx)
+    const { WorkspaceGraph } = require('./workspace-graph')
+    const { createDefaultExtractors } = require('./graph-extractors')
+    const graph = new WorkspaceGraph(engine)
+    for (const ext of createDefaultExtractors()) graph.registerExtractor(ext)
+    graph.buildGraph()
+    engine.setGraph(graph)
+    ctx.workspaceGraph = graph
+    return graph
+  } catch {
+    return null
   }
-  return ctx.codeIndexEngine
 }
 
-function createCodeSearchTool(ctx: ToolContext): AgentTool {
+function createImpactRadiusTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'file_search',
+    name: 'impact_radius',
     description:
-      'Semantic search across all files in the workspace. Finds code by meaning, not just exact text. ' +
-      'Use for questions like "where is X implemented?", "find tests for Y", "what module handles Z?". ' +
-      'Returns ranked code chunks with file paths and line numbers. ' +
-      'Prefer this over grep when exploring unfamiliar code or searching by concept rather than exact string.',
-    label: 'File Search',
+      'Find all files and symbols affected by changes to given files. ' +
+      'Shows blast radius: callers, dependents, importers, and related documents. ' +
+      'Useful before making changes to understand what else might break or need updating.',
+    label: 'Impact Radius',
     parameters: Type.Object({
-      query: Type.String({ description: 'Natural language search query' }),
-      limit: Type.Optional(Type.Number({ description: 'Max results (default: 10)' })),
-      path_filter: Type.Optional(Type.String({ description: 'Restrict to files matching this substring (e.g. "test", "src/rules")' })),
-      file_extensions: Type.Optional(Type.Array(Type.String(), { description: 'Restrict to these extensions (e.g. [".py", ".ts"])' })),
+      files: Type.Array(Type.String(), { description: 'File paths to check (relative to workspace root)' }),
+      max_depth: Type.Optional(Type.Number({ description: 'BFS traversal depth (default: 2)' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { query, limit = 10, path_filter, file_extensions } = params as {
-        query: string; limit?: number; path_filter?: string; file_extensions?: string[]
+      const { files, max_depth = 2 } = params as { files: string[]; max_depth?: number }
+
+      const graph = getOrCreateGraph(ctx)
+      if (!graph) {
+        return textResult({ error: 'Knowledge graph not available. The workspace graph could not be initialized.' })
       }
-      const engine = getOrCreateCodeIndex(ctx)
-      const results = await engine.search(query, limit, path_filter, file_extensions)
+
+      const result = graph.getImpactRadius(files, max_depth)
+
       return textResult({
-        query,
-        results: results.map(r => ({
-          path: r.path,
-          chunk: r.chunk,
-          score: Math.round(r.score * 1000) / 1000,
-          lines: `${r.lineStart}-${r.lineEnd}`,
-          matchType: r.matchType,
+        analyzed_files: files,
+        depth: max_depth,
+        changed_nodes: result.changedNodes.map(n => ({
+          kind: n.kind, name: n.name, file: n.filePath,
         })),
-        count: results.length,
-        stats: engine.getStats(),
+        impacted_files: result.impactedFiles,
+        impacted_nodes: result.impactedNodes.slice(0, 50).map(n => ({
+          kind: n.kind, name: n.name, file: n.filePath,
+        })),
+        edges: result.edges.slice(0, 100).map(e => ({
+          kind: e.kind,
+          from: e.sourceQualified.split('::').pop(),
+          to: e.targetQualified.split('::').pop(),
+        })),
+        total_impacted: result.totalImpacted,
+        truncated: result.truncated,
+        graph_stats: graph.getStats(),
       })
     },
   }

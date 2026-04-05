@@ -44,7 +44,7 @@ You are operating in **coordinator mode**. Your role is to orchestrate workers, 
 - Compare multiple agents' outputs when approaching ambiguous problems.`
 
 export const COORDINATOR_READONLY_TOOLS = new Set([
-  'read_file', 'glob', 'grep', 'ls', 'list_files', 'search_files', 'code_search',
+  'read_file', 'glob', 'grep', 'ls', 'list_files', 'search', 'impact_radius',
   'web', 'browser', 'memory_read', 'memory_search',
   'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
   'team_create', 'team_delete', 'task_create', 'task_get', 'task_list', 'task_update', 'send_team_message',

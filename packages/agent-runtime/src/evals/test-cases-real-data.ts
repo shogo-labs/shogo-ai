@@ -127,10 +127,10 @@ export const REAL_DATA_EVALS: AgentEval[] = [
       },
       {
         id: 'read-csv-file',
-        description: 'Used read_file or search_files to access the CSV data',
+        description: 'Used read_file or search to access the CSV data',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'response-has-real-expenses',
@@ -485,7 +485,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         ],
         default: { content: '', path: 'unknown' },
       },
-      search_files: {
+      search: {
         type: 'static',
         description: 'Search across indexed files.',
         paramKeys: ['query'],
@@ -502,17 +502,17 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'accessed-files',
-        description: 'Used list_files or read_file or search_files to access uploaded data',
+        description: 'Used list_files or read_file or search to access uploaded data',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'read_file') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'read-the-file',
         description: 'Read the actual CSV file content',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'response-has-real-data',

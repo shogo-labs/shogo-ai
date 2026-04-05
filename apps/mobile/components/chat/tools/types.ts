@@ -54,7 +54,7 @@ export interface ToolCallData {
 
 export function getToolCategory(name: string): ToolCategory {
   if (name.startsWith("mcp__")) return "mcp"
-  if (["Read", "Write", "Edit", "Glob", "Grep", "read_file", "write_file", "edit_file", "glob", "grep", "search_files"].includes(name)) return "file"
+  if (["Read", "Write", "Edit", "Glob", "Grep", "read_file", "write_file", "edit_file", "glob", "grep", "search"].includes(name)) return "file"
   if (["Skill", "Task", "task", "skill"].includes(name)) return "skill"
   if (["Bash", "exec"].includes(name)) return "bash"
   return "other"
@@ -104,7 +104,7 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
     }
   }
 
-  if (toolName === "Grep" || toolName === "Glob" || toolName === "grep" || toolName === "glob" || toolName === "search_files") {
+  if (toolName === "Grep" || toolName === "Glob" || toolName === "grep" || toolName === "glob" || toolName === "search") {
     const pattern = args.pattern as string | undefined
     if (pattern) {
       return pattern.length > 30 ? pattern.slice(0, 27) + "..." : pattern

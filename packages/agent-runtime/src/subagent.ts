@@ -26,7 +26,7 @@ import type { ToolContext } from './gateway-tools'
 
 const CORE_GATEWAY_TOOLS = new Set([
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search_files',
+  'list_files', 'delete_file', 'search', 'impact_radius',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',

@@ -4,9 +4,9 @@
  * File Workspace & RAG — End-to-End Tests
  *
  * Tests the full file management and search flow:
- * 1. FileIndexEngine — indexing, FTS5 search, incremental reindex
+ * 1. IndexEngine (files source) — indexing, FTS5 search, incremental reindex
  * 2. API endpoints — CRUD, upload, download, tree, search
- * 3. Agent tools — list_files, delete_file, search_files
+ * 3. Agent tools — list_files, delete_file, search
  *
  * Runs against a real temp workspace with actual SQLite databases.
  */
@@ -14,7 +14,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { FileIndexEngine } from '../file-index-engine'
+import { IndexEngine, createFilesSource } from '../index-engine'
 import { createTools } from '../gateway-tools'
 
 // ---------------------------------------------------------------------------
@@ -37,11 +37,11 @@ function writeTestFile(relPath: string, content: string) {
 }
 
 // ============================================================================
-// 1. FileIndexEngine — Core RAG Engine
+// 1. IndexEngine (files source) — Core RAG Engine
 // ============================================================================
 
-describe('FileIndexEngine', () => {
-  let engine: FileIndexEngine
+describe('IndexEngine (files source)', () => {
+  let engine: IndexEngine
 
   beforeAll(() => {
     setupWorkspace()
@@ -96,7 +96,12 @@ describe('FileIndexEngine', () => {
       '- Added 5 new MCP integrations',
     ].join('\n'))
 
-    engine = new FileIndexEngine(TEST_DIR)
+    const dbDir = join(TEST_DIR, '.shogo')
+    mkdirSync(dbDir, { recursive: true })
+    engine = new IndexEngine({
+      dbPath: join(dbDir, 'index.db'),
+      sources: [createFilesSource(TEST_DIR)],
+    })
   })
 
   afterAll(() => {
@@ -105,22 +110,21 @@ describe('FileIndexEngine', () => {
   })
 
   test('reindex discovers and indexes all supported files', async () => {
-    const result = await engine.reindex()
+    const result = await engine.reindex('files')
     expect(result.indexed).toBe(4)
     expect(result.removed).toBe(0)
     expect(result.total).toBe(4)
   })
 
   test('getStats returns correct counts', () => {
-    const stats = engine.getStats()
+    const stats = engine.getStats('files')
     expect(stats.totalFiles).toBe(4)
     expect(stats.totalChunks).toBeGreaterThanOrEqual(4)
-    // In test environments without OPENAI_API_KEY, embeddings are disabled
     expect(typeof stats.embeddingsEnabled).toBe('boolean')
   })
 
   test('keyword search finds relevant documents', async () => {
-    const results = await engine.search('database migration', 5)
+    const results = await engine.search('database migration', { source: 'files', limit: 5 })
     expect(results.length).toBeGreaterThan(0)
     const noteResult = results.find(r => r.path === 'notes.txt')
     expect(noteResult).toBeDefined()
@@ -128,61 +132,60 @@ describe('FileIndexEngine', () => {
   })
 
   test('search matches CSV content', async () => {
-    const results = await engine.search('Alice Engineer Platform', 5)
+    const results = await engine.search('Alice Engineer Platform', { source: 'files', limit: 5 })
     expect(results.length).toBeGreaterThan(0)
     const csvResult = results.find(r => r.path === 'team.csv')
     expect(csvResult).toBeDefined()
   })
 
   test('search finds content in subdirectories', async () => {
-    const results = await engine.search('revenue churn rate', 5)
+    const results = await engine.search('revenue churn rate', { source: 'files', limit: 5 })
     expect(results.length).toBeGreaterThan(0)
     const reportResult = results.find(r => r.path === 'reports/q1-summary.md')
     expect(reportResult).toBeDefined()
   })
 
   test('search with path_filter narrows results', async () => {
-    const results = await engine.search('search', 10, 'reports')
+    const results = await engine.search('search', { source: 'files', limit: 10, pathFilter: 'reports' })
     const allInReports = results.every(r => r.path.includes('reports'))
     expect(allInReports).toBe(true)
   })
 
   test('incremental reindex skips unchanged files', async () => {
-    const result = await engine.reindex()
+    const result = await engine.reindex('files')
     expect(result.indexed).toBe(0)
     expect(result.removed).toBe(0)
   })
 
   test('reindex detects modified files', async () => {
-    // Wait a tiny bit to ensure mtime changes
     await new Promise(r => setTimeout(r, 50))
     writeTestFile('notes.txt', 'Updated content: new sprint notes about Kubernetes deployment.')
-    const result = await engine.reindex()
+    const result = await engine.reindex('files')
     expect(result.indexed).toBe(1)
   })
 
   test('reindex detects deleted files', async () => {
     rmSync(join(FILES_DIR, 'team.csv'))
-    const result = await engine.reindex()
+    const result = await engine.reindex('files')
     expect(result.removed).toBe(1)
     expect(result.total).toBe(3)
   })
 
   test('search after delete no longer returns deleted file', async () => {
-    const results = await engine.search('Alice Engineer', 10)
+    const results = await engine.search('Alice Engineer', { source: 'files', limit: 10 })
     const csvResult = results.find(r => r.path === 'team.csv')
     expect(csvResult).toBeUndefined()
   })
 
   test('reindex detects new files', async () => {
     writeTestFile('changelog.md', '# Changelog\n\n## v1.0\n- Initial release with file search')
-    const result = await engine.reindex()
+    const result = await engine.reindex('files')
     expect(result.indexed).toBe(1)
     expect(result.total).toBe(4)
   })
 
   test('search returns results with scores', async () => {
-    const results = await engine.search('sqlite search', 10)
+    const results = await engine.search('sqlite search', { source: 'files', limit: 10 })
     expect(results.length).toBeGreaterThan(0)
     for (const r of results) {
       expect(typeof r.score).toBe('number')
@@ -192,12 +195,14 @@ describe('FileIndexEngine', () => {
   })
 
   test('empty query returns empty results', async () => {
-    const results = await engine.search('', 10)
+    const results = await engine.search('', { source: 'files', limit: 10 })
     expect(results.length).toBe(0)
   })
 
-  test('getFilesDir returns correct path', () => {
-    expect(engine.getFilesDir()).toBe(FILES_DIR)
+  test('getSource returns files source config', () => {
+    const src = engine.getSource('files')
+    expect(src).toBeDefined()
+    expect(src!.scanDir).toBe(FILES_DIR)
   })
 })
 
@@ -241,7 +246,7 @@ describe('Workspace API Endpoints', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  // Skip API tests if server isn't running — the FileIndexEngine tests above
+  // Skip API tests if server isn't running — the IndexEngine tests above
   // cover the core logic. API tests can be run when the server is started separately.
 })
 
@@ -334,7 +339,7 @@ describe('File Management Agent Tools', () => {
     expect(data.error).toBeDefined()
   })
 
-  test('search_files tool returns search results', async () => {
+  test('search tool returns search results', async () => {
     writeTestFile('searchable.md', '# SQLite Vector Search\n\nThis document covers sqlite-vec integration for RAG.')
 
     const ctx: any = {
@@ -345,7 +350,7 @@ describe('File Management Agent Tools', () => {
     }
 
     const tools = createTools(ctx)
-    const searchTool = tools.find(t => t.name === 'search_files')!
+    const searchTool = tools.find(t => t.name === 'search')!
 
     const result = await searchTool.execute('test-call', { query: 'sqlite vector RAG' })
     const data = JSON.parse((result.content[0] as any).text)
@@ -354,7 +359,7 @@ describe('File Management Agent Tools', () => {
     expect(data.stats.totalFiles).toBeGreaterThan(0)
   })
 
-  test('search_files with path_filter', async () => {
+  test('search with path_filter', async () => {
     const ctx: any = {
       workspaceDir: TEST_DIR,
       channels: new Map(),
@@ -363,7 +368,7 @@ describe('File Management Agent Tools', () => {
     }
 
     const tools = createTools(ctx)
-    const searchTool = tools.find(t => t.name === 'search_files')!
+    const searchTool = tools.find(t => t.name === 'search')!
 
     const result = await searchTool.execute('test-call', {
       query: 'content',

@@ -832,7 +832,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           delete runtimeEnv.AI_PROXY_URL
         }
 
-        // Tools proxy URL — enables file-index-engine embeddings and other tool
+        // Tools proxy URL — enables index engine embeddings and other tool
         // requests to route through the API server (same as Kubernetes managers do).
         runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
 

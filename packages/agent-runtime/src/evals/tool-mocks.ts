@@ -2149,7 +2149,7 @@ export const REAL_DATA_UPLOADED_CSV_MOCKS: ToolMockMap = {
     ],
     default: { content: '', path: 'unknown' },
   },
-  search_files: {
+  search: {
     type: 'static',
     description: 'Search across indexed files using hybrid keyword + semantic search.',
     paramKeys: ['query'],

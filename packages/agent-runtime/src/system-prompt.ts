@@ -183,7 +183,7 @@ Use these **exact names** in the \`tools\` field:
 | \`channel_connect\` | Connect a messaging channel |
 | \`cron\` | Manage scheduled jobs |
 
-**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep + file_search, \`planning\` → todo_write, \`memory\` → memory_read + memory_search, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
+**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep + search, \`planning\` → todo_write, \`memory\` → memory_read + memory_search, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
 
 ### Skills with Scripts
 
@@ -362,7 +362,7 @@ export const TOOL_USAGE = `## Tool Usage
 - **delete_file** — Delete a file
 - **glob** — Find files matching a glob pattern (e.g. \`**/*.ts\`)
 - **grep** — Search for regex patterns in file contents across the workspace (use for exact text/symbol matches)
-- **file_search** — Semantic search across all workspace files. Finds code by meaning, not just exact text. Use for exploring unfamiliar code, searching by concept ("where is auth handled?", "find database migration logic"), or when you don't know the exact symbol name. Prefer \`grep\` for exact strings; prefer \`file_search\` for conceptual queries.
+- **search** — Semantic search across the workspace (code + uploaded files). Finds content by meaning, not just exact text. Use for exploring unfamiliar code, searching by concept ("where is auth handled?", "find database migration logic"), or searching uploaded data ("find revenue numbers"). Prefer \`grep\` for exact strings; prefer \`search\` for conceptual queries. Use \`source\` param to narrow: "code", "files", or "all" (default).
 - **ls** — List files and directories at any workspace path
 - **exec** — Run shell commands
 
@@ -388,7 +388,7 @@ Write a Prisma schema to \`.shogo/server/schema.prisma\` and the server starts a
 
 **Uploaded Files**
 - **list_files** — List files in the \`files/\` directory (uploaded by the user via the file browser)
-- **search_files** — RAG search across indexed files in \`files/\` using hybrid keyword + semantic search
+- Use **search** with \`source: "files"\` to RAG search across indexed files in \`files/\`
 
 **Web & External**
 - **web** — Fetch a URL or search the web. Provide \`url\` to fetch a page, or \`query\` to search Google.

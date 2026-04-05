@@ -221,6 +221,16 @@ async function parseSSEStream(
               }
               break
             }
+            case 'error': {
+              const errText = data.errorText || data.message || data.error || JSON.stringify(data)
+              if (verbose) console.log(`      [SSE] ERROR event: ${errText}`)
+              text += `[ERROR: ${errText}]`
+              break
+            }
+            default:
+              if (verbose && !['start-step', 'finish-step', 'finish'].includes(data.type)) {
+                console.log(`      [SSE] Unhandled event: ${data.type}`)
+              }
           }
         } catch { /* skip non-JSON lines */ }
       }

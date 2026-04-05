@@ -580,7 +580,7 @@ app.post('/agent/chat', async (c) => {
         savedPaths.push(baseName)
         console.log(`[AgentChat] Saved uploaded file to files/${baseName}`)
 
-        try { (getFileIndexEngine() as any).indexFile(resolved) } catch { /* best-effort */ }
+        try { getIndexEngine().indexFile('files', baseName).catch(() => {}) } catch { /* best-effort */ }
       } catch (err: any) {
         console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
       }
@@ -1089,6 +1089,7 @@ app.post('/agent/session/reset', async (c) => {
   agentGateway.reloadConfig()
   agentGateway.setActiveMode('canvas')
   agentGateway.setEvalLabel(body.evalLabel ?? null)
+  agentGateway.reconnectIndex()
   await agentGateway.getMCPClientManager().stopAll()
   return c.json({ ok: true })
 })
@@ -1252,14 +1253,14 @@ app.put('/agent/files/:filename', async (c) => {
 // Workspace File Management Endpoints (files/ directory)
 // ---------------------------------------------------------------------------
 
-import { FileIndexEngine } from './file-index-engine'
+import { IndexEngine, createDefaultConfig } from './index-engine'
 
-let fileIndexEngine: FileIndexEngine | null = null
-function getFileIndexEngine(): FileIndexEngine {
-  if (!fileIndexEngine) {
-    fileIndexEngine = new FileIndexEngine(WORKSPACE_DIR)
+let indexEngineSingleton: IndexEngine | null = null
+function getIndexEngine(): IndexEngine {
+  if (!indexEngineSingleton) {
+    indexEngineSingleton = new IndexEngine(createDefaultConfig(WORKSPACE_DIR))
   }
-  return fileIndexEngine
+  return indexEngineSingleton
 }
 
 const FILES_DIR = join(WORKSPACE_DIR, 'files')
@@ -1471,8 +1472,8 @@ app.post('/agent/workspace/search', async (c) => {
     }
     if (!query) return c.json({ error: 'Query required' }, 400)
 
-    const engine = getFileIndexEngine()
-    const results = await engine.search(query, limit, path_filter)
+    const engine = getIndexEngine()
+    const results = await engine.search(query, { source: 'files', limit, pathFilter: path_filter })
     return c.json({
       query,
       results: results.map(r => ({
@@ -1483,7 +1484,7 @@ app.post('/agent/workspace/search', async (c) => {
         matchType: r.matchType,
       })),
       count: results.length,
-      stats: engine.getStats(),
+      stats: engine.getStats('files'),
     })
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
@@ -1493,8 +1494,8 @@ app.post('/agent/workspace/search', async (c) => {
 // Re-index files (manual trigger)
 app.post('/agent/workspace/reindex', async (c) => {
   try {
-    const engine = getFileIndexEngine()
-    const stats = await engine.reindex()
+    const engine = getIndexEngine()
+    const stats = await engine.reindex('files')
     return c.json({ ok: true, ...stats })
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
