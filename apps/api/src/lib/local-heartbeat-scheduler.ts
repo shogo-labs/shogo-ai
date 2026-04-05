@@ -21,6 +21,7 @@ const TRIGGER_TIMEOUT_MS = parseInt(process.env.HEARTBEAT_TRIGGER_TIMEOUT_MS || 
 
 export interface IRuntimeStatusProvider {
   status(projectId: string): { agentPort?: number } | null
+  start(projectId: string): Promise<{ agentPort?: number }>
 }
 
 export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
@@ -64,10 +65,20 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
     try {
       const { deriveRuntimeToken } = await import('./runtime-token')
 
-      const runtime = this.runtimeProvider?.status(projectId)
+      let runtime = this.runtimeProvider?.status(projectId)
       if (!runtime?.agentPort) {
-        console.log(`[LocalHeartbeat] Runtime not running for ${projectId}, skipping`)
-        return
+        console.log(`[LocalHeartbeat] Runtime not running for ${projectId}, starting...`)
+        try {
+          runtime = await this.runtimeProvider?.start(projectId) ?? null
+        } catch (err: any) {
+          console.error(`[LocalHeartbeat] Failed to start runtime for ${projectId}:`, err.message)
+          return
+        }
+        if (!runtime?.agentPort) {
+          console.error(`[LocalHeartbeat] Runtime started but no agentPort for ${projectId}`)
+          return
+        }
+        console.log(`[LocalHeartbeat] Runtime started for ${projectId} on port ${runtime.agentPort}`)
       }
 
       const podUrl = `http://localhost:${runtime.agentPort}`
