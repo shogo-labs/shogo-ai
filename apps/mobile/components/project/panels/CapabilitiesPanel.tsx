@@ -42,7 +42,7 @@ export interface CapabilitySettings {
   webEnabled: boolean
   browserEnabled: boolean
   shellEnabled: boolean
-  cronEnabled: boolean
+  heartbeatEnabled: boolean
   imageGenEnabled: boolean
   memoryEnabled: boolean
 }
@@ -92,12 +92,12 @@ const CAPABILITIES: CapabilityDef[] = [
     warning: 'Disabling this prevents the agent from running any code or commands.',
   },
   {
-    key: 'cronEnabled',
-    label: 'Scheduling',
-    description: 'Run tasks automatically on a schedule',
+    key: 'heartbeatEnabled',
+    label: 'Heartbeat',
+    description: 'Periodic autonomous check-ins on a schedule',
     disabledDescription: 'No autonomous scheduling',
     icon: Clock,
-    toolNames: ['cron'],
+    toolNames: ['heartbeat_configure', 'heartbeat_status'],
   },
   {
     key: 'imageGenEnabled',
@@ -513,7 +513,7 @@ export function CapabilitiesPanel({
                             <View className="flex-1 flex-row items-center border border-border rounded-md bg-background">
                               <TextInput
                                 value={extensionToken}
-                                onChangeText={(v) => { setExtensionToken(v); setTokenSaved(false) }}
+                                onChangeText={(v) => { setExtensionToken(v.replace(/^\s*PLAYWRIGHT_MCP_EXTENSION_TOKEN\s*=\s*/i, '').trim()); setTokenSaved(false) }}
                                 secureTextEntry={!tokenVisible}
                                 placeholder="Extension token..."
                                 placeholderTextColor="#999"

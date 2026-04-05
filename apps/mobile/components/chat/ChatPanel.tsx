@@ -2659,7 +2659,7 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Error Alert — cap long messages so the sidebar layout stays usable */}
           {(error || emptyResponseError) && (
-            <View className="px-4 pb-2">
+            <View className="px-4 pb-2 max-w-lg">
               <View className="flex-row items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3">
                 <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" size={16} />
                 <View className="flex-1 min-w-0 flex-row items-start justify-between gap-2">

@@ -408,3 +408,33 @@ tools: [{tools used — list gateway tool names}]
 - Include synonyms and related phrases
 - Example for Google Calendar: "google calendar|calendar events|my meetings|my schedule|upcoming events|weekly calendar"
 - Example for Airbnb: "airbnb|find a place to stay|vacation rental|book accommodation|places to stay"`
+
+export const BROWSER_TOOL_GUIDE = `### Browser Tool Workflow
+
+The \`browser\` tool lets you navigate pages, interact with elements, and take screenshots.
+
+**IMPORTANT — Before interacting with any page:**
+1. Use \`snapshot\` to get the page structure and element refs before ANY interaction (click, fill, select, etc.)
+2. NEVER guess CSS selectors or element structures — always snapshot first to get refs
+
+**Core workflow:**
+1. \`navigate\` to a URL
+2. \`snapshot\` to get the accessibility tree with numbered element refs (e.g. \`button "Submit" <ref=3>\`)
+3. Read the snapshot to understand the page structure and find the elements you need
+4. Use \`click\`, \`fill\`, or \`select\` with the \`ref\` parameter (e.g. \`ref: 3\`) to interact
+5. After actions that change the page, \`snapshot\` again to see the updated state
+6. Use \`screenshot\` when you need to visually verify something or see non-text content
+
+**Waiting strategy:**
+When waiting for page changes (navigation, content loading, animations), prefer short incremental waits with snapshot checks in between rather than a single long wait. For example, instead of waiting 10 seconds: snapshot → check if ready → if not, use \`wait_for\` with a short timeout → snapshot again. This lets you proceed as soon as the page is ready.
+
+**Key rules:**
+- **Always snapshot before interacting** — this is mandatory, not optional
+- **Prefer \`ref\` over \`selector\`** — ref numbers from snapshot are reliable; CSS selectors are a last-resort fallback
+- **Snapshot after every page change** — don't assume the page structure, always re-snapshot after clicks, navigations, form submissions, or any action that might modify the DOM
+- **Never guess selectors** — if you don't have a ref, snapshot first to get one
+- **Use \`fill\` to clear and replace** input content, not to append
+- **Use \`screenshot\` sparingly** — snapshots are cheaper and give you actionable refs; screenshots are for visual verification only
+- **Use \`scroll\` before clicking** elements that may be off-screen or inside scroll containers
+
+When a browser extension token is configured, the tool connects to the user's real browser with their logged-in sessions and cookies.`

@@ -1856,10 +1856,63 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () => void }> {
+  const { spawn } = require('child_process') as typeof import('child_process')
+  const srcDir = dirname(new URL(import.meta.url).pathname)
+  const relayScript = existsSync(join(srcDir, 'browser-relay.cjs'))
+    ? join(srcDir, 'browser-relay.cjs')
+    : join(srcDir, '..', 'src', 'browser-relay.cjs')
+  const channel = process.env.BROWSER_CHANNEL || 'chrome'
+  const execPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || ''
+  const timeout = '90000'
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', [relayScript, channel, execPath, timeout], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PLAYWRIGHT_MCP_EXTENSION_TOKEN: token },
+    })
+
+    let stderr = ''
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+
+    child.on('error', (err: Error) => reject(new Error(`Failed to start relay: ${err.message}`)))
+    child.on('exit', (code: number | null) => {
+      if (code !== null && code !== 0) reject(new Error(`Relay exited with code ${code}: ${stderr}`))
+    })
+
+    let buffer = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString()
+      const lines = buffer.split('\n')
+      buffer = lines.pop()!
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const msg = JSON.parse(line)
+          if (msg.type === 'error') {
+            child.kill()
+            reject(new Error(msg.message))
+          } else if (msg.type === 'connected' && (child as any).__cdpEndpoint) {
+            resolve({ cdpEndpoint: (child as any).__cdpEndpoint, kill: () => child.kill() })
+          } else if (msg.type === 'ready') {
+            (child as any).__cdpEndpoint = msg.cdpEndpoint
+          }
+        } catch {}
+      }
+    })
+
+    setTimeout(() => {
+      child.kill()
+      reject(new Error('Relay connection timed out (90s). Make sure the Playwright MCP Bridge extension is installed and the token is correct.'))
+    }, 95000)
+  })
+}
+
 function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let page: any = null
   let isExtensionMode = false
+  let killRelay: (() => void) | null = null
 
   async function ensureBrowser() {
     if (browser && page) return page
@@ -1868,8 +1921,15 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
 
       const extensionToken = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
       if (extensionToken) {
-        const cdpEndpoint = process.env.BROWSER_CDP_ENDPOINT || 'http://localhost:9222'
-        browser = await pw.chromium.connectOverCDP(cdpEndpoint)
+        const directCdpEndpoint = process.env.BROWSER_CDP_ENDPOINT
+        if (directCdpEndpoint) {
+          browser = await pw.chromium.connectOverCDP(directCdpEndpoint)
+        } else {
+          const relay = await spawnCDPRelay(extensionToken)
+          killRelay = relay.kill
+          browser = await pw.chromium.connectOverCDP(relay.cdpEndpoint, { isLocal: true })
+        }
+
         const browserCtx = browser.contexts()[0]
         page = browserCtx?.pages()[0] || await browser.newPage()
         isExtensionMode = true
@@ -1882,10 +1942,22 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
       }
       return page
     } catch (err: any) {
+      cleanupRelay()
       if (process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
-        throw new Error(`Failed to connect to browser via CDP: ${err.message}. Ensure the browser is running with remote debugging enabled.`)
+        throw new Error(
+          `Failed to connect to browser via extension: ${err.message}. ` +
+          'Make sure Chrome is running with the "Playwright MCP Bridge" extension installed, ' +
+          'and the extension token matches.',
+        )
       }
       throw new Error('Playwright is not installed. Run: bunx playwright install chromium')
+    }
+  }
+
+  function cleanupRelay() {
+    if (killRelay) {
+      try { killRelay() } catch {}
+      killRelay = null
     }
   }
 
@@ -1896,6 +1968,7 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
       try { if (page) await page.close() } catch {}
       try { if (browser) await browser.close() } catch {}
     }
+    cleanupRelay()
     page = null
     browser = null
     isExtensionMode = false
@@ -3760,7 +3833,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   browser: ['browser', 'web'],
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
-  cron: ['cron'],
+  heartbeat: ['heartbeat_configure', 'heartbeat_status'],
   tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
   audio: ['transcribe_audio'],
@@ -3770,7 +3843,8 @@ export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
   'list_files', 'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
-  'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
+  'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
+  'heartbeat_configure', 'heartbeat_status',
   'read_lints', 'skill_server_sync',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',

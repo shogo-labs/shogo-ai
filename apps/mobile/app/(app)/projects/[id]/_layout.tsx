@@ -219,7 +219,7 @@ export default observer(function ProjectLayout() {
     webEnabled: projectSettings.webEnabled !== false,
     browserEnabled: projectSettings.browserEnabled !== false,
     shellEnabled: projectSettings.shellEnabled !== false,
-    cronEnabled: projectSettings.cronEnabled !== false,
+    heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
     imageGenEnabled: projectSettings.imageGenEnabled !== false,
     memoryEnabled: projectSettings.memoryEnabled !== false,
   }), [projectSettings])

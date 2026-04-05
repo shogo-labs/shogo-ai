@@ -62,9 +62,9 @@ import {
   OPTIMIZED_MCP_DISCOVERY_GUIDE,
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
   SELF_EVOLUTION_GUIDE,
+  BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
-import { BROWSER_TOOL_GUIDE } from './system-prompt'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
@@ -173,8 +173,7 @@ export interface GatewayConfig {
   browserExtensionToken?: string
   /** Whether shell/exec tool is enabled (default: true) */
   shellEnabled?: boolean
-  /** Whether cron/scheduling tool is enabled (default: true) */
-  cronEnabled?: boolean
+  // heartbeat tools are gated by heartbeatEnabled (above)
   /** Whether image generation tool is enabled (default: true) */
   imageGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
@@ -1309,7 +1308,7 @@ export class AgentGateway {
     console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
-    // When there's no uiWriter (cron, heartbeat, channel, webhook turns),
+    // When there's no uiWriter (heartbeat, channel, webhook turns),
     // clear the callback so "ask" decisions fail closed instead of writing
     // to a stale stream from a previous UI turn.
     if (this.permissionEngine) {
@@ -1398,8 +1397,8 @@ export class AgentGateway {
     if (this.config.shellEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'exec')
     }
-    if (this.config.cronEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'cron')
+    if (this.config.heartbeatEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'heartbeat_configure' && t.name !== 'heartbeat_status')
     }
     if (this.config.imageGenEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'generate_image')

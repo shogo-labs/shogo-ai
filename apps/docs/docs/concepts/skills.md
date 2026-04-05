@@ -66,7 +66,8 @@ When triggered, compile a morning briefing and send it to the configured Slack c
 | `memory_write` | Write to MEMORY.md or daily logs |
 | `send_message` | Send a message via a connected channel |
 | `browser` | Control a headless browser |
-| `cron` | Manage scheduled jobs |
+| `heartbeat_configure` | Configure heartbeat schedule and quiet hours |
+| `heartbeat_status` | Check heartbeat configuration and checklist |
 
 ## The skills directory
 
