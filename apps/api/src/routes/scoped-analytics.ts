@@ -59,21 +59,8 @@ export function scopedAnalyticsRoutes(): Hono {
   router.use('*', requireAuth)
 
   // --------------------------------------------------------------------------
-  // Workspace Analytics (Business plan or higher required)
+  // Workspace Analytics — Basic (all workspace members)
   // --------------------------------------------------------------------------
-
-  router.use('/workspaces/:workspaceId/analytics/*', async (c, next) => {
-    const workspaceId = c.req.param('workspaceId')
-    if (!await isBusinessOrHigherPlan(workspaceId)) {
-      return c.json({
-        error: {
-          code: 'plan_required',
-          message: 'Workspace analytics require a Business plan or higher. Please upgrade to access team analytics.',
-        },
-      }, 403)
-    }
-    await next()
-  })
 
   router.get('/workspaces/:workspaceId/analytics/overview', async (c) => {
     try {
@@ -91,92 +78,6 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
-  router.get('/workspaces/:workspaceId/analytics/growth', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
-        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
-      }
-
-      const data = await analytics.getGrowthTimeSeries({ workspaceId }, period)
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
-    }
-  })
-
-  router.get('/workspaces/:workspaceId/analytics/usage', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
-        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
-      }
-
-      const data = await analytics.getUsageAnalytics({ workspaceId }, period)
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
-    }
-  })
-
-  router.get('/workspaces/:workspaceId/analytics/chat', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
-        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
-      }
-
-      const data = await analytics.getChatAnalytics({ workspaceId }, period)
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
-    }
-  })
-
-  router.get('/workspaces/:workspaceId/analytics/projects', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
-        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
-      }
-
-      const data = await analytics.getProjectAnalytics({ workspaceId })
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
-    }
-  })
-
-  router.get('/workspaces/:workspaceId/analytics/billing', async (c) => {
-    try {
-      const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
-        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
-      }
-
-      const data = await analytics.getBillingAnalytics({ workspaceId })
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
-    }
-  })
-
-  /**
-   * GET /workspaces/:workspaceId/analytics/usage-log - Paginated AI proxy usage log
-   */
   router.get('/workspaces/:workspaceId/analytics/usage-log', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
@@ -200,9 +101,6 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
-  /**
-   * GET /workspaces/:workspaceId/analytics/usage-summary - Aggregated usage by user + model
-   */
   router.get('/workspaces/:workspaceId/analytics/usage-summary', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
@@ -214,6 +112,106 @@ export function scopedAnalyticsRoutes(): Hono {
 
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
       const data = await analytics.getUsageSummary({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Workspace Analytics — Advanced (Business plan or higher required)
+  // --------------------------------------------------------------------------
+
+  const requireBusinessPlan = async (c: any, next: any) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!await isBusinessOrHigherPlan(workspaceId)) {
+      return c.json({
+        error: {
+          code: 'plan_required',
+          message: 'Advanced workspace analytics require a Business plan or higher.',
+        },
+      }, 403)
+    }
+    await next()
+  }
+
+  router.get('/workspaces/:workspaceId/analytics/growth', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getGrowthTimeSeries({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/usage', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getUsageAnalytics({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/chat', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getChatAnalytics({ workspaceId }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/projects', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getProjectAnalytics({ workspaceId })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/analytics/billing', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getBillingAnalytics({ workspaceId })
       return c.json({ ok: true, data })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
