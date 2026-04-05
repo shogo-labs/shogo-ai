@@ -185,7 +185,7 @@ model AgentConfig {
   quietHoursTimezone String?
   channels           Json      @default("[]")
   modelProvider      String    @default("anthropic")
-  modelName          String    @default("claude-sonnet-4-6")
+  modelName          String    @default("claude-haiku-4-5")
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 

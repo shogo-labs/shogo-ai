@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "dev": "bun --env-file=../../.env.local --watch src/entry.ts",
+    "dev": "cd ../.. && bun scripts/watch-api.ts",
     "start": "bun --env-file=../../.env.local src/entry.ts",
     "typecheck": "tsc --noEmit"
   },

@@ -449,7 +449,7 @@ export class AgentGateway {
       heartbeatEnabled: false,
       quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
-      model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
       maxSessionMessages: 30,
       activeMode: 'canvas',
       canvasMode: 'code',
@@ -849,7 +849,9 @@ export class AgentGateway {
       this.emitLog('Heartbeat OK')
     }
 
+    const heartbeatSummary = response === 'HEARTBEAT_OK' ? 'Routine check — all clear' : response.substring(0, 300)
     this.appendDailyMemory(`Heartbeat: ${response === 'HEARTBEAT_OK' ? 'All clear' : response.substring(0, 200)}`)
+    this.appendHeartbeatLog(heartbeatSummary)
 
     return response
   }
@@ -2040,6 +2042,15 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
       }
     }
 
+    // 7b. Recent heartbeat activity (lets agent answer questions about autonomous work)
+    const heartbeatLogPath = join(this.workspaceDir, 'HEARTBEAT_LOG.md')
+    if (existsSync(heartbeatLogPath)) {
+      const heartbeatLog = readFileSync(heartbeatLogPath, 'utf-8').trim()
+      if (heartbeatLog) {
+        dynamicParts.push(`## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`)
+      }
+    }
+
     // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
     // 8. Agent template context (stable per-project, but read from disk)
@@ -2586,6 +2597,28 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
   // ---------------------------------------------------------------------------
   // Memory
   // ---------------------------------------------------------------------------
+
+  private appendHeartbeatLog(summary: string): void {
+    const logPath = join(this.workspaceDir, 'HEARTBEAT_LOG.md')
+    const timestamp = new Date().toISOString()
+    const entry = `- [${timestamp}] ${summary}\n`
+    const MAX_ENTRIES = 20
+
+    try {
+      let content = ''
+      if (existsSync(logPath)) {
+        content = readFileSync(logPath, 'utf-8')
+      }
+
+      const lines = content.split('\n').filter(l => l.startsWith('- ['))
+      lines.push(entry.trim())
+      const recent = lines.slice(-MAX_ENTRIES)
+
+      writeFileSync(logPath, `# Recent Heartbeat Activity\n\n${recent.join('\n')}\n`, 'utf-8')
+    } catch (error: any) {
+      console.error('[AgentGateway] Failed to write heartbeat log:', error.message)
+    }
+  }
 
   private appendDailyMemory(entry: string): void {
     const date = new Date().toISOString().split('T')[0]

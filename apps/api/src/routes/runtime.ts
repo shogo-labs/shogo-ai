@@ -139,7 +139,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
     } catch (error: any) {
       console.error("[Runtime] Stop error:", error)
       return c.json(
-        { error: { code: "stop_failed", message: error.message || "Failed to stop runtime" } },
+        { error: { code: "stop_failed", message: error.message || `Failed to stop runtime for project ${projectId}` } },
         500
       )
     }
@@ -285,7 +285,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
     } catch (error: any) {
       console.error("[Runtime] Restart error:", error)
       return c.json(
-        { error: { code: "restart_failed", message: error.message || "Failed to restart runtime" } },
+        { error: { code: "restart_failed", message: error.message || `Failed to restart runtime for project ${projectId}` } },
         500
       )
     }
