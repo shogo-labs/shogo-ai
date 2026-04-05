@@ -1859,37 +1859,70 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
 function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let page: any = null
+  let isExtensionMode = false
 
   async function ensureBrowser() {
     if (browser && page) return page
     try {
       const pw = await import('playwright-core')
-      browser = await pw.chromium.launch({
-        headless: true,
-        executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      })
-      page = await browser.newPage()
+
+      const extensionToken = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+      if (extensionToken) {
+        const cdpEndpoint = process.env.BROWSER_CDP_ENDPOINT || 'http://localhost:9222'
+        browser = await pw.chromium.connectOverCDP(cdpEndpoint)
+        const browserCtx = browser.contexts()[0]
+        page = browserCtx?.pages()[0] || await browser.newPage()
+        isExtensionMode = true
+      } else {
+        browser = await pw.chromium.launch({
+          headless: true,
+          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+        })
+        page = await browser.newPage()
+      }
       return page
-    } catch {
+    } catch (err: any) {
+      if (process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
+        throw new Error(`Failed to connect to browser via CDP: ${err.message}. Ensure the browser is running with remote debugging enabled.`)
+      }
       throw new Error('Playwright is not installed. Run: bunx playwright install chromium')
     }
   }
 
   async function cleanup() {
-    try { if (page) await page.close() } catch {}
-    try { if (browser) await browser.close() } catch {}
+    if (isExtensionMode) {
+      try { if (browser) await browser.close() } catch {}
+    } else {
+      try { if (page) await page.close() } catch {}
+      try { if (browser) await browser.close() } catch {}
+    }
     page = null
     browser = null
+    isExtensionMode = false
+  }
+
+  function resolveLocator(p: any, ref?: number, selector?: string): any {
+    if (ref !== undefined) return p.locator(`[data-shogo-ref="${ref}"]`)
+    if (selector) return p.locator(selector)
+    return null
   }
 
   return {
     name: 'browser',
     description:
-      'Control a headless browser. Actions: navigate (go to URL), click (CSS selector), fill (type into input), extract (get elements by selector), text (full page text), screenshot (capture visible page as image — you will SEE the image), evaluate (run JS), select (dropdown option), scroll (scroll page), wait_for (wait for element), close. To visually analyze an image file, navigate to its file:// URL then screenshot — the image will be returned to you directly for visual inspection.',
+      'Control a browser. IMPORTANT: You MUST call snapshot before ANY interaction to get element refs — never guess selectors.\n\n' +
+      'Actions: navigate (go to URL), snapshot (get accessibility tree with element refs — ALWAYS call this before interacting), ' +
+      'click (by ref or CSS selector), fill (clear and replace input text), select (dropdown option), ' +
+      'extract (get elements by CSS selector), text (full page text), screenshot (capture visible page as image — you will SEE the image), ' +
+      'evaluate (run JS), scroll (scroll page), wait_for (wait for element), close.\n\n' +
+      'Workflow: navigate → snapshot → read refs → interact using ref numbers → snapshot again after page changes. ' +
+      'Use short incremental waits with snapshot checks rather than long single waits. ' +
+      'CSS selectors work as fallback via the selector parameter, but prefer ref from snapshot.',
     label: 'Browser',
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal('navigate'),
+        Type.Literal('snapshot'),
         Type.Literal('click'),
         Type.Literal('fill'),
         Type.Literal('extract'),
@@ -1902,14 +1935,16 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
         Type.Literal('close'),
       ], { description: 'Browser action to perform' }),
       url: Type.Optional(Type.String({ description: 'URL to navigate to (for navigate action)' })),
-      selector: Type.Optional(Type.String({ description: 'CSS selector (for click/fill/extract/select/scroll/wait_for actions)' })),
+      ref: Type.Optional(Type.Number({ description: 'Element ref number from snapshot (for click/fill/select — preferred over selector)' })),
+      selector: Type.Optional(Type.String({ description: 'CSS selector (fallback for click/fill/extract/select/scroll/wait_for)' })),
       value: Type.Optional(Type.String({ description: 'Text to type (fill), JS to run (evaluate), option value (select), or scroll distance in px (scroll)' })),
       waitMs: Type.Optional(Type.Number({ description: 'Wait time in ms after action (default: 1000)' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { action, url, selector, value, waitMs = 1000 } = params as {
+      const { action, url, ref, selector, value, waitMs = 1000 } = params as {
         action: string
         url?: string
+        ref?: number
         selector?: string
         value?: string
         waitMs?: number
@@ -1932,16 +1967,143 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             const pageUrl = p.url()
             return textResult({ ok: true, title, url: pageUrl })
           }
+          case 'snapshot': {
+            const snapshot = await p.evaluate(() => {
+              const INTERACTIVE_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY'])
+              const INTERACTIVE_ROLES = new Set([
+                'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
+                'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
+                'switch', 'tab', 'slider', 'spinbutton', 'searchbox', 'treeitem',
+              ])
+
+              document.querySelectorAll('[data-shogo-ref]').forEach(el => el.removeAttribute('data-shogo-ref'))
+              let nextRef = 1
+
+              function getRole(el: Element): string {
+                const explicit = el.getAttribute('role')
+                if (explicit) return explicit
+                const tag = el.tagName
+                if (tag === 'A' && el.hasAttribute('href')) return 'link'
+                if (tag === 'BUTTON' || (tag === 'INPUT' && ((el as HTMLInputElement).type === 'submit' || (el as HTMLInputElement).type === 'button'))) return 'button'
+                if (tag === 'INPUT') {
+                  const t = (el as HTMLInputElement).type
+                  if (t === 'checkbox') return 'checkbox'
+                  if (t === 'radio') return 'radio'
+                  if (t === 'range') return 'slider'
+                  if (t === 'number') return 'spinbutton'
+                  if (t === 'search') return 'searchbox'
+                  return 'textbox'
+                }
+                if (tag === 'SELECT') return 'combobox'
+                if (tag === 'TEXTAREA') return 'textbox'
+                if (tag === 'IMG') return 'img'
+                if (/^H[1-6]$/.test(tag)) return 'heading'
+                if (tag === 'NAV') return 'navigation'
+                if (tag === 'MAIN') return 'main'
+                if (tag === 'HEADER') return 'banner'
+                if (tag === 'FOOTER') return 'contentinfo'
+                if (tag === 'ASIDE') return 'complementary'
+                if (tag === 'FORM') return 'form'
+                if (tag === 'TABLE') return 'table'
+                if (tag === 'UL' || tag === 'OL') return 'list'
+                if (tag === 'LI') return 'listitem'
+                if (tag === 'SECTION' && el.getAttribute('aria-label')) return 'region'
+                return ''
+              }
+
+              function getName(el: Element): string {
+                const ariaLabel = el.getAttribute('aria-label')
+                if (ariaLabel) return ariaLabel
+                const title = el.getAttribute('title')
+                if (title) return title
+                const alt = el.getAttribute('alt')
+                if (alt) return alt
+                const placeholder = el.getAttribute('placeholder')
+                if (placeholder) return placeholder
+                if (el.id) {
+                  const label = document.querySelector(`label[for="${el.id}"]`)
+                  if (label?.textContent?.trim()) return label.textContent.trim()
+                }
+                const directText = Array.from(el.childNodes)
+                  .filter(n => n.nodeType === Node.TEXT_NODE)
+                  .map(n => n.textContent?.trim())
+                  .filter(Boolean)
+                  .join(' ')
+                if (directText) return directText.substring(0, 80)
+                if (el.children.length <= 2) {
+                  const inner = el.textContent?.trim()
+                  if (inner && inner.length <= 80) return inner
+                }
+                return ''
+              }
+
+              function isVisible(el: Element): boolean {
+                if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false
+                const s = window.getComputedStyle(el)
+                return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
+              }
+
+              function walk(el: Element, depth: number): string[] {
+                if (!isVisible(el)) return []
+                const role = getRole(el)
+                const name = getName(el)
+                const lines: string[] = []
+                let childDepth = depth
+
+                if (role) {
+                  const indent = '  '.repeat(depth)
+                  let line = `${indent}${role}`
+                  if (name) line += ` "${name}"`
+
+                  const v = (el as HTMLInputElement).value
+                  if (v && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+                    line += ` value="${v.substring(0, 80)}"`
+                  }
+
+                  const attrs: string[] = []
+                  if ((el as HTMLInputElement).disabled) attrs.push('disabled')
+                  if ((el as HTMLInputElement).checked) attrs.push('checked')
+                  const expanded = el.getAttribute('aria-expanded')
+                  if (expanded !== null) attrs.push(`expanded=${expanded}`)
+                  if (el.getAttribute('aria-selected') === 'true') attrs.push('selected')
+                  if (el.getAttribute('aria-required') === 'true') attrs.push('required')
+                  if (attrs.length) line += ` [${attrs.join(', ')}]`
+
+                  const isInteractive = INTERACTIVE_TAGS.has(el.tagName) || INTERACTIVE_ROLES.has(role)
+                  if (isInteractive && !(el as HTMLInputElement).disabled) {
+                    const r = nextRef++
+                    el.setAttribute('data-shogo-ref', String(r))
+                    line += ` <ref=${r}>`
+                  }
+
+                  lines.push(line)
+                  childDepth = depth + 1
+                }
+
+                for (const child of el.children) {
+                  lines.push(...walk(child, childDepth))
+                }
+                return lines
+              }
+
+              const lines = walk(document.body, 0)
+              return { text: lines.join('\n') || '(empty page)', refCount: nextRef - 1 }
+            })
+            return textResult({ snapshot: snapshot.text, url: p.url(), title: await p.title(), refCount: snapshot.refCount })
+          }
           case 'click': {
-            if (!selector) return textResult({ error: 'selector is required for click' })
-            await p.click(selector, { timeout: 5000 })
+            const locator = resolveLocator(p, ref, selector)
+            if (!locator) return textResult({ error: 'ref or selector is required for click' })
+            await locator.click({ timeout: 5000 })
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 3000))
-            return textResult({ ok: true, action: 'click', selector })
+            return textResult({ ok: true, action: 'click', ref, selector })
           }
           case 'fill': {
-            if (!selector || value === undefined) return textResult({ error: 'selector and value required for fill' })
-            await p.fill(selector, value, { timeout: 5000 })
-            return textResult({ ok: true, action: 'fill', selector })
+            const locator = resolveLocator(p, ref, selector)
+            if (!locator) return textResult({ error: 'ref or selector is required for fill' })
+            if (value === undefined) return textResult({ error: 'value is required for fill' })
+            await locator.fill(value, { timeout: 5000 })
+            return textResult({ ok: true, action: 'fill', ref, selector })
           }
           case 'extract': {
             if (!selector) return textResult({ error: 'selector is required for extract' })
@@ -1977,13 +2139,16 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ result, url: p.url() })
           }
           case 'select': {
-            if (!selector || value === undefined) return textResult({ error: 'selector and value required for select' })
-            await p.selectOption(selector, value, { timeout: 5000 })
-            return textResult({ ok: true, action: 'select', selector, value })
+            const locator = resolveLocator(p, ref, selector)
+            if (!locator) return textResult({ error: 'ref or selector is required for select' })
+            if (value === undefined) return textResult({ error: 'value is required for select' })
+            await locator.selectOption(value, { timeout: 5000 })
+            return textResult({ ok: true, action: 'select', ref, selector, value })
           }
           case 'scroll': {
-            if (selector) {
-              await p.locator(selector).scrollIntoViewIfNeeded({ timeout: 5000 })
+            if (ref !== undefined || selector) {
+              const locator = resolveLocator(p, ref, selector)
+              if (locator) await locator.scrollIntoViewIfNeeded({ timeout: 5000 })
             } else {
               const distance = parseInt(value || '500', 10)
               await p.evaluate((d: number) => window.scrollBy(0, d), distance)
@@ -3592,12 +3757,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   web: ['web'],
   web_fetch: ['web'],
   web_search: ['web'],
-  browser: [
-    'browser', 'web',
-    'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
-    'mcp_playwright_browser_click', 'mcp_playwright_browser_type',
-    'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
-  ],
+  browser: ['browser', 'web'],
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],

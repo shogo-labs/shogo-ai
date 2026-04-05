@@ -217,6 +217,7 @@ export default observer(function ProjectLayout() {
   const capabilitySettings = useMemo(() => ({
     canvasEnabled: projectSettings.canvasEnabled !== false,
     webEnabled: projectSettings.webEnabled !== false,
+    browserEnabled: projectSettings.browserEnabled !== false,
     shellEnabled: projectSettings.shellEnabled !== false,
     cronEnabled: projectSettings.cronEnabled !== false,
     imageGenEnabled: projectSettings.imageGenEnabled !== false,

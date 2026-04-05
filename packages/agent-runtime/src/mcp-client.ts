@@ -366,9 +366,18 @@ export class MCPClientManager {
               .filter((c: any) => c.type === 'text')
               .map((c: any) => c.text)
               .join('\n') || ''
+            const images = contentArray.filter((c: any) => c.type === 'image')
 
             if (result.isError) {
               return textResult({ error: texts || 'MCP tool returned an error' })
+            }
+
+            if (images.length > 0) {
+              const content: any[] = images.map((img: any) => ({
+                type: 'image' as const, data: img.data, mimeType: img.mimeType || 'image/png',
+              }))
+              if (texts) content.push({ type: 'text' as const, text: texts })
+              return { content }
             }
 
             return textResult(texts || JSON.stringify(result.content))
@@ -504,9 +513,18 @@ export class MCPClientManager {
               .filter((c: any) => c.type === 'text')
               .map((c: any) => c.text)
               .join('\n') || ''
+            const images = contentArray.filter((c: any) => c.type === 'image')
 
             if (result.isError) {
               return textResult({ error: texts || 'MCP tool returned an error' })
+            }
+
+            if (images.length > 0) {
+              const content: any[] = images.map((img: any) => ({
+                type: 'image' as const, data: img.data, mimeType: img.mimeType || 'image/png',
+              }))
+              if (texts) content.push({ type: 'text' as const, text: texts })
+              return { content }
             }
 
             let raw = texts || JSON.stringify(result.content)

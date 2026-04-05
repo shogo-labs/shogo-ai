@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
 import {
   Globe,
+  Monitor,
   Terminal,
   Clock,
   ImageIcon,
@@ -17,7 +18,11 @@ import {
   MessageSquare,
   LayoutDashboard,
   Code,
+  Eye,
+  EyeOff,
+  Save,
 } from 'lucide-react-native'
+import { TextInput } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { Switch } from '@/components/ui/switch'
@@ -35,6 +40,7 @@ import { ToolsPanel } from './ToolsPanel'
 export interface CapabilitySettings {
   canvasEnabled: boolean
   webEnabled: boolean
+  browserEnabled: boolean
   shellEnabled: boolean
   cronEnabled: boolean
   imageGenEnabled: boolean
@@ -62,11 +68,19 @@ const AGENT_TYPES: { mode: AgentMode; label: string; description: string; icon: 
 const CAPABILITIES: CapabilityDef[] = [
   {
     key: 'webEnabled',
-    label: 'Web Access',
-    description: 'Search the web and browse pages',
-    disabledDescription: 'No internet access',
+    label: 'Web Search',
+    description: 'Search the web and fetch pages',
+    disabledDescription: 'No internet search access',
     icon: Globe,
-    toolNames: ['web', 'browser'],
+    toolNames: ['web'],
+  },
+  {
+    key: 'browserEnabled',
+    label: 'Browser Control',
+    description: 'Navigate and interact with web pages',
+    disabledDescription: 'No browser automation',
+    icon: Monitor,
+    toolNames: ['browser'],
   },
   {
     key: 'shellEnabled',
@@ -168,6 +182,12 @@ export function CapabilitiesPanel({
   const [modelUpdating, setModelUpdating] = useState(false)
   const fetchedRef = useRef(false)
 
+  const [extensionToken, setExtensionToken] = useState('')
+  const [tokenVisible, setTokenVisible] = useState(false)
+  const [tokenSaving, setTokenSaving] = useState(false)
+  const [tokenSaved, setTokenSaved] = useState(false)
+  const tokenFetchedRef = useRef(false)
+
   useEffect(() => {
     if (!visible || !agentUrl || fetchedRef.current) return
     fetchedRef.current = true
@@ -178,6 +198,37 @@ export function CapabilitiesPanel({
       })
       .catch((e) => console.error('[CapabilitiesPanel] Failed to fetch model:', e))
   }, [visible, agentUrl])
+
+  useEffect(() => {
+    if (!visible || !agentUrl || tokenFetchedRef.current) return
+    tokenFetchedRef.current = true
+    agentFetch(`${agentUrl}/agent/config`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.browserExtensionToken) {
+          setExtensionToken(data.browserExtensionToken)
+          setTokenSaved(true)
+        }
+      })
+      .catch(() => {})
+  }, [visible, agentUrl])
+
+  const handleSaveToken = useCallback(async () => {
+    if (!agentUrl) return
+    setTokenSaving(true)
+    try {
+      const res = await agentFetch(`${agentUrl}/agent/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ browserExtensionToken: extensionToken || null }),
+      })
+      if (res.ok) setTokenSaved(true)
+    } catch (err) {
+      console.error('[CapabilitiesPanel] Failed to save extension token:', err)
+    } finally {
+      setTokenSaving(false)
+    }
+  }, [agentUrl, extensionToken])
 
   const handleModelChange = useCallback(async (model: ModelOption) => {
     if (!agentUrl) return
@@ -449,6 +500,64 @@ export function CapabilitiesPanel({
                           </View>
                         ))}
                       </View>
+
+                      {cap.key === 'browserEnabled' && (
+                        <View className="mt-3 pt-2 border-t border-border/50">
+                          <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
+                            Browser Extension
+                          </Text>
+                          <Text className="text-[10px] text-muted-foreground mb-2">
+                            Paste a Playwright extension token to control your real browser (with your logins and cookies). Without a token, a headless browser is used.
+                          </Text>
+                          <View className="flex-row items-center gap-2">
+                            <View className="flex-1 flex-row items-center border border-border rounded-md bg-background">
+                              <TextInput
+                                value={extensionToken}
+                                onChangeText={(v) => { setExtensionToken(v); setTokenSaved(false) }}
+                                secureTextEntry={!tokenVisible}
+                                placeholder="Extension token..."
+                                placeholderTextColor="#999"
+                                className="flex-1 text-xs text-foreground px-2 py-1.5 font-mono"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                              />
+                              <Pressable onPress={() => setTokenVisible(!tokenVisible)} className="px-2">
+                                {tokenVisible
+                                  ? <EyeOff size={12} className="text-muted-foreground" />
+                                  : <Eye size={12} className="text-muted-foreground" />}
+                              </Pressable>
+                            </View>
+                            <Pressable
+                              onPress={handleSaveToken}
+                              disabled={tokenSaving || tokenSaved}
+                              className={cn(
+                                'px-2.5 py-1.5 rounded-md flex-row items-center gap-1',
+                                tokenSaved ? 'bg-emerald-500/15' : 'bg-primary active:bg-primary/80',
+                                (tokenSaving || tokenSaved) && 'opacity-70',
+                              )}
+                            >
+                              {tokenSaving ? (
+                                <ActivityIndicator size="small" />
+                              ) : tokenSaved ? (
+                                <Check size={12} className="text-emerald-600" />
+                              ) : (
+                                <Save size={12} className="text-primary-foreground" />
+                              )}
+                              <Text className={cn(
+                                'text-[10px] font-medium',
+                                tokenSaved ? 'text-emerald-600' : 'text-primary-foreground',
+                              )}>
+                                {tokenSaved ? 'Saved' : 'Save'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                          {extensionToken && tokenSaved && (
+                            <Text className="text-[10px] text-emerald-600 mt-1">
+                              Extension mode active — using your real browser
+                            </Text>
+                          )}
+                        </View>
+                      )}
                     </View>
                   )}
                 </View>
