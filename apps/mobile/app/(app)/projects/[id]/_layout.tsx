@@ -898,11 +898,12 @@ export default observer(function ProjectLayout() {
     surfaceEntries,
     activeSurfaceId: effectiveSurfaceId,
     onSurfaceChange: setUserSelectedSurfaceId,
-    showChatSessions,
-    isChatCollapsed: chatCollapsed,
-    onChatSessionsToggle: () => setShowChatSessions((s: boolean) => !s),
-    onChatCollapseToggle: () => setChatCollapsed((c: boolean) => !c),
-    onCreateNewSession: handleCreateNewSession,
+    showChatSessions: isChatFullscreen ? false : showChatSessions,
+    isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
+    onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
+    onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
+    onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
+    chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
@@ -947,7 +948,7 @@ export default observer(function ProjectLayout() {
               {/* Full-screen chat with history sidebar (canvas disabled, Chat tab active) */}
               {isChatFullscreen && (
                 <View className="flex-1 flex-row">
-                  <View className="w-[280px] border-r border-border bg-background">
+                  <View className="w-[280px] bg-muted/50 dark:bg-black/30">
                     <ChatSessionSidebar
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}

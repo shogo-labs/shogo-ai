@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/popover"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
+import { ContextTracker } from "./ContextTracker"
 import {
   ArrowUp,
   Plus,
@@ -158,6 +159,7 @@ export interface ChatInputProps {
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
+  contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
 }
 
 export function ChatInput({
@@ -175,6 +177,7 @@ export function ChatInput({
   onReorderQueuedMessage,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
+  contextUsage,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
@@ -687,29 +690,9 @@ export function ChatInput({
         />
 
         {/* Bottom toolbar */}
-        <View className="flex-row items-center justify-between pr-1">
+        <View className="flex-row items-center justify-between p-1.5">
           {/* Left side buttons */}
           <View className="flex-row items-center gap-1">
-            {/* Attach button */}
-            <Pressable
-              onPress={handleAttachClick}
-              disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
-              role="button"
-              accessibilityLabel="Attach file"
-              className="min-h-8 min-w-8 rounded-full items-center justify-center active:opacity-70"
-              android_ripple={{ color: "rgba(128,128,128,0.25)" }}
-            >
-              <Plus
-                className={cn(
-                  "h-3 w-3",
-                  disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES
-                    ? "text-muted-foreground/40"
-                    : "text-muted-foreground"
-                )}
-                size={12}
-              />
-            </Pressable>
-
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
               placement="top"
@@ -929,17 +912,43 @@ export function ChatInput({
           </View>
 
           {/* Right side buttons */}
-          <View className="flex-row items-center gap-2">
+          <View className="flex-row items-center gap-1">
+            {contextUsage && (
+              <ContextTracker
+                inputTokens={contextUsage.inputTokens}
+                contextWindowTokens={contextUsage.contextWindowTokens}
+              />
+            )}
+
+            <Pressable
+              onPress={handleAttachClick}
+              disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
+              role="button"
+              accessibilityLabel="Attach file"
+              className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+              android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+            >
+              <Plus
+                className={cn(
+                  "h-4 w-4",
+                  disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES
+                    ? "text-muted-foreground/40"
+                    : "text-muted-foreground"
+                )}
+                size={12}
+              />
+            </Pressable>
+
             {/* Always show Stop button while streaming */}
             {isStreaming && (
               <Pressable
                 onPress={onStop}
                 accessibilityLabel="Stop"
                 testID="stop-streaming"
-                className="h-6 w-6 rounded-full bg-destructive items-center justify-center active:opacity-70"
+                className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
               >
                 <Square
-                  className="h-2.5 w-2.5 text-destructive-foreground"
+                  className="text-destructive-foreground m-auto"
                   size={10}
                 />
               </Pressable>
@@ -956,7 +965,7 @@ export function ChatInput({
                 role="button"
                 accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
                 className={cn(
-                  "h-6 w-6 rounded-full items-center justify-center bg-primary",
+                  "h-5 w-5 rounded-full items-center justify-center bg-primary",
                   (disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)) && "opacity-50"
                 )}
               >

@@ -142,6 +142,7 @@ export interface ProjectTopBarProps {
   onChatSessionsToggle?: () => void
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
+  chatFullscreenSidebarWidth?: number
   // Slot for canvas theme picker
   canvasThemePicker?: React.ReactNode
   onCanvasRefresh?: () => void
@@ -232,6 +233,7 @@ export function ProjectTopBar({
   onChatSessionsToggle,
   onChatCollapseToggle,
   onCreateNewSession,
+  chatFullscreenSidebarWidth,
   canvasThemePicker,
   onCanvasRefresh,
 }: ProjectTopBarProps) {
@@ -468,10 +470,10 @@ export function ProjectTopBar({
           : { elevation: 12 }
       }
     >
-      {/* ── Left zone: aligned with chat panel (480px) ── */}
+      {/* ── Left zone: aligned with chat panel (480px) or sidebar in fullscreen ── */}
       <View
-        className="h-full flex-row items-center px-2 shrink-0"
-        style={{ width: isChatCollapsed ? undefined : chatPanelWidth }}
+        className={cn("h-full flex-row items-center px-2 shrink-0", chatFullscreenSidebarWidth && "bg-muted/50 dark:bg-black/30")}
+        style={{ width: chatFullscreenSidebarWidth ?? (isChatCollapsed ? undefined : chatPanelWidth) }}
       >
         <View className="flex-row items-center gap-0.5 flex-shrink-0">
           <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />

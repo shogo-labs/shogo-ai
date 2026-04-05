@@ -29,6 +29,13 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import {
+  Modal,
+  ModalBackdrop,
+  ModalContent,
+  ModalBody,
+  ModalCloseButton,
+} from "@/components/ui/modal"
+import {
   ChevronDown,
   MessageSquare,
   Plus,
@@ -294,6 +301,7 @@ export function ChatSessionSidebar({
 }: ChatSessionPickerProps) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
+  const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
 
   const sortedSessions = useMemo(() => {
@@ -314,6 +322,12 @@ export function ChatSessionSidebar({
     onSelect(sessionId)
   }
 
+  const handleSearchSelect = (sessionId: string) => {
+    onSelect(sessionId)
+    setSearchOpen(false)
+    setSearchQuery("")
+  }
+
   const handleStartEdit = (session: ChatSession) => {
     setEditingSessionId(session.id)
     setEditValue(session.name)
@@ -331,10 +345,10 @@ export function ChatSessionSidebar({
   }
 
   const handleEndReached = useCallback(() => {
-    if (hasMore && !isLoadingMore && !searchQuery.trim()) {
+    if (hasMore && !isLoadingMore) {
       onLoadMore?.()
     }
-  }, [hasMore, isLoadingMore, searchQuery, onLoadMore])
+  }, [hasMore, isLoadingMore, onLoadMore])
 
   const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
     const isEditing = editingSessionId === session.id
@@ -344,7 +358,7 @@ export function ChatSessionSidebar({
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
         className={cn(
-          "px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50",
+          "px-4 py-3",
           isCurrent && "bg-primary/10"
         )}
       >
@@ -370,16 +384,11 @@ export function ChatSessionSidebar({
               <Text className="font-medium text-sm text-foreground flex-1" numberOfLines={1}>
                 {session.name}
               </Text>
-              <View className="flex-row items-center gap-2 shrink-0">
-                {onRename && (
-                  <Pressable onPress={() => handleStartEdit(session)} className="p-1">
-                    <Pencil className="h-3 w-3 text-gray-400" size={12} />
-                  </Pressable>
-                )}
-                <Text className="text-xs text-gray-400">
-                  {formatRelativeTime(session.updatedAt)}
-                </Text>
-              </View>
+              {onRename && (
+                <Pressable onPress={() => handleStartEdit(session)} className="p-1 shrink-0">
+                  <Pencil className="h-3 w-3 text-gray-400" size={12} />
+                </Pressable>
+              )}
             </View>
             {session.messageCount >= 0 && (
               <Text className="text-xs text-gray-400 mt-0.5">
@@ -392,54 +401,110 @@ export function ChatSessionSidebar({
     )
   }
 
+  const renderSearchResult = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
+    const isCurrent = session.id === currentSessionId
+
+    return (
+      <Pressable
+        onPress={() => handleSearchSelect(session.id)}
+        className={cn(
+          "flex-row items-center gap-3 px-4 py-3",
+          isCurrent && "bg-primary/10"
+        )}
+      >
+        <MessageSquare className="text-muted-foreground shrink-0" size={16} />
+        <Text className="font-medium text-sm text-foreground flex-1" numberOfLines={1}>
+          {session.name}
+        </Text>
+      </Pressable>
+    )
+  }
+
   return (
     <View className="flex-1">
-      <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
+      <View className="flex-row items-center justify-between px-4 py-3">
         <Text className="text-sm font-semibold text-foreground">Chat History</Text>
-        <Pressable
-          onPress={onCreate}
-          className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
-        >
-          <Plus className="text-muted-foreground" size={16} />
-        </Pressable>
+        <View className="flex-row items-center gap-1">
+          {sessions.length > 0 && (
+            <Pressable
+              onPress={() => setSearchOpen(true)}
+              className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+            >
+              <Search className="text-muted-foreground" size={16} />
+            </Pressable>
+          )}
+          <Pressable
+            onPress={onCreate}
+            className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+          >
+            <Plus className="text-muted-foreground" size={16} />
+          </Pressable>
+        </View>
       </View>
 
-      {sessions.length > 0 && (
-        <View className="px-3 py-2 border-b border-border">
-          <View className="flex-row items-center gap-2 bg-muted rounded-md px-3 py-2">
-            <Search className="text-muted-foreground" size={14} />
+      <FlatList
+        data={sortedSessions}
+        renderItem={renderSession}
+        keyExtractor={(item) => item.id}
+        className="flex-1"
+        onEndReached={handleEndReached}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          isLoadingMore ? (
+            <View className="py-3 items-center">
+              <ActivityIndicator size="small" />
+            </View>
+          ) : null
+        }
+      />
+
+      <Modal
+        isOpen={searchOpen}
+        onClose={() => { setSearchOpen(false); setSearchQuery("") }}
+        size="lg"
+      >
+        <ModalBackdrop />
+        <ModalContent className="max-h-[70%]">
+          <View className="flex-row items-center gap-3 px-4 py-3">
+            <Search className="text-muted-foreground shrink-0" size={16} />
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
               placeholder="Search chats..."
               placeholderTextColor="#9ca3af"
-              className="flex-1 text-sm text-foreground"
+              autoFocus
+              className="flex-1 text-base text-foreground"
+              style={{ outline: 'none' } as any}
             />
+            <ModalCloseButton>
+              <X className="text-muted-foreground" size={18} />
+            </ModalCloseButton>
           </View>
-        </View>
-      )}
 
-      {filteredSessions.length === 0 && searchQuery ? (
-        <View className="py-8 items-center">
-          <Text className="text-sm text-muted-foreground">No chats found</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={filteredSessions}
-          renderItem={renderSession}
-          keyExtractor={(item) => item.id}
-          className="flex-1"
-          onEndReached={handleEndReached}
-          onEndReachedThreshold={0.5}
-          ListFooterComponent={
-            isLoadingMore ? (
-              <View className="py-3 items-center">
-                <ActivityIndicator size="small" />
+          <ModalBody className="mt-0 mb-0 p-0">
+            <Pressable
+              onPress={() => { onCreate(); setSearchOpen(false); setSearchQuery("") }}
+              className="flex-row items-center gap-3 px-4 py-3 bg-muted/50"
+            >
+              <Plus className="text-primary shrink-0" size={16} />
+              <Text className="text-sm font-medium text-primary">New chat</Text>
+            </Pressable>
+
+            {filteredSessions.length === 0 && searchQuery ? (
+              <View className="py-8 items-center">
+                <Text className="text-sm text-muted-foreground">No chats found</Text>
               </View>
-            ) : null
-          }
-        />
-      )}
+            ) : (
+              <FlatList
+                data={filteredSessions}
+                renderItem={renderSearchResult}
+                keyExtractor={(item) => item.id}
+                style={{ maxHeight: 400 }}
+              />
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
     </View>
   )
 }
