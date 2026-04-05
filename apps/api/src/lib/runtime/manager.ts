@@ -400,18 +400,24 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       mkdirSync(workspacesDir, { recursive: true })
     }
 
-    // Check if project directory exists
-    if (!existsSync(projectDir)) {
-      console.log(`[RuntimeManager] Creating project directory for ${projectId}`)
+    // Template copy filter: exclude bun.lock so `bun install` does a fresh
+    // platform-appropriate resolution (a Mac-generated lockfile causes
+    // incomplete installs on Windows)
+    const copyFilter = (src: string) =>
+      !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock') && !src.endsWith('bun.lockb')
 
-      // Create project directory
-      mkdirSync(projectDir, { recursive: true })
+    const needsSeed = !existsSync(projectDir) || !existsSync(join(projectDir, 'package.json'))
+
+    if (needsSeed) {
+      const isBare = existsSync(projectDir) && !existsSync(join(projectDir, 'package.json'))
+      if (isBare) {
+        console.log(`[RuntimeManager] Bare workspace detected for ${projectId} (no package.json), seeding template...`)
+      } else {
+        console.log(`[RuntimeManager] Creating project directory for ${projectId}`)
+        mkdirSync(projectDir, { recursive: true })
+      }
 
       // Template resolution order: bundled > workspace > inline
-      // Exclude bun.lock so `bun install` does a fresh platform-appropriate resolution
-      // (a Mac-generated lockfile causes incomplete installs on Windows)
-      const copyFilter = (src: string) =>
-        !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock') && !src.endsWith('bun.lockb')
       if (existsSync(BUNDLED_TEMPLATE_DIR) && existsSync(join(BUNDLED_TEMPLATE_DIR, 'package.json'))) {
         console.log(`[RuntimeManager] Copying bundled template from ${BUNDLED_TEMPLATE_DIR}`)
         cpSync(BUNDLED_TEMPLATE_DIR, projectDir, {
@@ -461,8 +467,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         writeFileSync(installSentinel, new Date().toISOString())
         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
       } catch (err: any) {
-        console.error(`[RuntimeManager] Failed to install dependencies:`, err.message)
-        throw new Error(`Failed to install dependencies for project ${projectId}`)
+        const hasPkg = existsSync(join(projectDir, 'package.json'))
+        const detail = hasPkg
+          ? err.message
+          : 'Workspace is missing package.json — the template may not have been seeded correctly'
+        console.error(`[RuntimeManager] Failed to install dependencies:`, detail)
+        throw new Error(`Failed to install dependencies for project ${projectId}: ${detail}`)
       }
     }
 

@@ -130,6 +130,11 @@ export default function ApiKeysPage() {
           <Text className="text-sm text-muted-foreground">
             Manage API keys for Shogo Local
           </Text>
+          {workspace?.id && (
+            <Text className="text-xs text-muted-foreground/70 font-mono mt-0.5">
+              Workspace: {workspace.id}
+            </Text>
+          )}
         </View>
         <Button size="sm" onPress={() => setShowCreateModal(true)}>
           <View className="flex-row items-center gap-1.5">

@@ -89,8 +89,9 @@ async function startServer() {
     waitingForChange = false;
     const gen = ++generation;
 
+    const envFile = resolve(ROOT, ".env.local");
     child = spawn({
-      cmd: ["bun", "run", ENTRY],
+      cmd: ["bun", `--env-file=${envFile}`, "run", ENTRY],
       stdout: "inherit",
       stderr: "inherit",
       stdin: "inherit",

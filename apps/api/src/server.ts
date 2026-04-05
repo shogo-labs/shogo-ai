@@ -89,6 +89,13 @@ let isShuttingDown = false
  * Retries once on transient failures (DB hiccup, connection pool exhaustion).
  */
 async function getAuthUserId(c: any): Promise<string | null> {
+  // Check middleware-resolved auth first (works for both API keys and sessions)
+  const middlewareAuth = c.get('auth')
+  if (middlewareAuth?.isAuthenticated && middlewareAuth.userId) {
+    return middlewareAuth.userId
+  }
+
+  // Fall back to Better Auth session lookup
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const session = await auth.api.getSession({ headers: c.req.raw.headers })
@@ -1664,9 +1671,7 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
         const errorText = await response.text()
         console.error(`[Runtime Restart] Pod returned error:`, errorText)
         return c.json({
-          success: false,
-          error: `Rebuild failed: ${response.status}`,
-          details: errorText,
+          error: { code: 'restart_failed', message: `Rebuild failed (HTTP ${response.status}): ${errorText}` },
         }, response.status as any)
       }
       
@@ -1679,8 +1684,7 @@ app.post('/api/projects/:projectId/runtime/restart', async (c) => {
     } catch (err: any) {
       console.error('[Runtime Restart] Error:', err)
       return c.json({
-        success: false,
-        error: err.message || 'Failed to restart runtime',
+        error: { code: 'restart_failed', message: err.message || `Failed to restart runtime for project ${projectId}` },
       }, 500)
     }
   }

@@ -319,7 +319,7 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
-// Update agent config — merge fields into config.json and hot-reload the gateway
+// Update agent config — deep-merge fields into config.json and hot-reload the gateway
 app.patch('/agent/config', async (c) => {
   const body = await c.req.json() as Record<string, unknown>
   if (!body || typeof body !== 'object') {
@@ -335,6 +335,29 @@ app.patch('/agent/config', async (c) => {
         fileConfig = {}
       }
     }
+
+    // Support flat convenience aliases for the nested model key
+    if (('modelName' in body || 'modelProvider' in body) && !('model' in body)) {
+      const existing = (fileConfig.model ?? {}) as Record<string, string>
+      body.model = {
+        ...existing,
+        ...(body.modelName ? { name: body.modelName as string } : {}),
+        ...(body.modelProvider ? { provider: body.modelProvider as string } : {}),
+      }
+      delete body.modelName
+      delete body.modelProvider
+    }
+
+    // Deep merge (one level) for known nested object keys so partial
+    // updates like { model: { name: "..." } } preserve existing fields
+    const NESTED_KEYS = ['model', 'quietHours', 'session', 'loopDetection', 'streamChunk', 'sandbox'] as const
+    for (const key of NESTED_KEYS) {
+      if (key in body && body[key] && typeof body[key] === 'object' && !Array.isArray(body[key])
+          && fileConfig[key] && typeof fileConfig[key] === 'object' && !Array.isArray(fileConfig[key])) {
+        body[key] = { ...(fileConfig[key] as any), ...(body[key] as any) }
+      }
+    }
+
     Object.assign(fileConfig, body)
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
     agentGateway?.reloadConfig()

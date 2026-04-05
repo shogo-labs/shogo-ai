@@ -7,6 +7,8 @@
  * This file is safe to edit - it will not be overwritten.
  */
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
+import * as billingService from '../services/billing.service'
+import { getModelTier } from '../../../../packages/model-catalog/src/helpers'
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -246,13 +248,31 @@ export const projectHooks: ProjectHooks = {
     const heartbeatInterval = template.settings.heartbeatInterval
     const jitter = Math.floor(Math.random() * heartbeatInterval * 0.1) * 1000
 
+    let modelProvider = template.settings.modelProvider
+    let modelName = template.settings.modelName
+
+    // Downgrade to economy-tier model if workspace lacks advanced access
+    if (record.workspaceId && getModelTier(modelName) !== 'economy') {
+      try {
+        const hasAdvanced = await billingService.hasAdvancedModelAccess(record.workspaceId)
+        if (!hasAdvanced) {
+          modelProvider = 'anthropic'
+          modelName = 'claude-haiku-4-5'
+        }
+      } catch {
+        // On billing check failure, fall back to economy to avoid broken first-run
+        modelProvider = 'anthropic'
+        modelName = 'claude-haiku-4-5'
+      }
+    }
+
     await ctx.prisma.agentConfig.create({
       data: {
         projectId: record.id,
         heartbeatInterval,
         heartbeatEnabled,
-        modelProvider: template.settings.modelProvider,
-        modelName: template.settings.modelName,
+        modelProvider,
+        modelName,
         channels: [],
         nextHeartbeatAt: heartbeatEnabled
           ? new Date(Date.now() + heartbeatInterval * 1000 + jitter)
