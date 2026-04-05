@@ -159,7 +159,7 @@ export function getModelTextColor(model: string): string {
   return FAMILY_TEXT_COLOR[getModelFamily(model)] ?? 'text-muted-foreground'
 }
 
-export { getModelShortDisplayName as getModelDisplayName }
+export const getModelDisplayName = getModelShortDisplayName
 
 // =============================================================================
 // Components
