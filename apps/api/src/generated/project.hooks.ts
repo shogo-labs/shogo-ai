@@ -230,26 +230,33 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * When a project is created with a templateId, auto-create an AgentConfig
-   * row populated from the template's settings.
+   * Auto-create an AgentConfig row for every new project so the heartbeat
+   * scheduler can manage it. When a templateId is present the row is
+   * populated from the template's settings; otherwise sensible defaults
+   * (heartbeat disabled, economy model) are used.
    */
   afterCreate: async (record, ctx) => {
-    if (!record.templateId) return
-
-    const template = getAgentTemplateById(record.templateId)
-    if (!template) return
-
     const existing = await ctx.prisma.agentConfig.findUnique({
       where: { projectId: record.id },
     })
     if (existing) return
 
-    const heartbeatEnabled = template.settings.heartbeatEnabled
-    const heartbeatInterval = template.settings.heartbeatInterval
-    const jitter = Math.floor(Math.random() * heartbeatInterval * 0.1) * 1000
+    let heartbeatEnabled = false
+    let heartbeatInterval = 1800
+    let modelProvider = 'anthropic'
+    let modelName = 'claude-sonnet-4-6'
 
-    let modelProvider = template.settings.modelProvider
-    let modelName = template.settings.modelName
+    if (record.templateId) {
+      const template = getAgentTemplateById(record.templateId)
+      if (template) {
+        heartbeatEnabled = template.settings.heartbeatEnabled
+        heartbeatInterval = template.settings.heartbeatInterval
+        modelProvider = template.settings.modelProvider
+        modelName = template.settings.modelName
+      }
+    }
+
+    const jitter = Math.floor(Math.random() * heartbeatInterval * 0.1) * 1000
 
     // Downgrade to economy-tier model if workspace lacks advanced access
     if (record.workspaceId && getModelTier(modelName) !== 'economy') {

@@ -8,6 +8,7 @@
  */
 
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { validatePodToken } from '../lib/k8s-auth'
 
 const app = new Hono()
@@ -25,6 +26,28 @@ function checkRateLimit(projectId: string): boolean {
   }
   entry.count++
   return entry.count <= RATE_LIMIT_MAX
+}
+
+/**
+ * Validate request auth: tries K8s SA token first, then falls back to
+ * runtime-token verification in local mode.
+ */
+async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
+  const authHeader = c.req.header('Authorization')
+  if (authHeader?.startsWith('Bearer ')) {
+    const identity = await validatePodToken(authHeader.slice(7))
+    if (identity) return true
+  }
+
+  if (process.env.SHOGO_LOCAL_MODE === 'true' && projectId) {
+    const runtimeToken = c.req.header('x-runtime-token')
+    if (runtimeToken) {
+      const { deriveRuntimeToken } = await import('../lib/runtime-token')
+      return runtimeToken === deriveRuntimeToken(projectId)
+    }
+  }
+
+  return false
 }
 
 /**
@@ -76,17 +99,7 @@ app.get('/pod-config/:projectId', async (c) => {
  * Updates lastHeartbeatAt in the DB. Authenticated via K8s SA token.
  */
 app.post('/heartbeat/complete', async (c) => {
-  const authHeader = c.req.header('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'Missing or invalid Authorization header' }, 401)
-  }
-
-  const token = authHeader.slice(7)
-  const identity = await validatePodToken(token)
-  if (!identity) {
-    return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
-  }
-
+  // Parse body first so we have projectId for runtime-token validation
   const body = await c.req.json()
   const projectId = body.projectId as string
 
@@ -94,12 +107,19 @@ app.post('/heartbeat/complete', async (c) => {
     return c.json({ error: 'projectId is required' }, 400)
   }
 
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
   try {
     const { prisma } = await import('../lib/prisma')
-    await prisma.agentConfig.updateMany({
-      where: { projectId },
-      data: { lastHeartbeatAt: new Date() },
-    })
+    // lastHeartbeatAt doesn't exist in the local SQLite schema, only update in prod
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      await prisma.agentConfig.updateMany({
+        where: { projectId },
+        data: { lastHeartbeatAt: new Date() },
+      })
+    }
 
     return c.json({ ok: true })
   } catch (err: any) {
@@ -115,18 +135,11 @@ app.post('/heartbeat/complete', async (c) => {
  * based on enabled/disabled state and interval changes.
  */
 app.put('/heartbeat/config/:projectId', async (c) => {
-  const authHeader = c.req.header('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'Missing or invalid Authorization header' }, 401)
-  }
-
-  const token = authHeader.slice(7)
-  const identity = await validatePodToken(token)
-  if (!identity) {
-    return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
-  }
-
   const projectId = c.req.param('projectId')
+
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
   const body = await c.req.json()
 
   try {
@@ -139,9 +152,11 @@ app.put('/heartbeat/config/:projectId', async (c) => {
     if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
       data.heartbeatInterval = body.heartbeatInterval
     }
-    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+      if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+      if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
+    }
 
     const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
     if (!existing) {

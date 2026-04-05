@@ -35,5 +35,11 @@ export function getInternalHeaders(): Record<string, string> {
       headers['Authorization'] = `Bearer ${readFileSync(SA_TOKEN_PATH, 'utf-8').trim()}`
     }
   } catch { /* not in K8s */ }
+
+  // In local mode, include the runtime token for API auth
+  if (process.env.RUNTIME_AUTH_SECRET) {
+    headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
+  }
+
   return headers
 }
