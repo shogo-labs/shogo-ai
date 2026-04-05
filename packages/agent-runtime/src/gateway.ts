@@ -286,8 +286,10 @@ export class AgentGateway {
   private lspManager: WorkspaceLSPManager | null = null
   /** Tracks files the agent has read across turns for cache-aware compaction */
   private fileStateCache = new FileStateCache()
-  /** Shared code index engine for workspace-wide semantic search */
-  private codeIndexEngine: import('./code-index-engine').CodeIndexEngine | null = null
+  /** Shared index engine for workspace-wide search (code + files) */
+  private indexEngine: import('./index-engine').IndexEngine | null = null
+  /** Workspace knowledge graph for structural analysis */
+  private workspaceGraph: import('./workspace-graph').WorkspaceGraph | null = null
   /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
   private get canvasFileWatcher(): CanvasFileWatcher {
     return CanvasFileWatcher.getInstance(this.workspaceDir)
@@ -630,14 +632,32 @@ export class AgentGateway {
       })
     }
 
-    // Pre-warm code index for workspace-wide semantic search (fire-and-forget)
+    // Pre-warm unified index engine for workspace-wide search (fire-and-forget)
     try {
-      const { CodeIndexEngine } = require('./code-index-engine')
-      const engine = new CodeIndexEngine(this.workspaceDir)
-      this.codeIndexEngine = engine
+      const { IndexEngine, createDefaultConfig } = require('./index-engine')
+      const engine = new IndexEngine(createDefaultConfig(this.workspaceDir))
+      this.indexEngine = engine
       engine.reindexBackground()
+
+      // Initialize workspace knowledge graph (shares the same SQLite DB)
+      try {
+        const { WorkspaceGraph } = require('./workspace-graph')
+        const { createDefaultExtractors } = require('./graph-extractors')
+        const graph = new WorkspaceGraph(engine)
+        for (const ext of createDefaultExtractors()) graph.registerExtractor(ext)
+        engine.setGraph(graph)
+        this.workspaceGraph = graph
+        // Build graph in background to avoid blocking startup
+        setTimeout(() => {
+          try { graph.buildGraph() } catch (e: any) {
+            console.warn(`${this.logPrefix} Graph build failed (non-fatal):`, e.message)
+          }
+        }, 5000)
+      } catch (err: any) {
+        console.warn(`${this.logPrefix} Workspace graph init failed (non-fatal):`, err.message)
+      }
     } catch (err: any) {
-      console.warn(`${this.logPrefix} Code index pre-warm failed (non-fatal):`, err.message)
+      console.warn(`${this.logPrefix} Index engine pre-warm failed (non-fatal):`, err.message)
     }
 
     console.log('[AgentGateway] Started successfully')
@@ -678,6 +698,10 @@ export class AgentGateway {
     await this.skillServerManager.stop()
     this.canvasBuildManager?.stop()
     await this.mcpClientManager.stopAll()
+
+    this.workspaceGraph = null
+    try { this.indexEngine?.close() } catch { /* best-effort */ }
+    this.indexEngine = null
 
     for (const [name, adapter] of this.channels) {
       try {
@@ -1292,7 +1316,8 @@ export class AgentGateway {
       skillServerManager: this.skillServerManager,
       sessionPersistence: this.sessionPersistence ?? undefined,
       teamManager: this.teamManager,
-      codeIndexEngine: this.codeIndexEngine ?? undefined,
+      indexEngine: this.indexEngine ?? undefined,
+      workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
@@ -1347,7 +1372,7 @@ export class AgentGateway {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search_files', 'file_search',
+        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search',
         'web', 'browser',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
@@ -2333,7 +2358,7 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
   /**
    * Build a context section listing files the user has uploaded to files/.
    * Included in the system prompt so the agent knows what data is available
-   * and can proactively use list_files/search_files/read_file to access it.
+   * and can proactively use list_files/search/read_file to access it.
    */
   private buildUploadedFilesContext(): string | null {
     const filesDir = join(this.workspaceDir, 'files')
@@ -2347,7 +2372,7 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
         '## Workspace Uploaded Files',
         '',
         'The user has uploaded the following files to the workspace `files/` directory.',
-        'Use `list_files` to browse, `search_files` to search content, or `read_file` with path `files/<name>` to read them.',
+        'Use `list_files` to browse, `search` to search content, or `read_file` with path `files/<name>` to read them.',
         '',
       ]
 
@@ -2661,6 +2686,20 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
 
   getMCPClientManager(): MCPClientManager {
     return this.mcpClientManager
+  }
+
+  /**
+   * Reconnect the index engine and workspace graph database handles.
+   * Call after the .shogo/ directory has been deleted and recreated
+   * (e.g. between eval runs).
+   */
+  reconnectIndex(): void {
+    if (this.indexEngine) {
+      this.indexEngine.reconnect()
+      if (this.workspaceGraph) {
+        this.workspaceGraph.reconnect()
+      }
+    }
   }
 
   getActiveMode(): VisualMode {

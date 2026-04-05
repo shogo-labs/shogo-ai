@@ -19,7 +19,7 @@
       "browser",
       "list_files",
       "delete_file",
-      "search_files",
+      "search",
       "todo_write",
       "ask_user",
       "notify_user_error",

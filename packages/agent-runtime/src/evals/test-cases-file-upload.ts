@@ -5,7 +5,7 @@
  *
  * Tests the agent's ability to discover and use files uploaded to the
  * workspace `files/` directory. The system prompt dynamically lists
- * uploaded files and the agent should use `list_files`, `search_files`,
+ * uploaded files and the agent should use `list_files`, `search`,
  * and `read_file` to interact with them.
  */
 
@@ -125,7 +125,7 @@ const FILE_UPLOAD_SINGLE_CSV_MOCKS: ToolMockMap = {
     ],
     default: { error: 'File not found' },
   },
-  search_files: {
+  search: {
     type: 'pattern',
     description: 'RAG search across indexed files.',
     paramKeys: ['query'],
@@ -198,7 +198,7 @@ const FILE_UPLOAD_MULTI_MOCKS: ToolMockMap = {
     ],
     default: { error: 'File not found' },
   },
-  search_files: {
+  search: {
     type: 'pattern',
     description: 'RAG search across indexed files.',
     paramKeys: ['query'],
@@ -367,10 +367,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-search-or-read',
-        description: 'Used search_files or read_file to find error info',
+        description: 'Used search or read_file to find error info',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'search_files') || usedTool(r, 'read_file'),
+        validate: (r) => usedTool(r, 'search') || usedTool(r, 'read_file'),
       },
       {
         id: 'found-deploy-log',
@@ -423,10 +423,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-file-tool',
-        description: 'Used read_file or search_files to access meeting notes',
+        description: 'Used read_file or search to access meeting notes',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'read-meeting-file',
@@ -480,10 +480,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-search-or-read',
-        description: 'Used search_files or read_file for database info',
+        description: 'Used search or read_file for database info',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'search_files') || usedTool(r, 'read_file'),
+        validate: (r) => usedTool(r, 'search') || usedTool(r, 'read_file'),
       },
       {
         id: 'mentions-postgresql',
@@ -533,10 +533,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'discovered-files',
-        description: 'Used list_files or search_files to discover available data',
+        description: 'Used list_files or search to discover available data',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'search_files') || usedTool(r, 'read_file'),
+        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'search') || usedTool(r, 'read_file'),
       },
       {
         id: 'read-the-data',
@@ -610,7 +610,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         paramKeys: ['path'],
         response: { content: PLAIN_TEXT_LOG, path: 'files/deploy.log', size: 567 },
       },
-      search_files: {
+      search: {
         type: 'static',
         paramKeys: ['query'],
         response: {
@@ -626,10 +626,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-file-tools',
-        description: 'Used read_file or search_files to access the deploy log',
+        description: 'Used read_file or search to access the deploy log',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'identifies-root-cause',
@@ -679,10 +679,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-file-tools',
-        description: 'Used read_file or search_files to check config',
+        description: 'Used read_file or search to check config',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'targeted-config',
@@ -735,7 +735,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         paramKeys: ['path'],
         response: { files: [], total: 0 },
       },
-      search_files: {
+      search: {
         type: 'static',
         paramKeys: ['query'],
         response: { results: [] },
@@ -749,10 +749,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'checked-files',
-        description: 'Attempted to check files via list_files or search_files',
+        description: 'Attempted to check files via list_files or search',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'search_files'),
+        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'search'),
       },
       {
         id: 'reports-no-files',
@@ -806,7 +806,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         points: 20,
         phase: 'intention',
         validate: (r) => {
-          const readCalls = r.toolCalls.filter(t => t.name === 'read_file' || t.name === 'search_files')
+          const readCalls = r.toolCalls.filter(t => t.name === 'read_file' || t.name === 'search')
           return readCalls.length >= 2
         },
       },
@@ -883,7 +883,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         paramKeys: ['path'],
         response: { content: CSV_CONTENT, path: 'files/quarterly-report.csv', size: 312 },
       },
-      search_files: {
+      search: {
         type: 'static',
         paramKeys: ['query'],
         response: {
