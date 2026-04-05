@@ -2265,6 +2265,73 @@ export function aiProxyRoutes() {
   })
 
   // =========================================================================
+  // GET /ai/v1/subscription - Debug: check subscription status for the key's workspace
+  // =========================================================================
+  router.get('/ai/v1/subscription', async (c) => {
+    const tokenPayload = await validateProxyAuth(c) || await validateAnthropicAuth(c)
+    if (!tokenPayload) {
+      return c.json({ error: { message: 'Invalid or missing API key', code: 'auth_error' } }, 401)
+    }
+
+    const sub = await billingService.getSubscription(tokenPayload.workspaceId)
+    const ledger = await billingService.getCreditLedger(tokenPayload.workspaceId)
+
+    return c.json({
+      workspaceId: tokenPayload.workspaceId,
+      subscription: sub ? {
+        planId: sub.planId,
+        status: sub.status,
+        billingInterval: sub.billingInterval,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+      } : null,
+      credits: ledger ? {
+        monthlyCredits: ledger.monthlyCredits,
+        dailyCredits: ledger.dailyCredits,
+      } : null,
+      hasAdvancedModelAccess: isLocalDev || await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId),
+    })
+  })
+
+  // =========================================================================
+  // PUT /ai/v1/subscription - Debug: provision/update subscription for staging/testing
+  // =========================================================================
+  router.put('/ai/v1/subscription', async (c) => {
+    const tokenPayload = await validateProxyAuth(c) || await validateAnthropicAuth(c)
+    if (!tokenPayload) {
+      return c.json({ error: { message: 'Invalid or missing API key', code: 'auth_error' } }, 401)
+    }
+
+    const body = await c.req.json<{ planId?: string }>()
+    const planId = body.planId || 'pro'
+
+    const now = new Date()
+    const periodEnd = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000)
+
+    await billingService.syncFromStripe({
+      stripeSubscriptionId: `debug_${tokenPayload.workspaceId}`,
+      stripeCustomerId: `debug_cus_${tokenPayload.workspaceId}`,
+      workspaceId: tokenPayload.workspaceId,
+      planId: planId as any,
+      status: 'active',
+      billingInterval: 'monthly',
+      currentPeriodStart: now,
+      currentPeriodEnd: periodEnd,
+      cancelAtPeriodEnd: false,
+    })
+
+    await billingService.allocateMonthlyCredits(tokenPayload.workspaceId, planId)
+
+    const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+    return c.json({
+      ok: true,
+      workspaceId: tokenPayload.workspaceId,
+      planId,
+      hasAdvancedModelAccess: hasAdvanced,
+    })
+  })
+
+  // =========================================================================
   // GET /ai/proxy/health - Health check for the AI proxy
   // =========================================================================
   router.get('/ai/proxy/health', (c) => {

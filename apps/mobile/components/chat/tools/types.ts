@@ -119,6 +119,15 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
     }
   }
 
+  if (toolName === "browser") {
+    const action = args.action as string | undefined
+    if (action === "navigate") {
+      const url = args.url as string | undefined
+      if (url) return url.length > 30 ? url.slice(0, 27) + "..." : url
+    }
+    return action || null
+  }
+
   if (toolName === "Task") {
     const desc = args.description as string | undefined
     if (desc) {
