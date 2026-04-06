@@ -95,6 +95,7 @@ import { AlertCircle, RefreshCw, X } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
+import { buildStopRequest } from "../../lib/chat-stop"
 
 // ============================================================
 // Agent Mode Persistence
@@ -1550,21 +1551,20 @@ export const ChatPanel = observer(function ChatPanel({
   const handleStop = useCallback(() => {
     stop()
 
-    const stopUrl = localAgentUrl
-      ? `${localAgentUrl}/agent/stop`
-      : projectId
-        ? `${API_URL}/api/projects/${projectId}/chat/stop`
-        : null
-    if (stopUrl) {
-      fetch(stopUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      }).catch((err) => {
+    const req = buildStopRequest({
+      localAgentUrl,
+      projectId,
+      apiBaseUrl: API_URL!,
+      platform: Platform.OS,
+      getCookie: () => authClient.getCookie(),
+    })
+    if (req) {
+      const fetchFn = expoFetch || fetch
+      fetchFn(req.url, req.init).catch((err) => {
         console.warn("[ChatPanel] Failed to send stop signal to backend:", err)
       })
     }
-  }, [stop, projectId, localAgentUrl])
+  }, [stop, projectId, localAgentUrl, expoFetch])
 
   // Idle timeout to force-complete hung streams
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
