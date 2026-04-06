@@ -213,7 +213,7 @@ export async function consumeCredits(
           creditSource: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: actionMetadata ?? {},
+          actionMetadata: (actionMetadata ?? {}) as Prisma.InputJsonValue,
         },
       })
     } catch (e) {
