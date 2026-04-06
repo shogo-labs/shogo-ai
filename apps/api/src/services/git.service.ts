@@ -23,6 +23,29 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+let _gitAvailable: boolean | null = null;
+
+/**
+ * Check whether the `git` binary is available on the host.
+ * Result is cached after the first probe.
+ */
+export function isGitAvailable(): boolean {
+  if (_gitAvailable !== null) return _gitAvailable;
+  try {
+    execFileSync('git', ['--version'], { stdio: 'pipe' });
+    _gitAvailable = true;
+  } catch {
+    _gitAvailable = false;
+  }
+  return _gitAvailable;
+}
+
+function requireGit(): void {
+  if (!isGitAvailable()) {
+    throw new Error('Git is not installed. Checkpoint and version-control features require git on the host machine.');
+  }
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -135,6 +158,7 @@ export async function initRepo(
   workspacePath: string,
   options?: { defaultBranch?: string }
 ): Promise<{ created: boolean; branch: string }> {
+  requireGit();
   const defaultBranch = options?.defaultBranch || 'main';
 
   if (isGitRepo(workspacePath)) {
@@ -287,6 +311,7 @@ export async function commit(
   workspacePath: string,
   options: CommitOptions
 ): Promise<GitCommit | null> {
+  requireGit();
   const { message, author, email, includeUntracked = true } = options;
 
   // Stage changes
@@ -531,6 +556,7 @@ export async function checkout(
   ref: string,
   options?: { createBranch?: string; force?: boolean }
 ): Promise<{ success: boolean; branch: string; error?: string }> {
+  requireGit();
   const { createBranch, force } = options || {};
 
   try {
@@ -564,6 +590,7 @@ export async function createBranch(
   branchName: string,
   options?: { fromRef?: string; checkout?: boolean }
 ): Promise<{ success: boolean; error?: string }> {
+  requireGit();
   const { fromRef, checkout: shouldCheckout = true } = options || {};
 
   try {
@@ -618,7 +645,7 @@ export async function addRemote(
   name: string,
   url: string
 ): Promise<void> {
-  // Remove existing remote if present
+  requireGit();
   try {
     execFileSync('git', ['remote', 'remove', name], { cwd: workspacePath, stdio: 'pipe' });
   } catch {
@@ -635,6 +662,7 @@ export async function push(
   workspacePath: string,
   options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
 ): Promise<{ success: boolean; error?: string }> {
+  requireGit();
   const { remote = 'origin', branch, force, setUpstream } = options || {};
 
   try {
@@ -664,6 +692,7 @@ export async function fetch(
   workspacePath: string,
   options?: { remote?: string; prune?: boolean }
 ): Promise<{ success: boolean; error?: string }> {
+  requireGit();
   const { remote = 'origin', prune } = options || {};
 
   try {
@@ -687,6 +716,7 @@ export async function pull(
   workspacePath: string,
   options?: { remote?: string; branch?: string; rebase?: boolean }
 ): Promise<{ success: boolean; error?: string }> {
+  requireGit();
   const { remote = 'origin', branch, rebase } = options || {};
 
   try {

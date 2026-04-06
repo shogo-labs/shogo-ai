@@ -21,6 +21,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
 import * as checkpointService from "../services/checkpoint.service"
+import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession } from "../lib/proxy-billing-session"
 
@@ -397,7 +398,7 @@ async function trackUsageFromStream(
   // In Kubernetes the workspace lives on the agent pod, not on the API pod,
   // so the local path doesn't exist. Skip silently instead of logging a warning
   // on every streamed response.
-  if (hasFileModifyingTools(toolCallMap) && !streamInterrupted) {
+  if (hasFileModifyingTools(toolCallMap) && !streamInterrupted && isGitAvailable()) {
     const workspacePath = resolve(WORKSPACES_DIR, project.id)
     if (existsSync(workspacePath)) {
       const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')
