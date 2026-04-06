@@ -255,15 +255,6 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
     webViewRef.current?.postMessage(JSON.stringify(msg))
   }, [])
 
-  // Handle SSE events — reload WebView on build complete
-  useEffect(() => {
-    return sse.subscribe((event) => {
-      if (event.type === 'reload') {
-        webViewRef.current?.reload()
-      }
-    })
-  }, [sse])
-
   // Send connected status
   useEffect(() => {
     if (sse.connected) sendToWebView({ type: 'canvas-connected' })
