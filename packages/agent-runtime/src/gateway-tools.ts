@@ -1961,9 +1961,14 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
         page = browserCtx?.pages()[0] || await browser.newPage()
         isExtensionMode = true
       } else {
+        const launchArgs: string[] = []
+        if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CONTAINER) {
+          launchArgs.push('--no-sandbox', '--disable-setuid-sandbox')
+        }
         browser = await pw.chromium.launch({
           headless: true,
           executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+          args: launchArgs.length > 0 ? launchArgs : undefined,
         })
         page = await browser.newPage()
       }
