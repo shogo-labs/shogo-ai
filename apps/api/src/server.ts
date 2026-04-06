@@ -74,6 +74,7 @@ let runtimeManager: IRuntimeManager | null = null
 
 // Environment detection - check if running in Kubernetes
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
+const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
@@ -6215,6 +6216,62 @@ if (isKubernetes()) {
       startAnalyticsDigestCollector(prisma)
     } catch (err: any) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
+    }
+  }, 2000)
+}
+
+// Start VM warm pool controller (desktop VM isolation mode)
+if (isVMIsolation() && !isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { initVMWarmPool } = await import('./lib/vm-warm-pool-controller')
+      const vmModule = await import('../../desktop/src/vm/index')
+
+      const os = await import('os')
+      const path = await import('path')
+      const crypto = await import('crypto')
+      const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
+      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(__dirname, '../../../workspaces')
+      const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
+      const overlayDir = path.join(dataDir, 'vm-overlays')
+      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
+      const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
+
+      // One-time: create a provisioned base image for instant cloning
+      if (process.platform === 'darwin' && bundleDir) {
+        try {
+          const provisionMgr = vmModule.createVMManager() as InstanceType<typeof vmModule.DarwinVMManager>
+          if ('ensureProvisionedBase' in provisionMgr) {
+            await provisionMgr.ensureProvisionedBase(bundleDir)
+          }
+        } catch (err: any) {
+          console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)
+        }
+      }
+
+      // Factory: each pool VM gets its own DarwinVMManager instance
+      const managerFactory = () => vmModule.createVMManager()
+
+      const memoryMB = parseInt(process.env.VM_MEMORY_MB || '4096', 10)
+      const cpus = parseInt(process.env.VM_CPUS || String(Math.max(2, Math.floor(os.cpus().length / 2))), 10)
+
+      await initVMWarmPool(managerFactory, {
+        workspaceDir: workspacesDir,
+        credentialDirs: [
+          path.join(home, '.ssh'),
+          path.join(home, '.gitconfig'),
+          path.join(home, '.config', 'gh'),
+        ],
+        memoryMB,
+        cpus,
+        networkEnabled: true,
+        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.raw`),
+        vmImageDir,
+        bundleDir: bundleDir || undefined,
+      })
+      console.log('[VMWarmPool] VM warm pool controller started')
+    } catch (err: any) {
+      console.error('[VMWarmPool] Failed to start VM warm pool controller (non-fatal):', err.message)
     }
   }, 2000)
 }

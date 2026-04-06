@@ -29,6 +29,7 @@ const chatTracer = trace.getTracer("shogo-api-chat")
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
+const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
 // =============================================================================
 // Configuration
@@ -472,6 +473,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // In Kubernetes: Use Knative project manager
       const { getProjectPodUrl } = await import("../lib/knative-project-manager")
       return await getProjectPodUrl(projectId)
+    } else if (isVMIsolation()) {
+      // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s)
+      const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+      return await getVMProjectUrl(projectId)
     } else if (runtimeManager) {
       // Local development: Use RuntimeManager
       let runtime = runtimeManager.status(projectId)

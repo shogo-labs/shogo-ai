@@ -40,6 +40,7 @@ const config: ForgeConfig = {
       './resources/runtime-template',
       './resources/canvas-runtime',
       './resources/tree-sitter-wasm',
+      './resources/vm',
       './resources/seed.db',
       './resources/package.json',
       './prisma',
