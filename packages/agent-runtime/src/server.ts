@@ -607,13 +607,17 @@ app.post('/agent/chat', async (c) => {
     }
   }
 
+  // Use the DB chatSessionId as the runtime session key so that different
+  // chat sessions within the same project get isolated conversation history.
+  const chatSessionKey = body.chatSessionId || 'chat'
+
   // Seed the chat session with prior conversation history from the request.
   // AI SDK clients and eval runners send the full message array each turn;
   // the session is the authoritative store so we only seed when it's empty
   // to avoid duplicating messages on subsequent turns.
   if (allMessages.length > 1) {
     const sessionMgr = agentGateway!.getSessionManager()
-    const session = sessionMgr.getOrCreate('chat')
+    const session = sessionMgr.getOrCreate(chatSessionKey)
     if (session.messages.length === 0) {
       const priorMessages = allMessages.slice(0, -1)
       for (const msg of priorMessages) {
@@ -634,14 +638,14 @@ app.post('/agent/chat', async (c) => {
             if (fileCount > 0) notes.push(`[${fileCount} file(s) were attached]`)
             const effectiveText = [text, ...notes].filter(Boolean).join('\n')
             if (!effectiveText) continue
-            sessionMgr.addMessages('chat', userMessage(effectiveText))
+            sessionMgr.addMessages(chatSessionKey, userMessage(effectiveText))
           } else {
             if (!text) continue
-            sessionMgr.addMessages('chat', userMessage(text))
+            sessionMgr.addMessages(chatSessionKey, userMessage(text))
           }
         } else if (msg.role === 'assistant') {
           if (!text) continue
-          sessionMgr.addMessages('chat', {
+          sessionMgr.addMessages(chatSessionKey, {
             role: 'assistant',
             content: [{ type: 'text', text }],
             api: 'anthropic-messages',
@@ -678,6 +682,7 @@ app.post('/agent/chat', async (c) => {
           userId: chatUserId,
           interactionMode,
           confirmedPlan,
+          chatSessionId: chatSessionKey,
         })
 
         const usage = agentGateway!.consumeLastTurnUsage()
@@ -838,7 +843,9 @@ app.delete('/agent/plans/:filename', async (c) => {
 app.post('/agent/stop', async (c) => {
   if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
 
-  const aborted = agentGateway.abortCurrentTurn('chat')
+  const body = await c.req.json().catch(() => ({} as any))
+  const stopSessionKey = body.chatSessionId || 'chat'
+  const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
   // code_agent removed — subagent aborts are handled by the parent agent loop's abort signal
 

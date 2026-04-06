@@ -19,7 +19,10 @@ const API_PORT = Number(process.env.API_PORT ?? 8002);
 
 const WATCH_DIRS = [
   resolve(ROOT, "apps/api/src"),
-  resolve(ROOT, "packages"),
+  resolve(ROOT, "packages/agent-runtime/src"),
+  resolve(ROOT, "packages/model-catalog/src"),
+  resolve(ROOT, "packages/sdk/src"),
+  resolve(ROOT, "packages/shared-runtime/src"),
 ];
 
 const DEBOUNCE_MS = 800;

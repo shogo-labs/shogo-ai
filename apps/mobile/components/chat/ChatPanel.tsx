@@ -1550,7 +1550,6 @@ export const ChatPanel = observer(function ChatPanel({
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
 
-  // Enhanced stop handler
   const handleStop = useCallback(() => {
     stop()
 
@@ -1935,6 +1934,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   useEffect(() => {
     hasReceivedPartsRef.current = false
+    isLoadingMessagesRef.current = false
     processedProgressEventsRef.current.clear()
     subagentStreamStore.clear()
     setIsInitialLoadComplete(false)
@@ -2385,11 +2385,13 @@ export const ChatPanel = observer(function ChatPanel({
         if (content) {
           const lastUserIdx = messages.lastIndexOf(lastUserMsg)
           setMessages(messages.slice(0, lastUserIdx))
-          sendMessage({ text: content })
+          sendMessageInternal(content).catch((err) =>
+            console.error("[ChatPanel] Retry failed:", err)
+          )
         }
       }
     }
-  }, [messages, sendMessage, setMessages])
+  }, [messages, sendMessageInternal, setMessages])
 
   const messageListMessages = messages.map((msg) => ({
     id: msg.id,
