@@ -4225,41 +4225,54 @@ app.post('/api/generate-project-name', async (c) => {
 
     const result = await generateText({
       model: anthropic('claude-haiku-4-5-20251001'),
-      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short project name and a one-sentence description.
+      maxTokens: 80,
+      system: `You generate short titles for chat conversations. The user will provide the first message from a conversation. Your job is to generate a short title summarizing the topic.
+
+CRITICAL: You are a labeling function, NOT a conversational assistant. NEVER explain yourself, NEVER refuse, NEVER ask questions, NEVER describe your capabilities. Just output JSON.
 
 You MUST respond with valid JSON only, no other text. Use this exact format:
-{"title": "Project Name", "description": "A one-sentence description of the project."}
+{"title": "Short Title", "description": "A one-sentence description."}
 
 Rules for the title:
 - Use 2-4 words maximum
 - Make it descriptive but concise
 - Use Title Case (capitalize each word)
+- Summarize the TOPIC of the message, not its intent
 - Do NOT include words like "App", "Application", "Project", "System" unless essential
-- Focus on the core functionality or domain
 
 Rules for the description:
 - One sentence, under 100 characters
-- Describe what the project does, not how
+- Describe the topic of the conversation
 
 Examples:
 - "create a todo app" → {"title": "Task Tracker", "description": "Organize and track daily tasks and to-dos."}
 - "build a recipe manager" → {"title": "Recipe Book", "description": "Store and browse your favorite recipes."}
-- "make a chat application with video calls" → {"title": "Video Chat", "description": "Real-time messaging with video call support."}
+- "review my repo and commit pending changes" → {"title": "Repo Review", "description": "Review repository and commit pending changes."}
+- "fix the login bug on the dashboard" → {"title": "Login Bug Fix", "description": "Fix authentication issue on the dashboard."}
+- "help me understand how kubernetes works" → {"title": "Kubernetes Intro", "description": "Learning how Kubernetes orchestration works."}
 - "build a dashboard for monitoring servers" → {"title": "Server Monitor", "description": "Monitor server health and performance metrics."}`,
-      prompt: prompt.trim(),
+      prompt: "Here is the first message from a conversation: " + prompt.trim() + ". Generate a short title and description for this message.",
     })
 
     let name = 'New Project'
     let description = ''
     try {
-      // Strip markdown code fences if present (e.g. ```json ... ```)
       let jsonText = result.text.trim()
       jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
       const parsed = JSON.parse(jsonText)
       name = (parsed.title || '').replace(/['"]/g, '').trim() || 'New Project'
       description = (parsed.description || '').trim()
     } catch {
-      name = result.text.trim().replace(/['"]/g, '').replace(/```(?:json)?/gi, '').trim() || 'New Project'
+      const raw = result.text.trim().replace(/['"]/g, '').replace(/```(?:json)?/gi, '').trim()
+      if (raw.length > 50) {
+        name = fallbackGenerateProjectName(prompt)
+      } else {
+        name = raw || 'New Project'
+      }
+    }
+
+    if (name.length > 50) {
+      name = fallbackGenerateProjectName(prompt)
     }
 
     // Track credit usage (fire-and-forget, small cost for Haiku)
