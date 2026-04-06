@@ -474,3 +474,187 @@ describe('Concurrency behavior', () => {
     expect(result.details).toEqual({ name: 'write_file' })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Dynamic proxy behavior (MCP hot-add scenario)
+// ---------------------------------------------------------------------------
+
+describe('Dynamic proxy preservation', () => {
+  /**
+   * Simulates the gateway's tool Proxy: a base array of static tools that
+   * dynamically merges in "live" tools from a mutable source on every access.
+   */
+  function createDynamicToolsProxy(
+    staticTools: AgentTool[],
+    liveToolSource: { tools: AgentTool[] },
+  ): AgentTool[] {
+    const staticNames = new Set(staticTools.map(t => t.name))
+    return new Proxy(staticTools, {
+      get(target, prop, receiver) {
+        if (prop === 'find' || prop === 'filter' || prop === 'map' ||
+            prop === 'forEach' || prop === 'some' || prop === 'every' ||
+            prop === Symbol.iterator || prop === 'length' ||
+            prop === 'slice' || prop === 'concat' || prop === 'includes') {
+          const live = liveToolSource.tools.filter(t => !staticNames.has(t.name))
+          const merged = live.length > 0 ? [...target, ...live] : target
+          if (prop === 'length') return merged.length
+          if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)
+          return (merged as any)[prop].bind(merged)
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as AgentTool[]
+  }
+
+  test('tools added after wrapping are visible via find()', () => {
+    const staticTools = [makeTool('read_file'), makeTool('edit_file')]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped } = wrapToolsWithOrchestration(dynamicProxy)
+
+    // Initially only static tools
+    expect(wrapped.length).toBe(2)
+    expect(wrapped.find(t => t.name === 'read_file')).toBeDefined()
+    expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeUndefined()
+
+    // Simulate mcp_install adding a new tool mid-turn
+    liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
+
+    // The new tool should now be visible through the orchestrated proxy
+    expect(wrapped.length).toBe(3)
+    const found = wrapped.find(t => t.name === 'mcp_airbnb_search')
+    expect(found).toBeDefined()
+    expect(found!.name).toBe('mcp_airbnb_search')
+  })
+
+  test('dynamically added tools are properly orchestration-wrapped', async () => {
+    const staticTools = [makeTool('read_file')]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped, state } = wrapToolsWithOrchestration(dynamicProxy, { maxConcurrency: 2 })
+
+    // Add an MCP tool
+    liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
+
+    // Execute the dynamically added tool
+    const tool = wrapped.find(t => t.name === 'mcp_airbnb_search')!
+    const result = await tool.execute('t1', {})
+    expect(result.details).toEqual({ name: 'mcp_airbnb_search' })
+
+    // Verify the semaphore was used (acquired and released)
+    expect(state.semaphore.available).toBe(2)
+  })
+
+  test('dynamically added write tools acquire write mutex', async () => {
+    const log: string[] = []
+    const staticTools = [makeTimingTool('read_file', log, 10)]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped, state } = wrapToolsWithOrchestration(dynamicProxy)
+
+    // Add a write tool (not in CONCURRENT_SAFE_TOOLS)
+    liveToolSource.tools.push(makeTimingTool('mcp_db_write', log, 20))
+
+    // Execute both concurrently
+    const readTool = wrapped.find(t => t.name === 'read_file')!
+    const writeTool = wrapped.find(t => t.name === 'mcp_db_write')!
+
+    await Promise.all([
+      writeTool.execute('t1', {}),
+      readTool.execute('t2', {}),
+    ])
+
+    // Both should complete
+    expect(log.filter(e => e.startsWith('end:')).length).toBe(2)
+    // Locks released
+    expect(state.writeMutex.isLocked).toBe(false)
+  })
+
+  test('multiple tools added at different times are all visible', () => {
+    const staticTools = [makeTool('read_file')]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped } = wrapToolsWithOrchestration(dynamicProxy)
+
+    expect(wrapped.length).toBe(1)
+
+    // First MCP install
+    liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
+    expect(wrapped.length).toBe(2)
+
+    // Second MCP install
+    liveToolSource.tools.push(makeTool('mcp_stripe_create_payment'))
+    expect(wrapped.length).toBe(3)
+
+    // All tools findable
+    expect(wrapped.find(t => t.name === 'read_file')).toBeDefined()
+    expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeDefined()
+    expect(wrapped.find(t => t.name === 'mcp_stripe_create_payment')).toBeDefined()
+  })
+
+  test('removed tools disappear from wrapped proxy', () => {
+    const staticTools = [makeTool('read_file')]
+    const liveToolSource = { tools: [makeTool('mcp_airbnb_search')] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped } = wrapToolsWithOrchestration(dynamicProxy)
+
+    expect(wrapped.length).toBe(2)
+    expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeDefined()
+
+    // Simulate mcp_uninstall
+    liveToolSource.tools = []
+    expect(wrapped.length).toBe(1)
+    expect(wrapped.find(t => t.name === 'mcp_airbnb_search')).toBeUndefined()
+  })
+
+  test('iteration via for...of sees dynamic tools', () => {
+    const staticTools = [makeTool('read_file')]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped } = wrapToolsWithOrchestration(dynamicProxy)
+
+    liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
+
+    const names: string[] = []
+    for (const t of wrapped) {
+      names.push(t.name)
+    }
+    expect(names).toContain('read_file')
+    expect(names).toContain('mcp_airbnb_search')
+    expect(names).toHaveLength(2)
+  })
+
+  test('filter() sees dynamic tools', () => {
+    const staticTools = [makeTool('read_file')]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped } = wrapToolsWithOrchestration(dynamicProxy)
+
+    liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
+
+    const mcpTools = wrapped.filter(t => t.name.startsWith('mcp_'))
+    expect(mcpTools).toHaveLength(1)
+    expect(mcpTools[0].name).toBe('mcp_airbnb_search')
+  })
+
+  test('numeric index access sees dynamic tools', () => {
+    const staticTools = [makeTool('read_file')]
+    const liveToolSource = { tools: [] as AgentTool[] }
+    const dynamicProxy = createDynamicToolsProxy(staticTools, liveToolSource)
+
+    const { tools: wrapped } = wrapToolsWithOrchestration(dynamicProxy)
+
+    liveToolSource.tools.push(makeTool('mcp_airbnb_search'))
+
+    expect(wrapped[0].name).toBe('read_file')
+    expect(wrapped[1].name).toBe('mcp_airbnb_search')
+    expect(wrapped[2]).toBeUndefined()
+  })
+})

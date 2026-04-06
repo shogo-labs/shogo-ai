@@ -199,11 +199,66 @@ export interface OrchestrationState {
 }
 
 /**
+ * Wrap a single tool with orchestration (semaphore + optional write mutex).
+ */
+function wrapSingleTool(
+  tool: AgentTool,
+  semaphore: Semaphore,
+  writeMutex: WriteMutex,
+): AgentTool {
+  const safe = isConcurrencySafe(tool.name)
+
+  if (safe) {
+    return {
+      ...tool,
+      execute: async (
+        toolCallId: string,
+        params: any,
+        signal?: AbortSignal,
+        onUpdate?: any,
+      ): Promise<AgentToolResult<any>> => {
+        await semaphore.acquire()
+        try {
+          return await tool.execute(toolCallId, params, signal, onUpdate)
+        } finally {
+          semaphore.release()
+        }
+      },
+    }
+  }
+
+  return {
+    ...tool,
+    execute: async (
+      toolCallId: string,
+      params: any,
+      signal?: AbortSignal,
+      onUpdate?: any,
+    ): Promise<AgentToolResult<any>> => {
+      await semaphore.acquire()
+      await writeMutex.acquire()
+      try {
+        return await tool.execute(toolCallId, params, signal, onUpdate)
+      } finally {
+        writeMutex.release()
+        semaphore.release()
+      }
+    },
+  }
+}
+
+/**
  * Wrap an array of AgentTools with orchestration logic.
  *
  * - All tools are gated by a concurrency semaphore (default 10)
  * - Write/mutating tools additionally acquire an exclusive write mutex
  *   so they execute serially even when Pi runs them in parallel mode
+ *
+ * IMPORTANT: The input `tools` may be a Proxy that dynamically merges
+ * live MCP tools on access (e.g. after mcp_install). We must NOT
+ * materialize it into a plain array (via .map/.slice/spread) because
+ * that would snapshot the tools at creation time and miss any servers
+ * added mid-turn. Instead we return a Proxy that wraps tools lazily.
  *
  * Returns both the wrapped tools and the orchestration state (for testing/metrics).
  */
@@ -219,48 +274,43 @@ export function wrapToolsWithOrchestration(
   const writeMutex = new WriteMutex()
   const state: OrchestrationState = { semaphore, writeMutex }
 
-  const wrapped = tools.map((tool) => {
-    const safe = isConcurrencySafe(tool.name)
+  const wrappedCache = new Map<string, AgentTool>()
 
-    if (safe) {
-      return {
-        ...tool,
-        execute: async (
-          toolCallId: string,
-          params: any,
-          signal?: AbortSignal,
-          onUpdate?: any,
-        ): Promise<AgentToolResult<any>> => {
-          await semaphore.acquire()
-          try {
-            return await tool.execute(toolCallId, params, signal, onUpdate)
-          } finally {
-            semaphore.release()
-          }
-        },
+  function getOrWrap(tool: AgentTool): AgentTool {
+    let w = wrappedCache.get(tool.name)
+    if (w) return w
+    w = wrapSingleTool(tool, semaphore, writeMutex)
+    wrappedCache.set(tool.name, w)
+    return w
+  }
+
+  const PROXIED_PROPS = new Set<string | symbol>([
+    'find', 'filter', 'map', 'forEach', 'some', 'every',
+    'slice', 'concat', 'includes', 'reduce', 'flatMap',
+    'indexOf', 'findIndex',
+  ])
+
+  const proxy = new Proxy(tools, {
+    get(target, prop, receiver) {
+      if (prop === 'length') {
+        return Array.from(target).length
       }
-    }
+      if (prop === Symbol.iterator) {
+        const wrapped = Array.from(target).map(getOrWrap)
+        return wrapped[Symbol.iterator].bind(wrapped)
+      }
+      if (typeof prop === 'string' && PROXIED_PROPS.has(prop)) {
+        const wrapped = Array.from(target).map(getOrWrap)
+        return (wrapped as any)[prop].bind(wrapped)
+      }
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+        const current = Array.from(target)
+        const idx = parseInt(prop, 10)
+        return idx < current.length ? getOrWrap(current[idx]) : undefined
+      }
+      return Reflect.get(target, prop, receiver)
+    },
+  }) as AgentTool[]
 
-    // Write/mutating tool: acquire both semaphore slot and exclusive write lock
-    return {
-      ...tool,
-      execute: async (
-        toolCallId: string,
-        params: any,
-        signal?: AbortSignal,
-        onUpdate?: any,
-      ): Promise<AgentToolResult<any>> => {
-        await semaphore.acquire()
-        await writeMutex.acquire()
-        try {
-          return await tool.execute(toolCallId, params, signal, onUpdate)
-        } finally {
-          writeMutex.release()
-          semaphore.release()
-        }
-      },
-    }
-  })
-
-  return { tools: wrapped, state }
+  return { tools: proxy, state }
 }
