@@ -73,6 +73,7 @@ import {
   TerminalPanel,
   PlansPanel,
   AgentsPanel,
+  CheckpointsPanel,
 } from '../../../../components/project/panels'
 import { RefreshCw, MessageSquare } from 'lucide-react-native'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
@@ -83,7 +84,7 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans']
+const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -1057,6 +1058,7 @@ export default observer(function ProjectLayout() {
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
               <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} refreshTrigger={planRefreshNonce} />
+              <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>
 
