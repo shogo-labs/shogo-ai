@@ -33,7 +33,6 @@ import {
   History,
   PanelLeftClose,
   PanelLeft,
-  Github,
   Zap,
   ChevronDown,
   ChevronLeft,
@@ -680,11 +679,6 @@ export function ProjectTopBar({
 
         {/* Right actions */}
         <View className="flex-row items-center gap-0.5">
-          <BarIconButton
-            icon={Github}
-            onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
-            title="GitHub settings"
-          />
           {!hasActiveSubscription && (
             <Pressable
               onPress={() => router.push('/(app)/billing' as any)}
