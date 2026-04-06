@@ -6233,20 +6233,32 @@ if (isVMIsolation() && !isKubernetes()) {
       const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
       const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(__dirname, '../../../workspaces')
       const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
+
+      // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
+      // The VZ network gateway is typically 192.168.64.1 on macOS.
+      if (!process.env.API_HOST) {
+        const nets = os.networkInterfaces()
+        const bridge = nets['bridge100'] || nets['en0'] || []
+        const hostIp = bridge.find((n: any) => n.family === 'IPv4' && !n.internal)?.address
+        if (hostIp) process.env.API_HOST = hostIp
+      }
       const overlayDir = path.join(dataDir, 'vm-overlays')
       const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
       const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
 
-      // One-time: create a provisioned base image for instant cloning
+      // Fire-and-forget: create a provisioned base image for instant cloning.
+      // This can take minutes on first run — must not block warm pool init.
       if (process.platform === 'darwin' && bundleDir) {
-        try {
-          const provisionMgr = vmModule.createVMManager() as InstanceType<typeof vmModule.DarwinVMManager>
-          if ('ensureProvisionedBase' in provisionMgr) {
-            await provisionMgr.ensureProvisionedBase(bundleDir)
+        (async () => {
+          try {
+            const provisionMgr = vmModule.createVMManager() as InstanceType<typeof vmModule.DarwinVMManager>
+            if ('ensureProvisionedBase' in provisionMgr) {
+              await provisionMgr.ensureProvisionedBase(bundleDir)
+            }
+          } catch (err: any) {
+            console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)
           }
-        } catch (err: any) {
-          console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)
-        }
+        })()
       }
 
       // Factory: each pool VM gets its own DarwinVMManager instance

@@ -285,7 +285,16 @@ func createAndStartVM(params StartParams) (*vz.VirtualMachine, *vz.VirtioSocketD
 }
 
 func mustDiskAttachment(path string, readOnly bool) *vz.DiskImageStorageDeviceAttachment {
-	att, err := vz.NewDiskImageStorageDeviceAttachment(path, readOnly)
+	// Use cached mode to prevent filesystem corruption and kernel panics on
+	// Apple Virtualization.framework. The default (automatic/uncached) mode
+	// causes ext4 journal corruption that leads to "corrupted stack end
+	// detected inside scheduler" panics. This is the same fix adopted by
+	// UTM, Tart, Lima, and Apple Container.
+	att, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+		path, readOnly,
+		vz.DiskImageCachingModeCached,
+		vz.DiskImageSynchronizationModeFull,
+	)
 	if err != nil {
 		panic(fmt.Sprintf("disk attachment %s: %v", path, err))
 	}

@@ -51,6 +51,15 @@ export async function buildProjectEnv(
   env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
 
+  // AI proxy URLs — the runtime needs to know where the proxy server is.
+  // In K8s this is the service DNS name; locally it's localhost; in VMs we
+  // need the host address since localhost inside a VM doesn't reach the host.
+  const apiPort = process.env.API_PORT || '8002'
+  const apiHost = process.env.API_HOST || 'localhost'
+  env.AI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
+  env.ANTHROPIC_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/anthropic`
+  env.OPENAI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
+
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET
     env.S3_REGION = process.env.S3_REGION || 'us-east-1'
