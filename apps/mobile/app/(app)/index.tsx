@@ -365,10 +365,22 @@ const HomeScreen = observer(function HomeScreen() {
           initialInteractionMode: interactionMode,
         },
       } as any)
+
+      // Fire-and-forget: replace heuristic name with AI-generated name
+      const pid = newProject.id
+      const sid = chatSession.id
+      api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
+        if (name && name !== projectName) {
+          actions.updateProject(pid, { name, description: description || undefined })
+          actions.updateChatSession(sid, { inferredName: `Chat - ${name}` })
+        }
+      }).catch((err) => {
+        console.warn('[Home] AI project name generation failed, keeping heuristic name:', err)
+      })
     } finally {
       setIsCreating(false)
     }
-  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog, interactionMode])
+  }, [actions, http, user?.id, currentWorkspace?.id, projects, router, posthog, interactionMode])
 
   const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {

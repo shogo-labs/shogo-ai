@@ -355,6 +355,16 @@ export const api = {
     return res.data?.data ?? { totalMessages: 0, dailyAverage: 0, daysActive: 0, daysInPeriod: 365, currentStreak: 0, dailyCounts: {} }
   },
 
+  // ─── Project Naming ────────────────────────────────────────
+
+  async generateProjectName(http: HttpClient, prompt: string, workspaceId?: string) {
+    const res = await http.post<{ name: string; description: string }>(
+      '/api/generate-project-name',
+      { prompt, workspaceId },
+    )
+    return res.data ?? { name: '', description: '' }
+  },
+
   // ─── Templates ─────────────────────────────────────────────
 
   async getAgentTemplates(http: HttpClient) {
