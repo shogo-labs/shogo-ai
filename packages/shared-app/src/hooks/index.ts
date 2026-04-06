@@ -7,6 +7,7 @@ export {
   type GitStatus,
   type CheckpointDiff,
   type CheckpointsState,
+  type UseCheckpointsOptions,
 } from './useCheckpoints'
 export {
   useFeaturePolling,
