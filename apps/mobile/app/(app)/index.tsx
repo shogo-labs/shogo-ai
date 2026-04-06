@@ -34,6 +34,7 @@ import { saveInteractionModePreference } from '../../lib/interaction-mode-prefer
 import { loadAgentModePreference, saveAgentModePreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useTypingPlaceholder'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
@@ -321,12 +322,16 @@ const HomeScreen = observer(function HomeScreen() {
     void saveAgentModePreference(mode)
   }, [])
 
+  const typingPlaceholder = useTypingPlaceholder(undefined, {
+    enabled: interactionMode === 'agent' && !prompt,
+  })
+
   const homeComposerPlaceholder =
     interactionMode === 'plan'
       ? 'Describe what you want to plan...'
       : interactionMode === 'ask'
         ? 'Ask a question...'
-        : 'Ask Shogo to create...'
+        : `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
 
   const handlePromptSubmit = useCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
