@@ -15,7 +15,7 @@
  * - getStatus: Get working directory status
  */
 
-import { execSync, exec } from 'child_process';
+import { execSync, execFileSync, exec } from 'child_process';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -143,7 +143,7 @@ export async function initRepo(
   }
 
   // Initialize git repo
-  execSync(`git init -b ${defaultBranch}`, { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['init', '-b', defaultBranch], { cwd: workspacePath, stdio: 'pipe' });
 
   // Create .gitignore if it doesn't exist
   const gitignorePath = join(workspacePath, '.gitignore');
@@ -158,14 +158,14 @@ export async function initRepo(
   }
 
   // Configure git user for the repo (use Shogo AI as default)
-  execSync('git config user.name "Shogo AI"', { cwd: workspacePath, stdio: 'pipe' });
-  execSync('git config user.email "ai@shogo.dev"', { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'Shogo AI'], { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'ai@shogo.dev'], { cwd: workspacePath, stdio: 'pipe' });
 
   // Initial commit
-  execSync('git add -A', { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['add', '-A'], { cwd: workspacePath, stdio: 'pipe' });
   
   try {
-    execSync('git commit -m "Initial commit"', { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: workspacePath, stdio: 'pipe' });
   } catch (err: any) {
     // No files to commit is OK
     if (!err.message?.includes('nothing to commit')) {
@@ -291,9 +291,9 @@ export async function commit(
 
   // Stage changes
   if (includeUntracked) {
-    execSync('git add -A', { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', ['add', '-A'], { cwd: workspacePath, stdio: 'pipe' });
   } else {
-    execSync('git add -u', { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', ['add', '-u'], { cwd: workspacePath, stdio: 'pipe' });
   }
 
   // Check if there are changes to commit
@@ -302,18 +302,14 @@ export async function commit(
     return null; // Nothing to commit
   }
 
-  // Build commit command with optional author override
-  let commitCmd = 'git commit';
+  // Build commit args (uses execFileSync to avoid shell injection)
+  const commitArgs = ['commit', '-m', message];
   if (author && email) {
-    commitCmd += ` --author="${author} <${email}>"`;
+    commitArgs.push('--author', `${author} <${email}>`);
   }
-  
-  // Escape message for shell
-  const escapedMessage = message.replace(/"/g, '\\"');
-  commitCmd += ` -m "${escapedMessage}"`;
 
   try {
-    execSync(commitCmd, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', commitArgs, { cwd: workspacePath, stdio: 'pipe' });
   } catch (err: any) {
     if (err.message?.includes('nothing to commit')) {
       return null;
@@ -333,15 +329,15 @@ export async function getCommit(
   ref: string = 'HEAD'
 ): Promise<GitCommit | null> {
   try {
-    // Get commit info with format: sha|shortSha|message|author|email|date
-    const format = '%H|%h|%s|%an|%ae|%aI';
-    const info = execSync(`git log -1 --format="${format}" ${ref}`, {
+    // Null-byte delimiter avoids collisions with pipe chars in commit messages
+    const format = '%H%x00%h%x00%s%x00%an%x00%ae%x00%aI';
+    const info = execFileSync('git', ['log', '-1', `--format=${format}`, ref], {
       cwd: workspacePath,
       encoding: 'utf-8',
       stdio: 'pipe',
     }).trim();
 
-    const [sha, shortSha, message, author, authorEmail, dateStr] = info.split('|');
+    const [sha, shortSha, message, author, authorEmail, dateStr] = info.split('\0');
 
     // Get diff stats
     let filesChanged = 0;
@@ -350,13 +346,12 @@ export async function getCommit(
 
     try {
       // Try to get stats comparing with parent
-      const stats = execSync(`git diff --shortstat ${ref}^..${ref}`, {
+      const stats = execFileSync('git', ['diff', '--shortstat', `${ref}^..${ref}`], {
         cwd: workspacePath,
         encoding: 'utf-8',
         stdio: 'pipe',
       }).trim();
 
-      // Parse: "3 files changed, 10 insertions(+), 5 deletions(-)"
       const filesMatch = stats.match(/(\d+) files? changed/);
       const addMatch = stats.match(/(\d+) insertions?\(\+\)/);
       const delMatch = stats.match(/(\d+) deletions?\(-\)/);
@@ -367,19 +362,18 @@ export async function getCommit(
     } catch {
       // First commit has no parent - use --root to get stats
       try {
-        const stats = execSync(`git diff-tree --shortstat --root ${ref}`, {
+        const stats = execFileSync('git', ['diff-tree', '--shortstat', '--root', ref], {
           cwd: workspacePath,
           encoding: 'utf-8',
           stdio: 'pipe',
         }).trim();
 
-        // Parse output - similar format
         const filesMatch = stats.match(/(\d+) files? changed/);
         const addMatch = stats.match(/(\d+) insertions?\(\+\)/);
 
         filesChanged = filesMatch ? parseInt(filesMatch[1], 10) : 0;
         additions = addMatch ? parseInt(addMatch[1], 10) : 0;
-        deletions = 0; // First commit has no deletions
+        deletions = 0;
       } catch {
         // Still no luck, that's OK
       }
@@ -410,24 +404,27 @@ export async function getHistory(
 ): Promise<GitCommit[]> {
   const { limit = 50, before, branch } = options || {};
 
-  let cmd = `git log --format="%H|%h|%s|%an|%ae|%aI" -n ${limit}`;
+  // Use record separator (ASCII 30) between commits, null byte within fields
+  const format = '%H%x00%h%x00%s%x00%an%x00%ae%x00%aI%x1e';
+  const args = ['log', `--format=${format}`, '-n', String(limit)];
   if (before) {
-    cmd += ` ${before}^`;
+    args.push(`${before}^`);
   }
   if (branch) {
-    cmd += ` ${branch}`;
+    args.push(branch);
   }
 
   try {
-    const output = execSync(cmd, {
+    const output = execFileSync('git', args, {
       cwd: workspacePath,
       encoding: 'utf-8',
       stdio: 'pipe',
     });
 
     const commits: GitCommit[] = [];
-    for (const line of output.trim().split('\n').filter(Boolean)) {
-      const [sha, shortSha, message, author, authorEmail, dateStr] = line.split('|');
+    for (const record of output.trim().split('\x1e').filter(Boolean)) {
+      const [sha, shortSha, message, author, authorEmail, dateStr] = record.trim().split('\0');
+      if (!sha) continue;
       commits.push({
         sha,
         shortSha,
@@ -456,15 +453,17 @@ export async function getDiff(
   toRef: string = 'HEAD'
 ): Promise<GitDiff> {
   try {
+    const range = `${fromRef}..${toRef}`;
+
     // Get name-status for file list
-    const nameStatus = execSync(`git diff --name-status ${fromRef}..${toRef}`, {
+    const nameStatus = execFileSync('git', ['diff', '--name-status', range], {
       cwd: workspacePath,
       encoding: 'utf-8',
       stdio: 'pipe',
     });
 
     // Get numstat for additions/deletions
-    const numstat = execSync(`git diff --numstat ${fromRef}..${toRef}`, {
+    const numstat = execFileSync('git', ['diff', '--numstat', range], {
       cwd: workspacePath,
       encoding: 'utf-8',
       stdio: 'pipe',
@@ -535,16 +534,16 @@ export async function checkout(
   const { createBranch, force } = options || {};
 
   try {
-    let cmd = 'git checkout';
+    const args = ['checkout'];
     if (force) {
-      cmd += ' -f';
+      args.push('-f');
     }
     if (createBranch) {
-      cmd += ` -b ${createBranch}`;
+      args.push('-b', createBranch);
     }
-    cmd += ` ${ref}`;
+    args.push(ref);
 
-    execSync(cmd, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
 
     const branch = await getCurrentBranch(workspacePath);
     return { success: true, branch };
@@ -568,16 +567,15 @@ export async function createBranch(
   const { fromRef, checkout: shouldCheckout = true } = options || {};
 
   try {
-    let cmd = 'git branch';
-    cmd += ` ${branchName}`;
+    const args = ['branch', branchName];
     if (fromRef) {
-      cmd += ` ${fromRef}`;
+      args.push(fromRef);
     }
 
-    execSync(cmd, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
 
     if (shouldCheckout) {
-      execSync(`git checkout ${branchName}`, { cwd: workspacePath, stdio: 'pipe' });
+      execFileSync('git', ['checkout', branchName], { cwd: workspacePath, stdio: 'pipe' });
     }
 
     return { success: true };
@@ -622,12 +620,12 @@ export async function addRemote(
 ): Promise<void> {
   // Remove existing remote if present
   try {
-    execSync(`git remote remove ${name}`, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', ['remote', 'remove', name], { cwd: workspacePath, stdio: 'pipe' });
   } catch {
     // Remote doesn't exist, that's fine
   }
 
-  execSync(`git remote add ${name} ${url}`, { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['remote', 'add', name, url], { cwd: workspacePath, stdio: 'pipe' });
 }
 
 /**
@@ -640,19 +638,19 @@ export async function push(
   const { remote = 'origin', branch, force, setUpstream } = options || {};
 
   try {
-    let cmd = 'git push';
+    const args = ['push'];
     if (setUpstream) {
-      cmd += ' -u';
+      args.push('-u');
     }
     if (force) {
-      cmd += ' --force';
+      args.push('--force');
     }
-    cmd += ` ${remote}`;
+    args.push(remote);
     if (branch) {
-      cmd += ` ${branch}`;
+      args.push(branch);
     }
 
-    execSync(cmd, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Push failed' };
@@ -669,13 +667,13 @@ export async function fetch(
   const { remote = 'origin', prune } = options || {};
 
   try {
-    let cmd = 'git fetch';
+    const args = ['fetch'];
     if (prune) {
-      cmd += ' --prune';
+      args.push('--prune');
     }
-    cmd += ` ${remote}`;
+    args.push(remote);
 
-    execSync(cmd, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Fetch failed' };
@@ -692,16 +690,16 @@ export async function pull(
   const { remote = 'origin', branch, rebase } = options || {};
 
   try {
-    let cmd = 'git pull';
+    const args = ['pull'];
     if (rebase) {
-      cmd += ' --rebase';
+      args.push('--rebase');
     }
-    cmd += ` ${remote}`;
+    args.push(remote);
     if (branch) {
-      cmd += ` ${branch}`;
+      args.push(branch);
     }
 
-    execSync(cmd, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Pull failed' };
