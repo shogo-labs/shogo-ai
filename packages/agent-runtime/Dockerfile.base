@@ -71,19 +71,14 @@ RUN cd /app/mcp-packages && \
     npm install --omit=dev --no-audit --no-fund \
       @openbnb/mcp-server-airbnb@0.1.3 \
       mcp-fetch-node@latest \
-      @modelcontextprotocol/server-postgres@latest \
       @modelcontextprotocol/server-filesystem@latest \
       @playwright/mcp@latest \
       mongodb-mcp-server@latest \
       @discourse/mcp@latest \
-      @modelcontextprotocol/server-github@latest \
-      @modelcontextprotocol/server-gitlab@latest \
       mcp-server-linear@latest \
       mcp-server-sqlite@latest \
-      @modelcontextprotocol/server-slack@latest \
       @notionhq/notion-mcp-server@latest \
       mcp-server-stripe@latest \
-      @modelcontextprotocol/server-brave-search@latest \
       exa-mcp-server@latest \
       @sentry/mcp-server@latest \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json

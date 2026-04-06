@@ -211,6 +211,9 @@ export class MCPClientManager {
         } else if (pkg.bin && typeof pkg.bin === 'object') {
           entrypoint = Object.values(pkg.bin)[0] as string
         }
+        if (!entrypoint && pkg.main) {
+          entrypoint = pkg.main
+        }
         if (!entrypoint) continue
 
         const fullEntrypoint = join(baseDir, 'node_modules', pkgName, entrypoint)
