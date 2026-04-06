@@ -327,8 +327,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             />
           </View>
 
-          {/* Action bar */}
-          <View className="px-4 pt-0 pb-1 flex-row items-center justify-between gap-2">
+          {/* Action bar: items-center keeps all controls on one horizontal line; pr-2.5 matches the visual gap from send to card bottom (centering offset + pb-1) */}
+          <View className="flex-row items-center justify-between gap-2 pl-4 pr-2.5 pt-0 pb-1">
             <View className="flex-row items-center gap-1 flex-1 min-w-0">
               <Pressable
                 onPress={handleAttachClick}
