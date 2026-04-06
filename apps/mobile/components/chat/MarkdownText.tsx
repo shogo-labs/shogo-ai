@@ -13,10 +13,13 @@ interface ThemeColors {
   border: ColorValue
 }
 
+export type MarkdownVariant = "default" | "thinking"
+
 export interface MarkdownTextProps {
   children: string
   className?: string
   isStreaming?: boolean
+  variant?: MarkdownVariant
 }
 
 const baseStyles: MarkedStyles = {
@@ -43,6 +46,30 @@ const baseStyles: MarkedStyles = {
   image: { borderRadius: 6 },
 }
 
+const thinkingStyles: MarkedStyles = {
+  text: { fontSize: 11, lineHeight: 17 },
+  strong: { fontWeight: "bold" },
+  em: { fontStyle: "italic" },
+  codespan: {
+    fontFamily: "monospace",
+    fontSize: 9,
+    borderRadius: 3,
+  },
+  code: {
+    borderRadius: 6,
+    padding: 8,
+  },
+  h1: { fontSize: 14, fontWeight: "bold", marginBottom: 3 },
+  h2: { fontSize: 13, fontWeight: "bold", marginBottom: 2 },
+  h3: { fontSize: 11, fontWeight: "600", marginBottom: 2 },
+  h4: { fontSize: 11, fontWeight: "500" },
+  list: { marginVertical: 2 },
+  li: { fontSize: 11, lineHeight: 17 },
+  link: { textDecorationLine: "underline" },
+  hr: { height: 1, marginVertical: 6 },
+  image: { borderRadius: 6 },
+}
+
 const lightColors: ThemeColors = {
   text: "#1a1a1a",
   code: "#f5f5f5",
@@ -57,16 +84,35 @@ const darkColors: ThemeColors = {
   border: "#525252",
 }
 
-export function MarkdownText({ children }: MarkdownTextProps) {
+const lightThinkingColors: ThemeColors = {
+  text: "#737373",
+  code: "#f0f0f0",
+  link: "#6b9bd2",
+  border: "#e0e0e0",
+}
+
+const darkThinkingColors: ThemeColors = {
+  text: "#a0a0a0",
+  code: "#252525",
+  link: "#7ba8d4",
+  border: "#444444",
+}
+
+export function MarkdownText({ children, variant = "default" }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme()
-  const colors = colorScheme === "dark" ? darkColors : lightColors
+
+  const isThinking = variant === "thinking"
+  const colors = colorScheme === "dark"
+    ? (isThinking ? darkThinkingColors : darkColors)
+    : (isThinking ? lightThinkingColors : lightColors)
+  const styles = isThinking ? thinkingStyles : baseStyles
 
   const value = useMemo(() => children || "", [children])
 
   return (
     <Markdown
       value={value}
-      styles={baseStyles}
+      styles={styles}
       theme={{ colors }}
       flatListProps={{ scrollEnabled: false, style: { backgroundColor: 'transparent' } }}
     />

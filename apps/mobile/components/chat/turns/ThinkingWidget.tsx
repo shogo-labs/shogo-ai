@@ -13,6 +13,7 @@ import { Motion, AnimatePresence } from "@legendapp/motion"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
+import { MarkdownText } from "../MarkdownText"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -124,9 +125,7 @@ export function ThinkingWidget({
           }}
         >
           <View className="rounded-md border border-border/50 bg-muted/30 p-2.5">
-            <Text className="text-[11px] leading-relaxed text-muted-foreground">
-              {text}
-            </Text>
+            <MarkdownText variant="thinking">{text}</MarkdownText>
           </View>
         </View>
       )}
@@ -165,9 +164,7 @@ export function ThinkingWidget({
                   }
                 }}
               >
-                <Text className="text-[11px] leading-relaxed text-muted-foreground">
-                  {text}
-                </Text>
+                <MarkdownText variant="thinking">{text}</MarkdownText>
               </ScrollView>
 
               {/* Native fade overlays (web uses CSS mask instead) */}
