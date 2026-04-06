@@ -17,7 +17,7 @@
     "web:build": "cd apps/mobile && npx expo export --platform web",
     "api:dev": "bun scripts/watch-api.ts",
     "api:start": "bun apps/api/src/server.ts",
-    "dev:all": "concurrently --kill-others -n api,web -c green,magenta \"bun run api:dev\" \"bun run web:dev\"",
+    "dev:all": "lsof -ti:8002 | xargs kill -9 2>/dev/null; DATABASE_URL=file:./shogo.db npx prisma migrate deploy --config prisma.config.local.ts && concurrently --kill-others -n api,web -c green,magenta \"bun run api:dev\" \"bun run web:dev\"",
     "dev:backend": "mkdir -p logs && bun run api:dev 2>&1 | tee logs/api.log",
     "dev:start": "./scripts/docker-dev-start.sh",
     "dev:infra": "./scripts/docker-dev-start.sh --infra",

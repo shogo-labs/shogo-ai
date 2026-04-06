@@ -116,6 +116,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
+  { id: 'analytics', label: 'Usage', icon: BarChart3 },
 ]
 
 function TabBar({
@@ -206,7 +207,7 @@ function SettingsSidebar({
           { id: 'billing' as TabId, label: 'Billing' },
           { id: 'analytics' as TabId, label: 'Usage' },
         ]
-      : []),
+      : [{ id: 'analytics' as TabId, label: 'Usage' }]),
   ]
 
   const sections: SidebarSection[] = [
@@ -2203,10 +2204,11 @@ function WorkspaceAnalyticsTab() {
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
+  const { localMode } = usePlatformConfig()
   const { subscription } = useBillingData(workspaceId)
 
   const planId = subscription?.planId?.toLowerCase() ?? ''
-  const isBusinessOrHigher = planId.startsWith('business') || planId.startsWith('enterprise')
+  const isBusinessOrHigher = localMode || planId.startsWith('business') || planId.startsWith('enterprise')
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
@@ -2271,7 +2273,9 @@ function WorkspaceAnalyticsTab() {
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Workspace Usage</Text>
         <Text className="text-xs text-muted-foreground mb-3">
-          Usage metrics and credit consumption for this workspace
+          {localMode
+            ? 'Token usage and agent activity for this workspace'
+            : 'Usage metrics and credit consumption for this workspace'}
         </Text>
         <PeriodSelector value={period} onChange={setPeriod} />
       </View>
@@ -2344,7 +2348,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
-      {activeTab === 'analytics' && !isLocal && <WorkspaceAnalyticsTab />}
+      {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
     </>
   )
 })
@@ -2369,7 +2373,6 @@ export default observer(function SettingsPage() {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
     if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
-    if (activeTab === 'analytics' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
   const workspaceName = currentWorkspace?.name || ''

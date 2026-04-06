@@ -29,8 +29,9 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
-import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
+import type { FileAttachment, InteractionMode, AgentMode } from '../../components/chat/ChatInput'
 import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
+import { loadAgentModePreference, saveAgentModePreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
@@ -197,6 +198,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
+  const [agentMode, setAgentMode] = useState<AgentMode>('basic')
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
@@ -228,6 +230,12 @@ const HomeScreen = observer(function HomeScreen() {
     }
     fetchTemplates()
   }, [isAuthenticated, user?.id, http])
+
+  useEffect(() => {
+    loadAgentModePreference().then((stored) => {
+      if (stored) setAgentMode(stored)
+    })
+  }, [])
 
   const currentWorkspace = useActiveWorkspace()
 
@@ -308,6 +316,11 @@ const HomeScreen = observer(function HomeScreen() {
     void saveInteractionModePreference(mode)
   }, [])
 
+  const handleHomeAgentModeChange = useCallback((mode: AgentMode) => {
+    setAgentMode(mode)
+    void saveAgentModePreference(mode)
+  }, [])
+
   const homeComposerPlaceholder =
     interactionMode === 'plan'
       ? 'Describe what you want to plan...'
@@ -339,7 +352,7 @@ const HomeScreen = observer(function HomeScreen() {
       let chatSession
       try {
         chatSession = await actions.createChatSession({
-          inferredName: `Chat - ${projectName}`,
+          inferredName: 'Untitled',
           contextType: 'project',
           contextId: newProject.id,
         })
@@ -372,7 +385,7 @@ const HomeScreen = observer(function HomeScreen() {
       api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
         if (name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
-          actions.updateChatSession(sid, { inferredName: `Chat - ${name}` })
+          actions.updateChatSession(sid, { inferredName: name })
         }
       }).catch((err) => {
         console.warn('[Home] AI project name generation failed, keeping heuristic name:', err)
@@ -398,7 +411,7 @@ const HomeScreen = observer(function HomeScreen() {
         template.id,
       )
       const chatSession = await actions.createChatSession({
-        inferredName: `Chat - ${template.name}`,
+        inferredName: 'Untitled',
         contextType: 'project',
         contextId: newProject.id,
       })
@@ -503,6 +516,8 @@ const HomeScreen = observer(function HomeScreen() {
                 onChange={setPrompt}
                 interactionMode={interactionMode}
                 onInteractionModeChange={handleHomeInteractionModeChange}
+                agentMode={agentMode}
+                onAgentModeChange={handleHomeAgentModeChange}
               />
             </View>
           </View>

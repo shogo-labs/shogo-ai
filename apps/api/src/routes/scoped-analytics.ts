@@ -122,7 +122,10 @@ export function scopedAnalyticsRoutes(): Hono {
   // Workspace Analytics — Advanced (Business plan or higher required)
   // --------------------------------------------------------------------------
 
+  const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+
   const requireBusinessPlan = async (c: any, next: any) => {
+    if (isLocalMode) return next()
     const workspaceId = c.req.param('workspaceId')
     if (!await isBusinessOrHigherPlan(workspaceId)) {
       return c.json({

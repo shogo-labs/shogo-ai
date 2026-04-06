@@ -972,7 +972,7 @@ app.get('/api/config', async (c) => {
       billing: !localMode,
       admin: !localMode,
       oauth: !localMode,
-      analytics: !localMode,
+      analytics: true,
       publishing: !localMode,
     },
   })
