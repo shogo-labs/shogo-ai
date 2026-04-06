@@ -256,6 +256,9 @@ export async function startLocalServer(): Promise<void> {
     CANVAS_GLOBALS_DTS: IS_DEV
       ? path.join(projectRoot, 'packages', 'canvas-runtime', 'src', 'canvas-globals.d.ts')
       : path.join(projectRoot, 'canvas-runtime', 'canvas-globals.d.ts'),
+    ...(IS_DEV ? {} : {
+      TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
+    }),
   }
 
   ensureDatabase()
