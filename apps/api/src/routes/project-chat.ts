@@ -43,12 +43,13 @@ export interface ProjectChatRoutesConfig {
 const PROJECT_ROOT = resolve(__dirname, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
-const FILE_MODIFYING_TOOLS = new Set([
-  'write_file', 'exec',
+export const FILE_MODIFYING_TOOLS = new Set([
+  'write_file', 'edit_file', 'delete_file',
+  'exec', 'generate_image',
   'tool_install', 'mcp_install',
 ])
 
-function hasFileModifyingTools(toolCallMap: Map<string, { toolName: string }>): boolean {
+export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: string }>): boolean {
   for (const tc of toolCallMap.values()) {
     if (FILE_MODIFYING_TOOLS.has(tc.toolName) || tc.toolName.startsWith('mcp_')) {
       return true
