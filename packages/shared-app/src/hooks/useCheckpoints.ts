@@ -91,10 +91,17 @@ export interface CheckpointsState {
   refetch: () => void
 }
 
+export interface UseCheckpointsOptions {
+  baseUrl?: string
+  credentials?: RequestCredentials
+  headers?: () => Record<string, string>
+}
+
 /**
  * Hook for managing project checkpoints (version control).
  *
  * @param projectId - The project to manage checkpoints for
+ * @param options - Optional config for API base URL, credentials, and headers (needed on native)
  *
  * @example
  * ```tsx
@@ -107,7 +114,10 @@ export interface CheckpointsState {
  * await rollback(checkpointId)
  * ```
  */
-export function useCheckpoints(projectId: string | undefined): CheckpointsState {
+export function useCheckpoints(projectId: string | undefined, options?: UseCheckpointsOptions): CheckpointsState {
+  const baseUrl = options?.baseUrl ?? ''
+  const credentials = options?.credentials
+  const extraHeaders = options?.headers
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -130,10 +140,15 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       setError(null)
 
       try {
-        // Fetch checkpoints and git status in parallel
+        const fetchOpts: RequestInit = {}
+        if (credentials) fetchOpts.credentials = credentials
+        if (extraHeaders) {
+          fetchOpts.headers = extraHeaders()
+        }
+
         const [checkpointsRes, statusRes] = await Promise.all([
-          fetch(`/api/projects/${projectId}/checkpoints`),
-          fetch(`/api/projects/${projectId}/git/status`),
+          fetch(`${baseUrl}/api/projects/${projectId}/checkpoints`, fetchOpts),
+          fetch(`${baseUrl}/api/projects/${projectId}/git/status`, fetchOpts),
         ])
 
         if (cancelled) return
@@ -172,7 +187,7 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
     return () => {
       cancelled = true
     }
-  }, [projectId, refetchCounter])
+  }, [projectId, refetchCounter, baseUrl, credentials, extraHeaders])
 
   // Create checkpoint
   const createCheckpoint = useCallback(
@@ -188,10 +203,13 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       setError(null)
 
       try {
-        const response = await fetch(`/api/projects/${projectId}/checkpoints`, {
+        const headers: Record<string, string> = { "Content-Type": "application/json" }
+        if (extraHeaders) Object.assign(headers, extraHeaders())
+        const response = await fetch(`${baseUrl}/api/projects/${projectId}/checkpoints`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(options),
+          ...(credentials ? { credentials } : {}),
         })
 
         if (!response.ok) {
@@ -210,7 +228,7 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
         setIsMutating(false)
       }
     },
-    [projectId]
+    [projectId, baseUrl, credentials, extraHeaders]
   )
 
   // Rollback to checkpoint
@@ -222,12 +240,15 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       setError(null)
 
       try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" }
+        if (extraHeaders) Object.assign(headers, extraHeaders())
         const response = await fetch(
-          `/api/projects/${projectId}/checkpoints/${checkpointId}/rollback`,
+          `${baseUrl}/api/projects/${projectId}/checkpoints/${checkpointId}/rollback`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers,
             body: JSON.stringify({ includeDatabase }),
+            ...(credentials ? { credentials } : {}),
           }
         )
 
@@ -248,7 +269,7 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
         setIsMutating(false)
       }
     },
-    [projectId]
+    [projectId, baseUrl, credentials, extraHeaders]
   )
 
   // Get diff for checkpoint
@@ -257,8 +278,12 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       if (!projectId) return null
 
       try {
+        const fetchOpts: RequestInit = {}
+        if (credentials) fetchOpts.credentials = credentials
+        if (extraHeaders) fetchOpts.headers = extraHeaders()
         const response = await fetch(
-          `/api/projects/${projectId}/checkpoints/${checkpointId}/diff`
+          `${baseUrl}/api/projects/${projectId}/checkpoints/${checkpointId}/diff`,
+          fetchOpts,
         )
 
         if (!response.ok) {
@@ -272,7 +297,7 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
         return null
       }
     },
-    [projectId]
+    [projectId, baseUrl, credentials, extraHeaders]
   )
 
   // Refetch function
