@@ -113,6 +113,7 @@ let _initialized = false
 const _langCache = new Map<string, any>()
 
 function getWasmDir(): string {
+  if (process.env.TREE_SITTER_WASM_DIR) return process.env.TREE_SITTER_WASM_DIR
   const path = require('path')
   return path.join(path.dirname(require.resolve('tree-sitter-wasms/package.json')), 'out')
 }
@@ -124,7 +125,13 @@ async function ensureInit(): Promise<void> {
     const mod = require('web-tree-sitter')
     _Parser = mod.Parser
     _Language = mod.Language
-    await _Parser.init()
+
+    const initOpts: Record<string, unknown> = {}
+    if (process.env.TREE_SITTER_WASM_DIR) {
+      const wasmDir = process.env.TREE_SITTER_WASM_DIR
+      initOpts.locateFile = (file: string) => join(wasmDir, file)
+    }
+    await _Parser.init(initOpts)
     _initialized = true
   })()
   await _initPromise

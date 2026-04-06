@@ -46,6 +46,7 @@ const ITEMS_TO_CLEAN = [
   'templates',
   'runtime-template',
   'canvas-runtime',
+  'tree-sitter-wasm',
   'scripts',
   'package.json',
   'bun.lock',
@@ -108,7 +109,7 @@ function main() {
 
   for (let i = 0; i < ENTRY_POINTS.length; i++) {
     const { name, input, output } = ENTRY_POINTS[i]
-    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 5}] Bundling ${name}...`)
+    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 6}] Bundling ${name}...`)
 
     const inputPath = path.join(REPO_ROOT, input)
     const tempDir = path.join(bundleDir, `_tmp_${name}`)
@@ -144,7 +145,7 @@ function main() {
   const stepOffset = ENTRY_POINTS.length
 
   // --- Prisma schema ---
-  console.log(`[${stepOffset + 1}/${stepOffset + 7}] Copying Prisma schema...`)
+  console.log(`[${stepOffset + 1}/${stepOffset + 8}] Copying Prisma schema...`)
   const prismaDir = path.join(RESOURCES_DIR, 'prisma')
   fs.mkdirSync(prismaDir, { recursive: true })
   const localSchema = path.join(REPO_ROOT, 'prisma', 'schema.local.prisma')
@@ -153,7 +154,7 @@ function main() {
   }
 
   // --- Config files ---
-  console.log(`[${stepOffset + 2}/${stepOffset + 7}] Copying config files...`)
+  console.log(`[${stepOffset + 2}/${stepOffset + 8}] Copying config files...`)
   const prismaConfig = path.join(REPO_ROOT, 'prisma.config.local.ts')
   if (fs.existsSync(prismaConfig)) {
     fs.copyFileSync(prismaConfig, path.join(RESOURCES_DIR, 'prisma.config.local.ts'))
@@ -161,7 +162,7 @@ function main() {
   }
 
   // --- Install external packages ---
-  console.log(`[${stepOffset + 3}/${stepOffset + 7}] Installing external packages...`)
+  console.log(`[${stepOffset + 3}/${stepOffset + 8}] Installing external packages...`)
   const externalPkg = {
     name: 'shogo-desktop-bundle',
     private: true,
@@ -198,7 +199,7 @@ function main() {
   }
 
   // --- Copy canvas-runtime type definitions (used by LSP for canvas code linting) ---
-  console.log(`[${stepOffset + 4}/${stepOffset + 7}] Copying canvas-runtime...`)
+  console.log(`[${stepOffset + 4}/${stepOffset + 8}] Copying canvas-runtime...`)
   const canvasRuntimeDir = path.join(REPO_ROOT, 'packages', 'canvas-runtime')
   const canvasRuntimeDest = path.join(RESOURCES_DIR, 'canvas-runtime')
   fs.mkdirSync(canvasRuntimeDest, { recursive: true })
@@ -211,7 +212,7 @@ function main() {
   }
 
   // --- Copy runtime template (Vite scaffold for new projects) ---
-  console.log(`[${stepOffset + 5}/${stepOffset + 7}] Copying runtime template...`)
+  console.log(`[${stepOffset + 5}/${stepOffset + 8}] Copying runtime template...`)
   const runtimeTemplateSource = path.join(REPO_ROOT, 'templates', 'runtime-template')
   const runtimeTemplateDest = path.join(RESOURCES_DIR, 'runtime-template')
   if (fs.existsSync(runtimeTemplateSource)) {
@@ -225,7 +226,7 @@ function main() {
   }
 
   // --- Copy agent templates ---
-  console.log(`[${stepOffset + 6}/${stepOffset + 7}] Copying agent templates...`)
+  console.log(`[${stepOffset + 6}/${stepOffset + 8}] Copying agent templates...`)
   const templatesSource = path.join(REPO_ROOT, 'packages', 'agent-runtime', 'templates')
   const templatesDest = path.join(RESOURCES_DIR, 'templates')
   if (fs.existsSync(templatesSource)) {
@@ -237,7 +238,52 @@ function main() {
   }
 
   // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
-  console.log(`[${stepOffset + 7}/${stepOffset + 7}] Patching claude-agent-sdk...`)
+  // --- Copy tree-sitter WASM files (needed at runtime by agent-runtime) ---
+  console.log(`[${stepOffset + 7}/${stepOffset + 8}] Copying tree-sitter WASM files...`)
+  const wasmDest = path.join(RESOURCES_DIR, 'tree-sitter-wasm')
+  fs.mkdirSync(wasmDest, { recursive: true })
+
+  // Copy the core tree-sitter.wasm
+  const treeSitterWasm = path.join(REPO_ROOT, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')
+  const treeSitterWasmBun = path.join(REPO_ROOT, 'node_modules', '.bun', 'web-tree-sitter@0.25.10', 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')
+  const coreWasm = fs.existsSync(treeSitterWasm) ? treeSitterWasm : treeSitterWasmBun
+  if (fs.existsSync(coreWasm)) {
+    fs.copyFileSync(coreWasm, path.join(wasmDest, 'tree-sitter.wasm'))
+    console.log('  ✓ tree-sitter.wasm')
+  } else {
+    console.warn('  ⚠ tree-sitter.wasm not found')
+  }
+
+  // Copy language grammar .wasm files
+  const langWasmDir = (() => {
+    const direct = path.join(REPO_ROOT, 'node_modules', 'tree-sitter-wasms', 'out')
+    if (fs.existsSync(direct)) return direct
+    // Bun hoisted location
+    const entries = fs.readdirSync(path.join(REPO_ROOT, 'node_modules', '.bun')).filter(e => e.startsWith('tree-sitter-wasms@'))
+    if (entries.length > 0) {
+      const p = path.join(REPO_ROOT, 'node_modules', '.bun', entries[0], 'node_modules', 'tree-sitter-wasms', 'out')
+      if (fs.existsSync(p)) return p
+    }
+    return null
+  })()
+
+  if (langWasmDir) {
+    const needed = ['python', 'typescript', 'tsx', 'javascript', 'go', 'rust', 'java']
+    let copied = 0
+    for (const lang of needed) {
+      const src = path.join(langWasmDir, `tree-sitter-${lang}.wasm`)
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, path.join(wasmDest, `tree-sitter-${lang}.wasm`))
+        copied++
+      }
+    }
+    console.log(`  ✓ Copied ${copied} language grammar(s)`)
+  } else {
+    console.warn('  ⚠ tree-sitter-wasms/out not found')
+  }
+
+  // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
+  console.log(`[${stepOffset + 8}/${stepOffset + 8}] Patching claude-agent-sdk...`)
   const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
   if (fs.existsSync(patchScript)) {
     try {
