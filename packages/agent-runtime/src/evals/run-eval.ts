@@ -5,12 +5,13 @@
  * Agent Runtime Eval Runner
  *
  * Spins up real agent-runtime instances and runs evals against them.
- * By default uses Docker containers; pass --local to spawn local bun processes
- * instead (faster iteration, no image rebuild needed).
+ * By default uses Docker containers; pass --local to spawn local bun processes,
+ * or --vm to use VM isolation (macOS Virtualization.framework / Windows QEMU).
  *
  * Usage:
  *   bun run src/evals/run-eval.ts --track canvas --model haiku
  *   bun run src/evals/run-eval.ts --track canvas --model haiku --local
+ *   bun run src/evals/run-eval.ts --track canvas --model haiku --vm
  *   bun run src/evals/run-eval.ts --track all --model sonnet --workers 2
  *   bun run src/evals/run-eval.ts --track canvas --filter weather
  *   bun run src/evals/run-eval.ts --track skill-server-advanced --save-workspaces
@@ -41,6 +42,7 @@ import {
   registerCleanupHandlers,
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
+import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
 
 loadEnvFromDisk(REPO_ROOT)
 
@@ -107,6 +109,7 @@ const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'gen
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
+const vmFlag = args.includes('--vm')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
 const runIdArg = getArg(args, 'run-id')
@@ -628,7 +631,7 @@ async function runEvalOnWorker(
   const startTime = Date.now()
   console.log(`[${evalLabel}] Worker ${worker.id}: ${ev.name}`)
 
-  const statsCollector = !localFlag ? new DockerStatsCollector(worker.containerName) : null
+  const statsCollector = (!localFlag && !vmFlag) ? new DockerStatsCollector(worker.containerName) : null
   statsCollector?.start()
 
   try {
@@ -677,7 +680,7 @@ async function runEvalOnWorker(
       }
 
       const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
-      const canvasExpected = localFlag ? hostSkillPort : CONTAINER_SKILL_PORT
+      const canvasExpected = (localFlag || vmFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
       const runtimeResults = await runRuntimeChecks({
         workspaceDir: worker.dir,
         skillServerPort: hostSkillPort,
@@ -832,7 +835,7 @@ async function runEvalOnWorker(
 // ---------------------------------------------------------------------------
 
 let globalWorkers: DockerWorker[] = []
-const stopWorker = localFlag ? stopLocalWorker : stopDockerWorker
+const stopWorker = vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
 
 registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorker })
 
@@ -843,12 +846,12 @@ registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorke
 async function main() {
   console.log('')
   console.log('='.repeat(60))
-  console.log(`AGENT RUNTIME EVAL (${localFlag ? 'Local' : 'Docker'})`)
+  console.log(`AGENT RUNTIME EVAL (${vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
   console.log('='.repeat(60))
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Workers: ${workersArg}`)
-  console.log(`  Mode:    ${localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Mode:    ${vmFlag ? 'VM instance' : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -876,11 +879,19 @@ async function main() {
     process.exit(1)
   }
 
-  // Docker-specific setup (skipped in local mode)
+  // Worker config setup — one of three backends
   let dockerWorkerConfig: DockerWorkerConfig | undefined
   let localWorkerConfig: LocalWorkerConfig | undefined
+  let vmWorkerConfig: VMWorkerConfig | undefined
 
-  if (localFlag) {
+  if (vmFlag) {
+    vmWorkerConfig = {
+      containerPrefix: 'eval-vm',
+      baseHostPort: BASE_PORT,
+      model: modelArg,
+      verbose: verboseFlag,
+    }
+  } else if (localFlag) {
     localWorkerConfig = {
       containerPrefix: 'eval-worker',
       baseHostPort: BASE_PORT,
@@ -907,9 +918,11 @@ async function main() {
   const workers: DockerWorker[] = []
   try {
     for (let i = 0; i < workersArg; i++) {
-      const w = localFlag
-        ? await startLocalWorker(i, localWorkerConfig!)
-        : await startDockerWorker(i, dockerWorkerConfig!)
+      const w = vmFlag
+        ? await startVMWorker(i, vmWorkerConfig!)
+        : localFlag
+          ? await startLocalWorker(i, localWorkerConfig!)
+          : await startDockerWorker(i, dockerWorkerConfig!)
       workers.push(w)
       globalWorkers.push(w)
       if (i < workersArg - 1) await Bun.sleep(1_000)

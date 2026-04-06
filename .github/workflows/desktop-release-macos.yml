@@ -14,6 +14,7 @@ on:
 env:
   BUN_VERSION: '1.3.11'
   NODE_VERSION: '24'
+  GO_VERSION: '1.22'
 
 jobs:
   build-web:
@@ -116,6 +117,28 @@ jobs:
           rm -rf ${{ matrix.bun-target }} bun.zip
           ls -la
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build Go VM helper
+        working-directory: apps/desktop/native/shogo-vm
+        run: |
+          GO_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
+          CGO_ENABLED=1 GOOS=darwin GOARCH=$GO_ARCH go build -o shogo-vm-$GO_ARCH .
+          mkdir -p ../../resources/vm
+          cp shogo-vm-$GO_ARCH ../../resources/vm/
+          ls -la ../../resources/vm/
+
+      - name: Download VM image
+        run: |
+          mkdir -p apps/desktop/resources/vm
+          VM_ARCH=${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}
+          echo "TODO: Download pre-built VM image for $VM_ARCH from release artifacts or build cache"
+          echo "For now, creating placeholder files. The VM image build runs as a separate CI job."
+          touch apps/desktop/resources/vm/.gitkeep
+
       - name: Install monorepo dependencies
         run: bun install
         env:
@@ -173,6 +196,20 @@ jobs:
             echo "Apple certificate imported into temporary keychain."
           else
             echo "No Apple certificate provided. Skipping macOS code signing."
+          fi
+
+      - name: Codesign Go VM helper
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          GO_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
+          VM_HELPER="apps/desktop/resources/vm/shogo-vm-$GO_ARCH"
+          if [ -f "$VM_HELPER" ]; then
+            codesign --force --options runtime \
+              --entitlements apps/desktop/entitlements.plist \
+              --sign - "$VM_HELPER"
+            echo "Go VM helper codesigned with virtualization entitlement"
           fi
 
       - name: Package with Electron Forge

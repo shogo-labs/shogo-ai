@@ -143,6 +143,25 @@ function registerIpcHandlers(): void {
     app.relaunch()
     app.exit(0)
   })
+
+  ipcMain.handle('get-vm-status', () => {
+    const { isVMAvailable } = require('./vm') as typeof import('./vm')
+    const config = readConfig()
+    return {
+      available: isVMAvailable(),
+      enabled: config.vmIsolation.enabled,
+      memoryMB: config.vmIsolation.memoryMB,
+      cpus: config.vmIsolation.cpus,
+    }
+  })
+
+  ipcMain.handle('set-vm-config', (_event, vmConfig: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) => {
+    const current = readConfig()
+    writeConfig({
+      vmIsolation: { ...current.vmIsolation, ...vmConfig },
+    })
+    return readConfig().vmIsolation
+  })
 }
 
 function createWindow(): void {
