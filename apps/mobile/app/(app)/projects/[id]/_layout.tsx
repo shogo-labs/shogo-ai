@@ -483,7 +483,7 @@ export default observer(function ProjectLayout() {
           }
         } else {
           const newSession = await actions.createChatSession({
-            inferredName: `Chat ${new Date().toLocaleDateString()}`,
+            inferredName: 'Untitled',
             contextType: 'project',
             contextId: projectId,
           })
@@ -707,7 +707,7 @@ export default observer(function ProjectLayout() {
   const handleCreateNewSession = useCallback(async () => {
     try {
       const newSession = await actions.createChatSession({
-        inferredName: `Chat ${new Date().toLocaleDateString()}`,
+        inferredName: 'Untitled',
         contextType: 'project',
         contextId: projectId!,
       })

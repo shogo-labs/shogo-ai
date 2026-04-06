@@ -201,7 +201,26 @@ export async function consumeCredits(
   creditCost: number,
   actionMetadata?: Record<string, unknown>
 ): Promise<{ success: boolean; error?: string; remainingCredits?: number }> {
-  if (isLocalMode) return { success: true, remainingCredits: Infinity }
+  if (isLocalMode) {
+    try {
+      await prisma.usageEvent.create({
+        data: {
+          workspaceId,
+          projectId,
+          memberId,
+          actionType,
+          creditCost: 0,
+          creditSource: 'daily',
+          balanceBefore: 0,
+          balanceAfter: 0,
+          actionMetadata: actionMetadata ?? {},
+        },
+      })
+    } catch (e) {
+      console.warn('[billing] Failed to record local usage event:', e)
+    }
+    return { success: true, remainingCredits: Infinity }
+  }
 
   for (let attempt = 0; ; attempt++) {
     try {

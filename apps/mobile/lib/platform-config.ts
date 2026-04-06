@@ -28,7 +28,7 @@ const CLOUD_CONFIG: PlatformConfig = {
 const LOCAL_CONFIG: PlatformConfig = {
   localMode: true,
   configLoaded: false,
-  features: { billing: false, admin: false, oauth: false, analytics: false, publishing: false },
+  features: { billing: false, admin: false, oauth: false, analytics: true, publishing: false },
 }
 
 function isLocalMode(): boolean {

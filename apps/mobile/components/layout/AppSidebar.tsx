@@ -603,7 +603,9 @@ function WorkspaceSwitcher({
   const [isOpen, setIsOpen] = useState(false)
 
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
-  const resolvedPlanId = workspacePlan?.planId ?? billingData.subscription?.planId ?? 'free'
+  const resolvedPlanId = (billingData.hasActiveSubscription && billingData.subscription?.planId)
+    || workspacePlan?.planId
+    || 'free'
   const planType = resolvedPlanId !== 'free'
     ? resolvedPlanId.charAt(0).toUpperCase() + resolvedPlanId.slice(1)
     : 'Free'
@@ -772,7 +774,9 @@ function WorkspaceSwitcher({
                       {ws.name}
                     </Text>
                     {showBilling && (() => {
-                      const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
+                      const wsPlanId = (allPlans[ws.id]?.planId
+                        ?? (ws.id === currentWorkspace?.id && billingData.subscription?.planId))
+                        || 'free'
                       const isPaid = wsPlanId !== 'free'
                       const label = isPaid
                         ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
@@ -1092,7 +1096,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       .then((plans) => { if (!cancelled) setAllPlans(plans) })
       .catch((e) => console.error('[AppSidebar] Failed to load workspace plans:', e))
     return () => { cancelled = true }
-  }, [features.billing, allWorkspaces.length, http])
+  }, [features.billing, allWorkspaces.length, http, billingData.subscription?.planId])
 
   const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')

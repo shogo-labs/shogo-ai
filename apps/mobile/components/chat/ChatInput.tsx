@@ -118,7 +118,7 @@ interface SkillOption {
 
 const SKILLS: SkillOption[] = []
 
-const AGENT_MODES: AgentModeConfig[] = [
+export const AGENT_MODES: AgentModeConfig[] = [
   {
     id: "basic",
     label: "Basic",

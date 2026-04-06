@@ -156,7 +156,7 @@ export function ChatSessionPicker({
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
         className={cn(
-          "px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50",
+          "px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50 hover:bg-muted",
           isCurrent && "bg-primary/10"
         )}
       >
@@ -358,7 +358,7 @@ export function ChatSessionSidebar({
       <Pressable
         onPress={() => handleSessionSelect(session.id)}
         className={cn(
-          "px-4 py-3",
+          "px-4 py-2 hover:bg-muted",
           isCurrent && "bg-primary/10"
         )}
       >
@@ -381,7 +381,7 @@ export function ChatSessionSidebar({
         ) : (
           <>
             <View className="flex-row items-center justify-between">
-              <Text className="font-medium text-sm text-foreground flex-1" numberOfLines={1}>
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
                 {session.name}
               </Text>
               {onRename && (
@@ -408,7 +408,7 @@ export function ChatSessionSidebar({
       <Pressable
         onPress={() => handleSearchSelect(session.id)}
         className={cn(
-          "flex-row items-center gap-3 px-4 py-3",
+          "flex-row items-center gap-3 px-4 py-3 hover:bg-muted",
           isCurrent && "bg-primary/10"
         )}
       >
@@ -423,7 +423,7 @@ export function ChatSessionSidebar({
   return (
     <View className="flex-1">
       <View className="flex-row items-center justify-between px-4 py-3">
-        <Text className="text-sm font-semibold text-foreground">Chat History</Text>
+        <Text className="text-sm text-foreground">Chats</Text>
         <View className="flex-row items-center gap-1">
           {sessions.length > 0 && (
             <Pressable
@@ -484,7 +484,7 @@ export function ChatSessionSidebar({
           <ModalBody className="mt-0 mb-0 p-0">
             <Pressable
               onPress={() => { onCreate(); setSearchOpen(false); setSearchQuery("") }}
-              className="flex-row items-center gap-3 px-4 py-3 bg-muted/50"
+              className="flex-row items-center gap-3 px-4 py-3 bg-muted/50 hover:bg-muted"
             >
               <Plus className="text-primary shrink-0" size={16} />
               <Text className="text-sm font-medium text-primary">New chat</Text>

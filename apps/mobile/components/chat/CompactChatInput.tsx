@@ -5,6 +5,7 @@
  *
  * Chat input card with attach button and send button.
  * Supports file attachments.
+ * Styled to match ChatInput exactly (shared toolbar layout).
  *
  * Note: ThemeSelector is omitted for mobile (web-only feature).
  * Web (including mobile-web): hidden <input type="file" /> triggered by button click.
@@ -21,20 +22,25 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import {
-  Paperclip,
-  Send,
+  ArrowUp,
+  Plus,
   Loader2,
   X,
   File,
   FileText,
   ImageIcon,
   ChevronDown,
+  Lock,
+  Crown,
 } from "lucide-react-native"
 import {
   INTERACTION_MODES,
+  AGENT_MODES,
   type FileAttachment,
   type InteractionMode,
+  type AgentMode,
 } from "./ChatInput"
+import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -58,6 +64,10 @@ export interface CompactChatInputProps {
   onChange?: (value: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
+  agentMode?: AgentMode
+  onAgentModeChange?: (mode: AgentMode) => void
+  isPro?: boolean
+  onUpgradeClick?: () => void
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -72,9 +82,16 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onChange: controlledOnChange,
       interactionMode: controlledInteractionMode,
       onInteractionModeChange,
+      agentMode: controlledAgentMode,
+      onAgentModeChange,
+      isPro = false,
+      onUpgradeClick,
     },
     ref
   ) {
+    const { features } = usePlatformConfig()
+    const effectiveIsPro = features.billing ? isPro : true
+
     const [internalValue, setInternalValue] = useState("")
     const textInputRef = useRef<TextInput>(null)
 
@@ -82,9 +99,15 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [fileError, setFileError] = useState<string | null>(null)
     const [attachSheetOpen, setAttachSheetOpen] = useState(false)
     const [interactionModeOpen, setInteractionModeOpen] = useState(false)
+    const [agentModeOpen, setAgentModeOpen] = useState(false)
     const [internalInteractionMode, setInternalInteractionMode] =
       useState<InteractionMode>("agent")
     const interactionMode = controlledInteractionMode ?? internalInteractionMode
+
+    const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
+      effectiveIsPro ? "advanced" : "basic"
+    )
+    const agentMode = controlledAgentMode ?? internalAgentMode
 
     const handleInteractionModeChange = useCallback(
       (mode: InteractionMode) => {
@@ -97,10 +120,34 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       [onInteractionModeChange]
     )
 
+    const handleAgentModeChange = useCallback(
+      (mode: AgentMode) => {
+        const modeConfig = AGENT_MODES.find((m) => m.id === mode)
+
+        if (modeConfig?.requiresPro && !effectiveIsPro) {
+          onUpgradeClick?.()
+          return
+        }
+
+        if (onAgentModeChange) {
+          onAgentModeChange(mode)
+        } else {
+          setInternalAgentMode(mode)
+        }
+      },
+      [onAgentModeChange, effectiveIsPro, onUpgradeClick]
+    )
+
     const currentInteractionConfig = useMemo(
       () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
       [interactionMode]
     )
+
+    const currentAgentConfig = useMemo(
+      () => AGENT_MODES.find((m) => m.id === agentMode) || AGENT_MODES[1],
+      [agentMode]
+    )
+
     const fileInputRef = useRef<HTMLInputElement | null>(null)
     const dropZoneRef = useRef<View>(null)
 
@@ -229,7 +276,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     return (
       <View ref={ref} className={cn("w-full", className)}>
-        <View ref={dropZoneRef as any} className="bg-white/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+        <View
+          ref={dropZoneRef as any}
+          className="relative rounded-xl border bg-card border-border/60 overflow-hidden"
+        >
           {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
           {Platform.OS === "web" && (
             <input
@@ -301,47 +351,38 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <Text className="text-sm text-red-500 px-4 pb-2">{fileError}</Text>
           )}
 
-          {/* Input area */}
-          <View className="px-4 pt-4 pb-1">
-            <TextInput
-              ref={textInputRef}
-              placeholder={placeholderText}
-              placeholderTextColor="#9ca3af"
-              accessibilityLabel="Describe the agent you want to build"
-              value={value}
-              onChangeText={setValue}
-              onSubmitEditing={handleSubmit}
-              onKeyPress={(e: any) => {
-                if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
-                  e.preventDefault()
-                  handleSubmit()
-                }
-              }}
-              editable={!disabled && !isLoading}
-              multiline
-              className={cn(
-                "min-h-[80px] text-base text-foreground",
-                Platform.OS === "web" && "outline-none"
-              )}
-              textAlignVertical="top"
-            />
-          </View>
+          {/* TextInput */}
+          <TextInput
+            ref={textInputRef}
+            placeholder={placeholderText}
+            placeholderTextColor="#9ca3af"
+            accessibilityLabel="Describe the agent you want to build"
+            value={value}
+            onChangeText={setValue}
+            onSubmitEditing={handleSubmit}
+            onKeyPress={(e: any) => {
+              if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                e.preventDefault()
+                handleSubmit()
+              }
+            }}
+            editable={!disabled && !isLoading}
+            multiline
+            blurOnSubmit={false}
+            className={cn(
+              "min-h-[80px] max-h-[200px] w-full",
+              "px-4 pt-4 text-xs text-foreground",
+              disabled && "opacity-50",
+              Platform.OS === "web" && "outline-none"
+            )}
+            textAlignVertical="top"
+          />
 
-          {/* Action bar */}
-          <View className="px-4 pt-0 pb-1 flex-row items-center justify-between gap-2">
-            <View className="flex-row items-center gap-1 flex-1 min-w-0">
-              <Pressable
-                onPress={handleAttachClick}
-                disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
-                role="button"
-                accessibilityLabel="Attach file"
-                className="min-h-11 min-w-11 flex-row items-center gap-1.5 rounded-lg px-3 py-2 active:opacity-70"
-                android_ripple={{ color: "rgba(128,128,128,0.25)" }}
-              >
-                <Paperclip className="h-4 w-4 text-gray-400" size={16} />
-                <Text className="text-xs text-gray-400">Attach</Text>
-              </Pressable>
-
+          {/* Bottom toolbar */}
+          <View className="flex-row items-center justify-between p-1.5">
+            {/* Left side buttons */}
+            <View className="flex-row items-center gap-1">
+              {/* Interaction mode selector (Agent / Plan / Ask) */}
               <Popover
                 placement="top"
                 size="xs"
@@ -353,7 +394,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     {...triggerProps}
                     disabled={disabled || isLoading}
                     className={cn(
-                      "h-8 flex-row items-center gap-1 rounded-md px-2 max-w-[140px]",
+                      "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                       interactionMode === "agent" && "bg-muted/50",
                       interactionMode === "plan" &&
                         "border border-amber-500/45 bg-amber-500/12",
@@ -364,32 +405,31 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   >
                     <currentInteractionConfig.Icon
                       className={cn(
-                        "h-3 w-3 shrink-0",
+                        "h-2.5 w-2.5",
                         interactionMode === "agent" && "text-muted-foreground",
                         interactionMode === "plan" && "text-amber-400",
                         interactionMode === "ask" && "text-emerald-400"
                       )}
-                      size={12}
+                      size={10}
                     />
                     <Text
                       className={cn(
-                        "text-xs shrink-0",
+                        "text-xs",
                         interactionMode === "agent" && "text-muted-foreground",
                         interactionMode === "plan" && "text-amber-400",
                         interactionMode === "ask" && "text-emerald-400"
                       )}
-                      numberOfLines={1}
                     >
                       {currentInteractionConfig.label}
                     </Text>
                     <ChevronDown
                       className={cn(
-                        "h-2.5 w-2.5 shrink-0",
+                        "h-2 w-2",
                         interactionMode === "agent" && "text-muted-foreground/60",
                         interactionMode === "plan" && "text-amber-400/80",
                         interactionMode === "ask" && "text-emerald-400/80"
                       )}
-                      size={10}
+                      size={8}
                     />
                   </Pressable>
                 )}
@@ -461,26 +501,143 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   </View>
                 </PopoverContent>
               </Popover>
+
+              {/* Model quality selector (Basic / Advanced) */}
+              <Popover
+                placement="top"
+                size="xs"
+                isOpen={agentModeOpen}
+                onOpen={() => setAgentModeOpen(true)}
+                onClose={() => setAgentModeOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    disabled={disabled || isLoading}
+                    className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
+                  >
+                    <Text className="text-xs text-muted-foreground">
+                      {currentAgentConfig.label}
+                    </Text>
+                    <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-[280px] p-0">
+                  <View className="py-1">
+                    {AGENT_MODES.map((mode) => {
+                      const isLocked = mode.requiresPro && !effectiveIsPro
+                      const isSelected = mode.id === agentMode
+                      return (
+                        <Pressable
+                          key={mode.id}
+                          onPress={() => {
+                            handleAgentModeChange(mode.id)
+                            setAgentModeOpen(false)
+                          }}
+                          className={cn(
+                            "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                            isSelected && "bg-accent"
+                          )}
+                        >
+                          <View className="w-8 items-center">
+                            {isLocked ? (
+                              <Lock
+                                className="h-4 w-4 text-muted-foreground"
+                                size={16}
+                              />
+                            ) : (
+                              <mode.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                            )}
+                          </View>
+                          <View className="flex-1">
+                            <View className="flex-row items-center gap-1.5">
+                              <Text className="font-medium text-sm text-foreground">
+                                {mode.label}
+                              </Text>
+                              {features.billing && mode.requiresPro && (
+                                <View
+                                  className={cn(
+                                    "flex-row items-center gap-0.5 px-1.5 py-0.5 rounded-full",
+                                    effectiveIsPro
+                                      ? "bg-amber-100 dark:bg-amber-900/30"
+                                      : "bg-muted"
+                                  )}
+                                >
+                                  <Crown
+                                    className={cn(
+                                      "h-2.5 w-2.5",
+                                      effectiveIsPro
+                                        ? "text-amber-700 dark:text-amber-400"
+                                        : "text-muted-foreground"
+                                    )}
+                                    size={10}
+                                  />
+                                  <Text
+                                    className={cn(
+                                      "text-[10px] font-semibold",
+                                      effectiveIsPro
+                                        ? "text-amber-700 dark:text-amber-400"
+                                        : "text-muted-foreground"
+                                    )}
+                                  >
+                                    PRO
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                            <Text className="text-xs text-muted-foreground">
+                              {isLocked
+                                ? "Upgrade to unlock"
+                                : features.billing ? `${mode.description} (${mode.creditHint})` : mode.description}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      )
+                    })}
+                  </View>
+                </PopoverContent>
+              </Popover>
             </View>
 
-            <Pressable
-              onPress={handleSubmit}
-              disabled={(!value.trim() && pendingFiles.length === 0) || disabled || isLoading}
-              role="button"
-              accessibilityLabel="Send message"
-              className={cn(
-                "h-8 w-8 rounded-md items-center justify-center",
-                (!value.trim() && pendingFiles.length === 0) || disabled || isLoading
-                  ? "bg-gray-200 dark:bg-gray-700"
-                  : "bg-primary"
-              )}
-            >
-              {isLoading ? (
-                <Loader2 className="h-4 w-4 text-white" size={16} />
-              ) : (
-                <Send className="h-4 w-4 text-white" size={16} />
-              )}
-            </Pressable>
+            {/* Right side buttons */}
+            <View className="flex-row items-center gap-1">
+              <Pressable
+                onPress={handleAttachClick}
+                disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
+                role="button"
+                accessibilityLabel="Attach file"
+                className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+                android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+              >
+                <Plus
+                  className={cn(
+                    "h-4 w-4",
+                    disabled || isLoading || pendingFiles.length >= MAX_FILES
+                      ? "text-muted-foreground/40"
+                      : "text-muted-foreground"
+                  )}
+                  size={12}
+                />
+              </Pressable>
+
+              <Pressable
+                onPress={handleSubmit}
+                disabled={(!value.trim() && pendingFiles.length === 0) || disabled || isLoading}
+                role="button"
+                accessibilityLabel="Send message"
+                className={cn(
+                  "h-5 w-5 rounded-full items-center justify-center bg-primary",
+                  ((!value.trim() && pendingFiles.length === 0) || disabled || isLoading) && "opacity-50"
+                )}
+              >
+                {isLoading ? (
+                  <Loader2 className="h-3 w-3 text-primary-foreground" size={12} />
+                ) : (
+                  <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                )}
+              </Pressable>
+            </View>
           </View>
         </View>
 

@@ -41,7 +41,6 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native"
-import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
 import { useRouter } from "expo-router"
@@ -73,6 +72,10 @@ import {
   loadInteractionModePreference,
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
+import {
+  loadAgentModePreference,
+  saveAgentModePreference,
+} from "../../lib/agent-mode-preference"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -97,40 +100,6 @@ import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/pl
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
 
-// ============================================================
-// Agent Mode Persistence
-// ============================================================
-
-const AGENT_MODE_KEY = "agent-mode-preference"
-
-async function loadAgentMode(): Promise<AgentMode | null> {
-  try {
-    if (Platform.OS === "web") {
-      const stored = typeof localStorage !== "undefined" ? localStorage.getItem(AGENT_MODE_KEY) : null
-      if (stored === "basic" || stored === "advanced") return stored
-      return null
-    }
-    const stored = await SecureStore.getItemAsync(AGENT_MODE_KEY)
-    if (stored === "basic" || stored === "advanced") return stored
-    return null
-  } catch {
-    return null
-  }
-}
-
-async function saveAgentMode(value: AgentMode): Promise<void> {
-  try {
-    if (Platform.OS === "web") {
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(AGENT_MODE_KEY, value)
-      }
-      return
-    }
-    await SecureStore.setItemAsync(AGENT_MODE_KEY, value)
-  } catch {
-    // Silently fail
-  }
-}
 
 // ============================================================
 // Types
@@ -615,7 +584,18 @@ export const ChatPanel = observer(function ChatPanel({
 
   useEffect(() => {
     fetchQuickActions()
-  }, [fetchQuickActions])
+
+    // Retry after a delay — the agent runtime may not be ready on first mount
+    const retryTimer = setTimeout(() => fetchQuickActions(), 3000)
+    return () => clearTimeout(retryTimer)
+  }, [fetchQuickActions, chatSessionId])
+
+  // Track whether we've already triggered AI naming for this session
+  const hasTriggeredNamingRef = useRef(false)
+
+  useEffect(() => {
+    hasTriggeredNamingRef.current = false
+  }, [chatSessionId])
 
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
@@ -691,7 +671,7 @@ export const ChatPanel = observer(function ChatPanel({
   const [agentMode, setAgentMode] = useState<AgentMode>("basic")
 
   useEffect(() => {
-    loadAgentMode().then((stored) => {
+    loadAgentModePreference().then((stored) => {
       if (stored) {
         setAgentMode(stored)
       } else if (hasAdvancedModelAccess) {
@@ -702,7 +682,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const handleAgentModeChange = useCallback((mode: AgentMode) => {
     setAgentMode(mode)
-    saveAgentMode(mode)
+    saveAgentModePreference(mode)
   }, [])
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
@@ -783,7 +763,7 @@ export const ChatPanel = observer(function ChatPanel({
       try {
         if (phase) {
           const newSession = await actions.createChatSession({
-            inferredName: `${featureName || featureId} - ${phase}`,
+            inferredName: 'Untitled',
             contextType: "feature",
             contextId: featureId,
             phase: phase,
@@ -792,7 +772,7 @@ export const ChatPanel = observer(function ChatPanel({
           onChatSessionChange?.(newSession.id)
         } else {
           const newSession = await actions.createChatSession({
-            inferredName: featureName || `Chat for ${featureId}`,
+            inferredName: 'Untitled',
             contextType: "feature",
             contextId: featureId,
           })
@@ -1479,6 +1459,29 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       fetchQuickActions()
+
+      // Auto-name "Untitled" sessions after the first assistant response
+      if (currentSessionId && !hasTriggeredNamingRef.current) {
+        const session = studioChat.chatSessionCollection.get(currentSessionId)
+        const sessionName = (session as any)?.inferredName || (session as any)?.name
+        if (!sessionName || sessionName === 'Untitled') {
+          const firstUserMsg = messages.find((m: any) => m.role === 'user')
+          const userText = firstUserMsg?.parts
+            ?.filter((p: any) => p.type === 'text')
+            .map((p: any) => p.text)
+            .join(' ')
+            ?.trim()
+          if (userText) {
+            hasTriggeredNamingRef.current = true
+            const http = createHttpClient()
+            api.generateProjectName(http, userText, workspaceId).then(({ name }) => {
+              if (name) {
+                actions.updateChatSession(currentSessionId, { inferredName: name })
+              }
+            }).catch(() => {})
+          }
+        }
+      }
     },
   })
 
