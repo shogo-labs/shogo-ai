@@ -262,16 +262,16 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const getFileIcon = useCallback((fileType: string) => {
       if (fileType.startsWith("image/")) {
-        return <ImageIcon className="h-4 w-4 text-gray-400" size={16} />
+        return <ImageIcon className="h-4 w-4 text-muted-foreground" size={16} />
       }
       if (
         fileType.includes("pdf") ||
         fileType.includes("document") ||
         fileType.includes("text")
       ) {
-        return <FileText className="h-4 w-4 text-gray-400" size={16} />
+        return <FileText className="h-4 w-4 text-muted-foreground" size={16} />
       }
-      return <File className="h-4 w-4 text-gray-400" size={16} />
+      return <File className="h-4 w-4 text-muted-foreground" size={16} />
     }, [])
 
     return (
@@ -308,14 +308,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <View
                     key={file.id}
                     className={cn(
-                      "relative rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/50 p-2",
+                      "relative rounded-lg border border-border bg-muted/50 p-2",
                       isImage ? "w-[150px]" : "w-[180px]"
                     )}
                   >
                     {isImage ? (
                       <Image
                         source={{ uri: file.dataUrl }}
-                        className="h-[80px] rounded border border-gray-200 dark:border-gray-700 w-full"
+                        className="h-[80px] rounded border border-border w-full"
                         resizeMode="cover"
                       />
                     ) : (
@@ -328,7 +328,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                           >
                             {file.name}
                           </Text>
-                          <Text className="text-xs text-gray-400">
+                          <Text className="text-xs text-muted-foreground">
                             {formatFileSize(file.size)}
                           </Text>
                         </View>
@@ -336,9 +336,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     )}
                     <Pressable
                       onPress={() => handleRemoveFile(file.id)}
-                      className="absolute -right-1 -top-1 h-6 w-6 rounded-full bg-red-500 items-center justify-center"
+                      className="absolute -right-1 -top-1 h-6 w-6 rounded-full bg-destructive items-center justify-center"
                     >
-                      <X className="h-3 w-3 text-white" size={12} />
+                      <X className="h-3 w-3 text-destructive-foreground" size={12} />
                     </Pressable>
                   </View>
                 )
@@ -348,7 +348,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
           {/* Error message */}
           {fileError && (
-            <Text className="text-sm text-red-500 px-4 pb-2">{fileError}</Text>
+            <Text className="text-sm text-destructive px-4 pb-2">{fileError}</Text>
           )}
 
           {/* TextInput */}
