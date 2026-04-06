@@ -322,6 +322,8 @@ export class AgentGateway {
   /** Dynamic sub-agent registry and lifecycle manager */
   public agentManager = new AgentManager()
   private teamManager?: TeamManager
+  /** Per-session shell cwd tracking — persists cd across exec calls */
+  private shellCwd = new Map<string, string>()
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -1371,6 +1373,10 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
+      shellState: sessionId ? {
+        getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
+        setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
+      } : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1934,8 +1940,31 @@ export class AgentGateway {
     }
   }
 
+  private buildShellNavLines(): string[] {
+    const lines = [
+      '',
+      '### Shell Navigation',
+      'Shell state is persistent — `cd` in one exec call carries over to the next.',
+    ]
+    if (this.permissionEngine) {
+      switch (this.permissionEngine.mode) {
+        case 'strict':
+          lines.push('You may only run commands within the workspace directory. Do not navigate outside it.')
+          break
+        case 'balanced':
+          lines.push('You may navigate within the workspace directory tree. Navigation outside the workspace requires user approval.')
+          break
+        case 'full_autonomy':
+          lines.push('You may navigate to any directory on the system.')
+          break
+      }
+    }
+    return lines
+  }
+
   private buildSWEPrompt(sessionId?: string): string {
     const parts: string[] = []
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
 
     const now = new Date()
     parts.push([
@@ -1943,9 +1972,10 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${this.workspaceDir}\``,
+      `- Working directory: \`${currentCwd}\``,
       '',
       'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+      ...this.buildShellNavLines(),
     ].join('\n'))
 
     const workspaceTree = this.buildWorkspaceTreeContext()
@@ -1974,6 +2004,7 @@ export class AgentGateway {
    */
   private buildGeneralPrompt(sessionId?: string): string {
     const parts: string[] = []
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
 
     const now = new Date()
     parts.push([
@@ -1981,9 +2012,10 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${this.workspaceDir}\``,
+      `- Working directory: \`${currentCwd}\``,
       '',
       'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+      ...this.buildShellNavLines(),
     ].join('\n'))
 
     const workspaceTree = this.buildWorkspaceTreeContext()
@@ -2184,15 +2216,17 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
 
     // 9. Current date/time context (changes every turn)
     const now = new Date()
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
     dynamicParts.push([
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${this.workspaceDir}\``,
+      `- Working directory: \`${currentCwd}\``,
       '',
       'All file paths are relative to the working directory.',
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
+      ...this.buildShellNavLines(),
     ].join('\n'))
 
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
