@@ -62,6 +62,7 @@ import {
   Terminal,
   ClipboardList,
   RefreshCw,
+  GitCommit,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
@@ -90,6 +91,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'monitor', label: 'Monitor', icon: Activity },
   { id: 'plans', label: 'Plans', icon: ClipboardList },
+  { id: 'checkpoints', label: 'Checkpoints', icon: GitCommit },
 ]
 
 export interface ProjectSwitcherItem {
