@@ -475,9 +475,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       return await getProjectPodUrl(projectId)
     } else if (isVMIsolation()) {
       // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s)
-      const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
-      return await getVMProjectUrl(projectId)
-    } else if (runtimeManager) {
+      // Falls through to local RuntimeManager if the warm pool isn't ready yet
+      try {
+        const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+        return await getVMProjectUrl(projectId)
+      } catch {
+        console.warn(`[ProjectChat] VM warm pool not ready, falling back to local RuntimeManager for ${projectId}`)
+      }
+    }
+    if (runtimeManager) {
       // Local development: Use RuntimeManager
       let runtime = runtimeManager.status(projectId)
 

@@ -542,7 +542,7 @@ async function runEvalOnWorker(
   index: number,
   total: number,
   runTimestamp: string,
-  opts?: { skipCleanup?: boolean },
+  opts?: { skipCleanup?: boolean; runDir?: string },
 ): Promise<EvalResult> {
   // Force GC between evals to prevent memory pressure crashes in Bun
   try { Bun.gc(true) } catch {}
@@ -792,8 +792,8 @@ async function runEvalOnWorker(
       }
     }
 
-    if (saveWorkspacesFlag) {
-      const archivePath = archiveWorkspaceAsTemplate(ev, result, worker.dir, runDir)
+    if (saveWorkspacesFlag && opts?.runDir) {
+      const archivePath = archiveWorkspaceAsTemplate(ev, result, worker.dir, opts.runDir)
       if (archivePath) {
         result.workspaceDir = archivePath
         console.log(`[${evalLabel}] Workspace saved: ${archivePath}`)
@@ -1023,7 +1023,7 @@ async function main() {
     }
     await reportProgress()
     await ensureWorkerHealthy(worker)
-    const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, { skipCleanup })
+    const result = await runEvalOnWorker(worker, ev, idx, evals.length, runTimestamp, { skipCleanup, runDir })
     results.push(result)
     workerStatus[worker.id].evalsCompleted++
     let logContent: string | undefined

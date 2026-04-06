@@ -10,6 +10,23 @@ import { VM_DEFAULTS } from './types'
 import { JsonRpcClient } from './json-rpc-client'
 import { generateSeedISO } from './cloud-init'
 
+const NOISY_VM_PATTERNS = [
+  /^-+BEGIN SSH/,
+  /^-+END SSH/,
+  /^ssh-(rsa|ed25519|ecdsa)/,
+  /^ecdsa-sha2-/,
+  /^#{3,}/,
+  /^ci-info:/,
+  /SHA256:/,
+  /login:$/,
+  /^<\d+>/,            // syslog-prefixed cloud-init lines
+  /^Ubuntu .* LTS/,
+]
+
+function isNoisyVMLine(line: string): boolean {
+  return NOISY_VM_PATTERNS.some((p) => p.test(line))
+}
+
 /**
  * macOS VM Manager using Apple Virtualization.framework via a Go helper binary.
  *
@@ -49,7 +66,11 @@ export class DarwinVMManager implements VMManager {
     })
 
     this.goProcess.stderr?.on('data', (data: Buffer) => {
-      console.error(`[shogo-vm] ${data.toString().trim()}`)
+      for (const line of data.toString().split('\n')) {
+        const t = line.trim()
+        if (!t || isNoisyVMLine(t)) continue
+        console.error(`[shogo-vm] ${t}`)
+      }
     })
 
     this.rpcClient = new JsonRpcClient(this.goProcess)
@@ -64,7 +85,7 @@ export class DarwinVMManager implements VMManager {
 
     for (const dir of config.credentialDirs) {
       const expanded = dir.replace(/^~/, process.env.HOME || '')
-      if (fs.existsSync(expanded)) {
+      if (fs.existsSync(expanded) && fs.statSync(expanded).isDirectory()) {
         const tag = path.basename(expanded).replace(/^\./, '')
         readOnlyShares[tag] = expanded
       }
@@ -182,7 +203,11 @@ export class DarwinVMManager implements VMManager {
     } catch {
       execSync(`cp "${rawImage}" "${tmpOverlay}"`, { stdio: 'pipe' })
     }
-    try { execSync(`truncate -s 10G "${tmpOverlay}"`, { stdio: 'pipe' }) } catch {}
+    // Ensure at least 10GB for growpart/resize2fs inside the VM
+    const stat = fs.statSync(tmpOverlay)
+    if (stat.size < 10 * 1024 * 1024 * 1024) {
+      try { execSync(`truncate -s 10G "${tmpOverlay}"`, { stdio: 'pipe' }) } catch {}
+    }
 
     const tmpWorkspace = fs.mkdtempSync(path.join(require('os').tmpdir(), 'shogo-provision-ws-'))
     const dataDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'shogo-provision-'))
@@ -197,7 +222,11 @@ export class DarwinVMManager implements VMManager {
     const goProc = spawn(this.goHelperPath, [], { stdio: ['pipe', 'pipe', 'pipe'] })
     const rpc = new JsonRpcClient(goProc)
     goProc.stderr?.on('data', (d: Buffer) => {
-      console.error(`[shogo-vm-provision] ${d.toString().trim()}`)
+      for (const line of d.toString().split('\n')) {
+        const t = line.trim()
+        if (!t || isNoisyVMLine(t)) continue
+        console.error(`[shogo-vm-provision] ${t}`)
+      }
     })
 
     try {
@@ -269,10 +298,13 @@ export class DarwinVMManager implements VMManager {
           throw new Error(`Failed to create overlay from ${path.basename(sourceImage)}: ${err.message}`)
         }
       }
-      if (sourceImage === rawImage) {
-        // Only extend when cloning the raw base; provisioned image is already 10GB
-        try { execSync(`truncate -s 10G "${overlayPath}"`, { stdio: 'pipe' }) } catch {}
-      }
+      // Ensure overlay is at least 10GB (raw base image is already 10GB, this is a safety net)
+      try {
+        const stat = fs.statSync(overlayPath)
+        if (stat.size < 10 * 1024 * 1024 * 1024) {
+          execSync(`truncate -s 10G "${overlayPath}"`, { stdio: 'pipe' })
+        }
+      } catch {}
       return
     }
 

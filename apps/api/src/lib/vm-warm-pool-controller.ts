@@ -14,10 +14,10 @@
 
 import { buildProjectEnv } from './runtime/build-project-env'
 
-const POOL_SIZE = parseInt(process.env.VM_POOL_SIZE || '2', 10)
+const POOL_SIZE = parseInt(process.env.VM_POOL_SIZE || '1', 10)
 const RECONCILE_INTERVAL_MS = parseInt(process.env.VM_POOL_RECONCILE_INTERVAL || '30000', 10)
-const HEALTH_CHECK_RETRIES = 60
-const HEALTH_CHECK_INTERVAL_MS = 500
+const HEALTH_CHECK_RETRIES = parseInt(process.env.VM_HEALTH_CHECK_RETRIES || '120', 10)
+const HEALTH_CHECK_INTERVAL_MS = parseInt(process.env.VM_HEALTH_CHECK_INTERVAL || '2000', 10)
 
 export interface VMPodInfo {
   id: string
