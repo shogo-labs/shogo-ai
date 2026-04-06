@@ -34,6 +34,7 @@ import { saveInteractionModePreference } from '../../lib/interaction-mode-prefer
 import { loadAgentModePreference, saveAgentModePreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useBillingData } from '@shogo/shared-app/hooks'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
@@ -231,13 +232,19 @@ const HomeScreen = observer(function HomeScreen() {
     fetchTemplates()
   }, [isAuthenticated, user?.id, http])
 
+  const currentWorkspace = useActiveWorkspace()
+  const billingData = useBillingData(currentWorkspace?.id)
+  const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
+
   useEffect(() => {
     loadAgentModePreference().then((stored) => {
-      if (stored) setAgentMode(stored)
+      if (stored) {
+        setAgentMode(stored)
+      } else if (hasAdvancedModelAccess) {
+        setAgentMode("advanced")
+      }
     })
-  }, [])
-
-  const currentWorkspace = useActiveWorkspace()
+  }, [hasAdvancedModelAccess])
 
   // Deep-link: auto-create project from pending template (website referral)
   useEffect(() => {
@@ -518,6 +525,8 @@ const HomeScreen = observer(function HomeScreen() {
                 onInteractionModeChange={handleHomeInteractionModeChange}
                 agentMode={agentMode}
                 onAgentModeChange={handleHomeAgentModeChange}
+                isPro={hasAdvancedModelAccess}
+                onUpgradeClick={() => router.push('/billing')}
               />
             </View>
           </View>
