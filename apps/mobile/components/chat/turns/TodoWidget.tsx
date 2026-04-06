@@ -128,7 +128,7 @@ function TodoItemRow({ todo }: { todo: TodoItem; index: number }) {
 
       <Text
         className={cn(
-          "text-xs flex-1",
+          "text-xs flex-1 text-foreground",
           todo.status === "completed" && "text-muted-foreground",
           todo.status === "cancelled" && "line-through text-muted-foreground"
         )}
