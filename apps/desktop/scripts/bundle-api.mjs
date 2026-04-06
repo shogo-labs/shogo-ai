@@ -237,37 +237,43 @@ function main() {
     console.warn('  ⚠ Templates directory not found at', templatesSource)
   }
 
-  // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
   // --- Copy tree-sitter WASM files (needed at runtime by agent-runtime) ---
   console.log(`[${stepOffset + 7}/${stepOffset + 8}] Copying tree-sitter WASM files...`)
   const wasmDest = path.join(RESOURCES_DIR, 'tree-sitter-wasm')
   fs.mkdirSync(wasmDest, { recursive: true })
 
-  // Copy the core tree-sitter.wasm
-  const treeSitterWasm = path.join(REPO_ROOT, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')
-  const treeSitterWasmBun = path.join(REPO_ROOT, 'node_modules', '.bun', 'web-tree-sitter@0.25.10', 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')
-  const coreWasm = fs.existsSync(treeSitterWasm) ? treeSitterWasm : treeSitterWasmBun
-  if (fs.existsSync(coreWasm)) {
-    fs.copyFileSync(coreWasm, path.join(wasmDest, 'tree-sitter.wasm'))
-    console.log('  ✓ tree-sitter.wasm')
-  } else {
-    console.warn('  ⚠ tree-sitter.wasm not found')
-  }
-
-  // Copy language grammar .wasm files
-  const langWasmDir = (() => {
-    const direct = path.join(REPO_ROOT, 'node_modules', 'tree-sitter-wasms', 'out')
-    if (fs.existsSync(direct)) return direct
-    // Bun hoisted location
-    const entries = fs.readdirSync(path.join(REPO_ROOT, 'node_modules', '.bun')).filter(e => e.startsWith('tree-sitter-wasms@'))
-    if (entries.length > 0) {
-      const p = path.join(REPO_ROOT, 'node_modules', '.bun', entries[0], 'node_modules', 'tree-sitter-wasms', 'out')
-      if (fs.existsSync(p)) return p
+  /**
+   * Locate an installed package directory by walking up from a starting dir.
+   * Works regardless of package manager layout (bun hoisted, npm flat, pnpm, etc.)
+   */
+  function findInstalledPkg(pkgName, startDir) {
+    let dir = startDir
+    while (dir !== path.dirname(dir)) {
+      const candidate = path.join(dir, 'node_modules', pkgName)
+      if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate
+      dir = path.dirname(dir)
     }
     return null
-  })()
+  }
 
-  if (langWasmDir) {
+  const agentRuntimeDir = path.join(REPO_ROOT, 'packages', 'agent-runtime')
+
+  const webTreeSitterDir = findInstalledPkg('web-tree-sitter', agentRuntimeDir)
+  if (webTreeSitterDir) {
+    const src = path.join(webTreeSitterDir, 'tree-sitter.wasm')
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(wasmDest, 'tree-sitter.wasm'))
+      console.log('  ✓ tree-sitter.wasm')
+    } else {
+      console.warn(`  ⚠ tree-sitter.wasm not found inside ${webTreeSitterDir}`)
+    }
+  } else {
+    console.warn('  ⚠ web-tree-sitter package not found')
+  }
+
+  const treeSitterWasmsDir = findInstalledPkg('tree-sitter-wasms', agentRuntimeDir)
+  if (treeSitterWasmsDir) {
+    const langWasmDir = path.join(treeSitterWasmsDir, 'out')
     const needed = ['python', 'typescript', 'tsx', 'javascript', 'go', 'rust', 'java']
     let copied = 0
     for (const lang of needed) {
@@ -279,7 +285,7 @@ function main() {
     }
     console.log(`  ✓ Copied ${copied} language grammar(s)`)
   } else {
-    console.warn('  ⚠ tree-sitter-wasms/out not found')
+    console.warn('  ⚠ tree-sitter-wasms package not found')
   }
 
   // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
