@@ -34,6 +34,8 @@ import {
   Pressable,
   ScrollView,
   Platform,
+  StyleSheet,
+  type ViewStyle,
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
@@ -483,6 +485,34 @@ async function refreshCollections(
 // Toolkit Error Messages
 // ============================================================
 
+// ============================================================
+// Message list scroll — load-older thresholds (domain SDK loads via chatMessageCollection)
+// ============================================================
+
+/** Y offset from top below which we treat the viewport as "at the top" for loading older messages. */
+const LOAD_OLDER_SCROLL_EDGE_PX = 80
+
+/** Pixels from bottom to consider the user "at bottom" for follow-scroll heuristics (web). */
+const SCROLL_NEAR_BOTTOM_PX = 100
+
+/**
+ * Web only: debounce scheduling load-older when the user rests near the top.
+ * Avoids firing on every scroll frame (wheel/trackpad).
+ */
+const LOAD_OLDER_WEB_DEBOUNCE_MS = 450
+
+/** react-native-web exposes scrollbar*; not in core ViewStyle — cast for StyleSheet. */
+const CHAT_MESSAGES_SCROLL_WEB: ViewStyle = {
+  scrollbarWidth: "thin",
+  scrollbarColor: "rgba(150,150,150,0.3) transparent",
+} as ViewStyle
+
+const chatMessagesScrollStyles = StyleSheet.create({
+  scroll: Platform.select({
+    web: CHAT_MESSAGES_SCROLL_WEB,
+    default: {},
+  }),
+})
 
 // ============================================================
 // Component
@@ -605,6 +635,8 @@ export const ChatPanel = observer(function ChatPanel({
   const isLoadingOlderRef = useRef(false)
   const contentHeightBeforeLoadRef = useRef(0)
   const prevDisplayLengthRef = useRef(0)
+  /** Web only: debounce timer for near-top load-older (see LOAD_OLDER_WEB_DEBOUNCE_MS). */
+  const loadOlderWebDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const MESSAGE_PAGE_SIZE = 10
   const isNative = Platform.OS !== "web"
   const STICK_BOTTOM_PX = 16
@@ -662,6 +694,7 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     return () => {
       if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
+      if (loadOlderWebDebounceRef.current) clearTimeout(loadOlderWebDebounceRef.current)
     }
   }, [])
 
@@ -1872,12 +1905,15 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [currentSessionId, studioChat, setMessages])
 
-  // Load older messages when user scrolls to top
+  // Load older messages when user scrolls to top.
+  // isLoadingOlderRef stays true until onContentSizeChange adjusts scroll position,
+  // preventing a cascade where the scroll-to-top handler re-triggers loading.
   const handleLoadOlderMessages = useCallback(async () => {
     if (
       !currentSessionId ||
       isLoadingOlderRef.current ||
       !studioChat.chatMessageCollection.hasMore ||
+      studioChat.chatMessageCollection.isLoadingMore ||
       isStreamingRef.current
     ) return
 
@@ -1914,12 +1950,51 @@ export const ChatPanel = observer(function ChatPanel({
       })
 
       setMessages(aiMessages)
+      // NOTE: isLoadingOlderRef is intentionally NOT reset here.
+      // It is reset in onContentSizeChange after scroll position is adjusted,
+      // so the onScroll handler doesn't immediately re-trigger loading.
     } catch (err) {
       console.error("[ChatPanel] Failed to load older messages:", err)
-    } finally {
       isLoadingOlderRef.current = false
     }
   }, [currentSessionId, studioChat, setMessages])
+
+  /** Native: load older only when scroll settles near the top — not on every onScroll frame. */
+  const tryLoadOlderNearTopOnScrollEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (e.nativeEvent.contentOffset.y >= LOAD_OLDER_SCROLL_EDGE_PX) return
+      handleLoadOlderMessages()
+    },
+    [handleLoadOlderMessages],
+  )
+
+  /**
+   * Web: track bottom for follow-scroll + debounced load-older near top.
+   * Native omits onScroll entirely here — stick-to-bottom uses drag/momentum end handlers.
+   */
+  const handleMessagesScrollWeb = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
+      const isAtBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height <
+        SCROLL_NEAR_BOTTOM_PX
+      isUserAtBottomRef.current = isAtBottom
+
+      if (contentOffset.y < LOAD_OLDER_SCROLL_EDGE_PX) {
+        if (loadOlderWebDebounceRef.current) {
+          clearTimeout(loadOlderWebDebounceRef.current)
+        }
+        loadOlderWebDebounceRef.current = setTimeout(() => {
+          loadOlderWebDebounceRef.current = null
+          handleLoadOlderMessages()
+        }, LOAD_OLDER_WEB_DEBOUNCE_MS)
+      } else if (loadOlderWebDebounceRef.current) {
+        clearTimeout(loadOlderWebDebounceRef.current)
+        loadOlderWebDebounceRef.current = null
+      }
+    },
+    [handleLoadOlderMessages],
+  )
 
   const hasReceivedPartsRef = useRef(false)
 
@@ -2471,25 +2546,13 @@ export const ChatPanel = observer(function ChatPanel({
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
-            style={Platform.OS === "web" ? { scrollbarWidth: "thin", scrollbarColor: "rgba(150,150,150,0.3) transparent" } as any : undefined}
+            style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
               isNativePhoneLayout ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
             keyboardShouldPersistTaps="handled"
-            onScroll={(e) => {
-              const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
-
-              if (!isNative) {
-                const isAtBottom =
-                  contentSize.height - contentOffset.y - layoutMeasurement.height < 100
-                isUserAtBottomRef.current = isAtBottom
-              }
-
-              if (contentOffset.y < 50 && !isLoadingOlderRef.current) {
-                handleLoadOlderMessages()
-              }
-            }}
+            onScroll={isNative ? undefined : handleMessagesScrollWeb}
             onScrollBeginDrag={() => {
               if (isNative) {
                 stickToBottomRef.current = false
@@ -2498,25 +2561,32 @@ export const ChatPanel = observer(function ChatPanel({
             onScrollEndDrag={(e) => {
               if (isNative) {
                 syncStickFromNativeEvent(e)
+                tryLoadOlderNearTopOnScrollEnd(e)
               }
             }}
             onMomentumScrollEnd={(e) => {
               if (isNative) {
                 syncStickFromNativeEvent(e)
+                tryLoadOlderNearTopOnScrollEnd(e)
               }
             }}
             onContentSizeChange={(_w, h) => {
-              if (isLoadingOlderRef.current || studioChat.chatMessageCollection.isLoadingMore) {
+              if (isLoadingOlderRef.current) {
                 const delta = h - contentHeightBeforeLoadRef.current
                 if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
                   scrollViewRef.current?.scrollTo({ y: delta, animated: false })
                 }
+                // Reset after a frame so the scroll offset takes effect
+                // before onScroll can re-trigger loading
+                requestAnimationFrame(() => {
+                  isLoadingOlderRef.current = false
+                })
               } else if (isNative && stickToBottomRef.current && contentHeightBeforeLoadRef.current > 0) {
                 setTimeout(() => throttledScrollToEnd(), 200)
               }
               contentHeightBeforeLoadRef.current = h
             }}
-            scrollEventThrottle={16}
+            scrollEventThrottle={32}
           >
             {studioChat.chatMessageCollection.hasMore && (
               <Pressable
