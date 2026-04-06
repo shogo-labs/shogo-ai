@@ -1977,7 +1977,12 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
           'and the extension token matches.',
         )
       }
-      throw new Error('Playwright is not installed. Run: bunx playwright install chromium')
+      const execPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '(not set)'
+      throw new Error(
+        `Browser launch failed: ${err.message}. ` +
+        `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${execPath}. ` +
+        'If running locally, try: bunx playwright install chromium',
+      )
     }
   }
 

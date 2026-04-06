@@ -66,7 +66,7 @@ beforeAll(() => {
     setupFakePackage(TEST_PREINSTALL_DIR, '@playwright/mcp', { 'playwright-mcp': 'dist/index.js' })
   }
   // Set up a fake package only in the workspace .mcp-packages/ (not in Docker preinstall)
-  setupFakePackage(TEST_WORKSPACE_MCP_DIR, '@modelcontextprotocol/server-github', { 'mcp-server-github': 'dist/index.js' })
+  setupFakePackage(TEST_WORKSPACE_MCP_DIR, '@notionhq/notion-mcp-server', { 'notion-mcp-server': 'dist/index.js' })
 })
 
 afterAll(() => {
@@ -159,12 +159,12 @@ describe('Workspace-local .mcp-packages/ resolution', () => {
 
     const resolved = (manager as any).resolvePreinstalled({
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-github@latest'],
+      args: ['-y', '@notionhq/notion-mcp-server@latest'],
     })
 
     expect(resolved.command).toBe('node')
     expect(resolved.args[0]).toContain('.mcp-packages')
-    expect(resolved.args[0]).toContain('server-github')
+    expect(resolved.args[0]).toContain('notion-mcp-server')
   })
 
   test('Docker preinstall takes priority over workspace .mcp-packages/', () => {
@@ -193,7 +193,7 @@ describe('Workspace-local .mcp-packages/ resolution', () => {
     const manager = createManager()
     const resolved = (manager as any).resolvePreinstalled({
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-github@latest', '--port', '3000'],
+      args: ['-y', '@notionhq/notion-mcp-server@latest', '--port', '3000'],
     })
 
     expect(resolved.command).toBe('node')
@@ -231,13 +231,13 @@ describe('Remote MCP server config persistence', () => {
   })
 
   test('persistRemoteConfig preserves existing mcpServers', () => {
-    writeConfig({ mcpServers: { postgres: { command: 'npx', args: ['server-postgres'] } } })
+    writeConfig({ mcpServers: { sqlite: { command: 'npx', args: ['mcp-server-sqlite'] } } })
 
     const manager = createManager()
     ;(manager as any).persistRemoteConfig('remote-1', { url: 'https://example.com/mcp' })
 
     const stored = readConfig()
-    expect(stored.mcpServers.postgres).toBeDefined()
+    expect(stored.mcpServers.sqlite).toBeDefined()
     expect(stored.remoteMcpServers['remote-1']).toBeDefined()
   })
 
@@ -319,7 +319,7 @@ describe('S3 sync exclude list does not filter .mcp-packages/', () => {
   test('.mcp-packages paths are not excluded by S3 sync defaults', () => {
     expect(shouldExclude('.mcp-packages/node_modules/foo/index.js')).toBe(false)
     expect(shouldExclude('.mcp-packages/package.json')).toBe(false)
-    expect(shouldExclude('.mcp-packages/node_modules/@modelcontextprotocol/server-github/dist/index.js')).toBe(false)
+    expect(shouldExclude('.mcp-packages/node_modules/@notionhq/notion-mcp-server/dist/index.js')).toBe(false)
   })
 
   test('project/node_modules IS excluded (control)', () => {
@@ -344,9 +344,9 @@ describe('Full cold start simulation', () => {
       command: 'npx',
       args: ['-y', '@playwright/mcp@latest'],
     })
-    ;(managerA as any).persistConfig('github', {
+    ;(managerA as any).persistConfig('notion', {
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-github@latest'],
+      args: ['-y', '@notionhq/notion-mcp-server@latest'],
     })
     ;(managerA as any).persistRemoteConfig('custom-remote', {
       url: 'https://remote-mcp.example.com',
@@ -357,7 +357,7 @@ describe('Full cold start simulation', () => {
 
     expect(config.mcpServers).toBeDefined()
     expect(config.mcpServers.playwright).toBeDefined()
-    expect(config.mcpServers.github).toBeDefined()
+    expect(config.mcpServers.notion).toBeDefined()
     expect(config.remoteMcpServers).toBeDefined()
     expect(config.remoteMcpServers['custom-remote']).toBeDefined()
 
@@ -368,9 +368,9 @@ describe('Full cold start simulation', () => {
     expect(playwrightResolved.command).toBe('node')
     expect(playwrightResolved.args[0]).toContain(TEST_PREINSTALL_DIR)
 
-    const githubResolved = (managerB as any).resolvePreinstalled(config.mcpServers.github)
-    expect(githubResolved.command).toBe('node')
-    expect(githubResolved.args[0]).toContain('.mcp-packages')
+    const notionResolved = (managerB as any).resolvePreinstalled(config.mcpServers.notion)
+    expect(notionResolved.command).toBe('node')
+    expect(notionResolved.args[0]).toContain('.mcp-packages')
   })
 
   test('mixed stdio and remote configs survive round-trip', () => {
@@ -410,17 +410,20 @@ describe('Whitelist allows all catalog entries', () => {
   })
 
   test('isCatalogEntry correctly identifies catalog vs non-catalog', () => {
-    expect(isCatalogEntry('github')).toBe(true)
-    expect(isCatalogEntry('postgres')).toBe(true)
-    expect(isCatalogEntry('linear')).toBe(true)
+    expect(isCatalogEntry('sqlite')).toBe(true)
+    expect(isCatalogEntry('exa')).toBe(true)
     expect(isCatalogEntry('random-name')).toBe(false)
+    expect(isCatalogEntry('postgres')).toBe(false)
+    expect(isCatalogEntry('github')).toBe(false)
+    expect(isCatalogEntry('gitlab')).toBe(false)
+    expect(isCatalogEntry('brave-search')).toBe(false)
+    expect(isCatalogEntry('slack')).toBe(false)
   })
 
-  test('all newly preinstalled entries are correctly marked', () => {
+  test('all preinstalled entries are correctly marked', () => {
     const expectedPreinstalled = [
-      'playwright', 'fetch', 'github', 'gitlab', 'linear', 'postgres',
-      'sqlite', 'mongodb', 'discourse', 'slack', 'notion', 'stripe',
-      'brave-search', 'exa', 'sentry', 'airbnb', 'filesystem',
+      'playwright', 'fetch', 'sqlite', 'mongodb', 'discourse',
+      'stripe', 'exa', 'sentry', 'airbnb', 'filesystem',
     ]
     for (const id of expectedPreinstalled) {
       expect(isPreinstalledMcpId(id)).toBe(true)
@@ -530,21 +533,21 @@ describe('Edge cases', () => {
 
   test('config.json env vars are persisted but not leaked across servers', () => {
     const manager = createManager()
-    ;(manager as any).persistConfig('postgres', {
+    ;(manager as any).persistConfig('sqlite', {
       command: 'npx',
-      args: ['server-postgres'],
-      env: { POSTGRES_CONNECTION_STRING: 'postgresql://user:pass@host/db' },
+      args: ['mcp-server-sqlite'],
+      env: { SQLITE_DB_PATH: '/tmp/test.db' },
     })
-    ;(manager as any).persistConfig('github', {
+    ;(manager as any).persistConfig('notion', {
       command: 'npx',
-      args: ['server-github'],
-      env: { GITHUB_TOKEN: 'ghp_secret' },
+      args: ['notion-mcp-server'],
+      env: { NOTION_TOKEN: 'ntn_secret' },
     })
 
     const stored = readConfig()
-    expect(stored.mcpServers.postgres.env.POSTGRES_CONNECTION_STRING).toBe('postgresql://user:pass@host/db')
-    expect(stored.mcpServers.postgres.env.GITHUB_TOKEN).toBeUndefined()
-    expect(stored.mcpServers.github.env.GITHUB_TOKEN).toBe('ghp_secret')
-    expect(stored.mcpServers.github.env.POSTGRES_CONNECTION_STRING).toBeUndefined()
+    expect(stored.mcpServers.sqlite.env.SQLITE_DB_PATH).toBe('/tmp/test.db')
+    expect(stored.mcpServers.sqlite.env.NOTION_TOKEN).toBeUndefined()
+    expect(stored.mcpServers.notion.env.NOTION_TOKEN).toBe('ntn_secret')
+    expect(stored.mcpServers.notion.env.SQLITE_DB_PATH).toBeUndefined()
   })
 })

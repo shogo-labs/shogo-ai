@@ -39,7 +39,7 @@ describe('MCP pre-install resolution', () => {
 
     setupFakePackage('@openbnb/mcp-server-airbnb', { 'mcp-server-airbnb': 'dist/index.js' })
     setupFakePackage('mcp-fetch-node', { 'mcp-fetch-node': 'index.js' })
-    setupFakePackage('@modelcontextprotocol/server-postgres', 'dist/index.js')
+    setupFakePackage('mcp-server-sqlite', 'src/index.js')
   })
 
   afterAll(() => {
@@ -71,12 +71,12 @@ describe('MCP pre-install resolution', () => {
     const manager = createManager()
     const resolved = (manager as any).resolvePreinstalled({
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-postgres@latest'],
+      args: ['-y', 'mcp-server-sqlite@latest'],
     })
 
     expect(resolved.command).toBe('node')
-    expect(resolved.args[0]).toContain('server-postgres')
-    expect(resolved.args[0]).toContain('dist/index.js')
+    expect(resolved.args[0]).toContain('mcp-server-sqlite')
+    expect(resolved.args[0]).toContain('src/index.js')
   })
 
   test('strips version specifiers correctly', () => {
@@ -160,25 +160,23 @@ describe('MCP pre-install resolution', () => {
 describe('MCP whitelist enforcement', () => {
   test('isPreinstalledMcpId returns true for whitelisted servers', () => {
     expect(isPreinstalledMcpId('fetch')).toBe(true)
-    expect(isPreinstalledMcpId('postgres')).toBe(true)
     expect(isPreinstalledMcpId('airbnb')).toBe(true)
     expect(isPreinstalledMcpId('filesystem')).toBe(true)
     expect(isPreinstalledMcpId('playwright')).toBe(true)
     expect(isPreinstalledMcpId('mongodb')).toBe(true)
     expect(isPreinstalledMcpId('discourse')).toBe(true)
-  })
-
-  test('isPreinstalledMcpId returns true for all newly preinstalled servers', () => {
-    expect(isPreinstalledMcpId('github')).toBe(true)
-    expect(isPreinstalledMcpId('slack')).toBe(true)
-    expect(isPreinstalledMcpId('notion')).toBe(true)
-    expect(isPreinstalledMcpId('brave-search')).toBe(true)
-    expect(isPreinstalledMcpId('gitlab')).toBe(true)
-    expect(isPreinstalledMcpId('linear')).toBe(true)
     expect(isPreinstalledMcpId('sqlite')).toBe(true)
     expect(isPreinstalledMcpId('stripe')).toBe(true)
     expect(isPreinstalledMcpId('exa')).toBe(true)
     expect(isPreinstalledMcpId('sentry')).toBe(true)
+  })
+
+  test('removed deprecated @modelcontextprotocol packages are no longer preinstalled', () => {
+    expect(isPreinstalledMcpId('postgres')).toBe(false)
+    expect(isPreinstalledMcpId('github')).toBe(false)
+    expect(isPreinstalledMcpId('gitlab')).toBe(false)
+    expect(isPreinstalledMcpId('brave-search')).toBe(false)
+    expect(isPreinstalledMcpId('slack')).toBe(false)
   })
 
   test('isPreinstalledMcpId returns false for arbitrary names', () => {
@@ -192,16 +190,20 @@ describe('MCP whitelist enforcement', () => {
     const ids = preinstalled.map(e => e.id)
 
     expect(ids).toContain('fetch')
-    expect(ids).toContain('postgres')
     expect(ids).toContain('airbnb')
     expect(ids).toContain('filesystem')
     expect(ids).toContain('playwright')
     expect(ids).toContain('mongodb')
     expect(ids).toContain('discourse')
-    expect(ids).toContain('github')
-    expect(ids).toContain('slack')
-    expect(ids).toContain('notion')
-    expect(ids).toContain('brave-search')
+    expect(ids).toContain('sqlite')
+    expect(ids).toContain('exa')
+    expect(ids).toContain('sentry')
+
+    expect(ids).not.toContain('postgres')
+    expect(ids).not.toContain('github')
+    expect(ids).not.toContain('gitlab')
+    expect(ids).not.toContain('brave-search')
+    expect(ids).not.toContain('slack')
 
     expect(preinstalled.every(e => e.preinstalled === true)).toBe(true)
   })
@@ -220,10 +222,11 @@ describe('MCP whitelist enforcement', () => {
     expect(playwrightEntry).toBeDefined()
     expect(playwrightEntry!.package).toBe('@playwright/mcp@latest')
 
-    const githubEntry = getPreinstalledEntry('github')
-    expect(githubEntry).toBeDefined()
-    expect(githubEntry!.preinstalled).toBe(true)
-
+    expect(getPreinstalledEntry('postgres')).toBeUndefined()
+    expect(getPreinstalledEntry('github')).toBeUndefined()
+    expect(getPreinstalledEntry('gitlab')).toBeUndefined()
+    expect(getPreinstalledEntry('brave-search')).toBeUndefined()
+    expect(getPreinstalledEntry('slack')).toBeUndefined()
     expect(getPreinstalledEntry('unknown')).toBeUndefined()
   })
 
