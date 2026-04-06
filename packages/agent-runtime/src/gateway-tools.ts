@@ -15,7 +15,7 @@ import { join, resolve, extname, dirname } from 'path'
 import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { sandboxExec } from './sandbox-exec'
+import { sandboxExec, shouldSandbox } from './sandbox-exec'
 import {
   runSubagent,
   getBuiltinSubagentConfig,
@@ -102,6 +102,8 @@ export interface ToolContext {
   teammateHandles?: Map<string, TeammateLoopHandle>
   /** Effective model ID for this turn (accounts for session modelOverride + alias resolution) */
   effectiveModel?: string
+  /** Persistent shell cwd state — survives across exec calls within a session */
+  shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -155,6 +157,24 @@ function truncateExecOutput(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Path translation helpers for Docker sandbox ↔ host
+// ---------------------------------------------------------------------------
+
+export function hostToContainer(hostPath: string, workspaceDir: string): string {
+  if (hostPath.startsWith(workspaceDir)) {
+    return '/workspace' + hostPath.slice(workspaceDir.length)
+  }
+  return '/workspace'
+}
+
+export function containerToHost(containerPath: string, workspaceDir: string): string {
+  if (containerPath.startsWith('/workspace')) {
+    return workspaceDir + containerPath.slice('/workspace'.length)
+  }
+  return workspaceDir
+}
+
+// ---------------------------------------------------------------------------
 // Tool Definitions (created via factory)
 // ---------------------------------------------------------------------------
 
@@ -162,7 +182,8 @@ function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
     description:
-      'Run a shell command in the agent workspace. Destructive commands are blocked. ' +
+      'Run a shell command in the agent workspace. Shell state is persistent — ' +
+      'cd in one call carries over to the next. Destructive commands are blocked. ' +
       'Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. ' +
       'Never use interactive flags (-i). Prefer read_file over cat/head/tail, and grep tool over exec("grep ..."). ' +
       'Pre-installed CLIs: gh (GitHub), glab (GitLab), aws, stripe, oci. ' +
@@ -179,9 +200,32 @@ function createExecTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Blocked command: ${command}` })
       }
 
+      const currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir
+      const cwdMarker = `.shogo-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const cwdFileHost = join(ctx.workspaceDir, cwdMarker)
+
+      const isSandboxed = shouldSandbox({
+        command,
+        workspaceDir: ctx.workspaceDir,
+        sandboxConfig: ctx.sandbox,
+        sessionId: ctx.sessionId,
+        mainSessionIds: ctx.mainSessionIds,
+      })
+
+      const cwdFileCmd = isSandboxed ? `/workspace/${cwdMarker}` : cwdFileHost
+      const cdTarget = isSandboxed
+        ? hostToContainer(currentCwd, ctx.workspaceDir)
+        : currentCwd
+
+      const wrappedCommand = [
+        `trap '/bin/pwd > "${cwdFileCmd}" 2>/dev/null' EXIT`,
+        `cd "${cdTarget}" 2>/dev/null || true`,
+        command,
+      ].join('\n')
+
       const startTime = Date.now()
       const result = sandboxExec({
-        command,
+        command: wrappedCommand,
         workspaceDir: ctx.workspaceDir,
         timeout,
         sandboxConfig: ctx.sandbox,
@@ -190,10 +234,24 @@ function createExecTool(ctx: ToolContext): AgentTool {
       })
       const durationMs = Date.now() - startTime
 
+      let newCwd = currentCwd
+      try {
+        const rawCwd = readFileSync(cwdFileHost, 'utf-8').trim()
+        if (rawCwd) {
+          newCwd = isSandboxed
+            ? containerToHost(rawCwd, ctx.workspaceDir)
+            : rawCwd
+        }
+        unlinkSync(cwdFileHost)
+      } catch { /* trap may not have fired (e.g. user overrode it) — keep previous cwd */ }
+
+      ctx.shellState?.setCwd(newCwd)
+
       return textResult({
         stdout: truncateExecOutput(result.stdout),
         stderr: result.stderr ? truncateExecOutput(result.stderr) : undefined,
         exitCode: result.exitCode,
+        cwd: newCwd,
         durationMs,
         sandboxed: result.sandboxed || undefined,
       })

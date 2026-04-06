@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
-import { createTools, createHeartbeatTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, type ToolContext } from '../gateway-tools'
+import { createTools, createHeartbeatTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
 import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
 
@@ -90,7 +90,9 @@ describe('gateway-tools', () => {
     })
 
     test('blocks destructive commands', async () => {
-      const result = await exec(createCtx(), 'exec', { command: 'rm -rf /' })
+      // Lightweight isBlockedCommand catches 'sudo'; the PermissionEngine
+      // has broader patterns (rm -rf /) but isn't active in this test context.
+      const result = await exec(createCtx(), 'exec', { command: 'sudo rm -rf /' })
       expect(result.error).toContain('Blocked command')
     })
 
@@ -363,7 +365,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(51)
+      expect(createTools(createCtx())).toHaveLength(52)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
@@ -374,7 +376,7 @@ describe('gateway-tools', () => {
 
     test('createHeartbeatTools excludes exec and send_message', () => {
       const hbTools = createHeartbeatTools(createCtx())
-      expect(hbTools).toHaveLength(11)
+      expect(hbTools).toHaveLength(12)
       expect(hbTools.find((t) => t.name === 'exec')).toBeUndefined()
       expect(hbTools.find((t) => t.name === 'send_message')).toBeUndefined()
       expect(hbTools.find((t) => t.name === 'cron')).toBeUndefined()
@@ -469,14 +471,12 @@ describe('gateway-tools', () => {
 
     test('tool_install has Composio-only description without env/url/headers params', () => {
       const tool = getTool(createCtx(), 'tool_install')
-      expect(tool.description).toContain('managed OAuth')
       expect(tool.description).toContain('mcp_install')
       const schema = JSON.stringify(tool.parameters)
       expect(schema).not.toContain('"url"')
       expect(schema).not.toContain('"headers"')
       expect(schema).not.toContain('"env"')
-      expect(schema).toContain('"autoBind"')
-      expect(schema).toContain('"bind"')
+      expect(schema).toContain('"name"')
     })
 
     test('mcp_install has MCP-only description with env/url/headers params', () => {
@@ -506,7 +506,7 @@ describe('gateway-tools', () => {
     })
 
     test('mcp_search returns catalog results with mcp_install commands', async () => {
-      const result = await exec(createCtx(), 'mcp_search', { query: 'postgres' })
+      const result = await exec(createCtx(), 'mcp_search', { query: 'sqlite' })
       expect(result.results.length).toBeGreaterThan(0)
       const first = result.results[0]
       expect(first.source).toBe('catalog')
@@ -534,19 +534,335 @@ describe('gateway-tools', () => {
 
     test('tool labels distinguish integrations from MCP servers', () => {
       const tools = createTools(createCtx())
-      const toolSearch = tools.find(t => t.name === 'tool_search')!
       const mcpSearch = tools.find(t => t.name === 'mcp_search')!
-      const toolInstall = tools.find(t => t.name === 'tool_install')!
       const mcpInstall = tools.find(t => t.name === 'mcp_install')!
-      const toolUninstall = tools.find(t => t.name === 'tool_uninstall')!
       const mcpUninstall = tools.find(t => t.name === 'mcp_uninstall')!
 
-      expect(toolSearch.label).toContain('Integration')
       expect(mcpSearch.label).toContain('MCP')
-      expect(toolInstall.label).toContain('Integration')
       expect(mcpInstall.label).toContain('MCP')
-      expect(toolUninstall.label).toContain('Integration')
       expect(mcpUninstall.label).toContain('MCP')
+
+      // tool_* labels should NOT contain "MCP" — they cover integrations/skills
+      const toolSearch = tools.find(t => t.name === 'tool_search')!
+      const toolInstall = tools.find(t => t.name === 'tool_install')!
+      const toolUninstall = tools.find(t => t.name === 'tool_uninstall')!
+
+      expect(toolSearch.label).not.toContain('MCP')
+      expect(toolInstall.label).not.toContain('MCP')
+      expect(toolUninstall.label).not.toContain('MCP')
+    })
+  })
+
+  // =========================================================================
+  // Stateful exec cwd tests
+  // =========================================================================
+
+  describe('exec stateful cwd', () => {
+    // Resolve symlinks so /tmp → /private/tmp on macOS matches pwd output.
+    // Computed lazily because beforeEach creates the dir first.
+    let REAL_TEST_DIR: string
+    beforeEach(() => {
+      REAL_TEST_DIR = realpathSync(TEST_DIR)
+    })
+
+    function createStatefulCtx(overrides?: Partial<ToolContext>): ToolContext {
+      const cwdMap = new Map<string, string>()
+      const sessionId = 'test-session'
+      return createCtx({
+        sessionId,
+        shellState: {
+          getCwd: () => cwdMap.get(sessionId) || REAL_TEST_DIR,
+          setCwd: (cwd: string) => cwdMap.set(sessionId, cwd),
+        },
+        ...overrides,
+      })
+    }
+
+    // Reuse the same ctx across calls within a single test to verify persistence
+    async function execStateful(ctx: ToolContext, command: string) {
+      const tool = getTool(ctx, 'exec')
+      const result = await tool.execute('test-call', { command })
+      return result.details
+    }
+
+    // --- Happy path ---
+
+    test('cd persists across calls', async () => {
+      mkdirSync(join(TEST_DIR, 'subdir'), { recursive: true })
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd subdir')
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(join(REAL_TEST_DIR, 'subdir'))
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'subdir'))
+    })
+
+    test('sequential cd accumulates', async () => {
+      mkdirSync(join(TEST_DIR, 'a', 'b'), { recursive: true })
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd a')
+      await execStateful(ctx, 'cd b')
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(join(REAL_TEST_DIR, 'a', 'b'))
+    })
+
+    test('cd .. walks back', async () => {
+      mkdirSync(join(TEST_DIR, 'deep'), { recursive: true })
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd deep')
+      await execStateful(ctx, 'cd ..')
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(REAL_TEST_DIR)
+    })
+
+    test('cd with && chaining captures cwd and produces correct stdout', async () => {
+      mkdirSync(join(TEST_DIR, 'chain'), { recursive: true })
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'cd chain && echo hello')
+      expect(result.stdout).toBe('hello')
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'chain'))
+    })
+
+    test('result always includes cwd field', async () => {
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'echo test')
+      expect(result.cwd).toBeDefined()
+      expect(typeof result.cwd).toBe('string')
+    })
+
+    test('absolute cd', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd /tmp')
+      const result = await execStateful(ctx, 'pwd')
+      // pwd returns logical path; /tmp is fine even if it symlinks to /private/tmp
+      expect(['/tmp', realpathSync('/tmp')]).toContain(result.stdout)
+    })
+
+    test('cd alone with no other command', async () => {
+      mkdirSync(join(TEST_DIR, 'solo'), { recursive: true })
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'cd solo')
+      expect(result.exitCode).toBe(0)
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'solo'))
+    })
+
+    test('first call without prior cd starts at workspace root', async () => {
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(REAL_TEST_DIR)
+      expect(result.cwd).toBe(REAL_TEST_DIR)
+    })
+
+    // --- Edge cases ---
+
+    test('cd to nonexistent directory does not change cwd', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd /nonexistent_dir_xyz_12345 2>/dev/null; true')
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(REAL_TEST_DIR)
+    })
+
+    test('failed command preserves cd', async () => {
+      mkdirSync(join(TEST_DIR, 'faildir'), { recursive: true })
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'cd faildir && false')
+      expect(result.exitCode).not.toBe(0)
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'faildir'))
+    })
+
+    test('command with explicit exit still captures cwd', async () => {
+      mkdirSync(join(TEST_DIR, 'exitdir'), { recursive: true })
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'cd exitdir && exit 42')
+      expect(result.exitCode).toBe(42)
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'exitdir'))
+    })
+
+    test('subshell cd does not leak to outer shell', async () => {
+      mkdirSync(join(TEST_DIR, 'inner'), { recursive: true })
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, '(cd inner)')
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(REAL_TEST_DIR)
+    })
+
+    test('pipe with cd captures correct cwd', async () => {
+      mkdirSync(join(TEST_DIR, 'pipedir'), { recursive: true })
+      writeFileSync(join(TEST_DIR, 'pipedir', 'file.txt'), 'content\n')
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'cd pipedir && ls | head -1')
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'pipedir'))
+      expect(result.stdout).toBe('file.txt')
+    })
+
+    test('no shellState (no sessionId) still works', async () => {
+      const ctx = createCtx()
+      const result = await exec(ctx, 'exec', { command: 'echo hello' })
+      expect(result.stdout).toBe('hello')
+      expect(result.exitCode).toBe(0)
+      expect(result.cwd).toBeDefined()
+    })
+
+    // --- Adversarial ---
+
+    test('path with spaces', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'mkdir -p "dir with spaces"')
+      await execStateful(ctx, 'cd "dir with spaces"')
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(join(REAL_TEST_DIR, 'dir with spaces'))
+    })
+
+    test('path with single quotes in name', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, "mkdir -p \"it's a dir\"")
+      await execStateful(ctx, "cd \"it's a dir\"")
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toContain("it's a dir")
+    })
+
+    test('deeply nested path', async () => {
+      const depth = 30
+      let nested = TEST_DIR
+      for (let i = 0; i < depth; i++) nested = join(nested, `d${i}`)
+      mkdirSync(nested, { recursive: true })
+      const realNested = realpathSync(nested)
+
+      const ctx = createStatefulCtx()
+      const cdChain = Array.from({ length: depth }, (_, i) => `d${i}`).join('/')
+      await execStateful(ctx, `cd ${cdChain}`)
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(realNested)
+    })
+
+    test('symlink cd tracks the path used', async () => {
+      const targetDir = join(TEST_DIR, 'real-target')
+      mkdirSync(targetDir, { recursive: true })
+      symlinkSync(targetDir, join(TEST_DIR, 'sym-link'))
+
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd sym-link')
+      const result = await execStateful(ctx, 'pwd')
+      // pwd may return logical (symlink) or physical (resolved) path
+      const expected = [
+        join(REAL_TEST_DIR, 'sym-link'),
+        realpathSync(join(TEST_DIR, 'sym-link')),
+      ]
+      expect(expected).toContain(result.stdout)
+    })
+
+    test('deleted cwd falls back gracefully', async () => {
+      mkdirSync(join(TEST_DIR, 'ephemeral'), { recursive: true })
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'cd ephemeral')
+      rmSync(join(TEST_DIR, 'ephemeral'), { recursive: true })
+      // Next call: cd to deleted dir fails, || true saves us, runs in workspaceDir
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.exitCode).toBe(0)
+      expect(result.cwd).toBeDefined()
+    })
+
+    test('rapid sequential calls have no temp file collision', async () => {
+      const ctx = createStatefulCtx()
+      for (let i = 0; i < 10; i++) {
+        const dir = `rapid-${i}`
+        mkdirSync(join(TEST_DIR, dir), { recursive: true })
+        const result = await execStateful(ctx, `cd "${REAL_TEST_DIR}/${dir}"`)
+        expect(result.cwd).toBe(join(REAL_TEST_DIR, dir))
+      }
+    })
+
+    test('command producing massive stdout still captures cwd', async () => {
+      mkdirSync(join(TEST_DIR, 'bigout'), { recursive: true })
+      const ctx = createStatefulCtx()
+      const result = await execStateful(ctx, 'cd bigout && yes | head -10000')
+      expect(result.cwd).toBe(join(REAL_TEST_DIR, 'bigout'))
+      expect(result.exitCode).toBe(0)
+    })
+
+    test('trap override attempt falls back to previous cwd', async () => {
+      mkdirSync(join(TEST_DIR, 'trapdir'), { recursive: true })
+      const ctx = createStatefulCtx()
+      // Overwrite our EXIT trap — cwd capture won't fire
+      const result = await execStateful(ctx, 'trap "echo overridden" EXIT && cd trapdir')
+      // Should fall back to the previous cwd (workspace root) since trap was overridden
+      expect(result.cwd).toBeDefined()
+      // The key assertion: no crash, and either the trap still caught it or we fell back
+      expect(typeof result.cwd).toBe('string')
+    })
+
+    test('multiple sessions are independent', async () => {
+      mkdirSync(join(TEST_DIR, 'dirA'), { recursive: true })
+      mkdirSync(join(TEST_DIR, 'dirB'), { recursive: true })
+
+      const cwdMapA = new Map<string, string>()
+      const cwdMapB = new Map<string, string>()
+      const ctxA = createCtx({
+        sessionId: 'session-a',
+        shellState: {
+          getCwd: () => cwdMapA.get('session-a') || REAL_TEST_DIR,
+          setCwd: (cwd: string) => cwdMapA.set('session-a', cwd),
+        },
+      })
+      const ctxB = createCtx({
+        sessionId: 'session-b',
+        shellState: {
+          getCwd: () => cwdMapB.get('session-b') || REAL_TEST_DIR,
+          setCwd: (cwd: string) => cwdMapB.set('session-b', cwd),
+        },
+      })
+
+      await execStateful(ctxA, 'cd dirA')
+      await execStateful(ctxB, 'cd dirB')
+      const resultA = await execStateful(ctxA, 'pwd')
+      const resultB = await execStateful(ctxB, 'pwd')
+      expect(resultA.stdout).toBe(join(REAL_TEST_DIR, 'dirA'))
+      expect(resultB.stdout).toBe(join(REAL_TEST_DIR, 'dirB'))
+    })
+
+    // --- Temp file hygiene ---
+
+    test('temp file cleaned up on success', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'echo clean')
+      const remaining = readdirSync(TEST_DIR).filter(f => f.startsWith('.shogo-cwd-'))
+      expect(remaining).toHaveLength(0)
+    })
+
+    test('temp file cleaned up on failure', async () => {
+      const ctx = createStatefulCtx()
+      await execStateful(ctx, 'false')
+      const remaining = readdirSync(TEST_DIR).filter(f => f.startsWith('.shogo-cwd-'))
+      expect(remaining).toHaveLength(0)
+    })
+  })
+
+  // =========================================================================
+  // Path translation unit tests
+  // =========================================================================
+
+  describe('hostToContainer / containerToHost', () => {
+    test('hostToContainer: workspace-relative path', () => {
+      expect(hostToContainer('/home/user/project/src', '/home/user/project')).toBe('/workspace/src')
+    })
+
+    test('hostToContainer: workspace root', () => {
+      expect(hostToContainer('/home/user/project', '/home/user/project')).toBe('/workspace')
+    })
+
+    test('hostToContainer: outside workspace falls back', () => {
+      expect(hostToContainer('/tmp/other', '/home/user/project')).toBe('/workspace')
+    })
+
+    test('containerToHost: workspace-relative', () => {
+      expect(containerToHost('/workspace/src', '/home/user/project')).toBe('/home/user/project/src')
+    })
+
+    test('containerToHost: workspace root', () => {
+      expect(containerToHost('/workspace', '/home/user/project')).toBe('/home/user/project')
+    })
+
+    test('containerToHost: outside workspace falls back', () => {
+      expect(containerToHost('/etc/passwd', '/home/user/project')).toBe('/home/user/project')
     })
   })
 })

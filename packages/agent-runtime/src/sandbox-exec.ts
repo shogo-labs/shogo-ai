@@ -230,7 +230,7 @@ export function stripRuntimeVars(env: Record<string, string | undefined>): typeo
   return env
 }
 
-function shouldSandbox(opts: SandboxExecOptions): boolean {
+export function shouldSandbox(opts: SandboxExecOptions): boolean {
   const config = { ...DEFAULT_SANDBOX, ...opts.sandboxConfig }
   if (!config.enabled) return false
 
