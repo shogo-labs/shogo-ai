@@ -491,13 +491,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     return
   }
 
-  const prismaCli = path.join(projectRoot, 'node_modules', 'prisma', 'build', 'index.js')
-
-  if (!fs.existsSync(prismaCli)) {
-    console.log('[Desktop] Prisma CLI not found, skipping migrations')
-    return
-  }
-
+  // Copy schema-engine binary to a writable location (Prisma needs it for SQLite)
   const { getDataDir } = require('./paths') as typeof import('./paths')
   const writableEngineDir = path.join(getDataDir(), '.prisma-engines')
   fs.mkdirSync(writableEngineDir, { recursive: true })
@@ -519,7 +513,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   console.log('[Desktop] Running database migrations...')
   try {
     const result = execSync(
-      `"${bunPath}" "${prismaCli}" migrate deploy`,
+      `"${bunPath}" x prisma migrate deploy --config=prisma.config.js`,
       {
         cwd: projectRoot,
         env: {
@@ -539,8 +533,8 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
       console.log('[Desktop] Database schema is up to date')
       return
     }
-    console.error('[Desktop] Migration failed:', stderr || err.message)
-    console.error('[Desktop] Migration stdout:', stdout)
+    console.error('[Desktop] [ERROR] Migration failed:', stderr || err.message)
+    console.error('[Desktop] [ERROR] Migration stdout:', stdout)
     throw new Error('Failed to run database migrations')
   }
 }

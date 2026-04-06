@@ -6060,9 +6060,10 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}, Google=${!!process.env.GOOGLE_API_KEY}`)
 
-// Local mode: restore saved API keys and auto-seed default user on startup
+// Local mode: restore saved API keys and auto-seed default user BEFORE accepting requests
+// (must complete before export default so /api/config and /api/local/auto-sign-in work on first load)
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
-  setTimeout(async () => {
+  await (async () => {
     try {
       const savedConfig = await (prisma as any).localConfig.findMany({})
       for (const row of savedConfig) {
@@ -6075,7 +6076,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
     }
 
-    // Auto-seed the single local user if none exists
     try {
       const userCount = await prisma.user.count()
       if (userCount === 0) {
@@ -6102,17 +6102,19 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     } catch (err: any) {
       console.error('[LocalMode] Failed to auto-seed user:', err.message)
     }
+  })()
 
-    // Start instance tunnel to Shogo Cloud if API key is configured
-    if (process.env.SHOGO_API_KEY) {
+  // Instance tunnel is not time-critical — start in background
+  if (process.env.SHOGO_API_KEY) {
+    setTimeout(async () => {
       try {
         const { startInstanceTunnel } = await import('./lib/instance-tunnel')
         startInstanceTunnel()
       } catch (err: any) {
         console.error('[LocalMode] Failed to start instance tunnel (non-fatal):', err.message)
       }
-    }
-  }, 1000)
+    }, 1000)
+  }
 }
 
 export default {
