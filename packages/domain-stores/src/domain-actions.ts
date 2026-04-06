@@ -297,6 +297,16 @@ export function createDomainActions(store: IDomainStore) {
     },
 
     /**
+     * Update a chat session
+     */
+    updateChatSession: async (
+      sessionId: string,
+      changes: { name?: string; inferredName?: string }
+    ) => {
+      return store.chatSessionCollection.update(sessionId, changes)
+    },
+
+    /**
      * Add a message to a chat session
      */
     addMessage: async (data: {
