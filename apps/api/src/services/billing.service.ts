@@ -5,7 +5,7 @@
  * Replaces billingDomain.createStore() for subscriptions, credits, usage
  */
 
-import { prisma, type Prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
+import { prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
 import { DAILY_CREDITS, MONTHLY_DAILY_CAP, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -213,7 +213,7 @@ export async function consumeCredits(
           creditSource: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: (actionMetadata ?? {}) as Prisma.InputJsonValue,
+          actionMetadata: actionMetadata ? JSON.stringify(actionMetadata) : null,
         },
       })
     } catch (e) {
@@ -325,7 +325,7 @@ async function _consumeCreditsTransaction(
         projectId,
         memberId,
         actionType,
-        actionMetadata: actionMetadata as Prisma.InputJsonValue,
+        actionMetadata: actionMetadata ? JSON.stringify(actionMetadata) : null,
         creditCost,
         creditSource,
         balanceBefore,

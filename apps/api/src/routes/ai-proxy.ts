@@ -490,7 +490,8 @@ async function proxyAnthropicStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
+  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const body = convertToAnthropicFormat({
     ...request,
@@ -506,6 +507,7 @@ async function proxyAnthropicStream(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -751,7 +753,8 @@ async function proxyOpenAIStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
+  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const url = getOpenAICompatibleBaseUrl(modelConfig)
   const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
@@ -763,9 +766,9 @@ async function proxyOpenAIStream(
       ...request,
       model: modelConfig.apiModel,
       stream: true,
-      // Ask OpenAI-compatible providers to include usage in the final chunk
       stream_options: { include_usage: true },
     }),
+    signal,
   })
 
   if (!response.ok) {
@@ -1193,7 +1196,7 @@ export function aiProxyRoutes() {
   /**
    * Forward an OpenAI-compatible chat completions request to the Shogo Cloud proxy.
    */
-  async function forwardChatCompletionsToCloud(c: any, request: ChatCompletionRequest): Promise<Response> {
+  async function forwardChatCompletionsToCloud(c: any, request: ChatCompletionRequest, signal?: AbortSignal): Promise<Response> {
     const cloudUrl = getShogoCloudUrl()
     const shogoKey = process.env.SHOGO_API_KEY!
 
@@ -1204,6 +1207,7 @@ export function aiProxyRoutes() {
         'Authorization': `Bearer ${shogoKey}`,
       },
       body: JSON.stringify(request),
+      signal,
     })
 
     if (request.stream) {
@@ -1227,7 +1231,7 @@ export function aiProxyRoutes() {
   /**
    * Forward an Anthropic-native request to the Shogo Cloud proxy.
    */
-  async function forwardAnthropicToCloud(c: any, body: string, headers: Record<string, string>): Promise<Response> {
+  async function forwardAnthropicToCloud(c: any, body: string, headers: Record<string, string>, signal?: AbortSignal): Promise<Response> {
     const cloudUrl = getShogoCloudUrl()
     const shogoKey = process.env.SHOGO_API_KEY!
     const parsed = JSON.parse(body)
@@ -1247,6 +1251,7 @@ export function aiProxyRoutes() {
       method: 'POST',
       headers: forwardHeaders,
       body,
+      signal,
     })
 
     if (isStream) {
@@ -1291,7 +1296,7 @@ export function aiProxyRoutes() {
       try {
         const request: ChatCompletionRequest = await c.req.json()
         console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
-        return await forwardChatCompletionsToCloud(c, request)
+        return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error:', error.message)
         return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
@@ -1395,11 +1400,11 @@ export function aiProxyRoutes() {
         if (modelConfig.provider === 'anthropic') {
           return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok)
-          })
+          }, c.req.raw.signal)
         } else {
           return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok)
-          })
+          }, c.req.raw.signal)
         }
       } else {
         let result: any
@@ -1719,7 +1724,7 @@ export function aiProxyRoutes() {
         }
         const parsed = JSON.parse(body)
         console.log(`[AI Proxy] Forwarding Anthropic to Shogo Cloud: ${parsed.model || 'unknown'} (stream: ${!!parsed.stream})`)
-        return await forwardAnthropicToCloud(c, body, headers)
+        return await forwardAnthropicToCloud(c, body, headers, c.req.raw.signal)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error:', error.message)
         return c.json({ type: 'error', error: { type: 'api_error', message: `Cloud proxy error: ${error.message}` } }, 502)
@@ -1780,6 +1785,7 @@ export function aiProxyRoutes() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(openaiBody),
+          signal: c.req.raw.signal,
         })
         if (!response.ok) {
           const errorText = await response.text()
@@ -1839,6 +1845,7 @@ export function aiProxyRoutes() {
             'Authorization': `Bearer ${openaiApiKey}`,
           },
           body: JSON.stringify(openaiBody),
+          signal: c.req.raw.signal,
         })
         if (!response.ok) {
           const errorText = await response.text()
@@ -1898,6 +1905,7 @@ export function aiProxyRoutes() {
         method: 'POST',
         headers,
         body: forwardBody,
+        signal: c.req.raw.signal,
       })
 
       if (!response.ok) {

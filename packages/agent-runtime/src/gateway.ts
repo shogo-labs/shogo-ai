@@ -1115,10 +1115,12 @@ export class AgentGateway {
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
       confirmedPlan?: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
+      chatSessionId?: string
     },
   ): Promise<void> {
+    const sessionId = options?.chatSessionId || 'chat'
     if (options?.modelOverride) {
-      const session = this.sessionManager.getOrCreate('chat')
+      const session = this.sessionManager.getOrCreate(sessionId)
       session.modelOverride = options.modelOverride
     }
 
@@ -1181,7 +1183,7 @@ export class AgentGateway {
     }
 
     const interactionMode = options?.interactionMode || 'agent'
-    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill, images, interactionMode)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
@@ -168,6 +168,24 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const appOrigins = ['shogo://app', 'http://localhost']
+    const isInternal = appOrigins.some((origin) => url.startsWith(origin))
+    if (!isInternal) {
+      event.preventDefault()
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        shell.openExternal(url)
+      }
+    }
   })
 
   if (isCloudMode) {

@@ -590,6 +590,10 @@ function buildSessionOptions(projectId?: string): ExtendedSessionOptions {
 // Session cache: persistent V2 sessions keyed by scope (projectId or '__platform__')
 const sessionCache = new Map<string, SDKSession>()
 
+// Track the last chatSessionId per scope so we can detect "new chat" and
+// invalidate the cached SDK session (which carries conversation history).
+const scopeLastChatSessionId = new Map<string, string>()
+
 /**
  * Get or create a persistent V2 session for the given scope.
  * Sessions persist across HTTP requests — the CLI subprocess stays alive,
@@ -4369,7 +4373,17 @@ app.post('/api/chat', async (c) => {
 
     // Get or create a persistent V2 session for this scope.
     // The session keeps the CLI subprocess alive across requests — no more cold starts.
+    // When the chatSessionId changes (user started a "new chat"), invalidate the cached
+    // SDK session so the agent doesn't carry conversation history from the old chat.
     const scopeKey = projectId || '__platform__'
+    const lastChatId = scopeLastChatSessionId.get(scopeKey)
+    if (chatSessionId && lastChatId && chatSessionId !== lastChatId) {
+      console.log(`[ClaudeCode] Chat session changed ${lastChatId} -> ${chatSessionId}, creating fresh SDK session`)
+      sessionCache.delete(scopeKey)
+    }
+    if (chatSessionId) {
+      scopeLastChatSessionId.set(scopeKey, chatSessionId)
+    }
     const session = getOrCreateSession(scopeKey, projectId)
     activeSessions.add(scopeKey) // Mark session as active to prevent prewarm interference
 
