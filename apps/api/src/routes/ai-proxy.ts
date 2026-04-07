@@ -700,7 +700,8 @@ function convertAnthropicStreamEvent(event: any, id: string, model: string): any
 async function proxyAnthropicNonStream(
   request: ChatCompletionRequest,
   apiKey: string,
-  modelConfig: ModelConfig
+  modelConfig: ModelConfig,
+  signal?: AbortSignal,
 ) {
   const body = convertToAnthropicFormat({
     ...request,
@@ -716,6 +717,7 @@ async function proxyAnthropicNonStream(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -857,7 +859,8 @@ async function proxyOpenAIStream(
 async function proxyOpenAINonStream(
   request: ChatCompletionRequest,
   apiKey: string,
-  modelConfig: ModelConfig
+  modelConfig: ModelConfig,
+  signal?: AbortSignal,
 ) {
   const url = getOpenAICompatibleBaseUrl(modelConfig)
   const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
@@ -870,6 +873,7 @@ async function proxyOpenAINonStream(
       model: modelConfig.apiModel,
       stream: false,
     }),
+    signal,
   })
 
   if (!response.ok) {
@@ -998,6 +1002,7 @@ async function generateImageOpenAI(
   apiKey: string,
   model: string,
   params: { prompt: string; size?: string; quality?: string; n?: number },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResponse> {
   const body: Record<string, unknown> = {
     model,
@@ -1015,6 +1020,7 @@ async function generateImageOpenAI(
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -1029,6 +1035,7 @@ async function generateImageGoogle(
   apiKey: string,
   model: string,
   params: { prompt: string; size?: string; n?: number },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResponse> {
   const sizeToAspect: Record<string, string> = {
     '1024x1024': '1:1',
@@ -1055,6 +1062,7 @@ async function generateImageGoogle(
         'x-goog-api-key': apiKey,
       },
       body: JSON.stringify(body),
+      signal,
     }
   )
 
@@ -1079,6 +1087,7 @@ async function generateImageGoogle(
 async function generateImageLocal(
   _model: string,
   params: { prompt: string; size?: string; quality?: string; n?: number },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResponse> {
   const baseUrl = process.env.LOCAL_IMAGE_GEN_BASE_URL
   if (!baseUrl) throw new Error('LOCAL_IMAGE_GEN_BASE_URL is not configured')
@@ -1097,6 +1106,7 @@ async function generateImageLocal(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -1409,9 +1419,9 @@ export function aiProxyRoutes() {
       } else {
         let result: any
         if (modelConfig.provider === 'anthropic') {
-          result = await proxyAnthropicNonStream(request, apiKey, modelConfig)
+          result = await proxyAnthropicNonStream(request, apiKey, modelConfig, c.req.raw.signal)
         } else {
-          result = await proxyOpenAINonStream(request, apiKey, modelConfig)
+          result = await proxyOpenAINonStream(request, apiKey, modelConfig, c.req.raw.signal)
         }
 
         const totalPrompt = result.usage?.prompt_tokens || 0
@@ -1498,6 +1508,7 @@ export function aiProxyRoutes() {
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify(forwardBody),
+        signal: c.req.raw.signal,
       })
 
       if (!response.ok) {
@@ -2007,6 +2018,7 @@ export function aiProxyRoutes() {
           'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
         },
         body,
+        signal: c.req.raw.signal,
       })
       const responseBody = await response.text()
       return new Response(responseBody, {
@@ -2034,6 +2046,7 @@ export function aiProxyRoutes() {
       method: 'POST',
       headers,
       body,
+      signal: c.req.raw.signal,
     })
 
     const responseBody = await response.text()
@@ -2068,6 +2081,7 @@ export function aiProxyRoutes() {
         'x-api-key': anthropicApiKey,
         'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
       },
+      signal: c.req.raw.signal,
     })
 
     const responseBody = await response.text()
@@ -2139,13 +2153,14 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎨 Image generation: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel}`)
 
+      const signal = c.req.raw.signal
       let result: ImageGenerationResponse
       if (imageModel.provider === 'openai') {
-        result = await generateImageOpenAI(apiKey, imageModel.apiModel, body)
+        result = await generateImageOpenAI(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'google') {
-        result = await generateImageGoogle(apiKey, imageModel.apiModel, body)
+        result = await generateImageGoogle(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'local') {
-        result = await generateImageLocal(imageModel.apiModel, body)
+        result = await generateImageLocal(imageModel.apiModel, body, signal)
       } else {
         return c.json(
           { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
@@ -2234,6 +2249,7 @@ export function aiProxyRoutes() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${openaiKey}` },
         body: forwardForm,
+        signal: c.req.raw.signal,
       })
 
       if (!response.ok) {
