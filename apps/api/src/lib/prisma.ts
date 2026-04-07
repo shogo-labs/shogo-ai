@@ -118,7 +118,7 @@ function wrapForSqlite(client: PrismaClient): PrismaClient {
 }
 
 async function createPrismaClient(): Promise<PrismaClient> {
-  const logConfig = process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] as const : ['error'] as const
+  const logConfig = process.env.NODE_ENV === 'development' ? ['error', 'warn'] as const : ['error'] as const
 
   if (isLocalMode) {
     const { PrismaClient: SqliteClient } = await import('../generated/prisma-sqlite/client')
