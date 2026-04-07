@@ -63,7 +63,7 @@ test.describe("Pro Feature Gating", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
 
-    const input = page.getByPlaceholder("Ask Shogo to create...")
+    const input = page.getByPlaceholder("Ask Shogo to ...")
     await input.click()
     await input.fill("Test model gating")
     await page.waitForTimeout(500)
