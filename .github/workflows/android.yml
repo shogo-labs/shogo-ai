@@ -190,19 +190,28 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Resolve API URL for environment
+        id: api-url
+        run: |
+          if [ "${{ needs.check-fingerprint.outputs.environment }}" = "production" ]; then
+            echo "url=https://studio.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://studio.staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+
       - name: Publish OTA update
         working-directory: apps/mobile
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
         run: |
-          # Use only the subject line to avoid shell injection from backticks/newlines
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
           eas update \
             --branch ${{ needs.check-fingerprint.outputs.environment }} \
             --message "$SUBJECT" \
             --non-interactive
-          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
 
       - name: Summary
         run: |
@@ -231,6 +240,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve API URL for environment
+        id: api-url
+        run: |
+          if [ "${{ needs.check-fingerprint.outputs.environment }}" = "production" ]; then
+            echo "url=https://studio.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://studio.staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+          echo "Resolved API URL for ${{ needs.check-fingerprint.outputs.environment }}: $(grep url= $GITHUB_OUTPUT | tail -1)"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -295,6 +314,7 @@ jobs:
         run: npx expo prebuild --platform android --clean
         env:
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
 
@@ -371,7 +391,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}

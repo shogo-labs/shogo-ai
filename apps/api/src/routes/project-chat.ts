@@ -931,17 +931,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      let podUrl: string
-      try {
-        podUrl = await getProjectUrl(projectId)
-      } catch {
-        return c.json({ success: true, message: "No active runtime to stop" })
-      }
-
       const body = await c.req.text()
-      const response = await fetch(`${podUrl}/agent/stop`, {
+      const response = await fetchFromRuntime(projectId, "/agent/stop", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: body || "{}",
       })
 
