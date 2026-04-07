@@ -481,16 +481,24 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     return projectDir
   }
 
-  private async getProjectInfo(projectId: string): Promise<{ templateId?: string; name?: string }> {
+  private async getProjectInfo(projectId: string): Promise<{ templateId?: string; name?: string; techStackId?: string }> {
     try {
       const { prisma } = await import('../prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { templateId: true, name: true },
+        select: { templateId: true, name: true, settings: true },
       })
+      const settings = project?.settings as Record<string, unknown> | null
+      let techStackId = settings?.techStackId as string | undefined
+      if (!techStackId && project?.templateId) {
+        const { getAgentTemplateById } = await import('@shogo/agent-runtime/src/agent-templates')
+        const template = getAgentTemplateById(project.templateId)
+        if (template?.techStack) techStackId = template.techStack
+      }
       return {
         templateId: project?.templateId ?? undefined,
         name: project?.name ?? undefined,
+        techStackId,
       }
     } catch {
       return {}
@@ -807,6 +815,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           WORKSPACE_DIR: projectDir,
           ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
+          ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
           PORT: String(agentPort),
           SKILL_SERVER_PORT: String(agentPort + 1),
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),

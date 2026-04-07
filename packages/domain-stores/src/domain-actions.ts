@@ -92,11 +92,13 @@ export function createDomainActions(store: IDomainStore) {
       description: string | undefined,
       userId: string,
       _type?: string,
-      templateId?: string
+      templateId?: string,
+      techStackId?: string
     ) => {
       const settings = JSON.stringify({
         activeMode: 'canvas',
         canvasMode: 'code',
+        ...(techStackId ? { techStackId } : {}),
       })
 
       const project = await store.projectCollection.create({

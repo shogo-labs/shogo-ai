@@ -4,11 +4,6 @@
 import { Platform, Pressable } from "react-native"
 import { useColorScheme } from "nativewind"
 import Svg, { Circle } from "react-native-svg"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipText,
-} from "@/components/ui/tooltip"
 
 export interface ContextTrackerProps {
   inputTokens: number
@@ -77,15 +72,11 @@ export function ContextTracker({ inputTokens, contextWindowTokens }: ContextTrac
   }
 
   return (
-    <Tooltip
-      placement="top"
-      trigger={(triggerProps) => (
-        <Pressable {...triggerProps}>{ring}</Pressable>
-      )}
+    <Pressable
+      ref={(el: any) => { if (el) el.title = label }}
+      accessibilityLabel={label}
     >
-      <TooltipContent className="py-0.5 px-2 rounded bg-popover border border-border shadow-sm">
-        <TooltipText className="text-[10px] text-popover-foreground">{label}</TooltipText>
-      </TooltipContent>
-    </Tooltip>
+      {ring}
+    </Pressable>
   )
 }

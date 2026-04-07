@@ -34,7 +34,7 @@ import {
   configureAIProxy,
   StreamBufferStore,
 } from '@shogo/shared-runtime'
-import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps } from './workspace-defaults'
+import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
@@ -137,14 +137,17 @@ function ensureWorkspaceFiles(): void {
     const seeded = seedWorkspaceFromTemplate(WORKSPACE_DIR, templateId, process.env.AGENT_NAME)
     if (seeded) {
       logTiming(`Workspace seeded from template: ${templateId}`)
-      return
+    } else {
+      logTiming(`Template "${templateId}" not found, falling back to defaults`)
+      seedWorkspaceDefaults(WORKSPACE_DIR)
+      seedLSPConfig(WORKSPACE_DIR)
+      logTiming('Workspace defaults seeded')
     }
-    logTiming(`Template "${templateId}" not found, falling back to defaults`)
+  } else {
+    seedWorkspaceDefaults(WORKSPACE_DIR)
+    seedLSPConfig(WORKSPACE_DIR)
+    logTiming('Workspace defaults seeded')
   }
-
-  seedWorkspaceDefaults(WORKSPACE_DIR)
-  seedLSPConfig(WORKSPACE_DIR)
-  logTiming('Workspace defaults seeded')
 
   // Migrate legacy APP layout: if package.json exists at workspace root (no AGENTS.md),
   // this is a legacy APP project — move app files into project/ subdirectory
@@ -166,9 +169,39 @@ function ensureWorkspaceFiles(): void {
     logTiming('Migrated legacy APP layout into project/ subdirectory')
   }
 
-  // Seed runtime-template (Vite + React + Tailwind + shadcn/ui) if not already present.
-  // This provides the Vite project structure so `bun run build` works for canvas mode.
-  seedRuntimeTemplate(WORKSPACE_DIR)
+  // Seed tech stack if specified via env var or marker file.
+  // For backward compat: existing canvasMode 'code' projects without a tech stack get react-app.
+  const techStackMarker = join(WORKSPACE_DIR, '.tech-stack')
+  const techStackIdFromEnv = process.env.TECH_STACK_ID
+  const techStackIdFromFile = existsSync(techStackMarker) ? readFileSync(techStackMarker, 'utf-8').trim() : undefined
+  let techStackId = techStackIdFromEnv || techStackIdFromFile
+
+  if (!techStackId) {
+    for (const configCandidate of [join(WORKSPACE_DIR, 'config.json'), join(WORKSPACE_DIR, '.shogo', 'config.json')]) {
+      if (existsSync(configCandidate)) {
+        try {
+          const config = JSON.parse(readFileSync(configCandidate, 'utf-8'))
+          if (config.canvasMode === 'code') {
+            techStackId = 'react-app'
+            break
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+  }
+
+  if (techStackId) {
+    seedTechStack(WORKSPACE_DIR, techStackId)
+    logTiming(`Tech stack seeded: ${techStackId}`)
+  }
+
+  // Seed runtime-template (Vite + React + Tailwind + shadcn/ui) if not already present
+  // and the tech stack is a JS/Node-based stack (or react-app specifically).
+  // For non-JS stacks like python-data, we skip the runtime template.
+  const jsStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
+  if (!techStackId || jsStacks.has(techStackId)) {
+    seedRuntimeTemplate(WORKSPACE_DIR)
+  }
 }
 
 // AI proxy is configured by the shared framework (state.aiProxy)
@@ -2394,6 +2427,17 @@ async function initializeEssentials(): Promise<void> {
       logTiming('Workspace deps ready')
     } catch (err: any) {
       console.error('[agent-runtime] Workspace deps install failed:', err.message)
+    }
+  }
+
+  const techStackMarkerPath = join(WORKSPACE_DIR, '.tech-stack')
+  if (existsSync(techStackMarkerPath)) {
+    const stackId = readFileSync(techStackMarkerPath, 'utf-8').trim()
+    try {
+      await runTechStackSetup(WORKSPACE_DIR, stackId)
+      logTiming(`Tech stack setup complete: ${stackId}`)
+    } catch (err: any) {
+      console.error(`[agent-runtime] Tech stack setup failed for ${stackId}:`, err.message)
     }
   }
 

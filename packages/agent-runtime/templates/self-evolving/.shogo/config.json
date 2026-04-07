@@ -1,0 +1,10 @@
+{
+  "activeMode": "canvas",
+  "webEnabled": true,
+  "browserEnabled": true,
+  "shellEnabled": true,
+  "heartbeatEnabled": true,
+  "imageGenEnabled": true,
+  "memoryEnabled": true,
+  "quickActionsEnabled": true
+}

@@ -700,6 +700,12 @@ export default observer(function ProjectLayout() {
     }
   }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
 
+  const techStackId = projectSettings.techStackId as string | undefined
+
+  const handleTechStackChange = useCallback(async (stackId: string) => {
+    await updateProjectSettings({ techStackId: stackId })
+  }, [updateProjectSettings])
+
   const handleBuildPlan = useCallback((plan: any, agentMode: any) => {
     setBuildPlanRequest({ plan, agentMode, nonce: Date.now() })
     setActiveTab('chat')
@@ -1162,7 +1168,7 @@ export default observer(function ProjectLayout() {
             >
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
