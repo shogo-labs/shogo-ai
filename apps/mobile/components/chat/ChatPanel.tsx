@@ -2131,6 +2131,7 @@ export const ChatPanel = observer(function ChatPanel({
         return
       }
       setStoppedMessages(null)
+      setEmptyResponseError(null)
 
       const fileArray = files || []
 
