@@ -31,11 +31,9 @@ const config: ForgeConfig = {
     asar: true,
     ...(process.platform === 'darwin' && process.env.APPLE_ID ? {
       osxSign: {
-        optionsForFile: () => ({
-          hardenedRuntime: true,
-          entitlements: './entitlements.plist',
-          'entitlements-inherit': './entitlements.plist',
-        }),
+        hardenedRuntime: true,
+        entitlements: './entitlements.plist',
+        'entitlements-inherit': './entitlements.plist',
       },
       osxNotarize: {
         tool: 'notarytool' as const,
