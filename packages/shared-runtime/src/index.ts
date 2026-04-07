@@ -30,23 +30,8 @@ export {
 
 export {
   configureAIProxy,
-  buildClaudeCodeEnv,
   type AIProxyConfig,
 } from './ai-proxy'
-
-export {
-  createSessionManager,
-  type ModelTier,
-  type V2SessionOptions,
-  type SessionManagerOptions,
-  type SessionManager,
-} from './sdk-session'
-
-export {
-  streamSdkToUI,
-  type UIMessageStreamWriter,
-  type StreamSdkToUIOptions,
-} from './sdk-stream'
 
 export {
   initInstrumentation,

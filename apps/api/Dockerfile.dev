@@ -8,25 +8,14 @@
 # - Hot reloading via bun --watch
 # - RuntimeManager for project previews (spawns Vite processes)
 # - Prisma migrations on startup
-# - Claude Code CLI for AI agent capabilities
 # =============================================================================
 
 FROM oven/bun:1.3-alpine
 
 WORKDIR /app
 
-# Install system dependencies:
-# - curl: healthchecks
-# - nodejs npm: Claude Code CLI
-# - bash: shell for Claude Code
-# - git: for Claude Code agent operations
-RUN apk add --no-cache curl nodejs npm bash git
-
-# Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
-RUN npm install -g @anthropic-ai/claude-code
-
-# Set SHELL environment variable (required by Claude Code CLI)
-ENV SHELL=/bin/bash
+# Install system dependencies
+RUN apk add --no-cache curl bash git
 
 # Copy workspace root files
 COPY package.json bun.lock ./

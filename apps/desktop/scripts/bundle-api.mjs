@@ -68,7 +68,6 @@ const EXTERNAL_PACKAGES = [
   'prisma',
   'prisma-adapter-bun-sqlite',
   'sqlite-vec',
-  '@anthropic-ai/claude-agent-sdk',
 ]
 
 /**
@@ -118,7 +117,7 @@ function main() {
 
   // --- Step counter ---
   const externals = EXTERNAL_PACKAGES.map((p) => `--external ${p}`).join(' ')
-  const totalSteps = ENTRY_POINTS.length + 11
+  const totalSteps = ENTRY_POINTS.length + 10
   let step = 0
 
   const logStep = (label) => console.log(`[${++step}/${totalSteps}] ${label}`)
@@ -332,20 +331,6 @@ function main() {
     console.log(`  ✓ Copied ${copied} language grammar(s)`)
   } else {
     console.warn('  ⚠ tree-sitter-wasms package not found')
-  }
-
-  // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
-  logStep('Patching claude-agent-sdk...')
-  const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
-  if (fs.existsSync(patchScript)) {
-    try {
-      execSync(`bun run "${patchScript}"`, {
-        cwd: RESOURCES_DIR,
-        stdio: 'inherit',
-      })
-    } catch {
-      console.warn('  Patch script failed (non-fatal)')
-    }
   }
 
   // --- Prepare VM bundle (Linux bun, templates, wasm for VirtioFS mount) ---

@@ -21,8 +21,8 @@
  * mapping is detected by getProjectPodUrl, cleared, and a fresh warm pod
  * is assigned.
  *
- * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono, 
- * pre-warm Claude Code session, load deps into memory), and wait for assignment.
+ * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
+ * load deps into memory), and wait for assignment.
  */
 
 import * as k8s from '@kubernetes/client-node'
