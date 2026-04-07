@@ -22,12 +22,19 @@ OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
 CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/jammy/current"
 
+QEMU_ACCEL=""
+if [ -w /dev/kvm ]; then
+  QEMU_ACCEL="-accel kvm"
+  echo "KVM acceleration available"
+fi
+
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
     CLOUD_IMAGE="jammy-server-cloudimg-arm64.img"
     QEMU_SYSTEM="qemu-system-aarch64"
     QEMU_MACHINE="-machine virt -cpu cortex-a72"
+    QEMU_ACCEL=""  # KVM only works for native arch
     ;;
   x86_64|amd64)
     ARCH="x86_64"
@@ -175,8 +182,10 @@ else
 fi
 
 # Step 4: Boot and provision
-echo "Booting VM for provisioning (this takes a few minutes)..."
-timeout 600 $QEMU_SYSTEM \
+TIMEOUT=${QEMU_TIMEOUT:-1200}
+echo "Booting VM for provisioning (timeout: ${TIMEOUT}s)..."
+timeout "$TIMEOUT" $QEMU_SYSTEM \
+  $QEMU_ACCEL \
   $QEMU_MACHINE \
   -m 4096 -smp 4 \
   -drive file="${WORK_DIR}/disk.qcow2",if=virtio \
