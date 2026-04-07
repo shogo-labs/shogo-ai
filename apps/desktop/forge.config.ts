@@ -50,6 +50,9 @@ const config: ForgeConfig = {
     ignore: [
       /^\/src/,
       /^\/scripts/,
+      /^\/resources/,
+      /^\/native/,
+      /^\/prisma\/migrations/,
       /tsconfig\.json$/,
       /forge\.config\.ts$/,
     ],

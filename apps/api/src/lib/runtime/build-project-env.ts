@@ -8,6 +8,7 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
+import { getAgentModeOverrides } from '@shogo/model-catalog'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -59,6 +60,11 @@ export async function buildProjectEnv(
   env.AI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
   env.ANTHROPIC_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
+
+  // Inject admin-configured agent model overrides so the gateway resolves correctly
+  const modelOverrides = getAgentModeOverrides()
+  if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
+  if (modelOverrides.advanced) env.AGENT_ADVANCED_MODEL = modelOverrides.advanced
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET

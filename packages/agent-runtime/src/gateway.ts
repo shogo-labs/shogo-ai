@@ -45,6 +45,7 @@ import {
   inferProviderFromModel as catalogInferProvider,
   resolveModelId,
   AGENT_MODE_DEFAULTS,
+  setAgentModeOverrides,
 } from '@shogo/model-catalog'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
@@ -333,6 +334,14 @@ export class AgentGateway {
     this.sessionManager = new SessionManager(this.config.session)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
     this.skillServerManager = new SkillServerManager({ workspaceDir })
+
+    // Apply admin-configured agent model overrides from injected env vars
+    const envOverrides: Record<string, string> = {}
+    if (process.env.AGENT_BASIC_MODEL) envOverrides.basic = process.env.AGENT_BASIC_MODEL
+    if (process.env.AGENT_ADVANCED_MODEL) envOverrides.advanced = process.env.AGENT_ADVANCED_MODEL
+    if (Object.keys(envOverrides).length > 0) {
+      setAgentModeOverrides(envOverrides)
+    }
 
     // Initialize permission engine in local mode
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
