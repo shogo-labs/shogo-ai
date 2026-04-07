@@ -1592,6 +1592,7 @@ export const ChatPanel = observer(function ChatPanel({
       apiBaseUrl: API_URL!,
       platform: Platform.OS,
       getCookie: () => authClient.getCookie(),
+      chatSessionId: currentSessionId,
     })
     if (req) {
       const fetchFn = expoFetch || fetch
@@ -1599,7 +1600,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn("[ChatPanel] Failed to send stop signal to backend:", err)
       })
     }
-  }, [stop, projectId, localAgentUrl, expoFetch])
+  }, [stop, projectId, localAgentUrl, expoFetch, currentSessionId])
 
   // Idle timeout to force-complete hung streams
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
