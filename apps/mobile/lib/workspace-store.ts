@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
+import { safeGetItem, safeSetItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo:active-workspace-id'
 
@@ -10,7 +11,7 @@ export function getActiveWorkspaceId(): string | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
     return nativeActiveWorkspaceId
   }
-  return window.localStorage.getItem(STORAGE_KEY)
+  return safeGetItem(STORAGE_KEY)
 }
 
 export function setActiveWorkspaceId(id: string): void {
@@ -18,5 +19,5 @@ export function setActiveWorkspaceId(id: string): void {
     nativeActiveWorkspaceId = id
     return
   }
-  window.localStorage.setItem(STORAGE_KEY, id)
+  safeSetItem(STORAGE_KEY, id)
 }

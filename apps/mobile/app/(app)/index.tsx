@@ -38,6 +38,7 @@ import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useT
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
@@ -250,8 +251,8 @@ const HomeScreen = observer(function HomeScreen() {
 
   // Deep-link: auto-create project from pending template (website referral)
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return
-    const pendingId = localStorage.getItem('pending_template_id')
+    if (Platform.OS !== 'web') return
+    const pendingId = safeGetItem('pending_template_id')
     if (!pendingId || !currentWorkspace?.id || !user?.id) return
     if (homeTemplates.length === 0) return
 
@@ -262,18 +263,18 @@ const HomeScreen = observer(function HomeScreen() {
         const all = Array.isArray(raw) ? raw : []
         const found = all.find((t: AgentTemplate) => t.id === pendingId)
         if (found) {
-          localStorage.removeItem('pending_template_id')
+          safeRemoveItem('pending_template_id')
           handleTemplatePress(found)
         } else {
-          localStorage.removeItem('pending_template_id')
+          safeRemoveItem('pending_template_id')
         }
       }).catch(() => {
-        localStorage.removeItem('pending_template_id')
+        safeRemoveItem('pending_template_id')
       })
       return
     }
 
-    localStorage.removeItem('pending_template_id')
+    safeRemoveItem('pending_template_id')
     handleTemplatePress(template)
   }, [homeTemplates, currentWorkspace?.id, user?.id])
 
