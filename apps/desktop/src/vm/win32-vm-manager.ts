@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -9,13 +9,19 @@ import type { VMManager, VMConfig, VMHandle } from './types'
 import { VM_DEFAULTS } from './types'
 import { QMPClient } from './qmp-client'
 import { generateSeedISO } from './cloud-init'
+import { isNoisyVMLine } from './vm-log-filter'
 
 /**
- * Windows VM Manager using bundled QEMU with WHPX acceleration.
+ * Windows VM Manager using QEMU with WHPX acceleration.
  *
- * Each VM runs a single agent-runtime process in pool mode (the equivalent
- * of a K8s pod). QEMU manages the VM lifecycle, 9p for file sharing,
- * and SLIRP user-mode networking with port forwarding.
+ * Architecture:
+ * - Pre-provisioned base image (rootfs-provisioned.qcow2) has bun, node,
+ *   git, gh, skill-server deps already installed.
+ * - Each VM gets a qcow2 overlay (copy-on-write) from the base.
+ * - Agent-runtime bundle (server.js, shogo.js) is embedded in the seed ISO
+ *   and copied into /opt/shogo at boot by cloud-init.
+ * - No file sharing needed (no 9p, VirtioFS, or VFAT).
+ * - SLIRP networking with dynamic port forwarding.
  */
 export class Win32VMManager implements VMManager {
   private qemuProcess: ChildProcess | null = null
@@ -35,34 +41,40 @@ export class Win32VMManager implements VMManager {
     const dataDir = this.getVMDataDir(vmId)
     fs.mkdirSync(dataDir, { recursive: true })
 
-    const seedISOPath = path.join(dataDir, 'seed.iso')
-    const credentialMounts = this.resolveCredentialMounts(config.credentialDirs)
-
-    generateSeedISO(seedISOPath, {
-      guestAgentPort: VM_DEFAULTS.guestAgentPort,
-      workspaceMountTag: 'workspace',
-      credentialMounts: credentialMounts.map(m => ({
-        tag: m.tag,
-        guestPath: m.guestPath,
-      })),
-    })
-
     this.ensureOverlay(config.overlayPath)
 
-    const qmpPipePath = `\\\\.\\pipe\\shogo-vm-${vmId}`
+    const qmpPort = await this.findFreePort(44440)
+    const agentHostPort = await this.findFreePort(37100)
+    const skillHostPort = config.skillServerHostPort || await this.findFreePort(38100)
 
-    // Forward the guest agent-runtime port to a host port via SLIRP
-    const agentHostPort = VM_DEFAULTS.agentTcpPort
+    // Build extra files to embed in the seed ISO.
+    // If bundleFiles were provided explicitly (eval path), use them directly.
+    // Otherwise, auto-read from bundleDir (local mode / desktop app path).
+    const extraFiles: Array<{ name: string; content: Buffer }> = []
+    const bundleFiles = config.bundleFiles ?? this.readBundleDir(config.bundleDir)
+    for (const [name, content] of Object.entries(bundleFiles)) {
+      extraFiles.push({ name, content: typeof content === 'string' ? Buffer.from(content) : content })
+    }
+
+    const seedISOPath = path.join(dataDir, 'seed.iso')
+    generateSeedISO(seedISOPath, {
+      guestAgentPort: VM_DEFAULTS.guestAgentPort,
+      useBundleMount: false,
+      env: config.env,
+      qemuDir: path.dirname(this.qemuPath),
+      extraFiles,
+    })
+
     const hostFwds = [
       `hostfwd=tcp::${agentHostPort}-:${VM_DEFAULTS.guestAgentPort}`,
+      `hostfwd=tcp::${skillHostPort}-:${VM_DEFAULTS.guestSkillPort}`,
     ]
 
     const qemuArgs = this.buildQemuArgs({
       config,
       overlayPath: config.overlayPath,
       seedISOPath,
-      qmpPipePath,
-      credentialMounts,
+      qmpPort,
       hostFwds,
     })
 
@@ -71,20 +83,48 @@ export class Win32VMManager implements VMManager {
       windowsHide: true,
     })
 
+    let accelReported = false
+    let stdoutBuf = ''
+    let stderrBuf = ''
+
     this.qemuProcess.stdout?.on('data', (data: Buffer) => {
-      console.log(`[QEMU] ${data.toString().trim()}`)
+      stdoutBuf += data.toString()
+      let nl: number
+      while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        stdoutBuf = stdoutBuf.slice(nl + 1)
+        const t = line.trim()
+        if (!t || isNoisyVMLine(t)) continue
+        console.log(`[QEMU] ${t}`)
+      }
     })
     this.qemuProcess.stderr?.on('data', (data: Buffer) => {
-      console.error(`[QEMU] ${data.toString().trim()}`)
+      stderrBuf += data.toString()
+      let nl: number
+      while ((nl = stderrBuf.indexOf('\n')) !== -1) {
+        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        stderrBuf = stderrBuf.slice(nl + 1)
+        const t = line.trim()
+        if (!t || isNoisyVMLine(t)) continue
+        if (!accelReported && /WHPX|TCG|KVM/.test(t)) {
+          accelReported = true
+          if (/TCG/.test(t) && !/WHPX/.test(t)) {
+            console.warn('[QEMU] WARNING: Running with TCG (software emulation) — enable Hyper-V for WHPX acceleration')
+          }
+        }
+        console.error(`[QEMU] ${t}`)
+      }
     })
 
     this.qemuProcess.on('exit', (code) => {
+      if (stdoutBuf.trim()) console.log(`[QEMU] ${stdoutBuf.trim()}`)
+      if (stderrBuf.trim()) console.error(`[QEMU] ${stderrBuf.trim()}`)
       console.log(`[QEMU] Process exited with code ${code}`)
       this.vmRunning = false
     })
 
     await this.sleep(1000)
-    this.qmpClient = new QMPClient(qmpPipePath)
+    this.qmpClient = new QMPClient(qmpPort)
 
     let connected = false
     for (let i = 0; i < 30; i++) {
@@ -106,6 +146,7 @@ export class Win32VMManager implements VMManager {
     return {
       id: vmId,
       agentUrl: `http://localhost:${agentHostPort}`,
+      skillServerPort: skillHostPort,
       pid: this.qemuProcess.pid!,
       platform: 'win32',
     }
@@ -113,16 +154,12 @@ export class Win32VMManager implements VMManager {
 
   async stopVM(_handle: VMHandle): Promise<void> {
     if (!this.vmRunning) return
-
     try {
       if (this.qmpClient) {
         await this.qmpClient.shutdown()
         await this.waitForExit(VM_DEFAULTS.shutdownTimeoutMs)
       }
-    } catch {
-      // force kill
-    }
-
+    } catch {}
     this.cleanup()
   }
 
@@ -142,112 +179,97 @@ export class Win32VMManager implements VMManager {
     this.portForwards.delete(hostPort)
   }
 
+  // -------------------------------------------------------------------------
+
   private buildQemuArgs(opts: {
     config: VMConfig
     overlayPath: string
     seedISOPath: string
-    qmpPipePath: string
-    credentialMounts: Array<{ tag: string; hostPath: string; guestPath: string }>
+    qmpPort: number
     hostFwds: string[]
   }): string[] {
-    const { config, overlayPath, seedISOPath, qmpPipePath, credentialMounts, hostFwds } = opts
+    const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
 
-    const args = [
+    return [
       '-accel', 'whpx', '-accel', 'tcg',
-      '-machine', 'q35', '-cpu', 'max',
+      '-machine', 'q35', '-cpu', 'Broadwell-v4',
       '-m', String(config.memoryMB),
       '-smp', String(config.cpus),
       '-kernel', path.join(this.vmImageDir, 'vmlinuz'),
       '-initrd', path.join(this.vmImageDir, 'initrd.img'),
-      '-append', 'root=/dev/vda1 console=ttyS0 quiet',
-      '-drive', `file=${overlayPath},if=virtio,format=qcow2`,
-    ]
-
-    if (fs.existsSync(seedISOPath)) {
-      args.push('-drive', `file=${seedISOPath},if=virtio,format=raw,readonly=on`)
-    }
-
-    args.push(
-      '-virtfs', `local,path=${config.workspaceDir},mount_tag=workspace,security_model=mapped-xattr,id=workspace`
-    )
-
-    for (const mount of credentialMounts) {
-      args.push(
-        '-virtfs', `local,path=${mount.hostPath},mount_tag=${mount.tag},security_model=none,readonly=on,id=${mount.tag}`
-      )
-    }
-
-    args.push(
+      '-append', 'root=LABEL=cloudimg-rootfs console=ttyS0 ds=nocloud quiet',
+      '-drive', `file=${overlayPath},if=virtio,format=qcow2,cache=writeback`,
+      ...(fs.existsSync(seedISOPath) ? ['-cdrom', seedISOPath] : []),
       '-netdev', `user,id=net0,${hostFwds.join(',')}`,
       '-device', 'virtio-net-pci,netdev=net0',
-    )
-
-    args.push('-qmp', `pipe:${qmpPipePath}`)
-    args.push('-nographic')
-
-    return args
-  }
-
-  private resolveCredentialMounts(dirs: string[]): Array<{ tag: string; hostPath: string; guestPath: string }> {
-    const mounts: Array<{ tag: string; hostPath: string; guestPath: string }> = []
-    const home = process.env.USERPROFILE || process.env.HOME || ''
-
-    for (const dir of dirs) {
-      const expanded = dir.replace(/^~/, home)
-      if (!fs.existsSync(expanded)) continue
-
-      const basename = path.basename(expanded).replace(/^\./, '')
-      let guestPath: string
-
-      switch (basename) {
-        case 'ssh': guestPath = '/home/shogo/.ssh'; break
-        case 'gitconfig': guestPath = '/home/shogo/.gitconfig'; break
-        case 'gh': guestPath = '/home/shogo/.config/gh'; break
-        default: guestPath = `/home/shogo/.${basename}`; break
-      }
-
-      mounts.push({ tag: basename, hostPath: expanded, guestPath })
-    }
-
-    return mounts
+      '-qmp', `tcp:127.0.0.1:${qmpPort},server=on,wait=off`,
+      '-nographic',
+    ]
   }
 
   private ensureOverlay(overlayPath: string): void {
     if (fs.existsSync(overlayPath)) return
 
-    const parentDir = path.dirname(overlayPath)
-    fs.mkdirSync(parentDir, { recursive: true })
+    fs.mkdirSync(path.dirname(overlayPath), { recursive: true })
 
+    const provisionedImage = path.join(this.vmImageDir, 'rootfs-provisioned.qcow2')
     const baseImage = path.join(this.vmImageDir, 'rootfs.qcow2')
-    if (!fs.existsSync(baseImage)) {
-      throw new Error(`Base VM image not found: ${baseImage}`)
-    }
+    const source = fs.existsSync(provisionedImage) ? provisionedImage : baseImage
+
+    if (!fs.existsSync(source)) throw new Error(`Base VM image not found: ${source}`)
 
     const qemuImg = path.join(path.dirname(this.qemuPath), 'qemu-img.exe')
-    const { execSync } = require('child_process')
-    try {
-      execSync(
-        `"${qemuImg}" create -f qcow2 -b "${baseImage}" -F qcow2 "${overlayPath}"`,
-        { stdio: 'pipe', timeout: 10000 }
-      )
-    } catch (err: any) {
-      throw new Error(`Failed to create qcow2 overlay: ${err.message}`)
-    }
+    execSync(`"${qemuImg}" create -f qcow2 -b "${source}" -F qcow2 "${overlayPath}"`, { stdio: 'pipe', timeout: 10000 })
+    execSync(`"${qemuImg}" resize "${overlayPath}" 10G`, { stdio: 'pipe', timeout: 10000 })
   }
 
   private getVMDataDir(vmId: string): string {
-    const { app } = require('electron')
-    return path.join(app.getPath('userData'), 'vm-data', vmId)
+    try {
+      const { app } = require('electron')
+      return path.join(app.getPath('userData'), 'vm-data', vmId)
+    } catch {
+      return path.join(require('os').tmpdir(), 'shogo-vm-data', vmId)
+    }
+  }
+
+  /**
+   * Read bundle files from a host directory for ISO embedding.
+   * Used in local mode when bundleDir is provided instead of bundleFiles.
+   */
+  private readBundleDir(bundleDir?: string): Record<string, Buffer> {
+    if (!bundleDir || !fs.existsSync(bundleDir)) return {}
+
+    const files: Record<string, Buffer> = {}
+    for (const name of ['server.js', 'shogo.js']) {
+      const p = path.join(bundleDir, name)
+      if (fs.existsSync(p)) files[name] = fs.readFileSync(p)
+    }
+
+    // tree-sitter.wasm for code parsing (avoids crash from hardcoded build paths)
+    const wasmPath = path.join(bundleDir, 'wasm', 'tree-sitter.wasm')
+    if (fs.existsSync(wasmPath)) {
+      files['tree-sitter.wasm'] = fs.readFileSync(wasmPath)
+    } else {
+      // Fall back to searching node_modules
+      const bunModBase = path.join(bundleDir, '..', '..', 'node_modules', '.bun')
+      if (fs.existsSync(bunModBase)) {
+        try {
+          for (const entry of fs.readdirSync(bunModBase, { withFileTypes: true })) {
+            if (entry.isDirectory() && entry.name.startsWith('web-tree-sitter@')) {
+              const candidate = path.join(bunModBase, entry.name, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')
+              if (fs.existsSync(candidate)) { files['tree-sitter.wasm'] = fs.readFileSync(candidate); break }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return files
   }
 
   private cleanup(): void {
-    if (this.qmpClient) {
-      this.qmpClient.disconnect()
-      this.qmpClient = null
-    }
-    if (this.qemuProcess && !this.qemuProcess.killed) {
-      this.qemuProcess.kill('SIGTERM')
-    }
+    if (this.qmpClient) { this.qmpClient.disconnect(); this.qmpClient = null }
+    if (this.qemuProcess && !this.qemuProcess.killed) this.qemuProcess.kill('SIGTERM')
     this.qemuProcess = null
     this.vmRunning = false
     this.portForwards.clear()
@@ -257,17 +279,25 @@ export class Win32VMManager implements VMManager {
     return new Promise((resolve) => {
       if (!this.qemuProcess) { resolve(); return }
       const timeout = setTimeout(() => {
-        if (this.qemuProcess && !this.qemuProcess.killed) {
-          this.qemuProcess.kill('SIGKILL')
-        }
+        if (this.qemuProcess && !this.qemuProcess.killed) this.qemuProcess.kill('SIGKILL')
         resolve()
       }, timeoutMs)
-
-      this.qemuProcess.on('exit', () => {
-        clearTimeout(timeout)
-        resolve()
-      })
+      this.qemuProcess.on('exit', () => { clearTimeout(timeout); resolve() })
     })
+  }
+
+  private async findFreePort(preferred: number): Promise<number> {
+    const { createServer } = require('net')
+    for (let port = preferred; port < preferred + 100; port++) {
+      const ok = await new Promise<boolean>(resolve => {
+        const s = createServer()
+        s.once('error', () => resolve(false))
+        s.once('listening', () => { s.close(() => resolve(true)) })
+        s.listen(port, '127.0.0.1')
+      })
+      if (ok) return port
+    }
+    throw new Error(`No free port found near ${preferred}`)
   }
 
   private sleep(ms: number): Promise<void> {

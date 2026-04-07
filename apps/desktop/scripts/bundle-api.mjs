@@ -189,7 +189,7 @@ function main() {
   if (!skipInstall) {
     const isWindows = process.platform === 'win32'
     const installCmd = isWindows
-      ? 'bun install --production --linker=isolated'
+      ? 'npm install --omit=dev'
       : 'bun install --production'
     console.log(`  Running: ${installCmd}`)
     execSync(installCmd, {

@@ -6235,12 +6235,17 @@ if (isVMIsolation() && !isKubernetes()) {
       const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
 
       // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
-      // The VZ network gateway is typically 192.168.64.1 on macOS.
+      // macOS VZ: gateway is typically 192.168.64.1
+      // Windows QEMU SLIRP: gateway is always 10.0.2.2
       if (!process.env.API_HOST) {
-        const nets = os.networkInterfaces()
-        const bridge = nets['bridge100'] || nets['en0'] || []
-        const hostIp = bridge.find((n: any) => n.family === 'IPv4' && !n.internal)?.address
-        if (hostIp) process.env.API_HOST = hostIp
+        if (process.platform === 'win32') {
+          process.env.API_HOST = '10.0.2.2'
+        } else {
+          const nets = os.networkInterfaces()
+          const bridge = nets['bridge100'] || nets['en0'] || []
+          const hostIp = bridge.find((n: any) => n.family === 'IPv4' && !n.internal)?.address
+          if (hostIp) process.env.API_HOST = hostIp
+        }
       }
       const overlayDir = path.join(dataDir, 'vm-overlays')
       const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
@@ -6248,12 +6253,12 @@ if (isVMIsolation() && !isKubernetes()) {
 
       // Fire-and-forget: create a provisioned base image for instant cloning.
       // This can take minutes on first run — must not block warm pool init.
-      if (process.platform === 'darwin' && bundleDir) {
+      if (bundleDir) {
         (async () => {
           try {
-            const provisionMgr = vmModule.createVMManager() as InstanceType<typeof vmModule.DarwinVMManager>
+            const provisionMgr = vmModule.createVMManager()
             if ('ensureProvisionedBase' in provisionMgr) {
-              await provisionMgr.ensureProvisionedBase(bundleDir)
+              await (provisionMgr as any).ensureProvisionedBase(bundleDir)
             }
           } catch (err: any) {
             console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)

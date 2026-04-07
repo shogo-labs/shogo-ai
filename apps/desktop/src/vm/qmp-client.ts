@@ -35,11 +35,14 @@ export class QMPClient {
   private queue: PendingCommand[] = []
   private onReady: (() => void) | null = null
 
-  constructor(private pipePath: string) {}
+  /** Accept either a pipe path (string) or TCP port number */
+  constructor(private target: string | number) {}
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.socket = connect(this.pipePath)
+      this.socket = typeof this.target === 'number'
+        ? connect({ host: '127.0.0.1', port: this.target })
+        : connect(this.target)
 
       this.socket.on('error', (err) => {
         if (!this.ready) reject(err)
