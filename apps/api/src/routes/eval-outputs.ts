@@ -48,20 +48,14 @@ export function evalOutputRoutes() {
       }) ?? runDir.name
 
       const runPath = join(EVAL_OUTPUTS_DIR, runDir.name)
-      const evalDirs = readdirSync(runPath, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-
       const entries: EvalOutputEntry[] = []
 
-      for (const evalDir of evalDirs) {
-        const templatePath = join(runPath, evalDir.name, 'template.json')
-        if (!existsSync(templatePath)) continue
-
+      function pushEntry(relPath: string, folderName: string, templatePath: string) {
         try {
           const meta = JSON.parse(readFileSync(templatePath, 'utf-8'))
           entries.push({
-            id: meta.id ?? evalDir.name,
-            name: meta.name ?? evalDir.name,
+            id: meta.id ?? folderName,
+            name: meta.name ?? folderName,
             description: meta.description ?? '',
             icon: meta.icon ?? '?',
             passed: meta.eval?.passed ?? false,
@@ -71,10 +65,31 @@ export function evalOutputRoutes() {
               percentage: meta.eval?.percentage ?? 0,
             },
             tags: meta.tags ?? [],
-            path: `${runDir.name}/${evalDir.name}`,
+            path: relPath,
           })
         } catch {
           // skip malformed entries
+        }
+      }
+
+      // Legacy layout: <run>/<evalId>/template.json
+      const topDirs = readdirSync(runPath, { withFileTypes: true }).filter(d => d.isDirectory())
+      for (const evalDir of topDirs) {
+        if (evalDir.name === 'workspaces' || evalDir.name === 'logs') continue
+        const templatePath = join(runPath, evalDir.name, 'template.json')
+        if (!existsSync(templatePath)) continue
+        pushEntry(`${runDir.name}/${evalDir.name}`, evalDir.name, templatePath)
+      }
+
+      // Current run-eval layout: <run>/workspaces/<evalId>/template.json
+      const workspacesRoot = join(runPath, 'workspaces')
+      if (existsSync(workspacesRoot)) {
+        for (const evalDir of readdirSync(workspacesRoot, { withFileTypes: true }).filter(
+          d => d.isDirectory(),
+        )) {
+          const templatePath = join(workspacesRoot, evalDir.name, 'template.json')
+          if (!existsSync(templatePath)) continue
+          pushEntry(`${runDir.name}/workspaces/${evalDir.name}`, evalDir.name, templatePath)
         }
       }
 
