@@ -35,6 +35,7 @@ const config: ForgeConfig = {
       './resources/bun',
       './resources/web',
       './resources/bundle',
+      './resources/vm-bundle',
       './resources/node_modules',
       './resources/templates',
       './resources/runtime-template',

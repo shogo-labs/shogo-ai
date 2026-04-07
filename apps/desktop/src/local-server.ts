@@ -214,7 +214,7 @@ function getVMImageDir(): string {
 
 function getVMBundleDir(projectRoot: string, bundleDir: string, isDev: boolean): string {
   if (isDev) return ''
-  return bundleDir
+  return path.join(projectRoot, 'vm-bundle')
 }
 
 function isVMIsolationEnabled(): boolean {
