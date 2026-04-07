@@ -66,9 +66,16 @@ const dataDir = getArg(args, 'data', resolve(REPO_ROOT, '.swe-bench/data'))!
 const repoCache = getArg(args, 'repos', resolve(REPO_ROOT, '.swe-bench/repos'))!
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
+const vmFlag = args.includes('--vm')
 const gradeFlag = args.includes('--grade')
 const gradeOnlyFlag = args.includes('--grade-only')
 const noSweImagesFlag = args.includes('--no-swe-images')
+
+if (vmFlag) {
+  console.error('ERROR: --vm is not supported for swe-bench (requires Docker for SWE-bench images and docker exec).')
+  console.error('Use --vm with run-eval.ts instead.')
+  process.exit(1)
+}
 const predictionsArg = getArg(args, 'predictions')
 
 const BASE_PORT = 7200

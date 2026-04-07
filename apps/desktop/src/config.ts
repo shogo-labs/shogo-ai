@@ -4,14 +4,28 @@ import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 
+export interface VMIsolationConfig {
+  enabled: boolean | 'auto'
+  memoryMB: number
+  cpus: number
+}
+
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
   cloudUrl: string
+  vmIsolation: VMIsolationConfig
+}
+
+const DEFAULT_VM_CONFIG: VMIsolationConfig = {
+  enabled: 'auto',
+  memoryMB: 4096,
+  cpus: 0,  // 0 = auto (half physical cores)
 }
 
 const DEFAULT_CONFIG: DesktopConfig = {
   mode: 'local',
   cloudUrl: 'https://studio.shogo.ai',
+  vmIsolation: { ...DEFAULT_VM_CONFIG },
 }
 
 function getConfigPath(): string {
@@ -27,6 +41,12 @@ export function readConfig(): DesktopConfig {
       cloudUrl: typeof parsed.cloudUrl === 'string' && parsed.cloudUrl
         ? parsed.cloudUrl
         : DEFAULT_CONFIG.cloudUrl,
+      vmIsolation: {
+        ...DEFAULT_VM_CONFIG,
+        ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null
+          ? parsed.vmIsolation
+          : {}),
+      },
     }
   } catch {
     return { ...DEFAULT_CONFIG }

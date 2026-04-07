@@ -75,6 +75,7 @@ let runtimeManager: IRuntimeManager | null = null
 
 // Environment detection - check if running in Kubernetes
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
+const isVMIsolation = () => process.env.SHOGO_VM_ISOLATION === 'true'
 
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
@@ -6220,6 +6221,79 @@ if (isKubernetes()) {
       startAnalyticsDigestCollector(prisma)
     } catch (err: any) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
+    }
+  }, 2000)
+}
+
+// Start VM warm pool controller (desktop VM isolation mode)
+if (isVMIsolation() && !isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { initVMWarmPool } = await import('./lib/vm-warm-pool-controller')
+      const vmModule = await import('../../desktop/src/vm/index')
+
+      const os = await import('os')
+      const path = await import('path')
+      const crypto = await import('crypto')
+      const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
+      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(__dirname, '../../../workspaces')
+      const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
+
+      // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
+      // macOS VZ: gateway is typically 192.168.64.1
+      // Windows QEMU SLIRP: gateway is always 10.0.2.2
+      if (!process.env.API_HOST) {
+        if (process.platform === 'win32') {
+          process.env.API_HOST = '10.0.2.2'
+        } else {
+          const nets = os.networkInterfaces()
+          const bridge = nets['bridge100'] || nets['en0'] || []
+          const hostIp = bridge.find((n: any) => n.family === 'IPv4' && !n.internal)?.address
+          if (hostIp) process.env.API_HOST = hostIp
+        }
+      }
+      const overlayDir = path.join(dataDir, 'vm-overlays')
+      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
+      const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
+
+      // Fire-and-forget: create a provisioned base image for instant cloning.
+      // This can take minutes on first run — must not block warm pool init.
+      if (bundleDir) {
+        (async () => {
+          try {
+            const provisionMgr = vmModule.createVMManager()
+            if ('ensureProvisionedBase' in provisionMgr) {
+              await (provisionMgr as any).ensureProvisionedBase(bundleDir)
+            }
+          } catch (err: any) {
+            console.error('[VMWarmPool] Provisioned base creation failed (non-fatal):', err.message)
+          }
+        })()
+      }
+
+      // Factory: each pool VM gets its own DarwinVMManager instance
+      const managerFactory = () => vmModule.createVMManager()
+
+      const memoryMB = parseInt(process.env.VM_MEMORY_MB || '4096', 10)
+      const cpus = parseInt(process.env.VM_CPUS || String(Math.max(2, Math.floor(os.cpus().length / 2))), 10)
+
+      await initVMWarmPool(managerFactory, {
+        workspaceDir: workspacesDir,
+        credentialDirs: [
+          path.join(home, '.ssh'),
+          path.join(home, '.gitconfig'),
+          path.join(home, '.config', 'gh'),
+        ],
+        memoryMB,
+        cpus,
+        networkEnabled: true,
+        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.raw`),
+        vmImageDir,
+        bundleDir: bundleDir || undefined,
+      })
+      console.log('[VMWarmPool] VM warm pool controller started')
+    } catch (err: any) {
+      console.error('[VMWarmPool] Failed to start VM warm pool controller (non-fatal):', err.message)
     }
   }, 2000)
 }

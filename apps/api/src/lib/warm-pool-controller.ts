@@ -28,7 +28,6 @@
 import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
-import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
 
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
@@ -1318,59 +1317,11 @@ export class WarmPoolController {
 
   /**
    * Build the environment variables needed for assigning a project to a warm pod.
-   * This gathers everything a project pod needs: DATABASE_URL, AI_PROXY_TOKEN, S3 config, etc.
+   * Delegates to the shared utility used by both K8s and VM warm pools.
    */
   async buildProjectEnv(projectId: string): Promise<Record<string, string>> {
-    const startTime = Date.now()
-    const env: Record<string, string> = {
-      PROJECT_ID: projectId,
-    }
-
-    // AI Proxy token
-    const tokenStart = Date.now()
-    try {
-      const { prisma } = await import('./prisma')
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true, templateId: true, name: true },
-      })
-      if (project) {
-        if (project.templateId) env.TEMPLATE_ID = project.templateId
-        if (project.name) env.AGENT_NAME = project.name
-        const { getProjectOwnerUserId } = await import('./project-user-context')
-        const ownerUserId = await getProjectOwnerUserId(projectId)
-        env.AI_PROXY_TOKEN = await generateProxyToken(
-          projectId,
-          project.workspaceId,
-          ownerUserId,
-          7 * 24 * 60 * 60 * 1000
-        )
-      }
-    } catch (err: any) {
-      console.error(`[WarmPool] Failed to generate proxy token for ${projectId}:`, err.message)
-    }
-    console.log(`[WarmPool] buildProjectEnv: proxy token took ${Date.now() - tokenStart}ms`)
-
-    // Dev projects use SQLite — no external database provisioning needed
-    console.log(`[WarmPool] buildProjectEnv: dev project uses SQLite — no DB provisioning`)
-
-    // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
-    const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
-    env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
-    env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
-
-    // S3 config
-    if (process.env.S3_WORKSPACES_BUCKET) {
-      env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET
-      env.S3_REGION = process.env.S3_REGION || 'us-east-1'
-      env.S3_WATCH_ENABLED = 'true'
-      env.S3_SYNC_INTERVAL = '30000'
-      if (process.env.S3_ENDPOINT) env.S3_ENDPOINT = process.env.S3_ENDPOINT
-      if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
-    }
-
-    console.log(`[WarmPool] buildProjectEnv: total ${Date.now() - startTime}ms for ${projectId}`)
-    return env
+    const { buildProjectEnv } = await import('./runtime/build-project-env')
+    return buildProjectEnv(projectId, { logPrefix: 'WarmPool' })
   }
 
   /**

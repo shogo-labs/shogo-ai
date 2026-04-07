@@ -40,6 +40,7 @@ const config: ForgeConfig = {
       './resources/runtime-template',
       './resources/canvas-runtime',
       './resources/tree-sitter-wasm',
+      './resources/vm',
       './resources/seed.db',
       './resources/package.json',
       './prisma',
@@ -55,7 +56,7 @@ const config: ForgeConfig = {
   makers: [
     {
       name: '@electron-forge/maker-zip',
-      platforms: ['win32'],
+      platforms: ['darwin', 'win32'],
     },
     {
       name: '@electron-forge/maker-dmg',

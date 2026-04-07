@@ -151,6 +151,10 @@ apps/desktop/resources/package.json
 apps/desktop/resources/bun.lock
 apps/desktop/resources/tsconfig.base.json
 apps/desktop/resources/prisma.config.local.ts
+apps/desktop/resources/package-lock.json
+apps/desktop/resources/tree-sitter-wasm/
+apps/desktop/resources/vm-bundle/
+apps/desktop/resources/vm/
 apps/desktop/local-server.js
 
 # Local SQLite databases
