@@ -13,6 +13,9 @@
  */
 
 import { buildProjectEnv } from './runtime/build-project-env'
+import fs from 'fs'
+import path from 'path'
+import { execSync } from 'child_process'
 
 const POOL_SIZE = parseInt(process.env.VM_POOL_SIZE || '1', 10)
 const RECONCILE_INTERVAL_MS = parseInt(process.env.VM_POOL_RECONCILE_INTERVAL || '30000', 10)
@@ -56,6 +59,7 @@ export class VMWarmPoolController {
   private assigned = new Map<string, VMPodInfo>()
   private vmHandles = new Map<string, VMManagerHandle>()
   private vmManagers = new Map<string, VMManagerInterface>()
+  private vmOverlayPaths = new Map<string, string>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
   private started = false
   private managerFactory: VMManagerFactory
@@ -75,6 +79,23 @@ export class VMWarmPoolController {
     this.started = true
 
     console.log(`[VMWarmPool] Starting VM warm pool controller (poolSize: ${this.poolSize})`)
+
+    // Kill orphaned VM helper processes from a previous server session
+    try { execSync('pkill -f shogo-vm', { stdio: 'pipe' }) } catch {}
+
+    // Purge stale overlay disk images from previous sessions
+    if (this.vmConfig.overlayPath) {
+      const overlayDir = path.dirname(this.vmConfig.overlayPath)
+      if (fs.existsSync(overlayDir)) {
+        let purged = 0
+        for (const f of fs.readdirSync(overlayDir)) {
+          if (f.endsWith('.raw') || f.endsWith('.qcow2')) {
+            try { fs.rmSync(path.join(overlayDir, f), { force: true }); purged++ } catch {}
+          }
+        }
+        if (purged > 0) console.log(`[VMWarmPool] Purged ${purged} stale overlay(s) from ${overlayDir}`)
+      }
+    }
 
     await this.reconcile().catch((err) => {
       console.error('[VMWarmPool] Initial reconciliation failed:', err.message)
@@ -100,6 +121,10 @@ export class VMWarmPoolController {
       if (mgr) stops.push(mgr.stopVM(handle).catch(() => {}))
     }
     await Promise.allSettled(stops)
+
+    for (const vmId of this.vmOverlayPaths.keys()) {
+      this.cleanupOverlay(vmId)
+    }
 
     this.available.clear()
     this.assigned.clear()
@@ -193,6 +218,7 @@ export class VMWarmPoolController {
         console.error(`[VMWarmPool] Error stopping evicted VM ${pod.vmId}:`, err.message)
       })
     }
+    this.cleanupOverlay(pod.vmId)
     this.vmHandles.delete(pod.vmId)
     this.vmManagers.delete(pod.vmId)
     console.log(`[VMWarmPool] Evicted VM ${pod.vmId} for project ${projectId}`)
@@ -211,6 +237,7 @@ export class VMWarmPoolController {
         if (handle && mgr) {
           mgr.stopVM(handle).catch(() => {})
         }
+        this.cleanupOverlay(pod.vmId)
         this.vmHandles.delete(pod.vmId)
         this.vmManagers.delete(pod.vmId)
       }
@@ -252,6 +279,7 @@ export class VMWarmPoolController {
       const handle = await mgr.startVM(config)
       this.vmHandles.set(handle.id, handle)
       this.vmManagers.set(handle.id, mgr)
+      if (config.overlayPath) this.vmOverlayPaths.set(handle.id, config.overlayPath)
 
       await this.waitForHealth(handle.agentUrl)
 
@@ -281,6 +309,14 @@ export class VMWarmPoolController {
       await new Promise(r => setTimeout(r, HEALTH_CHECK_INTERVAL_MS))
     }
     throw new Error(`VM agent-runtime failed to become healthy after ${HEALTH_CHECK_RETRIES} retries`)
+  }
+
+  private cleanupOverlay(vmId: string): void {
+    const overlayPath = this.vmOverlayPaths.get(vmId)
+    if (overlayPath) {
+      try { fs.rmSync(overlayPath, { force: true }) } catch {}
+      this.vmOverlayPaths.delete(vmId)
+    }
   }
 
   getStatus() {
