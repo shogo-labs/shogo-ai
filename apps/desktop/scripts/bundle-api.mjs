@@ -59,6 +59,7 @@ const ITEMS_TO_CLEAN = [
  * These are kept as external imports and installed in a minimal node_modules.
  */
 const EXTERNAL_PACKAGES = [
+  'electron',
   'playwright-core',
   '@playwright/mcp',
   '@prisma/client',
