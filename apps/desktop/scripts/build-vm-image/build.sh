@@ -286,4 +286,6 @@ echo "Files:"
 echo "  ${OUTPUT_DIR}/vmlinuz      - Linux kernel (decompressed for VZ on arm64)"
 echo "  ${OUTPUT_DIR}/initrd.img   - Initial ramdisk"
 echo "  ${OUTPUT_DIR}/rootfs.qcow2 - Root filesystem (qcow2, for Windows/QEMU)"
-[ "$ARCH" = "aarch64" ] && echo "  ${OUTPUT_DIR}/rootfs.raw   - Root filesystem (raw, for macOS/VZ)"
+if [ "$ARCH" = "aarch64" ]; then
+  echo "  ${OUTPUT_DIR}/rootfs.raw   - Root filesystem (raw, for macOS/VZ)"
+fi
