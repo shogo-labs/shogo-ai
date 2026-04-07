@@ -17,6 +17,40 @@ env:
   QEMU_VERSION: '9.2.0'
 
 jobs:
+  build-vm-images:
+    name: Build VM Images (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Cache VM images
+        id: vm-cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: apps/desktop/scripts/build-vm-image/output/x86_64
+          key: vm-image-x86_64-${{ hashFiles('apps/desktop/scripts/build-vm-image/build.sh') }}
+
+      - name: Install QEMU and tools
+        if: steps.vm-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils libguestfs-tools wget
+
+      - name: Build VM image
+        if: steps.vm-cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x apps/desktop/scripts/build-vm-image/build.sh
+          apps/desktop/scripts/build-vm-image/build.sh x86_64
+
+      - name: Verify VM image output
+        run: ls -lh apps/desktop/scripts/build-vm-image/output/x86_64/
+
+      - name: Upload VM images
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: vm-images-x86_64
+          path: apps/desktop/scripts/build-vm-image/output/x86_64/
+
   build-web:
     name: Build Expo Web
     runs-on: ubuntu-latest
@@ -58,7 +92,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (Windows x64)
-    needs: build-web
+    needs: [build-web, build-vm-images]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -117,13 +151,12 @@ jobs:
           echo "TODO: Download pre-built QEMU ${{ env.QEMU_VERSION }} x86_64 binaries for Windows"
           echo "Source: MSYS2 QEMU package or custom build"
           echo "Required files: qemu-system-x86_64.exe, qemu-img.exe, and supporting DLLs"
-          touch apps/desktop/resources/vm/.gitkeep
 
-      - name: Download VM image
-        shell: bash
-        run: |
-          echo "TODO: Download pre-built x86_64 Ubuntu VM image from release artifacts or build cache"
-          echo "Required files: vmlinuz, initrd.img, rootfs.qcow2"
+      - name: Download VM images
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vm-images-x86_64
+          path: apps/desktop/resources/vm/
 
       - name: Install monorepo dependencies
         shell: bash
