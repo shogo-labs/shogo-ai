@@ -76,7 +76,7 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
           <ImageIcon size={14} className="text-destructive" />
           <Text className="text-xs text-destructive">Image generation failed</Text>
         </View>
-        <Text className="mt-1 text-xs text-muted-foreground">{result.error}</Text>
+        <Text className="mt-1 text-xs text-muted-foreground">{typeof result.error === 'string' ? result.error : String(result.error)}</Text>
       </View>
     )
   }
@@ -133,7 +133,7 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
             {result.reference_image ? ` · Edited from ${result.reference_image}` : ""}
           </Text>
         </View>
-        {result.revised_prompt && result.revised_prompt !== tool.args?.prompt && (
+        {result.revised_prompt && typeof result.revised_prompt === 'string' && result.revised_prompt !== tool.args?.prompt && (
           <Text className="text-[10px] text-muted-foreground/70" numberOfLines={2}>
             {result.revised_prompt}
           </Text>

@@ -121,7 +121,7 @@ export function InlineToolWidget({
   }
 
   const getDisplayableResult = (): string => {
-    if (tool.error) return tool.error
+    if (tool.error) return typeof tool.error === 'string' ? tool.error : String(tool.error)
     if (tool.result === undefined || tool.result === null) return ""
     if (typeof tool.result === "string") return tool.result
     const r = tool.result as Record<string, unknown>

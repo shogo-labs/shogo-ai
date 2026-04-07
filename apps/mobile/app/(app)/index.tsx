@@ -28,6 +28,7 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
+import type { IProject, IMember, IWorkspace } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment, InteractionMode, AgentMode } from '../../components/chat/ChatInput'
 import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
@@ -280,7 +281,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   // APP_MODE_DISABLED: pending_app_template deep-link removed
 
-  const myProjects = useMemo(() => {
+  const myProjects = useMemo((): IProject[] => {
     try {
       const all = projects?.all
       return [...(Array.isArray(all) ? all : [])]
@@ -294,24 +295,21 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [projects?.all])
 
-  const sharedProjects = useMemo(() => {
+  const sharedProjects = useMemo((): IProject[] => {
     if (!user?.id) return []
     try {
-      const membersAll = Array.isArray(membersColl.all) ? membersColl.all : []
-      const wsAll = Array.isArray(workspaces.all) ? workspaces.all : []
-      const projAll = Array.isArray(projects?.all) ? projects.all : []
-      const userMembers = membersAll.filter((m: any) => m.userId === user.id)
+      const userMembers = membersColl.all.filter((m: IMember) => m.userId === user.id)
       const sharedWsIds = new Set(
-        wsAll
-          .filter((ws: any) => {
-            const membership = userMembers.find((m: any) => m.workspaceId === ws.id)
+        workspaces.all
+          .filter((ws: IWorkspace) => {
+            const membership = userMembers.find((m: IMember) => m.workspaceId === ws.id)
             return membership && membership.role !== 'owner'
           })
-          .map((ws: any) => ws.id)
+          .map((ws: IWorkspace) => ws.id)
       )
-      return [...projAll]
-        .filter((p: any) => sharedWsIds.has(p.workspaceId))
-        .sort((a: any, b: any) => {
+      return [...(projects?.all ?? [])]
+        .filter((p) => sharedWsIds.has(p.workspaceId))
+        .sort((a, b) => {
           const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
           const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
           return bTime - aTime
@@ -655,11 +653,11 @@ const HomeScreen = observer(function HomeScreen() {
                     marginHorizontal: 'auto',
                   } as any : {}}
                 >
-                  {myProjects.map((project: any) => (
+                  {myProjects.map((project) => (
                     <ProjectCard
                       key={project.id}
-                      name={project.name || 'Untitled'}
-                      description={project.description}
+                      name={String(project.name || 'Untitled')}
+                      description={typeof project.description === 'string' ? project.description : undefined}
                       updatedAt={project.updatedAt}
                       createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}
@@ -687,11 +685,11 @@ const HomeScreen = observer(function HomeScreen() {
                     marginHorizontal: 'auto',
                   } as any : {}}
                 >
-                  {sharedProjects.map((project: any) => (
+                  {sharedProjects.map((project) => (
                     <ProjectCard
                       key={project.id}
-                      name={project.name || 'Untitled'}
-                      description={project.description}
+                      name={String(project.name || 'Untitled')}
+                      description={typeof project.description === 'string' ? project.description : undefined}
                       updatedAt={project.updatedAt}
                       createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}

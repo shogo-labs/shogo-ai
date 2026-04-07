@@ -266,7 +266,7 @@ export function ToolCallDisplay({
       {isError && error && (
         <View className="mt-1.5">
           <Text className="text-[9px] text-red-400/80 mb-0.5 uppercase">Error</Text>
-          <Text className="text-[10px] text-red-500">{error}</Text>
+          <Text className="text-[10px] text-red-500">{typeof error === 'string' ? error : String(error)}</Text>
         </View>
       )}
     </View>
