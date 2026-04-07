@@ -40,6 +40,7 @@ import {
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
+  resolveAgentModeDefault,
   getMaxOutputTokens,
   type Provider,
   type ImageProvider,
@@ -190,7 +191,7 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: model, isLocal: true }
   }
   if (model === 'basic' || model === 'advanced') {
-    return { resolvedModel: AGENT_MODE_DEFAULTS[model as AgentMode], isLocal: false }
+    return { resolvedModel: resolveAgentModeDefault(model as AgentMode), isLocal: false }
   }
   return { resolvedModel: model, isLocal: false }
 }

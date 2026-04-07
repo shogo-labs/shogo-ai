@@ -23,7 +23,7 @@
 import {
   getModelTier as catalogGetModelTier,
   getModelBillingModel,
-  AGENT_MODE_DEFAULTS,
+  resolveAgentModeDefault,
   type ModelTier,
   type AgentMode,
   type BillingModel,
@@ -60,8 +60,8 @@ export const getModelTier = catalogGetModelTier
  * Map agent mode to model name for credit calculation.
  */
 export function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return AGENT_MODE_DEFAULTS.basic as ModelName
-  return 'sonnet'
+  if (agentMode === 'basic') return resolveAgentModeDefault('basic') as ModelName
+  return resolveAgentModeDefault('advanced') as ModelName
 }
 
 /**
