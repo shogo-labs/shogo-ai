@@ -273,6 +273,15 @@ export interface TechStackMeta {
     buildCommand?: string
     previewPort?: number
   }
+  capabilities?: {
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    heartbeatEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
+  }
 }
 
 export function loadTechStackMeta(stackId: string): TechStackMeta | null {

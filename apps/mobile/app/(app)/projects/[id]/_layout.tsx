@@ -702,9 +702,26 @@ export default observer(function ProjectLayout() {
 
   const techStackId = projectSettings.techStackId as string | undefined
 
-  const handleTechStackChange = useCallback(async (stackId: string) => {
-    await updateProjectSettings({ techStackId: stackId })
-  }, [updateProjectSettings])
+  const handleTechStackChange = useCallback(async (stackId: string, capabilities?: Record<string, boolean>) => {
+    const patch: Record<string, unknown> = { techStackId: stackId }
+    if (capabilities) Object.assign(patch, capabilities)
+    await updateProjectSettings(patch)
+
+    if (capabilities && agentUrl) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (nativeHeaders) Object.assign(headers, nativeHeaders())
+        await fetch(`${agentUrl}/agent/config`, {
+          method: 'PATCH',
+          headers,
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          body: JSON.stringify(capabilities),
+        })
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to push stack capabilities to runtime:', err)
+      }
+    }
+  }, [updateProjectSettings, agentUrl, nativeHeaders])
 
   const handleBuildPlan = useCallback((plan: any, agentMode: any) => {
     setBuildPlanRequest({ plan, agentMode, nonce: Date.now() })

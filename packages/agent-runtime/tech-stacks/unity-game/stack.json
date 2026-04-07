@@ -7,5 +7,14 @@
     "devServer": "unity",
     "buildCommand": "dotnet build",
     "previewPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": false
   }
 }

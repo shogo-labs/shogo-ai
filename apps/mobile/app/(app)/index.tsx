@@ -427,6 +427,7 @@ const HomeScreen = observer(function HomeScreen() {
         'AGENT',
         template.id,
         template.techStack,
+        template.settings,
       )
       const chatSession = await actions.createChatSession({
         inferredName: 'Untitled',

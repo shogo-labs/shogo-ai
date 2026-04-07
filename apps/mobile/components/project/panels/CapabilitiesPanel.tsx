@@ -173,7 +173,7 @@ interface CapabilitiesPanelProps {
   activeMode?: AgentMode
   onModeChange?: (mode: AgentMode) => void
   techStackId?: string
-  onTechStackChange?: (stackId: string) => void
+  onTechStackChange?: (stackId: string, capabilities?: Record<string, boolean>) => void
 }
 
 export function CapabilitiesPanel({
@@ -412,7 +412,7 @@ export function CapabilitiesPanel({
                             <Pressable
                               key={stack.id}
                               onPress={() => {
-                                onTechStackChange?.(stack.id)
+                                onTechStackChange?.(stack.id, stack.capabilities as Record<string, boolean> | undefined)
                                 setStackPickerOpen(false)
                               }}
                               className={cn(
