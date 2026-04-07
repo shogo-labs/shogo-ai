@@ -200,16 +200,46 @@ echo "Provisioning complete."
 # Step 5: Extract kernel and initrd from the image
 echo "Extracting kernel and initrd..."
 
-if command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
+EXTRACTED=false
+
+# Method 1: qemu-nbd (most reliable in CI — no supermin/kernel dependency)
+if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
+  echo "Trying qemu-nbd for extraction..."
+  if sudo modprobe nbd max_part=8 2>/dev/null; then
+    MOUNT_DIR="${WORK_DIR}/mnt"
+    mkdir -p "$MOUNT_DIR"
+
+    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2"
+    sleep 2
+    sudo partprobe /dev/nbd0 2>/dev/null || true
+
+    if sudo mount /dev/nbd0p1 "$MOUNT_DIR" 2>/dev/null || sudo mount /dev/nbd0p2 "$MOUNT_DIR" 2>/dev/null; then
+      VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+      INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
+
+      if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
+        echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
+        sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
+        sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
+        sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
+        EXTRACTED=true
+      fi
+
+      sudo umount "$MOUNT_DIR"
+    fi
+
+    sudo qemu-nbd --disconnect /dev/nbd0
+  else
+    echo "nbd kernel module not available, skipping qemu-nbd"
+  fi
+fi
+
+# Method 2: libguestfs (requires supermin appliance with a host kernel in /boot)
+if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
   export LIBGUESTFS_BACKEND=direct
-  echo "Using libguestfs (virt-copy-out) for extraction..."
-  echo "Listing /boot/ contents:"
-  virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ || {
-    echo "virt-ls failed, trying with explicit partition..."
-    virt-filesystems -a "${WORK_DIR}/disk.qcow2" --long --human-readable
-  }
-  VMLINUZ=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ | grep '^vmlinuz-' | sort -V | tail -1 || true)
-  INITRD=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ | grep '^initrd.img-' | sort -V | tail -1 || true)
+  echo "Trying libguestfs (virt-copy-out) for extraction..."
+  VMLINUZ=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ 2>/dev/null | grep '^vmlinuz-' | sort -V | tail -1 || true)
+  INITRD=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ 2>/dev/null | grep '^initrd.img-' | sort -V | tail -1 || true)
 
   if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
     echo "Found: $VMLINUZ, $INITRD"
@@ -217,41 +247,15 @@ if command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
     virt-copy-out -a "${WORK_DIR}/disk.qcow2" "/boot/$INITRD" "$OUTPUT_DIR"
     mv "${OUTPUT_DIR}/${VMLINUZ}" "${OUTPUT_DIR}/vmlinuz"
     mv "${OUTPUT_DIR}/${INITRD}" "${OUTPUT_DIR}/initrd.img"
+    EXTRACTED=true
   else
-    echo "ERROR: Could not find kernel/initrd in the image via virt-ls"
-    echo "VMLINUZ='$VMLINUZ' INITRD='$INITRD'"
-    exit 1
+    echo "libguestfs could not list /boot/ contents (supermin may lack a host kernel)"
   fi
-elif command -v qemu-nbd &>/dev/null; then
-  # Fallback: qemu-nbd requires the nbd kernel module (works on local dev machines)
-  echo "Using qemu-nbd for extraction..."
-  MOUNT_DIR="${WORK_DIR}/mnt"
-  mkdir -p "$MOUNT_DIR"
+fi
 
-  sudo modprobe nbd max_part=8 2>/dev/null || true
-  sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2"
-  sleep 1
-  sudo mount /dev/nbd0p1 "$MOUNT_DIR" 2>/dev/null || sudo mount /dev/nbd0p2 "$MOUNT_DIR"
-
-  VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
-  INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
-
-  if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
-    sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
-    sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
-    sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
-  else
-    echo "ERROR: Could not find kernel/initrd in the image"
-    sudo umount "$MOUNT_DIR"
-    sudo qemu-nbd --disconnect /dev/nbd0
-    exit 1
-  fi
-
-  sudo umount "$MOUNT_DIR"
-  sudo qemu-nbd --disconnect /dev/nbd0
-else
-  echo "ERROR: Neither libguestfs-tools nor qemu-nbd available for kernel extraction."
-  echo "Install libguestfs-tools (apt install libguestfs-tools) or qemu-utils."
+if [ "$EXTRACTED" = false ]; then
+  echo "ERROR: Could not extract kernel/initrd from the image."
+  echo "Ensure qemu-utils (for qemu-nbd) or libguestfs-tools is installed."
   exit 1
 fi
 
