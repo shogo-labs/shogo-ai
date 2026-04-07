@@ -2188,13 +2188,18 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const FETCH_TIMEOUT_MS = 1_800_000
   let lastError: Error | null = null
 
+  const proxyClientSignal = c.req.raw.signal
+  const proxyFetchSignal = proxyClientSignal
+    ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), proxyClientSignal])
+    : AbortSignal.timeout(FETCH_TIMEOUT_MS)
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const response = await fetch(targetUrl, {
         method: c.req.method,
         headers,
         body: requestBody,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: proxyFetchSignal,
       })
 
       if (!response.ok && response.status >= 500 && attempt < MAX_RETRIES) {
@@ -2236,7 +2241,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         const trackedBody = response.body.pipeThrough(new TransformStream({
           flush() { activeProxyConnections-- },
         }))
-        c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+        proxyClientSignal?.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
         return new Response(trackedBody, { status: response.status, headers: responseHeaders })
       }
 
@@ -2254,6 +2259,9 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         fetchError.message?.includes('ECONNREFUSED') ||
         fetchError.message?.includes('connection refused')
 
+      const isClientAbort = fetchError.name === 'AbortError' && proxyClientSignal?.aborted
+      if (isClientAbort) break
+
       const isTimeout = fetchError.name === 'TimeoutError' || fetchError.name === 'AbortError'
 
       if ((isTransient || isTimeout) && attempt < MAX_RETRIES) {
@@ -2269,6 +2277,9 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     }
   }
 
+  if (proxyClientSignal?.aborted) {
+    return new Response(null, { status: 499 })
+  }
   console.error(`[AgentProxy] ${c.req.method} ${path} failed after ${MAX_RETRIES} attempts:`, lastError?.message)
   return c.json(
     { error: { code: 'proxy_error', message: lastError?.message || 'Agent runtime unavailable after retries', retryable: true } },
@@ -3726,10 +3737,12 @@ app.post('/api/projects/:projectId/chat', async (c) => {
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat`
+  const clientSignal = c.req.raw.signal
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
     body: c.req.raw.body,
+    signal: clientSignal,
   })
   try {
     const resp = await router.fetch(newReq)
@@ -3737,7 +3750,7 @@ app.post('/api/projects/:projectId/chat', async (c) => {
       const trackedBody = resp.body.pipeThrough(new TransformStream({
         flush() { activeProxyConnections-- },
       }))
-      c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+      clientSignal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
       return new Response(trackedBody, { status: resp.status, headers: resp.headers })
     }
     activeProxyConnections--

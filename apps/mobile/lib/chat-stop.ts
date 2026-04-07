@@ -7,6 +7,7 @@ export interface StopRequestConfig {
   apiBaseUrl: string
   platform: string
   getCookie?: () => string | null
+  chatSessionId?: string | null
 }
 
 export interface StopRequestResult {
@@ -19,7 +20,7 @@ export interface StopRequestResult {
  * including the correct auth credentials for the target.
  */
 export function buildStopRequest(config: StopRequestConfig): StopRequestResult | null {
-  const { localAgentUrl, projectId, apiBaseUrl, platform, getCookie } = config
+  const { localAgentUrl, projectId, apiBaseUrl, platform, getCookie, chatSessionId } = config
 
   const url = localAgentUrl
     ? `${localAgentUrl}/agent/stop`
@@ -30,10 +31,12 @@ export function buildStopRequest(config: StopRequestConfig): StopRequestResult |
   if (!url) return null
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const body: Record<string, string> = {}
+  if (chatSessionId) body.chatSessionId = chatSessionId
   const init: RequestInit = {
     method: 'POST',
     headers,
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
   }
 
   // Remote API requires auth credentials; local agent does not

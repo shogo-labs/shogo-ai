@@ -683,13 +683,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const FETCH_TIMEOUT_MS = 1_800_000
       let lastError: Error | null = null
 
+      const clientSignal = c.req.raw.signal
+      const fetchSignal = clientSignal
+        ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), clientSignal])
+        : AbortSignal.timeout(FETCH_TIMEOUT_MS)
+
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
           const response = await fetch(`${podUrl}${chatEndpoint}`, {
             method: "POST",
             headers,
             body,
-            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            signal: fetchSignal,
           })
 
           // Check for errors
@@ -794,6 +799,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             fetchError.cause?.code === 'ETIMEDOUT' ||
             fetchError.message?.includes('connection refused') ||
             fetchError.message?.includes('ECONNREFUSED')
+
+          const isClientAbort = fetchError.name === 'AbortError' && clientSignal?.aborted
+          if (isClientAbort) {
+            console.log(`[ProjectChat] Client disconnected, stopping retry loop`)
+            chatSpan.setStatus({ code: SpanStatusCode.OK, message: "client_disconnected" })
+            chatSpan.end()
+            return new Response(null, { status: 499 })
+          }
 
           const isAbortError = fetchError.name === 'TimeoutError' || fetchError.name === 'AbortError'
 

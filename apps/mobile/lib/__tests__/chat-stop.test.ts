@@ -126,4 +126,41 @@ describe('buildStopRequest', () => {
       expect((result!.init.headers as Record<string, string>).Cookie).toBeUndefined()
     })
   })
+
+  describe('chatSessionId', () => {
+    test('includes chatSessionId in body when provided', () => {
+      const result = buildStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+        chatSessionId: 'session-abc',
+      })
+
+      expect(result).not.toBeNull()
+      expect(JSON.parse(result!.init.body as string)).toEqual({ chatSessionId: 'session-abc' })
+    })
+
+    test('sends empty body when chatSessionId is null', () => {
+      const result = buildStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+        chatSessionId: null,
+      })
+
+      expect(result).not.toBeNull()
+      expect(JSON.parse(result!.init.body as string)).toEqual({})
+    })
+
+    test('sends empty body when chatSessionId is not provided', () => {
+      const result = buildStopRequest({
+        projectId: 'proj-123',
+        apiBaseUrl: API_BASE,
+        platform: 'web',
+      })
+
+      expect(result).not.toBeNull()
+      expect(JSON.parse(result!.init.body as string)).toEqual({})
+    })
+  })
 })
