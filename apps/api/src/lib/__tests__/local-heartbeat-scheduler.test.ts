@@ -16,6 +16,9 @@ async function createTestFixtures(overrides: {
   heartbeatEnabled?: boolean
   heartbeatInterval?: number
   nextHeartbeatAt?: Date | null
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
 } = {}) {
   const workspaceId = randomUUID()
   const projectId = randomUUID()
@@ -41,6 +44,9 @@ async function createTestFixtures(overrides: {
       heartbeatEnabled: overrides.heartbeatEnabled ?? true,
       heartbeatInterval: overrides.heartbeatInterval ?? 1800,
       nextHeartbeatAt: overrides.nextHeartbeatAt ?? new Date(Date.now() - 60_000),
+      quietHoursStart: overrides.quietHoursStart ?? null,
+      quietHoursEnd: overrides.quietHoursEnd ?? null,
+      quietHoursTimezone: overrides.quietHoursTimezone ?? null,
       channels: '[]',
     },
   })
@@ -255,6 +261,44 @@ describe('LocalHeartbeatScheduler', () => {
 
     const config = await prisma.agentConfig.findUnique({ where: { projectId } })
     expect(config.nextHeartbeatAt.getTime()).toBeGreaterThan(Date.now())
+
+    scheduler.stop()
+  })
+
+  test('tick() skips agents in quiet hours and advances nextHeartbeatAt', async () => {
+    const now = new Date()
+    const hours = now.getUTCHours()
+
+    const startH = hours
+    const endH = (hours + 2) % 24
+
+    const quietStart = `${String(startH).padStart(2, '0')}:00`
+    const quietEnd = `${String(endH).padStart(2, '0')}:00`
+
+    const { projectId } = await createTestFixtures({
+      heartbeatEnabled: true,
+      heartbeatInterval: 1800,
+      nextHeartbeatAt: new Date(Date.now() - 60_000),
+      quietHoursStart: quietStart,
+      quietHoursEnd: quietEnd,
+      quietHoursTimezone: 'UTC',
+    })
+
+    const triggeredProjects: string[] = []
+
+    const scheduler = new LocalHeartbeatScheduler()
+    ;(scheduler as any).running = true
+    ;(scheduler as any).triggerAgent = async (pid: string) => {
+      triggeredProjects.push(pid)
+    }
+
+    await scheduler.tick()
+
+    const config = await prisma.agentConfig.findUnique({ where: { projectId } })
+    expect(config.nextHeartbeatAt).toBeTruthy()
+    expect(config.nextHeartbeatAt.getTime()).toBeGreaterThan(Date.now())
+
+    expect(triggeredProjects).not.toContain(projectId)
 
     scheduler.stop()
   })

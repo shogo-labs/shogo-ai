@@ -554,13 +554,12 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                     </View>
 
                     {/* Quiet hours */}
-                    {(hbConfig?.quietHoursStart || status.heartbeat.quietHours?.start) &&
-                     (hbConfig?.quietHoursEnd || status.heartbeat.quietHours?.end) && (
+                    {hbConfig?.quietHoursStart && hbConfig?.quietHoursEnd && (
                       <Text className="text-xs text-muted-foreground">
                         Quiet hours:{' '}
-                        {hbConfig?.quietHoursStart ?? status.heartbeat.quietHours.start} –{' '}
-                        {hbConfig?.quietHoursEnd ?? status.heartbeat.quietHours.end}{' '}
-                        ({hbConfig?.quietHoursTimezone ?? status.heartbeat.quietHours.timezone})
+                        {hbConfig.quietHoursStart} –{' '}
+                        {hbConfig.quietHoursEnd}{' '}
+                        ({hbConfig.quietHoursTimezone ?? 'UTC'})
                       </Text>
                     )}
 

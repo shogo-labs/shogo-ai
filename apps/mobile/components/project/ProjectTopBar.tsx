@@ -62,6 +62,8 @@ import {
   Terminal,
   ClipboardList,
   RefreshCw,
+  GitCommit,
+  Download,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
@@ -70,6 +72,7 @@ import { formatCredits } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
+import { api } from '../../lib/api'
 
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
@@ -90,6 +93,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'monitor', label: 'Monitor', icon: Activity },
   { id: 'plans', label: 'Plans', icon: ClipboardList },
+  { id: 'checkpoints', label: 'Checkpoints', icon: GitCommit },
 ]
 
 export interface ProjectSwitcherItem {
@@ -757,6 +761,7 @@ function ProjectDropdownContent({
 
   return (
     <ProjectMenuView
+      projectId={currentProjectId}
       projectName={projectName}
       workspaceName={workspaceName}
       planLabel={planLabel}
@@ -783,6 +788,7 @@ function ProjectDropdownContent({
 // ---------------------------------------------------------------------------
 
 function ProjectMenuView({
+  projectId,
   projectName,
   workspaceName,
   planLabel,
@@ -801,6 +807,7 @@ function ProjectMenuView({
   onMoveToFolder,
   folders,
 }: {
+  projectId: string
   projectName: string
   workspaceName: string
   planLabel: string
@@ -822,9 +829,55 @@ function ProjectMenuView({
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
   const [showMoveModal, setShowMoveModal] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
   const { features } = usePlatformConfig()
   const showBilling = features.billing
   const creditsPercent = creditsTotal > 0 ? (creditsRemaining / creditsTotal) * 100 : 0
+
+  const handleExportProject = useCallback(async () => {
+    if (isExporting) return
+    setIsExporting(true)
+    onClose()
+    try {
+      const { blob, filename } = await api.exportProjectBlob(projectId)
+
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else if (Platform.OS !== 'web') {
+        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const Sharing = await import('expo-sharing')
+        const dir = documentDirectory
+        if (!dir) throw new Error('Could not access app storage')
+        const fileUri = `${dir}${filename}`
+        const arrayBuf = await blob.arrayBuffer()
+        const bytes = new Uint8Array(arrayBuf)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+        const base64 = btoa(binary)
+        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive' as any,
+          dialogTitle: 'Export Project',
+        })
+      }
+    } catch (err: any) {
+      console.error('[ProjectTopBar] Export failed:', err)
+      if (Platform.OS !== 'web') {
+        const { Alert } = await import('react-native')
+        Alert.alert('Export Failed', err.message || 'Failed to export project')
+      }
+    } finally {
+      setIsExporting(false)
+    }
+  }, [projectId, isExporting, onClose])
 
   const menuItems: {
     icon: React.ElementType
@@ -861,6 +914,11 @@ function ProjectMenuView({
       icon: Info,
       label: 'Details',
       onPress: () => { setShowDetailsModal(true) },
+    },
+    {
+      icon: Download,
+      label: isExporting ? 'Exporting...' : 'Export project',
+      onPress: handleExportProject,
     },
   ]
 
