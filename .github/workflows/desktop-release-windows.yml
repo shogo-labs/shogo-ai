@@ -30,6 +30,13 @@ jobs:
           path: apps/desktop/scripts/build-vm-image/output/x86_64
           key: vm-image-x86_64-${{ hashFiles('apps/desktop/scripts/build-vm-image/build.sh') }}
 
+      - name: Enable KVM
+        if: steps.vm-cache.outputs.cache-hit != 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Install QEMU and tools
         if: steps.vm-cache.outputs.cache-hit != 'true'
         run: |
