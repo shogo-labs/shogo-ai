@@ -96,7 +96,6 @@ async function main() {
       S3_WORKSPACES_BUCKET: "",
       S3_BUCKET: "",
       COMPOSIO_API_KEY: "",
-      PREWARM_CLAUDE_CODE: "false",
     },
     stdio: verbose ? "inherit" : ["ignore", "pipe", "pipe"],
   })

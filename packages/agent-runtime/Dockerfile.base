@@ -52,7 +52,7 @@ RUN groupadd -g 1001 appgroup && \
     useradd -u 1001 -g appgroup -m -s /bin/bash appuser
 
 # Install global Node packages and set ownership in single layer (no duplicate data)
-RUN npm install -g @anthropic-ai/claude-code typescript-language-server typescript pyright && \
+RUN npm install -g typescript-language-server typescript pyright && \
     (chown -R appuser:appgroup /usr/local/lib/node_modules 2>/dev/null || true) && \
     (chown -R appuser:appgroup /usr/lib/node_modules 2>/dev/null || true)
 

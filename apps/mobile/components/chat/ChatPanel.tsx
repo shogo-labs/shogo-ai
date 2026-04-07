@@ -744,8 +744,6 @@ export const ChatPanel = observer(function ChatPanel({
   const confirmedPlanRef = useRef<PlanData | null>(null)
   const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
 
-  const [ccSessionId, setCcSessionId] = useState<string | undefined>(undefined)
-  const ccSessionIdRef = useRef<string | undefined>(undefined)
   const sessionCreationInProgressRef = useRef<string | null>(null)
 
   // Find or create chat session for feature and phase
@@ -844,20 +842,6 @@ export const ChatPanel = observer(function ChatPanel({
   }
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
   const isProcessingQueueRef = useRef(false)
-
-  useEffect(() => {
-    if (currentSession?.claudeCodeSessionId) {
-      setCcSessionId(currentSession.claudeCodeSessionId)
-      ccSessionIdRef.current = currentSession.claudeCodeSessionId
-    } else {
-      setCcSessionId(undefined)
-      ccSessionIdRef.current = undefined
-    }
-  }, [currentSession?.claudeCodeSessionId])
-
-  useEffect(() => {
-    ccSessionIdRef.current = ccSessionId
-  }, [ccSessionId])
 
   const sessionContextUsage = (currentSession as any)?.contextUsageTokens
   const sessionContextWindow = (currentSession as any)?.contextWindowTokens
@@ -1408,21 +1392,6 @@ export const ChatPanel = observer(function ChatPanel({
         setEmptyResponseError(null)
       }
 
-      const newCcSessionId = (message as any).metadata?.ccSessionId as string | undefined
-
-      if (newCcSessionId && currentSessionId) {
-        ccSessionIdRef.current = newCcSessionId
-        try {
-          await studioChat.chatSessionCollection.update(currentSessionId, {
-            claudeCodeSessionId: newCcSessionId,
-          })
-          setCcSessionId(newCcSessionId)
-        } catch (err) {
-          ccSessionIdRef.current = ccSessionId
-          console.error("[ChatPanel] CRITICAL: CC session ID persistence failed:", err)
-        }
-      }
-
       if (currentSessionId) {
         refetchCreditLedger()
 
@@ -1677,23 +1646,6 @@ export const ChatPanel = observer(function ChatPanel({
     }
 
     parts.forEach((part) => {
-      if (part.type === "data-session") {
-        const sessionData = part.data as { ccSessionId: string }
-        if (sessionData.ccSessionId && !ccSessionIdRef.current) {
-          ccSessionIdRef.current = sessionData.ccSessionId
-          setCcSessionId(sessionData.ccSessionId)
-          if (currentSessionId) {
-            studioChat.chatSessionCollection
-              .update(currentSessionId, {
-                claudeCodeSessionId: sessionData.ccSessionId,
-              })
-              .catch((error: any) => {
-                console.error("[ChatPanel:Session] Failed to persist session ID:", error)
-              })
-          }
-        }
-      }
-
       if (part.type === "data-progress") {
         const event = part.data as SubagentProgressEvent
 
@@ -2226,7 +2178,6 @@ export const ChatPanel = observer(function ChatPanel({
         const bodyExtra: Record<string, unknown> = {
           featureId,
           phase,
-          ccSessionId: ccSessionIdRef.current,
           chatSessionId: currentSessionId,
           workspaceId,
           userId,

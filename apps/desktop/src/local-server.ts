@@ -281,7 +281,6 @@ export async function startLocalServer(): Promise<void> {
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
-    PREWARM_CLAUDE_CODE: 'false',
     SHOGO_BUN_PATH: bunPath,
     AGENT_RUNTIME_ENTRY: IS_DEV
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')

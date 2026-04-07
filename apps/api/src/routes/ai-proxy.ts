@@ -12,14 +12,14 @@
  * Endpoints:
  * - POST /ai/v1/chat/completions       - OpenAI-compatible chat completions
  * - GET  /ai/v1/models                 - List available models
- * - POST /ai/anthropic/v1/messages     - Anthropic-native pass-through (for Claude Code CLI)
+ * - POST /ai/anthropic/v1/messages     - Anthropic-native pass-through (for agent-runtime)
  * - POST /ai/anthropic/v1/messages/count_tokens - Token counting pass-through
  * - GET  /ai/anthropic/v1/models       - Anthropic models pass-through  
  * - POST /ai/proxy/tokens              - Generate a proxy token for a project
  *
  * Authentication:
  * - OpenAI-compatible: `Authorization: Bearer <proxy-token>`
- * - Anthropic-native: `x-api-key: <proxy-token>` (Claude Code CLI sends this)
+ * - Anthropic-native: `x-api-key: <proxy-token>` (agent-runtime sends this)
  *
  * Environment Variables:
  * - ANTHROPIC_API_KEY: Anthropic API key (server-side only)
@@ -1194,10 +1194,14 @@ export function aiProxyRoutes() {
   }
 
   /**
-   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set).
+   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set
+   * and AI_MODE not overridden to 'api-keys' or 'local-llm').
    */
   function isShogoCloudForwarding(): boolean {
-    return process.env.SHOGO_LOCAL_MODE === 'true' && !!process.env.SHOGO_API_KEY
+    if (process.env.SHOGO_LOCAL_MODE !== 'true' || !process.env.SHOGO_API_KEY) return false
+    const aiMode = process.env.AI_MODE
+    if (aiMode === 'api-keys' || aiMode === 'local-llm') return false
+    return true
   }
 
   function getShogoCloudUrl(): string {
@@ -1677,11 +1681,11 @@ export function aiProxyRoutes() {
   // Anthropic-Native Pass-Through Endpoints
   // =========================================================================
   // These endpoints accept requests in Anthropic's native API format and
-  // forward them directly to api.anthropic.com. This allows the Claude Code
-  // CLI to use the proxy via ANTHROPIC_BASE_URL without any format conversion.
+  // forward them directly to api.anthropic.com. This allows the agent-runtime
+  // to use the proxy via ANTHROPIC_BASE_URL without any format conversion.
   //
   // Auth: The proxy token is sent via the `x-api-key` header (same header
-  // that Claude Code CLI uses for ANTHROPIC_API_KEY).
+  // used for ANTHROPIC_API_KEY).
 
   /**
    * Validate Anthropic-style auth (x-api-key header contains proxy token).
@@ -1712,7 +1716,7 @@ export function aiProxyRoutes() {
   /**
    * POST /ai/anthropic/v1/messages - Anthropic Messages API pass-through
    *
-   * Claude Code CLI sets ANTHROPIC_BASE_URL to our proxy and sends requests
+   * The agent-runtime sets ANTHROPIC_BASE_URL to our proxy and sends requests
    * here. We validate the proxy token (sent as x-api-key), then forward the
    * request to the real Anthropic API with our server-side API key.
    */

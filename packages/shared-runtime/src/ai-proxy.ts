@@ -1,28 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * AI proxy configuration for Claude Code SDK sessions.
- * Routes Claude API requests through the API server's proxy endpoint
- * instead of requiring a raw ANTHROPIC_API_KEY in the runtime process.
+ * AI proxy configuration for agent runtime sessions.
+ * Routes API requests through the API server's proxy endpoint
+ * instead of requiring raw API keys in the runtime process.
  *
  * Shared between runtime and agent-runtime.
  *
  * Local-dev policy: when AI_PROXY_URL is present the proxy MUST be used.
- * The raw ANTHROPIC_API_KEY is always stripped from child-process environments
- * to prevent silent fallbacks to an account-level key.
+ * The raw API keys are always stripped from child-process environments
+ * to prevent silent fallbacks to account-level keys.
  */
 
 export interface AIProxyConfig {
   useProxy: boolean
-  /** Environment overrides to spread into process.env or pass to Claude Code sessions */
+  /** Environment overrides to spread into process.env or pass to agent sessions */
   env: Record<string, string>
 }
-
-/**
- * Keys that are stripped from child environments whenever the proxy is active,
- * ensuring the runtime never falls back to raw platform API keys.
- */
-const PROXY_SHADOW_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'] as const
 
 /**
  * Configure AI proxy.
@@ -80,35 +74,4 @@ export function configureAIProxy(options?: {
       OPENAI_API_KEY: proxyToken,
     },
   }
-}
-
-/**
- * Build the full environment for a Claude Code session.
- *
- * Inherits all current process.env values, then:
- * - When proxy is active: overlays ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY
- *   (the raw platform key is overwritten with the scoped proxy token)
- * - Always strips the raw ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL when the
- *   proxy is active so Claude Code cannot fall back to a platform-level key.
- */
-export function buildClaudeCodeEnv(proxyConfig: AIProxyConfig, extraEnv?: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
-    ),
-  }
-
-  if (proxyConfig.useProxy) {
-    // Strip raw platform keys before applying proxy overrides so there is
-    // no window where the old value could be read.
-    for (const key of PROXY_SHADOW_KEYS) {
-      delete env[key]
-    }
-    Object.assign(env, proxyConfig.env)
-  }
-
-  if (extraEnv) {
-    Object.assign(env, extraEnv)
-  }
-  return env
 }
