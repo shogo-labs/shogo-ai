@@ -906,8 +906,8 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
-  // Mark the stream buffer as complete so resume after stop returns 204
-  streamBufferStore.complete(stopSessionKey)
+  // Remove the buffer entirely so resume after stop returns 204 (not a replay)
+  streamBufferStore.abort(stopSessionKey)
 
   return c.json({ stopped: aborted })
 })
