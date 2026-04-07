@@ -12,4 +12,13 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
+  getVMImageStatus: () => ipcRenderer.invoke('get-vm-image-status'),
+  downloadVMImages: () => ipcRenderer.invoke('download-vm-images'),
+  skipVMDownload: () => ipcRenderer.invoke('skip-vm-download'),
+  onVMImageNeeded: (callback: (data: { downloadUrl: string; imageDir: string }) => void) => {
+    ipcRenderer.on('vm-image-needed', (_event, data) => callback(data))
+  },
+  onVMImageDownloadProgress: (callback: (progress: { bytesDownloaded: number; totalBytes: number; percent: number; stage: string }) => void) => {
+    ipcRenderer.on('vm-image-download-progress', (_event, progress) => callback(progress))
+  },
 })

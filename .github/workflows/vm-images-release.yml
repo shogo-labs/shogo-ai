@@ -1,0 +1,104 @@
+name: VM Images Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image version tag (e.g. vm-images-v1)'
+        required: true
+        default: 'vm-images-v1'
+        type: string
+  push:
+    tags:
+      - 'vm-images-v*'
+
+jobs:
+  build-vm-images:
+    name: Build VM Image (${{ matrix.vm-arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        vm-arch: [aarch64, x86_64]
+        include:
+          - vm-arch: aarch64
+            qemu-pkg: qemu-system-arm
+          - vm-arch: x86_64
+            qemu-pkg: qemu-system-x86
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Cache VM images
+        id: vm-cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}
+          key: vm-image-${{ matrix.vm-arch }}-${{ hashFiles('apps/desktop/scripts/build-vm-image/build.sh') }}
+
+      - name: Enable KVM
+        if: steps.vm-cache.outputs.cache-hit != 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install QEMU and tools
+        if: steps.vm-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.qemu-pkg }} qemu-utils cloud-image-utils wget
+          sudo modprobe nbd max_part=8
+
+      - name: Build VM image
+        if: steps.vm-cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x apps/desktop/scripts/build-vm-image/build.sh
+          apps/desktop/scripts/build-vm-image/build.sh ${{ matrix.vm-arch }}
+
+      - name: Write version file
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          echo "$TAG" > apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}/version.txt
+
+      - name: Create tarball
+        run: |
+          cd apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}
+          tar czf /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz vmlinuz initrd.img rootfs.qcow2 version.txt
+          ls -lh /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: vm-image-tarball-${{ matrix.vm-arch }}
+          path: /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz
+
+  release:
+    name: Publish VM Images Release
+    needs: build-vm-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts/
+          pattern: vm-image-tarball-*
+
+      - name: Write version.txt for release
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          echo "$TAG" > artifacts/version.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          tag_name: ${{ github.ref_name || inputs.version }}
+          name: VM Images ${{ github.ref_name || inputs.version }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/vm-image-tarball-*/vm-image-*.tar.gz
+            artifacts/version.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -70,17 +70,18 @@ function getDesktopRoot(): string {
   return path.resolve(__dirname, '..', '..')
 }
 
-function getVMImageDir(): string {
+export function getVMImageDir(): string {
   if (process.env.SHOGO_VM_IMAGE_DIR) return process.env.SHOGO_VM_IMAGE_DIR
   if (isElectron()) {
     const { app } = require('electron')
     if (!app.isPackaged) return path.join(getDesktopRoot(), 'resources', 'vm')
-    return path.join(process.resourcesPath!, 'vm')
+    const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+    return path.join(app.getPath('userData'), 'vm-images', arch)
   }
   return path.join(getDesktopRoot(), 'resources', 'vm')
 }
 
-function getGoHelperPath(): string {
+export function getGoHelperPath(): string {
   const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
   const binaryName = `shogo-vm-${arch}`
 
@@ -90,7 +91,7 @@ function getGoHelperPath(): string {
   if (isElectron()) {
     const { app } = require('electron')
     if (!app.isPackaged) return path.join(getDesktopRoot(), 'native', 'shogo-vm', binaryName)
-    return path.join(process.resourcesPath!, 'vm', binaryName)
+    return path.join(process.resourcesPath!, 'vm-helper', binaryName)
   }
   return path.join(getDesktopRoot(), 'native', 'shogo-vm', binaryName)
 }
