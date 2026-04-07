@@ -26,6 +26,12 @@ export interface VMConfig {
   skillServerHostPort?: number
   /** Extra environment variables to pass to the agent-runtime inside the VM */
   env?: Record<string, string>
+  /**
+   * Files to embed in the seed ISO (Windows pre-provisioned image path).
+   * Keys are filenames (e.g. "server.js"), values are Buffer or string content.
+   * Cloud-init copies them from the mounted ISO into /opt/shogo/.
+   */
+  bundleFiles?: Record<string, Buffer | string>
 }
 
 export interface VMHandle {

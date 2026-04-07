@@ -9,23 +9,7 @@ import type { VMManager, VMConfig, VMHandle } from './types'
 import { VM_DEFAULTS } from './types'
 import { JsonRpcClient } from './json-rpc-client'
 import { generateSeedISO } from './cloud-init'
-
-const NOISY_VM_PATTERNS = [
-  /^-+BEGIN SSH/,
-  /^-+END SSH/,
-  /^ssh-(rsa|ed25519|ecdsa)/,
-  /^ecdsa-sha2-/,
-  /^#{3,}/,
-  /^ci-info:/,
-  /SHA256:/,
-  /login:$/,
-  /^<\d+>/,            // syslog-prefixed cloud-init lines
-  /^Ubuntu .* LTS/,
-]
-
-function isNoisyVMLine(line: string): boolean {
-  return NOISY_VM_PATTERNS.some((p) => p.test(line))
-}
+import { isNoisyVMLine } from './vm-log-filter'
 
 /**
  * macOS VM Manager using Apple Virtualization.framework via a Go helper binary.

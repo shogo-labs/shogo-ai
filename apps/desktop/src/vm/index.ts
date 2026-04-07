@@ -6,6 +6,7 @@ export { VM_DEFAULTS } from './types'
 export { VMPool } from './vm-pool'
 export { VMImageManager } from './image-manager'
 export { DarwinVMManager } from './darwin-vm-manager'
+export { Win32VMManager } from './win32-vm-manager'
 
 import path from 'path'
 import fs from 'fs'
@@ -93,8 +94,25 @@ function getGoHelperPath(): string {
 function getQemuPath(): string {
   if (isElectron()) {
     const { app } = require('electron')
-    if (!app.isPackaged) return path.join(getDesktopRoot(), 'resources', 'vm', 'qemu-system-x86_64.exe')
+    if (!app.isPackaged) return findQemuBinary()
     return path.join(process.resourcesPath!, 'vm', 'qemu-system-x86_64.exe')
   }
-  return path.join(getDesktopRoot(), 'resources', 'vm', 'qemu-system-x86_64.exe')
+  return findQemuBinary()
+}
+
+function findQemuBinary(): string {
+  const fs = require('fs')
+  // 1. Bundled alongside VM images
+  const bundled = path.join(getDesktopRoot(), 'resources', 'vm', 'qemu-system-x86_64.exe')
+  if (fs.existsSync(bundled)) return bundled
+  // 2. System-installed QEMU (standard winget/installer location)
+  const systemPath = 'C:\\Program Files\\qemu\\qemu-system-x86_64.exe'
+  if (fs.existsSync(systemPath)) return systemPath
+  // 3. On PATH
+  try {
+    const { execSync } = require('child_process')
+    const found = execSync('where qemu-system-x86_64', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().split('\n')[0]
+    if (found && fs.existsSync(found.trim())) return found.trim()
+  } catch {}
+  return bundled
 }
