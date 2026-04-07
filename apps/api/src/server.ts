@@ -462,6 +462,8 @@ app.use(
       '/api/ai/',
       '/api/tools/',
       '/api/api-keys/validate',
+      '/api/agent-templates',
+      '/api/tech-stacks',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()

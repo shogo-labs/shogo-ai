@@ -9,6 +9,7 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { getAgentModeOverrides } from '@shogo/model-catalog'
+import { getAgentTemplateById } from '@shogo/agent-runtime/src/agent-templates'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -34,6 +35,16 @@ export async function buildProjectEnv(
     if (project) {
       if (project.templateId) env.TEMPLATE_ID = project.templateId
       if (project.name) env.AGENT_NAME = project.name
+
+      const settings = project.settings as Record<string, unknown> | null
+      const techStackFromSettings = settings?.techStackId as string | undefined
+      if (techStackFromSettings) {
+        env.TECH_STACK_ID = techStackFromSettings
+      } else if (project.templateId) {
+        const template = getAgentTemplateById(project.templateId)
+        if (template?.techStack) env.TECH_STACK_ID = template.techStack
+      }
+
       const { getProjectOwnerUserId } = await import('../project-user-context')
       const ownerUserId = await getProjectOwnerUserId(projectId)
       env.AI_PROXY_TOKEN = await generateProxyToken(

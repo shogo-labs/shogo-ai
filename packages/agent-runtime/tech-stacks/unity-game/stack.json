@@ -1,0 +1,11 @@
+{
+  "id": "unity-game",
+  "name": "Unity Game Builder",
+  "description": "Build games with Unity and C#. Requires .NET SDK (future runtime layer).",
+  "tags": ["unity", "csharp", "3d", "2d", "games", "gamedev"],
+  "runtime": {
+    "devServer": "unity",
+    "buildCommand": "dotnet build",
+    "previewPort": 3001
+  }
+}

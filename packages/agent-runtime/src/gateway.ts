@@ -38,7 +38,7 @@ import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipC
 import { microcompact } from './microcompact'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
-import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES, CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
+import { CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import {
@@ -2045,28 +2045,7 @@ export class AgentGateway {
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
-    if (activeMode === 'canvas') {
-      if (this.config.canvasMode === 'code') {
-        stableParts.push(`\n## Canvas Mode — React App
-
-You are in canvas code mode. Your workspace is a standard Vite + React + Tailwind app. The app auto-builds and renders in the preview panel.
-
-**Your workflow:**
-1. **Read existing state** — check \`.shogo/server/schema.prisma\` and \`src/App.tsx\` to understand what's already built
-2. If the app needs persistent data, **ADD** models to the schema — never replace existing models
-3. Create new feature components under \`src/components/\` — one file per feature
-4. Update \`src/App.tsx\` to add a tab/section for the new feature — don't rewrite the whole file
-5. Use \`edit_file\` to update existing files, \`write_file\` only for new files
-
-**IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
-**IMPORTANT:** NEVER create a custom HTTP server (\`server.ts\`, \`server.tsx\`, Hono, Express, etc.). The skill server is always running. For custom API routes, edit \`.shogo/server/custom-routes.ts\`. For persistent data, write \`.shogo/server/schema.prisma\`.
-`)
-        stableParts.push(this.promptOverrides.get('canvas_v2_guide') ?? CANVAS_V2_GUIDE)
-        stableParts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
-        stableParts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
-        stableParts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
-      }
-    } else {
+    if (activeMode !== 'canvas') {
       stableParts.push(CANVAS_FILE_REFERENCE)
     }
 
@@ -2133,7 +2112,7 @@ You are in canvas code mode. Your workspace is a standard Vite + React + Tailwin
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
     // 6. Project identity files (change when user edits them)
-    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
+    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md', 'STACK.md']
     for (const filename of files) {
       const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
       if (filepath) {

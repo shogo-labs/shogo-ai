@@ -376,6 +376,12 @@ export const api = {
     return Array.isArray(templates) ? templates : []
   },
 
+  async getTechStacks(http: HttpClient) {
+    const res = await http.get<{ stacks: TechStackSummary[] }>('/api/tech-stacks')
+    const stacks = res.data?.stacks
+    return Array.isArray(stacks) ? stacks : []
+  },
+
   async getAppTemplates(http: HttpClient) {
     const res = await http.get<{ templates: AppTemplateSummary[] }>('/api/templates')
     const templates = res.data?.templates
@@ -529,6 +535,19 @@ export interface AgentTemplateSummary {
     description: string
     required?: boolean
   }>
+  techStack?: string
+}
+
+export interface TechStackSummary {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  runtime?: {
+    devServer?: string
+    buildCommand?: string
+    previewPort?: number
+  }
 }
 
 export interface AppTemplateSummary {

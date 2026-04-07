@@ -57,7 +57,8 @@ RUN npm install -g typescript-language-server typescript pyright && \
 
 # Install Python packages and set ownership in single layer (no duplicate data)
 RUN pip install --no-cache-dir \
-      openpyxl Pillow python-pptx pydub pandas numpy scipy PyPDF2 && \
+      openpyxl Pillow python-pptx pydub pandas numpy scipy PyPDF2 \
+      jupyter jupyterlab matplotlib plotly seaborn && \
     chown -R appuser:appgroup /usr/local/lib/python3.12
 
 ENV SHELL=/bin/bash
