@@ -69,6 +69,12 @@ export interface ChatSessionPickerProps {
   onLoadMore?: () => void
   hasMore?: boolean
   isLoadingMore?: boolean
+  /** Hide the "Chats" header row (search + new-chat buttons). Used in fullscreen mode where the top bar owns those controls. */
+  hideHeader?: boolean
+  /** Externally controlled search-modal open state. When provided, overrides internal state. */
+  searchOpen?: boolean
+  /** Called when the externally-controlled search modal should close. */
+  onSearchClose?: () => void
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -298,10 +304,21 @@ export function ChatSessionSidebar({
   onLoadMore,
   hasMore,
   isLoadingMore,
+  hideHeader,
+  searchOpen: externalSearchOpen,
+  onSearchClose,
 }: ChatSessionPickerProps) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
-  const [searchOpen, setSearchOpen] = useState(false)
+  const [internalSearchOpen, setInternalSearchOpen] = useState(false)
+  const searchOpen = externalSearchOpen ?? internalSearchOpen
+  const setSearchOpen = (open: boolean) => {
+    if (externalSearchOpen !== undefined) {
+      if (!open) onSearchClose?.()
+    } else {
+      setInternalSearchOpen(open)
+    }
+  }
   const [searchQuery, setSearchQuery] = useState("")
 
   const sortedSessions = useMemo(() => {
@@ -422,25 +439,27 @@ export function ChatSessionSidebar({
 
   return (
     <View className="flex-1">
-      <View className="flex-row items-center justify-between px-4 py-3">
-        <Text className="text-sm text-foreground">Chats</Text>
-        <View className="flex-row items-center gap-1">
-          {sessions.length > 0 && (
+      {!hideHeader && (
+        <View className="flex-row items-center justify-between px-4 py-3">
+          <Text className="text-sm text-foreground">Chats</Text>
+          <View className="flex-row items-center gap-1">
+            {sessions.length > 0 && (
+              <Pressable
+                onPress={() => setSearchOpen(true)}
+                className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+              >
+                <Search className="text-muted-foreground" size={16} />
+              </Pressable>
+            )}
             <Pressable
-              onPress={() => setSearchOpen(true)}
+              onPress={onCreate}
               className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
             >
-              <Search className="text-muted-foreground" size={16} />
+              <Plus className="text-muted-foreground" size={16} />
             </Pressable>
-          )}
-          <Pressable
-            onPress={onCreate}
-            className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
-          >
-            <Plus className="text-muted-foreground" size={16} />
-          </Pressable>
+          </View>
         </View>
-      </View>
+      )}
 
       <FlatList
         data={sortedSessions}

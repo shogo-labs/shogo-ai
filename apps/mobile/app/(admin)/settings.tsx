@@ -80,9 +80,7 @@ function CloudModelSettingsPage() {
       .then((data: { basic: string | null; advanced: string | null }) => {
         setCloudBasicModel(data.basic || '')
         setCloudAdvancedModel(data.advanced || '')
-        loadedRef.current = true
       })
-      .catch(() => { loadedRef.current = true })
       .finally(() => setIsLoading(false))
   }, [platform])
 
@@ -105,6 +103,12 @@ function CloudModelSettingsPage() {
     }, 600)
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
   }, [cloudBasicModel, cloudAdvancedModel, platform])
+
+  // Declared after auto-save effect so it runs second in the same render cycle.
+  // The auto-save skips (ref is false), then this enables future saves.
+  useEffect(() => {
+    if (!isLoading) loadedRef.current = true
+  }, [isLoading])
 
   if (isLoading) {
     return (
@@ -254,7 +258,6 @@ function LocalSettingsPage() {
       console.error('[AdminSettings] Failed to load config:', err)
     } finally {
       setIsLoading(false)
-      configLoadedRef.current = true
     }
   }, [platform, inferMode])
 
@@ -343,6 +346,12 @@ function LocalSettingsPage() {
     }, 600)
     return () => { if (modelDefaultsTimerRef.current) clearTimeout(modelDefaultsTimerRef.current) }
   }, [activeMode, cloudBasicModel, cloudAdvancedModel, platform])
+
+  // Declared after auto-save effects so it runs second in the same render cycle.
+  // The auto-save effects skip (ref is false), then this enables future saves.
+  useEffect(() => {
+    if (!isLoading) configLoadedRef.current = true
+  }, [isLoading])
 
   const handleApiKeyBlur = useCallback(async (provider: 'anthropic' | 'openai') => {
     const key = provider === 'anthropic' ? anthropicKey : openaiKey

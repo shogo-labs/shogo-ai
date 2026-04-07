@@ -863,9 +863,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           delete runtimeEnv.ANTHROPIC_BASE_URL
         }
 
-        // When Shogo Cloud API key is active, route all providers through the local proxy.
-        // The local proxy will forward requests to the Shogo Cloud proxy.
-        if (process.env.SHOGO_API_KEY) {
+        // When Shogo Cloud API key is active and AI_MODE is not overridden,
+        // route all providers through the local proxy for cloud forwarding.
+        const aiMode = process.env.AI_MODE
+        if (process.env.SHOGO_API_KEY && aiMode !== 'api-keys' && aiMode !== 'local-llm') {
           const proxyToken = runtimeEnv.AI_PROXY_TOKEN
           if (proxyToken) {
             runtimeEnv.OPENAI_BASE_URL = proxyUrl

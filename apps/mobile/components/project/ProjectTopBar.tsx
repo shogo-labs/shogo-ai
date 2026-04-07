@@ -30,7 +30,6 @@ import {
 import { useRouter } from 'expo-router'
 import {
   ArrowLeft,
-  History,
   PanelLeftClose,
   PanelLeft,
   Zap,
@@ -146,6 +145,8 @@ export interface ProjectTopBarProps {
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
   chatFullscreenSidebarWidth?: number
+  /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
+  onSearchChats?: () => void
   // Slot for canvas theme picker
   canvasThemePicker?: React.ReactNode
   onCanvasRefresh?: () => void
@@ -237,6 +238,7 @@ export function ProjectTopBar({
   onChatCollapseToggle,
   onCreateNewSession,
   chatFullscreenSidebarWidth,
+  onSearchChats,
   canvasThemePicker,
   onCanvasRefresh,
 }: ProjectTopBarProps) {
@@ -543,19 +545,16 @@ export function ProjectTopBar({
 
         <View className="flex-1" />
 
-        {/* Chat controls — right-aligned within the chat zone */}
+        {/* Fullscreen: search chats icon in the sidebar header area */}
+        {onSearchChats && (
+          <BarIconButton icon={Search} onPress={onSearchChats} title="Search chats" />
+        )}
+
+        {/* Chat collapse/expand — history and new-chat are now in ChatTabBar */}
         {onChatCollapseToggle && (
           <View className="flex-row items-center gap-0.5">
             {!isChatCollapsed ? (
-              <>
-                <BarIconButton icon={PanelLeftClose} onPress={onChatCollapseToggle} title="Collapse chat" />
-                {onChatSessionsToggle && (
-                  <BarIconButton icon={History} onPress={onChatSessionsToggle} active={showChatSessions} title="Chat history" />
-                )}
-                {onCreateNewSession && (
-                  <BarIconButton icon={Plus} onPress={onCreateNewSession} title="New chat" />
-                )}
-              </>
+              <BarIconButton icon={PanelLeftClose} onPress={onChatCollapseToggle} title="Collapse chat" />
             ) : (
               <BarIconButton icon={PanelLeft} onPress={onChatCollapseToggle} title="Expand chat" />
             )}
