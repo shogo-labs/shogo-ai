@@ -55,6 +55,7 @@ import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-la
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
+import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
 import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
@@ -455,6 +456,63 @@ export default observer(function ProjectLayout() {
     }
   }, [projectId, chatSessionId])
 
+  // ─── Open chat tabs state ───────────────────────────────
+  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([])
+  const openTabsRestoredRef = useRef(false)
+
+  // Restore open tabs from AsyncStorage on mount
+  useEffect(() => {
+    if (!projectId || openTabsRestoredRef.current) return
+    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`).then((raw) => {
+      if (raw) {
+        try {
+          const ids = JSON.parse(raw)
+          if (Array.isArray(ids) && ids.length > 0) {
+            setOpenChatTabIds(ids)
+            openTabsRestoredRef.current = true
+            return
+          }
+        } catch { /* ignore malformed data */ }
+      }
+      openTabsRestoredRef.current = true
+    }).catch(() => { openTabsRestoredRef.current = true })
+  }, [projectId])
+
+  // Persist open tabs to AsyncStorage when they change
+  useEffect(() => {
+    if (!projectId || !openTabsRestoredRef.current || openChatTabIds.length === 0) return
+    AsyncStorage.setItem(`shogo:chatTabs:${projectId}`, JSON.stringify(openChatTabIds)).catch(() => {})
+  }, [projectId, openChatTabIds])
+
+  // Ensure the active session is always in the open tabs list
+  useEffect(() => {
+    if (!chatSessionId) return
+    setOpenChatTabIds((prev) => {
+      if (prev.includes(chatSessionId)) return prev
+      return [...prev, chatSessionId]
+    })
+  }, [chatSessionId])
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    setOpenChatTabIds((prev) => {
+      const next = prev.filter((id) => id !== tabId)
+      if (tabId === chatSessionId) {
+        const idx = prev.indexOf(tabId)
+        const neighbor = prev[idx + 1] ?? prev[idx - 1]
+        if (neighbor) {
+          setChatSessionId(neighbor)
+        } else {
+          // Last tab closed — will trigger new session creation via the initSession effect
+          setChatSessionId(null)
+        }
+      }
+      if (next.length === 0 && projectId) {
+        AsyncStorage.removeItem(`shogo:chatTabs:${projectId}`).catch(() => {})
+      }
+      return next
+    })
+  }, [chatSessionId, projectId])
+
   const SESSION_PAGE_SIZE = 10
 
   // Auto-select or create chat session
@@ -527,6 +585,7 @@ export default observer(function ProjectLayout() {
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
@@ -708,6 +767,17 @@ export default observer(function ProjectLayout() {
     }
   }, [store?.chatSessionCollection?.all, sessionNames, projectId])
 
+  // Build ordered tab list with display names from openChatTabIds
+  const openChatTabs: ChatTab[] = useMemo(() => {
+    const sessionMap = new Map(chatSessions.map((s) => [s.id, s.name]))
+    return openChatTabIds
+      .map((id) => ({ id, name: sessionMap.get(id) || 'Untitled' }))
+  }, [openChatTabIds, chatSessions])
+
+  const handleSelectTab = useCallback((tabId: string) => {
+    setChatSessionId(tabId)
+  }, [])
+
   const handleCreateNewSession = useCallback(async () => {
     try {
       const newSession = await actions.createChatSession({
@@ -716,6 +786,7 @@ export default observer(function ProjectLayout() {
         contextId: projectId!,
       })
       if (newSession?.id) {
+        setOpenChatTabIds((prev) => prev.includes(newSession.id) ? prev : [...prev, newSession.id])
         setChatSessionId(newSession.id)
       }
     } catch (err) {
@@ -910,6 +981,7 @@ export default observer(function ProjectLayout() {
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
+    onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
@@ -968,11 +1040,17 @@ export default observer(function ProjectLayout() {
                     <ChatSessionSidebar
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => setChatSessionId(sessionId)}
+                      onSelect={(sessionId) => {
+                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                        setChatSessionId(sessionId)
+                      }}
                       onCreate={handleCreateNewSession}
                       onLoadMore={handleLoadMoreSessions}
                       hasMore={store?.chatSessionCollection?.hasMore ?? false}
                       isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                      hideHeader
+                      searchOpen={sidebarSearchOpen}
+                      onSearchClose={() => setSidebarSearchOpen(false)}
                     />
                   </View>
                 )}
@@ -982,6 +1060,7 @@ export default observer(function ProjectLayout() {
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}
                       onSelect={(sessionId) => {
+                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
                         setChatSessionId(sessionId)
                         setShowChatSessions(false)
                       }}
@@ -992,7 +1071,34 @@ export default observer(function ProjectLayout() {
                     />
                   </View>
                 )}
-                <View className="min-h-0 flex-1">{chatPanel}</View>
+                {isChatFullscreen ? (
+                  /* Fullscreen: parent is flex-row, so wrap tab bar + chat in a flex-col */
+                  <View className="min-h-0 flex-1 flex-col">
+                    <ChatTabBar
+                      tabs={openChatTabs}
+                      activeTabId={chatSessionId}
+                      onSelectTab={handleSelectTab}
+                      onCloseTab={handleCloseTab}
+                      onNewChat={handleCreateNewSession}
+                    />
+                    <View className="min-h-0 flex-1">{chatPanel}</View>
+                  </View>
+                ) : (
+                  <>
+                    {isWide && (
+                      <ChatTabBar
+                        tabs={openChatTabs}
+                        activeTabId={chatSessionId}
+                        onSelectTab={handleSelectTab}
+                        onCloseTab={handleCloseTab}
+                        onNewChat={handleCreateNewSession}
+                        onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
+                        showHistory={showChatSessions}
+                      />
+                    )}
+                    <View className="min-h-0 flex-1">{chatPanel}</View>
+                  </>
+                )}
               </View>
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}

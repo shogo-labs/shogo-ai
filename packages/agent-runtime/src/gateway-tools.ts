@@ -5291,24 +5291,3 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
     },
   }
 }
-
-/** Reduced tool set for heartbeat ticks (no exec, no send_message, no planning tools) */
-export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
-  const pe = ctx.permissionEngine
-  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
-
-  return [
-    g(createReadFileTool(ctx), 'file_read'),
-    g(createWriteFileTool(ctx), 'file_write'),
-    g(createEditFileTool(ctx), 'file_write'),
-    g(createGlobTool(ctx), 'file_read'),
-    g(createGrepTool(ctx), 'file_read'),
-    g(createLsTool(ctx), 'file_read'),
-    g(createWebTool(), 'network'),
-    g(createBrowserTool(ctx), 'network'),
-    createMemoryReadTool(ctx),
-    createMemorySearchTool(ctx),
-    createHeartbeatConfigureTool(ctx),
-    createHeartbeatStatusTool(ctx),
-  ]
-}

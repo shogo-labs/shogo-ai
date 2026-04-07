@@ -30,7 +30,7 @@ import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } fr
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { createTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
@@ -1370,20 +1370,10 @@ export class AgentGateway {
       },
     }
 
-    const baseTools = isHeartbeat
-      ? createHeartbeatTools(toolContext)
-      : createTools(toolContext)
+    const baseTools = createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
-
-    // Strip skill and preview tools from heartbeat runs
-    if (isHeartbeat) {
-      assembledTools = assembledTools.filter(t =>
-        t.name !== 'skill' &&
-        t.name !== 'preview_status' && t.name !== 'preview_restart'
-      )
-    }
 
     // Suppress MCP Playwright tools — built-in browser tool has feature parity
     assembledTools = assembledTools.filter(t => !t.name.startsWith('mcp_playwright_'))
@@ -1860,18 +1850,19 @@ export class AgentGateway {
 
         if (result.error) {
           const msg = result.error.message || 'An unexpected error occurred'
-          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits/i.test(msg)
+          const isBillingError = /billing|insufficient.credits|upgrade your plan/i.test(msg)
           console.error(
             `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
           )
           chunker?.dispose()
           if (uiWriter) {
-            uiWriter.write({
-              type: 'error',
-              errorText: isProviderError
+            const errorText = isBillingError
+              ? 'Insufficient credits. Please check your plan or AI provider settings.'
+              : isProviderError
                 ? `AI provider error: ${msg}`
-                : `I encountered an issue processing your message: ${msg}`,
-            } as any)
+                : `I encountered an issue processing your message: ${msg}`
+            uiWriter.write({ type: 'error', errorText } as any)
           }
         } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
           console.error(
