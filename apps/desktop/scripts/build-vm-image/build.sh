@@ -201,18 +201,25 @@ echo "Provisioning complete."
 echo "Extracting kernel and initrd..."
 
 if command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
-  # Preferred: libguestfs works in userspace without kernel modules (CI-friendly)
+  export LIBGUESTFS_BACKEND=direct
   echo "Using libguestfs (virt-copy-out) for extraction..."
-  VMLINUZ=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ 2>/dev/null | grep '^vmlinuz-' | sort -V | tail -1)
-  INITRD=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ 2>/dev/null | grep '^initrd.img-' | sort -V | tail -1)
+  echo "Listing /boot/ contents:"
+  virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ || {
+    echo "virt-ls failed, trying with explicit partition..."
+    virt-filesystems -a "${WORK_DIR}/disk.qcow2" --long --human-readable
+  }
+  VMLINUZ=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ | grep '^vmlinuz-' | sort -V | tail -1 || true)
+  INITRD=$(virt-ls -a "${WORK_DIR}/disk.qcow2" /boot/ | grep '^initrd.img-' | sort -V | tail -1 || true)
 
   if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
+    echo "Found: $VMLINUZ, $INITRD"
     virt-copy-out -a "${WORK_DIR}/disk.qcow2" "/boot/$VMLINUZ" "$OUTPUT_DIR"
     virt-copy-out -a "${WORK_DIR}/disk.qcow2" "/boot/$INITRD" "$OUTPUT_DIR"
     mv "${OUTPUT_DIR}/${VMLINUZ}" "${OUTPUT_DIR}/vmlinuz"
     mv "${OUTPUT_DIR}/${INITRD}" "${OUTPUT_DIR}/initrd.img"
   else
     echo "ERROR: Could not find kernel/initrd in the image via virt-ls"
+    echo "VMLINUZ='$VMLINUZ' INITRD='$INITRD'"
     exit 1
   fi
 elif command -v qemu-nbd &>/dev/null; then
