@@ -32,9 +32,9 @@ const OPTIONS: SecurityOption[] = [
   {
     mode: 'full_autonomy',
     label: 'Full Autonomy',
-    summary: 'All actions auto-approved, destructive commands still blocked',
+    summary: 'All actions auto-approved.',
     description:
-      'Agent performs all actions automatically. System-level destructive commands still blocked.',
+      'Agent performs all actions automatically.',
     icon: Zap,
     recommended: true,
   },

@@ -32,10 +32,6 @@ export function SecurityForm({ onComplete }: SecurityFormProps) {
     <View className="gap-4">
       <SecurityPreferenceSelector value={securityMode} onChange={setSecurityMode} compact />
 
-      <Text className="text-xs text-muted-foreground leading-4">
-        Shogo never accesses ~/.ssh, system credentials, or runs sudo commands.
-      </Text>
-
       <Pressable
         onPress={handleSave}
         disabled={isSaving}

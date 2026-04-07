@@ -56,10 +56,12 @@ interface CapabilityDef {
   key: keyof CapabilitySettings
   label: string
   description: string
+  detail: string
   disabledDescription: string
   icon: typeof LayoutDashboard
   toolNames: string[]
   warning?: string
+  examples?: string[]
 }
 
 type AgentMode = 'none' | 'canvas'
@@ -75,6 +77,7 @@ const CAPABILITIES: CapabilityDef[] = [
     key: 'webEnabled',
     label: 'Web Search',
     description: 'Search the web and fetch pages',
+    detail: 'Lets the agent search Google, read documentation, fetch API references, and pull real-time information from the internet. Essential for research, fact-checking, and staying up to date.',
     disabledDescription: 'No internet search access',
     icon: Globe,
     toolNames: ['web'],
@@ -83,6 +86,7 @@ const CAPABILITIES: CapabilityDef[] = [
     key: 'browserEnabled',
     label: 'Browser Control',
     description: 'Navigate and interact with web pages',
+    detail: 'Gives the agent a full headless browser to click buttons, fill forms, take screenshots, and scrape dynamic content. Use for testing web apps, monitoring dashboards, or automating workflows on sites that require JavaScript.',
     disabledDescription: 'No browser automation',
     icon: Monitor,
     toolNames: ['browser'],
@@ -91,6 +95,7 @@ const CAPABILITIES: CapabilityDef[] = [
     key: 'shellEnabled',
     label: 'Shell',
     description: 'Execute code and system commands',
+    detail: 'Allows running shell commands, scripts, and code in the agent\'s runtime environment. Required for installing packages, running dev servers, executing builds, and any task that needs a terminal.',
     disabledDescription: 'No code execution',
     icon: Terminal,
     toolNames: ['exec'],
@@ -100,14 +105,21 @@ const CAPABILITIES: CapabilityDef[] = [
     key: 'heartbeatEnabled',
     label: 'Heartbeat',
     description: 'Periodic autonomous check-ins on a schedule',
+    detail: 'The agent wakes up on a configurable interval to check for updates, run monitoring tasks, send reports, or perform any recurring work — even when you\'re not actively chatting with it.',
     disabledDescription: 'No autonomous scheduling',
     icon: Clock,
     toolNames: ['heartbeat_configure', 'heartbeat_status'],
+    examples: [
+      '"Check my GitHub PRs every hour and summarize what needs review"',
+      '"Every morning at 9am, pull yesterday\'s sales numbers and post a summary"',
+      '"Monitor our API uptime every 15 minutes and alert me if anything goes down"',
+    ],
   },
   {
     key: 'imageGenEnabled',
     label: 'Image Generation',
     description: 'Generate images from text descriptions',
+    detail: 'Creates images using AI models from text prompts. Useful for generating app icons, placeholder graphics, concept art, social media assets, diagrams, and visual mockups.',
     disabledDescription: 'No image generation',
     icon: ImageIcon,
     toolNames: ['generate_image'],
@@ -116,18 +128,30 @@ const CAPABILITIES: CapabilityDef[] = [
     key: 'memoryEnabled',
     label: 'Memory',
     description: 'Remember information across conversations',
+    detail: 'Persistent memory that survives between chat sessions. The agent can store preferences, project context, decisions, and learnings so it doesn\'t start from scratch each time you talk to it.',
     disabledDescription: 'Ephemeral — no long-term memory',
     icon: Brain,
     toolNames: ['memory_read', 'memory_write', 'memory_search'],
     warning: 'Disabling this means the agent cannot recall past conversations.',
+    examples: [
+      '"Remember that I prefer TypeScript over JavaScript and Tailwind over plain CSS"',
+      '"Save our API keys and endpoint URLs so I don\'t have to repeat them"',
+      '"What do you remember about the auth system we discussed last week?"',
+    ],
   },
   {
     key: 'quickActionsEnabled',
     label: 'Quick Actions',
     description: 'Register and suggest repeatable prompt shortcuts',
+    detail: 'The agent can create one-tap shortcuts for tasks you do often — like "deploy to staging", "run tests", or "generate weekly report". These appear as buttons in the chat interface for quick access.',
     disabledDescription: 'No prompt shortcuts',
     icon: Zap,
     toolNames: ['quick_action'],
+    examples: [
+      '"Add a quick action to run the test suite and show results"',
+      '"Create a shortcut that generates a weekly status report from my project"',
+      '"Make a one-click action to deploy the current build to staging"',
+    ],
   },
 ]
 
@@ -610,8 +634,25 @@ export function CapabilitiesPanel({
 
                       {isExpanded && (
                         <View className="px-3 pb-3 pt-1 border-t border-border ml-11">
+                          <Text className="text-xs text-muted-foreground mb-2.5">
+                            {cap.detail}
+                          </Text>
+                          {cap.examples && cap.examples.length > 0 && (
+                            <View className="mb-2.5">
+                              <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                                Try saying
+                              </Text>
+                              <View className="gap-1.5">
+                                {cap.examples.map((ex, i) => (
+                                  <Text key={i} className="text-[11px] text-foreground/70 italic">
+                                    {ex}
+                                  </Text>
+                                ))}
+                              </View>
+                            </View>
+                          )}
                           <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
-                            Tools in this group
+                            Tools
                           </Text>
                           <View className="flex-row flex-wrap gap-1">
                             {cap.toolNames.map((name) => (
