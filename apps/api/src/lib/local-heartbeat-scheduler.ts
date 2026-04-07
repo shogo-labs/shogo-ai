@@ -10,7 +10,6 @@
  *  - No subscription JOIN (local mode treats all workspaces as paid)
  *  - No FOR UPDATE SKIP LOCKED (single API process, no contention)
  *  - Resolves runtime URLs via RuntimeManager instead of Knative
- *  - No quiet-hours check (columns don't exist in local SQLite schema)
  */
 
 import { BaseHeartbeatScheduler, type DueAgent } from './base-heartbeat-scheduler'
@@ -44,8 +43,6 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
   protected async fetchDueAgents(): Promise<DueAgent[]> {
     const { prisma } = await import('./prisma')
 
-    // Prisma query builder works with both SQLite and Postgres.
-    // No subscription check — local mode treats all workspaces as paid.
     return prisma.agentConfig.findMany({
       where: {
         heartbeatEnabled: true,
@@ -55,6 +52,9 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
         id: true,
         projectId: true,
         heartbeatInterval: true,
+        quietHoursStart: true,
+        quietHoursEnd: true,
+        quietHoursTimezone: true,
       },
       orderBy: { nextHeartbeatAt: 'asc' },
       take: BATCH_SIZE,

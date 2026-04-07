@@ -15,8 +15,6 @@
 import { trace, metrics } from '@opentelemetry/api'
 import {
   BaseHeartbeatScheduler,
-  isInQuietHours,
-  computeJitter,
   type DueAgent,
 } from './base-heartbeat-scheduler'
 
@@ -37,14 +35,6 @@ const POLL_INTERVAL_MS = parseInt(process.env.HEARTBEAT_POLL_INTERVAL_MS || '300
 const BATCH_SIZE = parseInt(process.env.HEARTBEAT_BATCH_SIZE || '10', 10)
 const TRIGGER_TIMEOUT_MS = parseInt(process.env.HEARTBEAT_TRIGGER_TIMEOUT_MS || '15000', 10)
 
-// ─── Extended DueAgent with quiet-hours fields (Postgres only) ───────────────
-
-interface CloudDueAgent extends DueAgent {
-  quietHoursStart: string | null
-  quietHoursEnd: string | null
-  quietHoursTimezone: string | null
-}
-
 // ─── Scheduler ───────────────────────────────────────────────────────────────
 
 export class HeartbeatScheduler extends BaseHeartbeatScheduler {
@@ -61,62 +51,21 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
   protected override async runTick(): Promise<void> {
     await tracer.startActiveSpan('heartbeat_scheduler.tick', async (span) => {
       try {
-        await this.processBatchWithQuietHours()
+        await this.processBatch()
       } finally {
         span.end()
       }
     })
   }
 
-  /**
-   * Cloud-specific batch processing that adds quiet-hours filtering
-   * on top of the base batch loop. We override the entire batch here
-   * because the quiet-hours check must happen between fetch and trigger,
-   * and the base processBatch doesn't know about quiet hours.
-   */
-  private async processBatchWithQuietHours(): Promise<void> {
-    const { prisma } = await import('./prisma')
-
-    const dueAgents = await this.fetchDueAgentsWithQuietHours()
-    if (dueAgents.length === 0) return
-
-    console.log(`[HeartbeatScheduler] Found ${dueAgents.length} due heartbeat(s)`)
-
-    const triggers: Promise<void>[] = []
-
-    for (const agent of dueAgents) {
-      if (this.breaker.isBackedOff(agent.projectId)) continue
-
-      if (isInQuietHours(agent.quietHoursStart, agent.quietHoursEnd, agent.quietHoursTimezone)) {
-        heartbeatsSkippedCounter.add(1)
-        const jitter = computeJitter(agent.heartbeatInterval)
-        await prisma.agentConfig.update({
-          where: { id: agent.id },
-          data: {
-            nextHeartbeatAt: new Date(Date.now() + agent.heartbeatInterval * 1000 + jitter),
-          },
-        })
-        continue
-      }
-
-      const jitter = computeJitter(agent.heartbeatInterval)
-      await prisma.agentConfig.update({
-        where: { id: agent.id },
-        data: {
-          nextHeartbeatAt: new Date(Date.now() + agent.heartbeatInterval * 1000 + jitter),
-        },
-      })
-
-      triggers.push(this.triggerAgent(agent.projectId))
-    }
-
-    await Promise.allSettled(triggers)
+  protected override onQuietHoursSkip(_agent: DueAgent): void {
+    heartbeatsSkippedCounter.add(1)
   }
 
-  private async fetchDueAgentsWithQuietHours(): Promise<CloudDueAgent[]> {
+  protected async fetchDueAgents(): Promise<DueAgent[]> {
     const { prisma } = await import('./prisma')
 
-    return prisma.$queryRaw<CloudDueAgent[]>`
+    return prisma.$queryRaw<DueAgent[]>`
       SELECT ac."id", ac."projectId", ac."heartbeatInterval",
              ac."quietHoursStart", ac."quietHoursEnd", ac."quietHoursTimezone"
       FROM "agent_configs" ac
@@ -129,11 +78,6 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
       FOR UPDATE OF ac SKIP LOCKED
       LIMIT ${BATCH_SIZE}
     `
-  }
-
-  /** Required by base class but unused — cloud uses processBatchWithQuietHours instead. */
-  protected async fetchDueAgents(): Promise<DueAgent[]> {
-    return this.fetchDueAgentsWithQuietHours()
   }
 
   protected async triggerAgent(projectId: string): Promise<void> {

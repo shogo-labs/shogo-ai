@@ -113,13 +113,10 @@ app.post('/heartbeat/complete', async (c) => {
 
   try {
     const { prisma } = await import('../lib/prisma')
-    // lastHeartbeatAt doesn't exist in the local SQLite schema, only update in prod
-    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-      await prisma.agentConfig.updateMany({
-        where: { projectId },
-        data: { lastHeartbeatAt: new Date() },
-      })
-    }
+    await prisma.agentConfig.updateMany({
+      where: { projectId },
+      data: { lastHeartbeatAt: new Date() },
+    })
 
     return c.json({ ok: true })
   } catch (err: any) {
@@ -152,11 +149,9 @@ app.put('/heartbeat/config/:projectId', async (c) => {
     if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
       data.heartbeatInterval = body.heartbeatInterval
     }
-    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-      if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-      if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-      if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-    }
+    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
 
     const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
     if (!existing) {

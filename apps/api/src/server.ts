@@ -51,6 +51,7 @@ import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
 import { evalOutputRoutes } from './routes/eval-outputs'
+import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
@@ -1338,6 +1339,9 @@ app.route('/api', agentTemplateRoutes())
 // Eval output listing + import — for local dev/testing
 app.route('/api', evalOutputRoutes())
 
+// Project export/import — full project bundle (.shogo-project ZIP)
+app.route('/api/projects', projectExportImportRoutes())
+
 // Eval admin — run management, results viewer, trigger (super-admin only)
 app.route('/api/admin/evals', evalAdminRoutes())
 
@@ -2189,13 +2193,18 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const FETCH_TIMEOUT_MS = 1_800_000
   let lastError: Error | null = null
 
+  const proxyClientSignal = c.req.raw.signal
+  const proxyFetchSignal = proxyClientSignal
+    ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), proxyClientSignal])
+    : AbortSignal.timeout(FETCH_TIMEOUT_MS)
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const response = await fetch(targetUrl, {
         method: c.req.method,
         headers,
         body: requestBody,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: proxyFetchSignal,
       })
 
       if (!response.ok && response.status >= 500 && attempt < MAX_RETRIES) {
@@ -2237,7 +2246,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         const trackedBody = response.body.pipeThrough(new TransformStream({
           flush() { activeProxyConnections-- },
         }))
-        c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+        proxyClientSignal?.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
         return new Response(trackedBody, { status: response.status, headers: responseHeaders })
       }
 
@@ -2255,6 +2264,9 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         fetchError.message?.includes('ECONNREFUSED') ||
         fetchError.message?.includes('connection refused')
 
+      const isClientAbort = fetchError.name === 'AbortError' && proxyClientSignal?.aborted
+      if (isClientAbort) break
+
       const isTimeout = fetchError.name === 'TimeoutError' || fetchError.name === 'AbortError'
 
       if ((isTransient || isTimeout) && attempt < MAX_RETRIES) {
@@ -2270,6 +2282,9 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     }
   }
 
+  if (proxyClientSignal?.aborted) {
+    return new Response(null, { status: 499 })
+  }
   console.error(`[AgentProxy] ${c.req.method} ${path} failed after ${MAX_RETRIES} attempts:`, lastError?.message)
   return c.json(
     { error: { code: 'proxy_error', message: lastError?.message || 'Agent runtime unavailable after retries', retryable: true } },
@@ -3570,23 +3585,18 @@ app.get('/api/projects/:projectId/heartbeat', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
-  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
-  const select: Record<string, boolean> = {
-    heartbeatEnabled: true,
-    heartbeatInterval: true,
-    nextHeartbeatAt: true,
-    modelName: true,
-  }
-  if (!isLocal) {
-    select.lastHeartbeatAt = true
-    select.quietHoursStart = true
-    select.quietHoursEnd = true
-    select.quietHoursTimezone = true
-  }
-
   const config = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
-    select,
+    select: {
+      heartbeatEnabled: true,
+      heartbeatInterval: true,
+      nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
+      quietHoursStart: true,
+      quietHoursEnd: true,
+      quietHoursTimezone: true,
+      modelName: true,
+    },
   })
 
   if (!config) {
@@ -3609,11 +3619,9 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
   if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
     data.heartbeatInterval = body.heartbeatInterval
   }
-  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-  }
+  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
 
   const existing = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
@@ -3643,24 +3651,19 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
     data.nextHeartbeatAt = null
   }
 
-  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
-  const updateSelect: Record<string, boolean> = {
-    heartbeatEnabled: true,
-    heartbeatInterval: true,
-    nextHeartbeatAt: true,
-    modelName: true,
-  }
-  if (!isLocal) {
-    updateSelect.lastHeartbeatAt = true
-    updateSelect.quietHoursStart = true
-    updateSelect.quietHoursEnd = true
-    updateSelect.quietHoursTimezone = true
-  }
-
   const updated = await prisma.agentConfig.update({
     where: { projectId: authResult.projectId },
     data,
-    select: updateSelect,
+    select: {
+      heartbeatEnabled: true,
+      heartbeatInterval: true,
+      nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
+      quietHoursStart: true,
+      quietHoursEnd: true,
+      quietHoursTimezone: true,
+      modelName: true,
+    },
   })
 
   return c.json(updated)
@@ -3727,10 +3730,12 @@ app.post('/api/projects/:projectId/chat', async (c) => {
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat`
+  const clientSignal = c.req.raw.signal
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
     body: c.req.raw.body,
+    signal: clientSignal,
   })
   try {
     const resp = await router.fetch(newReq)
@@ -3738,7 +3743,7 @@ app.post('/api/projects/:projectId/chat', async (c) => {
       const trackedBody = resp.body.pipeThrough(new TransformStream({
         flush() { activeProxyConnections-- },
       }))
-      c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+      clientSignal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
       return new Response(trackedBody, { status: resp.status, headers: resp.headers })
     }
     activeProxyConnections--

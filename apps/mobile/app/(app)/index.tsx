@@ -34,6 +34,8 @@ import { saveInteractionModePreference } from '../../lib/interaction-mode-prefer
 import { loadAgentModePreference, saveAgentModePreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useTypingPlaceholder'
+import { useBillingData } from '@shogo/shared-app/hooks'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
@@ -231,13 +233,19 @@ const HomeScreen = observer(function HomeScreen() {
     fetchTemplates()
   }, [isAuthenticated, user?.id, http])
 
+  const currentWorkspace = useActiveWorkspace()
+  const billingData = useBillingData(currentWorkspace?.id)
+  const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
+
   useEffect(() => {
     loadAgentModePreference().then((stored) => {
-      if (stored) setAgentMode(stored)
+      if (stored) {
+        setAgentMode(stored)
+      } else if (hasAdvancedModelAccess) {
+        setAgentMode("advanced")
+      }
     })
-  }, [])
-
-  const currentWorkspace = useActiveWorkspace()
+  }, [hasAdvancedModelAccess])
 
   // Deep-link: auto-create project from pending template (website referral)
   useEffect(() => {
@@ -321,12 +329,16 @@ const HomeScreen = observer(function HomeScreen() {
     void saveAgentModePreference(mode)
   }, [])
 
+  const typingPlaceholder = useTypingPlaceholder(undefined, {
+    enabled: interactionMode === 'agent' && !prompt,
+  })
+
   const homeComposerPlaceholder =
     interactionMode === 'plan'
       ? 'Describe what you want to plan...'
       : interactionMode === 'ask'
         ? 'Ask a question...'
-        : 'Ask Shogo to create...'
+        : `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
 
   const handlePromptSubmit = useCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
@@ -518,6 +530,8 @@ const HomeScreen = observer(function HomeScreen() {
                 onInteractionModeChange={handleHomeInteractionModeChange}
                 agentMode={agentMode}
                 onAgentModeChange={handleHomeAgentModeChange}
+                isPro={hasAdvancedModelAccess}
+                onUpgradeClick={() => router.push('/billing')}
               />
             </View>
           </View>
