@@ -97,7 +97,7 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 |---------|-------------|
 | `@shogo/api` | API server and platform orchestration |
 | `@shogo/mobile` | Primary client app |
-| `@shogo/desktop` | Desktop packaging layer |
+| `shogo` | Desktop packaging layer |
 | `@shogo/agent-runtime` | Agent runtime and tool gateway |
 | `@shogo-ai/sdk` | Developer SDK for auth, data, and email |
 

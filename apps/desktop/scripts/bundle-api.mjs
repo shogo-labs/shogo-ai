@@ -59,6 +59,7 @@ const ITEMS_TO_CLEAN = [
  * These are kept as external imports and installed in a minimal node_modules.
  */
 const EXTERNAL_PACKAGES = [
+  'electron',
   'playwright-core',
   '@playwright/mcp',
   '@prisma/client',
@@ -189,7 +190,7 @@ function main() {
   if (!skipInstall) {
     const isWindows = process.platform === 'win32'
     const installCmd = isWindows
-      ? 'bun install --production --linker=isolated'
+      ? 'npm install --omit=dev'
       : 'bun install --production'
     console.log(`  Running: ${installCmd}`)
     execSync(installCmd, {

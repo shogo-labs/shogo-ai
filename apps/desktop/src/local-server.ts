@@ -3,7 +3,8 @@
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
 import path from 'path'
-import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot } from './paths'
+import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
+import { isVMAvailable } from './vm'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -202,6 +203,33 @@ function ensureRuntimeTemplate(): void {
   console.log('[Desktop] Runtime template installed')
 }
 
+// --- VM isolation ---
+
+function getVMImageDir(): string {
+  const IS_DEV = !require('electron').app.isPackaged
+  const desktopRoot = path.resolve(__dirname, '..')
+  if (IS_DEV) return path.join(desktopRoot, 'resources', 'vm')
+  return path.join(process.resourcesPath!, 'vm')
+}
+
+function getVMBundleDir(projectRoot: string, bundleDir: string, isDev: boolean): string {
+  if (isDev) return ''
+  return bundleDir
+}
+
+function isVMIsolationEnabled(): boolean {
+  try {
+    const { readConfig } = require('./config') as typeof import('./config')
+    const config = readConfig()
+    const setting = config.vmIsolation?.enabled ?? 'auto'
+    if (setting === false) return false
+    if (setting === true) return true
+    return isVMAvailable()
+  } catch {
+    return isVMAvailable()
+  }
+}
+
 // --- Main server lifecycle ---
 
 export async function startLocalServer(): Promise<void> {
@@ -220,6 +248,14 @@ export async function startLocalServer(): Promise<void> {
 
   // Ensure runtime-template is available in the workspaces dir for RuntimeManager's fallback
   ensureRuntimeTemplate()
+
+  // Detect VM isolation availability (the API server manages the VM pool itself)
+  const vmIsolationAvailable = isVMIsolationEnabled()
+  if (vmIsolationAvailable) {
+    console.log('[Desktop] VM isolation available — API will manage VM warm pool')
+  } else {
+    console.log('[Desktop] VM isolation not available, using host execution')
+  }
 
   apiPort = await findFreePort()
   if (apiPort !== PREFERRED_PORT) {
@@ -259,6 +295,12 @@ export async function startLocalServer(): Promise<void> {
     ...(IS_DEV ? {} : {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
     }),
+    ...(vmIsolationAvailable ? {
+      SHOGO_VM_ISOLATION: 'true',
+      SHOGO_DATA_DIR: getDataDir(),
+      SHOGO_VM_IMAGE_DIR: getVMImageDir(),
+      SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, bundleDir, IS_DEV),
+    } : {}),
   }
 
   ensureDatabase()
