@@ -106,3 +106,9 @@ export {
   type PkgInstallOptions,
   type PkgExecOptions,
 } from './platform-pkg'
+
+export {
+  StreamBufferStore,
+  createBufferingTransform,
+  type StreamBufferWriter,
+} from './stream-buffer'
