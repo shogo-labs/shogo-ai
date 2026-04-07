@@ -41,7 +41,8 @@ jobs:
         if: steps.vm-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils libguestfs-tools wget
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils wget
+          sudo modprobe nbd max_part=8
 
       - name: Build VM image
         if: steps.vm-cache.outputs.cache-hit != 'true'
