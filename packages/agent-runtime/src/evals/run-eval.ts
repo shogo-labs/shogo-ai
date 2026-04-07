@@ -472,7 +472,7 @@ function archiveWorkspaceAsTemplate(
 ): string | null {
   if (!existsSync(workspaceDir)) return null
 
-  const destDir = join(runDir, 'workspaces', ev.id)
+  const destDir = join(runDir, ev.id)
   mkdirSync(destDir, { recursive: true })
 
   const templateJson = {
@@ -1290,7 +1290,7 @@ async function main() {
     console.log('')
     console.log('SAVED WORKSPACES (template format)')
     console.log('-'.repeat(60))
-    console.log(`  Directory: ${join(runDir, 'workspaces')}`)
+    console.log(`  Directory: ${runDir}`)
     for (const r of results) {
       if (r.workspaceDir) {
         const status = r.passed ? 'PASS' : 'FAIL'
