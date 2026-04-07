@@ -4,14 +4,14 @@
 import { Platform } from "react-native"
 import * as SecureStore from "expo-secure-store"
 import type { AgentMode } from "../components/chat/ChatInput"
+import { safeGetItem, safeSetItem } from "./safe-storage"
 
 const AGENT_MODE_KEY = "agent-mode-preference"
 
 export async function loadAgentModePreference(): Promise<AgentMode | null> {
   try {
     if (Platform.OS === "web") {
-      const stored =
-        typeof localStorage !== "undefined" ? localStorage.getItem(AGENT_MODE_KEY) : null
+      const stored = safeGetItem(AGENT_MODE_KEY)
       if (stored === "basic" || stored === "advanced") return stored
       return null
     }
@@ -26,9 +26,7 @@ export async function loadAgentModePreference(): Promise<AgentMode | null> {
 export async function saveAgentModePreference(value: AgentMode): Promise<void> {
   try {
     if (Platform.OS === "web") {
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(AGENT_MODE_KEY, value)
-      }
+      safeSetItem(AGENT_MODE_KEY, value)
       return
     }
     await SecureStore.setItemAsync(AGENT_MODE_KEY, value)

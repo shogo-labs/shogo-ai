@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
+import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo_attribution'
 const LANDING_KEY = 'shogo_landing_page'
@@ -17,7 +18,7 @@ export interface Attribution {
 
 export function captureAttribution(): void {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return
-  if (localStorage.getItem(STORAGE_KEY)) return
+  if (safeGetItem(STORAGE_KEY)) return
 
   const params = new URLSearchParams(window.location.search)
   const data: Attribution = {
@@ -30,13 +31,13 @@ export function captureAttribution(): void {
     landingPage: window.location.pathname + window.location.search,
   }
 
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  safeSetItem(STORAGE_KEY, JSON.stringify(data))
 }
 
 export function getStoredAttribution(): Attribution | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = safeGetItem(STORAGE_KEY)
     if (!raw) return null
     return JSON.parse(raw) as Attribution
   } catch {
@@ -46,6 +47,6 @@ export function getStoredAttribution(): Attribution | null {
 
 export function clearStoredAttribution(): void {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return
-  localStorage.removeItem(STORAGE_KEY)
-  localStorage.removeItem(LANDING_KEY)
+  safeRemoveItem(STORAGE_KEY)
+  safeRemoveItem(LANDING_KEY)
 }

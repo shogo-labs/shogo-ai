@@ -37,6 +37,7 @@ import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/plat
 import { PlatformApi } from '@shogo-ai/sdk'
 import { API_URL, api, createHttpClient } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { safeGetItem, safeSetItem } from '../../lib/safe-storage'
 import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
 import { SecurityPreferenceSelector } from '../../components/security/SecurityPreferenceSelector'
 
@@ -147,8 +148,8 @@ export default function OnboardingPage() {
         .then((agentData: any) => {
           const agentList: AgentTemplate[] = agentData.templates ?? []
           setTemplates(agentList)
-          if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
-            const pending = localStorage.getItem('pending_template_id')
+          if (Platform.OS === 'web') {
+            const pending = safeGetItem('pending_template_id')
             if (pending && agentList.some(t => t.id === pending)) {
               setSelectedTemplate(pending)
             }
@@ -280,7 +281,7 @@ export default function OnboardingPage() {
         selected_template: selectedTemplate || null,
       })
       if (selectedTemplate) {
-        localStorage.setItem('pending_template_id', selectedTemplate)
+        safeSetItem('pending_template_id', selectedTemplate)
       }
       router.replace('/(app)')
     } catch {
