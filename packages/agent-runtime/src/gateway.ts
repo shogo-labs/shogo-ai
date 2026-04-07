@@ -70,6 +70,7 @@ import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
+import { isInQuietHours } from './quiet-hours'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -795,45 +796,9 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
 
 
-  private isInQuietHours(): boolean {
-    if (!this.config.quietHours.start || !this.config.quietHours.end) {
-      return false
-    }
-
-    const now = new Date()
-    const tz = this.config.quietHours.timezone || 'UTC'
-    let hours: number
-    let minutes: number
-    try {
-      const fmt = new Intl.DateTimeFormat('en-GB', {
-        timeZone: tz,
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      })
-      const timeStr = fmt.format(now)
-      const [h, m] = timeStr.split(':').map(Number)
-      hours = h % 24
-      minutes = m
-    } catch {
-      hours = now.getUTCHours()
-      minutes = now.getUTCMinutes()
-    }
-    const currentTime = hours * 60 + minutes
-
-    const [startH, startM] = this.config.quietHours.start.split(':').map(Number)
-    const [endH, endM] = this.config.quietHours.end.split(':').map(Number)
-    const startTime = startH * 60 + startM
-    const endTime = endH * 60 + endM
-
-    // Log the comparison for debugging
-    const currentStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
-    console.log(`[AgentGateway] Quiet hours check: current=${currentStr} (${tz}), window=${this.config.quietHours.start}-${this.config.quietHours.end}`)
-
-    if (startTime <= endTime) {
-      return currentTime >= startTime && currentTime < endTime
-    }
-    return currentTime >= startTime || currentTime < endTime
+  private checkQuietHours(): boolean {
+    const { start, end, timezone } = this.config.quietHours
+    return isInQuietHours(start || null, end || null, timezone || null)
   }
 
   async heartbeatTick(): Promise<string> {
@@ -849,7 +814,7 @@ export class AgentGateway {
       return 'HEARTBEAT_OK'
     }
 
-    if (this.isInQuietHours()) {
+    if (this.checkQuietHours()) {
       console.log('[AgentGateway] Heartbeat skipped (quiet hours)')
       this.emitLog('Heartbeat skipped (quiet hours)')
       return 'HEARTBEAT_OK'

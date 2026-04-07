@@ -185,3 +185,5 @@ apps/desktop/resources/vm/
 apps/desktop/native/shogo-vm/shogo-vm-arm64
 
 apps/desktop/resources/bin/shogo-vm-arm64
+
+dev.db

@@ -3584,23 +3584,18 @@ app.get('/api/projects/:projectId/heartbeat', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
-  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
-  const select: Record<string, boolean> = {
-    heartbeatEnabled: true,
-    heartbeatInterval: true,
-    nextHeartbeatAt: true,
-    modelName: true,
-  }
-  if (!isLocal) {
-    select.lastHeartbeatAt = true
-    select.quietHoursStart = true
-    select.quietHoursEnd = true
-    select.quietHoursTimezone = true
-  }
-
   const config = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
-    select,
+    select: {
+      heartbeatEnabled: true,
+      heartbeatInterval: true,
+      nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
+      quietHoursStart: true,
+      quietHoursEnd: true,
+      quietHoursTimezone: true,
+      modelName: true,
+    },
   })
 
   if (!config) {
@@ -3623,11 +3618,9 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
   if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
     data.heartbeatInterval = body.heartbeatInterval
   }
-  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-  }
+  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
 
   const existing = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
@@ -3657,24 +3650,19 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
     data.nextHeartbeatAt = null
   }
 
-  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
-  const updateSelect: Record<string, boolean> = {
-    heartbeatEnabled: true,
-    heartbeatInterval: true,
-    nextHeartbeatAt: true,
-    modelName: true,
-  }
-  if (!isLocal) {
-    updateSelect.lastHeartbeatAt = true
-    updateSelect.quietHoursStart = true
-    updateSelect.quietHoursEnd = true
-    updateSelect.quietHoursTimezone = true
-  }
-
   const updated = await prisma.agentConfig.update({
     where: { projectId: authResult.projectId },
     data,
-    select: updateSelect,
+    select: {
+      heartbeatEnabled: true,
+      heartbeatInterval: true,
+      nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
+      quietHoursStart: true,
+      quietHoursEnd: true,
+      quietHoursTimezone: true,
+      modelName: true,
+    },
   })
 
   return c.json(updated)
