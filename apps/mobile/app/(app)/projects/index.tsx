@@ -284,8 +284,9 @@ export default observer(function AllProjectsPage() {
     store.starredProjectCollection
       .loadAll({ userId: user.id, workspaceId: currentWorkspace.id })
       .then(() => {
+        const starredAll = Array.isArray(store.starredProjectCollection.all) ? store.starredProjectCollection.all : []
         const ids = new Set(
-          store.starredProjectCollection.all
+          starredAll
             .filter((s: any) => s.userId === user.id && s.workspaceId === currentWorkspace.id)
             .map((s: any) => s.projectId),
         )
@@ -294,8 +295,10 @@ export default observer(function AllProjectsPage() {
       .catch((e) => console.error('[Projects] Failed to load starred projects:', e))
   }, [currentWorkspace?.id, user?.id, store])
 
-  const allProjects = (store?.projectCollection?.all ?? []) as Project[]
-  const allFolders = (store?.folderCollection?.all ?? []) as Folder[]
+  const rawProjects = store?.projectCollection?.all
+  const allProjects = (Array.isArray(rawProjects) ? rawProjects : []) as Project[]
+  const rawFolders = store?.folderCollection?.all
+  const allFolders = (Array.isArray(rawFolders) ? rawFolders : []) as Folder[]
 
   // Folders in current location
   const currentFolders = useMemo(() => {

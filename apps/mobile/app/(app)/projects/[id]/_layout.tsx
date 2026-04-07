@@ -173,7 +173,8 @@ export default observer(function ProjectLayout() {
 
   const folders = useMemo(() => {
     try {
-      return (store?.folderCollection?.all ?? []).map((f: any) => ({
+      const rawFolders = store?.folderCollection?.all
+      return (Array.isArray(rawFolders) ? rawFolders : []).map((f: any) => ({
         id: f.id,
         name: f.name || 'Untitled',
       }))
@@ -240,7 +241,8 @@ export default observer(function ProjectLayout() {
 
   const allProjects = useMemo(() => {
     try {
-      const items = projects?.all ?? []
+      const raw = projects?.all
+      const items = Array.isArray(raw) ? raw : []
       return items.map((p: any) => ({
         id: p.id,
         name: p.name || 'Untitled',
@@ -691,7 +693,8 @@ export default observer(function ProjectLayout() {
   const chatSessions: ChatSession[] = useMemo(() => {
     if (!store?.chatSessionCollection) return []
     try {
-      return store.chatSessionCollection.all
+      const sessionsAll = Array.isArray(store.chatSessionCollection.all) ? store.chatSessionCollection.all : []
+      return sessionsAll
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
