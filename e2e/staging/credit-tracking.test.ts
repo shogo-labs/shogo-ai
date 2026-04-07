@@ -48,7 +48,7 @@ test.describe("Credit Tracking", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
 
-    const input = page.getByPlaceholder("Ask Shogo to create...")
+    const input = page.getByPlaceholder("Ask Shogo to ...")
     await input.click()
     await input.fill("Quick credit tracking test")
     await page.waitForTimeout(500)
