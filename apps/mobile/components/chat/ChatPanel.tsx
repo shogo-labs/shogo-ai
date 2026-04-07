@@ -899,6 +899,7 @@ export const ChatPanel = observer(function ChatPanel({
   const { messages, sendMessage, addToolOutput, status, error, setMessages, stop } = useChat({
     transport: chatTransport,
     id: currentSessionId || undefined,
+    resume: isInitialLoadComplete,
     experimental_throttle: 50,
     onError: (err) => {
       console.error("[ChatPanel] Stream error:", err)
@@ -1487,8 +1488,19 @@ export const ChatPanel = observer(function ChatPanel({
     },
   })
 
-  const isStreaming = status === "streaming" || status === "submitted"
+  const [stoppedMessages, setStoppedMessages] = useState<UIMessage[] | null>(null)
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+
+  const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
   const filesChangedFiredRef = useRef(false)
+
+  useEffect(() => {
+    if (status === 'ready' && stoppedMessages !== null) {
+      setMessages(stoppedMessages)
+      setStoppedMessages(null)
+    }
+  }, [status, stoppedMessages, setMessages])
 
   useEffect(() => {
     onMessagesChange?.(messages)
@@ -1535,7 +1547,8 @@ export const ChatPanel = observer(function ChatPanel({
   }, [messages.length, pendingInitialMessage])
 
   const displayMessages = useMemo((): UIMessage[] => {
-    if (messages.length > 0) return messages
+    const effectiveMessages = stoppedMessages ?? messages
+    if (effectiveMessages.length > 0) return effectiveMessages
     const text = (pendingInitialMessage ?? initialMessage ?? initialMessageRef.current ?? "").trim()
     if (text !== "") {
       return [
@@ -1547,12 +1560,13 @@ export const ChatPanel = observer(function ChatPanel({
       ]
     }
     return []
-  }, [messages, pendingInitialMessage, initialMessage])
+  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage])
 
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
 
   const handleStop = useCallback(() => {
+    setStoppedMessages([...messagesRef.current])
     stop()
 
     const req = buildStopRequest({
@@ -2116,6 +2130,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
+      setStoppedMessages(null)
 
       const fileArray = files || []
 

@@ -32,6 +32,7 @@ import {
   initializeS3Sync,
   initializePostgresBackup,
   configureAIProxy,
+  StreamBufferStore,
 } from '@shogo/shared-runtime'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps } from './workspace-defaults'
 import { AgentGateway } from './gateway'
@@ -178,6 +179,12 @@ function ensureWorkspaceFiles(): void {
 
 let gatewayReadyResolve: (() => void) | null = null
 let gatewayReadyPromise: Promise<void> | null = null
+
+// =============================================================================
+// Stream Buffer Store (SSE reconnect support)
+// =============================================================================
+
+const streamBufferStore = new StreamBufferStore()
 
 // =============================================================================
 // Stream Keep-Alive Utility
@@ -671,6 +678,12 @@ app.post('/agent/chat', async (c) => {
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
 
+  // Create a buffer that lives independently of the HTTP connection.
+  // The agent writes into this buffer via a background consumer so that
+  // a client disconnect (e.g. page refresh) does NOT cancel the agent.
+  console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
+  const bufWriter = streamBufferStore.create(chatSessionKey)
+
   trackStreamStart()
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -705,13 +718,59 @@ app.post('/agent/chat', async (c) => {
 
   const response = createUIMessageStreamResponse({ stream })
   if (response.body) {
-    const wrappedStream = wrapStreamWithKeepalive(response.body, 15_000)
+    // Consume the agent's stream in the background, feeding chunks into
+    // the buffer. This reader is NOT tied to the HTTP response — the agent
+    // keeps running even if the client disconnects.
+    const bgReader = response.body.getReader()
+    ;(async () => {
+      try {
+        while (true) {
+          const { done, value } = await bgReader.read()
+          if (done) break
+          bufWriter.append(value)
+        }
+        console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey}`)
+      } catch (err: any) {
+        console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
+      } finally {
+        bufWriter.complete()
+      }
+    })()
+
+    // The client reads from a replay stream backed by the buffer.
+    // If this client disconnects, only the replay subscriber is removed;
+    // the background reader + agent keep running.
+    const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
+    const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
     return new Response(wrappedStream, {
       status: response.status,
       headers: response.headers,
     })
   }
   return response
+})
+
+// Reconnect to an active stream — replays buffered SSE events then continues live.
+// URL pattern matches the AI SDK's default resume convention: ${api}/${chatId}/stream
+app.get('/agent/chat/:chatSessionId/stream', (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  console.log(`[AgentChat] Stream reconnect request for session: ${chatSessionId}, has buffer: ${streamBufferStore.has(chatSessionId)}`)
+  const replayStream = streamBufferStore.createReplayStream(chatSessionId)
+
+  if (!replayStream) {
+    console.log(`[AgentChat] No active stream buffer for session: ${chatSessionId}`)
+    return new Response(null, { status: 204 })
+  }
+
+  console.log(`[AgentChat] Replaying stream buffer for session: ${chatSessionId}`)
+  const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+  return new Response(wrappedStream, {
+    headers: {
+      'Content-Type': 'text/x-ai-sdk-ui-stream',
+      'X-Accel-Buffering': 'no',
+      'Cache-Control': 'no-cache',
+    },
+  })
 })
 
 // Retrieve chat history so the UI can restore past messages on reconnect
@@ -847,7 +906,8 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
-  // code_agent removed — subagent aborts are handled by the parent agent loop's abort signal
+  // Mark the stream buffer as complete so resume after stop returns 204
+  streamBufferStore.complete(stopSessionKey)
 
   return c.json({ stopped: aborted })
 })
@@ -2450,6 +2510,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
       }, 500)
     })
   }
+
+  streamBufferStore.dispose()
 
   try {
     if (s3SyncInstance) {

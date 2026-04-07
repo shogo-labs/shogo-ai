@@ -3443,6 +3443,31 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
   return router.fetch(newReq)
 })
 
+// GET /api/projects/:projectId/chat/:chatSessionId/stream - Resume active stream
+// URL pattern matches AI SDK's default: ${api}/${chatId}/stream
+app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/${c.req.param('chatSessionId')}/stream`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  const resp = await router.fetch(newReq)
+
+  if (resp.body && resp.status !== 204) {
+    const trackedBody = resp.body.pipeThrough(new TransformStream({
+      flush() { activeProxyConnections-- },
+    }))
+    activeProxyConnections++
+    c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+    return new Response(trackedBody, { status: resp.status, headers: resp.headers })
+  }
+
+  return resp
+})
+
 // POST /api/projects/:projectId/chat/stop - Stop/interrupt active generation
 app.post('/api/projects/:projectId/chat/stop', async (c) => {
   const authResult = await requireProjectAuth(c)
