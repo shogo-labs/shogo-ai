@@ -12,6 +12,10 @@
  *   - onSkipQuietHours() — (optional) handle quiet-hours skip for a given agent
  */
 
+import { isInQuietHours } from '../../../../packages/agent-runtime/src/quiet-hours'
+
+export { isInQuietHours }
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 export const JITTER_RATIO = 0.1
@@ -20,48 +24,6 @@ const RETRY_DELAYS_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000]
 
 export function computeJitter(intervalSeconds: number): number {
   return Math.floor(Math.random() * intervalSeconds * JITTER_RATIO) * 1000
-}
-
-// ─── Quiet Hours ─────────────────────────────────────────────────────────────
-
-export function isInQuietHours(
-  quietStart: string | null,
-  quietEnd: string | null,
-  timezone: string | null
-): boolean {
-  if (!quietStart || !quietEnd) return false
-
-  const now = new Date()
-  const tz = timezone || 'UTC'
-  let hours: number
-  let minutes: number
-
-  try {
-    const fmt = new Intl.DateTimeFormat('en-GB', {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    })
-    const timeStr = fmt.format(now)
-    const [h, m] = timeStr.split(':').map(Number)
-    hours = h % 24
-    minutes = m
-  } catch {
-    hours = now.getUTCHours()
-    minutes = now.getUTCMinutes()
-  }
-
-  const currentTime = hours * 60 + minutes
-  const [startH, startM] = quietStart.split(':').map(Number)
-  const [endH, endM] = quietEnd.split(':').map(Number)
-  const startTime = startH * 60 + startM
-  const endTime = endH * 60 + endM
-
-  if (startTime <= endTime) {
-    return currentTime >= startTime && currentTime < endTime
-  }
-  return currentTime >= startTime || currentTime < endTime
 }
 
 // ─── Circuit Breaker ─────────────────────────────────────────────────────────
@@ -107,6 +69,9 @@ export interface DueAgent {
   id: string
   projectId: string
   heartbeatInterval: number
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
 }
 
 // ─── Base Scheduler ──────────────────────────────────────────────────────────
@@ -174,7 +139,7 @@ export abstract class BaseHeartbeatScheduler {
     await this.processBatch()
   }
 
-  private async processBatch(): Promise<void> {
+  protected async processBatch(): Promise<void> {
     const { prisma } = await import('./prisma')
     const dueAgents = await this.fetchDueAgents()
 
@@ -187,8 +152,19 @@ export abstract class BaseHeartbeatScheduler {
     for (const agent of dueAgents) {
       if (this.breaker.isBackedOff(agent.projectId)) continue
 
-      // Advance nextHeartbeatAt before triggering to prevent double-fires
       const jitter = computeJitter(agent.heartbeatInterval)
+
+      if (isInQuietHours(agent.quietHoursStart ?? null, agent.quietHoursEnd ?? null, agent.quietHoursTimezone ?? null)) {
+        this.onQuietHoursSkip(agent)
+        await prisma.agentConfig.update({
+          where: { id: agent.id },
+          data: {
+            nextHeartbeatAt: new Date(Date.now() + agent.heartbeatInterval * 1000 + jitter),
+          },
+        })
+        continue
+      }
+
       await prisma.agentConfig.update({
         where: { id: agent.id },
         data: {
@@ -201,6 +177,9 @@ export abstract class BaseHeartbeatScheduler {
 
     await Promise.allSettled(triggers)
   }
+
+  /** Override to record metrics when a heartbeat is skipped due to quiet hours. */
+  protected onQuietHoursSkip(_agent: DueAgent): void {}
 
   /**
    * Query the database for agents whose heartbeat is due.
