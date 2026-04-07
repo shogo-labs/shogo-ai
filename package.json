@@ -76,6 +76,8 @@
     "@types/pg": "^8.20.0",
     "chokidar": "3",
     "concurrently": "^9.2.1",
+    "fflate": "^0.8.2",
+    "hono": "^4.12.11",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.20.0",
     "prisma": "^7.3.0",

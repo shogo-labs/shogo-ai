@@ -430,6 +430,63 @@ export const api = {
     )
     return res.data
   },
+
+  // ─── Project Export/Import ──────────────────────────────────
+
+  getProjectExportUrl(projectId: string): string {
+    return `${API_URL}/api/projects/${projectId}/export`
+  },
+
+  async exportProjectBlob(
+    projectId: string,
+    authCookie?: string | null,
+  ): Promise<{ blob: Blob; filename: string }> {
+    const url = `${API_URL}/api/projects/${projectId}/export`
+    const headers: Record<string, string> = {}
+    if (authCookie) headers['Cookie'] = authCookie
+
+    const res = await fetch(url, {
+      credentials: Platform.OS === 'web' ? 'include' : 'omit',
+      headers,
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(text || `Export failed with status ${res.status}`)
+    }
+
+    const disposition = res.headers.get('content-disposition') || ''
+    const match = disposition.match(/filename="?([^"]+)"?/)
+    const filename = match?.[1] || 'project.shogo-project'
+
+    const blob = await res.blob()
+    return { blob, filename }
+  },
+
+  async importProject(
+    params: { file: Blob; workspaceId: string; filename?: string },
+    authCookie?: string | null,
+  ): Promise<{ id: string; name: string; description?: string | null } | null> {
+    const formData = new FormData()
+    formData.append('file', params.file, params.filename || 'project.shogo-project')
+    formData.append('workspaceId', params.workspaceId)
+
+    const headers: Record<string, string> = {}
+    if (authCookie) headers['Cookie'] = authCookie
+
+    const res = await fetch(`${API_URL}/api/projects/import`, {
+      method: 'POST',
+      body: formData,
+      credentials: Platform.OS === 'web' ? 'include' : 'omit',
+      headers,
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(text || `Import failed with status ${res.status}`)
+    }
+
+    const data = (await res.json()) as { project: { id: string; name: string; description?: string | null } }
+    return data.project ?? null
+  },
 }
 
 export interface SecurityPrefs {
