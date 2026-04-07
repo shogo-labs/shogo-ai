@@ -2,37 +2,65 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Safe wrappers around localStorage that gracefully handle:
- * - SSR / environments where `window` is undefined
- * - SecurityError in private/incognito mode or restricted iframe/webview contexts
+ * Storage abstraction that always works:
+ * - Uses localStorage when available (normal browsers)
+ * - Falls back to an in-memory Map when localStorage is blocked
+ *   (private/incognito mode, restricted iframe/webview, SSR)
  *
- * The `typeof localStorage !== 'undefined'` check alone is insufficient:
- * some browsers define the property but throw SecurityError on any access.
+ * The fallback keeps data alive for the duration of the page session,
+ * so preferences, pending template IDs, attribution, etc. still function
+ * within a single visit even when persistence is impossible.
  */
 
-export const safeGetItem = (key: string): string | null => {
-  try {
-    if (typeof window === 'undefined') return null
-    return window.localStorage.getItem(key)
-  } catch {
-    return null
+interface StorageBackend {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
+
+class MemoryStorage implements StorageBackend {
+  private store = new Map<string, string>()
+
+  getItem(key: string): string | null {
+    return this.store.get(key) ?? null
   }
+
+  setItem(key: string, value: string): void {
+    this.store.set(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.store.delete(key)
+  }
+}
+
+function resolveBackend(): StorageBackend {
+  if (typeof window === 'undefined') return new MemoryStorage()
+  try {
+    const testKey = '__shogo_storage_probe__'
+    window.localStorage.setItem(testKey, '1')
+    window.localStorage.removeItem(testKey)
+    return window.localStorage
+  } catch {
+    return new MemoryStorage()
+  }
+}
+
+let backend: StorageBackend | null = null
+
+function getBackend(): StorageBackend {
+  if (!backend) backend = resolveBackend()
+  return backend
+}
+
+export const safeGetItem = (key: string): string | null => {
+  return getBackend().getItem(key)
 }
 
 export const safeSetItem = (key: string, value: string): void => {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(key, value)
-  } catch {
-    // Storage unavailable (private mode, quota exceeded, etc.)
-  }
+  getBackend().setItem(key, value)
 }
 
 export const safeRemoveItem = (key: string): void => {
-  try {
-    if (typeof window === 'undefined') return
-    window.localStorage.removeItem(key)
-  } catch {
-    // Storage unavailable
-  }
+  getBackend().removeItem(key)
 }
