@@ -20,7 +20,6 @@ import {
   Unplug,
   Palette,
   Check,
-  Pencil,
   Wifi,
   WifiOff,
   Monitor,
@@ -45,9 +44,12 @@ export default function AdminGeneralPage() {
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [cloudUrl, setCloudUrl] = useState(SHOGO_CLOUD_URL_DEFAULT)
 
+  const [cloudUrlDraft, setCloudUrlDraft] = useState(SHOGO_CLOUD_URL_DEFAULT)
+  const [isSavingCloudUrl, setIsSavingCloudUrl] = useState(false)
+  const [cloudUrlError, setCloudUrlError] = useState('')
+
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(null)
-  const [editingName, setEditingName] = useState(false)
-  const [instanceNameInput, setInstanceNameInput] = useState('')
+  const [instanceNameDraft, setInstanceNameDraft] = useState('')
   const [isSavingName, setIsSavingName] = useState(false)
 
   const [isLoading, setIsLoading] = useState(true)
@@ -58,7 +60,7 @@ export default function AdminGeneralPage() {
     try {
       const info = await platform.getInstanceInfo()
       setInstanceInfo(info)
-      setInstanceNameInput(info.name)
+      setInstanceNameDraft(info.name)
     } catch (err) {
       console.error('[AdminGeneral] Failed to load instance info:', err)
     }
@@ -72,7 +74,10 @@ export default function AdminGeneralPage() {
         if (cancelled) return
         setShogoKeyConnected(shogoData.connected)
         if (shogoData.keyMask) setShogoKeyMask(shogoData.keyMask)
-        if (shogoData.cloudUrl) setCloudUrl(shogoData.cloudUrl)
+        if (shogoData.cloudUrl) {
+          setCloudUrl(shogoData.cloudUrl)
+          setCloudUrlDraft(shogoData.cloudUrl)
+        }
         if (shogoData.workspace?.name) setShogoWorkspaceName(shogoData.workspace.name)
         if (shogoData.connected) {
           setShogoKeyStatus('connected')
@@ -132,15 +137,46 @@ export default function AdminGeneralPage() {
     }
   }
 
-  const handleSaveInstanceName = async () => {
-    if (!instanceNameInput.trim()) return
+  const handleCloudUrlBlur = async () => {
+    const trimmed = cloudUrlDraft.trim().replace(/\/$/, '')
+    if (!trimmed || trimmed === cloudUrl) {
+      setCloudUrlDraft(cloudUrl)
+      return
+    }
+    setIsSavingCloudUrl(true)
+    setCloudUrlError('')
+    try {
+      const data = await platform.updateShogoCloudUrl(trimmed)
+      if (data.ok) {
+        setCloudUrl(trimmed)
+        setCloudUrlDraft(trimmed)
+        setShogoWorkspaceName(data.workspace?.name || '')
+        fetchInstanceInfo()
+      } else {
+        setCloudUrlError(data.error || 'Failed to validate key against new URL')
+        setCloudUrlDraft(cloudUrl)
+      }
+    } catch (err: any) {
+      setCloudUrlError(err.message || 'Connection failed')
+      setCloudUrlDraft(cloudUrl)
+    } finally {
+      setIsSavingCloudUrl(false)
+    }
+  }
+
+  const handleInstanceNameBlur = async () => {
+    const trimmed = instanceNameDraft.trim()
+    if (!trimmed || trimmed === instanceInfo?.name) {
+      if (instanceInfo) setInstanceNameDraft(instanceInfo.name)
+      return
+    }
     setIsSavingName(true)
     try {
-      await platform.updateInstanceName(instanceNameInput.trim())
-      setEditingName(false)
+      await platform.updateInstanceName(trimmed)
       setTimeout(() => fetchInstanceInfo(), 2000)
     } catch (err) {
       console.error('[AdminGeneral] Failed to update instance name:', err)
+      if (instanceInfo) setInstanceNameDraft(instanceInfo.name)
     } finally {
       setIsSavingName(false)
     }
@@ -202,9 +238,36 @@ export default function AdminGeneralPage() {
                   </Text>
                 </Pressable>
               </View>
-              <Text className="text-xs text-muted-foreground">
-                Connected to {cloudUrl}
-              </Text>
+              <View className="gap-1">
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Cloud URL
+                  </Text>
+                  {isSavingCloudUrl && <ActivityIndicator size="small" />}
+                </View>
+                <TextInput
+                  value={cloudUrlDraft}
+                  onChangeText={(t) => {
+                    setCloudUrlDraft(t)
+                    setCloudUrlError('')
+                  }}
+                  onBlur={handleCloudUrlBlur}
+                  onSubmitEditing={handleCloudUrlBlur}
+                  editable={!isSavingCloudUrl}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className={cn(
+                    'border rounded-lg px-3 py-2 text-sm text-foreground bg-background web:outline-none',
+                    cloudUrlError ? 'border-destructive' : 'border-border',
+                  )}
+                />
+                {cloudUrlError ? (
+                  <View className="flex-row items-center gap-1.5">
+                    <AlertTriangle size={14} className="text-destructive" />
+                    <Text className="text-xs text-destructive">{cloudUrlError}</Text>
+                  </View>
+                ) : null}
+              </View>
             </View>
           ) : (
             <View className="gap-3">
@@ -257,9 +320,20 @@ export default function AdminGeneralPage() {
                   <Text className="text-sm text-destructive">{shogoKeyError}</Text>
                 </View>
               ) : null}
-              <Text className="text-xs text-muted-foreground">
-                Validating against {cloudUrl}
-              </Text>
+              <View className="gap-1">
+                <Text className="text-xs font-medium text-muted-foreground">Cloud URL</Text>
+                <TextInput
+                  value={cloudUrl}
+                  onChangeText={setCloudUrl}
+                  placeholder={SHOGO_CLOUD_URL_DEFAULT}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className="border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                />
+                <Text className="text-xs text-muted-foreground">
+                  Override for self-hosted or staging environments
+                </Text>
+              </View>
             </View>
           )}
         </SectionCard>
@@ -272,61 +346,22 @@ export default function AdminGeneralPage() {
             description="How this machine appears on your Shogo Cloud dashboard"
           >
             <View className="gap-4">
-              <View className="gap-1.5">
-                <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Machine Name
-                </Text>
-                {editingName ? (
-                  <View className="flex-row gap-2">
-                    <TextInput
-                      value={instanceNameInput}
-                      onChangeText={setInstanceNameInput}
-                      autoFocus
-                      className="flex-1 border border-border rounded-lg px-3 py-2 text-sm text-foreground bg-background"
-                      placeholderTextColor="#666"
-                      autoCapitalize="none"
-                      onSubmitEditing={handleSaveInstanceName}
-                    />
-                    <Pressable
-                      onPress={handleSaveInstanceName}
-                      disabled={isSavingName || !instanceNameInput.trim()}
-                      className={cn(
-                        'px-3 py-2 rounded-lg items-center justify-center',
-                        isSavingName ? 'bg-primary/50' : 'bg-primary',
-                      )}
-                    >
-                      {isSavingName ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Check size={14} color="#fff" />
-                      )}
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setEditingName(false)
-                        setInstanceNameInput(instanceInfo.name)
-                      }}
-                      className="px-3 py-2 rounded-lg border border-border items-center justify-center"
-                    >
-                      <Text className="text-sm text-muted-foreground">Cancel</Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <View className="flex-row items-center gap-2">
-                    <Text className="text-sm font-medium text-foreground flex-1">
-                      {instanceInfo.name}
-                    </Text>
-                    <Pressable
-                      onPress={() => {
-                        setEditingName(true)
-                        setInstanceNameInput(instanceInfo.name)
-                      }}
-                      className="p-1.5 rounded-md active:bg-muted"
-                    >
-                      <Pencil size={14} className="text-muted-foreground" />
-                    </Pressable>
-                  </View>
-                )}
+              <View className="gap-1">
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Machine Name
+                  </Text>
+                  {isSavingName && <ActivityIndicator size="small" />}
+                </View>
+                <TextInput
+                  value={instanceNameDraft}
+                  onChangeText={setInstanceNameDraft}
+                  onBlur={handleInstanceNameBlur}
+                  onSubmitEditing={handleInstanceNameBlur}
+                  editable={!isSavingName}
+                  autoCapitalize="none"
+                  className="border border-border rounded-lg px-3 py-2 text-sm text-foreground bg-background web:outline-none"
+                />
               </View>
 
               <View className="gap-3">
@@ -360,10 +395,6 @@ export default function AdminGeneralPage() {
                 {instanceInfo.workspaceName && (
                   <InfoRow label="Cloud Workspace" value={instanceInfo.workspaceName} />
                 )}
-                <InfoRow
-                  label="Cloud URL"
-                  value={instanceInfo.cloudUrl.replace(/^https?:\/\//, '')}
-                />
               </View>
             </View>
           </SectionCard>

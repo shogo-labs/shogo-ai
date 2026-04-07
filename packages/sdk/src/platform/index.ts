@@ -200,6 +200,15 @@ export class PlatformApi {
     await this.http.delete('/api/local/shogo-key')
   }
 
+  /** Update the Shogo Cloud URL for an existing connection (re-validates the stored key). */
+  async updateShogoCloudUrl(cloudUrl: string): Promise<ShogoKeyConnectResult> {
+    const res = await this.http.request<ShogoKeyConnectResult>(
+      '/api/local/shogo-key',
+      { method: 'PATCH', body: { cloudUrl } },
+    )
+    return res.data ?? { ok: false }
+  }
+
   // ===========================================================================
   // Local: LLM Configuration
   // ===========================================================================
@@ -241,6 +250,23 @@ export class PlatformApi {
       { baseUrl },
     )
     return res.data ?? { ok: false, models: [] }
+  }
+
+  // ===========================================================================
+  // Admin: Agent Model Defaults
+  // ===========================================================================
+
+  /** Get admin-configured overrides for basic/advanced agent mode models. */
+  async getAgentModelDefaults(): Promise<{ basic: string | null; advanced: string | null }> {
+    const res = await this.http.get<{ basic: string | null; advanced: string | null }>(
+      '/api/admin/settings/agent-models',
+    )
+    return res.data ?? { basic: null, advanced: null }
+  }
+
+  /** Set which models the basic/advanced agent modes resolve to. Pass null to reset to platform default. */
+  async putAgentModelDefaults(overrides: { basic?: string | null; advanced?: string | null }): Promise<void> {
+    await this.http.request('/api/admin/settings/agent-models', { method: 'PUT', body: overrides })
   }
 
   // ===========================================================================
