@@ -6150,16 +6150,24 @@ async function gracefulShutdown(signal: string) {
     } catch (_) { /* may not be initialized */ }
   }
 
-  // In local dev mode, stop child-process runtimes. In K8s mode the
-  // project runtimes are independent Knative services and must NOT be killed.
-  if (!isKubernetes() && runtimeManager) {
-    console.log('[Server] Stopping local project runtimes...')
-    try {
-      await runtimeManager.stopAll()
-      console.log('[Server] All local runtimes stopped')
-    } catch (err: any) {
-      console.error('[Server] Error stopping runtimes:', err.message)
+  // In local dev mode, stop child-process runtimes and VM warm pool.
+  // In K8s mode the project runtimes are independent Knative services and must NOT be killed.
+  if (!isKubernetes()) {
+    if (runtimeManager) {
+      console.log('[Server] Stopping local project runtimes...')
+      try {
+        await runtimeManager.stopAll()
+        console.log('[Server] All local runtimes stopped')
+      } catch (err: any) {
+        console.error('[Server] Error stopping runtimes:', err.message)
+      }
     }
+
+    try {
+      const { stopVMWarmPool } = await import('./lib/vm-warm-pool-controller')
+      await stopVMWarmPool()
+      console.log('[Server] VM warm pool stopped')
+    } catch (_) { /* may not be initialized */ }
   }
 
   // Drain active proxy connections (SSE streams, chat)
