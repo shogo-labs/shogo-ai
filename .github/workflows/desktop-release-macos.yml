@@ -193,6 +193,16 @@ jobs:
             echo "No Apple certificate provided. Skipping macOS code signing."
           fi
 
+      - name: Test codesign with certificate
+        if: env.SIGNING_KEYCHAIN != ''
+        run: |
+          echo "Testing codesign with imported certificate..."
+          HASH=$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN" | head -1 | awk '{print $2}')
+          echo "Identity hash: $HASH"
+          echo "test" > /tmp/codesign-test.txt
+          codesign --sign "$HASH" --keychain "$SIGNING_KEYCHAIN" --force /tmp/codesign-test.txt && echo "codesign test PASSED" || echo "codesign test FAILED with exit $?"
+          codesign -dvv /tmp/codesign-test.txt 2>&1 || true
+
       - name: Codesign Go VM helper
         if: env.APPLE_CERTIFICATE_BASE64 != ''
         env:
