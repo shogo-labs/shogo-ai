@@ -17,7 +17,13 @@
     "heartbeatInterval": 1800,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",
-    "modelName": "claude-sonnet-4-5"
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
   },
   "integrations": [
     {
@@ -33,5 +39,6 @@
       "categoryId": "code-repository",
       "description": "Track commits and pull request activity"
     }
-  ]
+  ],
+  "techStack": "none"
 }

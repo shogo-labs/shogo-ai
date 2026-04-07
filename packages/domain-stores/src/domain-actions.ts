@@ -93,11 +93,13 @@ export function createDomainActions(store: IDomainStore) {
       userId: string,
       _type?: string,
       templateId?: string,
-      techStackId?: string
+      techStackId?: string,
+      templateSettings?: Record<string, unknown>
     ) => {
       const settings = JSON.stringify({
         activeMode: 'canvas',
         canvasMode: 'code',
+        ...(templateSettings ?? {}),
         ...(techStackId ? { techStackId } : {}),
       })
 

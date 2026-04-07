@@ -7,7 +7,6 @@ import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './loca
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
 import { initAutoUpdater } from './updater'
-import { getVMDownloadOverlayScript } from './vm-download-ui'
 
 // --- Persistent file logging ---
 const logDir = process.platform === 'win32'
@@ -361,17 +360,6 @@ app.whenReady().then(async () => {
   createWindow()
 
   if (!isCloudMode) {
-    const { isVMAvailable, getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
-    const imageDir = getVMImageDir()
-    const mgr = new VMImageManager(imageDir)
-
-    if (!mgr.isImagePresent() && app.isPackaged) {
-      console.log('[Desktop] VM images not found — prompting download')
-      mainWindow?.webContents.once('did-finish-load', () => {
-        mainWindow?.webContents.executeJavaScript(getVMDownloadOverlayScript()).catch(() => {})
-      })
-    }
-
     console.log('[Desktop] Starting local server...')
     try {
       await startLocalServer()

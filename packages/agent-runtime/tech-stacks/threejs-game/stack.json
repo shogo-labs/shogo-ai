@@ -7,5 +7,14 @@
     "devServer": "vite",
     "buildCommand": "vite build --watch",
     "previewPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
   }
 }

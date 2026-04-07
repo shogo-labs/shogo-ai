@@ -523,11 +523,17 @@ export interface AgentTemplateSummary {
   category: string
   icon: string
   tags: string[]
-  settings: {
-    heartbeatInterval: number
-    heartbeatEnabled: boolean
-    modelProvider: string
-    modelName: string
+  settings: Record<string, unknown> & {
+    heartbeatInterval?: number
+    heartbeatEnabled?: boolean
+    modelProvider?: string
+    modelName?: string
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
   }
   skills: string[]
   integrations?: Array<{
@@ -547,6 +553,15 @@ export interface TechStackSummary {
     devServer?: string
     buildCommand?: string
     previewPort?: number
+  }
+  capabilities?: {
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    heartbeatEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
   }
 }
 

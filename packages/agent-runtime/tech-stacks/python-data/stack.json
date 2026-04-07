@@ -7,5 +7,14 @@
     "devServer": "jupyter",
     "buildCommand": "jupyter lab --no-browser --port=3001",
     "previewPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "heartbeatEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
   }
 }

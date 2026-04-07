@@ -26,6 +26,13 @@ export interface AgentTemplate {
     modelName: string
     quietHours?: { start: string; end: string; timezone: string }
     mcpServers?: Record<string, { command: string; args: string[] }>
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
+    [key: string]: unknown
   }
 
   /** Bundled skill file names to auto-install into workspace skills/ dir */

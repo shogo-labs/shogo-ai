@@ -23,7 +23,13 @@
       "start": "22:00",
       "end": "07:00",
       "timezone": "UTC"
-    }
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
   },
   "integrations": [
     {
@@ -34,5 +40,6 @@
       "categoryId": "notes",
       "description": "Archive research findings and reports"
     }
-  ]
+  ],
+  "techStack": "none"
 }

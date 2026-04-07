@@ -2,5 +2,14 @@
   "id": "none",
   "name": "None",
   "description": "No preset tech stack. The agent has full freedom to choose tools, languages, and frameworks.",
-  "tags": ["blank", "custom"]
+  "tags": ["blank", "custom"],
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": false
+  }
 }
