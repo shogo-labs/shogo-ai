@@ -108,6 +108,18 @@ export class StreamBufferStore {
     this.completeBuffer(buf)
   }
 
+  /**
+   * Abort a stream: complete all subscribers and remove the buffer entirely.
+   * Future resume/replay requests for this key will return null (→ 204).
+   * The bound StreamBufferWriter stays safe (no-ops via closure ref).
+   */
+  abort(key: string): void {
+    const buf = this.buffers.get(key)
+    if (!buf) return
+    this.completeBuffer(buf)
+    this.buffers.delete(key)
+  }
+
   has(key: string): boolean {
     return this.buffers.has(key)
   }
