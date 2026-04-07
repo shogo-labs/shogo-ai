@@ -238,7 +238,6 @@ describe('StreamBufferStore', () => {
 
     store.abort('sess')
 
-    // Buffer is gone — resume should return null
     expect(store.has('sess')).toBe(false)
     expect(store.createReplayStream('sess')).toBeNull()
 
@@ -256,14 +255,11 @@ describe('StreamBufferStore', () => {
     const replay = store.createReplayStream('sess')!
     const reader = replay.getReader()
 
-    // First read should return the buffered chunk
     const { value: first } = await reader.read()
     expect(new TextDecoder().decode(first!)).toBe('data')
 
-    // Abort the buffer while a subscriber is attached
     store.abort('sess')
 
-    // Subscriber should be closed (done = true)
     const { done } = await reader.read()
     expect(done).toBe(true)
   })
