@@ -1261,6 +1261,66 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     }
   })
 
+  app.patch('/api/local/shogo-key', async (c) => {
+    const body = await c.req.json<{ cloudUrl: string }>()
+    if (!body.cloudUrl?.trim()) {
+      return c.json({ ok: false, error: 'cloudUrl is required' }, 400)
+    }
+    const newCloudUrl = body.cloudUrl.trim().replace(/\/$/, '')
+
+    const keyRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
+    if (!keyRow) {
+      return c.json({ ok: false, error: 'No Shogo Cloud key is connected' }, 400)
+    }
+
+    const validateUrl = `${newCloudUrl}/api/api-keys/validate`
+    try {
+      console.log(`[ShogoKey] Re-validating key against new cloud: ${validateUrl}`)
+      const validateRes = await fetch(validateUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: keyRow.value }),
+        signal: AbortSignal.timeout(10000),
+      })
+      let validateData: { valid: boolean; workspace?: any; error?: string }
+      try {
+        validateData = await validateRes.json()
+      } catch {
+        console.error(`[ShogoKey] Cloud returned non-JSON (HTTP ${validateRes.status})`)
+        return c.json({ ok: false, error: `Shogo Cloud (${newCloudUrl}) returned an unexpected response (HTTP ${validateRes.status})`, cloudUrl: newCloudUrl }, 502)
+      }
+      if (!validateData.valid) {
+        console.error(`[ShogoKey] Cloud at ${newCloudUrl} rejected key: ${validateData.error}`)
+        return c.json({ ok: false, error: `${validateData.error || 'Key validation failed'} (validated against ${newCloudUrl})`, cloudUrl: newCloudUrl }, 400)
+      }
+
+      await Promise.all([
+        localDb.localConfig.upsert({
+          where: { key: 'SHOGO_CLOUD_URL' },
+          update: { value: newCloudUrl },
+          create: { key: 'SHOGO_CLOUD_URL', value: newCloudUrl },
+        }),
+        localDb.localConfig.upsert({
+          where: { key: 'SHOGO_KEY_INFO' },
+          update: { value: JSON.stringify({ workspace: validateData.workspace }) },
+          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
+        }),
+      ])
+
+      process.env.SHOGO_CLOUD_URL = newCloudUrl
+
+      import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
+        stopInstanceTunnel()
+        startInstanceTunnel()
+      }).catch(() => {})
+
+      return c.json({ ok: true, workspace: validateData.workspace })
+    } catch (err: any) {
+      console.error(`[ShogoKey] Failed to reach cloud at ${validateUrl}:`, err.message)
+      return c.json({ ok: false, error: `Cannot reach Shogo Cloud at ${newCloudUrl}: ${err.message}`, cloudUrl: newCloudUrl }, 502)
+    }
+  })
+
   app.delete('/api/local/shogo-key', async (c) => {
     try {
       await Promise.all([
@@ -4145,6 +4205,55 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
   }
 })
 
+// GET /api/admin/settings/agent-models - Read agent mode model overrides
+app.get('/api/admin/settings/agent-models', async (c) => {
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['agent-model.basic', 'agent-model.advanced'] } },
+    })
+    const overrides: Record<string, string | null> = { basic: null, advanced: null }
+    for (const row of rows) {
+      if (row.key === 'agent-model.basic') overrides.basic = row.value
+      if (row.key === 'agent-model.advanced') overrides.advanced = row.value
+    }
+    return c.json(overrides)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/agent-models - Update agent mode model overrides
+app.put('/api/admin/settings/agent-models', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    const { setAgentModeOverrides } = await import('@shogo/model-catalog')
+    const overrides: Partial<Record<string, string>> = {}
+
+    for (const mode of ['basic', 'advanced'] as const) {
+      if (body[mode] === undefined) continue
+      const value = body[mode]
+      if (value === null || value === '') {
+        await prisma.platformSetting.deleteMany({ where: { key: `agent-model.${mode}` } })
+      } else {
+        await prisma.platformSetting.upsert({
+          where: { key: `agent-model.${mode}` },
+          create: { key: `agent-model.${mode}`, value: String(value), updatedBy: userId },
+          update: { value: String(value), updatedBy: userId },
+        })
+        overrides[mode] = String(value)
+      }
+    }
+
+    setAgentModeOverrides(overrides)
+    return c.json({ ok: true, overrides })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/pods/:projectId - Delete project pod
 app.delete('/api/admin/pods/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -6149,6 +6258,28 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     }, 1000)
   }
 }
+
+// Load admin-configured agent model overrides from platform_settings into memory.
+// This allows resolveModelId('basic'/'advanced') to return admin-chosen models.
+await (async () => {
+  try {
+    const { setAgentModeOverrides } = await import('@shogo/model-catalog')
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['agent-model.basic', 'agent-model.advanced'] } },
+    })
+    if (rows.length > 0) {
+      const overrides: Record<string, string> = {}
+      for (const row of rows) {
+        if (row.key === 'agent-model.basic') overrides.basic = row.value
+        if (row.key === 'agent-model.advanced') overrides.advanced = row.value
+      }
+      setAgentModeOverrides(overrides)
+      console.log('[AgentModels] Loaded admin model overrides:', overrides)
+    }
+  } catch (err: any) {
+    console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
+  }
+})()
 
 export default {
   port: API_PORT,
