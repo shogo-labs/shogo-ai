@@ -32,6 +32,7 @@ const config: ForgeConfig = {
     ...(process.platform === 'darwin' && process.env.APPLE_ID ? {
       osxSign: {
         identity: 'Developer ID Application',
+        ...(process.env.SIGNING_KEYCHAIN ? { keychain: process.env.SIGNING_KEYCHAIN } : {}),
         hardenedRuntime: true,
         entitlements: './entitlements.plist',
         'entitlements-inherit': './entitlements.plist',
