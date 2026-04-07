@@ -36,6 +36,7 @@ export {
 export type { IDomainStore } from '@shogo/domain-stores'
 export type { IProject } from '@shogo/domain-stores'
 export type { IWorkspace } from '@shogo/domain-stores'
+export type { IMember } from '@shogo/domain-stores'
 
 const isNative = Platform.OS !== 'web'
 
