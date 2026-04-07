@@ -313,8 +313,9 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const isValid = name.trim().length > 0 && name.length <= 60
 
   const currentUserId = user?.id
+  const membersAll = Array.isArray(members.all) ? members.all : []
   const workspaceMembers = currentWorkspace?.id
-    ? members.all.filter(
+    ? membersAll.filter(
         (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
       )
     : []
@@ -327,7 +328,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
     currentWorkspace?.slug?.includes('personal') ||
     currentWorkspace?.name?.toLowerCase().includes('personal')
 
-  const canDelete = isOwner && workspaces.all.length > 1 && !isPersonalWorkspace
+  const wsAll = Array.isArray(workspaces.all) ? workspaces.all : []
+  const canDelete = isOwner && wsAll.length > 1 && !isPersonalWorkspace
   const deleteConfirmRequired = currentWorkspace?.name || 'delete'
   const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired
 
@@ -490,7 +492,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={workspaces.all.length <= 1 || (isOwner && !workspaceMembers.some(
+                  disabled={wsAll.length <= 1 || (isOwner && !workspaceMembers.some(
                     (m: any) => m.role === 'owner' && m.userId !== user?.id
                   ))}
                   onPress={() => setIsLeaveDialogOpen(true)}
@@ -582,7 +584,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                     }
                     await api.leaveWorkspace(http, wsId)
                     await workspaces.loadAll()
-                    const remaining = workspaces.all
+                    const remaining = Array.isArray(workspaces.all) ? workspaces.all : []
                     if (remaining.length > 0) {
                       setActiveWorkspaceId((remaining[0] as any).id)
                     }
@@ -984,7 +986,7 @@ const PeopleTab = observer(function PeopleTab() {
 
   const loadPeopleData = useCallback(async () => {
     if (!currentWorkspace?.id) {
-      if (workspaces.all.length === 0) {
+      if ((Array.isArray(workspaces.all) ? workspaces.all : []).length === 0) {
         try { await workspaces.loadAll({}) } catch {}
       }
       setIsLoading(false)
@@ -1000,7 +1002,8 @@ const PeopleTab = observer(function PeopleTab() {
 
       if (http) {
         try {
-          const items = await api.getWorkspaceMembers(http, ws.id)
+          const rawItems = await api.getWorkspaceMembers(http, ws.id)
+          const items = Array.isArray(rawItems) ? rawItems : []
           const map: Record<string, { name: string; email: string }> = {}
           for (const item of items) {
             if (item.user && typeof item.user === 'object' && item.user.id) {
@@ -1015,8 +1018,8 @@ const PeopleTab = observer(function PeopleTab() {
 
         if (user?.email) {
           try {
-            const pending = await api.getReceivedInvitations(http, user.email)
-            setReceivedInvites(pending)
+            const rawPending = await api.getReceivedInvitations(http, user.email)
+            setReceivedInvites(Array.isArray(rawPending) ? rawPending : [])
           } catch {}
         }
       }
@@ -1032,7 +1035,8 @@ const PeopleTab = observer(function PeopleTab() {
 
   const workspaceMembers = useMemo(() => {
     if (!currentWorkspace?.id) return []
-    const raw = members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
+    const allMembers = Array.isArray(members.all) ? members.all : []
+    const raw = allMembers.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
     const byUser = new Map<string, any>()
     for (const m of raw) {
       const existing = byUser.get(m.userId)
@@ -1042,8 +1046,9 @@ const PeopleTab = observer(function PeopleTab() {
     }
     return Array.from(byUser.values())
   }, [currentWorkspace?.id, members.all])
+  const allInvitations = Array.isArray(invitations.all) ? invitations.all : []
   const sentInvitations = currentWorkspace?.id
-    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status !== 'cancelled')
+    ? allInvitations.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status !== 'cancelled')
     : []
 
   const filteredMembers = useMemo(() => {
