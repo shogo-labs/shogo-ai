@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { Platform } from 'react-native'
 import * as SecureStore from 'expo-secure-store'
+import { safeGetItem, safeSetItem, safeRemoveItem } from '../lib/safe-storage'
 import {
   ACCENT_PRESETS,
   DEFAULT_ACCENT,
@@ -28,7 +29,7 @@ function isValidAccent(v: string | null | undefined): v is AccentThemeName {
 async function loadAccent(): Promise<AccentThemeName> {
   try {
     if (Platform.OS === 'web') {
-      const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null
+      const stored = safeGetItem(STORAGE_KEY)
       return isValidAccent(stored) ? stored : DEFAULT_ACCENT
     }
     const stored = await SecureStore.getItemAsync(STORAGE_KEY)
@@ -41,12 +42,10 @@ async function loadAccent(): Promise<AccentThemeName> {
 async function saveAccent(value: AccentThemeName): Promise<void> {
   try {
     if (Platform.OS === 'web') {
-      if (typeof localStorage !== 'undefined') {
-        if (value === DEFAULT_ACCENT) {
-          localStorage.removeItem(STORAGE_KEY)
-        } else {
-          localStorage.setItem(STORAGE_KEY, value)
-        }
+      if (value === DEFAULT_ACCENT) {
+        safeRemoveItem(STORAGE_KEY)
+      } else {
+        safeSetItem(STORAGE_KEY, value)
       }
       return
     }
