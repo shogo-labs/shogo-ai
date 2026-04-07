@@ -224,7 +224,8 @@ const HomeScreen = observer(function HomeScreen() {
     async function fetchTemplates() {
       try {
         const agentData = await api.getAgentTemplates(http)
-        setHomeTemplates(agentData.slice(0, 6))
+        const templates = Array.isArray(agentData) ? agentData : []
+        setHomeTemplates(templates.slice(0, 6))
         // APP_MODE_DISABLED: app template fetch removed
       } catch (err) {
         console.error('[Home] Failed to fetch templates:', err)
@@ -257,7 +258,8 @@ const HomeScreen = observer(function HomeScreen() {
     const template = homeTemplates.find(t => t.id === pendingId)
     if (!template) {
       // Template not in the first 6; fetch full list to find it
-      api.getAgentTemplates(http).then((all) => {
+      api.getAgentTemplates(http).then((raw) => {
+        const all = Array.isArray(raw) ? raw : []
         const found = all.find((t: AgentTemplate) => t.id === pendingId)
         if (found) {
           localStorage.removeItem('pending_template_id')
@@ -279,7 +281,8 @@ const HomeScreen = observer(function HomeScreen() {
 
   const myProjects = useMemo(() => {
     try {
-      return [...(projects?.all ?? [])]
+      const all = projects?.all
+      return [...(Array.isArray(all) ? all : [])]
         .sort((a: any, b: any) => {
           const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
           const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
@@ -293,16 +296,19 @@ const HomeScreen = observer(function HomeScreen() {
   const sharedProjects = useMemo(() => {
     if (!user?.id) return []
     try {
-      const userMembers = membersColl.all.filter((m: any) => m.userId === user.id)
+      const membersAll = Array.isArray(membersColl.all) ? membersColl.all : []
+      const wsAll = Array.isArray(workspaces.all) ? workspaces.all : []
+      const projAll = Array.isArray(projects?.all) ? projects.all : []
+      const userMembers = membersAll.filter((m: any) => m.userId === user.id)
       const sharedWsIds = new Set(
-        workspaces.all
+        wsAll
           .filter((ws: any) => {
             const membership = userMembers.find((m: any) => m.workspaceId === ws.id)
             return membership && membership.role !== 'owner'
           })
           .map((ws: any) => ws.id)
       )
-      return [...(projects?.all ?? [])]
+      return [...projAll]
         .filter((p: any) => sharedWsIds.has(p.workspaceId))
         .sort((a: any, b: any) => {
           const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
@@ -434,7 +440,7 @@ const HomeScreen = observer(function HomeScreen() {
       })
 
       const onboardingMessage = getOnboardingMessage(template.name)
-      const hasIntegrations = template.integrations && template.integrations.length > 0
+      const hasIntegrations = Array.isArray(template.integrations) && template.integrations.length > 0
       projects.loadAll()
       router.push({
         pathname: '/(app)/projects/[id]',
