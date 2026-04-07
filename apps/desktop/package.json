@@ -1,5 +1,6 @@
 {
-  "name": "@shogo/desktop",
+  "name": "shogo",
+  "productName": "Shogo",
   "version": "0.1.0",
   "description": "Shogo Desktop - Local open-source edition",
   "author": "Shogo Team",

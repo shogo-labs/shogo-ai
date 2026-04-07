@@ -144,7 +144,7 @@ Run `rm -rf apps/desktop/resources/{node_modules,bundle}` before `bundle-api.mjs
 
 **Code signature broken after first launch**
 The app must not write to its own bundle. All runtime data goes to
-`~/Library/Application Support/@shogo/desktop/data/`. If Prisma engines are
+`~/Library/Application Support/Shogo/data/`. If Prisma engines are
 writing inside the bundle, check that `PRISMA_SCHEMA_ENGINE_BINARY` is set
 to a writable location (handled automatically by `local-server.ts`).
 
