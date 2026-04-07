@@ -85,11 +85,12 @@ export function ProjectCard({
   const initial = name?.charAt(0)?.toUpperCase() || 'P'
   const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
 
-  const subtitle = description || (updatedAt
-    ? `Edited ${formatDistanceAgo(updatedAt)}`
-    : createdAt
-      ? `Created ${formatDistanceAgo(createdAt)}`
-      : null)
+  const subtitle = (typeof description === 'string' ? description : null)
+    || (updatedAt
+      ? `Edited ${formatDistanceAgo(updatedAt)}`
+      : createdAt
+        ? `Created ${formatDistanceAgo(createdAt)}`
+        : null)
 
   return (
     <Pressable

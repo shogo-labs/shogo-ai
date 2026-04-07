@@ -12,8 +12,10 @@ export interface NotifyErrorWidgetProps {
 }
 
 export function NotifyErrorWidget({ tool, className }: NotifyErrorWidgetProps) {
-  const title = (tool.args as { title?: string })?.title || "Error"
-  const message = (tool.args as { message?: string })?.message || ""
+  const rawTitle = (tool.args as { title?: unknown })?.title
+  const title = typeof rawTitle === "string" ? rawTitle : "Error"
+  const rawMessage = (tool.args as { message?: unknown })?.message
+  const message = typeof rawMessage === "string" ? rawMessage : rawMessage ? String(rawMessage) : ""
 
   return (
     <View

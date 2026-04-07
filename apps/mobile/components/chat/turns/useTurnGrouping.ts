@@ -12,6 +12,13 @@ import type { UIMessage } from "@ai-sdk/react"
 import type { ConversationTurn, MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 
+function safeErrorString(error: unknown): string | undefined {
+  if (error == null) return undefined
+  if (typeof error === "string") return error
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 function extractToolCallsFromMessage(message: UIMessage): ToolCallData[] {
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
     return []
@@ -34,7 +41,7 @@ function extractToolCallsFromMessage(message: UIMessage): ToolCallData[] {
         state,
         args: invocation?.args,
         result: invocation?.result,
-        error: invocation?.error,
+        error: safeErrorString(invocation?.error),
         timestamp: 0,
       }
     })
@@ -78,14 +85,14 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
             state: mapToolState(inv.state),
             args: inv.args,
             result: inv.result,
-            error: inv.error,
+            error: safeErrorString(inv.error),
             timestamp: 0,
           },
         })
       }
     } else if (part.type === "dynamic-tool") {
       const toolCallId = part.toolCallId || `tool-${index}`
-      const errorContent =
+      const rawError =
         part.state === "output-error"
           ? (part as { errorText?: string }).errorText ?? part.error
           : part.error
@@ -99,7 +106,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           state: mapToolState(part.state),
           args: part.input,
           result: part.output,
-          error: errorContent,
+          error: safeErrorString(rawError),
           timestamp: 0,
         },
       })
