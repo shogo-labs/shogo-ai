@@ -7,6 +7,7 @@ import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './loca
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
 import { initAutoUpdater } from './updater'
+import { getVMDownloadOverlayScript } from './vm-download-ui'
 
 // --- Persistent file logging ---
 const logDir = process.platform === 'win32'
@@ -161,6 +162,39 @@ function registerIpcHandlers(): void {
       vmIsolation: { ...current.vmIsolation, ...vmConfig },
     })
     return readConfig().vmIsolation
+  })
+
+  ipcMain.handle('get-vm-image-status', () => {
+    const { isVMAvailable, getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+    const imageDir = getVMImageDir()
+    const mgr = new VMImageManager(imageDir)
+    return {
+      imagesPresent: mgr.isImagePresent(),
+      vmAvailable: isVMAvailable(),
+      imageVersion: mgr.getImageVersion(),
+      imageDir,
+    }
+  })
+
+  ipcMain.handle('download-vm-images', (event) => {
+    const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+    const imageDir = getVMImageDir()
+    const mgr = new VMImageManager(imageDir)
+
+    return mgr.downloadImage((progress) => {
+      event.sender.send('vm-image-download-progress', progress)
+    }).then(() => {
+      console.log('[Desktop] VM images downloaded successfully')
+      return { success: true }
+    }).catch((err: Error) => {
+      console.error('[Desktop] VM image download failed:', err)
+      return { success: false, error: err.message }
+    })
+  })
+
+  ipcMain.handle('skip-vm-download', () => {
+    console.log('[Desktop] User skipped VM image download')
+    return { success: true }
   })
 }
 
@@ -324,7 +358,20 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
   buildAppMenu()
 
+  createWindow()
+
   if (!isCloudMode) {
+    const { isVMAvailable, getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+    const imageDir = getVMImageDir()
+    const mgr = new VMImageManager(imageDir)
+
+    if (!mgr.isImagePresent() && app.isPackaged) {
+      console.log('[Desktop] VM images not found — prompting download')
+      mainWindow?.webContents.once('did-finish-load', () => {
+        mainWindow?.webContents.executeJavaScript(getVMDownloadOverlayScript()).catch(() => {})
+      })
+    }
+
     console.log('[Desktop] Starting local server...')
     try {
       await startLocalServer()
@@ -335,8 +382,6 @@ app.whenReady().then(async () => {
     }
     setupSessionHandlers()
   }
-
-  createWindow()
 
   if (app.isPackaged) {
     initAutoUpdater()

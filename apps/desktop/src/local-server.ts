@@ -206,13 +206,13 @@ function ensureRuntimeTemplate(): void {
 // --- VM isolation ---
 
 function getVMImageDir(): string {
-  const IS_DEV = !require('electron').app.isPackaged
-  const desktopRoot = path.resolve(__dirname, '..')
-  if (IS_DEV) return path.join(desktopRoot, 'resources', 'vm')
-  return path.join(process.resourcesPath!, 'vm')
+  const { app } = require('electron')
+  if (!app.isPackaged) return path.join(path.resolve(__dirname, '..'), 'resources', 'vm')
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+  return path.join(app.getPath('userData'), 'vm-images', arch)
 }
 
-function getVMBundleDir(projectRoot: string, bundleDir: string, isDev: boolean): string {
+function getVMBundleDir(projectRoot: string, isDev: boolean): string {
   if (isDev) return ''
   return path.join(projectRoot, 'vm-bundle')
 }
@@ -298,7 +298,7 @@ export async function startLocalServer(): Promise<void> {
       SHOGO_VM_ISOLATION: 'true',
       SHOGO_DATA_DIR: getDataDir(),
       SHOGO_VM_IMAGE_DIR: getVMImageDir(),
-      SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, bundleDir, IS_DEV),
+      SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
   }
 
