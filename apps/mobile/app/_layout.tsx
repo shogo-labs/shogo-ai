@@ -18,6 +18,7 @@ import { AccentThemeProvider } from '../contexts/accent-theme'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { captureAttribution } from '../lib/attribution'
+import { safeSetItem } from '../lib/safe-storage'
 
 Sentry.init({
   dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
@@ -36,12 +37,12 @@ function useCaptureTemplateDeepLink() {
     const params = new URLSearchParams(window.location.search)
     const templateId = params.get('template')
     if (templateId) {
-      localStorage.setItem(PENDING_TEMPLATE_KEY, templateId)
+      safeSetItem(PENDING_TEMPLATE_KEY, templateId)
       params.delete('template')
     }
     const appTemplateName = params.get('app_template')
     if (appTemplateName) {
-      localStorage.setItem(PENDING_APP_TEMPLATE_KEY, appTemplateName)
+      safeSetItem(PENDING_APP_TEMPLATE_KEY, appTemplateName)
       params.delete('app_template')
     }
     if (templateId || appTemplateName) {
