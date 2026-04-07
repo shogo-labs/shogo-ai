@@ -230,6 +230,44 @@ describe('StreamBufferStore', () => {
     expect(text).toBe('new-more')
   })
 
+  test('abort removes buffer so resume returns null', async () => {
+    store = new StreamBufferStore()
+    const writer = store.create('sess')
+    writer.append(encode('chunk-1'))
+    writer.append(encode('chunk-2'))
+
+    store.abort('sess')
+
+    // Buffer is gone — resume should return null
+    expect(store.has('sess')).toBe(false)
+    expect(store.createReplayStream('sess')).toBeNull()
+
+    // Bound writer becomes a safe no-op (buf object completed via closure)
+    writer.append(encode('STALE'))
+    writer.complete()
+    expect(store.has('sess')).toBe(false)
+  })
+
+  test('abort closes active subscribers before removing buffer', async () => {
+    store = new StreamBufferStore()
+    const writer = store.create('sess')
+    writer.append(encode('data'))
+
+    const replay = store.createReplayStream('sess')!
+    const reader = replay.getReader()
+
+    // First read should return the buffered chunk
+    const { value: first } = await reader.read()
+    expect(new TextDecoder().decode(first!)).toBe('data')
+
+    // Abort the buffer while a subscriber is attached
+    store.abort('sess')
+
+    // Subscriber should be closed (done = true)
+    const { done } = await reader.read()
+    expect(done).toBe(true)
+  })
+
   test('dispose clears everything', () => {
     store = new StreamBufferStore()
     store.create('a')
