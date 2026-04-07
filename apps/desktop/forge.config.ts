@@ -29,21 +29,8 @@ const config: ForgeConfig = {
     name: 'Shogo',
     ...(hasIcon ? { icon: './resources/icon' } : {}),
     asar: true,
-    ...(process.platform === 'darwin' && process.env.APPLE_ID ? {
-      osxSign: {
-        identity: 'Developer ID Application',
-        ...(process.env.SIGNING_KEYCHAIN ? { keychain: process.env.SIGNING_KEYCHAIN } : {}),
-        hardenedRuntime: true,
-        entitlements: './entitlements.plist',
-        'entitlements-inherit': './entitlements.plist',
-      },
-      osxNotarize: {
-        tool: 'notarytool' as const,
-        appleId: process.env.APPLE_ID!,
-        appleIdPassword: process.env.APPLE_ID_PASSWORD!,
-        teamId: process.env.APPLE_TEAM_ID!,
-      },
-    } : {}),
+    // Signing and notarization are handled by explicit workflow steps
+    // rather than @electron/osx-sign (which has integration bugs with @electron/packager 18.x).
     ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
       windowsSign: {
         certificateFile: process.env.WINDOWS_CERT_PATH,
