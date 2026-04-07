@@ -58,6 +58,7 @@ import {
   Trash2,
   ArrowRightLeft,
   Pencil,
+  Upload,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -74,6 +75,7 @@ import {
 } from '@/components/ui/popover'
 import { useAuth } from '../../../contexts/auth'
 import { ProjectCard } from '../../../components/home/ProjectCard'
+import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 
 // Types
@@ -237,6 +239,7 @@ export default observer(function AllProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [isImporting, setIsImporting] = useState(false)
   const [moveToFolderModalVisible, setMoveToFolderModalVisible] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
   const [visibilityOpen, setVisibilityOpen] = useState(false)
@@ -663,13 +666,91 @@ export default observer(function AllProjectsPage() {
     setSelectMode(false)
   }, [selectedIds, store, currentWorkspace?.id])
 
+  const handleImportProject = useCallback(() => {
+    if (!currentWorkspace?.id || isImporting) return
+
+    const pickAndImport = async (blob: Blob, filename: string) => {
+      setIsImporting(true)
+      try {
+        const result = await api.importProject({
+          file: blob,
+          workspaceId: currentWorkspace.id,
+          filename,
+        })
+        if (result?.id) {
+          store?.projectCollection?.loadAll({ workspaceId: currentWorkspace.id })
+          toast.show({
+            placement: 'top',
+            duration: 3000,
+            render: ({ id }) => (
+              <Toast nativeID={id} variant="outline" action="success">
+                <ToastTitle>Project imported</ToastTitle>
+                <ToastDescription>{result.name}</ToastDescription>
+              </Toast>
+            ),
+          })
+          router.push({ pathname: '/(app)/projects/[id]', params: { id: result.id } } as any)
+        }
+      } catch (err: any) {
+        console.error('[AllProjectsPage] Import failed:', err)
+        Alert.alert('Import Failed', err.message || 'Failed to import project')
+      } finally {
+        setIsImporting(false)
+      }
+    }
+
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = '.shogo-project,.zip'
+      input.style.cssText = 'position:fixed;left:-9999px;opacity:0;width:1px;height:1px;pointer-events:none'
+      document.body.appendChild(input)
+      const cleanup = () => { if (input.parentNode) input.parentNode.removeChild(input) }
+      const timer = setTimeout(cleanup, 120_000)
+      input.onchange = async (e: any) => {
+        clearTimeout(timer)
+        const file = e.target?.files?.[0] as File | undefined
+        if (file) await pickAndImport(file, file.name)
+        cleanup()
+      }
+      input.click()
+      return
+    }
+
+    void (async () => {
+      try {
+        const { getDocumentAsync } = await import('expo-document-picker')
+        const result = await getDocumentAsync({
+          type: ['application/zip', 'application/octet-stream'],
+          copyToCacheDirectory: true,
+          multiple: false,
+        })
+        if (result.canceled || !result.assets?.[0]) return
+        const asset = result.assets[0]
+        const { readAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const base64 = await readAsStringAsync(asset.uri, { encoding: EncodingType.Base64 })
+        const binary = atob(base64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        const blob = new Blob([bytes], { type: 'application/zip' })
+        await pickAndImport(blob, asset.name || 'project.shogo-project')
+      } catch (err: any) {
+        if (err?.code !== 'ERR_CANCELED') {
+          console.error('[AllProjectsPage] Import picker failed:', err)
+          Alert.alert('Import Failed', err.message || 'Failed to pick file')
+        }
+      }
+    })()
+  }, [currentWorkspace?.id, isImporting, store, router, toast])
+
   const handleMoreOptions = useCallback(() => {
     Alert.alert('More options', undefined, [
+      { text: 'Import project', onPress: handleImportProject },
       { text: 'New folder', onPress: () => setNewFolderModalVisible(true) },
       { text: 'Select projects', onPress: handleToggleSelect },
       { text: 'Cancel', style: 'cancel' },
     ])
-  }, [handleToggleSelect])
+  }, [handleToggleSelect, handleImportProject])
 
   // Build combined data for FlatList (folders first, then projects)
   type ListItem =
@@ -1375,6 +1456,16 @@ export default observer(function AllProjectsPage() {
 
           {/* Spacer */}
           <View className="flex-1" />
+
+          {/* Import project */}
+          <Pressable
+            onPress={handleImportProject}
+            disabled={isImporting}
+            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input active:bg-muted"
+          >
+            <Upload size={14} className="text-muted-foreground" />
+            <Text className="text-xs text-foreground">{isImporting ? 'Importing...' : 'Import'}</Text>
+          </Pressable>
 
           {/* New folder */}
           <Pressable
