@@ -5,6 +5,25 @@ import fs from 'fs'
 
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
 
+const extraResourceCandidates = [
+  './resources/bun',
+  './resources/web',
+  './resources/bundle',
+  './resources/vm-bundle',
+  './resources/node_modules',
+  './resources/templates',
+  './resources/runtime-template',
+  './resources/canvas-runtime',
+  './resources/tree-sitter-wasm',
+  './resources/vm',
+  './resources/seed.db',
+  './resources/package.json',
+  './prisma',
+  './prisma.config.js',
+]
+
+const extraResource = extraResourceCandidates.filter((p) => fs.existsSync(p))
+
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
@@ -31,22 +50,7 @@ const config: ForgeConfig = {
         certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
       }
     } : {}),
-    extraResource: [
-      './resources/bun',
-      './resources/web',
-      './resources/bundle',
-      './resources/vm-bundle',
-      './resources/node_modules',
-      './resources/templates',
-      './resources/runtime-template',
-      './resources/canvas-runtime',
-      './resources/tree-sitter-wasm',
-      './resources/vm',
-      './resources/seed.db',
-      './resources/package.json',
-      './prisma',
-      './prisma.config.js',
-    ],
+    extraResource,
     ignore: [
       /^\/src/,
       /^\/scripts/,
