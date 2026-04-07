@@ -36,6 +36,13 @@ import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 
+function safeErrorString(error: unknown): string | undefined {
+  if (error == null) return undefined
+  if (typeof error === "string") return error
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 export interface AssistantContentProps {
   message: UIMessage
   isStreaming?: boolean
@@ -99,14 +106,14 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
             state: mapToolState(inv.state),
             args: inv.args,
             result: inv.result,
-            error: inv.error,
+            error: safeErrorString(inv.error),
             timestamp: 0,
           },
         })
       }
     } else if (part.type === "dynamic-tool") {
       const toolCallId = part.toolCallId || `tool-${index}`
-      const errorContent =
+      const rawError =
         part.state === "output-error"
           ? (part as { errorText?: string }).errorText ?? part.error
           : part.error
@@ -121,7 +128,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           state: mapToolState(part.state, preliminary),
           args: part.input,
           result: part.output,
-          error: errorContent,
+          error: safeErrorString(rawError),
           timestamp: 0,
         },
       })
