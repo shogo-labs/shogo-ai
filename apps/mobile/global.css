@@ -199,6 +199,12 @@
   --color-brand-landing: 226 121 39;
 }
 
+/* Override browser default blue focus ring with theme accent on all inputs/textareas */
+input:focus,
+textarea:focus {
+  outline-color: rgb(var(--color-ring)) !important;
+}
+
 /* Expo web: full-height chain so auth hero (flex + CSS background) fills the viewport */
 html,
 body {

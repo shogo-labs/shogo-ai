@@ -10,6 +10,6 @@
     "heartbeatEnabled": false,
     "imageGenEnabled": false,
     "memoryEnabled": true,
-    "quickActionsEnabled": false
+    "quickActionsEnabled": true
   }
 }
