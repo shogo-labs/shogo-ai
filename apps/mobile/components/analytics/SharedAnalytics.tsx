@@ -346,13 +346,13 @@ export function UsageSummaryView({ data }: { data: UsageSummaryData }) {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   const sorted = useMemo(() => {
-    return [...data.summaries].sort((a, b) => {
+    return [...(data.summaries ?? [])].sort((a, b) => {
       const va = a[sortKey] ?? ''
       const vb = b[sortKey] ?? ''
       const cmp = typeof va === 'number' ? (va as number) - (vb as number) : String(va).localeCompare(String(vb))
       return sortDir === 'asc' ? cmp : -cmp
     })
-  }, [data.summaries, sortKey, sortDir])
+  }, [data?.summaries, sortKey, sortDir])
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
@@ -432,13 +432,13 @@ export function UsageSummaryView({ data }: { data: UsageSummaryData }) {
                 ) : (
                   <View className="h-5 w-5 rounded-full bg-primary/20 items-center justify-center">
                     <Text className="text-[8px] font-medium text-primary">
-                      {(entry.userName || entry.userEmail)[0]?.toUpperCase()}
+                      {(entry.userName || entry.userEmail || '?')[0]?.toUpperCase()}
                     </Text>
                   </View>
                 )}
                 <View className="flex-1 min-w-0">
                   <Text className="text-[10px] font-medium text-foreground" numberOfLines={1}>
-                    {entry.userName || entry.userEmail.split('@')[0]}
+                    {entry.userName || entry.userEmail?.split('@')[0] || '—'}
                   </Text>
                 </View>
               </View>
@@ -478,7 +478,7 @@ export function UsageEventLogView({
   return (
     <View>
       <Text className="text-xs text-muted-foreground mb-2">
-        Showing {data.entries.length} of {data.total.toLocaleString()} events
+        Showing {(data.entries ?? []).length} of {data.total.toLocaleString()} events
       </Text>
 
       {/* Header */}
@@ -494,13 +494,13 @@ export function UsageEventLogView({
       </View>
 
       {/* Rows */}
-      {data.entries.length === 0 ? (
+      {(data.entries ?? []).length === 0 ? (
         <View className="p-8 items-center border border-t-0 border-border rounded-b-lg">
           <Text className="text-sm text-muted-foreground">No usage events</Text>
         </View>
       ) : (
         <View className="border border-t-0 border-border rounded-b-lg overflow-hidden">
-          {data.entries.map((entry, i) => (
+          {(data.entries ?? []).map((entry, i) => (
             <View
               key={entry.id}
               className={cn(
@@ -520,12 +520,12 @@ export function UsageEventLogView({
                 ) : (
                   <View className="h-4 w-4 rounded-full bg-primary/20 items-center justify-center">
                     <Text className="text-[7px] font-medium text-primary">
-                      {(entry.userName || entry.userEmail)[0]?.toUpperCase()}
+                      {(entry.userName || entry.userEmail || '?')[0]?.toUpperCase()}
                     </Text>
                   </View>
                 )}
                 <Text className="text-[10px] font-medium text-foreground" numberOfLines={1}>
-                  {entry.userName || entry.userEmail.split('@')[0]}
+                  {entry.userName || entry.userEmail?.split('@')[0] || '—'}
                 </Text>
               </View>
               <View className={cn('w-20 px-1 py-0.5 rounded border', getModelColor(entry.model))}>
@@ -800,7 +800,7 @@ export function UserActivityTable({
     )
   }
 
-  if (!data || data.users.length === 0) {
+  if (!data || !data.users?.length) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">
         <Text className="text-sm font-semibold text-foreground mb-3">User Activity</Text>
@@ -828,7 +828,7 @@ export function UserActivityTable({
       </View>
 
       {/* Rows */}
-      {data.users.map(u => (
+      {(data.users ?? []).map(u => (
         <View key={u.id} className="flex-row items-center py-2 border-b border-border/50">
           <View className="flex-[2]">
             <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{u.name || '—'}</Text>
@@ -968,7 +968,7 @@ export function SourceBreakdownPanel({
     )
   }
 
-  if (!data || data.sources.length === 0) {
+  if (!data || !data.sources?.length) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">
         <Text className="text-sm font-semibold text-foreground mb-3">Acquisition Sources</Text>
@@ -979,7 +979,7 @@ export function SourceBreakdownPanel({
     )
   }
 
-  const total = data.sources.reduce((s, r) => s + r.count, 0)
+  const total = (data.sources ?? []).reduce((s, r) => s + r.count, 0)
 
   return (
     <View className="rounded-xl border border-border bg-card p-4">
@@ -989,7 +989,7 @@ export function SourceBreakdownPanel({
         <Text className="text-[10px] text-muted-foreground ml-auto">{total} total</Text>
       </View>
       <View className="gap-2">
-        {data.sources.map(s => {
+        {(data.sources ?? []).map(s => {
           const pct = total > 0 ? Math.round((s.count / total) * 100) : 0
           return (
             <View key={s.tag} className="flex-row items-center p-2 rounded-lg bg-muted/50 gap-3">
@@ -1140,10 +1140,10 @@ export function AIInsightsPanel({
         </View>
       ) : (
         <View className="gap-3">
-          {data.aiInsights.takeaways.length > 0 && (
+          {(data.aiInsights.takeaways?.length ?? 0) > 0 && (
             <View>
               <Text className="text-xs font-semibold text-foreground mb-1.5">Key Takeaways</Text>
-              {data.aiInsights.takeaways.map((t, i) => (
+              {(data.aiInsights.takeaways ?? []).map((t, i) => (
                 <View key={i} className="flex-row gap-2 mb-1">
                   <Text className="text-[10px] text-muted-foreground">•</Text>
                   <Text className="text-[10px] text-foreground flex-1">{t}</Text>
@@ -1152,11 +1152,11 @@ export function AIInsightsPanel({
             </View>
           )}
 
-          {data.aiInsights.intents.length > 0 && (
+          {(data.aiInsights.intents?.length ?? 0) > 0 && (
             <View>
               <Text className="text-xs font-semibold text-foreground mb-1.5">User Intents</Text>
               <View className="gap-1">
-                {data.aiInsights.intents.map((intent, i) => (
+                {(data.aiInsights.intents ?? []).map((intent, i) => (
                   <View key={i} className="flex-row items-center gap-2 p-1.5 rounded bg-muted/30">
                     <Text className="text-xs font-medium text-foreground">{intent.category}</Text>
                     <Text className="text-[10px] text-muted-foreground">×{intent.count}</Text>
@@ -1171,10 +1171,10 @@ export function AIInsightsPanel({
             </View>
           )}
 
-          {data.aiInsights.painPoints.length > 0 && (
+          {(data.aiInsights.painPoints?.length ?? 0) > 0 && (
             <View>
               <Text className="text-xs font-semibold text-red-400 mb-1.5">Pain Points</Text>
-              {data.aiInsights.painPoints.map((p, i) => (
+              {(data.aiInsights.painPoints ?? []).map((p, i) => (
                 <View key={i} className="flex-row gap-2 mb-1">
                   <Text className="text-[10px] text-red-400">!</Text>
                   <Text className="text-[10px] text-foreground flex-1">{p}</Text>
@@ -1183,10 +1183,10 @@ export function AIInsightsPanel({
             </View>
           )}
 
-          {data.aiInsights.securityFlags.length > 0 && (
+          {(data.aiInsights.securityFlags?.length ?? 0) > 0 && (
             <View>
               <Text className="text-xs font-semibold text-orange-400 mb-1.5">Security Flags</Text>
-              {data.aiInsights.securityFlags.map((f, i) => (
+              {(data.aiInsights.securityFlags ?? []).map((f, i) => (
                 <View key={i} className="flex-row gap-2 mb-1">
                   <Text className="text-[10px] text-orange-400">⚠</Text>
                   <Text className="text-[10px] text-foreground flex-1">{f}</Text>
