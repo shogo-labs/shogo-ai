@@ -193,16 +193,6 @@ jobs:
             echo "No Apple certificate provided. Skipping macOS code signing."
           fi
 
-      - name: Test codesign with certificate
-        if: env.SIGNING_KEYCHAIN != ''
-        run: |
-          echo "Testing codesign with imported certificate..."
-          HASH=$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN" | head -1 | awk '{print $2}')
-          echo "Identity hash: $HASH"
-          echo "test" > /tmp/codesign-test.txt
-          codesign --sign "$HASH" --keychain "$SIGNING_KEYCHAIN" --force /tmp/codesign-test.txt && echo "codesign test PASSED" || echo "codesign test FAILED with exit $?"
-          codesign -dvv /tmp/codesign-test.txt 2>&1 || true
-
       - name: Codesign Go VM helper
         if: env.APPLE_CERTIFICATE_BASE64 != ''
         env:
@@ -217,16 +207,89 @@ jobs:
             echo "Go VM helper codesigned with virtualization entitlement"
           fi
 
-      - name: Package with Electron Forge
+      - name: Package Electron app
         working-directory: apps/desktop
-        run: npx electron-forge make --arch=${{ matrix.arch }}
+        run: npx electron-forge package --arch=${{ matrix.arch }}
         env:
-          DEBUG: electron-osx-sign*,electron-packager
-          SIGNING_KEYCHAIN: ${{ env.SIGNING_KEYCHAIN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Codesign app bundle
+        if: env.SIGNING_KEYCHAIN != ''
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          HASH=$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN" | head -1 | awk '{print $2}')
+          echo "Signing identity: $HASH"
+          APP_PATH=$(find out -name "Shogo.app" -maxdepth 4 -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Shogo.app not found in out/"
+            find out -name "*.app" -maxdepth 4
+            exit 1
+          fi
+          echo "App bundle: $APP_PATH"
+          SIGN_ARGS=(--sign "$HASH" --keychain "$SIGNING_KEYCHAIN" --force --timestamp --options runtime)
+
+          # 1) Sign all .dylib and .so files
+          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.so" \) | while read -r f; do
+            echo "  signing lib: $f"
+            codesign "${SIGN_ARGS[@]}" "$f"
+          done
+
+          # 2) Sign all standalone Mach-O binaries (inside Frameworks AND Resources)
+          find "$APP_PATH/Contents" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" | while read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              echo "  signing binary: $f"
+              codesign "${SIGN_ARGS[@]}" "$f"
+            fi
+          done
+
+          # 3) Sign helper apps (deepest first by depth)
+          find "$APP_PATH/Contents/Frameworks" -name "*.app" -type d -depth | while read -r helper; do
+            echo "  signing helper: $helper"
+            codesign "${SIGN_ARGS[@]}" "$helper"
+          done
+
+          # 4) Sign frameworks (deepest first)
+          find "$APP_PATH/Contents/Frameworks" -name "*.framework" -type d -depth | while read -r fw; do
+            echo "  signing framework: $fw"
+            codesign "${SIGN_ARGS[@]}" "$fw"
+          done
+
+          # 5) Sign the main app bundle with entitlements
+          echo "  signing app: $APP_PATH"
+          codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.plist "$APP_PATH"
+
+          echo "Verifying signature..."
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          echo "Codesign complete."
+
+      - name: Notarize app bundle
+        if: env.SIGNING_KEYCHAIN != ''
+        working-directory: apps/desktop
+        env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find out -name "Shogo.app" -maxdepth 4 -type d | head -1)
+          ZIP_PATH="/tmp/Shogo-notarize.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+          echo "Submitting for notarization..."
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 10m
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$APP_PATH"
+          echo "Notarization complete."
+
+      - name: Build distribution artifacts
+        working-directory: apps/desktop
+        run: npx electron-forge make --arch=${{ matrix.arch }} --skip-package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup macOS Signing Keychain
         if: always()
