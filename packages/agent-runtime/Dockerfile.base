@@ -33,11 +33,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && apt-get install -y --no-install-recommends gh && \
-    # Stripe CLI
-    STRIPE_VER=$(curl -fsSL https://api.github.com/repos/stripe/stripe-cli/releases/latest \
-      | grep '"tag_name"' | head -1 | cut -d'"' -f4) && \
+    # Stripe CLI (pinned to avoid GitHub API rate limits in CI)
+    STRIPE_VER="1.40.0" && \
     STRIPE_ARCH="$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/x86_64/')" && \
-    curl -fsSL "https://github.com/stripe/stripe-cli/releases/download/${STRIPE_VER}/stripe_${STRIPE_VER#v}_linux_${STRIPE_ARCH}.tar.gz" \
+    curl -fsSL "https://github.com/stripe/stripe-cli/releases/download/v${STRIPE_VER}/stripe_${STRIPE_VER}_linux_${STRIPE_ARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin stripe && \
     # Cleanup
     apt-get purge -y gnupg unzip && \
