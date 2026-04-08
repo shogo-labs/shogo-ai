@@ -692,6 +692,7 @@ describe('WarmPoolController', () => {
       const env = await controller.buildProjectEnv('test-project-456')
 
       expect(env).toHaveProperty('PROJECT_ID', 'test-project-456')
+      expect(env).toHaveProperty('WORKSPACE_ID', 'test-workspace')
       expect(env).toHaveProperty('AI_PROXY_TOKEN', 'test-proxy-token')
       expect(env).not.toHaveProperty('DATABASE_URL')
       expect(env).toHaveProperty('S3_WORKSPACES_BUCKET', 'test-bucket')
