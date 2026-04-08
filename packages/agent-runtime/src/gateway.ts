@@ -2109,7 +2109,11 @@ export class AgentGateway {
     // 5b. Sub-agent orchestration guide
     stableParts.push(SUBAGENT_GUIDE)
 
-    // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
+    // Separator tells the AI proxy to split the system prompt into two Anthropic
+    // system blocks: the stable prefix gets cache_control, the dynamic suffix
+    // does not. Without this, the entire prompt is one block whose cache is
+    // invalidated every turn because the dynamic content changes.
+    const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
 
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
@@ -2225,7 +2229,9 @@ export class AgentGateway {
       if (teamCtx) dynamicParts.push(teamCtx)
     }
 
-    return [...stableParts, ...dynamicParts].join('\n\n---\n\n')
+    const stableText = stableParts.join('\n\n---\n\n')
+    const dynamicText = dynamicParts.join('\n\n---\n\n')
+    return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
   }
 
   /**

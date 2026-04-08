@@ -30,6 +30,7 @@ interface BillingSession {
   model: string
   inputTokens: number
   cachedInputTokens: number
+  cacheWriteTokens: number
   outputTokens: number
   requestCount: number
   openedAt: number
@@ -74,6 +75,7 @@ export function openSession(
     model: 'sonnet',
     inputTokens: 0,
     cachedInputTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens: 0,
     requestCount: 0,
     openedAt: Date.now(),
@@ -99,12 +101,14 @@ export function accumulateUsage(
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number = 0,
+  cacheWriteTokens: number = 0,
 ): boolean {
   const session = sessions.get(projectId)
   if (!session) return false
 
   session.inputTokens += inputTokens
   session.cachedInputTokens += cachedInputTokens
+  session.cacheWriteTokens += cacheWriteTokens
   session.outputTokens += outputTokens
   session.requestCount += 1
   session.model = model
@@ -126,13 +130,16 @@ export async function closeSession(
     return { creditCost: 0, totalTokens: 0 }
   }
 
-  const totalTokens = session.inputTokens + session.cachedInputTokens + session.outputTokens
+  const totalTokens = session.inputTokens + session.cachedInputTokens + session.cacheWriteTokens + session.outputTokens
   if (totalTokens === 0) {
     return { creditCost: 0, totalTokens: 0 }
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
-  const creditCost = calculateCreditCost(session.inputTokens, session.outputTokens, billingModel, session.cachedInputTokens)
+  const { credits: creditCost, dollarCost } = calculateCreditCost(
+    session.inputTokens, session.outputTokens, billingModel,
+    session.cachedInputTokens, session.cacheWriteTokens,
+  )
   const durationMs = Date.now() - session.openedAt
 
   try {
@@ -145,6 +152,7 @@ export async function closeSession(
       {
         inputTokens: session.inputTokens,
         cachedInputTokens: session.cachedInputTokens,
+        cacheWriteTokens: session.cacheWriteTokens,
         outputTokens: session.outputTokens,
         totalTokens,
         model: session.model,
@@ -155,9 +163,8 @@ export async function closeSession(
     )
 
     if (result.success) {
-      const cacheNote = session.cachedInputTokens > 0 ? `, ${session.cachedInputTokens} cached` : ''
       console.log(
-        `[BillingSession] Charged ${creditCost} credits (${totalTokens} tokens across ${session.requestCount} requests${cacheNote}, model: ${billingModel}) — remaining: ${result.remainingCredits}`
+        `[BillingSession] Charged ${creditCost} credits ($${dollarCost.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}) — remaining: ${result.remainingCredits}`
       )
     } else {
       console.warn(`[BillingSession] Could not charge credits: ${result.error}`)
