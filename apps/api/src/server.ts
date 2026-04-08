@@ -54,6 +54,7 @@ import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
+import { vmRoutes } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -468,6 +469,7 @@ app.use(
       '/api/api-keys/validate',
       '/api/agent-templates',
       '/api/tech-stacks',
+      '/api/vm/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
@@ -605,6 +607,11 @@ app.get('/api/config', async (c) => {
     },
   })
 })
+
+// ── Local mode: VM management endpoints ──────────────────────────────────────
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  app.route('/api/vm', vmRoutes())
+}
 
 // ── Local mode: auto-sign-in + API key management ───────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {

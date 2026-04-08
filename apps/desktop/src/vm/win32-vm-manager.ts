@@ -189,8 +189,10 @@ export class Win32VMManager implements VMManager {
     hostFwds: string[]
   }): string[] {
     const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
+    const firmwareDir = this.findFirmwareDir()
 
     return [
+      ...(firmwareDir ? ['-L', firmwareDir] : []),
       '-accel', 'whpx', '-accel', 'tcg',
       '-machine', 'q35', '-cpu', 'Broadwell-v4',
       '-m', String(config.memoryMB),
@@ -205,6 +207,22 @@ export class Win32VMManager implements VMManager {
       '-qmp', `tcp:127.0.0.1:${qmpPort},server=on,wait=off`,
       '-nographic',
     ]
+  }
+
+  /**
+   * Locate the QEMU firmware directory containing bios-256k.bin.
+   * Checks: bundled share dir, system-installed QEMU, sibling of qemu binary.
+   */
+  private findFirmwareDir(): string | null {
+    const candidates = [
+      path.join(this.vmImageDir, 'share'),
+      path.join(path.dirname(this.qemuPath), 'share'),
+      'C:\\Program Files\\qemu\\share',
+    ]
+    for (const dir of candidates) {
+      if (fs.existsSync(path.join(dir, 'bios-256k.bin'))) return dir
+    }
+    return null
   }
 
   private ensureOverlay(overlayPath: string): void {
@@ -287,17 +305,33 @@ export class Win32VMManager implements VMManager {
   }
 
   private async findFreePort(preferred: number): Promise<number> {
-    const { createServer } = require('net')
+    const net = require('net')
     for (let port = preferred; port < preferred + 100; port++) {
-      const ok = await new Promise<boolean>(resolve => {
-        const s = createServer()
+      if (await this.isPortInUse(net, port)) continue
+      const canBind = await new Promise<boolean>(resolve => {
+        const s = net.createServer()
         s.once('error', () => resolve(false))
         s.once('listening', () => { s.close(() => resolve(true)) })
         s.listen(port, '127.0.0.1')
       })
-      if (ok) return port
+      if (canBind) return port
     }
     throw new Error(`No free port found near ${preferred}`)
+  }
+
+  /**
+   * Connect-based port check. On Windows, SO_REUSEADDR lets createServer().listen()
+   * succeed even when QEMU already has the port bound via SLIRP, so we also try
+   * connecting to detect listeners that the bind check misses.
+   */
+  private isPortInUse(net: any, port: number): Promise<boolean> {
+    return new Promise(resolve => {
+      const socket = new net.Socket()
+      socket.once('connect', () => { socket.destroy(); resolve(true) })
+      socket.once('error', () => { socket.destroy(); resolve(false) })
+      socket.setTimeout(300, () => { socket.destroy(); resolve(false) })
+      socket.connect(port, '127.0.0.1')
+    })
   }
 
   private sleep(ms: number): Promise<void> {
