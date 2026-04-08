@@ -46,7 +46,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Tool directories
 _tmp/
 .superdesign/
-.cursor/
+# Track shared Cursor project rules; ignore other .cursor noise
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 .codanna/
 .codex/
 .playwright-mcp/

@@ -42,6 +42,7 @@ import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
+import { costAnalyticsRoutes } from './routes/cost-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
 import { evalOutputRoutes } from './routes/eval-outputs'
@@ -4691,6 +4692,9 @@ app.route('/api', userAttributionRoute())
 
 // Scoped analytics routes handle their own auth (workspace/project membership checks)
 app.route('/api', scopedAnalyticsRoutes())
+
+// Agent cost optimizer and analytics routes
+app.route('/api', costAnalyticsRoutes())
 
 // Composio integration routes for managed OAuth (connect/disconnect/status)
 app.route('/api', integrationRoutes())
