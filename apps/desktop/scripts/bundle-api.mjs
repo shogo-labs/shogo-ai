@@ -126,7 +126,7 @@ function main() {
   logStep('Generating Prisma client...')
   try {
     execSync(
-      `bunx prisma generate --schema=prisma/schema.local.prisma`,
+      `bun x prisma generate --schema=prisma/schema.local.prisma`,
       {
         cwd: REPO_ROOT,
         stdio: 'inherit',
@@ -189,7 +189,7 @@ function main() {
   if (fs.existsSync(seedDbPath)) fs.rmSync(seedDbPath)
   try {
     execSync(
-      `bunx prisma db push --schema=prisma/schema.local.prisma --accept-data-loss`,
+      `bun x prisma db push --schema=prisma/schema.local.prisma --accept-data-loss`,
       {
         cwd: REPO_ROOT,
         stdio: 'inherit',
