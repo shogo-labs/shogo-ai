@@ -396,6 +396,13 @@ export function AssistantContent({
                   if (chatContext?.sendMessage) {
                     chatContext.sendMessage(response)
                   }
+                  if (chatContext?.saveToolOutput) {
+                    chatContext.saveToolOutput({
+                      messageId: message.id,
+                      toolCallId: part.id,
+                      output: response,
+                    })
+                  }
                 }}
               />
             )

@@ -13,7 +13,7 @@
  *  - Billing page (wide): NO sidebar (standalone full-width page)
  *  - All pages (narrow): hamburger header + drawer sidebar
  *
- * Auth guard redirects unauthenticated users to sign-in.
+ * Auth guard redirects unauthenticated users to sign-in (or root in local mode).
  */
 
 import { useState, useCallback, useEffect } from 'react'
@@ -21,6 +21,7 @@ import { View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
+import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
 import { DomainProvider } from '../../contexts/domain'
@@ -29,6 +30,7 @@ import { AppHeader } from '../../components/layout/AppHeader'
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading, user } = useAuth()
+  const { localMode } = usePlatformConfig()
   const router = useRouter()
   const pathname = usePathname()
   const { width } = useWindowDimensions()
@@ -53,9 +55,9 @@ export default function AppLayout() {
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace('/(auth)/sign-in')
+      router.replace(localMode ? '/' : '/(auth)/sign-in')
     }
-  }, [isAuthenticated, isLoading, router])
+  }, [isAuthenticated, isLoading, localMode, router])
 
   useEffect(() => {
     if (!isAuthenticated || !user) return

@@ -117,12 +117,14 @@ export default observer(function ProjectLayout() {
   const actions = useDomainActions()
   const projects = useProjectCollection()
 
-  // Capture initialMessage and files once so they don't re-fire on re-renders
+  // Capture initialMessage and files once so they don't re-fire on re-renders.
+  // The session ID that should receive these one-time props (only the first tab).
+  const [initialPropsSessionId] = useState(() => params.chatSessionId ?? null)
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
   const [capturedInitialInteractionMode] = useState<InteractionMode | undefined>(() => {
     const raw = params.initialInteractionMode
     const m = Array.isArray(raw) ? raw[0] : raw
-    if (m === 'agent' || m === 'plan' || m === 'ask') return m
+    if (m === 'agent' || m === 'plan' || m === 'ask') return m as InteractionMode
     return undefined
   })
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
@@ -531,6 +533,13 @@ export default observer(function ProjectLayout() {
   }, [chatSessionId])
 
   const handleCloseTab = useCallback((tabId: string) => {
+    streamingChangeHandlersRef.current.delete(tabId)
+    setStreamingTabIds((prev) => {
+      if (!prev.has(tabId)) return prev
+      const next = new Set(prev)
+      next.delete(tabId)
+      return next
+    })
     setOpenChatTabIds((prev) => {
       const next = prev.filter((id) => id !== tabId)
       if (tabId === chatSessionId) {
@@ -539,7 +548,6 @@ export default observer(function ProjectLayout() {
         if (neighbor) {
           setChatSessionId(neighbor)
         } else {
-          // Last tab closed — will trigger new session creation via the initSession effect
           setChatSessionId(null)
         }
       }
@@ -625,6 +633,27 @@ export default observer(function ProjectLayout() {
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
+  const [streamingTabIds, setStreamingTabIds] = useState<Set<string>>(new Set())
+  const handleTabStreamingChange = useCallback((tabId: string, isStreaming: boolean) => {
+    setStreamingTabIds((prev) => {
+      const has = prev.has(tabId)
+      if (isStreaming && has) return prev
+      if (!isStreaming && !has) return prev
+      const next = new Set(prev)
+      if (isStreaming) next.add(tabId)
+      else next.delete(tabId)
+      return next
+    })
+  }, [])
+  const streamingChangeHandlersRef = useRef<Map<string, (streaming: boolean) => void>>(new Map())
+  const getStreamingChangeHandler = useCallback((tabId: string) => {
+    let handler = streamingChangeHandlersRef.current.get(tabId)
+    if (!handler) {
+      handler = (streaming: boolean) => handleTabStreamingChange(tabId, streaming)
+      streamingChangeHandlersRef.current.set(tabId, handler)
+    }
+    return handler
+  }, [handleTabStreamingChange])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; modelId: string; nonce: number } | null>(null)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
@@ -955,28 +984,46 @@ export default observer(function ProjectLayout() {
     )
   }
 
-  const chatPanel = (
-    <ChatPanel
-      featureId={projectId ?? null}
-      featureName={project.name}
-      phase={null}
-      chatSessionId={chatSessionId}
-      onChatSessionChange={handleChatSessionChange}
-      workspaceId={project?.workspaceId}
-      userId={user?.id}
-      projectId={projectId}
-      projectType="unified"
-      initialMessage={capturedInitialMessage}
-      initialInteractionMode={capturedInitialInteractionMode}
-      initialFiles={capturedInitialFiles}
-      billingData={features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }}
-      onCanvasPreview={handleCanvasPreview}
-      onMessagesChange={setChatMessages}
-      buildPlanRequest={buildPlanRequest}
-      selectedModel={selectedModel}
-      onModelChange={handleModelChange}
-      className="flex-1"
-    />
+  const billingDataResolved = features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }
+
+  const chatPanels = (
+    <>
+      {openChatTabIds.map((tabId) => {
+        const isActive = tabId === chatSessionId
+        const isInitialSession = tabId === initialPropsSessionId
+        return (
+          <View
+            key={tabId}
+            className="flex-1"
+            style={!isActive ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 } : undefined}
+            pointerEvents={isActive ? 'auto' : 'none'}
+          >
+            <ChatPanel
+              featureId={projectId ?? null}
+              featureName={project.name}
+              phase={null}
+              chatSessionId={tabId}
+              onChatSessionChange={handleChatSessionChange}
+              workspaceId={project?.workspaceId}
+              userId={user?.id}
+              projectId={projectId}
+              projectType="unified"
+              initialMessage={isInitialSession ? capturedInitialMessage : undefined}
+              initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
+              initialFiles={isInitialSession ? capturedInitialFiles : undefined}
+              billingData={billingDataResolved}
+              onCanvasPreview={handleCanvasPreview}
+              onMessagesChange={isActive ? setChatMessages : undefined}
+              onStreamingChange={getStreamingChangeHandler(tabId)}
+              buildPlanRequest={isActive ? buildPlanRequest : null}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
+              className="flex-1"
+            />
+          </View>
+        )
+      })}
+    </>
   )
 
   const canvasPanel = canvasEnabled ? (
@@ -1136,8 +1183,9 @@ export default observer(function ProjectLayout() {
                       onSelectTab={handleSelectTab}
                       onCloseTab={handleCloseTab}
                       onNewChat={handleCreateNewSession}
+                      streamingTabIds={streamingTabIds}
                     />
-                    <View className="min-h-0 flex-1">{chatPanel}</View>
+                    <View className="min-h-0 flex-1">{chatPanels}</View>
                   </View>
                 ) : (
                   <>
@@ -1150,9 +1198,10 @@ export default observer(function ProjectLayout() {
                         onNewChat={handleCreateNewSession}
                         onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
                         showHistory={showChatSessions}
+                        streamingTabIds={streamingTabIds}
                       />
                     )}
-                    <View className="min-h-0 flex-1">{chatPanel}</View>
+                    <View className="min-h-0 flex-1">{chatPanels}</View>
                   </>
                 )}
               </View>

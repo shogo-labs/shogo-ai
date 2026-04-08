@@ -115,6 +115,7 @@ function OptionButton({
   isSelected,
   isMultiSelect,
   onSelect,
+  disabled,
 }: {
   label: string
   description: string
@@ -122,10 +123,12 @@ function OptionButton({
   isMultiSelect: boolean
   onSelect: () => void
   animationDelay: number
+  disabled?: boolean
 }) {
   return (
     <Pressable
       onPress={onSelect}
+      disabled={disabled}
       className={cn(
         "w-full p-2 rounded-md border",
         isSelected
@@ -231,6 +234,12 @@ export function AskUserQuestionWidget({
   const isPending = tool.result === undefined
   const isAnswered = !isPending
 
+  const [isSubmitted, setIsSubmitted] = useState(false)
+  const [submittedResponse, setSubmittedResponse] = useState<string | null>(null)
+
+  const effectivelyAnswered = isAnswered || isSubmitted
+  const effectivelyPending = isPending && !isSubmitted
+
   const [internalExpanded, setInternalExpanded] = useState(isPending)
   const isExpanded = controlledExpanded ?? internalExpanded
 
@@ -302,6 +311,8 @@ export function AskUserQuestionWidget({
     if (!isValid) return
 
     const response = formatResponse(questions, selections, otherTexts)
+    setIsSubmitted(true)
+    setSubmittedResponse(response)
     onSubmitResponse(response)
 
     if (!onToggle) {
@@ -309,8 +320,10 @@ export function AskUserQuestionWidget({
     }
   }, [isValid, questions, selections, otherTexts, onSubmitResponse, onToggle])
 
+  const displayResult = submittedResponse ?? (typeof tool.result === "string" ? tool.result : null)
+
   const summaryText = useMemo(() => {
-    if (!isAnswered) return null
+    if (!effectivelyAnswered) return null
 
     const firstQuestion = questions[0]
     if (!firstQuestion) return "Answered"
@@ -324,12 +337,12 @@ export function AskUserQuestionWidget({
       return `${firstQuestion.header}: ${label}`
     }
 
-    if (typeof tool.result === "string") {
-      return tool.result.split("\n")[0]?.slice(0, 40) || "Answered"
+    if (displayResult) {
+      return displayResult.split("\n")[0]?.slice(0, 40) || "Answered"
     }
 
     return "Answered"
-  }, [isAnswered, questions, selections, tool.result])
+  }, [effectivelyAnswered, questions, selections, displayResult])
 
   const currentQuestion =
     activeTab >= 0 && activeTab < questions.length
@@ -378,7 +391,7 @@ export function AskUserQuestionWidget({
     <View
       className={cn(
         "rounded-md border overflow-hidden",
-        isPending
+        effectivelyPending
           ? "border-primary/30 bg-primary/5"
           : "border-border/50 bg-muted/30",
         className
@@ -398,7 +411,7 @@ export function AskUserQuestionWidget({
         <MessageCircleQuestion
           className={cn(
             "w-3 h-3",
-            isPending ? "text-primary" : "text-muted-foreground"
+            effectivelyPending ? "text-primary" : "text-muted-foreground"
           )}
         />
 
@@ -406,7 +419,7 @@ export function AskUserQuestionWidget({
           AskUserQuestion
         </Text>
 
-        {!isExpanded && isAnswered && summaryText && (
+        {!isExpanded && effectivelyAnswered && summaryText && (
           <Text
             className="flex-1 text-[9px] text-muted-foreground text-right"
             numberOfLines={1}
@@ -415,9 +428,9 @@ export function AskUserQuestionWidget({
           </Text>
         )}
 
-        {(isExpanded || !isAnswered) && <View className="flex-1" />}
+        {(isExpanded || !effectivelyAnswered) && <View className="flex-1" />}
 
-        {isAnswered && (
+        {effectivelyAnswered && (
           <CheckCircle2 className="w-3 h-3 text-green-500" />
         )}
       </Pressable>
@@ -475,6 +488,7 @@ export function AskUserQuestionWidget({
                           )
                         }
                         animationDelay={optionIndex * 50}
+                        disabled={effectivelyAnswered}
                       />
                     )
                   }
@@ -501,6 +515,7 @@ export function AskUserQuestionWidget({
                     animationDelay={
                       (currentQuestion.options?.length ?? 0) * 50
                     }
+                    disabled={effectivelyAnswered}
                   />
 
                   {(selections.get(activeTab) || []).includes(
@@ -516,6 +531,7 @@ export function AskUserQuestionWidget({
                         }
                         className="text-xs h-7 border border-input rounded-md px-2 bg-background text-foreground"
                         autoFocus
+                        editable={!effectivelyAnswered}
                       />
                     </View>
                   )}
@@ -525,7 +541,7 @@ export function AskUserQuestionWidget({
           )}
 
           {/* Submit button */}
-          {isPending && (
+          {effectivelyPending && (
             <View className="flex-row justify-end pt-1.5">
               <Pressable
                 onPress={handleSubmit}
@@ -550,13 +566,13 @@ export function AskUserQuestionWidget({
           )}
 
           {/* Answered state */}
-          {isAnswered && typeof tool.result === "string" && (
+          {effectivelyAnswered && displayResult && (
             <View className="gap-0.5 pt-1.5 border-t border-border/30">
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Your Response
               </Text>
               <Text className="text-xs text-foreground">
-                {tool.result}
+                {displayResult}
               </Text>
             </View>
           )}

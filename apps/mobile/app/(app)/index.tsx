@@ -38,6 +38,7 @@ import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useTypingPlaceholder'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { usePlatformConfig } from '../../lib/platform-config'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
@@ -190,6 +191,7 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
+  const { localMode } = usePlatformConfig()
   const posthog = usePostHogSafe()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
@@ -467,6 +469,10 @@ const HomeScreen = observer(function HomeScreen() {
   // APP_MODE_DISABLED: handleAppTemplatePress removed
 
   if (!isAuthenticated) {
+    if (localMode) {
+      router.replace('/')
+      return null
+    }
     return (
       <SafeAreaView className="flex-1 bg-background">
         <View className="flex-1 items-center justify-center px-6">

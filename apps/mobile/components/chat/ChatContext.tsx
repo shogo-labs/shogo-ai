@@ -81,6 +81,9 @@ export interface ChatContextValue {
   /** Provide a tool output for a client-side tool call (e.g. ask_user responses) */
   addToolOutput?: (params: { toolCallId: string; output: string }) => void
 
+  /** Persist a tool output to in-memory messages and the DB (e.g. ask_user answers) */
+  saveToolOutput?: (params: { messageId: string; toolCallId: string; output: string }) => void
+
   /** Confirm and execute a pending plan. Null when no plan is pending. */
   confirmPlan?: (() => void) | null
 }
