@@ -64,13 +64,21 @@ export async function buildProjectEnv(
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
 
   // AI proxy URLs — the runtime needs to know where the proxy server is.
-  // In K8s this is the service DNS name; locally it's localhost; in VMs we
-  // need the host address since localhost inside a VM doesn't reach the host.
-  const apiPort = process.env.API_PORT || '8002'
-  const apiHost = process.env.API_HOST || 'localhost'
-  env.AI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
-  env.ANTHROPIC_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/anthropic`
-  env.OPENAI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
+  // In K8s (SYSTEM_NAMESPACE set): use the Knative service DNS on port 80.
+  // Desktop VMs: API_HOST is auto-set to the host bridge IP.
+  // Local dev: falls back to localhost:API_PORT.
+  const ns = process.env.SYSTEM_NAMESPACE
+  let apiBase: string
+  if (ns) {
+    apiBase = `http://api.${ns}.svc.cluster.local`
+  } else {
+    const apiPort = process.env.API_PORT || '8002'
+    const apiHost = process.env.API_HOST || 'localhost'
+    apiBase = `http://${apiHost}:${apiPort}`
+  }
+  env.AI_PROXY_URL = `${apiBase}/api/ai/v1`
+  env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
+  env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
 
   // Inject admin-configured agent model overrides so the gateway resolves correctly
   const modelOverrides = getAgentModeOverrides()
