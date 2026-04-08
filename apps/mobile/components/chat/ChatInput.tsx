@@ -56,7 +56,10 @@ import {
   ClipboardList,
   MessageCircleQuestion,
   Check,
+  Mic,
 } from "lucide-react-native"
+import { useVoiceInput } from "./useVoiceInput"
+import { VoiceWaveform } from "./VoiceWaveform"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -122,6 +125,7 @@ export interface FileAttachment {
   name: string
   type: string
 }
+
 
 interface SkillOption {
   name: string
@@ -391,6 +395,24 @@ export function ChatInput({
     }
   }, [processFiles])
 
+  const appendTranscriptToInput = useCallback((transcript: string) => {
+    const normalized = transcript.trim()
+    if (!normalized) return
+
+    setInputValue((current) => {
+      const prefix =
+        current.length === 0 || /\s$/.test(current) ? current : `${current} `
+      return `${prefix}${normalized}`
+    })
+    setShowSkillPicker(false)
+    setFilterText("")
+    setTimeout(() => textInputRef.current?.focus(), 0)
+  }, [])
+
+  const voiceInput = useVoiceInput({
+    onTranscript: appendTranscriptToInput,
+  })
+
   const selectSkill = useCallback(
     (skill: SkillOption) => {
       const spaceIndex = inputValue.indexOf(" ")
@@ -404,7 +426,14 @@ export function ChatInput({
 
   const handleSubmit = useCallback(() => {
     const trimmedContent = inputValue.trim()
-    if ((!trimmedContent && pendingFiles.length === 0) || disabled || isProcessingFiles) return
+    if (
+      (!trimmedContent && pendingFiles.length === 0) ||
+      disabled ||
+      isProcessingFiles ||
+      voiceInput.isBusy
+    ) {
+      return
+    }
 
     const fileData: FileAttachment[] | undefined =
       pendingFiles.length > 0
@@ -417,7 +446,7 @@ export function ChatInput({
     setFileError(null)
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, voiceInput.isBusy])
 
   const handleChangeText = useCallback(
     (text: string) => {
@@ -514,6 +543,10 @@ export function ChatInput({
       {/* Error message */}
       {fileError && (
         <Text className="text-sm text-destructive mb-2">{fileError}</Text>
+      )}
+
+      {voiceInput.error && (
+        <Text className="text-sm text-destructive mb-2">{voiceInput.error}</Text>
       )}
 
       {/* Queued messages */}
@@ -681,6 +714,14 @@ export function ChatInput({
           )}
           textAlignVertical="top"
         />
+
+        {voiceInput.canRecord && voiceInput.isRecording && voiceInput.liveTranscript ? (
+          <View className="px-4 pb-1">
+            <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+              {voiceInput.liveTranscript}
+            </Text>
+          </View>
+        ) : null}
 
         {/* Bottom toolbar */}
         <View className="flex-row items-center justify-between p-1.5">
@@ -960,12 +1001,48 @@ export function ChatInput({
           </View>
 
           {/* Right side buttons */}
+          {voiceInput.isRecording ? (
+            <View className="flex-row items-center gap-2">
+              <VoiceWaveform />
+              <Pressable
+                onPress={() => voiceInput.toggleRecording().catch(() => {})}
+                role="button"
+                accessibilityLabel="Stop voice recording"
+                className="h-6 w-6 rounded-full bg-foreground/90 items-center justify-center active:opacity-70"
+              >
+                <Square className="text-background" size={10} fill="currentColor" />
+              </Pressable>
+            </View>
+          ) : (
           <View className="flex-row items-center gap-1">
             {contextUsage && (
               <ContextTracker
                 inputTokens={contextUsage.inputTokens}
                 contextWindowTokens={contextUsage.contextWindowTokens}
               />
+            )}
+
+            {voiceInput.canRecord && (
+              <Pressable
+                onPress={() => {
+                  voiceInput.clearError()
+                  voiceInput.toggleRecording().catch(() => {})
+                }}
+                disabled={disabled || isProcessingFiles}
+                role="button"
+                accessibilityLabel="Start voice recording"
+                className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+              >
+                <Mic
+                  className={cn(
+                    "h-4 w-4",
+                    disabled || isProcessingFiles
+                      ? "text-muted-foreground/40"
+                      : "text-muted-foreground"
+                  )}
+                  size={12}
+                />
+              </Pressable>
             )}
 
             <Pressable
@@ -1009,12 +1086,20 @@ export function ChatInput({
             {(!isStreaming || (inputValue.trim() || pendingFiles.length > 0)) && (
               <Pressable
                 onPress={handleSubmit}
-                disabled={disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)}
+                disabled={
+                  disabled ||
+                  isProcessingFiles ||
+                  (!inputValue.trim() && pendingFiles.length === 0)
+                }
                 role="button"
                 accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
                 className={cn(
                   "h-5 w-5 rounded-full items-center justify-center bg-primary",
-                  (disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)) && "opacity-50"
+                  (
+                    disabled ||
+                    isProcessingFiles ||
+                    (!inputValue.trim() && pendingFiles.length === 0)
+                  ) && "opacity-50"
                 )}
               >
                 <ArrowUp
@@ -1024,6 +1109,7 @@ export function ChatInput({
               </Pressable>
             )}
           </View>
+          )}
         </View>
       </View>
 

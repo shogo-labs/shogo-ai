@@ -38,6 +38,8 @@ import {
   ChevronDown,
   Lock,
   Check,
+  Mic,
+  Square,
 } from "lucide-react-native"
 import {
   INTERACTION_MODES,
@@ -47,6 +49,8 @@ import {
   type InteractionMode,
 } from "./ChatInput"
 import { usePlatformConfig } from "../../lib/platform-config"
+import { useVoiceInput } from "./useVoiceInput"
+import { VoiceWaveform } from "./VoiceWaveform"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -168,6 +172,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const value = controlledValue ?? internalValue
     const setValue = controlledOnChange ?? setInternalValue
+    const valueRef = useRef(value)
+
+    useEffect(() => {
+      valueRef.current = value
+    }, [value])
 
     const placeholderText =
       placeholderProp ??
@@ -187,19 +196,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
       setFileError(null)
     }, [])
-
-    const handleSubmit = useCallback(() => {
-      const trimmedContent = value.trim()
-      if ((!trimmedContent && pendingFiles.length === 0) || disabled || isLoading) return
-
-      const fileData: FileAttachment[] | undefined =
-        pendingFiles.length > 0
-          ? pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type }))
-          : undefined
-
-      onSubmit(trimmedContent, fileData)
-      setFileError(null)
-    }, [value, disabled, isLoading, onSubmit, pendingFiles])
 
     const handleAttachClick = useCallback(() => {
       if (Platform.OS === "web") {
@@ -274,6 +270,47 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         node.removeEventListener("drop", handleDrop)
       }
     }, [processFiles])
+
+    const appendTranscriptToInput = useCallback(
+      (transcript: string) => {
+        const normalized = transcript.trim()
+        if (!normalized) return
+
+        const currentValue = valueRef.current
+        const nextValue =
+          currentValue.length === 0 || /\s$/.test(currentValue)
+            ? `${currentValue}${normalized}`
+            : `${currentValue} ${normalized}`
+
+        setValue(nextValue)
+        setTimeout(() => textInputRef.current?.focus(), 0)
+      },
+      [setValue]
+    )
+
+    const voiceInput = useVoiceInput({
+      onTranscript: appendTranscriptToInput,
+    })
+
+    const handleSubmit = useCallback(() => {
+      const trimmedContent = value.trim()
+      if (
+        (!trimmedContent && pendingFiles.length === 0) ||
+        disabled ||
+        isLoading ||
+        voiceInput.isBusy
+      ) {
+        return
+      }
+
+      const fileData: FileAttachment[] | undefined =
+        pendingFiles.length > 0
+          ? pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type }))
+          : undefined
+
+      onSubmit(trimmedContent, fileData)
+      setFileError(null)
+    }, [value, disabled, isLoading, onSubmit, pendingFiles, voiceInput.isBusy])
 
     const getFileIcon = useCallback((fileType: string) => {
       if (fileType.startsWith("image/")) {
@@ -366,6 +403,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <Text className="text-sm text-destructive px-4 pb-2">{fileError}</Text>
           )}
 
+          {voiceInput.error && (
+            <Text className="text-sm text-destructive px-4 pb-2">{voiceInput.error}</Text>
+          )}
+
           {/* TextInput */}
           <TextInput
             ref={textInputRef}
@@ -392,6 +433,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             )}
             textAlignVertical="top"
           />
+
+          {voiceInput.canRecord && voiceInput.isRecording && voiceInput.liveTranscript ? (
+            <View className="px-4 pb-1">
+              <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+                {voiceInput.liveTranscript}
+              </Text>
+            </View>
+          ) : null}
 
           {/* Bottom toolbar */}
           <View className="flex-row items-center justify-between p-1.5">
@@ -595,43 +644,88 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             </View>
 
             {/* Right side buttons */}
-            <View className="flex-row items-center gap-1">
-              <Pressable
-                onPress={handleAttachClick}
-                disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
-                role="button"
-                accessibilityLabel="Attach file"
-                className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
-                android_ripple={{ color: "rgba(128,128,128,0.25)" }}
-              >
-                <Plus
-                  className={cn(
-                    "h-4 w-4",
-                    disabled || isLoading || pendingFiles.length >= MAX_FILES
-                      ? "text-muted-foreground/40"
-                      : "text-muted-foreground"
-                  )}
-                  size={12}
-                />
-              </Pressable>
+            {voiceInput.isRecording ? (
+              <View className="flex-row items-center gap-2">
+                <VoiceWaveform />
+                <Pressable
+                  onPress={() => voiceInput.toggleRecording().catch(() => {})}
+                  role="button"
+                  accessibilityLabel="Stop voice recording"
+                  className="h-6 w-6 rounded-full bg-foreground/90 items-center justify-center active:opacity-70"
+                >
+                  <Square className="text-background" size={10} fill="currentColor" />
+                </Pressable>
+              </View>
+            ) : (
+              <View className="flex-row items-center gap-1">
+                {voiceInput.canRecord && (
+                  <Pressable
+                    onPress={() => {
+                      voiceInput.clearError()
+                      voiceInput.toggleRecording().catch(() => {})
+                    }}
+                    disabled={disabled || isLoading}
+                    role="button"
+                    accessibilityLabel="Start voice recording"
+                    className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+                  >
+                    <Mic
+                      className={cn(
+                        "h-4 w-4",
+                        disabled || isLoading
+                          ? "text-muted-foreground/40"
+                          : "text-muted-foreground"
+                      )}
+                      size={12}
+                    />
+                  </Pressable>
+                )}
 
-              <Pressable
-                onPress={handleSubmit}
-                disabled={(!value.trim() && pendingFiles.length === 0) || disabled || isLoading}
-                role="button"
-                accessibilityLabel="Send message"
-                className={cn(
-                  "h-5 w-5 rounded-full items-center justify-center bg-primary",
-                  ((!value.trim() && pendingFiles.length === 0) || disabled || isLoading) && "opacity-50"
-                )}
-              >
-                {isLoading ? (
-                  <Loader2 className="h-3 w-3 text-primary-foreground" size={12} />
-                ) : (
-                  <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
-                )}
-              </Pressable>
-            </View>
+                <Pressable
+                  onPress={handleAttachClick}
+                  disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
+                  role="button"
+                  accessibilityLabel="Attach file"
+                  className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
+                  android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+                >
+                  <Plus
+                    className={cn(
+                      "h-4 w-4",
+                      disabled || isLoading || pendingFiles.length >= MAX_FILES
+                        ? "text-muted-foreground/40"
+                        : "text-muted-foreground"
+                    )}
+                    size={12}
+                  />
+                </Pressable>
+
+                <Pressable
+                  onPress={handleSubmit}
+                  disabled={
+                    (!value.trim() && pendingFiles.length === 0) ||
+                    disabled ||
+                    isLoading
+                  }
+                  role="button"
+                  accessibilityLabel="Send message"
+                  className={cn(
+                    "h-5 w-5 rounded-full items-center justify-center bg-primary",
+                    (
+                      (!value.trim() && pendingFiles.length === 0) ||
+                      disabled ||
+                      isLoading
+                    ) && "opacity-50"
+                  )}
+                >
+                  {isLoading ? (
+                    <Loader2 className="h-3 w-3 text-primary-foreground" size={12} />
+                  ) : (
+                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                  )}
+                </Pressable>
+              </View>
+            )}
           </View>
         </View>
 
