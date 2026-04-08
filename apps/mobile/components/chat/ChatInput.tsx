@@ -1022,29 +1022,6 @@ export function ChatInput({
               />
             )}
 
-            {voiceInput.canRecord && (
-              <Pressable
-                onPress={() => {
-                  voiceInput.clearError()
-                  voiceInput.toggleRecording().catch(() => {})
-                }}
-                disabled={disabled || isProcessingFiles}
-                role="button"
-                accessibilityLabel="Start voice recording"
-                className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
-              >
-                <Mic
-                  className={cn(
-                    "h-4 w-4",
-                    disabled || isProcessingFiles
-                      ? "text-muted-foreground/40"
-                      : "text-muted-foreground"
-                  )}
-                  size={12}
-                />
-              </Pressable>
-            )}
-
             <Pressable
               onPress={handleAttachClick}
               disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
@@ -1064,50 +1041,66 @@ export function ChatInput({
               />
             </Pressable>
 
-            {/* Always show Stop button while streaming */}
-            {isStreaming && (
-              <Pressable
-                onPress={onStop}
-                accessibilityLabel="Stop"
-                testID="stop-streaming"
-                className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
-              >
-                <Square
-                  className="text-destructive-foreground m-auto"
-                  size={10}
-                />
-              </Pressable>
-            )}
-
-            {/* Show Send/Queue button:
-                1. If not streaming (normal behavior)
-                2. If streaming AND there is text/files to queue
-            */}
-            {(!isStreaming || (inputValue.trim() || pendingFiles.length > 0)) && (
+            {isStreaming ? (
+              <>
+                <Pressable
+                  onPress={onStop}
+                  accessibilityLabel="Stop"
+                  testID="stop-streaming"
+                  className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
+                >
+                  <Square
+                    className="text-destructive-foreground m-auto"
+                    size={10}
+                  />
+                </Pressable>
+                {(inputValue.trim() || pendingFiles.length > 0) && (
+                  <Pressable
+                    onPress={handleSubmit}
+                    disabled={disabled || isProcessingFiles}
+                    role="button"
+                    accessibilityLabel="Queue message"
+                    className="h-5 w-5 rounded-full items-center justify-center bg-primary"
+                  >
+                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                  </Pressable>
+                )}
+              </>
+            ) : (inputValue.trim() || pendingFiles.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
-                disabled={
-                  disabled ||
-                  isProcessingFiles ||
-                  (!inputValue.trim() && pendingFiles.length === 0)
-                }
+                disabled={disabled || isProcessingFiles}
                 role="button"
-                accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
+                accessibilityLabel="Send message"
                 className={cn(
                   "h-5 w-5 rounded-full items-center justify-center bg-primary",
-                  (
-                    disabled ||
-                    isProcessingFiles ||
-                    (!inputValue.trim() && pendingFiles.length === 0)
-                  ) && "opacity-50"
+                  (disabled || isProcessingFiles) && "opacity-50"
                 )}
               >
-                <ArrowUp
-                  className="h-3 w-3 text-primary-foreground"
-                  size={12}
+                <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+              </Pressable>
+            ) : voiceInput.canRecord ? (
+              <Pressable
+                onPress={() => {
+                  voiceInput.clearError()
+                  voiceInput.toggleRecording().catch(() => {})
+                }}
+                disabled={disabled || isProcessingFiles}
+                role="button"
+                accessibilityLabel="Start voice recording"
+                className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+              >
+                <Mic
+                  className={cn(
+                    "h-4 w-4",
+                    disabled || isProcessingFiles
+                      ? "text-muted-foreground/40"
+                      : "text-muted-foreground"
+                  )}
+                  size={14}
                 />
               </Pressable>
-            )}
+            ) : null}
           </View>
           )}
         </View>
