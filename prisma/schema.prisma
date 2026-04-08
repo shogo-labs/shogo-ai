@@ -107,29 +107,40 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id          String   @id @default(uuid())
-  name        String
-  slug        String   @unique
-  description String?
-  ssoSettings Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String       @id @default(uuid())
+  name            String
+  slug            String       @unique
+  description     String?
+  ssoSettings     Json?
+  instanceSize    InstanceSize @default(micro)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   // Relations
-  projects        Project[]
-  members         Member[]
-  billingAccounts BillingAccount[]
-  invitations     Invitation[]
-  inviteLinks     InviteLink[]
-  folders         Folder[]
-  subscriptions   Subscription[]
-  creditLedgers   CreditLedger[]
-  usageEvents     UsageEvent[]
-  starredProjects StarredProject[]
-  apiKeys         ApiKey[]
-  instances       Instance[]
+  projects             Project[]
+  members              Member[]
+  billingAccounts      BillingAccount[]
+  invitations          Invitation[]
+  inviteLinks          InviteLink[]
+  folders              Folder[]
+  subscriptions        Subscription[]
+  instanceSubscription InstanceSubscription?
+  creditLedgers        CreditLedger[]
+  usageEvents          UsageEvent[]
+  storageUsage         StorageUsage?
+  starredProjects      StarredProject[]
+  apiKeys              ApiKey[]
+  instances            Instance[]
 
   @@map("workspaces")
+}
+
+enum InstanceSize {
+  micro
+  small
+  medium
+  large
+  xlarge
 }
 
 model Project {
@@ -533,6 +544,43 @@ model UsageEvent {
 enum CreditSource {
   daily
   monthly
+}
+
+// =============================================================================
+// INSTANCE SIZES (Workspace Resource Tiers & Storage)
+// =============================================================================
+
+model InstanceSubscription {
+  id                   String             @id @default(uuid())
+  workspaceId          String             @unique
+  stripeSubscriptionId String             @unique
+  stripeCustomerId     String
+  instanceSize         InstanceSize
+  status               SubscriptionStatus
+  billingInterval      BillingInterval
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("instance_subscriptions")
+}
+
+model StorageUsage {
+  id               String   @id @default(uuid())
+  workspaceId      String   @unique
+  totalBytes       BigInt   @default(0)
+  projectCount     Int      @default(0)
+  lastCalculatedAt DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("storage_usage")
 }
 
 // =============================================================================
