@@ -413,7 +413,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             placeholder={placeholderText}
             placeholderTextColor="#9ca3af"
             accessibilityLabel="Describe the agent you want to build"
-            value={value}
+            value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
             onChangeText={setValue}
             onSubmitEditing={handleSubmit}
             onKeyPress={(e: any) => {
@@ -422,7 +422,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 handleSubmit()
               }
             }}
-            editable={!disabled && !isLoading}
+            editable={!disabled && !isLoading && !voiceInput.isRecording}
             multiline
             blurOnSubmit={false}
             className={cn(
@@ -433,14 +433,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             )}
             textAlignVertical="top"
           />
-
-          {voiceInput.canRecord && voiceInput.isRecording && voiceInput.liveTranscript ? (
-            <View className="px-4 pb-1">
-              <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
-                {voiceInput.liveTranscript}
-              </Text>
-            </View>
-          ) : null}
 
           {/* Bottom toolbar */}
           <View className="flex-row items-center justify-between p-1.5">
