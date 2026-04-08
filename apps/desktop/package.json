@@ -14,7 +14,9 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
-    "download-bun": "node scripts/download-bun.mjs"
+    "download-bun": "node scripts/download-bun.mjs",
+    "download-whisper": "node scripts/download-whisper.mjs",
+    "build-audio-helper": "cd native/shogo-audio && make build"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.0",

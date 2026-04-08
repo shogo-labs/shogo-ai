@@ -21,4 +21,39 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   onVMImageDownloadProgress: (callback: (progress: { bytesDownloaded: number; totalBytes: number; percent: number; stage: string }) => void) => {
     ipcRenderer.on('vm-image-download-progress', (_event, progress) => callback(progress))
   },
+
+  // Meeting recording
+  startRecording: () => ipcRenderer.invoke('start-recording'),
+  stopRecording: () => ipcRenderer.invoke('stop-recording'),
+  getRecordingStatus: () => ipcRenderer.invoke('get-recording-status'),
+  getMeetingConfig: () => ipcRenderer.invoke('get-meeting-config'),
+  setMeetingConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('set-meeting-config', config),
+  onRecordingStarted: (callback: (data: { id: string; path: string }) => void) => {
+    ipcRenderer.on('recording-started', (_event, data) => callback(data))
+  },
+  onRecordingDuration: (callback: (data: { id: string; duration: number }) => void) => {
+    ipcRenderer.on('recording-duration', (_event, data) => callback(data))
+  },
+  onRecordingStopped: (callback: (data: { id: string; audioPath: string; duration: number }) => void) => {
+    ipcRenderer.on('recording-stopped', (_event, data) => callback(data))
+  },
+  onRecordingResumed: (callback: (data: { id: string }) => void) => {
+    ipcRenderer.on('recording-resumed', (_event, data) => callback(data))
+  },
+  onUpcomingMeeting: (callback: (data: { title: string; start: number; minutesUntilStart: number }) => void) => {
+    ipcRenderer.on('upcoming-meeting', (_event, data) => callback(data))
+  },
+  removeRecordingListeners: () => {
+    ipcRenderer.removeAllListeners('recording-started')
+    ipcRenderer.removeAllListeners('recording-duration')
+    ipcRenderer.removeAllListeners('recording-stopped')
+    ipcRenderer.removeAllListeners('recording-resumed')
+    ipcRenderer.removeAllListeners('upcoming-meeting')
+  },
+  onNavigate: (callback: (path: string) => void) => {
+    ipcRenderer.on('navigate', (_event, path) => callback(path))
+  },
+  removeNavigateListener: () => {
+    ipcRenderer.removeAllListeners('navigate')
+  },
 })

@@ -7,6 +7,8 @@ import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './loca
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
 import { initAutoUpdater } from './updater'
+import { registerRecordingIpcHandlers, startMeetingMonitor, cleanupRecording } from './recording'
+import { createTray, destroyTray } from './tray'
 
 // --- Persistent file logging ---
 const logDir = process.platform === 'win32'
@@ -355,6 +357,7 @@ app.whenReady().then(async () => {
 
   registerProtocol()
   registerIpcHandlers()
+  registerRecordingIpcHandlers()
   buildAppMenu()
 
   createWindow()
@@ -369,6 +372,8 @@ app.whenReady().then(async () => {
       return
     }
     setupSessionHandlers()
+    createTray()
+    startMeetingMonitor()
   }
 
   if (app.isPackaged) {
@@ -395,6 +400,8 @@ app.on('before-quit', (event) => {
   isQuitting = true
   event.preventDefault()
   console.log('[Desktop] Waiting for server cleanup before exit...')
+  cleanupRecording()
+  destroyTray()
   stopLocalServer()
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))

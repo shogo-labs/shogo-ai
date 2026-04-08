@@ -9,6 +9,7 @@ export type WidgetType =
   | 'name-input'
   | 'ai-config'
   | 'security'
+  | 'meeting-setup'
   | 'features'
   | 'templates'
   | 'complete'
