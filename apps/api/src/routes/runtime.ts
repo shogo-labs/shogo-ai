@@ -101,6 +101,16 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         )
       }
 
+      if (process.env.SHOGO_VM_ISOLATION === 'true') {
+        try {
+          const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+          const url = await getVMProjectUrl(projectId)
+          return c.json({ success: true, projectId, status: 'running', url, port: 0 })
+        } catch {
+          // VM pool not ready, fall through to host runtime
+        }
+      }
+
       // Start or get existing runtime
       const runtime = await runtimeManager.start(projectId)
 
