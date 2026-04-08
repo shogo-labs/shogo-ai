@@ -311,6 +311,13 @@ export function createDomainActions(store: IDomainStore) {
     },
 
     /**
+     * Delete a chat session (server + local store)
+     */
+    deleteChatSession: async (sessionId: string) => {
+      return store.chatSessionCollection.delete(sessionId)
+    },
+
+    /**
      * Add a message to a chat session
      */
     addMessage: async (data: {
