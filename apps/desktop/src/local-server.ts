@@ -493,7 +493,7 @@ function baselineMigrations(dbPath: string): void {
 function getSchemaEngineName(): string {
   const platform = process.platform
   const arch = process.arch
-  if (platform === 'win32') return `schema-engine-windows`
+  if (platform === 'win32') return `schema-engine-windows.exe`
   if (platform === 'darwin' && arch === 'arm64') return `schema-engine-darwin-arm64`
   if (platform === 'darwin') return `schema-engine-darwin`
   return `schema-engine-debian-openssl-3.0.x`
