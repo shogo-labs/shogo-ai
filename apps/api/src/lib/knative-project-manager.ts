@@ -950,13 +950,6 @@ export class KnativeProjectManager {
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       ...(projectRecord?.workspaceId ? [{ name: "WORKSPACE_ID", value: projectRecord.workspaceId }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
-      // Auth secret for validating preview JWT tokens
-      {
-        name: "BETTER_AUTH_SECRET",
-        valueFrom: {
-          secretKeyRef: { name: "preview-secrets", key: "BETTER_AUTH_SECRET" },
-        },
-      },
     ]
 
     // AI Proxy configuration
