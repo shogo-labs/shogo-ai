@@ -15,6 +15,10 @@ function formatDuration(ms: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
+// ---------------------------------------------------------------------------
+// Web: Browser SpeechRecognition
+// ---------------------------------------------------------------------------
+
 function getSpeechRecognitionCtor(): (new () => any) | null {
   if (typeof window === 'undefined') return null
   return (
@@ -24,15 +28,41 @@ function getSpeechRecognitionCtor(): (new () => any) | null {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Native: expo-speech-recognition (lazy-loaded so web builds never pull it in)
+// ---------------------------------------------------------------------------
+
+let _nativeModule: any = null
+function getNativeModule(): any {
+  if (_nativeModule !== undefined && _nativeModule !== null) return _nativeModule
+  if (Platform.OS === 'web') {
+    _nativeModule = null
+    return null
+  }
+  try {
+    _nativeModule =
+      require('expo-speech-recognition').ExpoSpeechRecognitionModule
+  } catch {
+    _nativeModule = null
+  }
+  return _nativeModule
+}
+
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
+
 export interface UseVoiceInputOptions {
   onTranscript: (text: string) => void
 }
 
 export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   const isMountedRef = useRef(true)
+  const transcriptionHandlerRef = useRef(onTranscript)
+
+  // Web-only refs
   const recognitionRef = useRef<any>(null)
   const autoStopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const transcriptionHandlerRef = useRef(onTranscript)
   const finalTranscriptRef = useRef('')
   const liveTranscriptRef = useRef('')
   const stoppingRef = useRef(false)
@@ -47,9 +77,86 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   }, [onTranscript])
 
   const isSupported = useMemo(() => {
-    if (Platform.OS !== 'web') return false
-    return !!getSpeechRecognitionCtor()
+    if (Platform.OS === 'web') return !!getSpeechRecognitionCtor()
+    const mod = getNativeModule()
+    if (!mod) return false
+    try {
+      return mod.isRecognitionAvailable()
+    } catch {
+      return false
+    }
   }, [])
+
+  // ---------------------------------------------------------------------------
+  // Native event listeners (registered once, active only while mounted)
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return
+    const mod = getNativeModule()
+    if (!mod) return
+
+    const resultSub = mod.addListener('result', (event: any) => {
+      if (!isMountedRef.current) return
+      const transcript: string = event.results?.[0]?.transcript ?? ''
+      const isFinal: boolean = event.isFinal ?? false
+
+      if (isFinal) {
+        finalTranscriptRef.current = transcript
+      }
+      liveTranscriptRef.current = transcript
+      setLiveTranscript(transcript)
+    })
+
+    const errorSub = mod.addListener('error', (event: any) => {
+      if (!isMountedRef.current) return
+      const code = event?.error ?? ''
+      if (code === 'aborted') return
+
+      if (code === 'no-speech') {
+        setError('No speech detected. Please try again.')
+      } else if (code === 'not-allowed') {
+        setError(
+          'Microphone access was blocked. Please allow it in Settings and try again.'
+        )
+      } else {
+        setError(event?.message || `Speech recognition error: ${code}`)
+      }
+
+      finalTranscriptRef.current = ''
+      liveTranscriptRef.current = ''
+      setLiveTranscript('')
+      setStatus('idle')
+      setElapsedMs(0)
+    })
+
+    const endSub = mod.addListener('end', () => {
+      if (!isMountedRef.current) return
+
+      const transcript = (
+        finalTranscriptRef.current || liveTranscriptRef.current
+      ).trim()
+      if (transcript) {
+        transcriptionHandlerRef.current(transcript)
+      }
+
+      finalTranscriptRef.current = ''
+      liveTranscriptRef.current = ''
+      setLiveTranscript('')
+      setStatus('idle')
+      setElapsedMs(0)
+    })
+
+    return () => {
+      resultSub.remove()
+      errorSub.remove()
+      endSub.remove()
+    }
+  }, [])
+
+  // ---------------------------------------------------------------------------
+  // Shared helpers
+  // ---------------------------------------------------------------------------
 
   const cleanup = useCallback(() => {
     if (autoStopTimeoutRef.current) {
@@ -58,24 +165,53 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
     }
   }, [])
 
-  const stopRecording = useCallback(async () => {
-    const recognition = recognitionRef.current
-    if (!recognition) return
-    stoppingRef.current = true
-    recognition.stop()
-  }, [])
+  // ---------------------------------------------------------------------------
+  // Start
+  // ---------------------------------------------------------------------------
 
   const startRecording = useCallback(async () => {
     if (!isSupported || status !== 'idle') return
-
-    const Ctor = getSpeechRecognitionCtor()
-    if (!Ctor) return
-
     setError(null)
     finalTranscriptRef.current = ''
     liveTranscriptRef.current = ''
     setLiveTranscript('')
     stoppingRef.current = false
+
+    if (Platform.OS !== 'web') {
+      // ---- Native path ----
+      const mod = getNativeModule()
+      if (!mod) return
+
+      try {
+        const perms = await mod.requestPermissionsAsync()
+        if (!perms.granted) {
+          setError(
+            'Microphone / speech recognition permission was denied. Please allow it in Settings.'
+          )
+          return
+        }
+
+        mod.start({
+          lang: 'en-US',
+          interimResults: true,
+          continuous: true,
+        })
+        setStatus('recording')
+
+        autoStopTimeoutRef.current = setTimeout(() => {
+          try {
+            mod.stop()
+          } catch {}
+        }, MAX_RECORDING_MS)
+      } catch (err: any) {
+        setError(err?.message || 'Failed to start speech recognition.')
+      }
+      return
+    }
+
+    // ---- Web path (unchanged) ----
+    const Ctor = getSpeechRecognitionCtor()
+    if (!Ctor) return
 
     try {
       const recognition = new Ctor()
@@ -184,7 +320,33 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
           'Speech recognition is not available in this browser.'
       )
     }
-  }, [cleanup, isSupported, status, stopRecording])
+  }, [cleanup, isSupported, status])
+
+  // ---------------------------------------------------------------------------
+  // Stop
+  // ---------------------------------------------------------------------------
+
+  const stopRecording = useCallback(async () => {
+    if (Platform.OS !== 'web') {
+      cleanup()
+      const mod = getNativeModule()
+      if (mod) {
+        try {
+          mod.stop()
+        } catch {}
+      }
+      return
+    }
+
+    const recognition = recognitionRef.current
+    if (!recognition) return
+    stoppingRef.current = true
+    recognition.stop()
+  }, [cleanup])
+
+  // ---------------------------------------------------------------------------
+  // Toggle
+  // ---------------------------------------------------------------------------
 
   const toggleRecording = useCallback(async () => {
     if (status === 'recording') {
@@ -196,29 +358,44 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
     }
   }, [startRecording, status, stopRecording])
 
+  // ---------------------------------------------------------------------------
+  // Elapsed timer
+  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     if (status !== 'recording') return
-
     const startedAt = Date.now()
     setElapsedMs(0)
     const interval = setInterval(() => {
       setElapsedMs(Date.now() - startedAt)
     }, 250)
-
     return () => clearInterval(interval)
   }, [status])
+
+  // ---------------------------------------------------------------------------
+  // Cleanup on unmount
+  // ---------------------------------------------------------------------------
 
   useEffect(() => {
     return () => {
       isMountedRef.current = false
-      const recognition = recognitionRef.current
-      if (recognition) {
-        try {
-          recognition.abort()
-        } catch {
-          // Ignore cleanup errors during unmount.
+
+      if (Platform.OS === 'web') {
+        const recognition = recognitionRef.current
+        if (recognition) {
+          try {
+            recognition.abort()
+          } catch {}
+        }
+      } else {
+        const mod = getNativeModule()
+        if (mod) {
+          try {
+            mod.abort()
+          } catch {}
         }
       }
+
       cleanup()
     }
   }, [cleanup])

@@ -658,29 +658,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               </View>
             ) : (
               <View className="flex-row items-center gap-1">
-                {voiceInput.canRecord && (
-                  <Pressable
-                    onPress={() => {
-                      voiceInput.clearError()
-                      voiceInput.toggleRecording().catch(() => {})
-                    }}
-                    disabled={disabled || isLoading}
-                    role="button"
-                    accessibilityLabel="Start voice recording"
-                    className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
-                  >
-                    <Mic
-                      className={cn(
-                        "h-4 w-4",
-                        disabled || isLoading
-                          ? "text-muted-foreground/40"
-                          : "text-muted-foreground"
-                      )}
-                      size={12}
-                    />
-                  </Pressable>
-                )}
-
                 <Pressable
                   onPress={handleAttachClick}
                   disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
@@ -700,30 +677,45 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   />
                 </Pressable>
 
-                <Pressable
-                  onPress={handleSubmit}
-                  disabled={
-                    (!value.trim() && pendingFiles.length === 0) ||
-                    disabled ||
-                    isLoading
-                  }
-                  role="button"
-                  accessibilityLabel="Send message"
-                  className={cn(
-                    "h-5 w-5 rounded-full items-center justify-center bg-primary",
-                    (
-                      (!value.trim() && pendingFiles.length === 0) ||
-                      disabled ||
-                      isLoading
-                    ) && "opacity-50"
-                  )}
-                >
-                  {isLoading ? (
+                {isLoading ? (
+                  <View className="h-5 w-5 rounded-full items-center justify-center bg-primary opacity-50">
                     <Loader2 className="h-3 w-3 text-primary-foreground" size={12} />
-                  ) : (
+                  </View>
+                ) : (value.trim() || pendingFiles.length > 0) ? (
+                  <Pressable
+                    onPress={handleSubmit}
+                    disabled={disabled}
+                    role="button"
+                    accessibilityLabel="Send message"
+                    className={cn(
+                      "h-5 w-5 rounded-full items-center justify-center bg-primary",
+                      disabled && "opacity-50"
+                    )}
+                  >
                     <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
-                  )}
-                </Pressable>
+                  </Pressable>
+                ) : voiceInput.canRecord ? (
+                  <Pressable
+                    onPress={() => {
+                      voiceInput.clearError()
+                      voiceInput.toggleRecording().catch(() => {})
+                    }}
+                    disabled={disabled}
+                    role="button"
+                    accessibilityLabel="Start voice recording"
+                    className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+                  >
+                    <Mic
+                      className={cn(
+                        "h-4 w-4",
+                        disabled
+                          ? "text-muted-foreground/40"
+                          : "text-muted-foreground"
+                      )}
+                      size={14}
+                    />
+                  </Pressable>
+                ) : null}
               </View>
             )}
           </View>
