@@ -235,15 +235,15 @@ jobs:
             codesign "${SIGN_ARGS[@]}" "$f"
           done
 
-          # 2) Sign all standalone Mach-O binaries (inside Frameworks AND Resources)
-          find "$APP_PATH/Contents" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" | while read -r f; do
+          # 2) Sign Mach-O binaries inside Frameworks and Resources (NOT Contents/MacOS — main binary is signed with the app bundle)
+          find "$APP_PATH/Contents/Frameworks" "$APP_PATH/Contents/Resources" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" 2>/dev/null | while read -r f; do
             if file "$f" | grep -q "Mach-O"; then
               echo "  signing binary: $f"
               codesign "${SIGN_ARGS[@]}" "$f"
             fi
           done
 
-          # 3) Sign helper apps (deepest first by depth)
+          # 3) Sign helper apps (deepest first)
           find "$APP_PATH/Contents/Frameworks" -name "*.app" -type d -depth | while read -r helper; do
             echo "  signing helper: $helper"
             codesign "${SIGN_ARGS[@]}" "$helper"
@@ -255,7 +255,7 @@ jobs:
             codesign "${SIGN_ARGS[@]}" "$fw"
           done
 
-          # 5) Sign the main app bundle with entitlements
+          # 5) Sign the main app bundle (signs Contents/MacOS/* and validates all subcomponents)
           echo "  signing app: $APP_PATH"
           codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.plist "$APP_PATH"
 
