@@ -69,7 +69,8 @@ export default function NewWorkspacePage() {
     setIsCheckoutLoading(true)
     setError(null)
     try {
-      const planId = credits === 100 ? planType : `${planType}_${credits}`
+      const stripeTierKey = credits >= BASE_TIER_CREDITS ? Math.round(credits / 2) : credits
+      const planId = stripeTierKey === 100 ? planType : `${planType}_${stripeTierKey}`
       const isNative = Platform.OS !== 'web'
 
       const redirectBase = isNative
