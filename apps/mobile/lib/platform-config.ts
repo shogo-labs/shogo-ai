@@ -16,19 +16,20 @@ export interface PlatformConfig {
     oauth: boolean
     analytics: boolean
     publishing: boolean
+    marketplace: boolean
   }
 }
 
 const CLOUD_CONFIG: PlatformConfig = {
   localMode: false,
   configLoaded: false,
-  features: { billing: true, admin: true, oauth: true, analytics: true, publishing: true },
+  features: { billing: true, admin: true, oauth: true, analytics: true, publishing: true, marketplace: true },
 }
 
 const LOCAL_CONFIG: PlatformConfig = {
   localMode: true,
   configLoaded: false,
-  features: { billing: false, admin: false, oauth: false, analytics: true, publishing: false },
+  features: { billing: false, admin: false, oauth: false, analytics: true, publishing: false, marketplace: false },
 }
 
 function isLocalMode(): boolean {

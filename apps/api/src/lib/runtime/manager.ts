@@ -9,7 +9,7 @@
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { pkg } from '@shogo/shared-runtime'
 import type {
@@ -393,7 +393,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
    * Ensure project directory exists with Vite setup.
    */
   private async ensureProjectDirectory(projectId: string): Promise<string> {
-    const workspacesDir = this.config.workspacesDir || process.cwd()
+    const workspacesDir = resolve(this.config.workspacesDir || process.cwd())
     const projectDir = join(workspacesDir, projectId)
     const workspaceTemplateDir = join(workspacesDir, this.config.templateDir || '_template')
 
@@ -932,9 +932,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
 
-      // Wait for Vite dev server if it was started
-      if (runtime.process) {
+      // Wait for Vite dev server if it was started and is still alive.
+      // If the process already exited (e.g. vite binary missing during dep install),
+      // skip the wait — the agent server alone is sufficient for chat.
+      if (runtime.process && !runtime.process.killed && runtime.process.exitCode === null) {
         await this.waitForReady(projectId, port, 30000)
+      } else if (runtime.process) {
+        console.warn(`[RuntimeManager] Vite process already exited for ${projectId} (code=${runtime.process.exitCode}), skipping waitForReady`)
       }
 
       // Wait for agent server
@@ -1119,9 +1123,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 5000)
     try {
-      const healthPort = runtime.agentPort && !runtime.process ? runtime.agentPort : runtime.port
-      const response = await fetch(`http://localhost:${healthPort}${runtime.process ? '' : '/health'}`, {
-        method: runtime.process ? 'HEAD' : 'GET',
+      const viteAlive = runtime.process && !runtime.process.killed && runtime.process.exitCode === null
+      const healthPort = runtime.agentPort && !viteAlive ? runtime.agentPort : runtime.port
+      const response = await fetch(`http://localhost:${healthPort}${viteAlive ? '' : '/health'}`, {
+        method: viteAlive ? 'HEAD' : 'GET',
         signal: controller.signal,
       })
       clearTimeout(timer)
