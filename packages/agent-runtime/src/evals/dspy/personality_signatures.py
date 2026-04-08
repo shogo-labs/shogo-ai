@@ -26,12 +26,12 @@ class AgentTemplateSelection(dspy.Signature):
 
 
 class PersonalityGeneration(dspy.Signature):
-    """Generate SOUL.md content for an agent based on template and user description.
+    """Generate the Personality section of AGENTS.md for an agent.
 
-    SOUL.md defines the agent's personality, tone, and behavioral boundaries.
+    The Personality section in AGENTS.md defines the agent's tone, and behavioral boundaries.
     It must include:
-    - A clear identity/persona section
-    - Communication style (tone, verbosity, formality)
+    - A clear persona description
+    - Tone (verbosity, formality)
     - Boundaries section (what the agent should NOT do)
     - Domain expertise areas
 
@@ -42,13 +42,15 @@ class PersonalityGeneration(dspy.Signature):
     user_description: str = dspy.InputField(desc="User's description of desired agent behavior")
     agent_type: str = dspy.InputField(desc="Category: personal, development, business, research, operations")
 
-    soul_content: str = dspy.OutputField(desc="Full SOUL.md markdown content")
+    soul_content: str = dspy.OutputField(desc="Full Personality section markdown content for AGENTS.md")
     has_boundaries: bool = dspy.OutputField(desc="True if Boundaries section is included")
     reasoning: str = dspy.OutputField()
 
 
 class PersonalitySelfUpdate(dspy.Signature):
-    """Decide if the agent should update its own personality files based on conversation.
+    """Decide if the agent should update its AGENTS.md based on conversation.
+
+    AGENTS.md contains Identity, Personality, User, and Operating Instructions sections.
 
     Update when:
     - User explicitly corrects the agent's tone ("be more formal")
@@ -58,13 +60,13 @@ class PersonalitySelfUpdate(dspy.Signature):
     Do NOT update when:
     - Trivial conversation (greeting, quick question)
     - One-off request that doesn't reflect a lasting preference
-    - The same info is already in SOUL.md
+    - The same info is already in AGENTS.md
     """
     conversation_summary: str = dspy.InputField(desc="Summary of the conversation that may warrant an update")
-    current_soul: str = dspy.InputField(desc="Current SOUL.md content")
+    current_soul: str = dspy.InputField(desc="Current AGENTS.md Personality section content")
 
     should_update: bool = dspy.OutputField(desc="True if a personality update is warranted")
-    file: str = dspy.OutputField(desc="'SOUL.md', 'AGENTS.md', or 'IDENTITY.md'")
-    section: str = dspy.OutputField(desc="Section heading to update, e.g. 'Communication Style'")
+    file: str = dspy.OutputField(desc="Always 'AGENTS.md'")
+    section: str = dspy.OutputField(desc="Section heading to update, e.g. 'Tone', 'Boundaries', 'Identity'")
     new_content: str = dspy.OutputField(desc="New content for that section")
     reasoning: str = dspy.OutputField(desc="Why this update improves agent behavior")

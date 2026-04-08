@@ -15,7 +15,7 @@ const ALL_TEMPLATE_IDS = [
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
 ]
 
-const WORKSPACE_FILES = ['IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'HEARTBEAT.md', 'USER.md', 'config.json']
+const WORKSPACE_FILES = ['AGENTS.md', 'HEARTBEAT.md', 'config.json']
 
 let tempRoot: string
 
@@ -198,9 +198,9 @@ describe('workspace seeding', () => {
     const dir = join(tempRoot, 'seed-name-replace')
     seedWorkspaceFromTemplate(dir, 'marketing-command-center', 'MyMarketer')
 
-    const identity = readFileSync(join(dir, '.shogo', 'IDENTITY.md'), 'utf-8')
-    expect(identity).toContain('MyMarketer')
-    expect(identity).not.toContain('{{AGENT_NAME}}')
+    const agents = readFileSync(join(dir, '.shogo', 'AGENTS.md'), 'utf-8')
+    expect(agents).toContain('MyMarketer')
+    expect(agents).not.toContain('{{AGENT_NAME}}')
   })
 
   test('copies canvas state when available', () => {

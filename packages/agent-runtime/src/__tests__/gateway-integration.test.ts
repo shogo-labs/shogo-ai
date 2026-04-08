@@ -25,10 +25,7 @@ function setupWorkspace() {
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     })
   )
-  writeFileSync(join(TEST_DIR, 'AGENTS.md'), '# Agent\nYou are a test agent.')
-  writeFileSync(join(TEST_DIR, 'SOUL.md'), '# Soul\nBe helpful.')
-  writeFileSync(join(TEST_DIR, 'IDENTITY.md'), '# Identity\nTest Agent')
-  writeFileSync(join(TEST_DIR, 'USER.md'), '# User\nTest User')
+  writeFileSync(join(TEST_DIR, 'AGENTS.md'), '# Identity\nTest Agent\n\n# Personality\nBe helpful.\n\n# User\nTest User\n\n# Operating Instructions\nYou are a test agent.')
   writeFileSync(join(TEST_DIR, 'MEMORY.md'), '# Memory\nTest memory.')
 }
 

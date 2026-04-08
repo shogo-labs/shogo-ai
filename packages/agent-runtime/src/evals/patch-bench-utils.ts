@@ -17,8 +17,8 @@ import { resolve } from 'path'
 // ---------------------------------------------------------------------------
 
 export const SHOGO_WORKSPACE_FILES = [
-  '.mcp.json', 'AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md',
-  'MEMORY.md', 'TOOLS.md', 'CLAUDE.md', 'BOOT.md',
+  '.mcp.json', 'AGENTS.md',
+  'MEMORY.md', 'TOOLS.md', 'STACK.md', 'CLAUDE.md', 'BOOT.md',
 ]
 
 const SHOGO_WORKSPACE_DIRS = ['.shogo', 'memory']

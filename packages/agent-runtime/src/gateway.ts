@@ -215,30 +215,32 @@ When the user changes your personality, tone, role, name, or boundaries, you MUS
 **NEVER** use \`write_file\` to overwrite the entire file — always use \`edit_file\` to change only the relevant section.
 **NEVER** write personality/role/boundary changes to MEMORY.md — memory is for facts and conversation logs only.
 
-### Which File to Edit
-- **SOUL.md** — Tone, communication style, and boundaries (e.g. "be more formal", "never run shell commands")
-- **AGENTS.md** — Role definition, operating instructions, and capabilities (e.g. "you're my DevOps guy", safety rules)
-- **IDENTITY.md** — Name, avatar, emoji, and tagline (e.g. "call me Atlas")
+### AGENTS.md Sections
+All identity, personality, user preferences, and operating instructions live in **AGENTS.md**:
+- **# Identity** — Name, emoji, and tagline (e.g. "call me Atlas")
+- **# Personality** — Tone, communication style, and boundaries (e.g. "be more formal", "never run shell commands")
+- **# User** — User preferences like name, timezone, interests
+- **# Operating Instructions** — Role definition, capabilities, and priorities
 
 ### Example
 
 User: "Be more formal and professional from now on"
 
 \`\`\`
-read_file({ path: "SOUL.md" })
+read_file({ path: "AGENTS.md" })
 edit_file({
-  path: "SOUL.md",
+  path: "AGENTS.md",
   old_string: "## Tone\\n- Direct and helpful, not verbose",
   new_string: "## Tone\\n- Formal and professional at all times"
 })
 \`\`\`
 
-User: "Call me Atlas and focus on climate science"
+User: "Call me Atlas"
 
 \`\`\`
-read_file({ path: "IDENTITY.md" })
+read_file({ path: "AGENTS.md" })
 edit_file({
-  path: "IDENTITY.md",
+  path: "AGENTS.md",
   old_string: "- **Name:** Shogo",
   new_string: "- **Name:** Atlas"
 })
@@ -1032,7 +1034,7 @@ export class AgentGateway {
   }
 
   private buildSetupPrompt(userText: string): string {
-    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write IDENTITY.md with a fitting name, emoji, and tagline\n2. Write SOUL.md with personality, tone, and boundaries appropriate for this use case\n3. Write AGENTS.md with specific operating instructions and priorities (IMPORTANT: replace the default content)\n4. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n5. Create any relevant skills in the skills/ directory\n6. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
+    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write AGENTS.md with all sections: # Identity (name, emoji, tagline), # Personality (tone, boundaries), # User (preferences), and # Operating Instructions (specific to this use case — IMPORTANT: replace the default content)\n2. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n3. Create any relevant skills in the skills/ directory\n4. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
   }
 
   private buildChatPrompt(text: string): { prompt: string; activeSkill?: { name: string } } {
@@ -2112,6 +2114,8 @@ export class AgentGateway {
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
     // 6. Project identity files (change when user edits them)
+    // SOUL.md, USER.md, IDENTITY.md were consolidated into AGENTS.md but are
+    // still read here for backwards compatibility with existing workspaces.
     const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md', 'STACK.md']
     for (const filename of files) {
       const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
@@ -2153,7 +2157,7 @@ export class AgentGateway {
           '## Agent Template Context',
           '',
           `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
-          'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
+          'Your configuration files (AGENTS.md, HEARTBEAT.md, skills/) are already',
           'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
           '',
         ].join('\n'))
@@ -2774,6 +2778,46 @@ export class AgentGateway {
         description: s.description || '',
       }))
 
+    // Compute memory/context file stats
+    const memoryFiles = ['AGENTS.md', 'TOOLS.md', 'STACK.md', 'HEARTBEAT.md', 'MEMORY.md']
+    let memoryFileCount = 0
+    let memoryTotalSize = 0
+    let memoryLastModified: Date | null = null
+
+    for (const filename of memoryFiles) {
+      const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
+      if (filepath) {
+        try {
+          const st = statSync(filepath)
+          if (st.size > 0) {
+            memoryFileCount++
+            memoryTotalSize += st.size
+            if (!memoryLastModified || st.mtime > memoryLastModified) {
+              memoryLastModified = st.mtime
+            }
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    const memoryDir = join(this.workspaceDir, 'memory')
+    if (existsSync(memoryDir)) {
+      try {
+        for (const entry of readdirSync(memoryDir)) {
+          if (!entry.endsWith('.md')) continue
+          const fp = join(memoryDir, entry)
+          const st = statSync(fp)
+          if (st.isFile() && st.size > 0) {
+            memoryFileCount++
+            memoryTotalSize += st.size
+            if (!memoryLastModified || st.mtime > memoryLastModified) {
+              memoryLastModified = st.mtime
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+
     return {
       running: this.running,
       heartbeat: {
@@ -2786,6 +2830,11 @@ export class AgentGateway {
       skills: [...fsSkills, ...configSkills],
       model: this.config.model,
       sessions: this.sessionManager.getAllStats(),
+      memory: {
+        fileCount: memoryFileCount,
+        totalSizeBytes: memoryTotalSize,
+        lastModified: memoryLastModified?.toISOString() ?? null,
+      },
     }
   }
 
