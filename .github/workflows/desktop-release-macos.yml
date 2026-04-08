@@ -226,14 +226,43 @@ jobs:
             find out -name "*.app" -maxdepth 4
             exit 1
           fi
-          echo "Signing $APP_PATH with --deep ..."
-          codesign --deep --force \
-            --options runtime \
-            --timestamp \
-            --keychain "$SIGNING_KEYCHAIN" \
-            --entitlements ./entitlements.plist \
-            --sign "$HASH" \
-            "$APP_PATH"
+          echo "App bundle: $APP_PATH"
+          SIGN_ARGS=(--sign "$HASH" --keychain "$SIGNING_KEYCHAIN" --force --timestamp --options runtime)
+          SIGNED=0
+
+          sign_file() {
+            codesign "${SIGN_ARGS[@]}" "$1" 2>&1 && SIGNED=$((SIGNED + 1)) || echo "  WARNING: failed to sign $1"
+          }
+
+          echo "=== Phase 1: Sign all native binaries (Mach-O, dylib, .node, .so) ==="
+          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.node" \) | sort -r | while read -r f; do
+            echo "  signing: $f"
+            sign_file "$f"
+          done
+
+          find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              echo "  signing: $f"
+              sign_file "$f"
+            fi
+          done
+
+          echo "=== Phase 2: Sign helper .app bundles (deepest first) ==="
+          find "$APP_PATH" -name "*.app" -type d ! -path "$APP_PATH" -depth | while read -r bundle; do
+            echo "  signing bundle: $bundle"
+            sign_file "$bundle"
+          done
+
+          echo "=== Phase 3: Sign .framework bundles (deepest first) ==="
+          find "$APP_PATH" -name "*.framework" -type d -depth | while read -r fw; do
+            echo "  signing framework: $fw"
+            sign_file "$fw"
+          done
+
+          echo "=== Phase 4: Sign main app bundle with entitlements ==="
+          echo "  signing app: $APP_PATH"
+          codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.plist "$APP_PATH"
+
           echo "Verifying signature..."
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "Codesign complete."
