@@ -358,6 +358,9 @@ const HomeScreen = observer(function HomeScreen() {
           currentWorkspace.id,
           undefined,
           user.id,
+          undefined,
+          undefined,
+          'react-app',
         )
       } catch (err: any) {
         const detail = err?.message || err?.details?.error?.message || String(err)
