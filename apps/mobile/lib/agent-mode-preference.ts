@@ -3,33 +3,37 @@
 
 import { Platform } from "react-native"
 import * as SecureStore from "expo-secure-store"
-import type { AgentMode } from "../components/chat/ChatInput"
 import { safeGetItem, safeSetItem } from "./safe-storage"
 
 const AGENT_MODE_KEY = "agent-mode-preference"
 
-export async function loadAgentModePreference(): Promise<AgentMode | null> {
+const LEGACY_MIGRATION: Record<string, string> = {
+  basic: "claude-haiku-4-5-20251001",
+  advanced: "claude-sonnet-4-6",
+}
+
+export async function loadModelPreference(): Promise<string | null> {
   try {
+    let stored: string | null = null
     if (Platform.OS === "web") {
-      const stored = safeGetItem(AGENT_MODE_KEY)
-      if (stored === "basic" || stored === "advanced") return stored
-      return null
+      stored = safeGetItem(AGENT_MODE_KEY)
+    } else {
+      stored = await SecureStore.getItemAsync(AGENT_MODE_KEY)
     }
-    const stored = await SecureStore.getItemAsync(AGENT_MODE_KEY)
-    if (stored === "basic" || stored === "advanced") return stored
-    return null
+    if (!stored) return null
+    return LEGACY_MIGRATION[stored] ?? stored
   } catch {
     return null
   }
 }
 
-export async function saveAgentModePreference(value: AgentMode): Promise<void> {
+export async function saveModelPreference(modelId: string): Promise<void> {
   try {
     if (Platform.OS === "web") {
-      safeSetItem(AGENT_MODE_KEY, value)
+      safeSetItem(AGENT_MODE_KEY, modelId)
       return
     }
-    await SecureStore.setItemAsync(AGENT_MODE_KEY, value)
+    await SecureStore.setItemAsync(AGENT_MODE_KEY, modelId)
   } catch {
     // Silently fail
   }

@@ -20,6 +20,7 @@ import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
+import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -614,12 +615,16 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
-      // Enforce basic agent mode for free/basic-plan workspaces (server-side guard)
-      if (parsedBody.agentMode && parsedBody.agentMode !== 'basic') {
-        const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
-        if (!hasAdvanced) {
-          parsedBody.agentMode = 'basic'
-          body = JSON.stringify(parsedBody)
+      // Enforce model tier for free/basic-plan workspaces (server-side guard)
+      if (parsedBody.agentMode) {
+        const resolved = resolveModelId(parsedBody.agentMode)
+        const tier = getModelTier(resolved)
+        if (tier !== 'economy') {
+          const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
+          if (!hasAdvanced) {
+            parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+            body = JSON.stringify(parsedBody)
+          }
         }
       }
 

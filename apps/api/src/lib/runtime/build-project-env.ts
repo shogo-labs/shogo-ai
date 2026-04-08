@@ -30,7 +30,7 @@ export async function buildProjectEnv(
     const { prisma } = await import('../prisma')
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { workspaceId: true, templateId: true, name: true },
+      select: { workspaceId: true, templateId: true, name: true, settings: true },
     })
     if (project) {
       if (project.templateId) env.TEMPLATE_ID = project.templateId

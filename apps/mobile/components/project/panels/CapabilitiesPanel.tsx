@@ -198,6 +198,8 @@ interface CapabilitiesPanelProps {
   onModeChange?: (mode: AgentMode) => void
   techStackId?: string
   onTechStackChange?: (stackId: string, capabilities?: Record<string, boolean>) => void
+  selectedModel?: string
+  onModelChange?: (modelId: string) => void
 }
 
 export function CapabilitiesPanel({
@@ -211,6 +213,8 @@ export function CapabilitiesPanel({
   onModeChange,
   techStackId,
   onTechStackChange,
+  selectedModel: controlledModelId,
+  onModelChange: controlledOnModelChange,
 }: CapabilitiesPanelProps) {
   const { localMode } = usePlatformConfig()
   const canSelectAllModels = localMode || isPaidPlan
@@ -218,7 +222,14 @@ export function CapabilitiesPanel({
   const [expandedCap, setExpandedCap] = useState<string | null>(null)
   const [pendingToggle, setPendingToggle] = useState<{ key: string; enabled: boolean } | null>(null)
 
-  const [currentModel, setCurrentModel] = useState<{ provider: string; name: string } | null>(null)
+  const isModelControlled = controlledModelId !== undefined
+  const controlledModelEntry = isModelControlled
+    ? AVAILABLE_MODELS.find(m => m.name === controlledModelId)
+    : null
+  const [internalModel, setInternalModel] = useState<{ provider: string; name: string } | null>(null)
+  const currentModel = isModelControlled
+    ? (controlledModelEntry ? { provider: controlledModelEntry.provider, name: controlledModelEntry.name } : null)
+    : internalModel
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelUpdating, setModelUpdating] = useState(false)
   const fetchedRef = useRef(false)
@@ -235,15 +246,15 @@ export function CapabilitiesPanel({
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   useEffect(() => {
-    if (!visible || !agentUrl || fetchedRef.current) return
+    if (isModelControlled || !visible || !agentUrl || fetchedRef.current) return
     fetchedRef.current = true
     agentFetch(`${agentUrl}/agent/status`)
       .then(res => res.ok ? res.json() : null)
       .then(data => {
-        if (data?.model) setCurrentModel(data.model)
+        if (data?.model) setInternalModel(data.model)
       })
       .catch((e) => console.error('[CapabilitiesPanel] Failed to fetch model:', e))
-  }, [visible, agentUrl])
+  }, [visible, agentUrl, isModelControlled])
 
   useEffect(() => {
     if (!visible || techStacksFetchedRef.current) return
@@ -286,11 +297,16 @@ export function CapabilitiesPanel({
   }, [agentUrl, extensionToken])
 
   const handleModelChange = useCallback(async (model: ModelOption) => {
-    if (!agentUrl) return
     if (currentModel?.name === model.name && currentModel?.provider === model.provider) {
       setModelPickerOpen(false)
       return
     }
+    if (controlledOnModelChange) {
+      controlledOnModelChange(model.name)
+      setModelPickerOpen(false)
+      return
+    }
+    if (!agentUrl) return
     setModelUpdating(true)
     try {
       const res = await agentFetch(`${agentUrl}/agent/config`, {
@@ -299,7 +315,7 @@ export function CapabilitiesPanel({
         body: JSON.stringify({ model: { provider: model.provider, name: model.name } }),
       })
       if (res.ok) {
-        setCurrentModel({ provider: model.provider, name: model.name })
+        setInternalModel({ provider: model.provider, name: model.name })
       }
     } catch (err) {
       console.error('[CapabilitiesPanel] Failed to update model:', err)
@@ -307,7 +323,7 @@ export function CapabilitiesPanel({
       setModelUpdating(false)
       setModelPickerOpen(false)
     }
-  }, [agentUrl, currentModel])
+  }, [agentUrl, currentModel, controlledOnModelChange])
 
   const handleToggle = useCallback((cap: CapabilityDef, enabled: boolean) => {
     if (!enabled && cap.warning) {

@@ -66,7 +66,8 @@ import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import {
   ChatInput,
-  type AgentMode,
+  DEFAULT_MODEL_PRO,
+  DEFAULT_MODEL_FREE,
   type InteractionMode,
   type FileAttachment,
 } from "./ChatInput"
@@ -75,8 +76,8 @@ import {
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
 import {
-  loadAgentModePreference,
-  saveAgentModePreference,
+  loadModelPreference,
+  saveModelPreference,
 } from "../../lib/agent-mode-preference"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
@@ -204,7 +205,10 @@ export interface ChatPanelProps {
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
   onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
-  buildPlanRequest?: { plan: PlanData; agentMode: AgentMode; nonce: number } | null
+  buildPlanRequest?: { plan: PlanData; modelId: string; nonce: number } | null
+  /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
+  selectedModel?: string
+  onModelChange?: (modelId: string) => void
 }
 
 // ============================================================
@@ -557,6 +561,8 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
   buildPlanRequest,
+  selectedModel: controlledSelectedModel,
+  onModelChange: controlledOnModelChange,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -699,22 +705,30 @@ export const ChatPanel = observer(function ChatPanel({
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
-  const [agentMode, setAgentMode] = useState<AgentMode>("basic")
+  const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
+  const isModelControlled = controlledSelectedModel !== undefined
 
   useEffect(() => {
-    loadAgentModePreference().then((stored) => {
+    if (isModelControlled) return
+    loadModelPreference().then((stored) => {
       if (stored) {
-        setAgentMode(stored)
+        setInternalSelectedModel(stored)
       } else if (hasAdvancedModelAccess) {
-        setAgentMode("advanced")
+        setInternalSelectedModel(DEFAULT_MODEL_PRO)
       }
     })
-  }, [hasAdvancedModelAccess])
+  }, [hasAdvancedModelAccess, isModelControlled])
 
-  const handleAgentModeChange = useCallback((mode: AgentMode) => {
-    setAgentMode(mode)
-    saveAgentModePreference(mode)
-  }, [])
+  const selectedModel = isModelControlled ? controlledSelectedModel : internalSelectedModel
+
+  const handleModelChange = useCallback((modelId: string) => {
+    if (controlledOnModelChange) {
+      controlledOnModelChange(modelId)
+    } else {
+      setInternalSelectedModel(modelId)
+      saveModelPreference(modelId)
+    }
+  }, [controlledOnModelChange])
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
     () => initialInteractionMode ?? "agent"
@@ -838,7 +852,7 @@ export const ChatPanel = observer(function ChatPanel({
     id: string
     content: string
     files?: FileAttachment[]
-    selectedAgentMode?: AgentMode
+    selectedModel?: string
   }
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
   const isProcessingQueueRef = useRef(false)
@@ -2158,7 +2172,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Internal function that actually sends a message (used by queue processor)
   const sendMessageInternal = useCallback(
-    async (content: string, files?: FileAttachment[], selectedAgentMode?: AgentMode) => {
+    async (content: string, files?: FileAttachment[], perMsgModel?: string) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
@@ -2231,7 +2245,7 @@ export const ChatPanel = observer(function ChatPanel({
           workspaceId,
           userId,
           projectId,
-          agentMode: selectedAgentMode || agentMode,
+          agentMode: perMsgModel || selectedModel,
           interactionMode,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }
@@ -2259,7 +2273,7 @@ export const ChatPanel = observer(function ChatPanel({
       workspaceId,
       userId,
       projectId,
-      agentMode,
+      selectedModel,
       interactionMode,
       actions,
     ]
@@ -2281,7 +2295,7 @@ export const ChatPanel = observer(function ChatPanel({
       await sendMessageInternal(
         nextMessage.content,
         nextMessage.files,
-        nextMessage.selectedAgentMode
+        nextMessage.selectedModel
       )
     } catch (err) {
       console.error("[ChatPanel] Error processing queued message:", err)
@@ -2334,7 +2348,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Handle message submission
   const handleSendMessage = useCallback(
-    async (content: string, files?: FileAttachment[], selectedAgentMode?: AgentMode) => {
+    async (content: string, files?: FileAttachment[], perMsgModel?: string) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
@@ -2353,21 +2367,21 @@ export const ChatPanel = observer(function ChatPanel({
             id: `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             content: trimmedContent,
             files,
-            selectedAgentMode,
+            selectedModel: perMsgModel,
           },
         ])
         return
       }
 
-      await sendMessageInternal(trimmedContent, files, selectedAgentMode)
+      await sendMessageInternal(trimmedContent, files, perMsgModel)
     },
     [isStreaming, sendMessageInternal, currentSessionId]
   )
 
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
-    (content: string, files?: FileAttachment[], selectedAgentMode?: AgentMode) => {
-      handleSendMessage(content, files, selectedAgentMode)
+    (content: string, files?: FileAttachment[], perMsgModel?: string) => {
+      handleSendMessage(content, files, perMsgModel)
     },
     [handleSendMessage]
   )
@@ -2393,7 +2407,7 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     if (!buildPlanRequest || buildPlanRequest.nonce === lastBuildNonceRef.current) return
     lastBuildNonceRef.current = buildPlanRequest.nonce
-    const { plan, agentMode: requestedMode } = buildPlanRequest
+    const { plan, modelId: requestedMode } = buildPlanRequest
     confirmedPlanRef.current = plan
     setConfirmedPlan(plan)
     setPendingPlan(null)
@@ -2847,8 +2861,8 @@ export const ChatPanel = observer(function ChatPanel({
               }
               isStreaming={isStreaming}
               onStop={handleStop}
-              agentMode={agentMode}
-              onAgentModeChange={handleAgentModeChange}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
               isPro={hasAdvancedModelAccess}
               onUpgradeClick={handleUpgradeClick}
               queuedMessages={messageQueue}

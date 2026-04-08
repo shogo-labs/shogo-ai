@@ -55,6 +55,10 @@ import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-la
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
+import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
+import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
+import { MODEL_CATALOG } from '@shogo/model-catalog'
+import { agentFetch } from '../../../../lib/agent-fetch'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
@@ -270,6 +274,38 @@ export default observer(function ProjectLayout() {
   })
 
   // APP_MODE_DISABLED: app template copy effect removed
+
+  // Shared model selection — shared between ChatPanel and CapabilitiesPanel
+  const hasAdvancedModelAccess = features.billing ? billingData.hasAdvancedModelAccess : true
+  const [selectedModel, setSelectedModel] = useState<string>(
+    () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
+  )
+
+  useEffect(() => {
+    loadModelPreference().then((stored) => {
+      if (stored) setSelectedModel(stored)
+      else if (hasAdvancedModelAccess) setSelectedModel(DEFAULT_MODEL_PRO)
+    })
+  }, [hasAdvancedModelAccess])
+
+  const handleModelChange = useCallback(async (modelId: string) => {
+    setSelectedModel(modelId)
+    saveModelPreference(modelId)
+    if (agentUrl) {
+      const entry = MODEL_CATALOG[modelId as keyof typeof MODEL_CATALOG]
+      if (entry) {
+        try {
+          await agentFetch(`${agentUrl}/agent/config`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+          })
+        } catch (err) {
+          console.error('[ProjectLayout] Failed to push model config to runtime:', err)
+        }
+      }
+    }
+  }, [agentUrl])
 
   // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
   const dynamicAppStreamUrl = agentUrl
@@ -589,7 +625,7 @@ export default observer(function ProjectLayout() {
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
-  const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
+  const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; modelId: string; nonce: number } | null>(null)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -723,8 +759,8 @@ export default observer(function ProjectLayout() {
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders])
 
-  const handleBuildPlan = useCallback((plan: any, agentMode: any) => {
-    setBuildPlanRequest({ plan, agentMode, nonce: Date.now() })
+  const handleBuildPlan = useCallback((plan: any, modelId: string) => {
+    setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
     setActiveTab('chat')
     if (canvasEnabled) {
       setPreviewTab('dynamic-app')
@@ -941,6 +977,8 @@ export default observer(function ProjectLayout() {
       onCanvasPreview={handleCanvasPreview}
       onMessagesChange={setChatMessages}
       buildPlanRequest={buildPlanRequest}
+      selectedModel={selectedModel}
+      onModelChange={handleModelChange}
       className="flex-1"
     />
   )
@@ -1185,7 +1223,7 @@ export default observer(function ProjectLayout() {
             >
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />

@@ -8,7 +8,7 @@
  */
 
 export { ChatPanel, type ChatPanelProps, type WorkspacePanelData } from "./ChatPanel"
-export { ChatInput, type ChatInputProps, type AgentMode } from "./ChatInput"
+export { ChatInput, type ChatInputProps, DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from "./ChatInput"
 export {
   ChatContextProvider,
   useChatContext,
