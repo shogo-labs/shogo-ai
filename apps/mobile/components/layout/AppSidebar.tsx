@@ -68,6 +68,7 @@ import {
   Inbox,
   Shield,
   Key,
+  Store,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -1321,6 +1322,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
+            {features.marketplace && (
+              <NavItem
+                icon={Store}
+                label="Marketplace"
+                href="/(app)/marketplace"
+                active={isRouteActive(pathname, '/(app)/marketplace')}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            )}
             <NavItem
               icon={Monitor}
               label="Remote Control"

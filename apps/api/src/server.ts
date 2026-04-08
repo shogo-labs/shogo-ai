@@ -47,6 +47,8 @@ import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
+import { adminMarketplaceRoutes } from './routes/admin-marketplace'
+import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
@@ -846,6 +848,7 @@ app.use(
       '/api/ai/',
       '/api/tools/',
       '/api/api-keys/validate',
+      '/api/marketplace',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
@@ -980,6 +983,7 @@ app.get('/api/config', async (c) => {
       oauth: !localMode,
       analytics: true,
       publishing: !localMode,
+      marketplace: true,
     },
   })
 })
@@ -1332,6 +1336,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     return c.json({ ok: true, name })
   })
 }
+
+// Marketplace
+app.route('/api/marketplace', marketplaceRoutes())
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
@@ -5554,6 +5561,8 @@ app.route('/api/admin', createAdminRoutes({
 
 // Hand-written admin routes for custom analytics endpoints
 app.route('/api/admin', adminRoutes())
+
+app.route('/api/admin/marketplace', adminMarketplaceRoutes())
 
 // User attribution endpoint (authenticated users, not admin-only)
 app.route('/api', userAttributionRoute())

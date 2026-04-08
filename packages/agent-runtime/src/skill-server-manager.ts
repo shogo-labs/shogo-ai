@@ -560,6 +560,19 @@ export class SkillServerManager {
       return
     }
 
+    // Ensure node_modules exist before spawning — without them Bun cannot
+    // resolve imports and the process immediately crashes in a loop.
+    const nodeModules = join(this.serverDir, 'node_modules')
+    if (!existsSync(nodeModules)) {
+      try {
+        this.installDeps()
+      } catch (err: any) {
+        console.error(`[${LOG_PREFIX}] Dependency install failed, cannot start: ${err.message}`)
+        this._phase = 'crashed'
+        return
+      }
+    }
+
     this._phase = 'starting'
     console.log(`[${LOG_PREFIX}] Spawning server on port ${this._port}...`)
 
