@@ -1018,6 +1018,40 @@ model EvalRunResult {
 }
 
 // =============================================================================
+// ANALYTICS (Daily Digests)
+// =============================================================================
+
+model AnalyticsDigest {
+  id                   String   @id @default(uuid())
+  date                 DateTime
+  period               String   @default("24h")
+
+  funnelSignups        Int      @default(0)
+  funnelOnboarded      Int      @default(0)
+  funnelCreatedProject Int      @default(0)
+  funnelSentMessage    Int      @default(0)
+  funnelEngaged        Int      @default(0)
+  avgMinToFirstProject Float?
+  avgMinToFirstMessage Float?
+
+  activeUsers          Int      @default(0)
+  totalMessages        Int      @default(0)
+  totalSessions        Int      @default(0)
+  totalToolCalls       Int      @default(0)
+  totalCreditsUsed     Float    @default(0)
+
+  templateStats        String?
+  chunksProcessed      Int      @default(1)
+  messagesAnalyzed     Int      @default(0)
+  aiInsights           String?
+
+  createdAt            DateTime @default(now())
+
+  @@unique([date, period])
+  @@map("analytics_digests")
+}
+
+// =============================================================================
 // LOCAL CONFIG (Desktop/Local mode only — key-value settings store)
 // =============================================================================
 
