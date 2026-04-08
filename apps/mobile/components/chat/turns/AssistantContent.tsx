@@ -330,6 +330,14 @@ export function AssistantContent({
     [orderedParts],
   )
 
+  const firstTodoWriteId = useMemo(() => {
+    const first = groupedParts.find(
+      (p): p is Extract<GroupedMessagePart, { type: "tool" }> =>
+        p.type === "tool" && (p.tool.toolName === "TodoWrite" || p.tool.toolName === "todo_write"),
+    )
+    return first?.id
+  }, [groupedParts])
+
   if (groupedParts.length === 0) {
     return null
   }
@@ -409,7 +417,10 @@ export function AssistantContent({
           }
 
           if (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write") {
-            const isExpanded = !expandedTools.has(part.id)
+            const isFirst = part.id === firstTodoWriteId
+            const isExpanded = isFirst
+              ? !expandedTools.has(part.id)
+              : expandedTools.has(part.id)
 
             return (
               <TodoWidget
