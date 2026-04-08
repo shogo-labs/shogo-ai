@@ -30,9 +30,10 @@ import {
 } from '../../contexts/domain'
 import type { IProject, IMember, IWorkspace } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
-import type { FileAttachment, InteractionMode, AgentMode } from '../../components/chat/ChatInput'
+import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
+import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
 import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
-import { loadAgentModePreference, saveAgentModePreference } from '../../lib/agent-mode-preference'
+import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useTypingPlaceholder'
@@ -202,7 +203,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
-  const [agentMode, setAgentMode] = useState<AgentMode>('basic')
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
@@ -241,11 +242,11 @@ const HomeScreen = observer(function HomeScreen() {
   const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
 
   useEffect(() => {
-    loadAgentModePreference().then((stored) => {
+    loadModelPreference().then((stored) => {
       if (stored) {
-        setAgentMode(stored)
+        setSelectedModel(stored)
       } else if (hasAdvancedModelAccess) {
-        setAgentMode("advanced")
+        setSelectedModel(DEFAULT_MODEL_PRO)
       }
     })
   }, [hasAdvancedModelAccess])
@@ -329,9 +330,9 @@ const HomeScreen = observer(function HomeScreen() {
     void saveInteractionModePreference(mode)
   }, [])
 
-  const handleHomeAgentModeChange = useCallback((mode: AgentMode) => {
-    setAgentMode(mode)
-    void saveAgentModePreference(mode)
+  const handleHomeModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId)
+    void saveModelPreference(modelId)
   }, [])
 
   const typingPlaceholder = useTypingPlaceholder(undefined, {
@@ -538,8 +539,8 @@ const HomeScreen = observer(function HomeScreen() {
                 onChange={setPrompt}
                 interactionMode={interactionMode}
                 onInteractionModeChange={handleHomeInteractionModeChange}
-                agentMode={agentMode}
-                onAgentModeChange={handleHomeAgentModeChange}
+                selectedModel={selectedModel}
+                onModelChange={handleHomeModelChange}
                 isPro={hasAdvancedModelAccess}
                 onUpgradeClick={() => router.push('/billing')}
               />

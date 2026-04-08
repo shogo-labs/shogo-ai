@@ -34,6 +34,7 @@ import {
   configureAIProxy,
   StreamBufferStore,
 } from '@shogo/shared-runtime'
+import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
@@ -485,11 +486,13 @@ app.patch('/agent/channels/:type/model', async (c) => {
   const type = c.req.param('type')
   const { model } = await c.req.json() as { model: string }
 
-  if (!model || (model !== 'basic' && model !== 'advanced')) {
-    return c.json({ error: 'model must be "basic" or "advanced"' }, 400)
+  if (!model || typeof model !== 'string') {
+    return c.json({ error: 'model must be a valid model ID string' }, 400)
   }
 
-  if (model === 'advanced') {
+  const resolvedModel = resolveModelId(model)
+  const tier = getModelTier(resolvedModel)
+  if (tier !== 'economy') {
     const proxyUrl = process.env.AI_PROXY_URL
     const proxyToken = process.env.AI_PROXY_TOKEN
     if (proxyUrl && proxyToken) {
@@ -502,7 +505,7 @@ app.patch('/agent/channels/:type/model', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: 'Advanced model requires a Pro or higher subscription.' }, 403)
+            return c.json({ error: `Model '${model}' requires a Pro or higher subscription.` }, 403)
           }
         }
       } catch {
@@ -700,8 +703,7 @@ app.post('/agent/chat', async (c) => {
     }
   }
 
-  const agentMode = body.agentMode as 'basic' | 'advanced' | undefined
-  const modelOverride = agentMode || undefined
+  const modelOverride = (body.agentMode as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
 

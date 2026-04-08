@@ -10,6 +10,7 @@
  * ToolContext, since Pi's execute() signature doesn't accept external context.
  */
 
+import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname } from 'path'
 import { execSync } from 'child_process'
@@ -4660,7 +4661,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           'For webchat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? } — all fields optional.',
       }),
       model: Type.Optional(Type.String({
-        description: 'AI model tier for this channel: "basic" (economy, works on all plans) or "advanced" (requires Pro plan). Defaults to "basic".',
+        description: 'AI model ID for this channel (e.g. "claude-sonnet-4-6", "claude-haiku-4-5-20251001"). Economy-tier models work on all plans; standard/premium require Pro. Defaults to "claude-haiku-4-5-20251001".',
       })),
     }),
     execute: async (_toolCallId, params) => {
@@ -4670,12 +4671,11 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         model?: string
       }
 
-      const channelModel = model || 'basic'
-      if (channelModel !== 'basic' && channelModel !== 'advanced') {
-        return textResult({ error: `Invalid model: "${channelModel}". Must be "basic" or "advanced".` })
-      }
+      const channelModel = model || 'claude-haiku-4-5-20251001'
+      const resolvedChannelModel = resolveModelId(channelModel)
+      const channelTier = getModelTier(resolvedChannelModel)
 
-      if (channelModel === 'advanced') {
+      if (channelTier !== 'economy') {
         const proxyUrl = ctx.aiProxyUrl || process.env.AI_PROXY_URL
         const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
         if (proxyUrl && proxyToken) {
@@ -4688,7 +4688,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
               const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
               if (!access.hasAdvancedModelAccess) {
                 return textResult({
-                  error: 'Advanced model requires a Pro or higher subscription. Please use model: "basic" or upgrade your plan.',
+                  error: `Model '${channelModel}' requires a Pro or higher subscription. Please use an economy-tier model or upgrade your plan.`,
                 })
               }
             }

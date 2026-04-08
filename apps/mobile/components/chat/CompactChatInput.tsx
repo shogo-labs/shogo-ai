@@ -22,6 +22,12 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import {
+  getModelsByProvider,
+  getModelShortDisplayName,
+  getModelTier,
+  type ModelTier,
+} from "@shogo/model-catalog"
+import {
   ArrowUp,
   Plus,
   Loader2,
@@ -31,16 +37,31 @@ import {
   ImageIcon,
   ChevronDown,
   Lock,
-  Crown,
+  Check,
 } from "lucide-react-native"
 import {
   INTERACTION_MODES,
-  AGENT_MODES,
+  DEFAULT_MODEL_PRO,
+  DEFAULT_MODEL_FREE,
   type FileAttachment,
   type InteractionMode,
-  type AgentMode,
 } from "./ChatInput"
 import { usePlatformConfig } from "../../lib/platform-config"
+
+const MODEL_GROUPS = getModelsByProvider().map((g) => ({
+  label: g.label,
+  models: g.models.map((e) => ({
+    id: e.id,
+    displayName: e.displayName,
+    tier: e.tier as ModelTier,
+  })),
+}))
+
+const TIER_LABELS: Record<ModelTier, string> = {
+  premium: "Premium",
+  standard: "Standard",
+  economy: "Economy",
+}
 import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -64,8 +85,8 @@ export interface CompactChatInputProps {
   onChange?: (value: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
-  agentMode?: AgentMode
-  onAgentModeChange?: (mode: AgentMode) => void
+  selectedModel?: string
+  onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
 }
@@ -82,8 +103,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onChange: controlledOnChange,
       interactionMode: controlledInteractionMode,
       onInteractionModeChange,
-      agentMode: controlledAgentMode,
-      onAgentModeChange,
+      selectedModel: controlledModel,
+      onModelChange,
       isPro = false,
       onUpgradeClick,
     },
@@ -99,15 +120,15 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [fileError, setFileError] = useState<string | null>(null)
     const [attachSheetOpen, setAttachSheetOpen] = useState(false)
     const [interactionModeOpen, setInteractionModeOpen] = useState(false)
-    const [agentModeOpen, setAgentModeOpen] = useState(false)
+    const [modelPickerOpen, setModelPickerOpen] = useState(false)
     const [internalInteractionMode, setInternalInteractionMode] =
       useState<InteractionMode>("agent")
     const interactionMode = controlledInteractionMode ?? internalInteractionMode
 
-    const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
-      effectiveIsPro ? "advanced" : "basic"
+    const [internalModel, setInternalModel] = useState<string>(
+      effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
     )
-    const agentMode = controlledAgentMode ?? internalAgentMode
+    const currentModelId = controlledModel ?? internalModel
 
     const handleInteractionModeChange = useCallback(
       (mode: InteractionMode) => {
@@ -120,32 +141,26 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       [onInteractionModeChange]
     )
 
-    const handleAgentModeChange = useCallback(
-      (mode: AgentMode) => {
-        const modeConfig = AGENT_MODES.find((m) => m.id === mode)
-
-        if (modeConfig?.requiresPro && !effectiveIsPro) {
+    const handleModelChange = useCallback(
+      (modelId: string) => {
+        const tier = getModelTier(modelId)
+        if (tier !== "economy" && !effectiveIsPro) {
           onUpgradeClick?.()
           return
         }
 
-        if (onAgentModeChange) {
-          onAgentModeChange(mode)
+        if (onModelChange) {
+          onModelChange(modelId)
         } else {
-          setInternalAgentMode(mode)
+          setInternalModel(modelId)
         }
       },
-      [onAgentModeChange, effectiveIsPro, onUpgradeClick]
+      [onModelChange, effectiveIsPro, onUpgradeClick]
     )
 
     const currentInteractionConfig = useMemo(
       () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
       [interactionMode]
-    )
-
-    const currentAgentConfig = useMemo(
-      () => AGENT_MODES.find((m) => m.id === agentMode) || AGENT_MODES[1],
-      [agentMode]
     )
 
     const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -502,13 +517,13 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </PopoverContent>
               </Popover>
 
-              {/* Model quality selector (Basic / Advanced) */}
+              {/* Model selector */}
               <Popover
                 placement="top"
                 size="xs"
-                isOpen={agentModeOpen}
-                onOpen={() => setAgentModeOpen(true)}
-                onClose={() => setAgentModeOpen(false)}
+                isOpen={modelPickerOpen}
+                onOpen={() => setModelPickerOpen(true)}
+                onClose={() => setModelPickerOpen(false)}
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
@@ -516,86 +531,65 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                   >
                     <Text className="text-xs text-muted-foreground">
-                      {currentAgentConfig.label}
+                      {getModelShortDisplayName(currentModelId)}
                     </Text>
                     <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
                   </Pressable>
                 )}
               >
                 <PopoverBackdrop />
-                <PopoverContent className="w-[280px] p-0">
-                  <View className="py-1">
-                    {AGENT_MODES.map((mode) => {
-                      const isLocked = mode.requiresPro && !effectiveIsPro
-                      const isSelected = mode.id === agentMode
-                      return (
-                        <Pressable
-                          key={mode.id}
-                          onPress={() => {
-                            handleAgentModeChange(mode.id)
-                            setAgentModeOpen(false)
-                          }}
-                          className={cn(
-                            "flex-row items-center gap-3 p-3 rounded-lg mb-1",
-                            isSelected && "bg-accent"
-                          )}
-                        >
-                          <View className="w-8 items-center">
-                            {isLocked ? (
-                              <Lock
-                                className="h-4 w-4 text-muted-foreground"
-                                size={16}
-                              />
-                            ) : (
-                              <mode.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-                            )}
-                          </View>
-                          <View className="flex-1">
-                            <View className="flex-row items-center gap-1.5">
-                              <Text className="font-medium text-sm text-foreground">
-                                {mode.label}
-                              </Text>
-                              {features.billing && mode.requiresPro && (
-                                <View
+                <PopoverContent className="w-[260px] p-0 max-h-[320px]">
+                  <ScrollView>
+                    {MODEL_GROUPS.map((group) => (
+                      <View key={group.label}>
+                        <View className="px-3 pt-2.5 pb-1">
+                          <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                            {group.label}
+                          </Text>
+                        </View>
+                        {group.models.map((model) => {
+                          const isSelected = currentModelId === model.id
+                          const isLocked = !effectiveIsPro && model.tier !== "economy"
+                          return (
+                            <Pressable
+                              key={model.id}
+                              onPress={() => {
+                                handleModelChange(model.id)
+                                setModelPickerOpen(false)
+                              }}
+                              className={cn(
+                                "flex-row items-center gap-2.5 px-3 py-2",
+                                isSelected && "bg-accent",
+                                isLocked && "opacity-50"
+                              )}
+                            >
+                              <View className="flex-1">
+                                <Text className={cn("text-sm", isLocked ? "text-muted-foreground" : "text-foreground")}>
+                                  {model.displayName}
+                                </Text>
+                              </View>
+                              {isLocked ? (
+                                <Lock className="h-3 w-3 text-muted-foreground" size={12} />
+                              ) : isSelected ? (
+                                <Check className="h-3.5 w-3.5 text-primary" size={14} />
+                              ) : (
+                                <Text
                                   className={cn(
-                                    "flex-row items-center gap-0.5 px-1.5 py-0.5 rounded-full",
-                                    effectiveIsPro
-                                      ? "bg-amber-100 dark:bg-amber-900/30"
-                                      : "bg-muted"
+                                    "text-[10px]",
+                                    model.tier === "premium" ? "text-amber-500" :
+                                    model.tier === "economy" ? "text-emerald-500" :
+                                    "text-muted-foreground"
                                   )}
                                 >
-                                  <Crown
-                                    className={cn(
-                                      "h-2.5 w-2.5",
-                                      effectiveIsPro
-                                        ? "text-amber-700 dark:text-amber-400"
-                                        : "text-muted-foreground"
-                                    )}
-                                    size={10}
-                                  />
-                                  <Text
-                                    className={cn(
-                                      "text-[10px] font-semibold",
-                                      effectiveIsPro
-                                        ? "text-amber-700 dark:text-amber-400"
-                                        : "text-muted-foreground"
-                                    )}
-                                  >
-                                    PRO
-                                  </Text>
-                                </View>
+                                  {TIER_LABELS[model.tier]}
+                                </Text>
                               )}
-                            </View>
-                            <Text className="text-xs text-muted-foreground">
-                              {isLocked
-                                ? "Upgrade to unlock"
-                                : features.billing ? `${mode.description} (${mode.creditHint})` : mode.description}
-                            </Text>
-                          </View>
-                        </Pressable>
-                      )
-                    })}
-                  </View>
+                            </Pressable>
+                          )
+                        })}
+                      </View>
+                    ))}
+                  </ScrollView>
                 </PopoverContent>
               </Popover>
             </View>
