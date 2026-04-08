@@ -221,7 +221,12 @@ function main() {
 
   const apiPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'apps/api/package.json'), 'utf-8'))
   const agentPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'packages/agent-runtime/package.json'), 'utf-8'))
-  const allSourceDeps = { ...agentPkg.dependencies, ...apiPkg.dependencies }
+  const allSourceDeps = {
+    ...agentPkg.dependencies,
+    ...agentPkg.devDependencies,
+    ...apiPkg.dependencies,
+    ...apiPkg.devDependencies,
+  }
 
   for (const pkg of EXTERNAL_PACKAGES) {
     const version = allSourceDeps[pkg]
