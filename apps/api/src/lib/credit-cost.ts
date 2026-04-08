@@ -10,14 +10,13 @@
  * dollar cost using separate input/output token pricing per model tier.
  *
  * Model costs (per 1M tokens):
- * - GPT-5.4-Nano: $0.20 input / $0.02 cached input / $1.25 output
- * - Haiku:       $0.80 input / $0.08 cached input / $4.00 output
- * - GPT-5.4-Mini: $1.10 input / $0.55 cached input / $4.40 output
- * - Sonnet:      $3.00 input / $0.30 cached input / $15.00 output
- * - Opus:        $15.00 input / $1.50 cached input / $75.00 output
+ * - GPT-5.4-Nano: $0.20 input / $0.25 cache-write / $0.02 cache-read / $1.25 output
+ * - Haiku:       $0.80 input / $1.00 cache-write / $0.08 cache-read / $4.00 output
+ * - GPT-5.4-Mini: $0.75 input / $0.9375 cache-write / $0.075 cache-read / $4.40 output
+ * - Sonnet:      $3.00 input / $3.75 cache-write / $0.30 cache-read / $15.00 output
+ * - Opus:        $15.00 input / $18.75 cache-write / $1.50 cache-read / $75.00 output
  *
- * Cached input rates: Anthropic charges 10% of input for cache reads,
- * OpenAI charges 50%. The billing tiers approximate this per model family.
+ * Cache write = 1.25x input (Anthropic), cache read = 0.1x input (Anthropic) / 0.5x (OpenAI).
  */
 
 import {
@@ -36,11 +35,11 @@ export const MIN_CREDIT_COST = 0.2
 export const MIN_CREDIT_COST_ECONOMY = 0.1
 
 export const MODEL_DOLLAR_COSTS = {
-  'gpt-5.4-nano': { inputPerMillion: 0.20, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
-  haiku:          { inputPerMillion: 0.80, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
-  'gpt-5.4-mini': { inputPerMillion: 0.75, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
-  sonnet:         { inputPerMillion: 3.00, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
-  opus:           { inputPerMillion: 15.00, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
+  'gpt-5.4-nano': { inputPerMillion: 0.20, cacheWritePerMillion: 0.25, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
+  haiku:          { inputPerMillion: 0.80, cacheWritePerMillion: 1.00, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
+  'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
+  sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
+  opus:           { inputPerMillion: 15.00, cacheWritePerMillion: 18.75, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
 } as const
 
 export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
@@ -91,30 +90,38 @@ function resolveModel(modelOrAgentMode?: string): ModelName {
   return 'sonnet'
 }
 
+export interface CreditCostResult {
+  credits: number
+  dollarCost: number
+}
+
 /**
  * Calculate credit cost from separate input/output token counts.
  * 1 credit = $0.10 of raw LLM cost.
  *
  * `inputTokens` should be non-cached input only. Pass `cachedInputTokens`
- * separately so they're billed at the discounted cache-read rate.
+ * separately so they're billed at the discounted cache-read rate. Pass
+ * `cacheWriteTokens` separately so they're billed at the 1.25x cache-write rate.
  */
 export function calculateCreditCost(
   inputTokens: number,
   outputTokens: number,
   modelOrAgentMode?: string,
   cachedInputTokens: number = 0,
-): number {
+  cacheWriteTokens: number = 0,
+): CreditCostResult {
   const model = resolveModel(modelOrAgentMode)
   const costs = MODEL_DOLLAR_COSTS[model]
   const dollarCost =
     (inputTokens * costs.inputPerMillion / 1_000_000) +
+    (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +
     (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
     (outputTokens * costs.outputPerMillion / 1_000_000)
 
   const raw = Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10
-  if (raw === 0) return 0
+  if (raw === 0) return { credits: 0, dollarCost: 0 }
   const min = BILLING_MODEL_TIER[model] === 'economy' ? MIN_CREDIT_COST_ECONOMY : MIN_CREDIT_COST
-  return Math.max(min, raw)
+  return { credits: Math.max(min, raw), dollarCost }
 }
 
 // =============================================================================

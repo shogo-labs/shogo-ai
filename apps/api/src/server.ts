@@ -4051,7 +4051,7 @@ Examples:
       const inTok = usage?.inputTokens || usage?.promptTokens || 0
       const outTok = usage?.outputTokens || usage?.completionTokens || 0
       if (inTok + outTok > 0) {
-        const creditCost = calculateCreditCost(inTok, outTok, 'haiku')
+        const { credits: creditCost } = calculateCreditCost(inTok, outTok, 'haiku')
         billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok }).catch(() => {})
       }
     }
