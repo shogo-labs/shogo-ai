@@ -251,11 +251,25 @@ jobs:
           ZIP_PATH="/tmp/Shogo-notarize.zip"
           ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
           echo "Submitting for notarization..."
-          xcrun notarytool submit "$ZIP_PATH" \
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "$ZIP_PATH" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 10m
+            --wait --timeout 10m 2>&1) || true
+          echo "$SUBMIT_OUTPUT"
+          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
+          STATUS=$(echo "$SUBMIT_OUTPUT" | grep "status:" | tail -1 | awk '{print $2}')
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization failed with status: $STATUS"
+            echo "Fetching notarization log..."
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_ID_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              /tmp/notarization-log.json 2>&1 || true
+            cat /tmp/notarization-log.json 2>/dev/null || echo "Could not fetch log"
+            exit 1
+          fi
           echo "Stapling notarization ticket..."
           xcrun stapler staple "$APP_PATH"
           echo "Notarization complete."
