@@ -57,7 +57,7 @@ jobs:
 
       - name: Write version file
         run: |
-          TAG="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          TAG="${{ inputs.version || github.ref_name }}"
           echo "$TAG" > apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}/version.txt
 
       - name: Create tarball
@@ -87,14 +87,14 @@ jobs:
 
       - name: Write version.txt for release
         run: |
-          TAG="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          TAG="${{ inputs.version || github.ref_name }}"
           echo "$TAG" > artifacts/version.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
-          tag_name: ${{ github.ref_name || inputs.version }}
-          name: VM Images ${{ github.ref_name || inputs.version }}
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: VM Images ${{ inputs.version || github.ref_name }}
           draft: false
           prerelease: false
           files: |
