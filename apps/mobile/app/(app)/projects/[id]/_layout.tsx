@@ -630,9 +630,6 @@ export default observer(function ProjectLayout() {
 
   useEffect(() => {
     if (!canvasEnabled) {
-      if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
-        setPreviewTab('chat-fullscreen')
-      }
       if (
         activeTab === 'canvas' &&
         previewTab !== 'app-preview' &&
@@ -641,7 +638,6 @@ export default observer(function ProjectLayout() {
         setActiveTab('chat')
       }
     } else if (canvasEnabled) {
-      if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
       if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab])
@@ -653,7 +649,7 @@ export default observer(function ProjectLayout() {
     const onBack = () => {
       if (previewTab !== 'capabilities') return false
       setActiveTab('chat')
-      setPreviewTab(canvasEnabled ? 'dynamic-app' : 'chat-fullscreen')
+      setPreviewTab('chat-fullscreen')
       return true
     }
 
@@ -1003,10 +999,9 @@ export default observer(function ProjectLayout() {
   ) : null
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
-  if (activeMode !== 'none') hiddenTabs.push('chat-fullscreen')
   if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
 
-  const isChatFullscreen = isWide && activeMode === 'none' && previewTab === 'chat-fullscreen'
+  const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
@@ -1072,7 +1067,7 @@ export default observer(function ProjectLayout() {
                   } else {
                     // Clear standalone preview (files, capabilities, …) so the chat column shows
                     // and the next “canvas” visit doesn’t reopen the old panel on top.
-                    setPreviewTab(!canvasEnabled ? 'chat-fullscreen' : 'dynamic-app')
+                    setPreviewTab('chat-fullscreen')
                   }
                 }}
                 onTabChange={(tabId: string) => {
@@ -1185,7 +1180,7 @@ export default observer(function ProjectLayout() {
                 <Pressable
                   onPress={() => {
                     setActiveTab('chat')
-                    setPreviewTab(!canvasEnabled ? 'chat-fullscreen' : 'dynamic-app')
+                    setPreviewTab('chat-fullscreen')
                   }}
                   className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
                 >
