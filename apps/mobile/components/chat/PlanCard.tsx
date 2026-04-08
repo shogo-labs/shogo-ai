@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp } from "lucide-react-native"
+import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
 
 export interface PlanData {
@@ -25,6 +25,7 @@ interface PlanCardProps {
 
 export function PlanCard({ plan, onConfirm, onViewFull, isConfirmed }: PlanCardProps) {
   const [expanded, setExpanded] = useState(false)
+  const [tasksExpanded, setTasksExpanded] = useState(false)
   const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
   const displayedPlan = expanded || !isTruncatable
     ? plan.plan
@@ -50,16 +51,28 @@ export function PlanCard({ plan, onConfirm, onViewFull, isConfirmed }: PlanCardP
 
       {/* Todos */}
       {plan.todos.length > 0 && (
-        <View className="px-4 pb-3 border-t border-border/50 pt-3">
-          <Text className="text-xs font-semibold text-muted-foreground mb-2">
-            TASKS ({plan.todos.length})
-          </Text>
-          {plan.todos.map((todo) => (
-            <View key={todo.id} className="flex-row items-start gap-2 py-1">
-              <Circle className="h-3.5 w-3.5 text-muted-foreground mt-0.5" size={14} />
-              <Text className="text-xs text-foreground flex-1">{todo.content}</Text>
+        <View className="border-t border-border/50">
+          <Pressable
+            onPress={() => setTasksExpanded(prev => !prev)}
+            className="flex-row items-center gap-1.5 px-4 py-3"
+          >
+            {tasksExpanded
+              ? <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
+              : <ChevronRight className="h-3 w-3 text-muted-foreground" size={12} />}
+            <Text className="text-xs font-semibold text-muted-foreground">
+              TASKS ({plan.todos.length})
+            </Text>
+          </Pressable>
+          {tasksExpanded && (
+            <View className="px-4 pb-3">
+              {plan.todos.map((todo) => (
+                <View key={todo.id} className="flex-row items-start gap-2 py-1">
+                  <Circle className="h-3.5 w-3.5 text-muted-foreground mt-0.5" size={14} />
+                  <Text className="text-xs text-foreground flex-1">{todo.content}</Text>
+                </View>
+              ))}
             </View>
-          ))}
+          )}
         </View>
       )}
 
