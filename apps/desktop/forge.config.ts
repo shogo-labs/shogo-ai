@@ -16,6 +16,7 @@ const extraResourceCandidates = [
   './resources/canvas-runtime',
   './resources/tree-sitter-wasm',
   './resources/vm',
+  './resources/vm-helper',
   './resources/seed.db',
   './resources/package.json',
   './prisma',
