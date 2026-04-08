@@ -20,6 +20,7 @@
 
 import { calculateCreditCost, proxyModelToBillingModel } from './credit-cost'
 import * as billingService from '../services/billing.service'
+import { recordAgentCostMetric } from '../services/cost-analytics.service'
 
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000 // 10 min safety net
 
@@ -134,6 +135,22 @@ export async function closeSession(
   const billingModel = proxyModelToBillingModel(session.model)
   const creditCost = calculateCreditCost(session.inputTokens, session.outputTokens, billingModel, session.cachedInputTokens)
   const durationMs = Date.now() - session.openedAt
+
+  // Always record cost metrics, even if billing fails (e.g. no subscription/credits).
+  // Fire this first so analytics data is never lost.
+  await recordAgentCostMetric({
+    workspaceId: session.workspaceId,
+    projectId: session.projectId,
+    agentType: 'main-chat',
+    model: billingModel,
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    cachedInputTokens: session.cachedInputTokens,
+    toolCalls: session.requestCount,
+    creditCost,
+    wallTimeMs: durationMs,
+    success: true,
+  })
 
   try {
     const result = await billingService.consumeCredits(

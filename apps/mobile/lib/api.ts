@@ -198,6 +198,34 @@ export const api = {
     return (res.data as any).data ?? res.data
   },
 
+  // ─── Cost Analytics ───────────────────────────────────────
+
+  async getWorkspaceCostAnalytics<T>(
+    http: HttpClient,
+    workspaceId: string,
+    endpoint: string,
+    params?: Record<string, string>,
+  ): Promise<T> {
+    const res = await http.get<{ data: T }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/${endpoint}`,
+      params,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async postWorkspaceCostAnalytics<T>(
+    http: HttpClient,
+    workspaceId: string,
+    endpoint: string,
+    body: Record<string, unknown>,
+  ): Promise<T> {
+    const res = await http.post<{ data: T }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/${endpoint}`,
+      body,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
   // ─── Publish ─────────────────────────────────────────────
 
   async getPublishState(http: HttpClient, projectId: string) {

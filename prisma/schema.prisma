@@ -128,6 +128,9 @@ model Workspace {
   starredProjects StarredProject[]
   apiKeys         ApiKey[]
   instances       Instance[]
+  agentCostMetrics  AgentCostMetric[]
+  budgetAlerts      BudgetAlert[]
+  modelExperiments  ModelExperiment[]
 
   @@map("workspaces")
 }
@@ -168,6 +171,8 @@ model Project {
   githubConnection GitHubConnection?
   starredBy        StarredProject[]
   agentConfig      AgentConfig?
+  agentCostMetrics   AgentCostMetric[]
+  modelExperiments   ModelExperiment[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1327,4 +1332,86 @@ model EvalRunResult {
   @@index([runId])
   @@index([evalId])
   @@map("eval_run_results")
+}
+
+// =============================================================================
+// AGENT COST ANALYTICS
+// =============================================================================
+
+model AgentCostMetric {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  projectId        String?
+  agentType        String
+  model            String
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  cachedInputTokens Int     @default(0)
+  toolCalls        Int      @default(0)
+  creditCost       Float    @default(0)
+  wallTimeMs       Int      @default(0)
+  success          Boolean  @default(true)
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([agentType])
+  @@index([model])
+  @@index([createdAt])
+  @@map("agent_cost_metrics")
+}
+
+model BudgetAlert {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  name             String
+  creditLimit      Float
+  periodType       String   @default("monthly")
+  enabled          Boolean  @default(true)
+  autoThrottle     Boolean  @default(false)
+  throttleToModel  String?
+  notifyEmail      Boolean  @default(true)
+  lastTriggeredAt  DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("budget_alerts")
+}
+
+model ModelExperiment {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  projectId        String?
+  name             String
+  agentType        String
+  modelA           String
+  modelB           String
+  status           String   @default("running")
+  splitPercentage  Int      @default(50)
+  totalRunsA       Int      @default(0)
+  totalRunsB       Int      @default(0)
+  totalCostA       Float    @default(0)
+  totalCostB       Float    @default(0)
+  totalTokensA     Int      @default(0)
+  totalTokensB     Int      @default(0)
+  successRateA     Float    @default(0)
+  successRateB     Float    @default(0)
+  avgLatencyMsA    Float    @default(0)
+  avgLatencyMsB    Float    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([status])
+  @@map("model_experiments")
 }

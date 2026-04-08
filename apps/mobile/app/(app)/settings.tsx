@@ -43,6 +43,7 @@ import {
   MessageSquare,
   Zap,
   CreditCard,
+  Coins,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -76,6 +77,7 @@ import {
   ChatAnalyticsSection,
   UsageBreakdownSection,
 } from '../../components/analytics/SharedAnalytics'
+import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
 import {
@@ -91,9 +93,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'analytics'
+type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'analytics' | 'costs'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'analytics']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'analytics', 'costs']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -110,6 +112,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
+  { id: 'costs', label: 'Costs', icon: Coins },
 ]
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
@@ -117,6 +120,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
+  { id: 'costs', label: 'Costs', icon: Coins },
 ]
 
 function TabBar({
@@ -206,8 +210,12 @@ function SettingsSidebar({
       ? [
           { id: 'billing' as TabId, label: 'Billing' },
           { id: 'analytics' as TabId, label: 'Usage' },
+          { id: 'costs' as TabId, label: 'Cost Optimizer' },
         ]
-      : [{ id: 'analytics' as TabId, label: 'Usage' }]),
+      : [
+          { id: 'analytics' as TabId, label: 'Usage' },
+          { id: 'costs' as TabId, label: 'Cost Optimizer' },
+        ]),
   ]
 
   const sections: SidebarSection[] = [
@@ -2335,6 +2343,44 @@ function WorkspaceAnalyticsTab() {
 }
 
 // ============================================================================
+// COST OPTIMIZER TAB
+// ============================================================================
+
+function WorkspaceCostTab() {
+  const http = useDomainHttp()
+  const workspace = useActiveWorkspace()
+  const workspaceId = workspace?.id
+
+  const fetchCostAnalytics = useCallback(
+    <T,>(endpoint: string, params?: Record<string, string>) =>
+      api.getWorkspaceCostAnalytics<T>(http, workspaceId!, endpoint, params),
+    [http, workspaceId],
+  )
+
+  const postCostAnalytics = useCallback(
+    <T,>(endpoint: string, body: Record<string, unknown>) =>
+      api.postWorkspaceCostAnalytics<T>(http, workspaceId!, endpoint, body),
+    [http, workspaceId],
+  )
+
+  if (!workspaceId) {
+    return (
+      <View className="py-12 items-center">
+        <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+      </View>
+    )
+  }
+
+  return (
+    <CostAnalyticsTab
+      workspaceId={workspaceId}
+      fetchCostAnalytics={fetchCostAnalytics}
+      postCostAnalytics={postCostAnalytics}
+    />
+  )
+}
+
+// ============================================================================
 // MAIN SETTINGS PAGE
 // ============================================================================
 
@@ -2354,6 +2400,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
+      {activeTab === 'costs' && <WorkspaceCostTab />}
     </>
   )
 })
