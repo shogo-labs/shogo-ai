@@ -554,7 +554,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   console.log('[Desktop] Running database migrations...')
   try {
     const result = execSync(
-      `"${bunPath}" x prisma migrate deploy --schema=prisma/schema.prisma`,
+      `"${bunPath}" x prisma migrate deploy --config=prisma.config.js`,
       {
         cwd: projectRoot,
         env: {
