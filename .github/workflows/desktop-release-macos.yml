@@ -226,39 +226,14 @@ jobs:
             find out -name "*.app" -maxdepth 4
             exit 1
           fi
-          echo "App bundle: $APP_PATH"
-          SIGN_ARGS=(--sign "$HASH" --keychain "$SIGNING_KEYCHAIN" --force --timestamp --options runtime)
-
-          # 1) Sign all .dylib and .so files
-          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.so" \) | while read -r f; do
-            echo "  signing lib: $f"
-            codesign "${SIGN_ARGS[@]}" "$f"
-          done
-
-          # 2) Sign Mach-O binaries inside Frameworks and Resources (NOT Contents/MacOS — main binary is signed with the app bundle)
-          find "$APP_PATH/Contents/Frameworks" "$APP_PATH/Contents/Resources" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" 2>/dev/null | while read -r f; do
-            if file "$f" | grep -q "Mach-O"; then
-              echo "  signing binary: $f"
-              codesign "${SIGN_ARGS[@]}" "$f"
-            fi
-          done
-
-          # 3) Sign helper apps (deepest first)
-          find "$APP_PATH/Contents/Frameworks" -name "*.app" -type d -depth | while read -r helper; do
-            echo "  signing helper: $helper"
-            codesign "${SIGN_ARGS[@]}" "$helper"
-          done
-
-          # 4) Sign frameworks (deepest first)
-          find "$APP_PATH/Contents/Frameworks" -name "*.framework" -type d -depth | while read -r fw; do
-            echo "  signing framework: $fw"
-            codesign "${SIGN_ARGS[@]}" "$fw"
-          done
-
-          # 5) Sign the main app bundle (signs Contents/MacOS/* and validates all subcomponents)
-          echo "  signing app: $APP_PATH"
-          codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.plist "$APP_PATH"
-
+          echo "Signing $APP_PATH with --deep ..."
+          codesign --deep --force \
+            --options runtime \
+            --timestamp \
+            --keychain "$SIGNING_KEYCHAIN" \
+            --entitlements ./entitlements.plist \
+            --sign "$HASH" \
+            "$APP_PATH"
           echo "Verifying signature..."
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "Codesign complete."
