@@ -14,11 +14,15 @@ import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync } from 'fs'
 import { auth } from './auth'
-import { getPriceId } from './config/stripe-prices'
+import { getPriceId, getInstancePriceId, type PaidInstanceSize } from './config/stripe-prices'
 import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './config/currencies'
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import * as instanceService from './services/instance.service'
+import * as storageService from './services/storage.service'
+import * as nodeMetricsService from './services/node-metrics.service'
+import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, getInstanceDisplayPrice, type InstanceSizeName } from './config/instance-sizes'
 import {
   sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail,
   sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
@@ -4443,6 +4447,215 @@ app.get('/api/billing/regional-pricing', async (c) => {
   }
 })
 
+// =============================================================================
+// Instance size add-on routes
+// =============================================================================
+
+function resolvePaidInstanceSizeFromCheckoutBody(raw: string): PaidInstanceSize | null {
+  const legacy: Record<string, PaidInstanceSize> = {
+    basic: 'small',
+    pro: 'medium',
+    business: 'large',
+  }
+  if (legacy[raw]) return legacy[raw]
+  const paid: readonly string[] = ['small', 'medium', 'large', 'xlarge']
+  return paid.includes(raw) ? (raw as PaidInstanceSize) : null
+}
+
+function resolveInstanceSizeFromStripeMetadata(raw: string): InstanceSizeName | null {
+  const legacy: Record<string, InstanceSizeName> = {
+    free: 'micro',
+    basic: 'small',
+    pro: 'medium',
+    business: 'large',
+  }
+  if (legacy[raw]) return legacy[raw]
+  const all: readonly string[] = ['micro', 'small', 'medium', 'large', 'xlarge']
+  return all.includes(raw) ? (raw as InstanceSizeName) : null
+}
+
+app.post('/api/billing/instance-checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const rawSize = body.instanceSize ?? body.capacityTier
+    const { workspaceId, billingInterval, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+
+    if (!workspaceId || !rawSize || !billingInterval) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
+    }
+
+    const instanceSize = resolvePaidInstanceSizeFromCheckoutBody(String(rawSize))
+    if (!instanceSize) {
+      return c.json({ error: { code: 'invalid_tier', message: 'Invalid instance size' } }, 400)
+    }
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
+    const priceId = getInstancePriceId(instanceSize, billingInterval as 'monthly' | 'annual')
+    if (!priceId) {
+      return c.json({ error: { code: 'invalid_plan', message: `No instance price found for ${instanceSize} ${billingInterval}` } }, 400)
+    }
+
+    const auth = c.get('auth') as any
+    const userEmail = auth?.email
+
+    const metadata: Record<string, string> = {
+      workspaceId,
+      instanceSize,
+      billingInterval,
+      checkoutType: 'instance',
+    }
+
+    const frontendUrl = getFrontendUrl()
+    const successUrl = clientSuccessUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = clientCancelUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=canceled`
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      ...(userEmail && { customer_email: userEmail }),
+    })
+
+    return c.json({ sessionId: session.id, url: session.url }, 200)
+  } catch (error: any) {
+    console.error('[Instance] Checkout error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/instance-portal', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
+    const capSub = await instanceService.getInstanceSubscription(workspaceId)
+    if (!capSub?.stripeCustomerId) {
+      return c.json({
+        error: { code: 'customer_not_found', message: 'No instance subscription found for this workspace.' },
+      }, 404)
+    }
+
+    let returnUrl = `${getFrontendUrl()}/app/billing`
+    try {
+      const body = await c.req.json<{ returnUrl?: string }>()
+      if (body?.returnUrl) returnUrl = body.returnUrl
+    } catch { /* use default */ }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: capSub.stripeCustomerId,
+      return_url: returnUrl,
+    })
+
+    return c.json({ url: session.url }, 200)
+  } catch (error: any) {
+    console.error('[Instance] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/workspaces/:id/instance', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const instance = await instanceService.getInstanceForWorkspace(workspaceId)
+    if (!instance) {
+      return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    const sub = await instanceService.getInstanceSubscription(workspaceId)
+
+    return c.json({
+      ...instance,
+      subscription: sub
+        ? {
+            status: sub.status,
+            billingInterval: sub.billingInterval,
+            currentPeriodEnd: sub.currentPeriodEnd,
+            cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+          }
+        : null,
+      sizes: INSTANCE_SIZE_ORDER.map((t) => ({
+        name: t,
+        ...INSTANCE_SIZES[t],
+        displayPriceMonthly: getInstanceDisplayPrice(t, 'monthly'),
+        displayPriceAnnual: getInstanceDisplayPrice(t, 'annual'),
+      })),
+    })
+  } catch (error: any) {
+    console.error('[Instance] Get instance error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/workspaces/:id/metrics', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const url = new URL(c.req.url)
+    const period = (url.searchParams.get('period') || '24h') as nodeMetricsService.MetricsPeriod
+
+    const metrics = await nodeMetricsService.getWorkspaceMetrics(workspaceId, period)
+    if (!metrics) {
+      return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    return c.json(metrics)
+  } catch (error: any) {
+    console.error('[Metrics] Get metrics error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/workspaces/:id/storage', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const storage = await storageService.getStorageUsage(workspaceId)
+    if (!storage) {
+      return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    return c.json(storage)
+  } catch (error: any) {
+    console.error('[Storage] Get storage error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
 // Stripe webhook endpoint
 app.post('/api/webhooks/stripe', async (c) => {
   try {
@@ -4491,6 +4704,49 @@ app.post('/api/webhooks/stripe', async (c) => {
           customerId: session.customer,
           metadata: session.metadata,
         })
+
+        // Handle instance size add-on checkout
+        if (session.metadata?.checkoutType === 'instance' || session.metadata?.checkoutType === 'capacity') {
+          const rawSize =
+            session.metadata.instanceSize || session.metadata.capacityTier || ''
+          const normalizedSize = rawSize ? resolveInstanceSizeFromStripeMetadata(String(rawSize)) : null
+          const { workspaceId, billingInterval } = session.metadata
+          if (workspaceId && normalizedSize && billingInterval && session.subscription && session.customer) {
+            try {
+              const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+                current_period_start?: number
+                current_period_end?: number
+              }
+              const now = Date.now()
+              const currentPeriodStart = stripeSubscription.current_period_start
+                ? stripeSubscription.current_period_start * 1000
+                : now
+              const currentPeriodEnd = stripeSubscription.current_period_end
+                ? stripeSubscription.current_period_end * 1000
+                : now + (30 * 24 * 60 * 60 * 1000)
+
+              await instanceService.syncInstanceFromStripe(
+                workspaceId,
+                stripeSubscription.id,
+                session.customer as string,
+                normalizedSize,
+                stripeSubscription.status as any,
+                billingInterval as any,
+                new Date(currentPeriodStart),
+                new Date(currentPeriodEnd),
+              )
+
+              instanceService.applyInstanceToRuntime(workspaceId).catch((err) =>
+                console.error('[Webhook] Failed to apply instance size to runtime:', err.message)
+              )
+
+              console.log('[Webhook] Instance subscription created for workspace:', workspaceId, 'size:', normalizedSize)
+            } catch (err: any) {
+              console.error('[Webhook] Failed to create instance subscription:', err.message)
+            }
+          }
+          break
+        }
 
         // Workspace is already created by the checkout endpoint; webhook only provisions the subscription
         const { workspaceId, planId, billingInterval } = session.metadata || {}
@@ -5457,5 +5713,21 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
       console.error('[LocalHeartbeat] Failed to start (non-fatal):', err.message)
     }
   }, 3000)
+}
+
+// Storage usage recalculation (Kubernetes only, every 6 hours)
+if (isKubernetes()) {
+  const STORAGE_RECALC_INTERVAL = 6 * 60 * 60 * 1000
+  setTimeout(() => {
+    storageService.recalculateAllStorageUsage().catch((err) =>
+      console.error('[Storage] Initial recalculation failed:', err.message)
+    )
+    setInterval(() => {
+      storageService.recalculateAllStorageUsage().catch((err) =>
+        console.error('[Storage] Periodic recalculation failed:', err.message)
+      )
+    }, STORAGE_RECALC_INTERVAL)
+    console.log('[Storage] Storage recalculation cron started (every 6h)')
+  }, 10_000)
 }
 

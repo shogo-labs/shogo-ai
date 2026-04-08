@@ -651,6 +651,14 @@ export class S3Sync {
       return
     }
 
+    // Check storage quota before uploading
+    const quotaBytes = parseInt(process.env.S3_STORAGE_QUOTA_BYTES || '0', 10)
+    if (quotaBytes > 0 && archiveSize > quotaBytes) {
+      console.warn(`[S3Sync] Archive size (${this.formatBytes(archiveSize)}) exceeds storage quota (${this.formatBytes(quotaBytes)}), skipping upload`)
+      await unlink(tempArchive).catch(() => {})
+      return
+    }
+
     // Upload to S3
     const archiveKey = this.getProjectArchiveKey()
     const uploadStart = Date.now()

@@ -5,7 +5,7 @@ import { View, Text, Animated } from 'react-native'
 import { Sparkles } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
-const CHAR_DELAY_MS = 12
+const CHAR_DELAY_MS = 18
 const MIN_STREAM_DURATION_MS = 300
 
 interface OnboardingMessageProps {
@@ -25,7 +25,7 @@ export function OnboardingMessage({
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamDone, setStreamDone] = useState(false)
   const widgetOpacity = useRef(new Animated.Value(0)).current
-  const widgetTranslateY = useRef(new Animated.Value(12)).current
+  const widgetTranslateY = useRef(new Animated.Value(24)).current
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const charIndexRef = useRef(0)
 
@@ -59,12 +59,12 @@ export function OnboardingMessage({
       Animated.parallel([
         Animated.timing(widgetOpacity, {
           toValue: 1,
-          duration: 300,
+          duration: 900,
           useNativeDriver: true,
         }),
         Animated.timing(widgetTranslateY, {
           toValue: 0,
-          duration: 300,
+          duration: 900,
           useNativeDriver: true,
         }),
       ]).start()
@@ -74,11 +74,8 @@ export function OnboardingMessage({
   if (!isActive && !streamDone) return null
 
   return (
-    <View className="gap-3">
-      <View className="flex-row items-start gap-3">
-        <View className="w-8 h-8 rounded-full bg-primary/10 items-center justify-center mt-0.5 shrink-0">
-          <Sparkles size={16} className="text-primary" />
-        </View>
+    <View className="gap-2">
+      <View className="flex-row items-start gap-2">
         <View className="flex-1 pt-1">
           <Text className="text-base text-foreground leading-6">
             {displayedText}

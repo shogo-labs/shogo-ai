@@ -689,12 +689,14 @@ export class WarmPoolController {
     }
 
     // NOTE: We intentionally do NOT patch the Knative spec.template here.
-    // Changing the spec creates a new Revision, which replaces the running pod,
-    // destroying the in-memory agent gateway, local workspace files, and canvas
-    // state. The metadata labels/annotations above are sufficient for the warm
-    // pool controller to identify promoted pods. For cold-start recovery after
-    // scale-to-zero, getProjectPodUrl detects the stale mapping and re-assigns
-    // a fresh warm pod.
+    // Changing the spec creates a new Revision which replaces the running
+    // pod, destroying in-memory state.
+    //
+    // For paid instance sizes, resources and min-scale are applied via
+    // instance.service.applyInstanceToRuntime() after the workspace
+    // upgrades, or by KnativeProjectManager.buildKnativeService() on cold
+    // start. The warm pod serves as a fast bridge; the next scale-to-zero
+    // → scale-up cycle will use the correct spec.
 
     // Step 2: save the DB mapping, clearing any stale mapping from a previous
     // project that may have been assigned to this same service name.
@@ -1701,23 +1703,6 @@ export class WarmPoolController {
             timeoutSeconds: 1800,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
-            affinity: {
-              nodeAffinity: {
-                preferredDuringSchedulingIgnoredDuringExecution: [
-                  {
-                    weight: 100,
-                    preference: {
-                      matchExpressions: [
-                        {
-                          key: 'karpenter.sh/nodepool',
-                          operator: 'DoesNotExist',
-                        },
-                      ],
-                    },
-                  },
-                ],
-              },
-            },
             containers: [
               {
                 name: RUNTIME_CONFIG.containerName,

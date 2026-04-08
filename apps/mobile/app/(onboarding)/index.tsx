@@ -80,7 +80,7 @@ function getCloudSteps(): OnboardingStep[] {
   return [
     {
       id: 'welcome',
-      text: "Welcome to Shogo! Let\u2019s show you around.",
+      text: "Hello, I am Shogo. I'm going to show you around.",
       autoAdvance: true,
       advanceDelay: 800,
     },

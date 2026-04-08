@@ -160,6 +160,40 @@ export const api = {
     return res.data
   },
 
+  async createInstanceCheckout(http: HttpClient, params: {
+    workspaceId: string
+    instanceSize: string
+    billingInterval: string
+    successUrl?: string
+    cancelUrl?: string
+  }) {
+    const res = await http.post<{ url?: string }>('/api/billing/instance-checkout', params)
+    return res.data
+  },
+
+  async createInstancePortal(http: HttpClient, workspaceId: string, returnUrl?: string) {
+    const res = await http.post<{ url?: string }>(
+      `/api/billing/instance-portal?workspaceId=${encodeURIComponent(workspaceId)}`,
+      returnUrl ? { returnUrl } : {},
+    )
+    return res.data
+  },
+
+  async getWorkspaceInstance(http: HttpClient, workspaceId: string) {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/instance`)
+    return res.data
+  },
+
+  async getWorkspaceStorage(http: HttpClient, workspaceId: string) {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/storage`)
+    return res.data
+  },
+
+  async getWorkspaceMetrics(http: HttpClient, workspaceId: string, period = '24h') {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/metrics`, { period })
+    return res.data
+  },
+
   async getProjectAnalytics<T>(
     http: HttpClient,
     projectId: string,
