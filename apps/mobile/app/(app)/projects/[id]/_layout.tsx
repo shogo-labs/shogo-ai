@@ -26,6 +26,7 @@ import {
   Platform,
   BackHandler,
   Keyboard,
+  Alert,
 } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
@@ -85,6 +86,17 @@ import { RefreshCw, MessageSquare } from 'lucide-react-native'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
+import {
+  AlertDialog,
+  AlertDialogBackdrop,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogBody,
+  AlertDialogFooter,
+} from '@/components/ui/alert-dialog'
+import { Heading } from '@/components/ui/heading'
+import { Text as UIText } from '@/components/ui/text'
+import { Button, ButtonText } from '@/components/ui/button'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -497,6 +509,8 @@ export default observer(function ProjectLayout() {
 
   // ─── Open chat tabs state ───────────────────────────────
   const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([])
+  /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
+  const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<string | null>(null)
   const openTabsRestoredRef = useRef(false)
 
   // Restore open tabs from AsyncStorage on mount
@@ -841,7 +855,14 @@ export default observer(function ProjectLayout() {
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
-          name: sessionNames[s.id] || s.name || s.inferredName || `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+          // Prefer explicit title from the store over sessionNames (message-preview cache);
+          // otherwise renames stay stale until full reload.
+          name:
+            (typeof s.name === 'string' && s.name.trim())
+              ? s.name.trim()
+              : sessionNames[s.id] ||
+                s.inferredName ||
+                `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
           messageCount: -1,
           updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
         }))
@@ -877,6 +898,54 @@ export default observer(function ProjectLayout() {
       console.error('[ProjectLayout] Failed to create chat session:', err)
     }
   }, [actions, projectId])
+
+  const handleRenameChatSession = useCallback(
+    async (sessionId: string, newName: string) => {
+      try {
+        await actions.updateChatSession(sessionId, { name: newName })
+        // Flush into the local sessionNames cache so the useMemo dep changes
+        // and chatSessions / openChatTabs recompute immediately.
+        setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to rename chat session:', err)
+      }
+    },
+    [actions],
+  )
+
+  const performDeleteChatSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        await actions.deleteChatSession(sessionId)
+        handleCloseTab(sessionId)
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to delete chat session:', err)
+      }
+    },
+    [actions, handleCloseTab],
+  )
+
+  const handleDeleteChatSession = useCallback(
+    (sessionId: string) => {
+      const confirmMsg = 'Delete this chat? This cannot be undone.'
+      if (Platform.OS === 'web') {
+        setDeleteChatConfirmSessionId(sessionId)
+      } else {
+        Alert.alert('Delete chat', confirmMsg, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: () => { void performDeleteChatSession(sessionId) } },
+        ])
+      }
+    },
+    [performDeleteChatSession],
+  )
+
+  const handleConfirmDeleteChatDialog = useCallback(() => {
+    if (!deleteChatConfirmSessionId) return
+    const id = deleteChatConfirmSessionId
+    setDeleteChatConfirmSessionId(null)
+    void performDeleteChatSession(id)
+  }, [deleteChatConfirmSessionId, performDeleteChatSession])
 
   // ─── Integrations card state ───────────────────────────────
   const [integrationsCardData, setIntegrationsCardData] = useState<{
@@ -1184,6 +1253,9 @@ export default observer(function ProjectLayout() {
                       onCloseTab={handleCloseTab}
                       onNewChat={handleCreateNewSession}
                       streamingTabIds={streamingTabIds}
+                      onRenameSession={handleRenameChatSession}
+                      onDeleteSession={handleDeleteChatSession}
+                      onSearchChats={() => setSidebarSearchOpen(true)}
                     />
                     <View className="min-h-0 flex-1">{chatPanels}</View>
                   </View>
@@ -1199,6 +1271,8 @@ export default observer(function ProjectLayout() {
                         onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
                         showHistory={showChatSessions}
                         streamingTabIds={streamingTabIds}
+                        onRenameSession={handleRenameChatSession}
+                        onDeleteSession={handleDeleteChatSession}
                       />
                     )}
                     <View className="min-h-0 flex-1">{chatPanels}</View>
@@ -1303,6 +1377,40 @@ export default observer(function ProjectLayout() {
         </View>
       </EditModeProvider>
     </CanvasThemeProvider>
+
+      {Platform.OS === 'web' && (
+        <AlertDialog
+          isOpen={deleteChatConfirmSessionId !== null}
+          onClose={() => setDeleteChatConfirmSessionId(null)}
+          size="sm"
+        >
+          <AlertDialogBackdrop />
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <Heading size="md" className="text-typography-950">
+                Delete chat
+              </Heading>
+            </AlertDialogHeader>
+            <AlertDialogBody className="mt-3 mb-4">
+              <UIText size="sm" className="text-typography-700">
+                Delete this chat? This cannot be undone.
+              </UIText>
+            </AlertDialogBody>
+            <AlertDialogFooter>
+              <Button
+                variant="outline"
+                action="secondary"
+                onPress={() => setDeleteChatConfirmSessionId(null)}
+              >
+                <ButtonText>Cancel</ButtonText>
+              </Button>
+              <Button action="negative" onPress={handleConfirmDeleteChatDialog}>
+                <ButtonText>Delete</ButtonText>
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </PlanStreamProvider>
     </>
   )
