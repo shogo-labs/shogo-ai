@@ -190,6 +190,9 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
   useEffect(() => {
     if (visible) {
       fetchPlans()
+    } else {
+      setSelectedPlan(null)
+      setPlanContent(null)
     }
   }, [visible, fetchPlans, planStream?.planRefreshNonce])
 
