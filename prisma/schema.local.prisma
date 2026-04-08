@@ -121,6 +121,7 @@ model Workspace {
   starredProjects      StarredProject[]
   instances            Instance[]
   apiKeys              ApiKey[]
+  meetings             Meeting[]
 
   @@map("workspaces")
 }
@@ -161,6 +162,7 @@ model Project {
   githubConnection GitHubConnection?
   starredBy        StarredProject[]
   agentConfig      AgentConfig?
+  meetings         Meeting[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1089,6 +1091,31 @@ model AnalyticsDigest {
 
   @@unique([date, period])
   @@map("analytics_digests")
+}
+
+// =============================================================================
+// MEETINGS (Recording & Transcription)
+// =============================================================================
+
+model Meeting {
+  id            String   @id @default(cuid())
+  title         String?
+  audioPath     String
+  transcript    String?
+  summary       String?
+  duration      Int?
+  status        String   @default("recording")
+  projectId     String?
+  workspaceId   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("meetings")
 }
 
 // =============================================================================

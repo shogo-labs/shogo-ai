@@ -28,6 +28,7 @@ import {
   Menu,
   X,
   FlaskConical,
+  Mic,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -58,6 +59,7 @@ const LOCAL_MAIN_ITEMS = [
 const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
   { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
+  { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
 ] as const
 
 function useAdminCheck() {
@@ -342,6 +344,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'
   if (pathname.includes('evals')) return 'Evals'
+  if (pathname.includes('meetings')) return 'Meetings'
   if (pathname.includes('general')) return 'General'
   if (pathname.includes('settings')) return 'AI Settings'
   return 'Dashboard'

@@ -13,6 +13,7 @@ import { VMProgress } from '../../components/onboarding/VMProgress'
 import { NameInput } from '../../components/onboarding/steps/NameInput'
 import { AIConfigForm } from '../../components/onboarding/steps/AIConfigForm'
 import { SecurityForm } from '../../components/onboarding/steps/SecurityForm'
+import { MeetingSetupForm } from '../../components/onboarding/steps/MeetingSetupForm'
 import { FeaturesWidget } from '../../components/onboarding/steps/FeaturesWidget'
 import { TemplatesWidget } from '../../components/onboarding/steps/TemplatesWidget'
 import { CompleteWidget } from '../../components/onboarding/steps/CompleteWidget'
@@ -65,6 +66,11 @@ function getLocalSteps(): OnboardingStep[] {
       id: 'security',
       text: "One last thing \u2014 how should I handle permissions on your machine?",
       widget: 'security',
+    },
+    {
+      id: 'meeting-setup',
+      text: "I can also record and transcribe your meetings \u2014 everything stays on your machine. How would you like that set up?",
+      widget: 'meeting-setup',
     },
     {
       id: 'complete',
@@ -158,6 +164,8 @@ export default function OnboardingPage() {
         return <AIConfigForm onComplete={onComplete} onSkip={onComplete} />
       case 'security':
         return <SecurityForm onComplete={onComplete} />
+      case 'meeting-setup':
+        return <MeetingSetupForm onComplete={onComplete} />
       case 'features':
         return <FeaturesWidget onComplete={onComplete} />
       case 'templates':

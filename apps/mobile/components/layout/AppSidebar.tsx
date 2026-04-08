@@ -68,6 +68,7 @@ import {
   Inbox,
   Shield,
   Key,
+  Mic,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -1174,6 +1175,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
   const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
+  const isMeetingsPage = pathname.startsWith('/meetings') || pathname.startsWith('/(app)/meetings')
 
   const sidebarContent = (
     <View role="navigation" accessibilityLabel="App sidebar" className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
@@ -1248,6 +1250,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             shortcut="⌘K"
             onPress={handleSearchPress}
           />
+          {localMode && (
+            <NavItem
+              icon={Mic}
+              label="Meetings"
+              href="/(app)/meetings"
+              active={isMeetingsPage}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+          )}
         </View>
 
         {/* PROJECTS section */}

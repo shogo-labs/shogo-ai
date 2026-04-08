@@ -52,6 +52,7 @@ import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -1013,6 +1014,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
     return c.json({ ok: true, name })
   })
+
+  // ── Local mode: meeting recording & transcription ────────────────────────
+  app.route('/', meetingRoutes)
 }
 
 // Agent template catalog — public, no auth required
