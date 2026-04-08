@@ -182,13 +182,28 @@ export class VMWarmPoolController {
   async getProjectUrl(projectId: string): Promise<string> {
     const existing = this.assigned.get(projectId)
     if (existing) {
+      const age = Date.now() - (existing.assignedAt || 0)
+      const STARTUP_GRACE_MS = 60_000
+
+      if (age < STARTUP_GRACE_MS) {
+        try {
+          const probe = await fetch(`${existing.url}/health`, {
+            signal: AbortSignal.timeout(5000),
+          })
+          if (probe.ok) return existing.url
+        } catch {
+          // Gateway still starting -- return URL optimistically during grace period
+        }
+        return existing.url
+      }
+
       try {
         const probe = await fetch(`${existing.url}/health`, {
           signal: AbortSignal.timeout(3000),
         })
         if (probe.ok) return existing.url
       } catch {
-        // VM is dead, evict and re-assign
+        // VM is dead after grace period, evict and re-assign
       }
       this.evict(projectId)
     }

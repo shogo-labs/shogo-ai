@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   getVMImageStatus: () => ipcRenderer.invoke('get-vm-image-status'),
   downloadVMImages: () => ipcRenderer.invoke('download-vm-images'),
   skipVMDownload: () => ipcRenderer.invoke('skip-vm-download'),
+  getVMStatus: () => ipcRenderer.invoke('get-vm-status'),
+  setVMConfig: (config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) =>
+    ipcRenderer.invoke('set-vm-config', config),
   onVMImageNeeded: (callback: (data: { downloadUrl: string; imageDir: string }) => void) => {
     ipcRenderer.on('vm-image-needed', (_event, data) => callback(data))
   },
