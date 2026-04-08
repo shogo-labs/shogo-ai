@@ -37,6 +37,8 @@ export interface ChatTabBarProps {
   /** Toggle chat-session history panel. Omit in fullscreen mode (sidebar provides history). */
   onHistoryToggle?: () => void
   showHistory?: boolean
+  /** Set of tab IDs that currently have an active stream running. */
+  streamingTabIds?: Set<string>
 }
 
 export function ChatTabBar({
@@ -47,6 +49,7 @@ export function ChatTabBar({
   onNewChat,
   onHistoryToggle,
   showHistory,
+  streamingTabIds,
 }: ChatTabBarProps) {
   const scrollRef = useRef<ScrollView>(null)
 
@@ -71,6 +74,7 @@ export function ChatTabBar({
       >
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId
+          const isStreaming = !isActive && streamingTabIds?.has(tab.id)
           return (
             <Pressable
               key={tab.id}
@@ -83,6 +87,9 @@ export function ChatTabBar({
               )}
               style={{ maxWidth: 180 }}
             >
+              {isStreaming && (
+                <View className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" />
+              )}
               <Text
                 className={cn(
                   'text-xs',

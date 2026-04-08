@@ -702,8 +702,8 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [])
 
-  // Chat session state
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
+  // Chat session state — each ChatPanel instance receives a stable chatSessionId
+  const currentSessionId = chatSessionId ?? null
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const isModelControlled = controlledSelectedModel !== undefined
@@ -758,80 +758,15 @@ export const ChatPanel = observer(function ChatPanel({
 
   const planStream = usePlanStreamSafe()
 
-  const sessionCreationInProgressRef = useRef<string | null>(null)
-
-  // Find or create chat session for feature and phase
+  // Load session metadata from API if not already cached
   useEffect(() => {
-    if (chatSessionId !== undefined) {
-      setCurrentSessionId(chatSessionId)
-      if (chatSessionId && !studioChat.chatSessionCollection.get(chatSessionId)) {
-        console.log("[ChatPanel] Loading session from API:", chatSessionId)
-        studioChat.chatSessionCollection
-          .loadAll({ id: chatSessionId })
-          .catch((err: any) => console.warn("[ChatPanel] Failed to load session:", err))
-      }
-      return
+    if (chatSessionId && !studioChat.chatSessionCollection.get(chatSessionId)) {
+      console.log("[ChatPanel] Loading session from API:", chatSessionId)
+      studioChat.chatSessionCollection
+        .loadAll({ id: chatSessionId })
+        .catch((err: any) => console.warn("[ChatPanel] Failed to load session:", err))
     }
-
-    if (!featureId) {
-      setCurrentSessionId(null)
-      return
-    }
-
-    const sessionKey = `${featureId}:${phase ?? "null"}`
-
-    if (sessionCreationInProgressRef.current === sessionKey) {
-      return
-    }
-
-    const loadOrCreateSession = async () => {
-      try {
-        await studioChat.chatSessionCollection.loadAll({ contextId: featureId })
-      } catch (err) {
-        console.warn("[ChatPanel] Failed to load sessions for feature:", err)
-      }
-
-      const existingSession = studioChat.chatSessionCollection.all.find(
-        (s: any) =>
-          s.contextType === "feature" &&
-          s.contextId === featureId &&
-          (phase == null ? s.phase == null : s.phase === phase)
-      )
-      if (existingSession) {
-        setCurrentSessionId(existingSession.id)
-        onChatSessionChange?.(existingSession.id)
-        return
-      }
-
-      sessionCreationInProgressRef.current = sessionKey
-
-      try {
-        if (phase) {
-          const newSession = await actions.createChatSession({
-            inferredName: 'Untitled',
-            contextType: "feature",
-            contextId: featureId,
-            phase: phase,
-          })
-          setCurrentSessionId(newSession.id)
-          onChatSessionChange?.(newSession.id)
-        } else {
-          const newSession = await actions.createChatSession({
-            inferredName: 'Untitled',
-            contextType: "feature",
-            contextId: featureId,
-          })
-          setCurrentSessionId(newSession.id)
-          onChatSessionChange?.(newSession.id)
-        }
-      } finally {
-        sessionCreationInProgressRef.current = null
-      }
-    }
-
-    loadOrCreateSession()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [featureId, featureName, phase, chatSessionId])
+  }, [chatSessionId, studioChat])
 
   const currentSession = currentSessionId
     ? studioChat.chatSessionCollection.get(currentSessionId)
@@ -1509,6 +1444,13 @@ export const ChatPanel = observer(function ChatPanel({
   const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
   const filesChangedFiredRef = useRef(false)
 
+  // Abort any active stream when this panel unmounts (e.g. tab closed)
+  const stopRef = useRef(stop)
+  stopRef.current = stop
+  useEffect(() => {
+    return () => { stopRef.current() }
+  }, [])
+
   useEffect(() => {
     if (status === 'ready' && stoppedMessages !== null) {
       setMessages(stoppedMessages)
@@ -1988,15 +1930,6 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages])
 
-  useEffect(() => {
-    hasReceivedPartsRef.current = false
-    isLoadingMessagesRef.current = false
-    processedProgressEventsRef.current.clear()
-    subagentStreamStore.clear()
-    setIsInitialLoadComplete(false)
-    setPendingPlan(null)
-  }, [currentSessionId])
-
   // Re-hydrate pendingPlan from persisted messages on session restore
   useEffect(() => {
     if (!isInitialLoadComplete || isStreaming || pendingPlan) return
@@ -2079,9 +2012,13 @@ export const ChatPanel = observer(function ChatPanel({
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
 
+  // Only the active panel (the one feeding onMessagesChange) drives the shared plan-stream context.
+  // Background panels must not fight over setIsPlanStreaming.
+  const isActivePanel = onMessagesChange != null
   useEffect(() => {
+    if (!isActivePanel) return
     planStream?.setIsPlanStreaming(isStreaming && interactionMode === "plan")
-  }, [isStreaming, interactionMode, planStream])
+  }, [isStreaming, interactionMode, planStream, isActivePanel])
 
   const derivedStreamingPlan = useMemo<PlanData | null>(() => {
     if (!isStreaming) return null
@@ -2494,6 +2431,58 @@ export const ChatPanel = observer(function ChatPanel({
 
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
+  const handleSaveToolOutput = useCallback(
+    (params: { messageId: string; toolCallId: string; output: string }) => {
+      const { messageId, toolCallId, output } = params
+
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.id !== messageId) return msg
+          const parts = (msg as any).parts as any[] | undefined
+          if (!parts) return msg
+          return {
+            ...msg,
+            parts: parts.map((p: any) => {
+              if (
+                p.type === "dynamic-tool" &&
+                p.toolCallId === toolCallId
+              ) {
+                return { ...p, output, state: "output-available" }
+              }
+              return p
+            }),
+          }
+        })
+      )
+
+      const dbMsg = studioChat.chatMessageCollection.all.find(
+        (m: any) => m.id === messageId
+      )
+      if (dbMsg?.parts) {
+        try {
+          const parsed = JSON.parse(dbMsg.parts)
+          const updated = parsed.map((p: any) => {
+            if (
+              p.type === "dynamic-tool" &&
+              p.toolCallId === toolCallId
+            ) {
+              return { ...p, output, state: "output-available" }
+            }
+            return p
+          })
+          studioChat.chatMessageCollection
+            .update(messageId, { parts: JSON.stringify(updated) })
+            .catch((err: any) =>
+              console.error("[ChatPanel] Failed to persist ask_user output:", err)
+            )
+        } catch (err) {
+          console.error("[ChatPanel] Failed to parse parts for ask_user persist:", err)
+        }
+      }
+    },
+    [setMessages, studioChat]
+  )
+
   const contextValue: ChatContextValue = {
     currentSession: currentSession
       ? { id: currentSession.id, name: currentSession.name }
@@ -2505,6 +2494,7 @@ export const ChatPanel = observer(function ChatPanel({
     error: error?.message ?? null,
     agentUrl: resolvedAgentUrl,
     addToolOutput: (params) => addToolOutput(params as any),
+    saveToolOutput: handleSaveToolOutput,
     confirmPlan: pendingPlan ? handleConfirmPlan : null,
   }
 

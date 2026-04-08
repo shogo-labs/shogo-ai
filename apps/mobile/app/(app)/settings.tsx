@@ -713,7 +713,7 @@ function AccountTab() {
 
   const handleSignOut = async () => {
     await signOut()
-    router.replace('/(auth)/sign-in')
+    router.replace(localMode ? '/' : '/(auth)/sign-in')
   }
 
   const handleDeleteAccount = async () => {
@@ -722,7 +722,7 @@ function AccountTab() {
     try {
       await api.deleteAccount(http, user.id)
       await signOut()
-      router.replace('/(auth)/sign-in')
+      router.replace(localMode ? '/' : '/(auth)/sign-in')
     } catch (error: any) {
       console.error('Failed to delete account:', error)
       const msg = error?.details?.error?.message
