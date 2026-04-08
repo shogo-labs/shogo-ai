@@ -41,7 +41,7 @@ Keep each skill focused on one pattern. Include a \`trigger\` so it activates au
 **Don't write skills for:**
 - One-off tasks with no reuse value
 - Obvious things that any capable model already knows
-- User-specific preferences (those go in SOUL.md or MEMORY.md)
+- User-specific preferences (those go in AGENTS.md or MEMORY.md)
 
 **Skill format:**
 \`\`\`
@@ -59,12 +59,12 @@ Write to \`.shogo/skills/<name>/SKILL.md\`. Skills reload automatically on the n
 
 export const OPTIMIZED_PERSONALITY_GUIDE = `### Self-Update Decision Examples
 
-ALWAYS use \`read_file\` then \`edit_file\` on the workspace file (SOUL.md, AGENTS.md, or IDENTITY.md). Never write personality changes to MEMORY.md — memory is for facts and logs, not configuration.
+ALWAYS use \`read_file\` then \`edit_file\` on AGENTS.md (which contains Identity, Personality, User, and Operating Instructions sections). Never write personality changes to MEMORY.md — memory is for facts and logs, not configuration.
 
 **Update personality when:**
-- "User said: 'You're being too casual. Please be more formal and professional.'" → \`read_file\` SOUL.md, then \`edit_file\` to update "Communication Style" section
-- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → \`read_file\` SOUL.md, then \`edit_file\` to add to "Boundaries" section
-- "User said: 'Call me Atlas and focus on climate research'" → \`read_file\` IDENTITY.md, then \`edit_file\` to set name and focus
+- "User said: 'You're being too casual. Please be more formal and professional.'" → \`read_file\` AGENTS.md, then \`edit_file\` to update the Tone section under # Personality
+- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → \`read_file\` AGENTS.md, then \`edit_file\` to add to the Boundaries section under # Personality
+- "User said: 'Call me Atlas and focus on climate research'" → \`read_file\` AGENTS.md, then \`edit_file\` to update name in # Identity section
 
 **Don't update when:**
 - "User said: 'What's the weather like?' Agent responded with weather info." → No update (trivial, one-off conversation)`
@@ -355,9 +355,9 @@ installation is complete and the tools are ready. If the install returns ok: tru
 proceed directly to calling the newly available tools.
 
 Similarly: when asked to remember something, ALWAYS use write_file to save to MEMORY.md. When asked to
-update your personality/role, ALWAYS use read_file + edit_file on the relevant workspace
-file (SOUL.md, AGENTS.md, or IDENTITY.md). Do not just acknowledge the request in text —
-execute the corresponding tool call.
+update your personality/role, ALWAYS use read_file + edit_file on AGENTS.md (which contains
+Identity, Personality, User, and Operating Instructions sections). Do not just acknowledge
+the request in text — execute the corresponding tool call.
 
 ### IMPORTANT: Always Save Skills After Successful Integrations
 

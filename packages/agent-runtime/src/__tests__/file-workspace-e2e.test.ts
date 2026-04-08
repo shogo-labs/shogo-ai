@@ -402,10 +402,7 @@ describe('Workspace HTTP API Integration', () => {
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
       loopDetection: false,
     }))
-    writeFileSync(join(TEST_API_DIR, 'AGENTS.md'), '# Agent\nTest agent')
-    writeFileSync(join(TEST_API_DIR, 'SOUL.md'), '# Soul')
-    writeFileSync(join(TEST_API_DIR, 'IDENTITY.md'), '# Identity')
-    writeFileSync(join(TEST_API_DIR, 'USER.md'), '# User')
+    writeFileSync(join(TEST_API_DIR, 'AGENTS.md'), '# Identity\nTest Agent\n\n# Personality\nTest persona\n\n# User\nTest user\n\n# Operating Instructions\nTest agent')
     writeFileSync(join(TEST_API_DIR, 'MEMORY.md'), '# Memory')
 
     // Start the server as a subprocess

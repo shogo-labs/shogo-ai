@@ -1334,7 +1334,7 @@ app.post('/agent/permission-response', async (c) => {
 // Workspace file read/write endpoints
 app.get('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')
-  const allowedFiles = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json']
+  const allowedFiles = ['AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json']
 
   if (!allowedFiles.includes(filename)) {
     return c.json({ error: `File not allowed: ${filename}` }, 400)
@@ -1351,7 +1351,7 @@ app.get('/agent/files/:filename', async (c) => {
 
 app.put('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')
-  const allowedFiles = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json']
+  const allowedFiles = ['AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json']
 
   if (!allowedFiles.includes(filename)) {
     return c.json({ error: `File not allowed: ${filename}` }, 400)
@@ -2111,8 +2111,7 @@ app.delete('/agent/tools/:id', async (c) => {
 app.get('/agent/export', async (c) => {
   const exportFiles: Record<string, string> = {}
   const exportableFiles = [
-    'AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md',
-    'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json',
+    'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json',
   ]
 
   for (const filename of exportableFiles) {

@@ -18,11 +18,8 @@ const __dirname = dirname(__filename)
 const TEMPLATES_BASE = join(__dirname, '..', 'templates')
 
 const WORKSPACE_FILES = [
-  'IDENTITY.md',
-  'SOUL.md',
   'AGENTS.md',
   'HEARTBEAT.md',
-  'USER.md',
   'config.json',
 ]
 

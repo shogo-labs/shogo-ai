@@ -47,10 +47,7 @@ interface FilesBrowserPanelProps {
 }
 
 const WORKSPACE_FILES = [
-  { id: 'AGENTS.md', label: 'Instructions', description: 'Operating rules and priorities' },
-  { id: 'SOUL.md', label: 'Persona', description: 'Personality and boundaries' },
-  { id: 'USER.md', label: 'User', description: 'User preferences' },
-  { id: 'IDENTITY.md', label: 'Identity', description: 'Name, emoji, tagline' },
+  { id: 'AGENTS.md', label: 'Agent', description: 'Identity, personality, and instructions' },
   { id: 'HEARTBEAT.md', label: 'Heartbeat', description: 'Autonomous task checklist' },
   { id: 'MEMORY.md', label: 'Memory', description: 'Long-lived facts' },
   { id: 'TOOLS.md', label: 'Tools', description: 'Tool notes and conventions' },
