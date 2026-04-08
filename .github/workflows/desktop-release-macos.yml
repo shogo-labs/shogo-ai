@@ -247,10 +247,10 @@ jobs:
             fi
           done
 
-          echo "=== Phase 2: Sign helper .app bundles (deepest first) ==="
+          echo "=== Phase 2: Sign helper .app bundles with child entitlements (deepest first) ==="
           find "$APP_PATH" -name "*.app" -type d ! -path "$APP_PATH" -depth | while read -r bundle; do
             echo "  signing bundle: $bundle"
-            sign_file "$bundle"
+            codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.child.plist "$bundle" 2>&1 && SIGNED=$((SIGNED + 1)) || echo "  WARNING: failed to sign $bundle"
           done
 
           echo "=== Phase 3: Sign .framework bundles (deepest first) ==="
