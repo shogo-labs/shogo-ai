@@ -33,6 +33,7 @@ export async function buildProjectEnv(
       select: { workspaceId: true, templateId: true, name: true, settings: true },
     })
     if (project) {
+      if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
       if (project.templateId) env.TEMPLATE_ID = project.templateId
       if (project.name) env.AGENT_NAME = project.name
 
