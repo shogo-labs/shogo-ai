@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -16,6 +16,14 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../../contexts/auth'
 import { API_URL } from '../../../lib/api'
 import {
+  getProtocolVersion,
+  isCapabilityAvailable,
+  classifyLatency,
+  type ConnectionQuality,
+  type ConnectionMode,
+} from '../../../lib/remote-control/capabilities'
+import { resolveConnectionMode } from '../../../lib/remote-control/lan-discovery'
+import {
   ArrowLeft,
   Wifi,
   WifiOff,
@@ -30,6 +38,15 @@ import {
   Settings,
   Send,
   ChevronRight,
+  Pencil,
+  Check,
+  X,
+  AlertTriangle,
+  Zap,
+  RotateCw,
+  ClipboardList,
+  Globe,
+  Radio,
 } from 'lucide-react-native'
 
 interface InstanceDetail {
@@ -42,15 +59,24 @@ interface InstanceDetail {
   lastSeenAt: string | null
   metadata: Record<string, unknown> | null
   createdAt: string
+  controllers?: Array<{ userId: string; lastSeenAt: number }>
 }
 
 interface ProxyResponse {
   status: number
   headers?: Record<string, string>
   body?: string
+  error?: { code: string; message: string }
 }
 
-type Tab = 'status' | 'chat' | 'files' | 'controls'
+type Tab = 'status' | 'chat' | 'files' | 'controls' | 'audit'
+
+const QUALITY_COLORS: Record<ConnectionQuality, string> = {
+  good: 'text-green-500',
+  fair: 'text-yellow-500',
+  poor: 'text-red-500',
+  unknown: 'text-muted-foreground',
+}
 
 export default function InstanceDetailScreen() {
   const { instanceId } = useLocalSearchParams<{ instanceId: string }>()
@@ -59,6 +85,15 @@ export default function InstanceDetailScreen() {
   const [instance, setInstance] = useState<InstanceDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<Tab>('status')
+  const [connectionQuality, setConnectionQuality] = useState<ConnectionQuality>('unknown')
+  const [latencyMs, setLatencyMs] = useState<number | null>(null)
+  const [isRenaming, setIsRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [isReconnecting, setIsReconnecting] = useState(false)
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('cloud')
+  const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const headers = useCallback(() => {
     const h: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -67,6 +102,12 @@ export default function InstanceDetailScreen() {
     }
     return h
   }, [session?.token])
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg)
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => setToastMessage(null), 4000)
+  }, [])
 
   const fetchInstance = useCallback(async () => {
     if (!instanceId) return
@@ -88,6 +129,38 @@ export default function InstanceDetailScreen() {
     return () => clearInterval(interval)
   }, [fetchInstance])
 
+  // Latency ping
+  const measureLatency = useCallback(async () => {
+    if (!instanceId || !instance || instance.status !== 'online') return
+    try {
+      const start = Date.now()
+      const res = await fetch(`${API_URL}/api/instances/${instanceId}/ping`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: headers(),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const rtt = data.rttMs ?? (Date.now() - start)
+        setLatencyMs(rtt)
+        setConnectionQuality(classifyLatency(rtt))
+      } else {
+        setConnectionQuality('poor')
+      }
+    } catch {
+      setConnectionQuality('poor')
+    }
+  }, [instanceId, instance?.status, headers])
+
+  useEffect(() => {
+    measureLatency()
+    if (instanceId) {
+      resolveConnectionMode(instanceId).then(({ mode }) => setConnectionMode(mode))
+    }
+    pingRef.current = setInterval(measureLatency, 10_000)
+    return () => { if (pingRef.current) clearInterval(pingRef.current) }
+  }, [measureLatency, instanceId])
+
   const proxyRequest = useCallback(async (
     method: string,
     path: string,
@@ -101,11 +174,74 @@ export default function InstanceDetailScreen() {
         headers: headers(),
         body: JSON.stringify({ method, path, body }),
       })
-      return await res.json()
+      const data = await res.json()
+      if (res.status === 503) {
+        showToast('Instance is offline — try reconnecting')
+        return null
+      }
+      if (data.error && data.error.code === 'proxy_error') {
+        showToast(data.error.message || 'Proxy request failed')
+        return null
+      }
+      if (data.status === 404) {
+        showToast('This action requires a newer desktop app')
+        return null
+      }
+      return data
     } catch {
+      showToast('Network error — check your connection')
       return null
     }
-  }, [instanceId, headers])
+  }, [instanceId, headers, showToast])
+
+  const handleReconnect = useCallback(async () => {
+    if (!instanceId) return
+    setIsReconnecting(true)
+    try {
+      await fetch(`${API_URL}/api/instances/${instanceId}/request-connect`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: headers(),
+      })
+      showToast('Reconnect requested — waiting for instance...')
+      let attempts = 0
+      while (attempts < 15) {
+        attempts++
+        await new Promise((r) => setTimeout(r, 2000))
+        const res = await fetch(`${API_URL}/api/instances/${instanceId}`, {
+          credentials: 'include',
+          headers: headers(),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.status === 'online') {
+            setInstance(data)
+            showToast('Reconnected!')
+            break
+          }
+        }
+      }
+    } catch {}
+    setIsReconnecting(false)
+  }, [instanceId, headers, showToast])
+
+  const handleRename = useCallback(async () => {
+    if (!instanceId || !renameValue.trim()) return
+    try {
+      const res = await fetch(`${API_URL}/api/instances/${instanceId}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: headers(),
+        body: JSON.stringify({ name: renameValue.trim() }),
+      })
+      if (res.ok) {
+        const updated = await res.json()
+        setInstance((prev) => prev ? { ...prev, name: updated.name } : prev)
+        showToast('Instance renamed')
+      }
+    } catch {}
+    setIsRenaming(false)
+  }, [instanceId, renameValue, headers, showToast])
 
   if (loading) {
     return (
@@ -127,9 +263,17 @@ export default function InstanceDetailScreen() {
   }
 
   const isOnline = instance.status === 'online'
+  const protocolVersion = getProtocolVersion(instance.metadata)
 
   return (
     <View className="flex-1 bg-background">
+      {/* Toast */}
+      {toastMessage && (
+        <View className="absolute top-2 left-4 right-4 z-50 p-3 rounded-lg bg-foreground/90">
+          <Text className="text-sm text-background text-center">{toastMessage}</Text>
+        </View>
+      )}
+
       {/* Header */}
       <View className="px-4 pt-4 pb-3 border-b border-border">
         <View className="flex-row items-center gap-3">
@@ -137,17 +281,62 @@ export default function InstanceDetailScreen() {
             <ArrowLeft size={20} className="text-foreground" />
           </Pressable>
           <View className="flex-1">
-            <View className="flex-row items-center gap-2">
-              <Text className="text-lg font-bold text-foreground">{instance.name}</Text>
-              {isOnline ? (
-                <Wifi size={16} className="text-green-500" />
-              ) : (
-                <WifiOff size={16} className="text-muted-foreground" />
+            {isRenaming ? (
+              <View className="flex-row items-center gap-2">
+                <TextInput
+                  value={renameValue}
+                  onChangeText={setRenameValue}
+                  autoFocus
+                  className="flex-1 px-2 py-1 rounded border border-border bg-card text-foreground text-base font-bold"
+                  onSubmitEditing={handleRename}
+                />
+                <Pressable onPress={handleRename} className="p-1">
+                  <Check size={18} className="text-green-500" />
+                </Pressable>
+                <Pressable onPress={() => setIsRenaming(false)} className="p-1">
+                  <X size={18} className="text-muted-foreground" />
+                </Pressable>
+              </View>
+            ) : (
+              <View className="flex-row items-center gap-2">
+                <Text className="text-lg font-bold text-foreground">{instance.name}</Text>
+                <Pressable
+                  onPress={() => { setRenameValue(instance.name); setIsRenaming(true) }}
+                  className="p-1 rounded active:bg-muted"
+                >
+                  <Pencil size={14} className="text-muted-foreground" />
+                </Pressable>
+                {isOnline ? (
+                  <Wifi size={16} className="text-green-500" />
+                ) : (
+                  <WifiOff size={16} className="text-muted-foreground" />
+                )}
+              </View>
+            )}
+            <View className="flex-row items-center gap-2 mt-0.5">
+              <Text className="text-xs text-muted-foreground">
+                {instance.hostname} · {instance.os || 'unknown'}/{instance.arch || '?'}
+              </Text>
+              {isOnline && (
+                <View className="flex-row items-center gap-1.5">
+                  {latencyMs !== null && (
+                    <Text className={cn('text-xs font-mono', QUALITY_COLORS[connectionQuality])}>
+                      {latencyMs}ms
+                    </Text>
+                  )}
+                  <View className="flex-row items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-muted">
+                    {connectionMode === 'lan' ? (
+                      <Radio size={10} className="text-green-500" />
+                    ) : (
+                      <Globe size={10} className="text-blue-500" />
+                    )}
+                    <Text className="text-[10px] font-medium text-muted-foreground uppercase">
+                      {connectionMode}
+                    </Text>
+                  </View>
+                </View>
               )}
             </View>
-            <Text className="text-xs text-muted-foreground">
-              {instance.hostname} · {instance.os || 'unknown'}/{instance.arch || '?'}
-            </Text>
           </View>
         </View>
 
@@ -158,6 +347,7 @@ export default function InstanceDetailScreen() {
             { key: 'chat' as Tab, label: 'Chat', icon: MessageSquare },
             { key: 'files' as Tab, label: 'Files', icon: FolderTree },
             { key: 'controls' as Tab, label: 'Controls', icon: Settings },
+            { key: 'audit' as Tab, label: 'Audit', icon: ClipboardList },
           ]).map(({ key, label, icon: Icon }) => (
             <Pressable
               key={key}
@@ -179,21 +369,65 @@ export default function InstanceDetailScreen() {
         </View>
       </View>
 
+      {/* Degradation Banner */}
+      {!isOnline && (
+        <View className="mx-4 mt-3 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 flex-row items-center gap-3">
+          <AlertTriangle size={18} className="text-yellow-500" />
+          <View className="flex-1">
+            <Text className="text-sm font-medium text-foreground">Instance Offline</Text>
+            <Text className="text-xs text-muted-foreground">
+              Controls, chat, and files are unavailable until the instance reconnects.
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleReconnect}
+            disabled={isReconnecting}
+            className="px-3 py-1.5 rounded-md bg-yellow-500/20 active:bg-yellow-500/30"
+          >
+            {isReconnecting ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <Text className="text-xs font-medium text-yellow-600">Reconnect</Text>
+            )}
+          </Pressable>
+        </View>
+      )}
+
+      {connectionQuality === 'poor' && isOnline && (
+        <View className="mx-4 mt-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 flex-row items-center gap-2">
+          <Zap size={14} className="text-red-500" />
+          <Text className="text-xs text-red-500">
+            Poor connection — some features may be slow or unavailable
+          </Text>
+        </View>
+      )}
+
       {/* Tab Content */}
       {!isOnline ? (
         <View className="flex-1 items-center justify-center p-8">
           <WifiOff size={48} className="text-muted-foreground/40 mb-4" />
-          <Text className="text-lg font-medium text-foreground mb-2">Instance Offline</Text>
-          <Text className="text-sm text-muted-foreground text-center">
-            This instance is not currently connected. Start the local Shogo server with a Shogo API key to reconnect.
+          <Text className="text-lg font-medium text-foreground mb-2">Waiting for Connection</Text>
+          <Text className="text-sm text-muted-foreground text-center mb-4">
+            Start the local Shogo server with a Shogo API key, or tap Reconnect above.
           </Text>
+          <Pressable
+            onPress={handleReconnect}
+            disabled={isReconnecting}
+            className="flex-row items-center gap-2 px-4 py-2 rounded-lg bg-primary active:opacity-80"
+          >
+            <RotateCw size={14} color="#fff" />
+            <Text className="text-sm font-medium text-primary-foreground">
+              {isReconnecting ? 'Connecting...' : 'Request Connection'}
+            </Text>
+          </Pressable>
         </View>
       ) : (
         <>
-          {activeTab === 'status' && <StatusTab instance={instance} proxyRequest={proxyRequest} />}
-          {activeTab === 'chat' && <ChatTab instanceId={instanceId!} headers={headers} />}
+          {activeTab === 'status' && <StatusTab instance={instance} proxyRequest={proxyRequest} protocolVersion={protocolVersion} />}
+          {activeTab === 'chat' && <ChatTab instanceId={instanceId!} headers={headers} showToast={showToast} />}
           {activeTab === 'files' && <FilesTab instanceId={instanceId!} proxyRequest={proxyRequest} />}
-          {activeTab === 'controls' && <ControlsTab instanceId={instanceId!} proxyRequest={proxyRequest} />}
+          {activeTab === 'controls' && <ControlsTab instanceId={instanceId!} proxyRequest={proxyRequest} protocolVersion={protocolVersion} showToast={showToast} />}
+          {activeTab === 'audit' && <AuditTab instanceId={instanceId!} headers={headers} />}
         </>
       )}
     </View>
@@ -205,9 +439,11 @@ export default function InstanceDetailScreen() {
 function StatusTab({
   instance,
   proxyRequest,
+  protocolVersion,
 }: {
   instance: InstanceDetail
   proxyRequest: (method: string, path: string) => Promise<ProxyResponse | null>
+  protocolVersion: number
 }) {
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
@@ -232,7 +468,22 @@ function StatusTab({
         <InfoRow label="Uptime" value={meta?.uptime ? `${Math.floor(meta.uptime / 60)}m` : 'Unknown'} />
         <InfoRow label="API Port" value={String(meta?.apiPort || '?')} />
         <InfoRow label="Active Projects" value={String(meta?.activeProjects ?? '?')} />
+        <InfoRow label="Protocol Version" value={`v${protocolVersion}`} />
+        {meta?.apiVersion && <InfoRow label="API Version" value={String(meta.apiVersion)} />}
       </SectionCard>
+
+      {instance.controllers && instance.controllers.length > 0 && (
+        <SectionCard title="Active Controllers">
+          {instance.controllers.map((c, i) => (
+            <InfoRow key={i} label={c.userId.slice(0, 12) + '...'} value="Connected" />
+          ))}
+          {instance.controllers.length > 1 && (
+            <Text className="text-xs text-yellow-500 mt-1">
+              Multiple controllers connected — actions use last-write-wins
+            </Text>
+          )}
+        </SectionCard>
+      )}
 
       {meta?.projects && Array.isArray(meta.projects) && meta.projects.length > 0 && (
         <SectionCard title="Projects">
@@ -266,9 +517,11 @@ function StatusTab({
 function ChatTab({
   instanceId,
   headers,
+  showToast,
 }: {
   instanceId: string
   headers: () => Record<string, string>
+  showToast: (msg: string) => void
 }) {
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   const [input, setInput] = useState('')
@@ -296,6 +549,12 @@ function ChatTab({
         }),
       })
 
+      if (res.status === 503) {
+        showToast('Instance is offline — message not sent')
+        setSending(false)
+        return
+      }
+
       const reader = res.body?.getReader()
       if (!reader) return
 
@@ -316,10 +575,11 @@ function ChatTab({
       }
     } catch (err: any) {
       setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${err.message}` }])
+      showToast('Failed to get response from agent')
     } finally {
       setSending(false)
     }
-  }, [input, sending, instanceId, headers])
+  }, [input, sending, instanceId, headers, showToast])
 
   return (
     <View className="flex-1">
@@ -498,9 +758,13 @@ function FileTreeNode({
 function ControlsTab({
   instanceId,
   proxyRequest,
+  protocolVersion,
+  showToast,
 }: {
   instanceId: string
   proxyRequest: (method: string, path: string, body?: string) => Promise<ProxyResponse | null>
+  protocolVersion: number
+  showToast: (msg: string) => void
 }) {
   const [result, setResult] = useState<string | null>(null)
 
@@ -513,6 +777,8 @@ function ControlsTab({
       setResult(`${label}: Failed`)
     }
   }, [proxyRequest])
+
+  const canSwitchModel = isCapabilityAvailable('modelSwitch', protocolVersion)
 
   return (
     <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
@@ -553,9 +819,95 @@ function ControlsTab({
         />
       </SectionCard>
 
+      {!canSwitchModel && (
+        <View className="mb-4 p-3 rounded-lg bg-muted/50 border border-border">
+          <Text className="text-xs text-muted-foreground">
+            Model switching and project management require a newer desktop app (protocol v2+).
+          </Text>
+        </View>
+      )}
+
       {result && (
         <View className="mt-4 p-3 rounded-lg bg-muted">
           <Text className="text-sm font-mono text-foreground">{result}</Text>
+        </View>
+      )}
+    </ScrollView>
+  )
+}
+
+// ─── Audit Tab ──────────────────────────────────────────────────────────────
+
+interface AuditEntry {
+  id: string
+  action: string
+  path?: string
+  method?: string
+  result?: string
+  createdAt: string
+}
+
+function AuditTab({
+  instanceId,
+  headers,
+}: {
+  instanceId: string
+  headers: () => Record<string, string>
+}) {
+  const [actions, setActions] = useState<AuditEntry[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/instances/${instanceId}/audit?limit=50`, {
+          credentials: 'include',
+          headers: headers(),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setActions(data.actions || [])
+        }
+      } catch {}
+      setLoading(false)
+    })()
+  }, [instanceId, headers])
+
+  if (loading) {
+    return (
+      <View className="flex-1 items-center justify-center">
+        <ActivityIndicator size="large" />
+      </View>
+    )
+  }
+
+  return (
+    <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+      {actions.length === 0 ? (
+        <View className="items-center py-16">
+          <ClipboardList size={32} className="text-muted-foreground/40 mb-3" />
+          <Text className="text-sm text-muted-foreground">No remote actions recorded yet</Text>
+        </View>
+      ) : (
+        <View className="gap-2">
+          {actions.map((a) => (
+            <View key={a.id} className="p-3 rounded-lg border border-border bg-card">
+              <View className="flex-row justify-between items-center mb-1">
+                <Text className="text-sm font-medium text-foreground">{a.action}</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {new Date(a.createdAt).toLocaleTimeString()}
+                </Text>
+              </View>
+              {a.path && (
+                <Text className="text-xs font-mono text-muted-foreground">
+                  {a.method || 'GET'} {a.path}
+                </Text>
+              )}
+              {a.result && (
+                <Text className="text-xs text-muted-foreground mt-0.5">{a.result}</Text>
+              )}
+            </View>
+          ))}
         </View>
       )}
     </ScrollView>
@@ -590,17 +942,23 @@ function ControlButton({
   description,
   onPress,
   destructive,
+  disabled,
 }: {
   icon: React.ElementType
   label: string
   description: string
   onPress: () => void
   destructive?: boolean
+  disabled?: boolean
 }) {
   return (
     <Pressable
       onPress={onPress}
-      className="flex-row items-center p-3 rounded-lg active:bg-muted -mx-1"
+      disabled={disabled}
+      className={cn(
+        'flex-row items-center p-3 rounded-lg active:bg-muted -mx-1',
+        disabled && 'opacity-40',
+      )}
     >
       <View className={cn(
         'w-8 h-8 rounded-full items-center justify-center mr-3',

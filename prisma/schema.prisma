@@ -131,6 +131,7 @@ model Workspace {
   starredProjects      StarredProject[]
   apiKeys              ApiKey[]
   instances            Instance[]
+  pairingCodes         PairingCode[]
 
   @@map("workspaces")
 }
@@ -1299,7 +1300,9 @@ model Instance {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  remoteActions     RemoteAction[]
+  pushSubscriptions PushSubscription[]
 
   @@unique([workspaceId, hostname])
   @@index([workspaceId])
@@ -1309,6 +1312,57 @@ model Instance {
 enum InstanceStatus {
   online
   offline
+}
+
+model RemoteAction {
+  id         String   @id @default(cuid())
+  instanceId String
+  userId     String
+  action     String
+  path       String?
+  method     String?
+  summary    String?
+  result     String?
+  createdAt  DateTime @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([instanceId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("remote_actions")
+}
+
+model PushSubscription {
+  id         String   @id @default(cuid())
+  instanceId String
+  userId     String
+  pushToken  String
+  platform   String
+  createdAt  DateTime @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@unique([instanceId, pushToken])
+  @@index([instanceId])
+  @@map("push_subscriptions")
+}
+
+model PairingCode {
+  id          String    @id @default(cuid())
+  workspaceId String
+  code        String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  apiKeyId    String?
+  publicKey   String?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([code])
+  @@map("pairing_codes")
 }
 
 // =============================================================================

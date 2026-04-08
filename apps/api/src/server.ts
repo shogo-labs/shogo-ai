@@ -53,6 +53,8 @@ import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
+import { remoteAuditRoutes } from './routes/remote-audit'
+import { pairingRoutes } from './routes/pairing'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -1034,8 +1036,10 @@ app.route('/api/internal', evalInternalRoutes())
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
 
-// Remote Control — Instance registry and tunnel proxy
+// Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions, pairing
 app.route('/api', instanceRoutes())
+app.route('/api', remoteAuditRoutes())
+app.route('/api', pairingRoutes())
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)

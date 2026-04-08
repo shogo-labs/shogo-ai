@@ -23,6 +23,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { resolveApiKey } from './api-keys'
+import { logRemoteAction, classifyAction } from './remote-audit'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -54,6 +55,40 @@ export function isViewerActive(workspaceId: string): boolean {
 
 function markViewerActive(workspaceId: string) {
   activeViewers.set(workspaceId, Date.now())
+}
+
+// ─── Active controllers (multi-device awareness) ───────────────────────────
+
+interface ActiveController {
+  userId: string
+  sessionId?: string
+  lastSeenAt: number
+}
+
+const activeControllers = new Map<string, Map<string, ActiveController>>()
+const CONTROLLER_TTL_MS = 60_000
+
+function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
+  if (!activeControllers.has(instanceId)) {
+    activeControllers.set(instanceId, new Map())
+  }
+  const key = sessionId || userId
+  activeControllers.get(instanceId)!.set(key, { userId, sessionId, lastSeenAt: Date.now() })
+}
+
+function getActiveControllers(instanceId: string): ActiveController[] {
+  const map = activeControllers.get(instanceId)
+  if (!map) return []
+  const now = Date.now()
+  const result: ActiveController[] = []
+  for (const [key, ctrl] of map) {
+    if (now - ctrl.lastSeenAt > CONTROLLER_TTL_MS) {
+      map.delete(key)
+    } else {
+      result.push(ctrl)
+    }
+  }
+  return result
 }
 
 // ─── In-memory tunnel registry ──────────────────────────────────────────────
@@ -370,11 +405,13 @@ export function instanceRoutes() {
 
     const wsRequested = isWsRequested(instance.wsRequestedAt)
     const nextPollIn = computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
+    const hasTunnel = tunnels.has(instance.id)
 
     return c.json({
       instanceId: instance.id,
       nextPollIn,
       wsRequested,
+      tunnelStatus: hasTunnel ? 'connected' : 'polling',
     })
   })
 
@@ -488,6 +525,10 @@ export function instanceRoutes() {
     return c.json({
       ...instance,
       status: tunnels.has(instance.id) ? 'online' : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
+      controllers: getActiveControllers(instance.id).map((c) => ({
+        userId: c.userId,
+        lastSeenAt: c.lastSeenAt,
+      })),
     })
   })
 
@@ -570,6 +611,8 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
     }
 
+    markControllerActive(instance.id, auth.userId)
+
     const body = await c.req.json<{
       method: string
       path: string
@@ -578,6 +621,8 @@ export function instanceRoutes() {
     }>()
 
     const requestId = generateRequestId()
+    const action = classifyAction(body.method || 'GET', body.path)
+
     try {
       const resp = await sendTunnelRequest(instance.id, {
         type: 'request',
@@ -588,11 +633,59 @@ export function instanceRoutes() {
         body: body.body,
       })
 
+      logRemoteAction({
+        instanceId: instance.id,
+        userId: auth.userId,
+        action,
+        path: body.path,
+        method: body.method || 'GET',
+        result: `HTTP ${resp.status}`,
+      })
+
       return c.json({
         status: resp.status,
         headers: resp.headers,
         body: resp.body,
       })
+    } catch (err: any) {
+      logRemoteAction({
+        instanceId: instance.id,
+        userId: auth.userId,
+        action,
+        path: body.path,
+        method: body.method || 'GET',
+        result: `error: ${err.message}`,
+      })
+      return c.json({ error: { code: 'proxy_error', message: err.message } }, 502)
+    }
+  })
+
+  // POST /instances/:id/ping — Lightweight latency check through the tunnel
+  router.post('/instances/:id/ping', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    if (!instance) {
+      return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
+    }
+
+    if (!tunnels.has(instance.id)) {
+      return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
+    }
+
+    const requestId = generateRequestId()
+    const start = Date.now()
+    try {
+      await sendTunnelRequest(instance.id, {
+        type: 'request',
+        requestId,
+        method: 'GET',
+        path: '/health',
+      })
+      return c.json({ ok: true, rttMs: Date.now() - start })
     } catch (err: any) {
       return c.json({ error: { code: 'proxy_error', message: err.message } }, 502)
     }
@@ -666,6 +759,44 @@ export function instanceRoutes() {
     })
   })
 
+  // GET /instances/:id/echo — End-to-end tunnel integration test endpoint
+  router.all('/instances/:id/echo', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const instance = await prisma.instance.findUnique({ where: { id: c.req.param('id') } })
+    if (!instance) {
+      return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
+    }
+
+    if (!tunnels.has(instance.id)) {
+      return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
+    }
+
+    const body = c.req.method !== 'GET' ? await c.req.text() : undefined
+    const requestId = generateRequestId()
+    const start = Date.now()
+
+    try {
+      const resp = await sendTunnelRequest(instance.id, {
+        type: 'request',
+        requestId,
+        method: c.req.method,
+        path: '/__test/echo',
+        body,
+      })
+      return c.json({
+        tunnelRttMs: Date.now() - start,
+        echoStatus: resp.status,
+        echoBody: resp.body,
+      })
+    } catch (err: any) {
+      return c.json({ error: { code: 'proxy_error', message: err.message } }, 502)
+    }
+  })
+
   return router
 }
 
@@ -705,10 +836,13 @@ export function stopTunnelHeartbeat() {
 export const _testing = {
   tunnels,
   activeViewers,
+  activeControllers,
   computeNextPollIn,
   isWsRequested,
   isViewerActive,
   markViewerActive,
+  markControllerActive,
+  getActiveControllers,
   POLL_INTERVAL_IDLE_S,
   POLL_INTERVAL_VIEWER_S,
   POLL_INTERVAL_WS_REQUESTED_S,

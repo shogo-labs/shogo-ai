@@ -21,4 +21,9 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   onVMImageDownloadProgress: (callback: (progress: { bytesDownloaded: number; totalBytes: number; percent: number; stage: string }) => void) => {
     ipcRenderer.on('vm-image-download-progress', (_event, progress) => callback(progress))
   },
+  // Remote Control pairing
+  initiatePairing: (workspaceId: string) => ipcRenderer.invoke('pairing-initiate', workspaceId),
+  getPairingStatus: (code: string) => ipcRenderer.invoke('pairing-status', code),
+  showRemoteActionNotification: (title: string, body: string) =>
+    ipcRenderer.invoke('show-remote-action-notification', title, body),
 })
