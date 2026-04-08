@@ -98,6 +98,7 @@ import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
+import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
@@ -204,8 +205,6 @@ export interface ChatPanelProps {
   onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
   buildPlanRequest?: { plan: PlanData; agentMode: AgentMode; nonce: number } | null
-  /** Called when a new plan is created (so the Plans panel can refresh) */
-  onPlanCreated?: () => void
 }
 
 // ============================================================
@@ -558,7 +557,6 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
   buildPlanRequest,
-  onPlanCreated,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -743,6 +741,8 @@ export const ChatPanel = observer(function ChatPanel({
   const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
   const confirmedPlanRef = useRef<PlanData | null>(null)
   const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
+
+  const planStream = usePlanStreamSafe()
 
   const sessionCreationInProgressRef = useRef<string | null>(null)
 
@@ -1331,7 +1331,7 @@ export const ChatPanel = observer(function ChatPanel({
         const planData = (dataPart as any).data
         if (planData) {
           setPendingPlan(planData)
-          onPlanCreated?.()
+          planStream?.notifyPlanCreated()
         }
       }
 
@@ -2064,6 +2064,39 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
+
+  useEffect(() => {
+    planStream?.setIsPlanStreaming(isStreaming && interactionMode === "plan")
+  }, [isStreaming, interactionMode, planStream])
+
+  const derivedStreamingPlan = useMemo<PlanData | null>(() => {
+    if (!isStreaming) return null
+    const lastMsg = messages[messages.length - 1]
+    if (!lastMsg || lastMsg.role !== "assistant") return null
+    const parts = (lastMsg as any).parts as any[] | undefined
+    if (!parts) return null
+    const planPart = parts.find(
+      (p: any) =>
+        (p.type === "tool-invocation" && p.toolInvocation?.toolName === "create_plan") ||
+        (p.type === "dynamic-tool" && p.toolName === "create_plan"),
+    )
+    if (!planPart) return null
+    const args =
+      planPart.type === "tool-invocation"
+        ? planPart.toolInvocation?.args
+        : planPart.input ?? planPart.args
+    if (!args?.name) return null
+    return {
+      name: args.name,
+      overview: args.overview ?? "",
+      plan: args.plan ?? "",
+      todos: args.todos ?? [],
+    }
+  }, [isStreaming, messages])
+
+  useEffect(() => {
+    planStream?.setStreamingPlan(derivedStreamingPlan)
+  }, [derivedStreamingPlan, planStream])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange

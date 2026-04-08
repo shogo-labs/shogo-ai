@@ -53,6 +53,7 @@ import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
+import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
@@ -589,7 +590,6 @@ export default observer(function ProjectLayout() {
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
-  const [planRefreshNonce, setPlanRefreshNonce] = useState(0)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -941,7 +941,6 @@ export default observer(function ProjectLayout() {
       onCanvasPreview={handleCanvasPreview}
       onMessagesChange={setChatMessages}
       buildPlanRequest={buildPlanRequest}
-      onPlanCreated={() => setPlanRefreshNonce((n) => n + 1)}
       className="flex-1"
     />
   )
@@ -1014,6 +1013,7 @@ export default observer(function ProjectLayout() {
     <>
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
+      <PlanStreamProvider>
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
@@ -1189,7 +1189,7 @@ export default observer(function ProjectLayout() {
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} refreshTrigger={planRefreshNonce} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>
@@ -1221,6 +1221,7 @@ export default observer(function ProjectLayout() {
         </View>
       </EditModeProvider>
     </CanvasThemeProvider>
+    </PlanStreamProvider>
     </>
   )
 })
