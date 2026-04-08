@@ -42,11 +42,21 @@
       "expo-secure-store",
       "expo-web-browser",
       "expo-localization",
-      ["@sentry/react-native/expo", {
-        "organization": "shogo",
-        "project": "shogo-mobile"
-      }],
-      "./plugins/withRemoveOrientationLocks"
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "shogo",
+          "project": "shogo-mobile"
+        }
+      ],
+      "./plugins/withRemoveOrientationLocks",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Shogo to use the microphone for voice input.",
+          "speechRecognitionPermission": "Allow Shogo to use speech recognition for voice input."
+        }
+      ]
     ],
     "extra": {
       "router": {},
