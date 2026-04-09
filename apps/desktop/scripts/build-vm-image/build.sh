@@ -85,9 +85,25 @@ packages:
   - unzip
 
 runcmd:
-  # Install Bun
-  - curl -fsSL https://bun.sh/install | bash
-  - ln -sf /root/.bun/bin/bun /usr/local/bin/bun
+  # Install Bun as a regular file (not symlink) for the guest architecture
+  - |
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+      BUN_PKG="bun-linux-aarch64"
+    else
+      BUN_PKG="bun-linux-x64-baseline"
+    fi
+    BUN_VER="1.3.11"
+    cd /tmp
+    curl -fsSL -o bun-dl.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VER}/${BUN_PKG}.zip"
+    unzip -o bun-dl.zip -d bun-extract
+    cp bun-extract/${BUN_PKG}/bun /usr/local/bin/bun
+    chmod 755 /usr/local/bin/bun
+    rm -rf bun-dl.zip bun-extract
+    for alias in node npx npm; do
+      ln -sf /usr/local/bin/bun /usr/local/bin/$alias
+    done
+    echo "bun ready: $(/usr/local/bin/bun --version)"
   
   # Install gh CLI
   - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
@@ -269,11 +285,9 @@ fi
 echo "Shrinking rootfs..."
 qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs.qcow2"
 
-# Also produce a raw image for Virtualization.framework (macOS)
-if [ "$ARCH" = "aarch64" ]; then
-  echo "Converting rootfs to raw for Virtualization.framework..."
-  qemu-img convert -f qcow2 -O raw "${OUTPUT_DIR}/rootfs.qcow2" "${OUTPUT_DIR}/rootfs.raw"
-fi
+# The build already provisions bun, deps, and templates, so this IS the
+# provisioned image. Copy it so the desktop app's ensureOverlay picks it up.
+cp "${OUTPUT_DIR}/rootfs.qcow2" "${OUTPUT_DIR}/rootfs-provisioned.qcow2"
 
 echo ""
 echo "=== Build complete ==="
@@ -281,9 +295,7 @@ echo "Output:"
 ls -lh "${OUTPUT_DIR}/"
 echo ""
 echo "Files:"
-echo "  ${OUTPUT_DIR}/vmlinuz      - Linux kernel (decompressed for VZ on arm64)"
-echo "  ${OUTPUT_DIR}/initrd.img   - Initial ramdisk"
-echo "  ${OUTPUT_DIR}/rootfs.qcow2 - Root filesystem (qcow2, for Windows/QEMU)"
-if [ "$ARCH" = "aarch64" ]; then
-  echo "  ${OUTPUT_DIR}/rootfs.raw   - Root filesystem (raw, for macOS/VZ)"
-fi
+echo "  ${OUTPUT_DIR}/vmlinuz                  - Linux kernel (decompressed for VZ on arm64)"
+echo "  ${OUTPUT_DIR}/initrd.img               - Initial ramdisk"
+echo "  ${OUTPUT_DIR}/rootfs.qcow2             - Root filesystem (base)"
+echo "  ${OUTPUT_DIR}/rootfs-provisioned.qcow2 - Root filesystem (provisioned with bun + deps)"
