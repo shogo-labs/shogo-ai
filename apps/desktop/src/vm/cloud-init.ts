@@ -304,24 +304,13 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('  - ln -sf /mnt/bundle/templates/runtime-template /app/templates/runtime-template')
     lines.push('  - |')
     lines.push('    if [ ! -d /app/templates/skill-server/node_modules ]; then')
-    lines.push('      mkdir -p /app/templates/skill-server')
-    lines.push('      cp /mnt/bundle/templates/skill-server/package.json /app/templates/skill-server/ 2>/dev/null || true')
+    lines.push('      cp -r /mnt/bundle/templates/skill-server /app/templates/skill-server')
     lines.push('    fi')
     lines.push('  - ln -sf /mnt/bundle/shogo.js /packages/sdk/bin/shogo.ts')
     lines.push('  - ln -sf /mnt/bundle/bun /usr/local/bin/bun')
     lines.push('  - ln -sf /mnt/bundle/node /usr/local/bin/node')
     lines.push('  - ln -sf /mnt/bundle/npx /usr/local/bin/npx')
     lines.push('  - ln -sf /mnt/bundle/npm /usr/local/bin/npm')
-    lines.push('  - |')
-    lines.push('    if [ ! -d /app/templates/skill-server/node_modules ]; then')
-    lines.push('      export PATH=/mnt/bundle:$PATH')
-    lines.push('      cd /app/templates/skill-server && /mnt/bundle/bun install 2>/dev/null || true')
-    lines.push('    fi')
-    lines.push('  - |')
-    lines.push('    if ! which typescript-language-server >/dev/null 2>&1; then')
-    lines.push('      export PATH=/mnt/bundle:$PATH')
-    lines.push('      cd /workspace && /mnt/bundle/bun add typescript-language-server typescript 2>/workspace/.lsp-install.log || true')
-    lines.push('    fi')
 
     const projectId = config.env?.PROJECT_ID || '__POOL__'
     const envLines = [
@@ -332,7 +321,7 @@ function buildUserData(config: CloudInitConfig): string {
       `    export PROJECT_DIR=/workspace`,
       `    export NODE_ENV=development`,
       `    export TREE_SITTER_WASM_DIR=/mnt/bundle/wasm`,
-      `    export PATH=/mnt/bundle:/workspace/node_modules/.bin:$PATH`,
+      `    export PATH=/mnt/bundle:/mnt/bundle/node_modules/.bin:/workspace/node_modules/.bin:$PATH`,
     ]
     const skip = new Set(['PROJECT_ID', 'PORT', 'WORKSPACE_DIR', 'AGENT_DIR', 'PROJECT_DIR', 'NODE_ENV', 'TREE_SITTER_WASM_DIR', 'PATH'])
     if (config.env) {

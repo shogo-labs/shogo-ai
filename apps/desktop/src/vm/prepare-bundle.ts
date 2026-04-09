@@ -211,6 +211,16 @@ export function copyTemplates(destDir: string, repoRoot: string): void {
       }),
     )
   }
+
+  if (!existsSync(join(ssDir, 'node_modules'))) {
+    console.log('  Preparing skill-server with deps for VM...')
+    try {
+      execSync('bun install', { cwd: ssDir, stdio: 'pipe', timeout: 60_000 })
+    } catch {
+      if (!existsSync(join(ssDir, 'node_modules')))
+        throw new Error('bun install failed for skill-server')
+    }
+  }
 }
 
 /**
@@ -295,6 +305,14 @@ export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
 
   // --- Templates ---
   copyTemplates(destDir, repoRoot)
+
+  // --- typescript-language-server (used by LSP inside the VM) ---
+  if (!existsSync(join(destDir, 'node_modules', 'typescript-language-server'))) {
+    console.log('  Installing typescript-language-server for VM...')
+    execSync('bun add typescript-language-server typescript', {
+      cwd: destDir, stdio: 'pipe', timeout: 60_000,
+    })
+  }
 
   console.log(`  VM bundle ready at ${destDir}`)
 }

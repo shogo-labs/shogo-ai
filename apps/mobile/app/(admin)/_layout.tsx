@@ -59,9 +59,9 @@ const LOCAL_MAIN_ITEMS = [
 
 const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
-  { href: '/(admin)/vm' as const, icon: Monitor, label: 'VM / Sandbox' },
-  { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
   { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
+  { href: '/(admin)/vm' as const, icon: Monitor, label: 'VM' },
+  { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
 
 function useAdminCheck() {

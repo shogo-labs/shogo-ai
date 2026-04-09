@@ -649,12 +649,14 @@ export function evalAdminRoutes(): Hono {
       model?: string
       workers?: number
       local?: boolean
+      vm?: boolean
     }
 
     const track = body.track ?? 'agentic'
     const model = body.model ?? 'sonnet'
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
     const local = body.local ?? false
+    const vm = body.vm ?? false
 
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
@@ -715,13 +717,32 @@ export function evalAdminRoutes(): Hono {
       '--callback-url', callbackUrl,
     ]
     if (local) args.push('--local')
+    if (vm) args.push('--vm')
 
     const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
+    console.log(`[EvalTrigger] Spawning: ${bunBin} ${args.join(' ')}`)
+    console.log(`[EvalTrigger] CWD: ${AGENT_RUNTIME_DIR}`)
     const child = spawn(bunBin, args, {
       cwd: AGENT_RUNTIME_DIR,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, EVAL_CALLBACK_SECRET: callbackSecret },
+    })
+    child.stdout?.on('data', (d: Buffer) => {
+      for (const line of d.toString().split('\n').filter(Boolean))
+        console.log(`[Eval:${run.id.slice(0, 8)}] ${line}`)
+    })
+    child.stderr?.on('data', (d: Buffer) => {
+      for (const line of d.toString().split('\n').filter(Boolean))
+        console.error(`[Eval:${run.id.slice(0, 8)}] ${line}`)
+    })
+    child.on('error', (err) => {
+      console.error(`[EvalTrigger] Failed to spawn eval process:`, err.message)
+    })
+    child.on('exit', (code, signal) => {
+      if (code !== 0) {
+        console.error(`[EvalTrigger] Eval process exited: code=${code}, signal=${signal}`)
+      }
     })
     child.unref()
 
@@ -733,7 +754,7 @@ export function evalAdminRoutes(): Hono {
 
     return c.json({
       ok: true,
-      data: { started: true, id: run.id, pid, track, model, workers, local },
+      data: { started: true, id: run.id, pid, track, model, workers, local, vm },
     })
   })
 
