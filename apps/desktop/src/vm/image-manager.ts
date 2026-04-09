@@ -7,9 +7,9 @@ import https from 'https'
 import http from 'http'
 
 const GITHUB_REPO = 'shogo-labs/shogo-ai'
-const VM_IMAGE_TAG = 'vm-images-v2'
+const VM_IMAGE_TAG = 'vm-images-v3'
 
-export const VM_IMAGE_VERSION = '2'
+export const VM_IMAGE_VERSION = '3'
 
 export interface DownloadProgress {
   bytesDownloaded: number
@@ -52,9 +52,18 @@ export class VMImageManager {
     return `https://github.com/${GITHUB_REPO}/releases/download/${VM_IMAGE_TAG}/version.txt`
   }
 
+  isProvisionedImagePresent(): boolean {
+    return fs.existsSync(path.join(this.imageDir, 'rootfs-provisioned.qcow2'))
+  }
+
   /**
    * Download VM image from GitHub Releases.
-   * The archive should be a .tar.gz containing vmlinuz, initrd.img, rootfs.qcow2, version.txt.
+   * The archive should be a .tar.gz containing:
+   *   vmlinuz, initrd.img, rootfs.qcow2, rootfs-provisioned.qcow2, version.txt
+   *
+   * rootfs-provisioned.qcow2 has bun, templates, and deps pre-installed for
+   * fast boot (~20s). Without it, the first boot falls back to rootfs.qcow2
+   * and downloads bun via cloud-init (~40s).
    */
   async downloadImage(onProgress?: ProgressCallback): Promise<void> {
     fs.mkdirSync(this.imageDir, { recursive: true })

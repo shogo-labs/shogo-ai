@@ -5719,7 +5719,7 @@ if (isVMIsolation() && !isKubernetes()) {
         memoryMB,
         cpus,
         networkEnabled: true,
-        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.raw`),
+        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),
         vmImageDir,
         bundleDir: bundleDir || undefined,
       })

@@ -171,6 +171,7 @@ function registerIpcHandlers(): void {
     const mgr = new VMImageManager(imageDir)
     return {
       imagesPresent: mgr.isImagePresent(),
+      provisionedImagePresent: mgr.isProvisionedImagePresent(),
       vmAvailable: isVMAvailable(),
       imageVersion: mgr.getImageVersion(),
       imageDir,
