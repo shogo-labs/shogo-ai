@@ -370,8 +370,6 @@ app.whenReady().then(async () => {
   registerRecordingIpcHandlers()
   buildAppMenu()
 
-  createWindow()
-
   if (!isCloudMode) {
     console.log('[Desktop] Starting local server...')
     try {
@@ -382,6 +380,11 @@ app.whenReady().then(async () => {
       return
     }
     setupSessionHandlers()
+  }
+
+  createWindow()
+
+  if (!isCloudMode) {
     createTray()
     startMeetingMonitor()
   }

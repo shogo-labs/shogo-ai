@@ -55,7 +55,7 @@ import { apiKeyRoutes } from './routes/api-keys'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import internalRoutes from './routes/internal'
-import { vmRoutes } from './routes/vm'
+import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -612,6 +612,13 @@ app.get('/api/config', async (c) => {
 // ── Local mode: VM management endpoints ──────────────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   app.route('/api/vm', vmRoutes())
+
+  // Auto-download VM images in the background if not present
+  setTimeout(() => {
+    triggerVMImageDownload().catch((err) =>
+      console.error('[VM] Background VM image download failed (non-fatal):', err.message)
+    )
+  }, 5000)
 }
 
 // ── Local mode: auto-sign-in + API key management ───────────────────────────
