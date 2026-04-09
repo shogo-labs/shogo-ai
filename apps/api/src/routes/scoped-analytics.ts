@@ -78,6 +78,22 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  router.get('/workspaces/:workspaceId/analytics/member-usage', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const data = await analytics.getMemberUsageStats(workspaceId)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   router.get('/workspaces/:workspaceId/analytics/usage-log', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
