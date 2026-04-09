@@ -16,7 +16,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import {
@@ -28,8 +27,8 @@ import {
   Camera,
   Keyboard,
 } from 'lucide-react-native'
-import { useAuth } from '../../../contexts/auth'
 import { API_URL } from '../../../lib/api'
+import { authClient } from '../../../lib/auth-client'
 
 type PairState = 'idle' | 'pairing' | 'success' | 'error'
 type InputMode = 'qr' | 'pin'
@@ -46,9 +45,14 @@ try {
 
 const HAS_CAMERA = !!CameraView
 
+function getAuthHeaders(): Record<string, string> {
+  if (Platform.OS === 'web') return {}
+  const cookie = (authClient as any).getCookie?.()
+  return cookie ? { Cookie: cookie } : {}
+}
+
 export default function PairScreen() {
   const router = useRouter()
-  const { session } = useAuth()
   const [code, setCode] = useState('')
   const [state, setState] = useState<PairState>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -58,14 +62,6 @@ export default function PairScreen() {
     ? useCameraPermissions()
     : [null, () => Promise.resolve(null)]
   const scannedRef = useRef(false)
-
-  const headers = useCallback(() => {
-    const h: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (Platform.OS !== 'web' && session?.token) {
-      h.Cookie = `better-auth.session_token=${session.token}`
-    }
-    return h
-  }, [session?.token])
 
   useEffect(() => {
     if (inputMode === 'qr' && HAS_CAMERA && !cameraPermission?.granted) {
@@ -100,8 +96,11 @@ export default function PairScreen() {
 
       const res = await fetch(`${API_URL}/api/pairing/complete`, {
         method: 'POST',
-        credentials: 'include',
-        headers: headers(),
+        credentials: Platform.OS === 'web' ? 'include' : 'omit',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           code: trimmed,
           publicKey: mobilePublicKey,
@@ -126,7 +125,7 @@ export default function PairScreen() {
       setState('error')
       scannedRef.current = false
     }
-  }, [headers])
+  }, [])
 
   const handlePinSubmit = useCallback(() => completePairing(code), [code, completePairing])
 
@@ -202,13 +201,13 @@ export default function PairScreen() {
             </View>
             <Text className="text-xl font-bold text-foreground mb-2">Paired Successfully!</Text>
             <Text className="text-sm text-muted-foreground text-center mb-6">
-              Your device is now connected to the workspace. You can control your desktop remotely.
+              An API key has been created for your workspace. Start Shogo Desktop with this key — your instance will appear in the sidebar picker once it connects.
             </Text>
             <Pressable
-              onPress={() => router.replace('/(app)/remote-control')}
+              onPress={() => router.back()}
               className="px-6 py-3 rounded-lg bg-primary active:opacity-80"
             >
-              <Text className="text-sm font-medium text-primary-foreground">Go to Remote Control</Text>
+              <Text className="text-sm font-medium text-primary-foreground">Done</Text>
             </Pressable>
           </View>
         ) : inputMode === 'qr' && HAS_CAMERA ? (

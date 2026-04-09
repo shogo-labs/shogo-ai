@@ -1340,6 +1340,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             <InstancePicker
               workspaceId={currentWorkspace?.id}
               collapsed={collapsed}
+              onNavPress={onNavPress}
             />
             {!localMode && (
               <NavItem
