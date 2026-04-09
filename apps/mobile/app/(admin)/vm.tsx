@@ -30,6 +30,7 @@ import {
   Info,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgress'
 
 // =============================================================================
 // Desktop Bridge
@@ -168,6 +169,8 @@ interface VMDiagnostics {
   arch: string
   hypervisor: string
   hypervisorFound: boolean
+  qemuInstalled: boolean
+  whpxEnabled: boolean
   executionMode: string
   imageDir: string
   logFile: string
@@ -737,6 +740,12 @@ function DiagnosticsSection({
           label="Hypervisor Status"
           value={diagnostics?.hypervisorFound ? 'Found' : 'Not found'}
         />
+        {isWindows && (
+          <>
+            <InfoRow label="QEMU" value={diagnostics?.qemuInstalled ? 'Installed' : 'Not installed'} />
+            <InfoRow label="WHPX" value={diagnostics?.whpxEnabled ? 'Enabled' : 'Not enabled'} />
+          </>
+        )}
         <InfoRow
           label="Execution Mode"
           value={diagnostics?.executionMode ?? (vmStatus?.available ? 'VM Isolation' : 'Host Execution (fallback)')}
@@ -748,15 +757,19 @@ function DiagnosticsSection({
           <InfoRow label="Log File" value={diagnostics.logFile} mono />
         )}
 
-        {!vmStatus?.available && (
+        {!vmStatus?.available && isWindows && (
+          <View className="mt-2">
+            <VMSetupProgress compact />
+          </View>
+        )}
+
+        {!vmStatus?.available && !isWindows && (
           <View className="flex-row items-start gap-2 bg-muted/50 rounded-lg p-3 mt-1">
             <Info size={14} className="text-muted-foreground mt-0.5" />
             <Text className="text-xs text-muted-foreground flex-1">
-              {isWindows
-                ? 'VM isolation requires QEMU installed (winget install qemu) and VM images downloaded. Ensure Windows Hypervisor Platform (WHPX) is enabled in Windows Features.'
-                : isMac
-                  ? 'VM isolation requires macOS 13+ with Apple Silicon or Intel with Hypervisor.framework entitlements.'
-                  : 'VM isolation is not supported on this platform.'}
+              {isMac
+                ? 'VM isolation requires macOS 13+ with Apple Silicon or Intel with Hypervisor.framework entitlements.'
+                : 'VM isolation is not supported on this platform.'}
             </Text>
           </View>
         )}

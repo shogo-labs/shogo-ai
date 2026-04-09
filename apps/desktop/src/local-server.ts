@@ -296,10 +296,10 @@ export async function startLocalServer(): Promise<void> {
     ...(IS_DEV ? {} : {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
     }),
+    SHOGO_DATA_DIR: getDataDir(),
+    SHOGO_VM_IMAGE_DIR: getVMImageDir(),
     ...(vmIsolationAvailable ? {
       SHOGO_VM_ISOLATION: 'true',
-      SHOGO_DATA_DIR: getDataDir(),
-      SHOGO_VM_IMAGE_DIR: getVMImageDir(),
       SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
   }
