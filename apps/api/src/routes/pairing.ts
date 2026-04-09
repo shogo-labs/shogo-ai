@@ -125,6 +125,25 @@ export function pairingRoutes() {
       data: { usedAt: new Date(), apiKeyId: apiKey.id },
     })
 
+    // In local mode, auto-store the API key so the desktop can use it for cloud tunneling
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      try {
+        const db = prisma as any
+        await db.localConfig.upsert({
+          where: { key: 'SHOGO_API_KEY' },
+          update: { value: rawKey },
+          create: { key: 'SHOGO_API_KEY', value: rawKey },
+        })
+        process.env.SHOGO_API_KEY = rawKey
+        if (process.env.SHOGO_CLOUD_URL) {
+          import('../lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
+            stopInstanceTunnel()
+            startInstanceTunnel()
+          }).catch(() => {})
+        }
+      } catch {}
+    }
+
     return c.json({
       apiKey: rawKey,
       apiKeyId: apiKey.id,

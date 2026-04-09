@@ -9,7 +9,7 @@
  * - Account: Profile, email, preferences
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -43,6 +43,10 @@ import {
   MessageSquare,
   Zap,
   CreditCard,
+  Cloud,
+  Link2,
+  Copy,
+  Check,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -282,6 +286,345 @@ function SettingsSidebar({
 }
 
 // ============================================================================
+// REMOTE ACCESS SECTION (local mode only)
+// ============================================================================
+
+function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
+  const [status, setStatus] = useState<{
+    connected: boolean
+    keyMask?: string
+    cloudUrl?: string
+    workspace?: { name: string } | null
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [apiKey, setApiKey] = useState('')
+  const [cloudUrl, setCloudUrl] = useState('https://studio.shogo.ai')
+  const [connecting, setConnecting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState(false)
+
+  const [pairingCode, setPairingCode] = useState<string | null>(null)
+  const [pairingExpiresAt, setPairingExpiresAt] = useState<Date | null>(null)
+  const [pairingStatus, setPairingStatus] = useState<
+    'idle' | 'generating' | 'pending' | 'completed' | 'expired' | 'error'
+  >('idle')
+  const [pairingError, setPairingError] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
+      const data = await res.json()
+      setStatus(data)
+      if (data.cloudUrl) setCloudUrl(data.cloudUrl)
+    } catch {
+      setStatus({ connected: false })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchStatus()
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [fetchStatus])
+
+  const handleConnect = async () => {
+    if (!apiKey.trim()) return
+    setConnecting(true)
+    setConnectError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: apiKey.trim(), cloudUrl: cloudUrl.trim() }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        setConnectError(data.error || 'Failed to connect')
+        return
+      }
+      setApiKey('')
+      await fetchStatus()
+    } catch (err: any) {
+      setConnectError(err.message || 'Network error')
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const handleDisconnect = async () => {
+    setDisconnecting(true)
+    try {
+      await fetch(`${API_URL}/api/local/shogo-key`, { method: 'DELETE', credentials: 'include' })
+      await fetchStatus()
+    } catch {}
+    setDisconnecting(false)
+  }
+
+  const handleGenerateCode = async () => {
+    if (!workspaceId) return
+    setPairingStatus('generating')
+    setPairingError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/pairing/initiate`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setPairingError(data.error?.message || 'Failed to generate code')
+        setPairingStatus('error')
+        return
+      }
+      setPairingCode(data.code)
+      setPairingExpiresAt(new Date(data.expiresAt))
+      setPairingStatus('pending')
+
+      if (pollRef.current) clearInterval(pollRef.current)
+      pollRef.current = setInterval(async () => {
+        try {
+          const statusRes = await fetch(
+            `${API_URL}/api/pairing/${data.code}/status`,
+            { credentials: 'include' },
+          )
+          const statusData = await statusRes.json()
+          if (statusData.status === 'completed') {
+            setPairingStatus('completed')
+            if (pollRef.current) clearInterval(pollRef.current)
+            await fetchStatus()
+          } else if (statusData.status === 'expired') {
+            setPairingStatus('expired')
+            if (pollRef.current) clearInterval(pollRef.current)
+          }
+        } catch {}
+      }, 3000)
+    } catch (err: any) {
+      setPairingError(err.message || 'Network error')
+      setPairingStatus('error')
+    }
+  }
+
+  const handleCopyCode = () => {
+    if (!pairingCode) return
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(pairingCode)
+    }
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <Skeleton className="h-6 w-40 mb-2" />
+          <Skeleton className="h-4 w-60" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <View className="px-6 py-5">
+          <View className="flex-row items-center gap-2 mb-1">
+            <Cloud size={18} className="text-primary" />
+            <Text className="text-base font-semibold text-foreground">
+              Remote Access
+            </Text>
+          </View>
+          <Text className="text-sm text-muted-foreground">
+            Connect to Shogo Cloud to control this desktop from your phone or another computer.
+          </Text>
+        </View>
+
+        <Separator />
+
+        {status?.connected ? (
+          <View className="px-6 py-5 gap-4">
+            <View className="flex-row items-center gap-2">
+              <View className="h-2.5 w-2.5 rounded-full bg-green-500" />
+              <Text className="text-sm font-medium text-foreground">Connected to Shogo Cloud</Text>
+            </View>
+
+            <View className="gap-2.5">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">API Key</Text>
+                <Text className="text-sm font-mono text-foreground">{status.keyMask}</Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">Cloud URL</Text>
+                <Text className="text-sm text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
+              </View>
+              {status.workspace?.name && (
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm text-muted-foreground">Workspace</Text>
+                  <Text className="text-sm text-foreground">{status.workspace.name}</Text>
+                </View>
+              )}
+            </View>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleDisconnect}
+              disabled={disconnecting}
+              className="self-start"
+            >
+              <Text className="text-sm font-medium text-foreground">
+                {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              </Text>
+            </Button>
+          </View>
+        ) : (
+          <View className="px-6 py-5 gap-5">
+            <View className="gap-3">
+              <Text className="text-sm font-medium text-foreground">
+                Connect with API Key
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                Create an API key from your Shogo Cloud workspace, then paste it here.
+              </Text>
+              <View className="gap-2">
+                <View>
+                  <Text className="text-xs text-muted-foreground mb-1">Cloud URL</Text>
+                  <Input
+                    value={cloudUrl}
+                    onChangeText={setCloudUrl}
+                    placeholder="https://studio.shogo.ai"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+                <View>
+                  <Text className="text-xs text-muted-foreground mb-1">API Key</Text>
+                  <Input
+                    value={apiKey}
+                    onChangeText={setApiKey}
+                    placeholder="shogo_sk_..."
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry
+                  />
+                </View>
+              </View>
+
+              {connectError && (
+                <Text className="text-xs text-destructive">{connectError}</Text>
+              )}
+
+              <Button
+                onPress={handleConnect}
+                disabled={connecting || !apiKey.trim()}
+                size="sm"
+                className="self-start"
+              >
+                <Text className={cn('text-sm font-medium', apiKey.trim() && !connecting ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                  {connecting ? 'Connecting...' : 'Connect'}
+                </Text>
+              </Button>
+            </View>
+
+            <View className="flex-row items-center gap-3">
+              <View className="flex-1 h-px bg-border" />
+              <Text className="text-xs text-muted-foreground">or</Text>
+              <View className="flex-1 h-px bg-border" />
+            </View>
+
+            <View className="gap-3">
+              <Text className="text-sm font-medium text-foreground">
+                Generate Pairing Code
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                Generate a 6-digit code, then enter it on your phone's Instance Picker → Pair Device.
+              </Text>
+
+              {(pairingStatus === 'idle' || pairingStatus === 'error' || pairingStatus === 'expired') && (
+                <View className="gap-2">
+                  <Button
+                    variant="outline"
+                    onPress={handleGenerateCode}
+                    disabled={!workspaceId}
+                    size="sm"
+                    className="self-start"
+                  >
+                    <View className="flex-row items-center gap-2">
+                      <Link2 size={14} className="text-foreground" />
+                      <Text className="text-sm font-medium text-foreground">
+                        {pairingStatus === 'expired' ? 'Generate New Code' : 'Generate Code'}
+                      </Text>
+                    </View>
+                  </Button>
+                  {pairingError && (
+                    <Text className="text-xs text-destructive">{pairingError}</Text>
+                  )}
+                  {pairingStatus === 'expired' && (
+                    <Text className="text-xs text-muted-foreground">Previous code expired.</Text>
+                  )}
+                </View>
+              )}
+
+              {pairingStatus === 'generating' && (
+                <View className="flex-row items-center gap-2">
+                  <ActivityIndicator size="small" />
+                  <Text className="text-sm text-muted-foreground">Generating code...</Text>
+                </View>
+              )}
+
+              {pairingStatus === 'pending' && (
+                <View className="gap-3">
+                  <View className="bg-muted rounded-xl p-5 items-center gap-2">
+                    <Text className="text-xs text-muted-foreground uppercase tracking-wider">
+                      Your pairing code
+                    </Text>
+                    <Text
+                      className="text-3xl font-bold text-foreground"
+                      style={{ fontVariant: ['tabular-nums'], letterSpacing: 8 }}
+                    >
+                      {pairingCode}
+                    </Text>
+                    <Pressable
+                      onPress={handleCopyCode}
+                      className="flex-row items-center gap-1.5 mt-1 px-2 py-1 rounded active:bg-accent/50"
+                    >
+                      <Copy size={12} className="text-muted-foreground" />
+                      <Text className="text-xs text-muted-foreground">Copy code</Text>
+                    </Pressable>
+                  </View>
+                  <View className="flex-row items-center gap-2">
+                    <ActivityIndicator size="small" />
+                    <Text className="text-xs text-muted-foreground">
+                      Waiting for your phone to complete pairing...
+                    </Text>
+                  </View>
+                  {pairingExpiresAt && (
+                    <Text className="text-[11px] text-muted-foreground">
+                      Code expires at {pairingExpiresAt.toLocaleTimeString()}.
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              {pairingStatus === 'completed' && (
+                <View className="flex-row items-center gap-2 p-3 bg-green-500/10 rounded-lg">
+                  <Check size={16} color="#16a34a" />
+                  <Text className="text-sm font-medium" style={{ color: '#16a34a' }}>
+                    Pairing complete! API key has been stored.
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ============================================================================
 // WORKSPACE SETTINGS TAB
 // ============================================================================
 
@@ -474,6 +817,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
           )}
         </CardContent>
       </Card>
+
+      {localMode && <RemoteAccessSection workspaceId={currentWorkspace?.id} />}
 
       {!localMode && (
         <>
