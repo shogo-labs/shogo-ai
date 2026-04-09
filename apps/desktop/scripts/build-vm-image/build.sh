@@ -219,32 +219,40 @@ EXTRACTED=false
 # Method 1: qemu-nbd (most reliable in CI — no supermin/kernel dependency)
 if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
   echo "Trying qemu-nbd for extraction..."
-  if sudo modprobe nbd max_part=8 2>/dev/null; then
+  # Run in a subshell so failures don't kill the script under set -e
+  if (
+    set +e
+    sudo modprobe nbd max_part=8 2>/dev/null || exit 1
     MOUNT_DIR="${WORK_DIR}/mnt"
     mkdir -p "$MOUNT_DIR"
 
-    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2"
+    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2" || exit 1
     sleep 2
     sudo partprobe /dev/nbd0 2>/dev/null || true
 
-    if sudo mount /dev/nbd0p1 "$MOUNT_DIR" 2>/dev/null || sudo mount /dev/nbd0p2 "$MOUNT_DIR" 2>/dev/null; then
+    MOUNTED=false
+    for part in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p15; do
+      if sudo mount "$part" "$MOUNT_DIR" 2>/dev/null; then MOUNTED=true; break; fi
+    done
+
+    if [ "$MOUNTED" = true ]; then
       VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
       INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
-
       if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
         echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
         sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
         sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
         sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
-        EXTRACTED=true
+        echo "EXTRACTED_OK"
       fi
-
-      sudo umount "$MOUNT_DIR"
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
     fi
 
-    sudo qemu-nbd --disconnect /dev/nbd0
+    sudo qemu-nbd --disconnect /dev/nbd0 2>/dev/null || true
+  ) 2>&1 | tee /tmp/nbd-extract.log && grep -q "EXTRACTED_OK" /tmp/nbd-extract.log; then
+    EXTRACTED=true
   else
-    echo "nbd kernel module not available, skipping qemu-nbd"
+    echo "qemu-nbd extraction failed, will try fallback"
   fi
 fi
 
