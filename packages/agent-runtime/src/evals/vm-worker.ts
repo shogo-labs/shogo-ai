@@ -133,14 +133,10 @@ function ensureVMBundle(): { dir: string; bundleFiles: Record<string, Buffer> } 
 // ---------------------------------------------------------------------------
 
 const _vmHandles = new Map<number, { handle: VMHandle; manager: VMManagerLike; overlayPath: string }>()
-let _vmManager: VMManagerLike | null = null
 
-function getVMManager(): VMManagerLike {
-  if (_vmManager) return _vmManager
-
+function createVMManager(): VMManagerLike {
   const vmModule = require(resolve(REPO_ROOT, 'apps/desktop/src/vm/index'))
-  _vmManager = vmModule.createVMManager()
-  return _vmManager!
+  return vmModule.createVMManager()
 }
 
 function getVMImageDir(): string {
@@ -164,7 +160,7 @@ export async function startVMWorker(
 
   mkdirSync(dir, { recursive: true })
 
-  const manager = getVMManager()
+  const manager = createVMManager()
   const vmImageDir = config.vmImageDir || getVMImageDir()
   const overlayDir = resolve(tmpdir(), 'shogo-vm-eval-overlays')
   mkdirSync(overlayDir, { recursive: true })

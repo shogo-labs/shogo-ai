@@ -365,7 +365,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(52)
+      expect(createTools(createCtx())).toHaveLength(53)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
@@ -461,9 +461,9 @@ describe('gateway-tools', () => {
       expect(tool.description).toContain('tool_search')
     })
 
-    test('tool_install has Composio-only description without env/url/headers params', () => {
+    test('tool_install has managed-integration description without env/url/headers params', () => {
       const tool = getTool(createCtx(), 'tool_install')
-      expect(tool.description).toContain('mcp_install')
+      expect(tool.description).toContain('managed OAuth')
       const schema = JSON.stringify(tool.parameters)
       expect(schema).not.toContain('"url"')
       expect(schema).not.toContain('"headers"')
@@ -471,10 +471,9 @@ describe('gateway-tools', () => {
       expect(schema).toContain('"name"')
     })
 
-    test('mcp_install has MCP-only description with env/url/headers params', () => {
+    test('mcp_install has MCP description with env/url/headers params', () => {
       const tool = getTool(createCtx(), 'mcp_install')
       expect(tool.description).toContain('MCP')
-      expect(tool.description).toContain('tool_install')
       const schema = JSON.stringify(tool.parameters)
       expect(schema).toContain('"url"')
       expect(schema).toContain('"headers"')

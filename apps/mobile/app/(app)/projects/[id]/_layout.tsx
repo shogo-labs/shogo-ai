@@ -646,6 +646,22 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
+
+  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
+
+  useEffect(() => {
+    if (!projectId) return
+    AsyncStorage.getItem(`shogo:lastPreviewTab:${projectId}`).then((saved) => {
+      if (saved) setPreviewTab(saved)
+    }).catch(() => {})
+  }, [projectId])
+
+  useEffect(() => {
+    if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
+      AsyncStorage.setItem(`shogo:lastPreviewTab:${projectId}`, previewTab).catch(() => {})
+    }
+  }, [projectId, previewTab, PERSISTABLE_PREVIEW_TABS])
+
   const [chatMessages, setChatMessages] = useState<any[]>([])
   const [streamingTabIds, setStreamingTabIds] = useState<Set<string>>(new Set())
   const handleTabStreamingChange = useCallback((tabId: string, isStreaming: boolean) => {

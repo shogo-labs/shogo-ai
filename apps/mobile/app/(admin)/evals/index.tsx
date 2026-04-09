@@ -358,11 +358,9 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
   const [track, setTrack] = useState<string>('agentic')
   const [model, setModel] = useState<string>('sonnet')
   const [workers, setWorkers] = useState<string>('2')
-  const [localMode, setLocalMode] = useState(false)
+  const [mode, setMode] = useState<'docker' | 'local' | 'vm'>('vm')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const workerOptions = ['1', '2', '3', '4'] as const
 
   const handleSubmit = async () => {
     setSubmitting(true)
@@ -372,7 +370,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track, model, workers: Number(workers), local: localMode }),
+        body: JSON.stringify({ track, model, workers: Number(workers), local: mode === 'local', vm: mode === 'vm' }),
       })
       const json = await res.json()
       if (!json.ok) {
@@ -417,22 +415,39 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
             </View>
             <View className="gap-1 min-w-[90px]">
               <Text className="text-xs font-medium text-muted-foreground">Workers</Text>
-              <Select value={workers} options={workerOptions} onChange={setWorkers} />
+              <TextInput
+                value={workers}
+                onChangeText={(t) => setWorkers(t.replace(/[^0-9]/g, ''))}
+                keyboardType="number-pad"
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                placeholder="2"
+                placeholderTextColor="#999"
+              />
             </View>
           </View>
 
-          <Pressable
-            onPress={() => setLocalMode(!localMode)}
-            className="flex-row items-center gap-2"
-          >
-            <View className={cn(
-              'h-5 w-5 rounded border items-center justify-center',
-              localMode ? 'bg-primary border-primary' : 'border-border'
-            )}>
-              {localMode && <CheckCircle2 size={12} className="text-primary-foreground" />}
+          <View className="gap-1">
+            <Text className="text-xs font-medium text-muted-foreground">Mode</Text>
+            <View className="flex-row gap-2">
+              {(['docker', 'local', 'vm'] as const).map((m) => (
+                <Pressable
+                  key={m}
+                  onPress={() => setMode(m)}
+                  className={cn(
+                    'flex-1 py-2 rounded-lg border items-center',
+                    mode === m ? 'bg-primary border-primary' : 'border-border bg-background'
+                  )}
+                >
+                  <Text className={cn(
+                    'text-xs font-semibold',
+                    mode === m ? 'text-primary-foreground' : 'text-muted-foreground'
+                  )}>
+                    {m === 'docker' ? 'Docker' : m === 'local' ? 'Local' : 'VM'}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
-            <Text className="text-sm text-foreground">Local mode (no Docker)</Text>
-          </Pressable>
+          </View>
 
           {error && (
             <Text className="text-xs text-destructive">{error}</Text>
