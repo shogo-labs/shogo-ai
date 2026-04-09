@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Shogo Technologies, Inc.
 #
-# Build a Ubuntu 22.04 VM image for Shogo desktop VM isolation.
+# Build a Ubuntu 24.04 VM image for Shogo desktop VM isolation.
 #
 # Usage:
 #   ./build.sh [aarch64|x86_64]
@@ -20,7 +20,7 @@ ARCH="${1:-$(uname -m)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
-CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/jammy/current"
+CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
 
 QEMU_ACCEL=""
 if [ -w /dev/kvm ]; then
@@ -31,14 +31,14 @@ fi
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
-    CLOUD_IMAGE="jammy-server-cloudimg-arm64.img"
+    CLOUD_IMAGE="noble-server-cloudimg-arm64.img"
     QEMU_SYSTEM="qemu-system-aarch64"
     QEMU_MACHINE="-machine virt -cpu cortex-a72"
     QEMU_ACCEL=""  # KVM only works for native arch
     ;;
   x86_64|amd64)
     ARCH="x86_64"
-    CLOUD_IMAGE="jammy-server-cloudimg-amd64.img"
+    CLOUD_IMAGE="noble-server-cloudimg-amd64.img"
     QEMU_SYSTEM="qemu-system-x86_64"
     QEMU_MACHINE="-machine q35 -cpu max"
     ;;
@@ -54,7 +54,7 @@ echo "=== Building Shogo VM image for ${ARCH} ==="
 
 # Step 1: Download cloud image
 if [ ! -f "${WORK_DIR}/${CLOUD_IMAGE}" ]; then
-  echo "Downloading Ubuntu 22.04 cloud image..."
+  echo "Downloading Ubuntu 24.04 cloud image..."
   wget -q -O "${WORK_DIR}/${CLOUD_IMAGE}" "${CLOUD_IMAGE_BASE}/${CLOUD_IMAGE}"
 fi
 
@@ -86,6 +86,7 @@ packages:
   - imagemagick
   - bubblewrap
   - unzip
+  - linux-image-generic-hwe-24.04
 
 runcmd:
   # Install Bun

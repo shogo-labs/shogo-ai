@@ -289,10 +289,18 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('')
   }
 
+  lines.push('bootcmd:')
+  lines.push('  - systemctl mask multipathd multipathd.socket 2>/dev/null || true')
+  lines.push('  - systemctl stop multipathd 2>/dev/null || true')
+  lines.push('  - systemctl mask boot-efi.mount 2>/dev/null || true')
+  lines.push('  - depmod -a 2>/dev/null || true')
+  lines.push('  - modprobe virtiofs 2>/dev/null || true')
+  lines.push('')
+
   lines.push('runcmd:')
 
   if (config.useBundleMount) {
-    // macOS VirtioFS bundle-mount provisioning (unchanged)
+    // macOS VirtioFS bundle-mount provisioning
     lines.push('  - mkdir -p /workspace /mnt/bundle')
     lines.push('  - mount -t virtiofs workspace /workspace 2>/dev/null || true')
     lines.push('  - mount -t virtiofs bundle /mnt/bundle 2>/dev/null || true')
@@ -301,7 +309,8 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('  - growpart /dev/vda 1 2>/dev/null || true')
     lines.push('  - resize2fs /dev/vda1 2>/dev/null || true')
     lines.push('  - mkdir -p /app/templates /packages/sdk/bin')
-    lines.push('  - ln -sf /mnt/bundle/templates/runtime-template /app/templates/runtime-template')
+    lines.push('  - mkdir -p /app/templates/runtime-template')
+    lines.push('  - mount --bind /mnt/bundle/templates/runtime-template /app/templates/runtime-template')
     lines.push('  - |')
     lines.push('    if [ ! -d /app/templates/skill-server/node_modules ]; then')
     lines.push('      cp -r /mnt/bundle/templates/skill-server /app/templates/skill-server')
