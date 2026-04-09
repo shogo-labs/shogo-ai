@@ -770,6 +770,157 @@ export function instanceRoutes() {
     })
   })
 
+  // ─── Transparent proxy ──────────────────────────────────────────────────
+  // ALL /instances/:id/p/* — Transparent HTTP proxy
+  //
+  // Forwards any HTTP request through the tunnel to the remote agent as-is.
+  // The client uses agentUrl = "${API_URL}/api/instances/${id}/p" and all
+  // existing fetch calls (GET /agent/status, POST /agent/chat, etc.) work
+  // without a special fetch wrapper or envelope format.
+  //
+  // Streaming is auto-detected for POST requests to known streaming paths
+  // (e.g. /agent/chat, /agent/logs/stream).
+
+  const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream', '/agent/chat/']
+  const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
+
+  router.all('/instances/:id/p/*', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const instanceId = c.req.param('id')
+    const instance = await prisma.instance.findUnique({ where: { id: instanceId } })
+    if (!instance) {
+      return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { userId: auth.userId, workspaceId: instance.workspaceId },
+    })
+    if (!member) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    if (!tunnels.has(instanceId)) {
+      return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
+    }
+
+    markControllerActive(instanceId, auth.userId)
+
+    const wildcardParam = c.req.param('*')
+    const incomingUrl = new URL(c.req.url)
+    const qs = incomingUrl.search
+    const agentPath = '/' + (wildcardParam || '') + qs
+    const method = c.req.method
+    const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH'
+    const body = hasBody ? await c.req.text() : undefined
+    const requestId = generateRequestId()
+
+    const forwardHeaders: Record<string, string> = {}
+    const contentType = c.req.header('content-type')
+    if (contentType) forwardHeaders['content-type'] = contentType
+    const accept = c.req.header('accept')
+    if (accept) forwardHeaders['accept'] = accept
+
+    const pathWithoutQuery = agentPath.split('?')[0]
+    const isStreaming =
+      (method === 'POST' && STREAMING_POST_PATTERNS.some((p) => pathWithoutQuery === p || pathWithoutQuery.startsWith(p + '/'))) ||
+      (method === 'GET' && STREAMING_GET_PATTERNS.some((p) => pathWithoutQuery === p || pathWithoutQuery.startsWith(p + '/')))
+
+    if (isStreaming) {
+      void logRemoteAction({
+        instanceId,
+        userId: auth.userId,
+        action: classifyAction(method, agentPath),
+        path: agentPath,
+        method,
+        summary: 'streaming',
+      })
+
+      const stream = new ReadableStream({
+        start(controller) {
+          const { cancel } = sendTunnelStreamRequest(
+            instanceId,
+            {
+              type: 'request',
+              requestId,
+              method,
+              path: agentPath,
+              headers: forwardHeaders,
+              body,
+            },
+            (chunk) => {
+              if (chunk.type === 'stream-chunk' && chunk.data) {
+                controller.enqueue(new TextEncoder().encode(chunk.data))
+              } else if (chunk.type === 'stream-end') {
+                controller.close()
+              } else if (chunk.type === 'stream-error') {
+                controller.error(new Error(chunk.error || 'Stream error'))
+              }
+            },
+          )
+          c.req.raw.signal?.addEventListener('abort', () => cancel())
+        },
+      })
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        },
+      })
+    }
+
+    // Non-streaming: forward and return the response directly
+    try {
+      const resp = await sendTunnelRequest(instanceId, {
+        type: 'request',
+        requestId,
+        method,
+        path: agentPath,
+        headers: forwardHeaders,
+        body,
+      })
+
+      logRemoteAction({
+        instanceId,
+        userId: auth.userId,
+        action: classifyAction(method, agentPath),
+        path: agentPath,
+        method,
+        result: `HTTP ${resp.status}`,
+      })
+
+      const responseHeaders: Record<string, string> = {}
+      if (resp.headers) {
+        for (const [k, v] of Object.entries(resp.headers)) {
+          if (v) responseHeaders[k.toLowerCase()] = v
+        }
+      }
+      if (!responseHeaders['content-type']) {
+        responseHeaders['content-type'] = 'application/json'
+      }
+
+      return new Response(resp.body || '', {
+        status: resp.status,
+        headers: responseHeaders,
+      })
+    } catch (err: any) {
+      logRemoteAction({
+        instanceId,
+        userId: auth.userId,
+        action: classifyAction(method, agentPath),
+        path: agentPath,
+        method,
+        result: `error: ${err.message}`,
+      })
+      return c.json({ error: { code: 'proxy_error', message: err.message } }, 502)
+    }
+  })
+
   // GET /instances/:id/echo — End-to-end tunnel integration test endpoint
   router.all('/instances/:id/echo', async (c) => {
     const auth = c.get('auth') as any

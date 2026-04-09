@@ -62,6 +62,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  Laptop,
   Settings,
   Zap,
   Check,
@@ -72,6 +73,8 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
+import { InstancePicker } from './InstancePicker'
+import { useActiveInstance } from '../../contexts/active-instance'
 import { ShogoLogoMark } from '../branding/ShogoLogoMark'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -1084,6 +1087,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
+  const { instance: activeRemoteInstance } = useActiveInstance()
 
   let allWorkspaces: any[]
   try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
@@ -1209,6 +1213,18 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         )}
       </View>
 
+      {/* ── Remote instance indicator ── */}
+      {activeRemoteInstance && !collapsed && (
+        <View className="px-3 py-1.5 bg-primary/10 border-b border-primary/20">
+          <View className="flex-row items-center gap-2">
+            <Laptop size={12} className="text-primary" />
+            <Text className="text-[11px] text-primary font-medium flex-1" numberOfLines={1}>
+              Controlling: {activeRemoteInstance.name}
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* ── Workspace Switcher ── */}
       <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
         <WorkspaceSwitcher
@@ -1321,13 +1337,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-            <NavItem
-              icon={Monitor}
-              label="Remote Control"
-              href="/(app)/remote-control"
-              active={isRouteActive(pathname, '/(app)/remote-control')}
+            <InstancePicker
+              workspaceId={currentWorkspace?.id}
               collapsed={collapsed}
-              onNavPress={onNavPress}
             />
             {!localMode && (
               <NavItem
