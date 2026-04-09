@@ -218,10 +218,7 @@ export class DarwinVMManager implements VMManager {
 
     fs.mkdirSync(path.dirname(overlayPath), { recursive: true })
 
-    const provisionedImage = path.join(this.vmImageDir, 'rootfs-provisioned.qcow2')
-    const baseImage = path.join(this.vmImageDir, 'rootfs.qcow2')
-    const source = fs.existsSync(provisionedImage) ? provisionedImage : baseImage
-
+    const source = path.join(this.vmImageDir, 'rootfs-provisioned.qcow2')
     if (!fs.existsSync(source)) throw new Error(`Base VM image not found: ${source}`)
 
     const qemuImg = this.findQemuImg()

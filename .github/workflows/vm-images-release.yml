@@ -63,7 +63,7 @@ jobs:
       - name: Create tarball
         run: |
           cd apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}
-          tar czf /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz vmlinuz initrd.img rootfs.qcow2 rootfs-provisioned.qcow2 version.txt
+          tar czf /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz vmlinuz initrd.img rootfs-provisioned.qcow2 version.txt
           ls -lh /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz
 
       - name: Upload tarball artifact

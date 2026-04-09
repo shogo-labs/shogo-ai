@@ -33,7 +33,7 @@ export class VMImageManager {
     return (
       fs.existsSync(path.join(this.imageDir, 'vmlinuz')) &&
       fs.existsSync(path.join(this.imageDir, 'initrd.img')) &&
-      fs.existsSync(path.join(this.imageDir, 'rootfs.qcow2'))
+      fs.existsSync(path.join(this.imageDir, 'rootfs-provisioned.qcow2'))
     )
   }
 
@@ -52,18 +52,13 @@ export class VMImageManager {
     return `https://github.com/${GITHUB_REPO}/releases/download/${VM_IMAGE_TAG}/version.txt`
   }
 
-  isProvisionedImagePresent(): boolean {
-    return fs.existsSync(path.join(this.imageDir, 'rootfs-provisioned.qcow2'))
-  }
-
   /**
    * Download VM image from GitHub Releases.
-   * The archive should be a .tar.gz containing:
-   *   vmlinuz, initrd.img, rootfs.qcow2, rootfs-provisioned.qcow2, version.txt
+   * The archive is a .tar.gz containing:
+   *   vmlinuz, initrd.img, rootfs-provisioned.qcow2, version.txt
    *
-   * rootfs-provisioned.qcow2 has bun, templates, and deps pre-installed for
-   * fast boot (~20s). Without it, the first boot falls back to rootfs.qcow2
-   * and downloads bun via cloud-init (~40s).
+   * rootfs-provisioned.qcow2 has bun, templates, and deps pre-installed
+   * for fast boot (~20s).
    */
   async downloadImage(onProgress?: ProgressCallback): Promise<void> {
     fs.mkdirSync(this.imageDir, { recursive: true })
@@ -90,7 +85,7 @@ export class VMImageManager {
 
     if (!this.isImagePresent()) {
       this.cleanupAll()
-      throw new Error('Downloaded archive did not contain expected VM image files (vmlinuz, initrd.img, rootfs.qcow2)')
+      throw new Error('Downloaded archive did not contain expected VM image files (vmlinuz, initrd.img, rootfs-provisioned.qcow2)')
     }
   }
 
@@ -125,7 +120,7 @@ export class VMImageManager {
   }
 
   private cleanupAll(): void {
-    for (const file of ['vmlinuz', 'initrd.img', 'rootfs.qcow2', 'version.txt', 'vm-image.tar.gz']) {
+    for (const file of ['vmlinuz', 'initrd.img', 'rootfs-provisioned.qcow2', 'rootfs.qcow2', 'version.txt', 'vm-image.tar.gz']) {
       try { fs.unlinkSync(path.join(this.imageDir, file)) } catch { /* ignore */ }
     }
   }
