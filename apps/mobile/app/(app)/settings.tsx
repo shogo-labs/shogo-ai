@@ -58,10 +58,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import {
-  getTotalCreditsForPlan,
-  formatCredits,
-} from '../../lib/billing-config'
+import { getCreditsCapacityForDisplay, formatCredits } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import {
@@ -2125,7 +2122,10 @@ function BillingTab() {
           ? 'Basic'
           : 'Free'
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const totalCredits = getTotalCreditsForPlan(hasActiveSubscription ? subscription?.planId : undefined)
+  const totalCredits = getCreditsCapacityForDisplay(
+    hasActiveSubscription ? subscription?.planId : undefined,
+    effectiveBalance?.total,
+  )
   const creditsUsed = totalCredits - (effectiveBalance?.total ?? 0)
   const usagePct = totalCredits > 0 ? Math.min(100, Math.round((creditsUsed / totalCredits) * 100)) : 0
 
