@@ -714,12 +714,23 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
     }
 
+    markControllerActive(instance.id, auth.userId, auth.sessionId || 'stream')
+
     const body = await c.req.json<{
       method: string
       path: string
       headers?: Record<string, string>
       body?: string
     }>()
+
+    void logRemoteAction({
+      instanceId: instance.id,
+      userId: auth.userId,
+      action: classifyAction(body.method || 'POST', body.path),
+      path: body.path,
+      method: body.method || 'POST',
+      summary: 'streaming',
+    })
 
     const requestId = generateRequestId()
 

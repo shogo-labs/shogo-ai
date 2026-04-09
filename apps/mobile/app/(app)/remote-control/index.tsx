@@ -64,11 +64,12 @@ function getOsIcon(os: string | null) {
   return Laptop
 }
 
-function useAuthHeaders() {
+function useAuthHeaders(): Record<string, string> {
   const { session } = useAuth()
-  return Platform.OS !== 'web' && session?.token
-    ? { Cookie: `better-auth.session_token=${session.token}` }
-    : {}
+  if (Platform.OS !== 'web' && session?.token) {
+    return { Cookie: `better-auth.session_token=${session.token}` }
+  }
+  return {}
 }
 
 export default function RemoteControlScreen() {
@@ -85,6 +86,12 @@ export default function RemoteControlScreen() {
     result?: string
     createdAt: string
   }>>([])
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, {
+    status?: string
+    model?: string
+    currentTask?: string
+    lastTool?: string
+  }>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -108,6 +115,7 @@ export default function RemoteControlScreen() {
       setInstances(list)
       setError(null)
       fetchAggregateActivity(list)
+      fetchAgentStatuses(list)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -142,6 +150,40 @@ export default function RemoteControlScreen() {
       )
       setRecentActivity(merged.slice(0, 15))
     } catch {}
+  }, [authHeaders])
+
+  const fetchAgentStatuses = useCallback(async (instanceList: Instance[]) => {
+    const onlineIds = instanceList.filter(i => i.status === 'online').map(i => i.id)
+    if (onlineIds.length === 0) { setAgentStatuses({}); return }
+
+    const entries = await Promise.all(
+      onlineIds.slice(0, 10).map(async (id) => {
+        try {
+          const res = await fetch(`${API_URL}/api/instances/${id}/proxy`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { ...authHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ method: 'GET', path: '/agent/status' }),
+          })
+          if (!res.ok) return [id, null] as const
+          const data = await res.json()
+          const body = data.body ? JSON.parse(data.body) : data
+          return [id, {
+            status: body.status,
+            model: body.model,
+            currentTask: body.currentTask,
+            lastTool: body.lastTool,
+          }] as const
+        } catch {
+          return [id, null] as const
+        }
+      })
+    )
+    const map: Record<string, any> = {}
+    for (const [id, status] of entries) {
+      if (status) map[id] = status
+    }
+    setAgentStatuses(map)
   }, [authHeaders])
 
   const signalViewerActive = useCallback(async () => {
@@ -416,6 +458,7 @@ export default function RemoteControlScreen() {
               key={instance.id}
               instance={instance}
               connecting={connectingId === instance.id}
+              agentStatus={agentStatuses[instance.id]}
               onPress={() => router.push(`/(app)/remote-control/${instance.id}` as any)}
               onConnect={() => {}}
               onDelete={() => handleDelete(instance.id, instance.name)}
@@ -482,12 +525,14 @@ export default function RemoteControlScreen() {
 function InstanceCard({
   instance,
   connecting,
+  agentStatus,
   onPress,
   onConnect,
   onDelete,
 }: {
   instance: Instance
   connecting: boolean
+  agentStatus?: { status?: string; model?: string; currentTask?: string; lastTool?: string } | null
   onPress: () => void
   onConnect: () => void
   onDelete: () => void
@@ -544,11 +589,22 @@ function InstanceCard({
             {connecting
               ? 'Connecting...'
               : isOnline
-                ? 'Session active'
+                ? agentStatus?.currentTask
+                  ? `Working: ${agentStatus.currentTask}`
+                  : agentStatus?.status === 'running' || agentStatus?.status === 'active'
+                    ? `Running${agentStatus.model ? ` · ${agentStatus.model}` : ''}`
+                    : agentStatus?.status === 'idle'
+                      ? `Idle${agentStatus.model ? ` · ${agentStatus.model}` : ''}`
+                      : 'Online'
                 : isHeartbeat
                   ? `Polling · Last seen ${formatRelativeTime(instance.lastSeenAt)}`
                   : `Last seen ${formatRelativeTime(instance.lastSeenAt)}`}
           </Text>
+          {isOnline && agentStatus?.lastTool && (
+            <Text className="text-[10px] text-muted-foreground/50 font-mono mt-0.5" numberOfLines={1}>
+              last tool: {agentStatus.lastTool}
+            </Text>
+          )}
         </View>
 
         <View className="flex-row items-center gap-1">

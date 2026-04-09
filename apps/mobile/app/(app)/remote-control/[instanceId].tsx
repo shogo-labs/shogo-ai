@@ -47,6 +47,8 @@ import {
   ClipboardList,
   Globe,
   Radio,
+  Terminal,
+  Pause,
 } from 'lucide-react-native'
 
 interface InstanceDetail {
@@ -69,7 +71,7 @@ interface ProxyResponse {
   error?: { code: string; message: string }
 }
 
-type Tab = 'status' | 'chat' | 'files' | 'controls' | 'audit'
+type Tab = 'status' | 'chat' | 'logs' | 'files' | 'controls' | 'audit'
 
 const QUALITY_COLORS: Record<ConnectionQuality, string> = {
   good: 'text-green-500',
@@ -345,7 +347,7 @@ export default function InstanceDetailScreen() {
           {([
             { key: 'status' as Tab, label: 'Status', icon: Activity },
             { key: 'chat' as Tab, label: 'Chat', icon: MessageSquare },
-            { key: 'files' as Tab, label: 'Files', icon: FolderTree },
+            { key: 'logs' as Tab, label: 'Logs', icon: Terminal },
             { key: 'controls' as Tab, label: 'Controls', icon: Settings },
             { key: 'audit' as Tab, label: 'Audit', icon: ClipboardList },
           ]).map(({ key, label, icon: Icon }) => (
@@ -425,7 +427,7 @@ export default function InstanceDetailScreen() {
         <>
           {activeTab === 'status' && <StatusTab instance={instance} proxyRequest={proxyRequest} protocolVersion={protocolVersion} />}
           {activeTab === 'chat' && <ChatTab instanceId={instanceId!} headers={headers} showToast={showToast} />}
-          {activeTab === 'files' && <FilesTab instanceId={instanceId!} proxyRequest={proxyRequest} />}
+          {activeTab === 'logs' && <LogsTab instanceId={instanceId!} headers={headers} showToast={showToast} />}
           {activeTab === 'controls' && <ControlsTab instanceId={instanceId!} proxyRequest={proxyRequest} protocolVersion={protocolVersion} showToast={showToast} />}
           {activeTab === 'audit' && <AuditTab instanceId={instanceId!} headers={headers} />}
         </>
@@ -447,66 +449,105 @@ function StatusTab({
 }) {
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
+  const [lastRefresh, setLastRefresh] = useState<string>('')
 
-  useEffect(() => {
-    (async () => {
-      const resp = await proxyRequest('GET', '/agent/status')
-      if (resp?.body) {
-        try { setAgentStatus(JSON.parse(resp.body)) } catch {}
-      }
-      setLoading(false)
-    })()
+  const fetchAgentStatus = useCallback(async () => {
+    const resp = await proxyRequest('GET', '/agent/status')
+    if (resp?.body) {
+      try { setAgentStatus(JSON.parse(resp.body)) } catch {}
+    }
+    setLoading(false)
+    setLastRefresh(new Date().toLocaleTimeString())
   }, [proxyRequest])
 
+  useEffect(() => {
+    fetchAgentStatus()
+    const interval = setInterval(fetchAgentStatus, 5_000)
+    return () => clearInterval(interval)
+  }, [fetchAgentStatus])
+
   const meta = instance.metadata as any
+  const agent = agentStatus as any
 
   return (
     <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
-      <SectionCard title="Instance Info">
-        <InfoRow label="Hostname" value={instance.hostname} />
-        <InfoRow label="OS" value={`${instance.os || '?'} / ${instance.arch || '?'}`} />
-        <InfoRow label="Uptime" value={meta?.uptime ? `${Math.floor(meta.uptime / 60)}m` : 'Unknown'} />
-        <InfoRow label="API Port" value={String(meta?.apiPort || '?')} />
-        <InfoRow label="Active Projects" value={String(meta?.activeProjects ?? '?')} />
-        <InfoRow label="Protocol Version" value={`v${protocolVersion}`} />
-        {meta?.apiVersion && <InfoRow label="API Version" value={String(meta.apiVersion)} />}
-      </SectionCard>
-
-      {instance.controllers && instance.controllers.length > 0 && (
-        <SectionCard title="Active Controllers">
-          {instance.controllers.map((c, i) => (
-            <InfoRow key={i} label={c.userId.slice(0, 12) + '...'} value="Connected" />
-          ))}
-          {instance.controllers.length > 1 && (
-            <Text className="text-xs text-yellow-500 mt-1">
-              Multiple controllers connected — actions use last-write-wins
-            </Text>
-          )}
-        </SectionCard>
-      )}
-
-      {meta?.projects && Array.isArray(meta.projects) && meta.projects.length > 0 && (
-        <SectionCard title="Projects">
-          {meta.projects.map((p: any, i: number) => (
-            <InfoRow key={i} label={p.projectId?.slice(0, 8) || `Project ${i + 1}`} value={p.status || 'unknown'} />
-          ))}
-        </SectionCard>
-      )}
-
-      <SectionCard title="Agent Runtime">
+      {/* Agent activity — the most important thing */}
+      <SectionCard title="Agent Activity">
         {loading ? (
           <ActivityIndicator size="small" />
-        ) : agentStatus ? (
+        ) : agent ? (
           <>
-            <InfoRow label="Status" value={String((agentStatus as any).status || 'unknown')} />
-            <InfoRow label="Mode" value={String((agentStatus as any).mode || 'unknown')} />
-            {(agentStatus as any).channels && (
-              <InfoRow label="Channels" value={String(Object.keys((agentStatus as any).channels).length)} />
+            <View className="flex-row items-center gap-2 mb-2">
+              <View className={cn(
+                'w-2.5 h-2.5 rounded-full',
+                agent.status === 'running' || agent.status === 'active' ? 'bg-green-500' :
+                agent.status === 'idle' ? 'bg-yellow-500' : 'bg-muted-foreground',
+              )} />
+              <Text className="text-base font-medium text-foreground capitalize">
+                {agent.status || 'Unknown'}
+              </Text>
+              <Text className="text-xs text-muted-foreground ml-auto">{lastRefresh}</Text>
+            </View>
+
+            {agent.mode && <InfoRow label="Mode" value={String(agent.mode)} />}
+            {agent.model && <InfoRow label="Model" value={String(agent.model)} />}
+            {agent.currentTask && (
+              <View className="mt-2 p-2.5 rounded-md bg-primary/5 border border-primary/10">
+                <Text className="text-xs text-muted-foreground mb-0.5">Currently doing</Text>
+                <Text className="text-sm text-foreground">{String(agent.currentTask)}</Text>
+              </View>
+            )}
+            {agent.lastTool && (
+              <View className="mt-1.5">
+                <Text className="text-xs text-muted-foreground">Last tool: <Text className="font-mono text-foreground">{String(agent.lastTool)}</Text></Text>
+              </View>
+            )}
+            {agent.channels && (
+              <InfoRow label="Active Channels" value={String(Object.keys(agent.channels).length)} />
+            )}
+            {agent.tokenUsage && (
+              <InfoRow label="Tokens Used" value={String(agent.tokenUsage)} />
             )}
           </>
         ) : (
-          <Text className="text-sm text-muted-foreground">Could not fetch agent status</Text>
+          <Text className="text-sm text-muted-foreground">Agent not responding — it may be starting up</Text>
         )}
+      </SectionCard>
+
+      {/* Projects with live status */}
+      {meta?.projects && Array.isArray(meta.projects) && meta.projects.length > 0 && (
+        <SectionCard title="Projects">
+          {meta.projects.map((p: any, i: number) => (
+            <View key={i} className="flex-row items-center gap-2">
+              <View className={cn(
+                'w-2 h-2 rounded-full',
+                p.status === 'running' ? 'bg-green-500' :
+                p.status === 'idle' ? 'bg-yellow-500' : 'bg-muted-foreground',
+              )} />
+              <Text className="text-sm text-foreground flex-1">{p.projectId?.slice(0, 12) || `Project ${i + 1}`}</Text>
+              <Text className="text-xs text-muted-foreground capitalize">{p.status || 'unknown'}</Text>
+            </View>
+          ))}
+        </SectionCard>
+      )}
+
+      {instance.controllers && instance.controllers.length > 1 && (
+        <SectionCard title="Other Controllers">
+          {instance.controllers.map((c, i) => (
+            <InfoRow key={i} label={c.userId.slice(0, 12) + '...'} value="Connected" />
+          ))}
+          <Text className="text-xs text-yellow-500 mt-1">
+            Multiple controllers — actions use last-write-wins
+          </Text>
+        </SectionCard>
+      )}
+
+      {/* Instance details — less prominent */}
+      <SectionCard title="Instance">
+        <InfoRow label="Hostname" value={instance.hostname} />
+        <InfoRow label="OS" value={`${instance.os || '?'} / ${instance.arch || '?'}`} />
+        <InfoRow label="Uptime" value={meta?.uptime ? `${Math.floor(meta.uptime / 60)}m` : '?'} />
+        {meta?.apiVersion && <InfoRow label="Version" value={`${meta.apiVersion} (proto v${protocolVersion})`} />}
       </SectionCard>
     </ScrollView>
   )
@@ -633,6 +674,178 @@ function ChatTab({
           <Send size={16} className={input.trim() && !sending ? 'text-primary-foreground' : 'text-muted-foreground'} />
         </Pressable>
       </View>
+    </View>
+  )
+}
+
+// ─── Logs Tab (live streaming) ──────────────────────────────────────────────
+
+function LogsTab({
+  instanceId,
+  headers,
+  showToast,
+}: {
+  instanceId: string
+  headers: Record<string, string>
+  showToast: (msg: string) => void
+}) {
+  const [lines, setLines] = useState<string[]>([])
+  const [streaming, setStreaming] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const scrollRef = useRef<ScrollView>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const pausedRef = useRef(false)
+
+  const MAX_LINES = 500
+
+  const startStream = useCallback(async () => {
+    if (streaming) return
+    setStreaming(true)
+    setPaused(false)
+    pausedRef.current = false
+
+    const abort = new AbortController()
+    abortRef.current = abort
+
+    try {
+      const res = await fetch(`${API_URL}/api/instances/${instanceId}/proxy/stream`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'GET', path: '/agent/logs/stream' }),
+        signal: abort.signal,
+      })
+
+      if (!res.ok || !res.body) {
+        showToast(`Log stream failed: HTTP ${res.status}`)
+        setStreaming(false)
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n')
+        buffer = parts.pop() || ''
+
+        const newLines = parts.filter((l) => l.trim())
+        if (newLines.length > 0 && !pausedRef.current) {
+          setLines((prev) => {
+            const combined = [...prev, ...newLines]
+            return combined.length > MAX_LINES ? combined.slice(-MAX_LINES) : combined
+          })
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        showToast('Log stream disconnected')
+      }
+    } finally {
+      setStreaming(false)
+    }
+  }, [instanceId, headers, streaming, showToast])
+
+  const stopStream = useCallback(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+  }, [])
+
+  const togglePause = useCallback(() => {
+    setPaused((p) => {
+      pausedRef.current = !p
+      return !p
+    })
+  }, [])
+
+  const clearLogs = useCallback(() => {
+    setLines([])
+  }, [])
+
+  useEffect(() => {
+    return () => { abortRef.current?.abort() }
+  }, [])
+
+  useEffect(() => {
+    if (!paused) {
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50)
+    }
+  }, [lines, paused])
+
+  const logLevelColor = (line: string) => {
+    if (/\berror\b/i.test(line)) return 'text-red-400'
+    if (/\bwarn\b/i.test(line)) return 'text-yellow-400'
+    if (/\bdebug\b/i.test(line)) return 'text-blue-400'
+    return 'text-green-300'
+  }
+
+  return (
+    <View className="flex-1">
+      <View className="flex-row items-center gap-2 px-4 py-2 border-b border-border">
+        {!streaming ? (
+          <Pressable
+            onPress={startStream}
+            className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-md bg-green-600 active:opacity-80"
+          >
+            <Play size={12} color="#fff" />
+            <Text className="text-xs font-medium text-white">Start Streaming</Text>
+          </Pressable>
+        ) : (
+          <>
+            <Pressable
+              onPress={stopStream}
+              className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-600 active:opacity-80"
+            >
+              <Square size={12} color="#fff" />
+              <Text className="text-xs font-medium text-white">Stop</Text>
+            </Pressable>
+            <Pressable
+              onPress={togglePause}
+              className={cn(
+                'flex-row items-center gap-1.5 px-3 py-1.5 rounded-md active:opacity-80',
+                paused ? 'bg-yellow-600' : 'bg-muted',
+              )}
+            >
+              {paused
+                ? <Play size={12} color="#fff" />
+                : <Pause size={12} className="text-foreground" />
+              }
+              <Text className={cn('text-xs font-medium', paused ? 'text-white' : 'text-foreground')}>
+                {paused ? 'Resume' : 'Pause'}
+              </Text>
+            </Pressable>
+          </>
+        )}
+        <Pressable onPress={clearLogs} className="ml-auto px-2 py-1.5 rounded-md active:bg-muted">
+          <Text className="text-xs text-muted-foreground">Clear</Text>
+        </Pressable>
+        <Text className="text-xs text-muted-foreground">{lines.length} lines</Text>
+      </View>
+
+      <ScrollView
+        ref={scrollRef}
+        className="flex-1 bg-[#1a1a2e]"
+        contentContainerStyle={{ padding: 12 }}
+      >
+        {lines.length === 0 ? (
+          <View className="items-center py-16">
+            <Terminal size={28} className="text-muted-foreground/40 mb-3" />
+            <Text className="text-sm text-muted-foreground">
+              {streaming ? 'Waiting for logs...' : 'Tap "Start Streaming" to see live agent logs'}
+            </Text>
+          </View>
+        ) : (
+          lines.map((line, i) => (
+            <Text key={i} className={cn('text-xs font-mono leading-5', logLevelColor(line))}>
+              {line}
+            </Text>
+          ))
+        )}
+      </ScrollView>
     </View>
   )
 }
@@ -767,6 +980,46 @@ function ControlsTab({
   showToast: (msg: string) => void
 }) {
   const [result, setResult] = useState<string | null>(null)
+  const [currentModel, setCurrentModel] = useState<string | null>(null)
+  const [showModelPicker, setShowModelPicker] = useState(false)
+  const [loadingModel, setLoadingModel] = useState(false)
+
+  const AVAILABLE_MODELS = [
+    { id: 'gpt-4o', label: 'GPT-4o', provider: 'OpenAI' },
+    { id: 'gpt-4o-mini', label: 'GPT-4o Mini', provider: 'OpenAI' },
+    { id: 'claude-4-sonnet', label: 'Claude 4 Sonnet', provider: 'Anthropic' },
+    { id: 'claude-4-opus', label: 'Claude 4 Opus', provider: 'Anthropic' },
+    { id: 'claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', provider: 'Anthropic' },
+    { id: 'o3', label: 'o3', provider: 'OpenAI' },
+    { id: 'o4-mini', label: 'o4-mini', provider: 'OpenAI' },
+  ]
+
+  const fetchCurrentModel = useCallback(async () => {
+    const resp = await proxyRequest('GET', '/agent/model')
+    if (resp?.body) {
+      try {
+        const data = JSON.parse(resp.body)
+        setCurrentModel(data.model || data.modelId || null)
+      } catch {}
+    }
+  }, [proxyRequest])
+
+  useEffect(() => { fetchCurrentModel() }, [fetchCurrentModel])
+
+  const switchModel = useCallback(async (modelId: string) => {
+    setLoadingModel(true)
+    setShowModelPicker(false)
+    const resp = await proxyRequest('POST', '/agent/model', JSON.stringify({ model: modelId }))
+    if (resp && resp.status === 200) {
+      setCurrentModel(modelId)
+      showToast(`Switched to ${modelId}`)
+      setResult(`Model switched to ${modelId}`)
+    } else {
+      showToast('Failed to switch model')
+      setResult(`Model switch failed: HTTP ${resp?.status || 'unknown'}`)
+    }
+    setLoadingModel(false)
+  }, [proxyRequest, showToast])
 
   const executeAction = useCallback(async (label: string, method: string, path: string, body?: string) => {
     setResult(`Executing: ${label}...`)
@@ -782,6 +1035,64 @@ function ControlsTab({
 
   return (
     <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+      {/* Model switching — the most common remote action */}
+      {canSwitchModel && (
+        <SectionCard title="Model">
+          <View className="flex-row items-center justify-between mb-2">
+            <View>
+              <Text className="text-sm text-muted-foreground">Current model</Text>
+              <Text className="text-base font-medium text-foreground">
+                {loadingModel ? 'Switching...' : (currentModel || 'Unknown')}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => setShowModelPicker(!showModelPicker)}
+              disabled={loadingModel}
+              className={cn(
+                'px-4 py-2 rounded-lg',
+                loadingModel ? 'bg-muted' : 'bg-primary active:opacity-80',
+              )}
+            >
+              <Text className={cn(
+                'text-sm font-medium',
+                loadingModel ? 'text-muted-foreground' : 'text-primary-foreground',
+              )}>
+                {showModelPicker ? 'Cancel' : 'Switch'}
+              </Text>
+            </Pressable>
+          </View>
+
+          {showModelPicker && (
+            <View className="mt-2 border-t border-border pt-2">
+              {AVAILABLE_MODELS.map((model) => (
+                <Pressable
+                  key={model.id}
+                  onPress={() => switchModel(model.id)}
+                  disabled={model.id === currentModel}
+                  className={cn(
+                    'flex-row items-center justify-between py-2.5 px-3 rounded-lg mb-1',
+                    model.id === currentModel ? 'bg-primary/10' : 'active:bg-muted',
+                  )}
+                >
+                  <View>
+                    <Text className={cn(
+                      'text-sm font-medium',
+                      model.id === currentModel ? 'text-primary' : 'text-foreground',
+                    )}>
+                      {model.label}
+                    </Text>
+                    <Text className="text-xs text-muted-foreground">{model.provider}</Text>
+                  </View>
+                  {model.id === currentModel && (
+                    <Check size={16} className="text-primary" />
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </SectionCard>
+      )}
+
       <SectionCard title="Agent Controls">
         <ControlButton
           icon={Square}
@@ -822,7 +1133,7 @@ function ControlsTab({
       {!canSwitchModel && (
         <View className="mb-4 p-3 rounded-lg bg-muted/50 border border-border">
           <Text className="text-xs text-muted-foreground">
-            Model switching and project management require a newer desktop app (protocol v2+).
+            Model switching requires a newer desktop app (protocol v2+).
           </Text>
         </View>
       )}
