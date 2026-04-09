@@ -4319,13 +4319,11 @@ app.post('/api/billing/verify-checkout', async (c) => {
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
 
-    const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
-
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
       stripeCustomerId: session.customer as string,
       workspaceId,
-      planId: basePlanId,
+      planId,
       status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
       billingInterval: billingInterval as 'monthly' | 'annual',
       currentPeriodStart: new Date(currentPeriodStart),
@@ -4776,13 +4774,11 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
-            const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
-
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: basePlanId,
+              planId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),

@@ -5,7 +5,7 @@
  * Replaces billingDomain.createStore() for subscriptions, credits, usage
  */
 
-import { prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
+import { prisma, CreditSource, SubscriptionStatus, BillingInterval } from '../lib/prisma';
 import { DAILY_CREDITS, MONTHLY_DAILY_CAP, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -348,7 +348,7 @@ export async function syncFromStripe(data: {
   stripeSubscriptionId: string;
   stripeCustomerId: string;
   workspaceId: string;
-  planId: PlanId;
+  planId: string;
   status: SubscriptionStatus;
   billingInterval: BillingInterval;
   currentPeriodStart: Date;
