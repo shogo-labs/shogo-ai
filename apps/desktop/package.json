@@ -15,7 +15,7 @@
     "make": "electron-forge make",
     "publish": "electron-forge publish",
     "download-bun": "node scripts/download-bun.mjs",
-    "download-whisper": "node scripts/download-whisper.mjs",
+    "download-sherpa": "node scripts/download-sherpa.mjs",
     "build-audio-helper": "cd native/shogo-audio && make build",
     "generate-install-gif": "node scripts/generate-install-gif.mjs"
   },

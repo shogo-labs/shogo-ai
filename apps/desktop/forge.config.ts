@@ -18,7 +18,7 @@ const extraResourceCandidates = [
   './resources/tree-sitter-wasm',
   './resources/vm',
   './resources/vm-helper',
-  './resources/whisper',
+  './resources/sherpa-onnx',
   './resources/shogo-audio',
   './resources/seed.db',
   './resources/package.json',

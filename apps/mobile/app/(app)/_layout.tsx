@@ -111,7 +111,7 @@ export default function AppLayout() {
             {!isWide && !isProjectDetail && !isBillingPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <VMDownloadBanner />
-              <RecordingIndicator />
+              {localMode && <RecordingIndicator />}
               <Slot />
             </View>
           </View>

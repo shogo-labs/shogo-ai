@@ -21,6 +21,7 @@ import {
   ChevronDown,
   Copy,
   Check,
+  Users,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { createHttpClient } from '../../../lib/api'
@@ -30,6 +31,7 @@ interface TranscriptSegment {
   start: number
   end: number
   text: string
+  speaker?: string
 }
 
 interface MeetingDetail {
@@ -47,7 +49,25 @@ interface MeetingDetail {
   project: { id: string; name: string } | null
 }
 
-function parseTranscript(raw: string | null): { text: string; segments: TranscriptSegment[] } | null {
+const SPEAKER_COLORS = [
+  { bg: 'bg-blue-500/10', border: 'border-l-blue-500', text: 'text-blue-600', label: 'bg-blue-500/15' },
+  { bg: 'bg-emerald-500/10', border: 'border-l-emerald-500', text: 'text-emerald-600', label: 'bg-emerald-500/15' },
+  { bg: 'bg-purple-500/10', border: 'border-l-purple-500', text: 'text-purple-600', label: 'bg-purple-500/15' },
+  { bg: 'bg-orange-500/10', border: 'border-l-orange-500', text: 'text-orange-600', label: 'bg-orange-500/15' },
+  { bg: 'bg-pink-500/10', border: 'border-l-pink-500', text: 'text-pink-600', label: 'bg-pink-500/15' },
+  { bg: 'bg-cyan-500/10', border: 'border-l-cyan-500', text: 'text-cyan-600', label: 'bg-cyan-500/15' },
+  { bg: 'bg-amber-500/10', border: 'border-l-amber-500', text: 'text-amber-600', label: 'bg-amber-500/15' },
+  { bg: 'bg-rose-500/10', border: 'border-l-rose-500', text: 'text-rose-600', label: 'bg-rose-500/15' },
+]
+
+function getSpeakerColor(speaker: string, speakerMap: Map<string, number>) {
+  if (!speakerMap.has(speaker)) {
+    speakerMap.set(speaker, speakerMap.size)
+  }
+  return SPEAKER_COLORS[speakerMap.get(speaker)! % SPEAKER_COLORS.length]
+}
+
+function parseTranscript(raw: string | null): { text: string; segments: TranscriptSegment[]; numSpeakers?: number; error?: string } | null {
   if (!raw) return null
   try {
     return JSON.parse(raw)
@@ -62,6 +82,35 @@ function formatTimestamp(seconds: number): string {
   const s = Math.floor(seconds % 60)
   if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
   return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+/**
+ * Groups consecutive segments by the same speaker for a cleaner display.
+ */
+function groupSegmentsBySpeaker(segments: TranscriptSegment[]): {
+  speaker: string | undefined
+  start: number
+  end: number
+  lines: string[]
+}[] {
+  const groups: { speaker: string | undefined; start: number; end: number; lines: string[] }[] = []
+
+  for (const seg of segments) {
+    const lastGroup = groups[groups.length - 1]
+    if (lastGroup && lastGroup.speaker === seg.speaker && seg.speaker) {
+      lastGroup.end = seg.end
+      lastGroup.lines.push(seg.text)
+    } else {
+      groups.push({
+        speaker: seg.speaker,
+        start: seg.start,
+        end: seg.end,
+        lines: [seg.text],
+      })
+    }
+  }
+
+  return groups
 }
 
 export default function MeetingDetailScreen() {
@@ -90,7 +139,6 @@ export default function MeetingDetailScreen() {
     fetchMeeting()
   }, [fetchMeeting])
 
-  // Poll while transcribing
   useEffect(() => {
     if (meeting?.status !== 'transcribing') return
     const interval = setInterval(fetchMeeting, 3000)
@@ -180,6 +228,7 @@ export default function MeetingDetailScreen() {
 
   const transcript = parseTranscript(meeting.transcript)
   const meetingDate = new Date(meeting.createdAt)
+  const hasSpeakers = transcript?.segments.some((s) => s.speaker)
 
   return (
     <View className="flex-1 bg-background">
@@ -238,6 +287,14 @@ export default function MeetingDetailScreen() {
               <Text className="text-xs text-primary font-medium">{meeting.project.name}</Text>
             </View>
           )}
+          {hasSpeakers && transcript?.numSpeakers && (
+            <View className="flex-row items-center gap-1 bg-purple-500/10 rounded px-1.5 py-0.5">
+              <Users size={10} className="text-purple-600" />
+              <Text className="text-xs text-purple-600 font-medium">
+                {transcript.numSpeakers} speaker{transcript.numSpeakers !== 1 ? 's' : ''}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Actions */}
@@ -284,6 +341,9 @@ export default function MeetingDetailScreen() {
         ) : meeting.status === 'error' ? (
           <View className="items-center justify-center py-16">
             <Text className="text-sm text-red-500 mb-2">Transcription failed</Text>
+            {transcript?.error && (
+              <Text className="text-xs text-muted-foreground mb-4 text-center px-8">{transcript.error}</Text>
+            )}
             <Pressable
               onPress={handleRetranscribe}
               className="px-4 py-2 bg-primary rounded-lg active:opacity-80"
@@ -293,7 +353,14 @@ export default function MeetingDetailScreen() {
           </View>
         ) : transcript ? (
           <View>
-            {transcript.segments.length > 0 ? (
+            {transcript.error && transcript.segments.length === 0 && (
+              <View className="bg-amber-500/10 rounded-lg p-3 mb-4 flex-row items-center gap-2">
+                <Text className="text-xs text-amber-700">{transcript.error}</Text>
+              </View>
+            )}
+            {hasSpeakers ? (
+              <SpeakerTranscriptView segments={transcript.segments} />
+            ) : transcript.segments.length > 0 ? (
               transcript.segments.map((segment, index) => (
                 <View key={index} className="flex-row gap-3 mb-3">
                   <Text className="text-xs text-muted-foreground font-mono w-12 pt-0.5 text-right">
@@ -304,10 +371,14 @@ export default function MeetingDetailScreen() {
                   </Text>
                 </View>
               ))
-            ) : (
+            ) : transcript.text ? (
               <Text className="text-sm text-foreground leading-relaxed">
                 {transcript.text}
               </Text>
+            ) : (
+              <View className="items-center justify-center py-16">
+                <Text className="text-sm text-muted-foreground">No transcript available</Text>
+              </View>
             )}
           </View>
         ) : (
@@ -316,6 +387,55 @@ export default function MeetingDetailScreen() {
           </View>
         )}
       </ScrollView>
+    </View>
+  )
+}
+
+function SpeakerTranscriptView({ segments }: { segments: TranscriptSegment[] }) {
+  const groups = groupSegmentsBySpeaker(segments)
+  const speakerMap = new Map<string, number>()
+
+  return (
+    <View className="gap-4">
+      {groups.map((group, index) => {
+        const color = group.speaker
+          ? getSpeakerColor(group.speaker, speakerMap)
+          : null
+
+        if (!color) {
+          return (
+            <View key={index} className="flex-row gap-3">
+              <Text className="text-xs text-muted-foreground font-mono w-12 pt-0.5 text-right">
+                {formatTimestamp(group.start)}
+              </Text>
+              <Text className="flex-1 text-sm text-foreground leading-relaxed">
+                {group.lines.join(' ')}
+              </Text>
+            </View>
+          )
+        }
+
+        return (
+          <View
+            key={index}
+            className={cn('rounded-lg border-l-[3px] pl-3 py-2 pr-2', color.bg, color.border)}
+          >
+            <View className="flex-row items-center gap-2 mb-1">
+              <View className={cn('rounded px-1.5 py-0.5', color.label)}>
+                <Text className={cn('text-[10px] font-semibold uppercase', color.text)}>
+                  {group.speaker}
+                </Text>
+              </View>
+              <Text className="text-[10px] text-muted-foreground font-mono">
+                {formatTimestamp(group.start)}
+              </Text>
+            </View>
+            <Text className="text-sm text-foreground leading-relaxed">
+              {group.lines.join(' ')}
+            </Text>
+          </View>
+        )
+      })}
     </View>
   )
 }
