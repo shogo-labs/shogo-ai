@@ -36,7 +36,6 @@ import {
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
-import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -45,7 +44,6 @@ import { WebhookAdapter } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
-import { CanvasFileWatcher } from './canvas-file-watcher'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -79,7 +77,7 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 // Shared Server Framework (handles OTEL, CORS, auth, health, pool/assign)
 // =============================================================================
 
-let agentGateway: AgentGateway | null = null
+let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
 const { app, state, logTiming } = await createRuntimeApp({
@@ -111,7 +109,7 @@ const { app, state, logTiming } = await createRuntimeApp({
     const stats = sm?.getAllStats() ?? []
     const now = Date.now()
     const lastSessionActivity = stats.reduce(
-      (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
+      (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
     return { activeSessions: stats.length, lastActivityAt: lastSessionActivity }
@@ -970,8 +968,13 @@ function getPreviewManager(): PreviewManager {
 // Canvas File Watcher (canvas v2 mode — lazy init)
 // ---------------------------------------------------------------------------
 
-function getCanvasFileWatcher(): CanvasFileWatcher {
-  return CanvasFileWatcher.getInstance(WORKSPACE_DIR)
+let _canvasFileWatcher: any = null
+function getCanvasFileWatcher(): any {
+  if (!_canvasFileWatcher) {
+    const { CanvasFileWatcher } = require('./canvas-file-watcher')
+    _canvasFileWatcher = CanvasFileWatcher.getInstance(WORKSPACE_DIR)
+  }
+  return _canvasFileWatcher
 }
 
 app.get('/preview/status', (c) => {
@@ -1162,7 +1165,7 @@ app.post('/agent/hooks/agent', async (c) => {
       const response = await agentGateway!.processWebhookMessage(message)
       if (deliver && channel && to) {
         const status = agentGateway!.getStatus()
-        const connected = status.channels.find((ch) => ch.type === channel && ch.connected)
+        const connected = status.channels.find((ch: any) => ch.type === channel && ch.connected)
         if (connected) {
           // Deliver through the gateway's test message path for now
           console.log(`[agent-runtime] Webhook: delivering to ${channel}:${to}`)
@@ -1915,7 +1918,7 @@ app.get('/agent/tools/status', (c) => {
   const mcpMgr = agentGateway.getMcpClientManager()
   const serverInfo = mcpMgr.getServerInfo()
 
-  const tools = serverInfo.map((s) => {
+  const tools = serverInfo.map((s: any) => {
     const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
     return {
       id: s.name,
@@ -1950,7 +1953,7 @@ app.get('/agent/tools/schemas', (c) => {
   }
   const mcpMgr = agentGateway.getMcpClientManager()
   const allTools = mcpMgr.getTools()
-  const schemas = allTools.map((t) => ({
+  const schemas = allTools.map((t: any) => ({
     name: t.name,
     description: t.description || '',
     parameters: t.parameters ?? {},
@@ -2489,8 +2492,9 @@ async function startGateway(): Promise<void> {
     }
   }
 
+  const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
-  agentGateway.setLogCallback((line) => {
+  agentGateway.setLogCallback((line: string) => {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
   })

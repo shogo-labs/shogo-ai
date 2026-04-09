@@ -53,7 +53,7 @@ export interface VMManager {
 }
 
 export const VM_DEFAULTS = {
-  memoryMB: 4096,
+  memoryMB: 1536,
   cpus: 4,
   networkEnabled: true,
 

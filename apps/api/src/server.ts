@@ -5689,8 +5689,25 @@ if (isVMIsolation() && !isKubernetes()) {
       // Factory: each pool VM gets its own DarwinVMManager instance
       const managerFactory = () => vmModule.createVMManager()
 
-      const memoryMB = parseInt(process.env.VM_MEMORY_MB || '4096', 10)
-      const cpus = parseInt(process.env.VM_CPUS || String(Math.max(2, Math.floor(os.cpus().length / 2))), 10)
+      // Read persisted config.json (admin UI settings) as fallback for env vars
+      let configMemoryMB = 1536
+      let configCpus = 0
+      try {
+        const fs = await import('fs')
+        const configDir = process.platform === 'win32'
+          ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Shogo')
+          : process.platform === 'darwin'
+            ? path.join(home, 'Library', 'Application Support', 'Shogo')
+            : path.join(home, '.config', 'shogo')
+        const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
+        const parsed = JSON.parse(raw)
+        if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
+        if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
+      } catch {}
+
+      const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
+      const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
+      const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
 
       await initVMWarmPool(managerFactory, {
         workspaceDir: workspacesDir,
