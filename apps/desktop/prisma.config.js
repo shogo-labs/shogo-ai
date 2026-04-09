@@ -1,11 +1,11 @@
-const { defineConfig, env } = require('prisma/config')
-
-module.exports = defineConfig({
+// Self-contained config — avoids require('prisma/config') which isn't
+// resolvable inside the packaged Electron app's Resources directory.
+module.exports = {
   schema: 'prisma/schema.prisma',
   migrations: {
     path: 'prisma/migrations',
   },
   datasource: {
-    url: env('DATABASE_URL'),
+    url: process.env.DATABASE_URL,
   },
-})
+}

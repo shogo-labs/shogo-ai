@@ -92,11 +92,15 @@ export function createDomainActions(store: IDomainStore) {
       description: string | undefined,
       userId: string,
       _type?: string,
-      templateId?: string
+      templateId?: string,
+      techStackId?: string,
+      templateSettings?: Record<string, unknown>
     ) => {
       const settings = JSON.stringify({
         activeMode: 'canvas',
         canvasMode: 'code',
+        ...(templateSettings ?? {}),
+        ...(techStackId ? { techStackId } : {}),
       })
 
       const project = await store.projectCollection.create({
@@ -304,6 +308,13 @@ export function createDomainActions(store: IDomainStore) {
       changes: { name?: string; inferredName?: string }
     ) => {
       return store.chatSessionCollection.update(sessionId, changes)
+    },
+
+    /**
+     * Delete a chat session (server + local store)
+     */
+    deleteChatSession: async (sessionId: string) => {
+      return store.chatSessionCollection.delete(sessionId)
     },
 
     /**

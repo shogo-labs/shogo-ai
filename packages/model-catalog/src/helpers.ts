@@ -14,7 +14,7 @@ import {
   type AgentMode,
   type BillingModel,
 } from './models'
-import { MODEL_ALIASES, AGENT_MODE_DEFAULTS } from './aliases'
+import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
 
 // ---------------------------------------------------------------------------
 // Resolution
@@ -27,7 +27,7 @@ import { MODEL_ALIASES, AGENT_MODE_DEFAULTS } from './aliases'
 export function resolveModelId(id: string): string {
   if (id in MODEL_CATALOG) return id
   if (id in MODEL_ALIASES) return MODEL_ALIASES[id]
-  if (id === 'basic' || id === 'advanced') return AGENT_MODE_DEFAULTS[id as AgentMode]
+  if (id === 'basic' || id === 'advanced') return resolveAgentModeDefault(id as AgentMode)
   return id
 }
 

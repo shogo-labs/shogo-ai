@@ -32,8 +32,10 @@ import {
   initializeS3Sync,
   initializePostgresBackup,
   configureAIProxy,
+  StreamBufferStore,
 } from '@shogo/shared-runtime'
-import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps } from './workspace-defaults'
+import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
@@ -136,14 +138,17 @@ function ensureWorkspaceFiles(): void {
     const seeded = seedWorkspaceFromTemplate(WORKSPACE_DIR, templateId, process.env.AGENT_NAME)
     if (seeded) {
       logTiming(`Workspace seeded from template: ${templateId}`)
-      return
+    } else {
+      logTiming(`Template "${templateId}" not found, falling back to defaults`)
+      seedWorkspaceDefaults(WORKSPACE_DIR)
+      seedLSPConfig(WORKSPACE_DIR)
+      logTiming('Workspace defaults seeded')
     }
-    logTiming(`Template "${templateId}" not found, falling back to defaults`)
+  } else {
+    seedWorkspaceDefaults(WORKSPACE_DIR)
+    seedLSPConfig(WORKSPACE_DIR)
+    logTiming('Workspace defaults seeded')
   }
-
-  seedWorkspaceDefaults(WORKSPACE_DIR)
-  seedLSPConfig(WORKSPACE_DIR)
-  logTiming('Workspace defaults seeded')
 
   // Migrate legacy APP layout: if package.json exists at workspace root (no AGENTS.md),
   // this is a legacy APP project — move app files into project/ subdirectory
@@ -165,9 +170,39 @@ function ensureWorkspaceFiles(): void {
     logTiming('Migrated legacy APP layout into project/ subdirectory')
   }
 
-  // Seed runtime-template (Vite + React + Tailwind + shadcn/ui) if not already present.
-  // This provides the Vite project structure so `bun run build` works for canvas mode.
-  seedRuntimeTemplate(WORKSPACE_DIR)
+  // Seed tech stack if specified via env var or marker file.
+  // For backward compat: existing canvasMode 'code' projects without a tech stack get react-app.
+  const techStackMarker = join(WORKSPACE_DIR, '.tech-stack')
+  const techStackIdFromEnv = process.env.TECH_STACK_ID
+  const techStackIdFromFile = existsSync(techStackMarker) ? readFileSync(techStackMarker, 'utf-8').trim() : undefined
+  let techStackId = techStackIdFromEnv || techStackIdFromFile
+
+  if (!techStackId) {
+    for (const configCandidate of [join(WORKSPACE_DIR, 'config.json'), join(WORKSPACE_DIR, '.shogo', 'config.json')]) {
+      if (existsSync(configCandidate)) {
+        try {
+          const config = JSON.parse(readFileSync(configCandidate, 'utf-8'))
+          if (config.canvasMode === 'code') {
+            techStackId = 'react-app'
+            break
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+  }
+
+  if (techStackId) {
+    seedTechStack(WORKSPACE_DIR, techStackId)
+    logTiming(`Tech stack seeded: ${techStackId}`)
+  }
+
+  // Seed runtime-template (Vite + React + Tailwind + shadcn/ui) if not already present
+  // and the tech stack is a JS/Node-based stack (or react-app specifically).
+  // For non-JS stacks like python-data, we skip the runtime template.
+  const jsStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
+  if (!techStackId || jsStacks.has(techStackId)) {
+    seedRuntimeTemplate(WORKSPACE_DIR)
+  }
 }
 
 // AI proxy is configured by the shared framework (state.aiProxy)
@@ -178,6 +213,12 @@ function ensureWorkspaceFiles(): void {
 
 let gatewayReadyResolve: (() => void) | null = null
 let gatewayReadyPromise: Promise<void> | null = null
+
+// =============================================================================
+// Stream Buffer Store (SSE reconnect support)
+// =============================================================================
+
+const streamBufferStore = new StreamBufferStore()
 
 // =============================================================================
 // Stream Keep-Alive Utility
@@ -445,11 +486,13 @@ app.patch('/agent/channels/:type/model', async (c) => {
   const type = c.req.param('type')
   const { model } = await c.req.json() as { model: string }
 
-  if (!model || (model !== 'basic' && model !== 'advanced')) {
-    return c.json({ error: 'model must be "basic" or "advanced"' }, 400)
+  if (!model || typeof model !== 'string') {
+    return c.json({ error: 'model must be a valid model ID string' }, 400)
   }
 
-  if (model === 'advanced') {
+  const resolvedModel = resolveModelId(model)
+  const tier = getModelTier(resolvedModel)
+  if (tier !== 'economy') {
     const proxyUrl = process.env.AI_PROXY_URL
     const proxyToken = process.env.AI_PROXY_TOKEN
     if (proxyUrl && proxyToken) {
@@ -462,7 +505,7 @@ app.patch('/agent/channels/:type/model', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: 'Advanced model requires a Pro or higher subscription.' }, 403)
+            return c.json({ error: `Model '${model}' requires a Pro or higher subscription.` }, 403)
           }
         }
       } catch {
@@ -660,8 +703,7 @@ app.post('/agent/chat', async (c) => {
     }
   }
 
-  const agentMode = body.agentMode as 'basic' | 'advanced' | undefined
-  const modelOverride = agentMode || undefined
+  const modelOverride = (body.agentMode as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
 
@@ -670,6 +712,12 @@ app.post('/agent/chat', async (c) => {
   }
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
+
+  // Create a buffer that lives independently of the HTTP connection.
+  // The agent writes into this buffer via a background consumer so that
+  // a client disconnect (e.g. page refresh) does NOT cancel the agent.
+  console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
+  const bufWriter = streamBufferStore.create(chatSessionKey)
 
   trackStreamStart()
   const stream = createUIMessageStream({
@@ -705,13 +753,59 @@ app.post('/agent/chat', async (c) => {
 
   const response = createUIMessageStreamResponse({ stream })
   if (response.body) {
-    const wrappedStream = wrapStreamWithKeepalive(response.body, 15_000)
+    // Consume the agent's stream in the background, feeding chunks into
+    // the buffer. This reader is NOT tied to the HTTP response — the agent
+    // keeps running even if the client disconnects.
+    const bgReader = response.body.getReader()
+    ;(async () => {
+      try {
+        while (true) {
+          const { done, value } = await bgReader.read()
+          if (done) break
+          bufWriter.append(value)
+        }
+        console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey}`)
+      } catch (err: any) {
+        console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
+      } finally {
+        bufWriter.complete()
+      }
+    })()
+
+    // The client reads from a replay stream backed by the buffer.
+    // If this client disconnects, only the replay subscriber is removed;
+    // the background reader + agent keep running.
+    const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
+    const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
     return new Response(wrappedStream, {
       status: response.status,
       headers: response.headers,
     })
   }
   return response
+})
+
+// Reconnect to an active stream — replays buffered SSE events then continues live.
+// URL pattern matches the AI SDK's default resume convention: ${api}/${chatId}/stream
+app.get('/agent/chat/:chatSessionId/stream', (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  console.log(`[AgentChat] Stream reconnect request for session: ${chatSessionId}, has buffer: ${streamBufferStore.has(chatSessionId)}`)
+  const replayStream = streamBufferStore.createReplayStream(chatSessionId)
+
+  if (!replayStream) {
+    console.log(`[AgentChat] No active stream buffer for session: ${chatSessionId}`)
+    return new Response(null, { status: 204 })
+  }
+
+  console.log(`[AgentChat] Replaying stream buffer for session: ${chatSessionId}`)
+  const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+  return new Response(wrappedStream, {
+    headers: {
+      'Content-Type': 'text/x-ai-sdk-ui-stream',
+      'X-Accel-Buffering': 'no',
+      'Cache-Control': 'no-cache',
+    },
+  })
 })
 
 // Retrieve chat history so the UI can restore past messages on reconnect
@@ -847,7 +941,8 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
-  // code_agent removed — subagent aborts are handled by the parent agent loop's abort signal
+  // Remove the buffer entirely so resume after stop returns 204 (not a replay)
+  streamBufferStore.abort(stopSessionKey)
 
   return c.json({ stopped: aborted })
 })
@@ -2337,6 +2432,17 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
+  const techStackMarkerPath = join(WORKSPACE_DIR, '.tech-stack')
+  if (existsSync(techStackMarkerPath)) {
+    const stackId = readFileSync(techStackMarkerPath, 'utf-8').trim()
+    try {
+      await runTechStackSetup(WORKSPACE_DIR, stackId)
+      logTiming(`Tech stack setup complete: ${stackId}`)
+    } catch (err: any) {
+      console.error(`[agent-runtime] Tech stack setup failed for ${stackId}:`, err.message)
+    }
+  }
+
   logTiming('Essentials complete')
 
   // Auto-start preview server if an app project was restored from S3.
@@ -2450,6 +2556,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
       }, 500)
     })
   }
+
+  streamBufferStore.dispose()
 
   try {
     if (s3SyncInstance) {

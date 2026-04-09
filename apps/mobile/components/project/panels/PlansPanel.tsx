@@ -12,6 +12,11 @@ import {
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
+  getModelsByProvider,
+  getModelShortDisplayName,
+  type ModelTier,
+} from "@shogo/model-catalog"
+import {
   ClipboardList,
   ArrowLeft,
   Circle,
@@ -21,13 +26,28 @@ import {
   RefreshCw,
   Play,
   ChevronDown,
-  Zap,
-  Rocket,
+  Check,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { API_URL, createHttpClient } from "../../../lib/api"
-import type { AgentMode } from "../../chat/ChatInput"
+import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
+
+const PLAN_MODEL_GROUPS = getModelsByProvider().map((g) => ({
+  label: g.label,
+  models: g.models.map((e) => ({
+    id: e.id,
+    displayName: e.displayName,
+    tier: e.tier as ModelTier,
+  })),
+}))
+
+const TIER_LABELS: Record<ModelTier, string> = {
+  premium: "Premium",
+  standard: "Standard",
+  economy: "Economy",
+}
+import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
 
 interface PlanSummary {
   filename: string
@@ -50,8 +70,7 @@ interface PlansPanelProps {
   visible: boolean
   projectId: string
   agentUrl?: string | null
-  onBuildPlan?: (plan: PlanData, agentMode: AgentMode) => void
-  refreshTrigger?: number
+  onBuildPlan?: (plan: PlanData, modelId: string) => void
 }
 
 function formatDate(iso: string): string {
@@ -96,14 +115,15 @@ function extractTodos(
   return todos
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshTrigger }: PlansPanelProps) {
+export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansPanelProps) {
+  const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<PlanSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null)
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [buildMode, setBuildMode] = useState<AgentMode>("advanced")
+  const [buildMode, setBuildMode] = useState<string>(DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
 
   const baseUrl = agentUrl || `${API_URL}/api/projects/${projectId}/agent-proxy`
@@ -170,8 +190,11 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshT
   useEffect(() => {
     if (visible) {
       fetchPlans()
+    } else {
+      setSelectedPlan(null)
+      setPlanContent(null)
     }
-  }, [visible, fetchPlans, refreshTrigger])
+  }, [visible, fetchPlans, planStream?.planRefreshNonce])
 
   useEffect(() => {
     if (selectedPlan) {
@@ -241,13 +264,8 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshT
               onPress={() => setShowModelPicker((p) => !p)}
               className="flex-row items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 bg-muted/30"
             >
-              {buildMode === "basic" ? (
-                <Zap className="h-3 w-3 text-amber-500" size={12} />
-              ) : (
-                <Rocket className="h-3 w-3 text-violet-500" size={12} />
-              )}
               <Text className="text-xs font-medium text-foreground">
-                {buildMode === "basic" ? "Basic" : "Advanced"}
+                {getModelShortDisplayName(buildMode)}
               </Text>
               <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
             </Pressable>
@@ -258,40 +276,48 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshT
                 onPress={() => setShowModelPicker(false)}
                 style={{ position: "fixed" as any, top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 }}
               />
-              <View className="absolute right-0 top-9 z-50 w-48 rounded-lg border border-border bg-popover shadow-lg">
-                <Pressable
-                  onPress={() => { setBuildMode("basic"); setShowModelPicker(false) }}
-                  className={cn(
-                    "flex-row items-center gap-2 px-3 py-2.5 rounded-t-lg",
-                    buildMode === "basic" && "bg-accent"
-                  )}
-                >
-                  <Zap className="h-3.5 w-3.5 text-amber-500" size={14} />
-                  <View className="flex-1">
-                    <Text className="text-xs font-medium text-foreground">Basic</Text>
-                    <Text className="text-[10px] text-muted-foreground">Fast, 4x cheaper</Text>
+              <ScrollView className="absolute right-0 top-9 z-50 w-56 max-h-[280px] rounded-lg border border-border bg-popover shadow-lg">
+                {PLAN_MODEL_GROUPS.map((group) => (
+                  <View key={group.label}>
+                    <View className="px-3 pt-2.5 pb-1">
+                      <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                        {group.label}
+                      </Text>
+                    </View>
+                    {group.models.map((model) => {
+                      const isSelected = buildMode === model.id
+                      return (
+                        <Pressable
+                          key={model.id}
+                          onPress={() => { setBuildMode(model.id); setShowModelPicker(false) }}
+                          className={cn(
+                            "flex-row items-center gap-2.5 px-3 py-2",
+                            isSelected && "bg-accent"
+                          )}
+                        >
+                          <View className="flex-1">
+                            <Text className="text-xs text-foreground">{model.displayName}</Text>
+                          </View>
+                          {isSelected ? (
+                            <Check className="h-3.5 w-3.5 text-primary" size={14} />
+                          ) : (
+                            <Text
+                              className={cn(
+                                "text-[10px]",
+                                model.tier === "premium" ? "text-amber-500" :
+                                model.tier === "economy" ? "text-emerald-500" :
+                                "text-muted-foreground"
+                              )}
+                            >
+                              {TIER_LABELS[model.tier]}
+                            </Text>
+                          )}
+                        </Pressable>
+                      )
+                    })}
                   </View>
-                  {buildMode === "basic" && (
-                    <CheckCircle2 className="h-3.5 w-3.5 text-primary" size={14} />
-                  )}
-                </Pressable>
-                <Pressable
-                  onPress={() => { setBuildMode("advanced"); setShowModelPicker(false) }}
-                  className={cn(
-                    "flex-row items-center gap-2 px-3 py-2.5 rounded-b-lg",
-                    buildMode === "advanced" && "bg-accent"
-                  )}
-                >
-                  <Rocket className="h-3.5 w-3.5 text-violet-500" size={14} />
-                  <View className="flex-1">
-                    <Text className="text-xs font-medium text-foreground">Advanced</Text>
-                    <Text className="text-[10px] text-muted-foreground">More capable</Text>
-                  </View>
-                  {buildMode === "advanced" && (
-                    <CheckCircle2 className="h-3.5 w-3.5 text-primary" size={14} />
-                  )}
-                </Pressable>
-              </View>
+                ))}
+              </ScrollView>
               </>
             )}
           </View>
@@ -394,9 +420,65 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshT
 
       {/* List */}
       <ScrollView className="flex-1">
-        {loading ? (
+        {/* Streaming plan live preview */}
+        {planStream?.streamingPlan ? (
+          <View className="border-b border-primary/30 bg-primary/5">
+            <View className="flex-row items-center gap-2 px-4 pt-3 pb-1">
+              <ActivityIndicator size="small" />
+              <Text className="text-xs font-semibold text-primary">Creating plan...</Text>
+            </View>
+            <View className="px-4 py-2">
+              <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                {planStream.streamingPlan.name}
+              </Text>
+              {planStream.streamingPlan.overview ? (
+                <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={2}>
+                  {planStream.streamingPlan.overview}
+                </Text>
+              ) : null}
+            </View>
+            {planStream.streamingPlan.plan ? (
+              <View className="px-4 pb-2 overflow-hidden" style={{ maxHeight: 300 }}>
+                <MarkdownText>{planStream.streamingPlan.plan}</MarkdownText>
+              </View>
+            ) : null}
+            {planStream.streamingPlan.todos.length > 0 && (
+              <View className="px-4 pb-3 border-t border-border/50 pt-2">
+                <Text className="text-xs font-semibold text-muted-foreground mb-1">
+                  TASKS ({planStream.streamingPlan.todos.length})
+                </Text>
+                {planStream.streamingPlan.todos.map((todo) => (
+                  <View key={todo.id} className="flex-row items-start gap-2 py-1">
+                    <Circle className="h-3.5 w-3.5 text-muted-foreground mt-0.5" size={14} />
+                    <Text className="text-xs text-foreground flex-1">{todo.content}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        ) : planStream?.isPlanStreaming && filteredPlans.length === 0 && !loading ? (
+          <View className="items-center justify-center py-12 px-4">
+            <ActivityIndicator className="mb-3" />
+            <Text className="text-sm text-muted-foreground text-center">
+              Shogo is researching...
+            </Text>
+            <Text className="text-xs text-muted-foreground/70 text-center mt-1">
+              A plan will appear here shortly
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Researching banner when plans already exist */}
+        {planStream?.isPlanStreaming && !planStream.streamingPlan && filteredPlans.length > 0 && (
+          <View className="flex-row items-center gap-2 px-4 py-2.5 border-b border-primary/20 bg-primary/5">
+            <ActivityIndicator size="small" />
+            <Text className="text-xs text-primary">Creating a new plan...</Text>
+          </View>
+        )}
+
+        {loading && !planStream?.isPlanStreaming ? (
           <ActivityIndicator className="mt-8" />
-        ) : filteredPlans.length === 0 ? (
+        ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
           <View className="items-center justify-center py-12 px-4">
             <ClipboardList className="h-8 w-8 text-muted-foreground/40 mb-3" size={32} />
             <Text className="text-sm text-muted-foreground text-center">
@@ -406,7 +488,7 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshT
               Switch to Plan mode in the chat to create one
             </Text>
           </View>
-        ) : (
+        ) : filteredPlans.length > 0 ? (
           filteredPlans.map((plan) => (
             <Pressable
               key={plan.filename}
@@ -428,7 +510,7 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan, refreshT
               </View>
             </Pressable>
           ))
-        )}
+        ) : null}
       </ScrollView>
     </View>
   )

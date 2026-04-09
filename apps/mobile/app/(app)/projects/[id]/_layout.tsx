@@ -26,6 +26,7 @@ import {
   Platform,
   BackHandler,
   Keyboard,
+  Alert,
 } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
@@ -53,8 +54,14 @@ import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
+import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
+import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
+import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
+import { MODEL_CATALOG } from '@shogo/model-catalog'
+import { agentFetch } from '../../../../lib/agent-fetch'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
+import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
 import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
@@ -79,6 +86,17 @@ import { RefreshCw, MessageSquare } from 'lucide-react-native'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
+import {
+  AlertDialog,
+  AlertDialogBackdrop,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogBody,
+  AlertDialogFooter,
+} from '@/components/ui/alert-dialog'
+import { Heading } from '@/components/ui/heading'
+import { Text as UIText } from '@/components/ui/text'
+import { Button, ButtonText } from '@/components/ui/button'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -111,12 +129,14 @@ export default observer(function ProjectLayout() {
   const actions = useDomainActions()
   const projects = useProjectCollection()
 
-  // Capture initialMessage and files once so they don't re-fire on re-renders
+  // Capture initialMessage and files once so they don't re-fire on re-renders.
+  // The session ID that should receive these one-time props (only the first tab).
+  const [initialPropsSessionId] = useState(() => params.chatSessionId ?? null)
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
   const [capturedInitialInteractionMode] = useState<InteractionMode | undefined>(() => {
     const raw = params.initialInteractionMode
     const m = Array.isArray(raw) ? raw[0] : raw
-    if (m === 'agent' || m === 'plan' || m === 'ask') return m
+    if (m === 'agent' || m === 'plan' || m === 'ask') return m as InteractionMode
     return undefined
   })
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
@@ -173,7 +193,8 @@ export default observer(function ProjectLayout() {
 
   const folders = useMemo(() => {
     try {
-      return (store?.folderCollection?.all ?? []).map((f: any) => ({
+      const rawFolders = store?.folderCollection?.all
+      return (Array.isArray(rawFolders) ? rawFolders : []).map((f: any) => ({
         id: f.id,
         name: f.name || 'Untitled',
       }))
@@ -240,7 +261,8 @@ export default observer(function ProjectLayout() {
 
   const allProjects = useMemo(() => {
     try {
-      const items = projects?.all ?? []
+      const raw = projects?.all
+      const items = Array.isArray(raw) ? raw : []
       return items.map((p: any) => ({
         id: p.id,
         name: p.name || 'Untitled',
@@ -266,6 +288,38 @@ export default observer(function ProjectLayout() {
   })
 
   // APP_MODE_DISABLED: app template copy effect removed
+
+  // Shared model selection — shared between ChatPanel and CapabilitiesPanel
+  const hasAdvancedModelAccess = features.billing ? billingData.hasAdvancedModelAccess : true
+  const [selectedModel, setSelectedModel] = useState<string>(
+    () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
+  )
+
+  useEffect(() => {
+    loadModelPreference().then((stored) => {
+      if (stored) setSelectedModel(stored)
+      else if (hasAdvancedModelAccess) setSelectedModel(DEFAULT_MODEL_PRO)
+    })
+  }, [hasAdvancedModelAccess])
+
+  const handleModelChange = useCallback(async (modelId: string) => {
+    setSelectedModel(modelId)
+    saveModelPreference(modelId)
+    if (agentUrl) {
+      const entry = MODEL_CATALOG[modelId as keyof typeof MODEL_CATALOG]
+      if (entry) {
+        try {
+          await agentFetch(`${agentUrl}/agent/config`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: { provider: entry.provider, name: entry.id } }),
+          })
+        } catch (err) {
+          console.error('[ProjectLayout] Failed to push model config to runtime:', err)
+        }
+      }
+    }
+  }, [agentUrl])
 
   // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
   const dynamicAppStreamUrl = agentUrl
@@ -453,6 +507,71 @@ export default observer(function ProjectLayout() {
     }
   }, [projectId, chatSessionId])
 
+  // ─── Open chat tabs state ───────────────────────────────
+  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([])
+  /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
+  const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<string | null>(null)
+  const openTabsRestoredRef = useRef(false)
+
+  // Restore open tabs from AsyncStorage on mount
+  useEffect(() => {
+    if (!projectId || openTabsRestoredRef.current) return
+    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`).then((raw) => {
+      if (raw) {
+        try {
+          const ids = JSON.parse(raw)
+          if (Array.isArray(ids) && ids.length > 0) {
+            setOpenChatTabIds(ids)
+            openTabsRestoredRef.current = true
+            return
+          }
+        } catch { /* ignore malformed data */ }
+      }
+      openTabsRestoredRef.current = true
+    }).catch(() => { openTabsRestoredRef.current = true })
+  }, [projectId])
+
+  // Persist open tabs to AsyncStorage when they change
+  useEffect(() => {
+    if (!projectId || !openTabsRestoredRef.current || openChatTabIds.length === 0) return
+    AsyncStorage.setItem(`shogo:chatTabs:${projectId}`, JSON.stringify(openChatTabIds)).catch(() => {})
+  }, [projectId, openChatTabIds])
+
+  // Ensure the active session is always in the open tabs list
+  useEffect(() => {
+    if (!chatSessionId) return
+    setOpenChatTabIds((prev) => {
+      if (prev.includes(chatSessionId)) return prev
+      return [...prev, chatSessionId]
+    })
+  }, [chatSessionId])
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    streamingChangeHandlersRef.current.delete(tabId)
+    setStreamingTabIds((prev) => {
+      if (!prev.has(tabId)) return prev
+      const next = new Set(prev)
+      next.delete(tabId)
+      return next
+    })
+    setOpenChatTabIds((prev) => {
+      const next = prev.filter((id) => id !== tabId)
+      if (tabId === chatSessionId) {
+        const idx = prev.indexOf(tabId)
+        const neighbor = prev[idx + 1] ?? prev[idx - 1]
+        if (neighbor) {
+          setChatSessionId(neighbor)
+        } else {
+          setChatSessionId(null)
+        }
+      }
+      if (next.length === 0 && projectId) {
+        AsyncStorage.removeItem(`shogo:chatTabs:${projectId}`).catch(() => {})
+      }
+      return next
+    })
+  }, [chatSessionId, projectId])
+
   const SESSION_PAGE_SIZE = 10
 
   // Auto-select or create chat session
@@ -525,17 +644,35 @@ export default observer(function ProjectLayout() {
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
-  const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
-  const [planRefreshNonce, setPlanRefreshNonce] = useState(0)
+  const [streamingTabIds, setStreamingTabIds] = useState<Set<string>>(new Set())
+  const handleTabStreamingChange = useCallback((tabId: string, isStreaming: boolean) => {
+    setStreamingTabIds((prev) => {
+      const has = prev.has(tabId)
+      if (isStreaming && has) return prev
+      if (!isStreaming && !has) return prev
+      const next = new Set(prev)
+      if (isStreaming) next.add(tabId)
+      else next.delete(tabId)
+      return next
+    })
+  }, [])
+  const streamingChangeHandlersRef = useRef<Map<string, (streaming: boolean) => void>>(new Map())
+  const getStreamingChangeHandler = useCallback((tabId: string) => {
+    let handler = streamingChangeHandlersRef.current.get(tabId)
+    if (!handler) {
+      handler = (streaming: boolean) => handleTabStreamingChange(tabId, streaming)
+      streamingChangeHandlersRef.current.set(tabId, handler)
+    }
+    return handler
+  }, [handleTabStreamingChange])
+  const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; modelId: string; nonce: number } | null>(null)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!canvasEnabled) {
-      if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
-        setPreviewTab('chat-fullscreen')
-      }
       if (
         activeTab === 'canvas' &&
         previewTab !== 'app-preview' &&
@@ -544,7 +681,6 @@ export default observer(function ProjectLayout() {
         setActiveTab('chat')
       }
     } else if (canvasEnabled) {
-      if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
       if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab])
@@ -556,7 +692,7 @@ export default observer(function ProjectLayout() {
     const onBack = () => {
       if (previewTab !== 'capabilities') return false
       setActiveTab('chat')
-      setPreviewTab(canvasEnabled ? 'dynamic-app' : 'chat-fullscreen')
+      setPreviewTab('chat-fullscreen')
       return true
     }
 
@@ -639,8 +775,31 @@ export default observer(function ProjectLayout() {
     }
   }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
 
-  const handleBuildPlan = useCallback((plan: any, agentMode: any) => {
-    setBuildPlanRequest({ plan, agentMode, nonce: Date.now() })
+  const techStackId = projectSettings.techStackId as string | undefined
+
+  const handleTechStackChange = useCallback(async (stackId: string, capabilities?: Record<string, boolean>) => {
+    const patch: Record<string, unknown> = { techStackId: stackId }
+    if (capabilities) Object.assign(patch, capabilities)
+    await updateProjectSettings(patch)
+
+    if (capabilities && agentUrl) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (nativeHeaders) Object.assign(headers, nativeHeaders())
+        await fetch(`${agentUrl}/agent/config`, {
+          method: 'PATCH',
+          headers,
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          body: JSON.stringify(capabilities),
+        })
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to push stack capabilities to runtime:', err)
+      }
+    }
+  }, [updateProjectSettings, agentUrl, nativeHeaders])
+
+  const handleBuildPlan = useCallback((plan: any, modelId: string) => {
+    setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
     setActiveTab('chat')
     if (canvasEnabled) {
       setPreviewTab('dynamic-app')
@@ -691,11 +850,19 @@ export default observer(function ProjectLayout() {
   const chatSessions: ChatSession[] = useMemo(() => {
     if (!store?.chatSessionCollection) return []
     try {
-      return store.chatSessionCollection.all
+      const sessionsAll = Array.isArray(store.chatSessionCollection.all) ? store.chatSessionCollection.all : []
+      return sessionsAll
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
-          name: sessionNames[s.id] || s.name || s.inferredName || `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+          // Prefer explicit title from the store over sessionNames (message-preview cache);
+          // otherwise renames stay stale until full reload.
+          name:
+            (typeof s.name === 'string' && s.name.trim())
+              ? s.name.trim()
+              : sessionNames[s.id] ||
+                s.inferredName ||
+                `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
           messageCount: -1,
           updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
         }))
@@ -705,6 +872,17 @@ export default observer(function ProjectLayout() {
     }
   }, [store?.chatSessionCollection?.all, sessionNames, projectId])
 
+  // Build ordered tab list with display names from openChatTabIds
+  const openChatTabs: ChatTab[] = useMemo(() => {
+    const sessionMap = new Map(chatSessions.map((s) => [s.id, s.name]))
+    return openChatTabIds
+      .map((id) => ({ id, name: sessionMap.get(id) || 'Untitled' }))
+  }, [openChatTabIds, chatSessions])
+
+  const handleSelectTab = useCallback((tabId: string) => {
+    setChatSessionId(tabId)
+  }, [])
+
   const handleCreateNewSession = useCallback(async () => {
     try {
       const newSession = await actions.createChatSession({
@@ -713,12 +891,61 @@ export default observer(function ProjectLayout() {
         contextId: projectId!,
       })
       if (newSession?.id) {
+        setOpenChatTabIds((prev) => prev.includes(newSession.id) ? prev : [...prev, newSession.id])
         setChatSessionId(newSession.id)
       }
     } catch (err) {
       console.error('[ProjectLayout] Failed to create chat session:', err)
     }
   }, [actions, projectId])
+
+  const handleRenameChatSession = useCallback(
+    async (sessionId: string, newName: string) => {
+      try {
+        await actions.updateChatSession(sessionId, { name: newName })
+        // Flush into the local sessionNames cache so the useMemo dep changes
+        // and chatSessions / openChatTabs recompute immediately.
+        setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to rename chat session:', err)
+      }
+    },
+    [actions],
+  )
+
+  const performDeleteChatSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        await actions.deleteChatSession(sessionId)
+        handleCloseTab(sessionId)
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to delete chat session:', err)
+      }
+    },
+    [actions, handleCloseTab],
+  )
+
+  const handleDeleteChatSession = useCallback(
+    (sessionId: string) => {
+      const confirmMsg = 'Delete this chat? This cannot be undone.'
+      if (Platform.OS === 'web') {
+        setDeleteChatConfirmSessionId(sessionId)
+      } else {
+        Alert.alert('Delete chat', confirmMsg, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: () => { void performDeleteChatSession(sessionId) } },
+        ])
+      }
+    },
+    [performDeleteChatSession],
+  )
+
+  const handleConfirmDeleteChatDialog = useCallback(() => {
+    if (!deleteChatConfirmSessionId) return
+    const id = deleteChatConfirmSessionId
+    setDeleteChatConfirmSessionId(null)
+    void performDeleteChatSession(id)
+  }, [deleteChatConfirmSessionId, performDeleteChatSession])
 
   // ─── Integrations card state ───────────────────────────────
   const [integrationsCardData, setIntegrationsCardData] = useState<{
@@ -826,27 +1053,46 @@ export default observer(function ProjectLayout() {
     )
   }
 
-  const chatPanel = (
-    <ChatPanel
-      featureId={projectId ?? null}
-      featureName={project.name}
-      phase={null}
-      chatSessionId={chatSessionId}
-      onChatSessionChange={handleChatSessionChange}
-      workspaceId={project?.workspaceId}
-      userId={user?.id}
-      projectId={projectId}
-      projectType="unified"
-      initialMessage={capturedInitialMessage}
-      initialInteractionMode={capturedInitialInteractionMode}
-      initialFiles={capturedInitialFiles}
-      billingData={features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }}
-      onCanvasPreview={handleCanvasPreview}
-      onMessagesChange={setChatMessages}
-      buildPlanRequest={buildPlanRequest}
-      onPlanCreated={() => setPlanRefreshNonce((n) => n + 1)}
-      className="flex-1"
-    />
+  const billingDataResolved = features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }
+
+  const chatPanels = (
+    <>
+      {openChatTabIds.map((tabId) => {
+        const isActive = tabId === chatSessionId
+        const isInitialSession = tabId === initialPropsSessionId
+        return (
+          <View
+            key={tabId}
+            className="flex-1"
+            style={!isActive ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 } : undefined}
+            pointerEvents={isActive ? 'auto' : 'none'}
+          >
+            <ChatPanel
+              featureId={projectId ?? null}
+              featureName={project.name}
+              phase={null}
+              chatSessionId={tabId}
+              onChatSessionChange={handleChatSessionChange}
+              workspaceId={project?.workspaceId}
+              userId={user?.id}
+              projectId={projectId}
+              projectType="unified"
+              initialMessage={isInitialSession ? capturedInitialMessage : undefined}
+              initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
+              initialFiles={isInitialSession ? capturedInitialFiles : undefined}
+              billingData={billingDataResolved}
+              onCanvasPreview={handleCanvasPreview}
+              onMessagesChange={isActive ? setChatMessages : undefined}
+              onStreamingChange={getStreamingChangeHandler(tabId)}
+              buildPlanRequest={isActive ? buildPlanRequest : null}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
+              className="flex-1"
+            />
+          </View>
+        )
+      })}
+    </>
   )
 
   const canvasPanel = canvasEnabled ? (
@@ -869,10 +1115,9 @@ export default observer(function ProjectLayout() {
   ) : null
 
   const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
-  if (activeMode !== 'none') hiddenTabs.push('chat-fullscreen')
   if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
 
-  const isChatFullscreen = isWide && activeMode === 'none' && previewTab === 'chat-fullscreen'
+  const isChatFullscreen = isWide && previewTab === 'chat-fullscreen'
 
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
@@ -907,6 +1152,7 @@ export default observer(function ProjectLayout() {
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
+    onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
@@ -916,6 +1162,7 @@ export default observer(function ProjectLayout() {
     <>
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
+      <PlanStreamProvider>
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
@@ -936,7 +1183,7 @@ export default observer(function ProjectLayout() {
                   } else {
                     // Clear standalone preview (files, capabilities, …) so the chat column shows
                     // and the next “canvas” visit doesn’t reopen the old panel on top.
-                    setPreviewTab(!canvasEnabled ? 'chat-fullscreen' : 'dynamic-app')
+                    setPreviewTab('chat-fullscreen')
                   }
                 }}
                 onTabChange={(tabId: string) => {
@@ -965,11 +1212,17 @@ export default observer(function ProjectLayout() {
                     <ChatSessionSidebar
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => setChatSessionId(sessionId)}
+                      onSelect={(sessionId) => {
+                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                        setChatSessionId(sessionId)
+                      }}
                       onCreate={handleCreateNewSession}
                       onLoadMore={handleLoadMoreSessions}
                       hasMore={store?.chatSessionCollection?.hasMore ?? false}
                       isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                      hideHeader
+                      searchOpen={sidebarSearchOpen}
+                      onSearchClose={() => setSidebarSearchOpen(false)}
                     />
                   </View>
                 )}
@@ -979,6 +1232,7 @@ export default observer(function ProjectLayout() {
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}
                       onSelect={(sessionId) => {
+                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
                         setChatSessionId(sessionId)
                         setShowChatSessions(false)
                       }}
@@ -989,7 +1243,41 @@ export default observer(function ProjectLayout() {
                     />
                   </View>
                 )}
-                <View className="min-h-0 flex-1">{chatPanel}</View>
+                {isChatFullscreen ? (
+                  /* Fullscreen: parent is flex-row, so wrap tab bar + chat in a flex-col */
+                  <View className="min-h-0 flex-1 flex-col">
+                    <ChatTabBar
+                      tabs={openChatTabs}
+                      activeTabId={chatSessionId}
+                      onSelectTab={handleSelectTab}
+                      onCloseTab={handleCloseTab}
+                      onNewChat={handleCreateNewSession}
+                      streamingTabIds={streamingTabIds}
+                      onRenameSession={handleRenameChatSession}
+                      onDeleteSession={handleDeleteChatSession}
+                      onSearchChats={() => setSidebarSearchOpen(true)}
+                    />
+                    <View className="min-h-0 flex-1">{chatPanels}</View>
+                  </View>
+                ) : (
+                  <>
+                    {isWide && (
+                      <ChatTabBar
+                        tabs={openChatTabs}
+                        activeTabId={chatSessionId}
+                        onSelectTab={handleSelectTab}
+                        onCloseTab={handleCloseTab}
+                        onNewChat={handleCreateNewSession}
+                        onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
+                        showHistory={showChatSessions}
+                        streamingTabIds={streamingTabIds}
+                        onRenameSession={handleRenameChatSession}
+                        onDeleteSession={handleDeleteChatSession}
+                      />
+                    )}
+                    <View className="min-h-0 flex-1">{chatPanels}</View>
+                  </>
+                )}
               </View>
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
@@ -1015,7 +1303,7 @@ export default observer(function ProjectLayout() {
                 <Pressable
                   onPress={() => {
                     setActiveTab('chat')
-                    setPreviewTab(!canvasEnabled ? 'chat-fullscreen' : 'dynamic-app')
+                    setPreviewTab('chat-fullscreen')
                   }}
                   className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
                 >
@@ -1053,11 +1341,11 @@ export default observer(function ProjectLayout() {
             >
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} refreshTrigger={planRefreshNonce} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>
@@ -1089,6 +1377,41 @@ export default observer(function ProjectLayout() {
         </View>
       </EditModeProvider>
     </CanvasThemeProvider>
+
+      {Platform.OS === 'web' && (
+        <AlertDialog
+          isOpen={deleteChatConfirmSessionId !== null}
+          onClose={() => setDeleteChatConfirmSessionId(null)}
+          size="sm"
+        >
+          <AlertDialogBackdrop />
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <Heading size="md" className="text-typography-950">
+                Delete chat
+              </Heading>
+            </AlertDialogHeader>
+            <AlertDialogBody className="mt-3 mb-4">
+              <UIText size="sm" className="text-typography-700">
+                Delete this chat? This cannot be undone.
+              </UIText>
+            </AlertDialogBody>
+            <AlertDialogFooter>
+              <Button
+                variant="outline"
+                action="secondary"
+                onPress={() => setDeleteChatConfirmSessionId(null)}
+              >
+                <ButtonText>Cancel</ButtonText>
+              </Button>
+              <Button action="negative" onPress={handleConfirmDeleteChatDialog}>
+                <ButtonText>Delete</ButtonText>
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+    </PlanStreamProvider>
     </>
   )
 })

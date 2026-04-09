@@ -20,6 +20,7 @@ import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
+import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -614,12 +615,16 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
-      // Enforce basic agent mode for free/basic-plan workspaces (server-side guard)
-      if (parsedBody.agentMode && parsedBody.agentMode !== 'basic') {
-        const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
-        if (!hasAdvanced) {
-          parsedBody.agentMode = 'basic'
-          body = JSON.stringify(parsedBody)
+      // Enforce model tier for free/basic-plan workspaces (server-side guard)
+      if (parsedBody.agentMode) {
+        const resolved = resolveModelId(parsedBody.agentMode)
+        const tier = getModelTier(resolved)
+        if (tier !== 'economy') {
+          const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
+          if (!hasAdvanced) {
+            parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+            body = JSON.stringify(parsedBody)
+          }
         }
       }
 
@@ -694,12 +699,22 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const FETCH_TIMEOUT_MS = 1_800_000
       let lastError: Error | null = null
 
+      // Do NOT include clientSignal in fetchSignal. A client disconnect
+      // (e.g. page refresh) must NOT abort the upstream fetch — the runtime
+      // keeps the agent running in memory so the client can resume the stream.
+      // trackUsageFromStream also needs the full stream for billing/persistence.
       const clientSignal = c.req.raw.signal
-      const fetchSignal = clientSignal
-        ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), clientSignal])
-        : AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      const fetchSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        // Check if client already disconnected before retrying
+        if (clientSignal?.aborted) {
+          console.log(`[ProjectChat] Client disconnected before attempt ${attempt}, stopping retries`)
+          chatSpan.setStatus({ code: SpanStatusCode.OK, message: "client_disconnected" })
+          chatSpan.end()
+          return new Response(null, { status: 499 })
+        }
+
         try {
           const response = await fetch(`${podUrl}${chatEndpoint}`, {
             method: "POST",
@@ -855,6 +870,56 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   })
 
   /**
+   * GET /projects/:projectId/chat/:chatSessionId/stream - Resume active stream
+   *
+   * Matches the AI SDK's default resume URL pattern: ${api}/${chatId}/stream
+   * Returns 204 when no active stream exists, or pipes the replay stream.
+   */
+  router.get("/projects/:projectId/chat/:chatSessionId/stream", async (c) => {
+    const projectId = c.req.param("projectId")
+    const chatSessionId = c.req.param("chatSessionId")
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/chat/${chatSessionId}/stream`,
+        { method: "GET" },
+      )
+
+      if (response.status === 204) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (response.body) {
+        const responseHeaders = new Headers()
+        response.headers.forEach((value, key) => {
+          if (!["content-length", "transfer-encoding", "connection"].includes(key.toLowerCase())) {
+            responseHeaders.set(key, value)
+          }
+        })
+        responseHeaders.set("Access-Control-Allow-Origin", "*")
+        responseHeaders.set("X-Accel-Buffering", "no")
+        return new Response(response.body, {
+          status: response.status,
+          headers: responseHeaders,
+        })
+      }
+
+      return new Response(null, { status: 204 })
+    } catch {
+      return new Response(null, { status: 204 })
+    }
+  })
+
+  /**
    * POST /projects/:projectId/chat/stop - Stop/interrupt active generation
    * Proxies to the project runtime's /agent/stop endpoint
    */
@@ -871,17 +936,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      let podUrl: string
-      try {
-        podUrl = await getProjectUrl(projectId)
-      } catch {
-        return c.json({ success: true, message: "No active runtime to stop" })
-      }
-
       const body = await c.req.text()
-      const response = await fetch(`${podUrl}/agent/stop`, {
+      const response = await fetchFromRuntime(projectId, "/agent/stop", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: body || "{}",
       })
 

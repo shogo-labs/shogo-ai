@@ -1,0 +1,20 @@
+{
+  "id": "react-app",
+  "name": "React App",
+  "description": "Build apps with Vite + React + TypeScript + Tailwind CSS + shadcn/ui. Includes a skill server backend with Prisma + SQLite for persistent data.",
+  "tags": ["react", "vite", "tailwind", "shadcn", "typescript", "fullstack"],
+  "runtime": {
+    "devServer": "vite",
+    "buildCommand": "vite build --watch",
+    "previewPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatEnabled": true,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  }
+}

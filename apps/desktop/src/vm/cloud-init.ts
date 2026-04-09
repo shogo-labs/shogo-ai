@@ -296,7 +296,7 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('  - mkdir -p /workspace /mnt/bundle')
     lines.push('  - mount -t virtiofs workspace /workspace 2>/dev/null || true')
     lines.push('  - mount -t virtiofs bundle /mnt/bundle 2>/dev/null || true')
-    lines.push('  - chown shogo:shogo /workspace')
+    lines.push('  - chown shogo:shogo /workspace 2>/dev/null || true')
     lines.push(`  - date -s "${new Date().toISOString()}"`)
     lines.push('  - growpart /dev/vda 1 2>/dev/null || true')
     lines.push('  - resize2fs /dev/vda1 2>/dev/null || true')

@@ -39,3 +39,18 @@ export const AGENT_MODE_DEFAULTS: Record<AgentMode, ModelId> = {
   basic: 'claude-haiku-4-5-20251001',
   advanced: 'claude-sonnet-4-6',
 }
+
+// Runtime overrides set by admin — checked before AGENT_MODE_DEFAULTS.
+let _agentModeOverrides: Partial<Record<AgentMode, string>> = {}
+
+export function setAgentModeOverrides(overrides: Partial<Record<AgentMode, string>>): void {
+  _agentModeOverrides = { ...overrides }
+}
+
+export function getAgentModeOverrides(): Partial<Record<AgentMode, string>> {
+  return { ..._agentModeOverrides }
+}
+
+export function resolveAgentModeDefault(mode: AgentMode): string {
+  return _agentModeOverrides[mode] || AGENT_MODE_DEFAULTS[mode]
+}

@@ -231,7 +231,9 @@ export function DynChart({
   colors,
   className,
 }: ChartProps) {
-  const data = Array.isArray(rawData) ? rawData : []
+  const data = (Array.isArray(rawData) ? rawData : []).filter(
+    (d): d is ChartDataPoint => d != null && typeof d.value === 'number',
+  )
   if (data.length === 0) {
     return (
       <View className={cn('flex items-center justify-center', className)} style={{ height }}>

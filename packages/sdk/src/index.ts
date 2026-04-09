@@ -75,6 +75,7 @@ export {
   type ShogoKeyStatus,
   type ShogoKeyConnectResult,
   type LlmConfig,
+  type InstanceInfo,
 } from './platform/index.js'
 
 // Errors

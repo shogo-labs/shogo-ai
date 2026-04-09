@@ -1,0 +1,27 @@
+{
+  "id": "self-evolving",
+  "name": "Self-Evolving Agent",
+  "description": "A versatile agent that discovers and installs its own tools, skills, and integrations based on what you need. No framework opinions — it figures things out.",
+  "category": "development",
+  "tags": [
+    "general",
+    "adaptive",
+    "tools",
+    "skills",
+    "integrations",
+    "self-evolving"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "techStack": "none"
+}

@@ -330,7 +330,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // Also extract error messages from pi-agent-core (it catches stream errors
   // internally and appends error messages instead of re-throwing).
   const coreErrorMsg = newMessages.find((m: any) => m.errorMessage)
-  const coreError = (coreErrorMsg as any)?.errorMessage
+  const rawCoreError = (coreErrorMsg as any)?.errorMessage
+  const coreError = rawCoreError ? parseProviderError(rawCoreError) : undefined
   const implicitError =
     !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
       ? new Error(
@@ -362,6 +363,25 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   await onAgentEnd?.(result)
 
   return result
+}
+
+/**
+ * Extract a human-readable message from raw provider error strings.
+ * pi-agent-core often returns errors like: `402 {"type":"error","error":{"type":"billing_error","message":"..."}}`
+ */
+function parseProviderError(raw: string): string {
+  const jsonStart = raw.indexOf('{')
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart))
+      const msg = parsed?.error?.message || parsed?.message
+      if (msg) {
+        const status = raw.slice(0, jsonStart).trim()
+        return status ? `${status} ${msg}` : msg
+      }
+    } catch {}
+  }
+  return raw
 }
 
 function isContextOverflowError(err: any): boolean {

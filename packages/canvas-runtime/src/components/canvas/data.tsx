@@ -187,7 +187,9 @@ function getColor(d: ChartDataPoint, i: number, palette?: string[]): string {
 }
 
 export function DynChart({ type = 'bar', data: rawData, title, height = 200, showLegend, colors, className }: DynChartProps) {
-  const data = Array.isArray(rawData) ? rawData : []
+  const data = (Array.isArray(rawData) ? rawData : []).filter(
+    (d): d is ChartDataPoint => d != null && typeof d.value === 'number',
+  )
   if (data.length === 0) {
     return (
       <div className={cn('flex items-center justify-center', className)} style={{ height }}>

@@ -68,6 +68,7 @@ export function loadDirTemplates(): AgentTemplate[] {
         skills,
         files,
         integrations: meta.integrations,
+        techStack: meta.techStack,
       } satisfies AgentTemplate
     })
 }
