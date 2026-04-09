@@ -22,6 +22,7 @@ import {
   Award,
   ChevronRight,
   AlertCircle,
+  Info,
 } from 'lucide-react-native'
 import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
@@ -269,28 +270,32 @@ export default observer(function CreatorDashboardScreen() {
             label="Total Earnings"
             value={formatCents(profile.totalEarningsInCents)}
             color="text-green-600"
+            info="Total revenue earned across all your listings after platform fees."
           />
           <StatCard
             icon={Clock}
             label="Pending Payout"
             value={formatCents(profile.pendingPayoutInCents)}
             color="text-yellow-600"
+            info="Earnings that have not yet been transferred to your bank account."
           />
           <StatCard
             icon={Download}
             label="Total Installs"
             value={String(profile.totalInstalls)}
             color="text-blue-600"
+            info="Combined number of times your agents have been installed."
           />
           <StatCard
             icon={Star}
-            label="Avg Rating"
+            label="Average Rating"
             value={
               profile.averageAgentRating > 0
                 ? profile.averageAgentRating.toFixed(1)
                 : '—'
             }
             color="text-orange-500"
+            info="Average star rating across all your published agents."
           />
         </View>
       )}
@@ -354,7 +359,7 @@ export default observer(function CreatorDashboardScreen() {
                           : 'text-red-700'
                     )}
                   >
-                    {listing.status}
+                    {listing.status === 'archived' ? 'Unlisted' : listing.status}
                   </Text>
                 </View>
               </View>
@@ -394,17 +399,22 @@ function StatCard({
   label,
   value,
   color,
+  info,
 }: {
   icon: any
   label: string
   value: string
   color: string
+  info?: string
 }) {
   return (
     <View className="flex-1 min-w-[140px] p-4 rounded-xl border border-border bg-card">
       <Icon size={18} className={color} />
       <Text className="text-xl font-bold text-foreground mt-2">{value}</Text>
       <Text className="text-xs text-muted-foreground mt-0.5">{label}</Text>
+      {info && (
+        <Text className="text-[10px] text-muted-foreground/70 mt-1 leading-3">{info}</Text>
+      )}
     </View>
   )
 }

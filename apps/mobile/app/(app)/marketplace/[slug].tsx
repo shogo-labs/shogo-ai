@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  TextInput,
 } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter, useLocalSearchParams } from 'expo-router'
@@ -20,9 +21,13 @@ import {
   Download,
   Shield,
   ExternalLink,
+  MessageSquarePlus,
+  X,
+  Info,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../contexts/domain'
 import { useAuth } from '../../../contexts/auth'
+import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { PricingBadge } from '../../../components/marketplace/PricingBadge'
 import {
   CreatorBadge,
@@ -86,11 +91,17 @@ interface InstallResponse {
   error?: string
 }
 
+interface UserInstall {
+  id: string
+  listingId: string
+  status: string
+}
+
 function formatCents(cents: number): string {
   return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`
 }
 
-function renderStars(rating: number) {
+function renderStars(rating: number, size = 14) {
   const stars = []
   const full = Math.floor(rating)
   const half = rating - full >= 0.5
@@ -99,7 +110,7 @@ function renderStars(rating: number) {
     stars.push(
       <Star
         key={i}
-        size={14}
+        size={size}
         fill={filled ? '#eab308' : 'transparent'}
         color={filled ? '#eab308' : '#d1d5db'}
       />,
@@ -140,12 +151,21 @@ export default observer(function MarketplaceDetailScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>()
   const http = useDomainHttp()
   const { user } = useAuth()
+  const activeWorkspace = useActiveWorkspace()
 
   const [listing, setListing] = useState<ListingDetail | null>(null)
   const [reviews, setReviews] = useState<Review[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
+
+  const [userInstall, setUserInstall] = useState<UserInstall | null>(null)
+  const [showReviewForm, setShowReviewForm] = useState(false)
+  const [reviewRating, setReviewRating] = useState(5)
+  const [reviewTitle, setReviewTitle] = useState('')
+  const [reviewBody, setReviewBody] = useState('')
+  const [submittingReview, setSubmittingReview] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
 
   const loadListing = useCallback(async () => {
     if (!slug) return
@@ -165,27 +185,45 @@ export default observer(function MarketplaceDetailScreen() {
   const loadReviews = useCallback(async () => {
     if (!slug) return
     try {
-      const res = await http.get<ReviewsResponse>(`/api/marketplace/${slug}/reviews?limit=5`)
+      const res = await http.get<ReviewsResponse>(`/api/marketplace/${slug}/reviews?limit=10`)
       setReviews(res.data.items)
     } catch (err) {
       console.error('[MarketplaceDetail] Failed to load reviews:', err)
     }
   }, [http, slug])
 
+  const loadUserInstall = useCallback(async () => {
+    if (!user?.id) return
+    try {
+      const res = await http.get<{ installs: UserInstall[] }>('/api/marketplace/my-installs')
+      const installs = res.data?.installs ?? []
+      if (listing) {
+        const match = installs.find((i) => i.listingId === listing.id && i.status === 'active')
+        setUserInstall(match ?? null)
+      }
+    } catch {
+      // non-critical
+    }
+  }, [http, user?.id, listing])
+
   useEffect(() => {
     loadListing()
     loadReviews()
   }, [slug])
 
+  useEffect(() => {
+    if (listing) loadUserInstall()
+  }, [listing, loadUserInstall])
+
   const handleInstall = useCallback(async () => {
-    if (!listing || !user?.id) {
-      Alert.alert('Sign in required', 'You need to be signed in to install agents.')
+    if (!listing || !user?.id || !activeWorkspace?.id) {
+      Alert.alert('Sign In Required', 'You need to be signed in to install agents.')
       return
     }
     try {
       setInstalling(true)
       const res = await http.post<InstallResponse>(`/api/marketplace/${slug}/install`, {
-        workspaceId: user.id,
+        workspaceId: activeWorkspace.id,
       })
       const data = res.data
       if (data.checkoutUrl) {
@@ -193,15 +231,40 @@ export default observer(function MarketplaceDetailScreen() {
       } else if (data.projectId) {
         router.push(`/(app)/projects/${data.projectId}` as any)
       } else if (data.error) {
-        Alert.alert('Install failed', data.error)
+        Alert.alert('Install Failed', data.error)
       }
     } catch (err: any) {
       console.error('[MarketplaceDetail] Install failed:', err)
-      Alert.alert('Install failed', err?.message || 'Something went wrong')
+      Alert.alert('Install Failed', err?.message || 'Something went wrong')
     } finally {
       setInstalling(false)
     }
-  }, [listing, user?.id, http, slug, router])
+  }, [listing, user?.id, activeWorkspace?.id, http, slug, router])
+
+  const handleSubmitReview = useCallback(async () => {
+    if (!listing || !userInstall) return
+    setSubmittingReview(true)
+    setReviewError(null)
+    try {
+      await http.post(`/api/marketplace/${slug}/reviews`, {
+        installId: userInstall.id,
+        rating: reviewRating,
+        title: reviewTitle.trim() || null,
+        body: reviewBody.trim() || null,
+      })
+      setShowReviewForm(false)
+      setReviewTitle('')
+      setReviewBody('')
+      setReviewRating(5)
+      loadReviews()
+      loadListing()
+    } catch (err: any) {
+      const msg = err?.message || err?.data?.error || 'Failed to submit review'
+      setReviewError(msg.includes('already reviewed') ? 'You have already reviewed this agent.' : msg)
+    } finally {
+      setSubmittingReview(false)
+    }
+  }, [listing, userInstall, slug, http, reviewRating, reviewTitle, reviewBody, loadReviews, loadListing])
 
   if (loading) {
     return (
@@ -222,7 +285,7 @@ export default observer(function MarketplaceDetailScreen() {
           onPress={() => router.back()}
           className="mt-4 bg-primary px-4 py-2 rounded-lg"
         >
-          <Text className="text-primary-foreground text-sm font-medium">Go back</Text>
+          <Text className="text-primary-foreground text-sm font-medium">Go Back</Text>
         </Pressable>
       </View>
     )
@@ -311,16 +374,19 @@ export default observer(function MarketplaceDetailScreen() {
                 {listing.installCount.toLocaleString()}
               </Text>
             </View>
-            <Text className="text-xs text-muted-foreground mt-0.5">installs</Text>
+            <Text className="text-xs text-muted-foreground mt-0.5">Installs</Text>
           </View>
           <View className="items-center">
             <Text className="text-sm font-medium text-foreground">v{listing.currentVersion}</Text>
-            <Text className="text-xs text-muted-foreground mt-0.5">version</Text>
+            <Text className="text-xs text-muted-foreground mt-0.5">Version</Text>
           </View>
         </View>
 
         {/* Creator card */}
         <View className="mx-4 mb-4 p-3 rounded-xl border border-border bg-card">
+          <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+            Created By
+          </Text>
           <View className="flex-row items-center gap-3">
             {listing.creator.avatarUrl ? (
               <Image
@@ -405,11 +471,101 @@ export default observer(function MarketplaceDetailScreen() {
 
         {/* Reviews */}
         <View className="px-4 mb-4">
-          <Text className="text-sm font-semibold text-foreground mb-3">
-            Reviews ({listing.reviewCount})
-          </Text>
+          <View className="flex-row items-center justify-between mb-3">
+            <Text className="text-sm font-semibold text-foreground">
+              Reviews ({listing.reviewCount})
+            </Text>
+            {userInstall && !showReviewForm && (
+              <Pressable
+                onPress={() => setShowReviewForm(true)}
+                className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary"
+              >
+                <MessageSquarePlus size={13} color="#fff" />
+                <Text className="text-xs font-semibold text-primary-foreground">Write Review</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {/* Review form */}
+          {showReviewForm && (
+            <View className="mb-4 p-4 rounded-xl border border-primary/30 bg-primary/5">
+              <View className="flex-row items-center justify-between mb-3">
+                <Text className="text-sm font-semibold text-foreground">Your Review</Text>
+                <Pressable onPress={() => setShowReviewForm(false)}>
+                  <X size={16} className="text-muted-foreground" />
+                </Pressable>
+              </View>
+
+              {/* Star rating selector */}
+              <View className="mb-3">
+                <Text className="text-xs text-muted-foreground mb-1.5">Rating</Text>
+                <View className="flex-row gap-1">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Pressable key={n} onPress={() => setReviewRating(n)}>
+                      <Star
+                        size={28}
+                        fill={n <= reviewRating ? '#eab308' : 'transparent'}
+                        color={n <= reviewRating ? '#eab308' : '#d1d5db'}
+                      />
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View className="mb-3">
+                <Text className="text-xs text-muted-foreground mb-1.5">Title (Optional)</Text>
+                <TextInput
+                  value={reviewTitle}
+                  onChangeText={setReviewTitle}
+                  placeholder="Summarize your experience"
+                  placeholderTextColor="#9ca3af"
+                  className="px-3 py-2.5 rounded-lg border border-border bg-card text-foreground text-sm"
+                />
+              </View>
+
+              <View className="mb-3">
+                <Text className="text-xs text-muted-foreground mb-1.5">Review (Optional)</Text>
+                <TextInput
+                  value={reviewBody}
+                  onChangeText={setReviewBody}
+                  placeholder="What did you like or dislike about this agent?"
+                  placeholderTextColor="#9ca3af"
+                  multiline
+                  numberOfLines={3}
+                  textAlignVertical="top"
+                  className="px-3 py-2.5 rounded-lg border border-border bg-card text-foreground text-sm min-h-[72px]"
+                />
+              </View>
+
+              {reviewError && (
+                <Text className="text-xs text-destructive mb-2">{reviewError}</Text>
+              )}
+
+              <Pressable
+                onPress={handleSubmitReview}
+                disabled={submittingReview}
+                className={`py-2.5 rounded-lg items-center ${submittingReview ? 'bg-primary/60' : 'bg-primary'}`}
+              >
+                {submittingReview ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text className="text-sm font-semibold text-primary-foreground">Submit Review</Text>
+                )}
+              </Pressable>
+            </View>
+          )}
+
+          {!userInstall && !showReviewForm && (
+            <View className="flex-row items-start gap-2 mb-3 px-3 py-2.5 rounded-lg bg-muted/50">
+              <Info size={14} className="text-muted-foreground mt-0.5" />
+              <Text className="text-xs text-muted-foreground flex-1">
+                Install this agent to leave a review.
+              </Text>
+            </View>
+          )}
+
           {reviews.length === 0 ? (
-            <Text className="text-sm text-muted-foreground">No reviews yet.</Text>
+            <Text className="text-sm text-muted-foreground">No reviews yet. Be the first!</Text>
           ) : (
             <View className="gap-3">
               {reviews.map((review) => (
@@ -447,6 +603,8 @@ export default observer(function MarketplaceDetailScreen() {
         <Pressable
           onPress={handleInstall}
           disabled={installing}
+          accessibilityRole="button"
+          accessibilityLabel={installLabel}
           className={`rounded-xl py-3.5 items-center justify-center ${
             installing ? 'bg-primary/60' : 'bg-primary active:bg-primary/80'
           }`}
