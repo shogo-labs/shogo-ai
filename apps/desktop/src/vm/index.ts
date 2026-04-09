@@ -41,7 +41,7 @@ export function isVMAvailable(): boolean {
   try {
     const vmImageDir = getVMImageDir()
     const hasKernel = fs.existsSync(path.join(vmImageDir, 'vmlinuz'))
-    const hasRootfs = fs.existsSync(path.join(vmImageDir, 'rootfs.qcow2')) || fs.existsSync(path.join(vmImageDir, 'rootfs.raw'))
+    const hasRootfs = fs.existsSync(path.join(vmImageDir, 'rootfs-provisioned.qcow2')) || fs.existsSync(path.join(vmImageDir, 'rootfs.qcow2')) || fs.existsSync(path.join(vmImageDir, 'rootfs.raw'))
 
     if (!hasKernel || !hasRootfs) return false
 

@@ -28,6 +28,7 @@ import { DomainProvider } from '../../contexts/domain'
 import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
+import { VMDownloadBanner } from '../../components/VMDownloadBanner'
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading, user } = useAuth()
@@ -109,6 +110,7 @@ export default function AppLayout() {
           <View className="flex-1">
             {!isWide && !isProjectDetail && !isBillingPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
+              <VMDownloadBanner />
               <RecordingIndicator />
               <Slot />
             </View>

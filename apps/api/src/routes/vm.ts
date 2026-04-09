@@ -118,7 +118,7 @@ function isGoHelperAvailable(): boolean {
 function checkVMAvailable(): boolean {
   const imageDir = getVMImageDir()
   const hasKernel = fs.existsSync(path.join(imageDir, 'vmlinuz'))
-  const hasRootfs = fs.existsSync(path.join(imageDir, 'rootfs.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.raw'))
+  const hasRootfs = fs.existsSync(path.join(imageDir, 'rootfs-provisioned.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.raw'))
   if (!hasKernel || !hasRootfs) return false
   if (process.platform === 'darwin') return isGoHelperAvailable()
   if (process.platform === 'win32') return isQemuAvailable()
@@ -130,8 +130,72 @@ function checkImagesPresent(): boolean {
   return (
     fs.existsSync(path.join(imageDir, 'vmlinuz')) &&
     fs.existsSync(path.join(imageDir, 'initrd.img')) &&
-    fs.existsSync(path.join(imageDir, 'rootfs.qcow2'))
+    (fs.existsSync(path.join(imageDir, 'rootfs-provisioned.qcow2')) ||
+      fs.existsSync(path.join(imageDir, 'rootfs.qcow2')))
   )
+}
+
+// ---------------------------------------------------------------------------
+// Global VM image download state (shared across routes + auto-download)
+// ---------------------------------------------------------------------------
+
+export interface VMDownloadState {
+  status: 'idle' | 'downloading' | 'extracting' | 'complete' | 'error'
+  percent: number
+  bytesDownloaded: number
+  totalBytes: number
+  error?: string
+}
+
+let vmDownloadState: VMDownloadState = {
+  status: 'idle',
+  percent: 0,
+  bytesDownloaded: 0,
+  totalBytes: 0,
+}
+
+export function getVMDownloadState(): VMDownloadState {
+  return { ...vmDownloadState }
+}
+
+export async function triggerVMImageDownload(): Promise<void> {
+  if (vmDownloadState.status === 'downloading' || vmDownloadState.status === 'extracting') {
+    return
+  }
+
+  if (checkImagesPresent()) {
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+    return
+  }
+
+  vmDownloadState = { status: 'downloading', percent: 0, bytesDownloaded: 0, totalBytes: 0 }
+
+  try {
+    const vmModule = await import('../../../desktop/src/vm/index')
+    const imageDir = getVMImageDir()
+    const mgr = new vmModule.VMImageManager(imageDir)
+
+    await mgr.downloadImage((progress) => {
+      vmDownloadState = {
+        status: progress.stage === 'extracting' ? 'extracting' : 'downloading',
+        percent: progress.percent,
+        bytesDownloaded: progress.bytesDownloaded,
+        totalBytes: progress.totalBytes,
+      }
+    })
+
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+    console.log('[VM] Auto-download complete')
+  } catch (err: any) {
+    vmDownloadState = {
+      status: 'error',
+      percent: 0,
+      bytesDownloaded: 0,
+      totalBytes: 0,
+      error: err?.message || 'Download failed',
+    }
+    console.error('[VM] Auto-download failed:', err?.message)
+  }
 }
 
 function getImageVersion(): string | null {
@@ -186,7 +250,15 @@ export function vmRoutes(): Hono {
   })
 
   /**
+   * GET /images/download-status - poll current download state
+   */
+  router.get('/images/download-status', (c) => {
+    return c.json(getVMDownloadState())
+  })
+
+  /**
    * POST /images/download - download VM images with SSE progress
+   * Also kicks off the shared download state so the banner can poll.
    */
   router.post('/images/download', (c) => {
     return streamSSE(c, async (stream) => {
@@ -195,18 +267,35 @@ export function vmRoutes(): Hono {
         const imageDir = getVMImageDir()
         const mgr = new vmModule.VMImageManager(imageDir)
 
+        vmDownloadState = { status: 'downloading', percent: 0, bytesDownloaded: 0, totalBytes: 0 }
+
         await mgr.downloadImage((progress) => {
+          vmDownloadState = {
+            status: progress.stage === 'extracting' ? 'extracting' : 'downloading',
+            percent: progress.percent,
+            bytesDownloaded: progress.bytesDownloaded,
+            totalBytes: progress.totalBytes,
+          }
           stream.writeSSE({
             event: 'progress',
             data: JSON.stringify(progress),
           })
         })
 
+        vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+
         await stream.writeSSE({
           event: 'complete',
           data: JSON.stringify({ success: true }),
         })
       } catch (err: any) {
+        vmDownloadState = {
+          status: 'error',
+          percent: 0,
+          bytesDownloaded: 0,
+          totalBytes: 0,
+          error: err?.message || 'Download failed',
+        }
         await stream.writeSSE({
           event: 'error',
           data: JSON.stringify({ success: false, error: err?.message || 'Download failed' }),

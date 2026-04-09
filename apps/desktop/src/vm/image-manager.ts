@@ -7,9 +7,7 @@ import https from 'https'
 import http from 'http'
 
 const GITHUB_REPO = 'shogo-labs/shogo-ai'
-const VM_IMAGE_TAG = 'vm-images-v3'
-
-export const VM_IMAGE_VERSION = '3'
+const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases`
 
 export interface DownloadProgress {
   bytesDownloaded: number
@@ -20,20 +18,30 @@ export interface DownloadProgress {
 
 export type ProgressCallback = (progress: DownloadProgress) => void
 
+interface ReleaseInfo {
+  tag: string
+  downloadUrl: string
+  versionUrl: string
+}
+
 /**
  * Manages VM image lifecycle:
+ *   - Discovers the latest vm-images release from GitHub at runtime
  *   - First-use download instead of bundling ~1.4 GB in installer
  *   - Version checks for updates
  *   - Cleanup on failure
  */
 export class VMImageManager {
+  private cachedRelease: ReleaseInfo | null = null
+
   constructor(private imageDir: string) {}
 
   isImagePresent(): boolean {
     return (
       fs.existsSync(path.join(this.imageDir, 'vmlinuz')) &&
       fs.existsSync(path.join(this.imageDir, 'initrd.img')) &&
-      fs.existsSync(path.join(this.imageDir, 'rootfs-provisioned.qcow2'))
+      (fs.existsSync(path.join(this.imageDir, 'rootfs-provisioned.qcow2')) ||
+        fs.existsSync(path.join(this.imageDir, 'rootfs.qcow2')))
     )
   }
 
@@ -43,31 +51,72 @@ export class VMImageManager {
     return fs.readFileSync(versionFile, 'utf-8').trim()
   }
 
-  getDownloadUrl(): string {
-    const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
-    return `https://github.com/${GITHUB_REPO}/releases/download/${VM_IMAGE_TAG}/vm-image-${arch}.tar.gz`
-  }
+  /**
+   * Query the GitHub Releases API for the latest vm-images-v* release.
+   * Caches the result for the lifetime of this instance.
+   */
+  async discoverRelease(): Promise<ReleaseInfo> {
+    if (this.cachedRelease) return this.cachedRelease
 
-  getVersionUrl(): string {
-    return `https://github.com/${GITHUB_REPO}/releases/download/${VM_IMAGE_TAG}/version.txt`
+    const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+    const assetName = `vm-image-${arch}.tar.gz`
+
+    const res = await fetch(GITHUB_API, {
+      headers: {
+        'User-Agent': 'shogo-desktop',
+        'Accept': 'application/vnd.github+json',
+      },
+      signal: AbortSignal.timeout(15000),
+    })
+
+    if (!res.ok) {
+      throw new Error(`GitHub API returned ${res.status} — cannot discover VM image release`)
+    }
+
+    const releases = await res.json() as Array<{
+      tag_name: string
+      draft: boolean
+      prerelease: boolean
+      assets: Array<{ name: string; browser_download_url: string }>
+    }>
+
+    const release = releases.find(
+      (r) => r.tag_name.startsWith('vm-images-v') && !r.draft && !r.prerelease,
+    )
+    if (!release) {
+      throw new Error('No VM image release found on GitHub')
+    }
+
+    const tarAsset = release.assets.find((a) => a.name === assetName)
+    if (!tarAsset) {
+      throw new Error(`No ${assetName} asset in release ${release.tag_name}`)
+    }
+
+    const versionAsset = release.assets.find((a) => a.name === 'version.txt')
+
+    this.cachedRelease = {
+      tag: release.tag_name,
+      downloadUrl: tarAsset.browser_download_url,
+      versionUrl: versionAsset?.browser_download_url ?? '',
+    }
+    return this.cachedRelease
   }
 
   /**
-   * Download VM image from GitHub Releases.
+   * Download VM image from the latest GitHub Release.
    * The archive is a .tar.gz containing:
    *   vmlinuz, initrd.img, rootfs-provisioned.qcow2, version.txt
-   *
-   * rootfs-provisioned.qcow2 has bun, templates, and deps pre-installed
-   * for fast boot (~20s).
    */
   async downloadImage(onProgress?: ProgressCallback): Promise<void> {
     fs.mkdirSync(this.imageDir, { recursive: true })
 
+    const { downloadUrl, tag } = await this.discoverRelease()
+    console.log(`[VMImageManager] Downloading from ${tag}: ${downloadUrl}`)
+
     const tarPath = path.join(this.imageDir, 'vm-image.tar.gz')
-    const url = this.getDownloadUrl()
 
     try {
-      await this.downloadFile(url, tarPath, onProgress)
+      await this.downloadFile(downloadUrl, tarPath, onProgress)
 
       onProgress?.({ bytesDownloaded: 0, totalBytes: 0, percent: 100, stage: 'extracting' })
 
@@ -85,7 +134,7 @@ export class VMImageManager {
 
     if (!this.isImagePresent()) {
       this.cleanupAll()
-      throw new Error('Downloaded archive did not contain expected VM image files (vmlinuz, initrd.img, rootfs-provisioned.qcow2)')
+      throw new Error('Downloaded archive did not contain expected VM image files')
     }
   }
 
@@ -94,7 +143,10 @@ export class VMImageManager {
    */
   async checkForUpdate(): Promise<{ available: boolean; version: string }> {
     try {
-      const response = await fetch(this.getVersionUrl(), { signal: AbortSignal.timeout(5000) })
+      const { versionUrl } = await this.discoverRelease()
+      if (!versionUrl) return { available: false, version: '' }
+
+      const response = await fetch(versionUrl, { signal: AbortSignal.timeout(5000) })
       if (!response.ok) return { available: false, version: '' }
 
       const remoteVersion = (await response.text()).trim()
