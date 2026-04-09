@@ -464,6 +464,34 @@ export function marketplaceRoutes() {
     }
   })
 
+  app.post('/creator/listings/:id/unpublish', async (c) => {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    try {
+      const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
+      if (!profile) {
+        return c.json({ error: 'Creator profile not found' }, 404)
+      }
+      const listingId = c.req.param('id')
+      const listing = await marketplaceService.unpublishListing(listingId, profile.id)
+      try {
+        await gamification.recalculateCreatorStats(profile.id)
+      } catch (gamErr) {
+        console.error('[marketplace] gamification recalc failed (non-fatal):', gamErr)
+      }
+      return c.json({ listing })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('not found') || msg.includes('not owned')) {
+        return c.json({ error: msg }, 404)
+      }
+      console.error('[marketplace] unpublishListing', err)
+      return c.json({ error: 'Failed to unpublish listing' }, 500)
+    }
+  })
+
   app.post('/creator/listings/:id/versions', async (c) => {
     const authCtx = c.get('auth') as AuthContext | undefined
     if (!authCtx?.isAuthenticated || !authCtx.userId) {
@@ -661,12 +689,12 @@ export function marketplaceRoutes() {
       return c.json({ review })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('Rating must') || msg.includes('Install not found')) {
-        return c.json({ error: msg }, 400)
-      }
       const code = (err as { code?: string }).code
-      if (code === 'P2002') {
+      if (code === 'P2002' || msg.includes('Unique constraint failed')) {
         return c.json({ error: 'You already reviewed this listing' }, 409)
+      }
+      if (msg === 'Rating must be an integer from 1 to 5' || msg === 'Install not found for this user and listing') {
+        return c.json({ error: msg }, 400)
       }
       console.error('[marketplace] createReview', err)
       return c.json({ error: 'Failed to create review' }, 500)

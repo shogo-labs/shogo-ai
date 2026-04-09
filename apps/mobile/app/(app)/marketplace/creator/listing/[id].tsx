@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -22,6 +22,8 @@ import {
   Search,
   Bot,
   ChevronRight,
+  EyeOff,
+  Info,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -37,14 +39,14 @@ const CATEGORIES = [
 ] as const
 
 const PRICING_MODELS = [
-  { value: 'free', label: 'Free' },
-  { value: 'one_time', label: 'One-time Purchase' },
-  { value: 'subscription', label: 'Subscription' },
+  { value: 'free', label: 'Free', description: 'Anyone can install at no cost' },
+  { value: 'one_time', label: 'One-Time Purchase', description: 'Single payment for lifetime access' },
+  { value: 'subscription', label: 'Subscription', description: 'Recurring monthly charge' },
 ] as const
 
 const INSTALL_MODELS = [
-  { value: 'fork', label: 'Fork (independent copy)' },
-  { value: 'linked', label: 'Linked (receives updates)' },
+  { value: 'fork', label: 'Fork (Independent Copy)', description: 'Buyers get a standalone copy they can modify freely' },
+  { value: 'linked', label: 'Linked (Receives Updates)', description: 'Buyers stay linked and receive your future updates' },
 ] as const
 
 interface ListingForm {
@@ -123,6 +125,7 @@ export default observer(function EditListingScreen() {
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [unlisting, setUnlisting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -151,13 +154,18 @@ export default observer(function EditListingScreen() {
     }
   }, [showProjectPicker, loadProjects])
 
-  const filteredProjects = projectSearch.trim()
-    ? projects.filter(
+  const filteredProjects = useMemo(() => {
+    let list = projects
+    if (projectSearch.trim()) {
+      const q = projectSearch.toLowerCase()
+      list = list.filter(
         (p) =>
-          p.name?.toLowerCase().includes(projectSearch.toLowerCase()) ||
-          p.description?.toLowerCase().includes(projectSearch.toLowerCase()),
+          p.name?.toLowerCase().includes(q) ||
+          p.description?.toLowerCase().includes(q),
       )
-    : projects
+    }
+    return list
+  }, [projects, projectSearch])
 
   const loadListing = useCallback(async () => {
     if (isNew) return
@@ -284,11 +292,26 @@ export default observer(function EditListingScreen() {
     try {
       await http.post(`/api/marketplace/creator/listings/${id}/publish`, {})
       setExistingStatus('published')
-      setSuccess('Listing published!')
+      setSuccess('Listing published! It is now visible on the Marketplace.')
     } catch {
       setError('Failed to publish listing')
     } finally {
       setPublishing(false)
+    }
+  }, [isNew, existingStatus, http, id])
+
+  const handleUnlist = useCallback(async () => {
+    if (isNew || existingStatus !== 'published') return
+    setUnlisting(true)
+    setError(null)
+    try {
+      await http.post(`/api/marketplace/creator/listings/${id}/unpublish`, {})
+      setExistingStatus('archived')
+      setSuccess('Listing unlisted. It is no longer visible on the Marketplace.')
+    } catch {
+      setError('Failed to unlist listing')
+    } finally {
+      setUnlisting(false)
     }
   }, [isNew, existingStatus, http, id])
 
@@ -313,7 +336,7 @@ export default observer(function EditListingScreen() {
         </View>
 
         <Text className="px-4 text-sm text-muted-foreground mb-3">
-          Choose which agent you want to publish on the marketplace.
+          Choose which agent you want to publish on the Marketplace.
         </Text>
 
         <View className="px-4 pb-3">
@@ -342,12 +365,12 @@ export default observer(function EditListingScreen() {
           <View className="flex-1 items-center justify-center px-6">
             <Bot size={40} className="text-muted-foreground/40 mb-3" />
             <Text className="text-foreground font-medium mb-1">
-              {projectSearch ? 'No matching agents' : 'No agents found'}
+              {projectSearch ? 'No Matching Agents' : 'No Agents Found'}
             </Text>
             <Text className="text-muted-foreground text-sm text-center">
               {projectSearch
                 ? `No agents match "${projectSearch}"`
-                : 'Create an agent first before publishing to the marketplace.'}
+                : 'Create an agent first before publishing to the Marketplace.'}
             </Text>
           </View>
         ) : (
@@ -422,7 +445,9 @@ export default observer(function EditListingScreen() {
               'px-2.5 py-1 rounded-full',
               existingStatus === 'published'
                 ? 'bg-green-500/15'
-                : 'bg-yellow-500/15',
+                : existingStatus === 'archived'
+                  ? 'bg-red-500/15'
+                  : 'bg-yellow-500/15',
             )}
           >
             <Text
@@ -430,10 +455,12 @@ export default observer(function EditListingScreen() {
                 'text-xs font-semibold capitalize',
                 existingStatus === 'published'
                   ? 'text-green-700'
-                  : 'text-yellow-700',
+                  : existingStatus === 'archived'
+                    ? 'text-red-700'
+                    : 'text-yellow-700',
               )}
             >
-              {existingStatus}
+              {existingStatus === 'archived' ? 'Unlisted' : existingStatus}
             </Text>
           </View>
         )}
@@ -456,7 +483,7 @@ export default observer(function EditListingScreen() {
       {/* Selected Agent (for new listings) */}
       {isNew && selectedProjectId && (
         <View className="mb-5">
-          <FormField label="Agent">
+          <FormField label="Agent" info="The agent project that will be packaged and listed for others to install.">
             <Pressable
               onPress={() => setShowProjectPicker(true)}
               className="flex-row items-center gap-3 p-3 rounded-lg border border-primary/30 bg-primary/5"
@@ -474,7 +501,7 @@ export default observer(function EditListingScreen() {
       )}
 
       {/* Title */}
-      <FormField label="Title">
+      <FormField label="Title" info="The public name shown on the Marketplace. Make it clear and memorable.">
         <TextInput
           value={form.title}
           onChangeText={(v) => updateField('title', v)}
@@ -488,6 +515,7 @@ export default observer(function EditListingScreen() {
       <FormField
         label="Short Description"
         hint={`${form.shortDescription.length}/160`}
+        info="A one-liner shown on search results and listing cards. Keep it concise."
       >
         <TextInput
           value={form.shortDescription}
@@ -500,7 +528,7 @@ export default observer(function EditListingScreen() {
       </FormField>
 
       {/* Long Description */}
-      <FormField label="Long Description">
+      <FormField label="Long Description" info="Detailed overview for the listing page. Explain capabilities, use cases, and setup instructions.">
         <TextInput
           value={form.longDescription}
           onChangeText={(v) => updateField('longDescription', v)}
@@ -514,7 +542,7 @@ export default observer(function EditListingScreen() {
       </FormField>
 
       {/* Category */}
-      <FormField label="Category">
+      <FormField label="Category" info="Helps buyers discover your agent when browsing by topic.">
         <View className="flex-row flex-wrap gap-2">
           {CATEGORIES.map((cat) => (
             <Pressable
@@ -543,7 +571,7 @@ export default observer(function EditListingScreen() {
       </FormField>
 
       {/* Tags */}
-      <FormField label="Tags" hint="Comma-separated">
+      <FormField label="Tags" hint="Comma-separated" info="Keywords that improve search visibility. e.g. automation, sales, email.">
         <TextInput
           value={form.tags}
           onChangeText={(v) => updateField('tags', v)}
@@ -554,14 +582,14 @@ export default observer(function EditListingScreen() {
       </FormField>
 
       {/* Pricing Model */}
-      <FormField label="Pricing">
-        <View className="flex-row flex-wrap gap-2">
+      <FormField label="Pricing Model" info="How buyers will pay. You can change this before publishing.">
+        <View className="gap-2">
           {PRICING_MODELS.map((pm) => (
             <Pressable
               key={pm.value}
               onPress={() => updateField('pricingModel', pm.value)}
               className={cn(
-                'px-3 py-2 rounded-lg border',
+                'px-4 py-3 rounded-lg border',
                 form.pricingModel === pm.value
                   ? 'border-primary bg-primary/10'
                   : 'border-border bg-card',
@@ -569,7 +597,7 @@ export default observer(function EditListingScreen() {
             >
               <Text
                 className={cn(
-                  'text-xs font-medium',
+                  'text-sm font-medium',
                   form.pricingModel === pm.value
                     ? 'text-primary'
                     : 'text-foreground',
@@ -577,6 +605,7 @@ export default observer(function EditListingScreen() {
               >
                 {pm.label}
               </Text>
+              <Text className="text-xs text-muted-foreground mt-0.5">{pm.description}</Text>
             </Pressable>
           ))}
         </View>
@@ -584,7 +613,7 @@ export default observer(function EditListingScreen() {
 
       {/* Price (one-time) */}
       {form.pricingModel === 'one_time' && (
-        <FormField label="Price (USD)">
+        <FormField label="Price (USD)" info="The amount buyers pay once. Platform fees will be deducted from your earnings.">
           <View className="flex-row items-center">
             <Text className="text-foreground text-sm font-medium mr-2">$</Text>
             <TextInput
@@ -601,7 +630,7 @@ export default observer(function EditListingScreen() {
 
       {/* Monthly Price (subscription) */}
       {form.pricingModel === 'subscription' && (
-        <FormField label="Monthly Price (USD)">
+        <FormField label="Monthly Price (USD)" info="Recurring monthly charge. Buyers can cancel anytime.">
           <View className="flex-row items-center">
             <Text className="text-foreground text-sm font-medium mr-2">$</Text>
             <TextInput
@@ -617,7 +646,7 @@ export default observer(function EditListingScreen() {
       )}
 
       {/* Install Model */}
-      <FormField label="Install Model">
+      <FormField label="Install Model" info="Determines how buyers receive your agent and whether they get future updates.">
         <View className="gap-2">
           {INSTALL_MODELS.map((im) => (
             <Pressable
@@ -638,61 +667,91 @@ export default observer(function EditListingScreen() {
                     : 'border-muted-foreground',
                 )}
               />
-              <Text
-                className={cn(
-                  'text-sm',
-                  form.installModel === im.value
-                    ? 'text-primary font-medium'
-                    : 'text-foreground',
-                )}
-              >
-                {im.label}
-              </Text>
+              <View className="flex-1">
+                <Text
+                  className={cn(
+                    'text-sm',
+                    form.installModel === im.value
+                      ? 'text-primary font-medium'
+                      : 'text-foreground',
+                  )}
+                >
+                  {im.label}
+                </Text>
+                <Text className="text-xs text-muted-foreground mt-0.5">{im.description}</Text>
+              </View>
             </Pressable>
           ))}
         </View>
       </FormField>
 
       {/* Action Buttons */}
-      <View className="flex-row gap-3 mt-6">
-        <Pressable
-          onPress={handleSave}
-          disabled={saving}
-          className={cn(
-            'flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl',
-            saving ? 'bg-primary/60' : 'bg-primary',
-          )}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Save size={16} color="#fff" />
-              <Text className="text-sm font-semibold text-primary-foreground">
-                {isNew ? 'Create' : 'Save'}
-              </Text>
-            </>
-          )}
-        </Pressable>
-
-        {!isNew && existingStatus === 'draft' && (
+      <View className="gap-3 mt-6">
+        <View className="flex-row gap-3">
           <Pressable
-            onPress={handlePublish}
-            disabled={publishing}
+            onPress={handleSave}
+            disabled={saving}
             className={cn(
-              'flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border',
-              publishing
-                ? 'border-green-500/40 bg-green-500/5'
-                : 'border-green-600 bg-green-600/10',
+              'flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl',
+              saving ? 'bg-primary/60' : 'bg-primary',
             )}
           >
-            {publishing ? (
-              <ActivityIndicator size="small" color="#16a34a" />
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
             ) : (
               <>
-                <Send size={16} className="text-green-700" />
-                <Text className="text-sm font-semibold text-green-700">
-                  Publish
+                <Save size={16} color="#fff" />
+                <Text className="text-sm font-semibold text-primary-foreground">
+                  {isNew ? 'Create Listing' : 'Save Changes'}
+                </Text>
+              </>
+            )}
+          </Pressable>
+
+          {!isNew && existingStatus === 'draft' && (
+            <Pressable
+              onPress={handlePublish}
+              disabled={publishing}
+              className={cn(
+                'flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border',
+                publishing
+                  ? 'border-green-500/40 bg-green-500/5'
+                  : 'border-green-600 bg-green-600/10',
+              )}
+            >
+              {publishing ? (
+                <ActivityIndicator size="small" color="#16a34a" />
+              ) : (
+                <>
+                  <Send size={16} className="text-green-700" />
+                  <Text className="text-sm font-semibold text-green-700">
+                    Publish
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          )}
+        </View>
+
+        {/* Unlist button for published listings */}
+        {!isNew && existingStatus === 'published' && (
+          <Pressable
+            onPress={handleUnlist}
+            disabled={unlisting}
+            className={cn(
+              'flex-row items-center justify-center gap-2 py-3 rounded-xl border',
+              unlisting
+                ? 'border-red-500/40 bg-red-500/5'
+                : 'border-red-500/30 bg-red-500/5',
+            )}
+          >
+            {unlisting ? (
+              <ActivityIndicator size="small" color="#ef4444" />
+            ) : (
+              <>
+                <EyeOff size={16} className="text-red-600" />
+                <Text className="text-sm font-semibold text-red-600">
+                  Unlist from Marketplace
                 </Text>
               </>
             )}
@@ -706,20 +765,25 @@ export default observer(function EditListingScreen() {
 function FormField({
   label,
   hint,
+  info,
   children,
 }: {
   label: string
   hint?: string
+  info?: string
   children: React.ReactNode
 }) {
   return (
     <View className="mb-5">
-      <View className="flex-row items-center justify-between mb-1.5">
+      <View className="flex-row items-center justify-between mb-1">
         <Text className="text-sm font-medium text-foreground">{label}</Text>
         {hint && (
           <Text className="text-xs text-muted-foreground">{hint}</Text>
         )}
       </View>
+      {info && (
+        <Text className="text-xs text-muted-foreground mb-1.5">{info}</Text>
+      )}
       {children}
     </View>
   )

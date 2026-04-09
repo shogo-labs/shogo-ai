@@ -266,33 +266,35 @@ export default observer(function MarketplaceHomeScreen() {
       </View>
 
       {/* Category pills */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerClassName="px-4 pb-3 gap-2"
-      >
-        {CATEGORIES.map((cat) => (
-          <Pressable
-            key={cat}
-            onPress={() => setActiveCategory(cat)}
-            className={`rounded-full px-3.5 py-1.5 border ${
-              activeCategory === cat
-                ? 'bg-primary border-primary'
-                : 'bg-card border-border'
-            }`}
-          >
-            <Text
-              className={`text-xs font-medium ${
+      <View className="pb-3">
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerClassName="px-4 gap-2 items-center"
+        >
+          {CATEGORIES.map((cat) => (
+            <Pressable
+              key={cat}
+              onPress={() => setActiveCategory(cat)}
+              className={`rounded-full px-3.5 py-1.5 border ${
                 activeCategory === cat
-                  ? 'text-primary-foreground'
-                  : 'text-foreground'
+                  ? 'bg-primary border-primary'
+                  : 'bg-card border-border'
               }`}
             >
-              {cat}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+              <Text
+                className={`text-xs font-medium ${
+                  activeCategory === cat
+                    ? 'text-primary-foreground'
+                    : 'text-foreground'
+                }`}
+              >
+                {cat}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
 
       {/* Content */}
       {loading && listings.length === 0 ? (
