@@ -507,7 +507,7 @@ export function ProjectTopBar({
         style={{ width: chatFullscreenSidebarWidth ?? (isChatCollapsed ? undefined : chatPanelWidth) }}
       >
         <View className="flex-row items-center gap-0.5 flex-shrink-0">
-          {/* <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" /> */}
+          <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />
 
           <Popover
             placement="bottom"
