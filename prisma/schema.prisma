@@ -465,7 +465,7 @@ model Subscription {
   workspaceId         String
   stripeSubscriptionId String            @unique
   stripeCustomerId    String
-  planId              PlanId
+  planId              String
   status              SubscriptionStatus
   billingInterval     BillingInterval
   currentPeriodStart  DateTime
@@ -479,13 +479,6 @@ model Subscription {
 
   @@unique([workspaceId])
   @@map("subscriptions")
-}
-
-enum PlanId {
-  basic
-  pro
-  business
-  enterprise
 }
 
 enum SubscriptionStatus {

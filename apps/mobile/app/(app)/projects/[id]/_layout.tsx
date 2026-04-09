@@ -45,7 +45,11 @@ import {
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
+import {
+  getTotalCreditsForPlan,
+  getCreditsCapacityForDisplay,
+  getPlanDisplayName,
+} from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
@@ -174,12 +178,16 @@ export default observer(function ProjectLayout() {
   }, [store?.workspaceCollection?.all, project?.workspaceId])
 
   const planLabel = billingData.subscription
-    ? billingData.subscription.planId.charAt(0).toUpperCase() +
-      billingData.subscription.planId.slice(1)
+    ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
 
-  const creditsTotal = getTotalCreditsForPlan(billingData.subscription?.planId)
-  const creditsRemaining = billingData.effectiveBalance?.total ?? creditsTotal
+  const creditsRemaining =
+    billingData.effectiveBalance?.total ??
+    getTotalCreditsForPlan(billingData.subscription?.planId)
+  const creditsTotal = getCreditsCapacityForDisplay(
+    billingData.subscription?.planId,
+    billingData.effectiveBalance?.total,
+  )
 
   const isStarred = useMemo(() => {
     try {
