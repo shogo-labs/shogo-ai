@@ -56,7 +56,7 @@ export async function sendTurn(
   messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }>,
   config: EvalRunnerConfig,
 ): Promise<ParsedAgentResponse> {
-  const MAX_RETRIES = 3
+  const MAX_RETRIES = 8
   const RETRY_DELAY = 3_000
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -78,7 +78,8 @@ export async function sendTurn(
         const errBody = await res.text().catch(() => '(no body)')
         if (config.verbose) console.log(`      [sendTurn] HTTP ${res.status}: ${errBody.slice(0, 200)}`)
         if ((res.status >= 500 || res.status === 429) && attempt < MAX_RETRIES) {
-          await Bun.sleep(RETRY_DELAY * attempt)
+          const delay = res.status === 503 ? 5_000 : RETRY_DELAY * attempt
+          await Bun.sleep(delay)
           continue
         }
         throw new Error(`Agent API returned ${res.status}: ${errBody.slice(0, 200)}`)

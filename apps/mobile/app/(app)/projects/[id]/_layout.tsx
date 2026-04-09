@@ -863,6 +863,16 @@ export default observer(function ProjectLayout() {
     loadNames()
   }, [showChatSessions, store, projectId])
 
+  // Read name/inferredName from each session so MobX observer tracks those
+  // fields. The .all getter is reference-stable for field-only updates (no
+  // map-structure change), so useMemo wouldn't recompute without this.
+  let _sessionNameKey = ''
+  if (store?.chatSessionCollection) {
+    for (const s of store.chatSessionCollection.all as any[]) {
+      if (s.contextId === projectId) _sessionNameKey += s.name + '\0' + s.inferredName + '\n'
+    }
+  }
+
   const chatSessions: ChatSession[] = useMemo(() => {
     if (!store?.chatSessionCollection) return []
     try {
@@ -871,8 +881,6 @@ export default observer(function ProjectLayout() {
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
-          // Prefer explicit title from the store over sessionNames (message-preview cache);
-          // otherwise renames stay stale until full reload.
           name:
             (typeof s.name === 'string' && s.name.trim())
               ? s.name.trim()
@@ -886,7 +894,8 @@ export default observer(function ProjectLayout() {
     } catch {
       return []
     }
-  }, [store?.chatSessionCollection?.all, sessionNames, projectId])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionNameKey])
 
   // Build ordered tab list with display names from openChatTabIds
   const openChatTabs: ChatTab[] = useMemo(() => {
@@ -1170,6 +1179,11 @@ export default observer(function ProjectLayout() {
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
+    onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
+    onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
+    onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
+    activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
+    activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
@@ -1261,19 +1275,7 @@ export default observer(function ProjectLayout() {
                   </View>
                 )}
                 {isChatFullscreen ? (
-                  /* Fullscreen: parent is flex-row, so wrap tab bar + chat in a flex-col */
                   <View className="min-h-0 flex-1 flex-col">
-                    <ChatTabBar
-                      tabs={openChatTabs}
-                      activeTabId={chatSessionId}
-                      onSelectTab={handleSelectTab}
-                      onCloseTab={handleCloseTab}
-                      onNewChat={handleCreateNewSession}
-                      streamingTabIds={streamingTabIds}
-                      onRenameSession={handleRenameChatSession}
-                      onDeleteSession={handleDeleteChatSession}
-                      onSearchChats={() => setSidebarSearchOpen(true)}
-                    />
                     <View className="min-h-0 flex-1">{chatPanels}</View>
                   </View>
                 ) : (
