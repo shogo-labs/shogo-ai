@@ -293,6 +293,8 @@ function buildUserData(config: CloudInitConfig): string {
   lines.push('  - systemctl mask multipathd multipathd.socket 2>/dev/null || true')
   lines.push('  - systemctl stop multipathd 2>/dev/null || true')
   lines.push('  - systemctl mask boot-efi.mount 2>/dev/null || true')
+  lines.push('  - sysctl -w vm.vfs_cache_pressure=500')
+  lines.push('  - sysctl -w vm.min_free_kbytes=65536')
   lines.push('  - depmod -a 2>/dev/null || true')
   lines.push('  - modprobe virtiofs 2>/dev/null || true')
   lines.push('')
@@ -343,6 +345,7 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push(`    nohup /mnt/bundle/bun run /mnt/bundle/server.js > /workspace/.agent-runtime.log 2>&1 &`)
     lines.push('    sleep 1')
     lines.push('    nohup python3 /opt/vsock-bridge.py > /workspace/.vsock-bridge.log 2>&1 &')
+    lines.push('  - sync && echo 3 > /proc/sys/vm/drop_caches')
   } else {
     // Pre-provisioned image (Windows QEMU, or any image with bun pre-installed)
     // The seed ISO may carry server.js + shogo.js; copy them into the image.
@@ -417,6 +420,7 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('    which bun && bun --version || echo "ERROR: bun not found in PATH"')
     lines.push(`    su - shogo -c "export PATH=/usr/local/bin:\\$PATH; ${envStr} /usr/local/bin/bun run /opt/shogo/server.js 2>&1 | tee /workspace/.agent-runtime.log &"`)
     lines.push('    disown 2>/dev/null || true')
+    lines.push('  - sync && echo 3 > /proc/sys/vm/drop_caches')
   }
 
   return lines.join('\n') + '\n'

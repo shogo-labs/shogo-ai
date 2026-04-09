@@ -77,25 +77,17 @@ packages:
   - wget
   - git
   - openssh-client
-  - build-essential
   - python3
   - python3-pip
   - jq
   - ripgrep
-  - ffmpeg
-  - imagemagick
   - bubblewrap
   - unzip
-  - linux-image-generic-hwe-24.04
 
 runcmd:
   # Install Bun
   - curl -fsSL https://bun.sh/install | bash
   - ln -sf /root/.bun/bin/bun /usr/local/bin/bun
-  
-  # Install Node.js LTS via NodeSource
-  - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-  - apt-get install -y nodejs
   
   # Install gh CLI
   - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
@@ -107,7 +99,7 @@ runcmd:
   - echo "shogo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
   
   # Install global Node packages (matches Docker Dockerfile.base)
-  - npm install -g typescript-language-server typescript pyright
+  - /usr/local/bin/bun add -g typescript-language-server typescript pyright
   
   # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
   - |
@@ -141,6 +133,11 @@ runcmd:
     EOF
   - systemctl daemon-reload
   - systemctl enable shogo-agent-runtime
+  
+  # Disable unnecessary services to reduce idle memory
+  - systemctl disable --now snapd snapd.socket snapd.seeded 2>/dev/null || true
+  - systemctl disable --now ModemManager packagekit 2>/dev/null || true
+  - systemctl mask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
   
   # Clean up
   - apt-get clean
