@@ -233,22 +233,37 @@ if (
   echo "  Partition table:"
   sudo fdisk -l "${WORK_DIR}/disk.raw" 2>/dev/null || true
 
-  # Scan ALL partitions for vmlinuz — /boot may be on a dedicated partition
+  # Scan ALL partitions for vmlinuz.
+  # On Ubuntu 24.04, /boot is a DEDICATED partition. When mounted at $MOUNT_DIR,
+  # kernel files are at $MOUNT_DIR/vmlinuz-* (top of the /boot partition),
+  # NOT at $MOUNT_DIR/boot/vmlinuz-*. Also check the latter for older layouts.
   FOUND_VMLINUZ=""
   FOUND_INITRD=""
+  FOUND_PART=""
+  FOUND_PREFIX=""
   for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
     if [ -b "$part" ]; then
       echo "  Trying $part..."
       if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
-        echo "    Mounted OK. Contents of /boot (if any):"
-        sudo ls "$MOUNT_DIR"/boot/ 2>/dev/null || true
-        V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
-        I=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+        echo "    Mounted OK. Top-level contents:"
+        sudo ls "$MOUNT_DIR"/ 2>/dev/null || true
+        # Check top-level (for dedicated /boot partition)
+        V=$(sudo ls "$MOUNT_DIR"/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+        I=$(sudo ls "$MOUNT_DIR"/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+        PREFIX=""
+        # Fallback: check $MOUNT_DIR/boot/ (for root partition with embedded /boot)
+        if [ -z "$V" ] || [ -z "$I" ]; then
+          V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+          I=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+          PREFIX="boot/"
+        fi
         sudo umount "$MOUNT_DIR" 2>/dev/null || true
         if [ -n "$V" ] && [ -n "$I" ]; then
           FOUND_VMLINUZ="$V"
           FOUND_INITRD="$I"
-          echo "    Found kernel: $(basename "$V")"
+          FOUND_PART="$part"
+          FOUND_PREFIX="$PREFIX"
+          echo "    Found kernel: $(basename "$V") (prefix: '${PREFIX}')"
           break
         fi
       fi
@@ -256,24 +271,10 @@ if (
   done
 
   if [ -n "$FOUND_VMLINUZ" ] && [ -n "$FOUND_INITRD" ]; then
-    # Remount the correct partition to copy files
-    BOOT_PART=""
-    for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
-      if [ -b "$part" ]; then
-        if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
-          V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
-          if [ -n "$V" ]; then
-            BOOT_PART="$part"
-            break
-          fi
-          sudo umount "$MOUNT_DIR" 2>/dev/null || true
-        fi
-      fi
-    done
-    if [ -n "$BOOT_PART" ]; then
-      echo "Found: $(basename "$FOUND_VMLINUZ"), $(basename "$FOUND_INITRD") on $BOOT_PART"
-      sudo cp "$FOUND_VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
-      sudo cp "$FOUND_INITRD" "${OUTPUT_DIR}/initrd.img"
+    if sudo mount -o ro,noload "$FOUND_PART" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$FOUND_PART" "$MOUNT_DIR" 2>/dev/null; then
+      echo "Found: $(basename "$FOUND_VMLINUZ"), $(basename "$FOUND_INITRD") on $FOUND_PART"
+      sudo cp "$MOUNT_DIR/${FOUND_PREFIX}$(basename "$FOUND_VMLINUZ")" "${OUTPUT_DIR}/vmlinuz"
+      sudo cp "$MOUNT_DIR/${FOUND_PREFIX}$(basename "$FOUND_INITRD")" "${OUTPUT_DIR}/initrd.img"
       sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
       sudo umount "$MOUNT_DIR" 2>/dev/null || true
       echo "EXTRACTED_OK"
