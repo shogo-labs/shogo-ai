@@ -173,27 +173,6 @@ METADATA
 cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data" 2>/dev/null || \
   genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data"
 
-# Step 3.5: Bundle agent-runtime.js into the image via a second cloud-init file
-# The agent-runtime bundle is built by the monorepo build system and placed at
-# packages/agent-runtime/dist/agent-runtime.js (or bundle/agent-runtime.js for production).
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
-AGENT_RUNTIME_BUNDLE=""
-for candidate in \
-  "${REPO_ROOT}/bundle/agent-runtime.js" \
-  "${REPO_ROOT}/packages/agent-runtime/dist/agent-runtime.js"; do
-  if [ -f "$candidate" ]; then
-    AGENT_RUNTIME_BUNDLE="$candidate"
-    break
-  fi
-done
-
-if [ -n "$AGENT_RUNTIME_BUNDLE" ]; then
-  echo "Bundling agent-runtime from: ${AGENT_RUNTIME_BUNDLE}"
-  mkdir -p "${WORK_DIR}/provision"
-  cp "$AGENT_RUNTIME_BUNDLE" "${WORK_DIR}/provision/agent-runtime.js"
-else
-  echo "WARNING: agent-runtime bundle not found. The VM image will need it copied at boot time."
-fi
 
 # Step 4: Boot and provision
 TIMEOUT=${QEMU_TIMEOUT:-1200}
