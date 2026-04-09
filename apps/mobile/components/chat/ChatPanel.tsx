@@ -209,6 +209,8 @@ export interface ChatPanelProps {
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
+  /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
+  isActive?: boolean
 }
 
 // ============================================================
@@ -563,6 +565,7 @@ export const ChatPanel = observer(function ChatPanel({
   buildPlanRequest,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
+  isActive = true,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -617,12 +620,14 @@ export const ChatPanel = observer(function ChatPanel({
   }, [localAgentUrl, projectId])
 
   useEffect(() => {
+    if (!isActive) return
+
     fetchQuickActions()
 
     // Retry after a delay — the agent runtime may not be ready on first mount
     const retryTimer = setTimeout(() => fetchQuickActions(), 3000)
     return () => clearTimeout(retryTimer)
-  }, [fetchQuickActions, chatSessionId])
+  }, [fetchQuickActions, isActive])
 
   // Track whether we've already triggered AI naming for this session
   const hasTriggeredNamingRef = useRef(false)
@@ -779,6 +784,7 @@ export const ChatPanel = observer(function ChatPanel({
     : []
 
   const isLoadingMessagesRef = useRef(false)
+  const cachedMessagesRef = useRef<any[] | null>(null)
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{ content: string; files?: FileAttachment[] } | null>(null)
@@ -1441,6 +1447,10 @@ export const ChatPanel = observer(function ChatPanel({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
+  if (isActive && messages.length > 0) {
+    cachedMessagesRef.current = messages
+  }
+
   const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
   const filesChangedFiredRef = useRef(false)
 
@@ -1773,60 +1783,74 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages, onActiveToolCall])
 
-  // Effect 1: Trigger data loading for chat messages from API (paginated, newest first)
+  // Effect 1: Load chat messages with stale-while-revalidate.
+  // On tab activate: show cached messages instantly (if available), then fetch
+  // fresh data from the API. Only update the display if the response differs.
   useEffect(() => {
-    if (currentSessionId && !isLoadingMessagesRef.current) {
-      isLoadingMessagesRef.current = true
-      setIsInitialLoadComplete(false)
-      console.log("[ChatPanel] Loading messages for session:", currentSessionId)
-      studioChat.chatMessageCollection
-        .loadPage(
-          { sessionId: currentSessionId },
-          { limit: MESSAGE_PAGE_SIZE, offset: 0 },
-        )
-        .then((result: any) => {
-          const count = Array.isArray(result) ? result.length : 0
-          console.log("[ChatPanel] Loaded", count, "messages for session:", currentSessionId)
+    if (!isActive) return
+    if (!currentSessionId) {
+      setIsInitialLoadComplete(true)
+      return
+    }
+    if (isLoadingMessagesRef.current) return
 
-          if (count > 0 && !isStreamingRef.current && !isSendingMessageRef.current) {
-            const loaded = studioChat.chatMessageCollection.all
-              .filter((msg: any) => msg.sessionId === currentSessionId)
-              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+    const hasCached = cachedMessagesRef.current && cachedMessagesRef.current.length > 0
 
-            if (loaded.length > 0) {
-              const aiMessages = loaded.map((msg: any) => {
-                const baseMessage: any = {
-                  id: msg.id,
-                  role: msg.role as "user" | "assistant",
-                  content: msg.content,
-                }
-                if (msg.parts) {
-                  try {
-                    baseMessage.parts = JSON.parse(msg.parts)
-                  } catch (err) {
-                    console.warn("[ChatPanel] Failed to parse message parts:", err)
-                  }
-                }
-                return baseMessage
-              })
-              console.log(
-                "[ChatPanel] Direct sync: setting",
-                aiMessages.length,
-                "messages to AI SDK"
-              )
-              setMessages(aiMessages)
-            }
-          }
-        })
-        .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
-        .finally(() => {
-          isLoadingMessagesRef.current = false
-          setIsInitialLoadComplete(true)
-        })
-    } else if (!currentSessionId) {
+    if (hasCached) {
+      setMessages(cachedMessagesRef.current!)
       setIsInitialLoadComplete(true)
     }
-  }, [currentSessionId, studioChat, setMessages])
+
+    isLoadingMessagesRef.current = true
+    if (!hasCached) setIsInitialLoadComplete(false)
+
+    studioChat.chatMessageCollection
+      .loadPage(
+        { sessionId: currentSessionId },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      .then((result: any) => {
+        if (isStreamingRef.current || isSendingMessageRef.current) return
+
+        const loaded = studioChat.chatMessageCollection.all
+          .filter((msg: any) => msg.sessionId === currentSessionId)
+          .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+
+        if (loaded.length === 0) return
+
+        const aiMessages = loaded.map((msg: any) => {
+          const baseMessage: any = {
+            id: msg.id,
+            role: msg.role as "user" | "assistant",
+            content: msg.content,
+          }
+          if (msg.parts) {
+            try {
+              baseMessage.parts = JSON.parse(msg.parts)
+            } catch (err) {
+              console.warn("[ChatPanel] Failed to parse message parts:", err)
+            }
+          }
+          return baseMessage
+        })
+
+        const cached = cachedMessagesRef.current
+        const changed =
+          !cached ||
+          cached.length !== aiMessages.length ||
+          cached[cached.length - 1]?.id !== aiMessages[aiMessages.length - 1]?.id
+
+        if (changed) {
+          cachedMessagesRef.current = aiMessages
+          setMessages(aiMessages)
+        }
+      })
+      .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
+      .finally(() => {
+        isLoadingMessagesRef.current = false
+        setIsInitialLoadComplete(true)
+      })
+  }, [isActive, currentSessionId, studioChat, setMessages])
 
   // Load older messages when user scrolls to top.
   // isLoadingOlderRef stays true until onContentSizeChange adjusts scroll position,

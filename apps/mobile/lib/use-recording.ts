@@ -67,7 +67,7 @@ export function useRecording() {
     }
   }, [])
 
-  // API polling mode (non-Electron): fetch status on mount and poll while recording
+  // API polling mode (non-Electron): poll frequently while recording, slowly when idle
   useEffect(() => {
     if (desktop.current) return
     if (Platform.OS !== 'web') return
@@ -88,12 +88,12 @@ export function useRecording() {
 
     poll()
 
-    // Poll every second while recording to update duration
-    pollRef.current = setInterval(poll, 1000)
+    const interval = isRecording ? 1_000 : 10_000
+    pollRef.current = setInterval(poll, interval)
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [])
+  }, [isRecording])
 
   const startRecording = useCallback(async () => {
     const d = desktop.current
