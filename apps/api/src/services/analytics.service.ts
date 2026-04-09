@@ -256,6 +256,49 @@ export async function getGrowthTimeSeries(
 }
 
 // ============================================================================
+// Member Usage Stats (People table)
+// ============================================================================
+
+/**
+ * Per-member credit usage for the people/settings table.
+ * Returns current-month and all-time totals keyed by memberId (userId).
+ */
+export async function getMemberUsageStats(
+  workspaceId: string
+): Promise<{
+  monthly: Record<string, number>
+  total: Record<string, number>
+}> {
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+
+  const [monthlyRows, totalRows] = await Promise.all([
+    prisma.usageEvent.groupBy({
+      by: ['memberId'],
+      where: { workspaceId, createdAt: { gte: monthStart } },
+      _sum: { creditCost: true },
+    }),
+    prisma.usageEvent.groupBy({
+      by: ['memberId'],
+      where: { workspaceId },
+      _sum: { creditCost: true },
+    }),
+  ])
+
+  const monthly: Record<string, number> = {}
+  for (const row of monthlyRows) {
+    monthly[row.memberId] = row._sum.creditCost ?? 0
+  }
+
+  const total: Record<string, number> = {}
+  for (const row of totalRows) {
+    total[row.memberId] = row._sum.creditCost ?? 0
+  }
+
+  return { monthly, total }
+}
+
+// ============================================================================
 // Usage Analytics
 // ============================================================================
 

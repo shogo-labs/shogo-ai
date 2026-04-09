@@ -360,6 +360,13 @@ export const api = {
     return Array.isArray(items) ? items : []
   },
 
+  async getMemberUsageStats(http: HttpClient, workspaceId: string): Promise<{ monthly: Record<string, number>; total: Record<string, number> }> {
+    const res = await http.get<{ ok: boolean; data?: { monthly: Record<string, number>; total: Record<string, number> } }>(
+      `/api/workspaces/${workspaceId}/analytics/member-usage`,
+    )
+    return res.data?.data ?? { monthly: {}, total: {} }
+  },
+
   // ─── Invitations ──────────────────────────────────────
 
   async getReceivedInvitations(http: HttpClient, email: string) {
