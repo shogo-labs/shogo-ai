@@ -10,6 +10,7 @@
 
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { spawn, execSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -92,7 +93,9 @@ function writeConfig(config: Partial<DesktopConfig>): DesktopConfig {
 
 function getVMImageDir(): string {
   if (process.env.SHOGO_VM_IMAGE_DIR) return process.env.SHOGO_VM_IMAGE_DIR
-  return path.resolve(__dirname, '../../../desktop/resources/vm')
+  const dataDir = process.env.SHOGO_DATA_DIR || getUserDataDir()
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+  return path.join(dataDir, 'vm-images', arch)
 }
 
 function isQemuAvailable(): boolean {
@@ -202,6 +205,39 @@ function getImageVersion(): string | null {
   const versionFile = path.join(getVMImageDir(), 'version.txt')
   if (!fs.existsSync(versionFile)) return null
   return fs.readFileSync(versionFile, 'utf-8').trim()
+}
+
+// ---------------------------------------------------------------------------
+// Global QEMU install state (shared across routes)
+// ---------------------------------------------------------------------------
+
+export interface QemuInstallState {
+  status: 'idle' | 'installing' | 'complete' | 'error'
+  output: string
+  error?: string
+}
+
+let qemuInstallState: QemuInstallState = { status: 'idle', output: '' }
+
+export function getQemuInstallState(): QemuInstallState {
+  return { ...qemuInstallState }
+}
+
+// ---------------------------------------------------------------------------
+// WHPX detection (Windows only)
+// ---------------------------------------------------------------------------
+
+function checkWhpxEnabled(): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    const result = execSync(
+      'powershell -NoProfile -Command "(Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State"',
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 },
+    ).trim()
+    return result === 'Enabled'
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +352,8 @@ export function vmRoutes(): Hono {
       arch: process.arch,
       hypervisor: isWindows ? 'QEMU with WHPX' : isMac ? 'Apple Virtualization.framework' : 'Unknown',
       hypervisorFound: isWindows ? isQemuAvailable() : isMac ? isGoHelperAvailable() : false,
+      qemuInstalled: isWindows ? isQemuAvailable() : false,
+      whpxEnabled: isWindows ? checkWhpxEnabled() : false,
       executionMode: checkVMAvailable() ? 'VM Isolation' : 'Host Execution (fallback)',
       imageDir,
       logFile: isWindows
@@ -324,6 +362,156 @@ export function vmRoutes(): Hono {
           ? path.join(os.homedir(), 'Library', 'Logs', 'Shogo', 'main.log')
           : '',
     })
+  })
+
+  // -------------------------------------------------------------------------
+  // QEMU install (Windows only — uses winget)
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /qemu/install-status - poll current QEMU install state
+   */
+  router.get('/qemu/install-status', (c) => {
+    return c.json(getQemuInstallState())
+  })
+
+  /**
+   * POST /qemu/install - install QEMU via winget with SSE progress
+   */
+  router.post('/qemu/install', (c) => {
+    if (process.platform !== 'win32') {
+      return c.json({ error: 'QEMU winget install is only available on Windows' }, 400)
+    }
+
+    if (isQemuAvailable()) {
+      qemuInstallState = { status: 'complete', output: 'QEMU is already installed' }
+      return c.json({ status: 'complete', message: 'QEMU is already installed' })
+    }
+
+    if (qemuInstallState.status === 'installing') {
+      return c.json({ status: 'installing', message: 'Installation already in progress' })
+    }
+
+    return streamSSE(c, async (stream) => {
+      qemuInstallState = { status: 'installing', output: '' }
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('winget', [
+            'install',
+            'SoftwareFreedomConservancy.QEMU',
+            '--accept-package-agreements',
+            '--accept-source-agreements',
+          ], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          })
+
+          const appendOutput = (chunk: Buffer) => {
+            const text = chunk.toString()
+            qemuInstallState.output += text
+            stream.writeSSE({ event: 'output', data: JSON.stringify({ text }) })
+          }
+
+          proc.stdout?.on('data', appendOutput)
+          proc.stderr?.on('data', appendOutput)
+
+          proc.on('error', (err) => reject(err))
+          proc.on('exit', (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`winget exited with code ${code}`))
+          })
+        })
+
+        qemuInstallState = { status: 'complete', output: qemuInstallState.output }
+        await stream.writeSSE({
+          event: 'complete',
+          data: JSON.stringify({ success: true }),
+        })
+      } catch (err: any) {
+        qemuInstallState = {
+          status: 'error',
+          output: qemuInstallState.output,
+          error: err?.message || 'Installation failed',
+        }
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify({ success: false, error: err?.message || 'Installation failed' }),
+        })
+      }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // WHPX status (Windows only)
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /whpx/status - check Windows Hypervisor Platform state
+   */
+  router.get('/whpx/status', (c) => {
+    if (process.platform !== 'win32') {
+      return c.json({ enabled: false, platform: 'unsupported' })
+    }
+    return c.json({ enabled: checkWhpxEnabled(), platform: 'win32' })
+  })
+
+  /**
+   * POST /whpx/enable - enable Windows Hypervisor Platform via UAC-elevated PowerShell.
+   *
+   * Spawns an outer PowerShell that uses Start-Process -Verb RunAs to launch
+   * an elevated inner PowerShell running Enable-WindowsOptionalFeature.
+   * The UAC consent dialog appears on the user's desktop. If they decline,
+   * the outer process exits with a non-zero code.
+   *
+   * A reboot is required after enabling for WHPX to activate.
+   */
+  router.post('/whpx/enable', async (c) => {
+    if (process.platform !== 'win32') {
+      return c.json({ error: 'WHPX enable is only available on Windows' }, 400)
+    }
+
+    if (checkWhpxEnabled()) {
+      return c.json({ success: true, message: 'WHPX is already enabled', needsReboot: false })
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const innerCmd = '-NoProfile -Command "Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -NoRestart; exit $LASTEXITCODE"'
+        const proc = spawn('powershell', [
+          '-NoProfile',
+          '-Command',
+          `Start-Process powershell -Verb RunAs -Wait -ArgumentList '${innerCmd}'`,
+        ], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: false,
+        })
+
+        let stderr = ''
+        proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+        proc.on('error', (err) => reject(err))
+        proc.on('exit', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(stderr.trim() || `UAC elevation failed or was declined (exit code ${code})`))
+        })
+      })
+
+      const nowEnabled = checkWhpxEnabled()
+      return c.json({
+        success: true,
+        enabled: nowEnabled,
+        needsReboot: !nowEnabled,
+        message: nowEnabled
+          ? 'Windows Hypervisor Platform is now enabled'
+          : 'Windows Hypervisor Platform has been enabled. A restart is required for it to activate.',
+      })
+    } catch (err: any) {
+      return c.json({
+        success: false,
+        error: err?.message || 'Failed to enable WHPX',
+      }, 500)
+    }
   })
 
   return router

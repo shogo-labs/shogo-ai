@@ -6,6 +6,7 @@ import { OnboardingMessage } from './OnboardingMessage'
 
 export type WidgetType =
   | 'vm-progress'
+  | 'vm-setup'
   | 'name-input'
   | 'ai-config'
   | 'security'
