@@ -29,6 +29,7 @@ const ARRAY_FIELDS = new Set([
 const JSON_OBJECT_FIELDS = new Set([
   'summary', 'cost', 'byCategory', 'resources', 'progress',
   'tokens', 'phaseScores', 'criteria', 'antiPatterns',
+  'actionMetadata',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and
