@@ -194,4 +194,5 @@ dev.db
 
 apps/desktop/prisma/local.db
 
-apps/desktop/resources/whisper/models/ggml-base.en.bin
+apps/desktop/resources/whisper/
+apps/desktop/resources/sherpa-onnx/

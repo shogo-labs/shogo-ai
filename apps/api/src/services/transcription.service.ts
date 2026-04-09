@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { execSync, spawn } from 'child_process'
+import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { join, resolve } from 'path'
@@ -10,6 +10,7 @@ export interface TranscriptSegment {
   start: number
   end: number
   text: string
+  speaker?: string
 }
 
 export interface TranscriptionResult {
@@ -19,137 +20,158 @@ export interface TranscriptionResult {
   duration: number
 }
 
-function whichSync(cmd: string): string | null {
-  try {
-    return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() || null
-  } catch {
-    return null
+// ---------------------------------------------------------------------------
+// Path resolution
+// ---------------------------------------------------------------------------
+
+function getSherpaDir(): string {
+  const candidates = [
+    resolve(process.cwd(), 'apps', 'desktop', 'resources', 'sherpa-onnx'),
+    join(process.resourcesPath || '', 'sherpa-onnx'),
+  ]
+  for (const dir of candidates) {
+    if (existsSync(join(dir, 'bin', 'sherpa-onnx-offline'))) return dir
   }
+  return candidates[0]
 }
 
-function getWhisperBinaryPath(): string | null {
-  const candidates = [
-    // Dev: apps/desktop/resources/whisper/whisper-cli (cwd = monorepo root)
-    resolve(process.cwd(), 'apps', 'desktop', 'resources', 'whisper', 'whisper-cli'),
-    // Packaged: resources/whisper/whisper-cli
-    join(process.resourcesPath || '', 'whisper', 'whisper-cli'),
-  ]
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
-  }
-
-  // System PATH fallback (e.g. brew install whisper-cpp)
-  return whichSync('whisper-cli')
+export function getSherpaOfflinePath(): string | null {
+  const dir = getSherpaDir()
+  const binPath = join(dir, 'bin', 'sherpa-onnx-offline')
+  return existsSync(binPath) ? binPath : null
 }
 
-function getWhisperModelPath(model: string): string | null {
-  const filename = `ggml-${model}.bin`
-  const candidates = [
-    // User data dir (runtime-downloaded models)
-    join(process.env.SHOGO_DATA_DIR || '', 'whisper-models', filename),
-    // Dev: apps/desktop/resources/whisper/models/ (cwd = monorepo root)
-    resolve(process.cwd(), 'apps', 'desktop', 'resources', 'whisper', 'models', filename),
-    // Packaged
-    join(process.resourcesPath || '', 'whisper', 'models', filename),
-  ]
+export function getSherpaLibDir(): string {
+  return join(getSherpaDir(), 'lib')
+}
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
-  }
+export function getWhisperModelDir(model: string = 'base.en'): string | null {
+  const dir = getSherpaDir()
+  const modelDir = join(dir, 'models', `whisper-${model}`)
+  const prefix = model
+  const encoder = join(modelDir, `${prefix}-encoder.onnx`)
+  const decoder = join(modelDir, `${prefix}-decoder.onnx`)
+  const tokens = join(modelDir, `${prefix}-tokens.txt`)
+  if (existsSync(encoder) && existsSync(decoder) && existsSync(tokens)) return modelDir
   return null
 }
+
+export function getInstalledModels(): string[] {
+  const dir = getSherpaDir()
+  const modelsDir = join(dir, 'models')
+  if (!existsSync(modelsDir)) return []
+
+  const knownModels = ['tiny.en', 'base.en', 'small.en', 'medium.en', 'tiny', 'base', 'small']
+  return knownModels.filter((m) => getWhisperModelDir(m) !== null)
+}
+
+// ---------------------------------------------------------------------------
+// Local transcription via sherpa-onnx-offline
+// ---------------------------------------------------------------------------
 
 export async function transcribeLocal(
   audioPath: string,
   model: string = 'base.en',
-  language?: string,
 ): Promise<TranscriptionResult> {
-  const whisperPath = getWhisperBinaryPath()
-  if (!whisperPath) {
-    throw new Error('whisper-cli binary not found. Run download-whisper to install it.')
+  const binaryPath = getSherpaOfflinePath()
+  if (!binaryPath) {
+    throw new Error('sherpa-onnx-offline binary not found. Run download-sherpa to install.')
   }
 
-  const modelPath = getWhisperModelPath(model)
-  if (!modelPath) {
-    throw new Error(`Whisper model "${model}" not found. Run download-whisper --model ${model}`)
+  const modelDir = getWhisperModelDir(model)
+  if (!modelDir) {
+    throw new Error(`Whisper ONNX model "${model}" not found. Run download-sherpa --model ${model}`)
   }
 
-  const outputBase = audioPath.replace(/\.[^.]+$/, '')
-
+  const prefix = model
   const args = [
-    '-m', modelPath,
-    '-f', audioPath,
-    '-oj',  // output JSON
-    '-of', outputBase,
-    '--no-prints',
+    `--whisper-encoder=${join(modelDir, `${prefix}-encoder.onnx`)}`,
+    `--whisper-decoder=${join(modelDir, `${prefix}-decoder.onnx`)}`,
+    `--tokens=${join(modelDir, `${prefix}-tokens.txt`)}`,
+    '--num-threads=4',
+    audioPath,
   ]
 
-  if (language) {
-    args.push('-l', language)
+  const libDir = getSherpaLibDir()
+  const env = { ...process.env }
+  if (process.platform === 'darwin') {
+    env.DYLD_LIBRARY_PATH = [libDir, env.DYLD_LIBRARY_PATH].filter(Boolean).join(':')
+  } else {
+    env.LD_LIBRARY_PATH = [libDir, env.LD_LIBRARY_PATH].filter(Boolean).join(':')
   }
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(whisperPath, args, {
+    const proc = spawn(binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 600_000, // 10 minute timeout
+      env,
+      timeout: 600_000,
     })
 
+    let stdout = ''
     let stderr = ''
-    proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString()
-    })
+    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
 
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to run whisper: ${err.message}`))
-    })
+    proc.on('error', (err) => reject(new Error(`Failed to run sherpa-onnx-offline: ${err.message}`)))
 
-    proc.on('exit', async (code) => {
+    proc.on('exit', (code) => {
       if (code !== 0) {
-        reject(new Error(`whisper exited with code ${code}: ${stderr}`))
+        reject(new Error(`sherpa-onnx-offline exited with code ${code}: ${stderr.slice(-500)}`))
         return
       }
 
       try {
-        const jsonPath = `${outputBase}.json`
-        if (!existsSync(jsonPath)) {
-          reject(new Error(`Whisper output not found at ${jsonPath}`))
-          return
-        }
-
-        const raw = await readFile(jsonPath, 'utf-8')
-        const result = JSON.parse(raw)
-
-        const segments: TranscriptSegment[] = (result.transcription || []).map((seg: any) => ({
-          start: parseTimestamp(seg.timestamps?.from || '00:00:00'),
-          end: parseTimestamp(seg.timestamps?.to || '00:00:00'),
-          text: (seg.text || '').trim(),
-        }))
-
-        const fullText = segments.map((s) => s.text).join(' ')
-        const duration = segments.length > 0 ? segments[segments.length - 1].end : 0
-
-        resolve({
-          text: fullText,
-          segments,
-          language: result.result?.language || language || 'en',
-          duration,
-        })
+        const result = parseSherpaOutput(stdout)
+        resolve(result)
       } catch (err) {
-        reject(new Error(`Failed to parse whisper output: ${err}`))
+        reject(new Error(`Failed to parse sherpa-onnx output: ${err}`))
       }
     })
   })
 }
 
-function parseTimestamp(ts: string): number {
-  // Format: "HH:MM:SS.mmm" or "HH:MM:SS,mmm"
-  const parts = ts.replace(',', '.').split(':')
-  if (parts.length === 3) {
-    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2])
+function parseSherpaOutput(stdout: string): TranscriptionResult {
+  const lines = stdout.trim().split('\n')
+  let jsonResult: any = null
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        jsonResult = JSON.parse(trimmed)
+        break
+      } catch { /* not JSON, continue */ }
+    }
   }
-  return 0
+
+  if (!jsonResult) {
+    throw new Error('No JSON output found in sherpa-onnx-offline stdout')
+  }
+
+  const text = (jsonResult.text || '').trim()
+  const tokens: string[] = jsonResult.tokens || []
+  const timestamps: number[] = jsonResult.timestamps || []
+
+  let segments: TranscriptSegment[] = []
+  if (timestamps.length > 0 && timestamps.length === tokens.length) {
+    segments = tokens.map((tok: string, i: number) => ({
+      start: timestamps[i],
+      end: i + 1 < timestamps.length ? timestamps[i + 1] : timestamps[i] + 0.5,
+      text: tok,
+    }))
+  } else if (text) {
+    segments = [{ start: 0, end: 0, text }]
+  }
+
+  const durationMatch = stdout.match(/Real time factor.*?\/\s*([\d.]+)\s*=/)
+  const duration = durationMatch ? parseFloat(durationMatch[1]) : 0
+
+  return { text, segments, language: jsonResult.lang || 'en', duration }
 }
+
+// ---------------------------------------------------------------------------
+// Cloud transcription (OpenAI Whisper API) — unchanged
+// ---------------------------------------------------------------------------
 
 export async function transcribeCloud(
   audioPath: string,
@@ -210,6 +232,10 @@ export async function transcribeCloud(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Orchestrator: local-first with cloud fallback
+// ---------------------------------------------------------------------------
+
 export async function transcribe(
   audioPath: string,
   options: {
@@ -221,12 +247,12 @@ export async function transcribe(
   const { model = 'base.en', language, preferLocal = true } = options
 
   if (preferLocal) {
-    const whisperPath = getWhisperBinaryPath()
-    const modelPath = getWhisperModelPath(model)
+    const binPath = getSherpaOfflinePath()
+    const modelDir = getWhisperModelDir(model)
 
-    if (whisperPath && modelPath) {
+    if (binPath && modelDir) {
       try {
-        return await transcribeLocal(audioPath, model, language)
+        return await transcribeLocal(audioPath, model)
       } catch (err) {
         console.error('[Transcription] Local transcription failed, trying cloud:', err)
       }
@@ -237,5 +263,5 @@ export async function transcribe(
 }
 
 export function isLocalTranscriptionAvailable(model: string = 'base.en'): boolean {
-  return !!getWhisperBinaryPath() && !!getWhisperModelPath(model)
+  return !!getSherpaOfflinePath() && !!getWhisperModelDir(model)
 }
