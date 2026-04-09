@@ -50,7 +50,7 @@ test.describe("Composio Integrations", () => {
   })
 
   test("MCP catalog includes composio authType fields", async () => {
-    const input = page.getByPlaceholder("Ask Shogo to create...")
+    const input = page.getByPlaceholder("Ask Shogo to ...")
     await input.click()
     await input.fill("Test composio integrations")
     await page.waitForTimeout(500)

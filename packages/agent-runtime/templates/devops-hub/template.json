@@ -23,7 +23,13 @@
       "start": "22:00",
       "end": "07:00",
       "timezone": "UTC"
-    }
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
   },
   "integrations": [
     {
@@ -43,5 +49,6 @@
       "categoryId": "project-management",
       "description": "Sync issues and track sprint progress"
     }
-  ]
+  ],
+  "techStack": "none"
 }

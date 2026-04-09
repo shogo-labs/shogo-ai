@@ -113,7 +113,9 @@ export default observer(function TemplatesPage() {
           template.description,
           user.id,
           undefined,
-          template.id
+          template.id,
+          template.techStack,
+          template.settings,
         )
 
         if (project?.id) {

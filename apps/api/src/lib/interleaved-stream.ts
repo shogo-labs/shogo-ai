@@ -33,7 +33,7 @@ import type {
 export interface InterleavedStreamOptions {
   /**
    * Optional callback to extract message metadata from providerMetadata.
-   * Used to extract ccSessionId from Claude Code's providerMetadata.
+   * Used to extract session metadata from providerMetadata.
    */
   getMessageMetadata?: (providerMetadata: ProviderMetadata | undefined) => Record<string, unknown> | undefined
 }
@@ -246,9 +246,7 @@ function* processEvent<TOOLS extends ToolSet>(
 
     case 'tool-error': {
       const ev = event as any
-      // Extract error from all known provider fields (Claude Code uses rawError in providerMetadata)
-      const rawError = ev.providerMetadata?.['claude-code']?.rawError
-      let errorContent = ev.error ?? rawError
+      let errorContent = ev.error
       if (errorContent != null && typeof errorContent === 'object') {
         errorContent = errorContent?.message ?? JSON.stringify(errorContent)
       }

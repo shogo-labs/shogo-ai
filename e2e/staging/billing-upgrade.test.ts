@@ -179,7 +179,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
 
-    const input = page.getByPlaceholder("Ask Shogo to create...")
+    const input = page.getByPlaceholder("Ask Shogo to ...")
     await input.click()
     await input.fill("Test model gating for Pro plan")
     await page.waitForTimeout(500)

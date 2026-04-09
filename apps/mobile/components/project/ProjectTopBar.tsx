@@ -8,7 +8,7 @@
  * + chat toolbar + EditToolbar) into one.
  */
 
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useRef, useEffect, useState } from 'react'
 import {
   View,
   Text,
@@ -30,7 +30,6 @@ import {
 import { useRouter } from 'expo-router'
 import {
   ArrowLeft,
-  History,
   PanelLeftClose,
   PanelLeft,
   Zap,
@@ -66,7 +65,6 @@ import {
   Download,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
-import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { formatCredits } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
@@ -146,9 +144,22 @@ export interface ProjectTopBarProps {
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
   chatFullscreenSidebarWidth?: number
+  /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
+  onSearchChats?: () => void
   // Slot for canvas theme picker
   canvasThemePicker?: React.ReactNode
   onCanvasRefresh?: () => void
+}
+
+/** Set the native HTML `title` tooltip on the DOM element via ref. */
+function useWebTitle(title?: string) {
+  const ref = useRef<View>(null)
+  useEffect(() => {
+    if (Platform.OS === 'web' && ref.current) {
+      (ref.current as unknown as HTMLElement).title = title ?? ''
+    }
+  }, [title])
+  return ref
 }
 
 function BarIconButton({
@@ -164,9 +175,11 @@ function BarIconButton({
   title?: string
   size?: number
 }) {
-  const button = (triggerProps?: Record<string, unknown>) => (
+  const tipRef = useWebTitle(title)
+
+  return (
     <Pressable
-      {...triggerProps}
+      ref={tipRef}
       onPress={onPress}
       className={cn(
         'h-7 w-7 items-center justify-center rounded-md',
@@ -179,19 +192,6 @@ function BarIconButton({
         className={cn(active ? 'text-primary-foreground' : 'text-muted-foreground')}
       />
     </Pressable>
-  )
-
-  if (!title) return button()
-
-  return (
-    <Tooltip
-      placement="bottom"
-      trigger={(triggerProps) => button(triggerProps)}
-    >
-      <TooltipContent>
-        <TooltipText>{title}</TooltipText>
-      </TooltipContent>
-    </Tooltip>
   )
 }
 
@@ -237,6 +237,7 @@ export function ProjectTopBar({
   onChatCollapseToggle,
   onCreateNewSession,
   chatFullscreenSidebarWidth,
+  onSearchChats,
   canvasThemePicker,
   onCanvasRefresh,
 }: ProjectTopBarProps) {
@@ -543,19 +544,16 @@ export function ProjectTopBar({
 
         <View className="flex-1" />
 
-        {/* Chat controls — right-aligned within the chat zone */}
+        {/* Fullscreen: search chats icon in the sidebar header area */}
+        {onSearchChats && (
+          <BarIconButton icon={Search} onPress={onSearchChats} title="Search chats" />
+        )}
+
+        {/* Chat collapse/expand — history and new-chat are now in ChatTabBar */}
         {onChatCollapseToggle && (
           <View className="flex-row items-center gap-0.5">
             {!isChatCollapsed ? (
-              <>
-                <BarIconButton icon={PanelLeftClose} onPress={onChatCollapseToggle} title="Collapse chat" />
-                {onChatSessionsToggle && (
-                  <BarIconButton icon={History} onPress={onChatSessionsToggle} active={showChatSessions} title="Chat history" />
-                )}
-                {onCreateNewSession && (
-                  <BarIconButton icon={Plus} onPress={onCreateNewSession} title="New chat" />
-                )}
-              </>
+              <BarIconButton icon={PanelLeftClose} onPress={onChatCollapseToggle} title="Collapse chat" />
             ) : (
               <BarIconButton icon={PanelLeft} onPress={onChatCollapseToggle} title="Expand chat" />
             )}

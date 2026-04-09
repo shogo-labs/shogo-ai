@@ -83,7 +83,6 @@ SHOGO_LOCAL_MODE=true \
 DATABASE_URL="file:./shogo-local.db" \
 BETTER_AUTH_SECRET=local-dev-secret \
 BETTER_AUTH_URL=http://localhost:8002 \
-PREWARM_CLAUDE_CODE=false \
 NODE_ENV=development \
   bun apps/api/src/entry.ts
 ```
@@ -140,7 +139,6 @@ analytics UI.
 | `DATABASE_URL`         | `file:./shogo.db`        | SQLite database path                 |
 | `BETTER_AUTH_SECRET`   | —                        | Auth session secret (any string)     |
 | `BETTER_AUTH_URL`      | —                        | Auth base URL (`http://localhost:8002`) |
-| `PREWARM_CLAUDE_CODE`  | `true`                   | Set `false` to disable Claude prewarm |
 | `ANTHROPIC_API_KEY`    | —                        | Set via Settings UI or env           |
 | `OPENAI_API_KEY`       | —                        | Set via Settings UI or env           |
 

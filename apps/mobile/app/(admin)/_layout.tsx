@@ -47,7 +47,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
 
-const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' }
+const AI_NAV_ITEM = { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' }
 
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
@@ -161,7 +161,7 @@ function AdminSidebar({
   const router = useRouter()
   const pathname = usePathname()
   const { features, localMode } = usePlatformConfig()
-  const NAV_ITEMS = localMode ? LOCAL_MAIN_ITEMS : features.billing ? BASE_NAV_ITEMS : [...BASE_NAV_ITEMS, LOCAL_NAV_ITEM]
+  const NAV_ITEMS = localMode ? LOCAL_MAIN_ITEMS : [...BASE_NAV_ITEMS, AI_NAV_ITEM]
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)

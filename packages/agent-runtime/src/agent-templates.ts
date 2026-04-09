@@ -26,6 +26,13 @@ export interface AgentTemplate {
     modelName: string
     quietHours?: { start: string; end: string; timezone: string }
     mcpServers?: Record<string, { command: string; args: string[] }>
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
+    [key: string]: unknown
   }
 
   /** Bundled skill file names to auto-install into workspace skills/ dir */
@@ -36,6 +43,9 @@ export interface AgentTemplate {
 
   /** Composio integration categories the template recommends connecting */
   integrations?: TemplateIntegrationRef[]
+
+  /** Default tech stack to seed when creating a project with this template */
+  techStack?: string
 }
 
 export type TemplateCategory =
@@ -67,6 +77,6 @@ export function getTemplatesByCategory(category: TemplateCategory): AgentTemplat
   return AGENT_TEMPLATES.filter((t) => t.category === category)
 }
 
-export function getTemplateSummaries(): Array<Omit<AgentTemplate, 'files'>> {
+export function getTemplateSummaries(): Array<Omit<AgentTemplate, 'files'> & { techStack?: string }> {
   return AGENT_TEMPLATES.map(({ files: _files, ...rest }) => rest)
 }

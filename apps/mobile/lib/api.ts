@@ -233,7 +233,8 @@ export const api = {
       '/api/integrations/connections',
       { projectId },
     )
-    return res.data.data ?? []
+    const data = res.data?.data
+    return Array.isArray(data) ? data : []
   },
 
   async connectIntegration(http: HttpClient, toolkit: string, projectId: string, callbackUrl: string) {
@@ -321,7 +322,8 @@ export const api = {
     const res = await http.get<{ ok: boolean; items?: Array<{ user?: { id: string; name?: string; email?: string } }> }>(
       `/api/members?workspaceId=${workspaceId}`,
     )
-    return res.data?.items ?? []
+    const items = res.data?.items
+    return Array.isArray(items) ? items : []
   },
 
   // ─── Invitations ──────────────────────────────────────
@@ -330,7 +332,8 @@ export const api = {
     const res = await http.get<{ ok: boolean; items?: any[] }>(
       `/api/invitations?email=${encodeURIComponent(email)}`,
     )
-    return (res.data?.items ?? []).filter((i: any) => i.status === 'pending')
+    const items = res.data?.items
+    return (Array.isArray(items) ? items : []).filter((i: any) => i.status === 'pending')
   },
 
   // ─── Account ──────────────────────────────────────────
@@ -369,19 +372,28 @@ export const api = {
 
   async getAgentTemplates(http: HttpClient) {
     const res = await http.get<{ templates: AgentTemplateSummary[] }>('/api/agent-templates')
-    return res.data?.templates ?? []
+    const templates = res.data?.templates
+    return Array.isArray(templates) ? templates : []
+  },
+
+  async getTechStacks(http: HttpClient) {
+    const res = await http.get<{ stacks: TechStackSummary[] }>('/api/tech-stacks')
+    const stacks = res.data?.stacks
+    return Array.isArray(stacks) ? stacks : []
   },
 
   async getAppTemplates(http: HttpClient) {
     const res = await http.get<{ templates: AppTemplateSummary[] }>('/api/templates')
-    return res.data?.templates ?? []
+    const templates = res.data?.templates
+    return Array.isArray(templates) ? templates : []
   },
 
   // ─── Eval Outputs ─────────────────────────────────────────
 
   async getEvalOutputs(http: HttpClient) {
     const res = await http.get<{ runs: EvalOutputRun[] }>('/api/eval-outputs')
-    return res.data?.runs ?? []
+    const runs = res.data?.runs
+    return Array.isArray(runs) ? runs : []
   },
 
   async importEvalAsProject(
@@ -511,11 +523,17 @@ export interface AgentTemplateSummary {
   category: string
   icon: string
   tags: string[]
-  settings: {
-    heartbeatInterval: number
-    heartbeatEnabled: boolean
-    modelProvider: string
-    modelName: string
+  settings: Record<string, unknown> & {
+    heartbeatInterval?: number
+    heartbeatEnabled?: boolean
+    modelProvider?: string
+    modelName?: string
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
   }
   skills: string[]
   integrations?: Array<{
@@ -523,6 +541,28 @@ export interface AgentTemplateSummary {
     description: string
     required?: boolean
   }>
+  techStack?: string
+}
+
+export interface TechStackSummary {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  runtime?: {
+    devServer?: string
+    buildCommand?: string
+    previewPort?: number
+  }
+  capabilities?: {
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    heartbeatEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
+  }
 }
 
 export interface AppTemplateSummary {

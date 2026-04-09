@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Platform, Pressable } from "react-native"
-import { useColorScheme } from "nativewind"
+import { Platform, Pressable, useColorScheme as useSystemColorScheme } from "react-native"
 import Svg, { Circle } from "react-native-svg"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipText,
-} from "@/components/ui/tooltip"
+
+import { useTheme } from "../../contexts/theme"
 
 export interface ContextTrackerProps {
   inputTokens: number
@@ -38,12 +34,22 @@ function getFillColor(pct: number): string {
   return "#a1a1aa"
 }
 
+/** Match app chrome (ThemeProvider + document `dark` class), not NativeWind's internal scheme — NW can disagree on web builds. */
+function useResolvedLightDark(): "light" | "dark" {
+  const { theme } = useTheme()
+  const systemScheme = useSystemColorScheme()
+  if (theme === "system") {
+    return systemScheme === "dark" ? "dark" : "light"
+  }
+  return theme
+}
+
 export function ContextTracker({ inputTokens, contextWindowTokens }: ContextTrackerProps) {
-  const { colorScheme } = useColorScheme()
+  const appearance = useResolvedLightDark()
   const percentage = Math.min((inputTokens / contextWindowTokens) * 100, 100)
   const strokeDashoffset = CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE
   const fillColor = getFillColor(percentage)
-  const trackColor = colorScheme === "dark" ? "#3f3f46" : "#d4d4d8"
+  const trackColor = appearance === "dark" ? "#3f3f46" : "#d4d4d8"
   const label = `${percentage.toFixed(1)}% · ${formatTokenCount(inputTokens)} / ${formatTokenCount(contextWindowTokens)} context used`
 
   const ring = (
@@ -77,15 +83,11 @@ export function ContextTracker({ inputTokens, contextWindowTokens }: ContextTrac
   }
 
   return (
-    <Tooltip
-      placement="top"
-      trigger={(triggerProps) => (
-        <Pressable {...triggerProps}>{ring}</Pressable>
-      )}
+    <Pressable
+      ref={(el: any) => { if (el) el.title = label }}
+      accessibilityLabel={label}
     >
-      <TooltipContent className="py-0.5 px-2 rounded bg-popover border border-border shadow-sm">
-        <TooltipText className="text-[10px] text-popover-foreground">{label}</TooltipText>
-      </TooltipContent>
-    </Tooltip>
+      {ring}
+    </Pressable>
   )
 }

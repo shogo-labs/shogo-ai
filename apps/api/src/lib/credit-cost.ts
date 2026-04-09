@@ -23,7 +23,7 @@
 import {
   getModelTier as catalogGetModelTier,
   getModelBillingModel,
-  AGENT_MODE_DEFAULTS,
+  resolveAgentModeDefault,
   type ModelTier,
   type AgentMode,
   type BillingModel,
@@ -57,10 +57,15 @@ const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
 export const getModelTier = catalogGetModelTier
 
 /**
- * Map agent mode to model name for credit calculation.
+ * Map agent mode (model ID or legacy "basic"/"advanced") to billing model name.
  */
-export function agentModeToModel(agentMode?: AgentMode): ModelName {
-  if (agentMode === 'basic') return AGENT_MODE_DEFAULTS.basic as ModelName
+export function agentModeToModel(agentMode?: string): ModelName {
+  if (!agentMode) return resolveAgentModeDefault('advanced') as ModelName
+  if (agentMode === 'basic' || agentMode === 'advanced') {
+    return resolveAgentModeDefault(agentMode as AgentMode) as ModelName
+  }
+  const billing = getModelBillingModel(agentMode)
+  if (billing in MODEL_DOLLAR_COSTS) return billing as ModelName
   return 'sonnet'
 }
 
@@ -73,13 +78,16 @@ export function proxyModelToBillingModel(proxyModel: string): ModelName {
   return 'sonnet'
 }
 
-function resolveModel(modelOrAgentMode?: ModelName | AgentMode): ModelName {
+function resolveModel(modelOrAgentMode?: string): ModelName {
+  if (!modelOrAgentMode) return 'sonnet'
   if (modelOrAgentMode === 'basic' || modelOrAgentMode === 'advanced') {
-    return agentModeToModel(modelOrAgentMode as AgentMode)
+    return agentModeToModel(modelOrAgentMode)
   }
-  if (modelOrAgentMode && modelOrAgentMode in MODEL_DOLLAR_COSTS) {
+  if (modelOrAgentMode in MODEL_DOLLAR_COSTS) {
     return modelOrAgentMode as ModelName
   }
+  const billing = getModelBillingModel(modelOrAgentMode)
+  if (billing in MODEL_DOLLAR_COSTS) return billing as ModelName
   return 'sonnet'
 }
 
@@ -93,7 +101,7 @@ function resolveModel(modelOrAgentMode?: ModelName | AgentMode): ModelName {
 export function calculateCreditCost(
   inputTokens: number,
   outputTokens: number,
-  modelOrAgentMode?: ModelName | AgentMode,
+  modelOrAgentMode?: string,
   cachedInputTokens: number = 0,
 ): number {
   const model = resolveModel(modelOrAgentMode)

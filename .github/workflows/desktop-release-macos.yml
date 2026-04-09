@@ -17,57 +17,6 @@ env:
   GO_VERSION: '1.22'
 
 jobs:
-  build-vm-images:
-    name: Build VM Images (${{ matrix.vm-arch }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        vm-arch: [aarch64, x86_64]
-        include:
-          - vm-arch: aarch64
-            qemu-pkg: qemu-system-arm
-          - vm-arch: x86_64
-            qemu-pkg: qemu-system-x86
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Cache VM images
-        id: vm-cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}
-          key: vm-image-${{ matrix.vm-arch }}-${{ hashFiles('apps/desktop/scripts/build-vm-image/build.sh') }}
-
-      - name: Enable KVM
-        if: steps.vm-cache.outputs.cache-hit != 'true'
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Install QEMU and tools
-        if: steps.vm-cache.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.qemu-pkg }} qemu-utils cloud-image-utils wget
-          sudo modprobe nbd max_part=8
-
-      - name: Build VM image
-        if: steps.vm-cache.outputs.cache-hit != 'true'
-        run: |
-          chmod +x apps/desktop/scripts/build-vm-image/build.sh
-          apps/desktop/scripts/build-vm-image/build.sh ${{ matrix.vm-arch }}
-
-      - name: Verify VM image output
-        run: ls -lh apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}/
-
-      - name: Upload VM images
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: vm-images-${{ matrix.vm-arch }}
-          path: apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}/
-
   build-web:
     name: Build Expo Web
     runs-on: ubuntu-latest
@@ -109,7 +58,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (macOS ${{ matrix.arch }})
-    needs: [build-web, build-vm-images]
+    needs: build-web
     strategy:
       fail-fast: false
       matrix:
@@ -178,15 +127,9 @@ jobs:
         run: |
           GO_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
           CGO_ENABLED=1 GOOS=darwin GOARCH=$GO_ARCH go build -o shogo-vm-$GO_ARCH .
-          mkdir -p ../../resources/vm
-          cp shogo-vm-$GO_ARCH ../../resources/vm/
-          ls -la ../../resources/vm/
-
-      - name: Download VM images
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: vm-images-${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}
-          path: apps/desktop/resources/vm/
+          mkdir -p ../../resources/vm-helper
+          cp shogo-vm-$GO_ARCH ../../resources/vm-helper/
+          ls -la ../../resources/vm-helper/
 
       - name: Install monorepo dependencies
         run: bun install
@@ -237,12 +180,15 @@ jobs:
             security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
             security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
               -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-            security set-key-partition-list -S apple-tool:,apple: \
+            security set-key-partition-list -S apple-tool:,apple:,codesign: \
               -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-            security list-keychain -d user -s "$KEYCHAIN_PATH"
+            security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+            security default-keychain -d user -s "$KEYCHAIN_PATH"
 
             rm "$CERT_PATH"
             echo "Apple certificate imported into temporary keychain."
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            echo "SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           else
             echo "No Apple certificate provided. Skipping macOS code signing."
           fi
@@ -253,7 +199,7 @@ jobs:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
         run: |
           GO_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
-          VM_HELPER="apps/desktop/resources/vm/shogo-vm-$GO_ARCH"
+          VM_HELPER="apps/desktop/resources/vm-helper/shogo-vm-$GO_ARCH"
           if [ -f "$VM_HELPER" ]; then
             codesign --force --options runtime \
               --entitlements apps/desktop/entitlements.plist \
@@ -261,14 +207,107 @@ jobs:
             echo "Go VM helper codesigned with virtualization entitlement"
           fi
 
-      - name: Package with Electron Forge
+      - name: Package Electron app
         working-directory: apps/desktop
-        run: npx electron-forge make --arch=${{ matrix.arch }}
+        run: npx electron-forge package --arch=${{ matrix.arch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Codesign app bundle
+        if: env.SIGNING_KEYCHAIN != ''
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          HASH=$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN" | head -1 | awk '{print $2}')
+          echo "Signing identity: $HASH"
+          APP_PATH=$(find out -name "Shogo.app" -maxdepth 4 -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Shogo.app not found in out/"
+            find out -name "*.app" -maxdepth 4
+            exit 1
+          fi
+          echo "App bundle: $APP_PATH"
+          SIGN_ARGS=(--sign "$HASH" --keychain "$SIGNING_KEYCHAIN" --force --timestamp --options runtime)
+          SIGNED=0
+
+          sign_file() {
+            codesign "${SIGN_ARGS[@]}" "$1" 2>&1 && SIGNED=$((SIGNED + 1)) || echo "  WARNING: failed to sign $1"
+          }
+
+          echo "=== Phase 1: Sign all native binaries (Mach-O, dylib, .node, .so) ==="
+          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.node" \) | sort -r | while read -r f; do
+            echo "  signing: $f"
+            sign_file "$f"
+          done
+
+          find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              echo "  signing: $f"
+              sign_file "$f"
+            fi
+          done
+
+          echo "=== Phase 2: Sign helper .app bundles (deepest first) ==="
+          find "$APP_PATH" -name "*.app" -type d ! -path "$APP_PATH" -depth | while read -r bundle; do
+            echo "  signing bundle: $bundle"
+            sign_file "$bundle"
+          done
+
+          echo "=== Phase 3: Sign .framework bundles (deepest first) ==="
+          find "$APP_PATH" -name "*.framework" -type d -depth | while read -r fw; do
+            echo "  signing framework: $fw"
+            sign_file "$fw"
+          done
+
+          echo "=== Phase 4: Sign main app bundle with entitlements ==="
+          echo "  signing app: $APP_PATH"
+          codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.plist "$APP_PATH"
+
+          echo "Verifying signature..."
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          echo "Codesign complete."
+
+      - name: Notarize app bundle
+        if: env.SIGNING_KEYCHAIN != ''
+        working-directory: apps/desktop
+        env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find out -name "Shogo.app" -maxdepth 4 -type d | head -1)
+          ZIP_PATH="/tmp/Shogo-notarize.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+          echo "Submitting for notarization..."
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 10m 2>&1) || true
+          echo "$SUBMIT_OUTPUT"
+          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
+          STATUS=$(echo "$SUBMIT_OUTPUT" | grep "status:" | tail -1 | awk '{print $2}')
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization failed with status: $STATUS"
+            echo "Fetching notarization log..."
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_ID_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              /tmp/notarization-log.json 2>&1 || true
+            cat /tmp/notarization-log.json 2>/dev/null || echo "Could not fetch log"
+            exit 1
+          fi
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$APP_PATH"
+          echo "Notarization complete."
+
+      - name: Build distribution artifacts
+        working-directory: apps/desktop
+        run: npx electron-forge make --arch=${{ matrix.arch }} --skip-package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup macOS Signing Keychain
         if: always()

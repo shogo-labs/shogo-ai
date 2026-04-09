@@ -64,5 +64,9 @@ export default function RootIndex() {
     return <Redirect href="/(app)" />
   }
 
+  if (platformConfig.localMode) {
+    return <Redirect href="/(onboarding)" />
+  }
+
   return <Redirect href="/(auth)/sign-in" />
 }

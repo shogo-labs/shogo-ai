@@ -116,7 +116,7 @@ export class DarwinVMManager implements VMManager {
     }
   }
 
-  async stopVM(_handle: VMHandle): Promise<void> {
+  async stopVM(handle: VMHandle): Promise<void> {
     if (!this.vmRunning || !this.rpcClient) return
 
     try {
@@ -135,6 +135,9 @@ export class DarwinVMManager implements VMManager {
 
     this.vmRunning = false
     this.portForwards.clear()
+
+    const dataDir = this.getVMDataDir(handle.id)
+    try { fs.rmSync(dataDir, { recursive: true, force: true }) } catch {}
   }
 
   isRunning(_handle: VMHandle): boolean {

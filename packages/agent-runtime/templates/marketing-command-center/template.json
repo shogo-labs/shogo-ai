@@ -25,7 +25,13 @@
       "start": "22:00",
       "end": "07:00",
       "timezone": "UTC"
-    }
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
   },
   "integrations": [
     {
@@ -44,5 +50,6 @@
       "categoryId": "email",
       "description": "Monitor outreach and email campaigns"
     }
-  ]
+  ],
+  "techStack": "none"
 }

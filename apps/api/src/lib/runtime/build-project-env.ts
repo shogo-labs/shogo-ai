@@ -8,6 +8,8 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
+import { getAgentModeOverrides } from '@shogo/model-catalog'
+import { getAgentTemplateById } from '@shogo/agent-runtime/src/agent-templates'
 
 /**
  * Build the environment variables needed for assigning a project to a runtime pod or VM.
@@ -28,11 +30,21 @@ export async function buildProjectEnv(
     const { prisma } = await import('../prisma')
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { workspaceId: true, templateId: true, name: true },
+      select: { workspaceId: true, templateId: true, name: true, settings: true },
     })
     if (project) {
       if (project.templateId) env.TEMPLATE_ID = project.templateId
       if (project.name) env.AGENT_NAME = project.name
+
+      const settings = project.settings as Record<string, unknown> | null
+      const techStackFromSettings = settings?.techStackId as string | undefined
+      if (techStackFromSettings) {
+        env.TECH_STACK_ID = techStackFromSettings
+      } else if (project.templateId) {
+        const template = getAgentTemplateById(project.templateId)
+        if (template?.techStack) env.TECH_STACK_ID = template.techStack
+      }
+
       const { getProjectOwnerUserId } = await import('../project-user-context')
       const ownerUserId = await getProjectOwnerUserId(projectId)
       env.AI_PROXY_TOKEN = await generateProxyToken(
@@ -52,13 +64,26 @@ export async function buildProjectEnv(
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
 
   // AI proxy URLs — the runtime needs to know where the proxy server is.
-  // In K8s this is the service DNS name; locally it's localhost; in VMs we
-  // need the host address since localhost inside a VM doesn't reach the host.
-  const apiPort = process.env.API_PORT || '8002'
-  const apiHost = process.env.API_HOST || 'localhost'
-  env.AI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
-  env.ANTHROPIC_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/anthropic`
-  env.OPENAI_PROXY_URL = `http://${apiHost}:${apiPort}/api/ai/v1`
+  // In K8s (SYSTEM_NAMESPACE set): use the Knative service DNS on port 80.
+  // Desktop VMs: API_HOST is auto-set to the host bridge IP.
+  // Local dev: falls back to localhost:API_PORT.
+  const ns = process.env.SYSTEM_NAMESPACE
+  let apiBase: string
+  if (ns) {
+    apiBase = `http://api.${ns}.svc.cluster.local`
+  } else {
+    const apiPort = process.env.API_PORT || '8002'
+    const apiHost = process.env.API_HOST || 'localhost'
+    apiBase = `http://${apiHost}:${apiPort}`
+  }
+  env.AI_PROXY_URL = `${apiBase}/api/ai/v1`
+  env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
+  env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
+
+  // Inject admin-configured agent model overrides so the gateway resolves correctly
+  const modelOverrides = getAgentModeOverrides()
+  if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
+  if (modelOverrides.advanced) env.AGENT_ADVANCED_MODEL = modelOverrides.advanced
 
   if (process.env.S3_WORKSPACES_BUCKET) {
     env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET

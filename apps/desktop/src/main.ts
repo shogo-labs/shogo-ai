@@ -162,6 +162,39 @@ function registerIpcHandlers(): void {
     })
     return readConfig().vmIsolation
   })
+
+  ipcMain.handle('get-vm-image-status', () => {
+    const { isVMAvailable, getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+    const imageDir = getVMImageDir()
+    const mgr = new VMImageManager(imageDir)
+    return {
+      imagesPresent: mgr.isImagePresent(),
+      vmAvailable: isVMAvailable(),
+      imageVersion: mgr.getImageVersion(),
+      imageDir,
+    }
+  })
+
+  ipcMain.handle('download-vm-images', (event) => {
+    const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+    const imageDir = getVMImageDir()
+    const mgr = new VMImageManager(imageDir)
+
+    return mgr.downloadImage((progress) => {
+      event.sender.send('vm-image-download-progress', progress)
+    }).then(() => {
+      console.log('[Desktop] VM images downloaded successfully')
+      return { success: true }
+    }).catch((err: Error) => {
+      console.error('[Desktop] VM image download failed:', err)
+      return { success: false, error: err.message }
+    })
+  })
+
+  ipcMain.handle('skip-vm-download', () => {
+    console.log('[Desktop] User skipped VM image download')
+    return { success: true }
+  })
 }
 
 function createWindow(): void {
@@ -324,6 +357,8 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
   buildAppMenu()
 
+  createWindow()
+
   if (!isCloudMode) {
     console.log('[Desktop] Starting local server...')
     try {
@@ -335,8 +370,6 @@ app.whenReady().then(async () => {
     }
     setupSessionHandlers()
   }
-
-  createWindow()
 
   if (app.isPackaged) {
     initAutoUpdater()

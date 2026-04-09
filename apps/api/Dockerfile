@@ -28,7 +28,7 @@ COPY packages/model-catalog/package.json ./packages/model-catalog/
 COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
-# Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
+# Copy scripts needed for postinstall
 COPY scripts ./scripts
 
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
@@ -106,13 +106,7 @@ RUN apk add --no-cache curl bash unzip && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
     rm -rf /root/.bun
 
-# Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
-RUN npm install -g @anthropic-ai/claude-code
-
-# Set SHELL environment variable (required by Claude Code CLI)
-ENV SHELL=/bin/bash
-
-# Create non-root user for security (required for Claude Code CLI)
+# Create non-root user for security
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 

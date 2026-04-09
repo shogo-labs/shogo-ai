@@ -98,7 +98,7 @@ async function startServer() {
       stdout: "inherit",
       stderr: "inherit",
       stdin: "inherit",
-      env: { ...process.env, PREWARM_CLAUDE_CODE: "false" },
+      env: { ...process.env },
     });
 
     child.exited.then((code) => {

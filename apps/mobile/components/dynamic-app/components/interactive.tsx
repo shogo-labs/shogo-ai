@@ -251,7 +251,11 @@ interface DynSelectProps {
   className?: string
 }
 
-export function DynSelect({ label, options = [], value = '', placeholder, disabled, action, onAction, onDataChange, dataPath, className }: DynSelectProps) {
+export function DynSelect({ label, options: rawOptions = [], value = '', placeholder, disabled, action, onAction, onDataChange, dataPath, className }: DynSelectProps) {
+  const options = rawOptions.filter(
+    (o): o is SelectOption => o != null && typeof o.value === 'string',
+  )
+
   const handleValueChange = useCallback((newVal: string) => {
     if (dataPath && onDataChange) {
       onDataChange(dataPath, newVal, { persist: true })
@@ -432,7 +436,11 @@ interface DynChoicePickerProps {
   className?: string
 }
 
-export function DynChoicePicker({ label, options = [], value, multiple, action, onAction, onDataChange, dataPath, className }: DynChoicePickerProps) {
+export function DynChoicePicker({ label, options: rawOptions = [], value, multiple, action, onAction, onDataChange, dataPath, className }: DynChoicePickerProps) {
+  const options = rawOptions.filter(
+    (o): o is ChoiceOption => o != null && typeof o.value === 'string',
+  )
+
   const [selected, setSelected] = useState<string[]>(
     Array.isArray(value) ? value : value ? [value] : []
   )

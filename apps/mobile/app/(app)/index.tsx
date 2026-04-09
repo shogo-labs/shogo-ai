@@ -28,16 +28,20 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
+import type { IProject, IMember, IWorkspace } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
-import type { FileAttachment, InteractionMode, AgentMode } from '../../components/chat/ChatInput'
+import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
+import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
 import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
-import { loadAgentModePreference, saveAgentModePreference } from '../../lib/agent-mode-preference'
+import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useTypingPlaceholder'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { usePlatformConfig } from '../../lib/platform-config'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
@@ -187,6 +191,7 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
+  const { localMode } = usePlatformConfig()
   const posthog = usePostHogSafe()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
@@ -200,7 +205,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
-  const [agentMode, setAgentMode] = useState<AgentMode>('basic')
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
@@ -224,7 +229,8 @@ const HomeScreen = observer(function HomeScreen() {
     async function fetchTemplates() {
       try {
         const agentData = await api.getAgentTemplates(http)
-        setHomeTemplates(agentData.slice(0, 6))
+        const templates = Array.isArray(agentData) ? agentData : []
+        setHomeTemplates(templates.slice(0, 6))
         // APP_MODE_DISABLED: app template fetch removed
       } catch (err) {
         console.error('[Home] Failed to fetch templates:', err)
@@ -238,48 +244,50 @@ const HomeScreen = observer(function HomeScreen() {
   const hasAdvancedModelAccess = billingData.hasAdvancedModelAccess
 
   useEffect(() => {
-    loadAgentModePreference().then((stored) => {
+    loadModelPreference().then((stored) => {
       if (stored) {
-        setAgentMode(stored)
+        setSelectedModel(stored)
       } else if (hasAdvancedModelAccess) {
-        setAgentMode("advanced")
+        setSelectedModel(DEFAULT_MODEL_PRO)
       }
     })
   }, [hasAdvancedModelAccess])
 
   // Deep-link: auto-create project from pending template (website referral)
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return
-    const pendingId = localStorage.getItem('pending_template_id')
+    if (Platform.OS !== 'web') return
+    const pendingId = safeGetItem('pending_template_id')
     if (!pendingId || !currentWorkspace?.id || !user?.id) return
     if (homeTemplates.length === 0) return
 
     const template = homeTemplates.find(t => t.id === pendingId)
     if (!template) {
       // Template not in the first 6; fetch full list to find it
-      api.getAgentTemplates(http).then((all) => {
+      api.getAgentTemplates(http).then((raw) => {
+        const all = Array.isArray(raw) ? raw : []
         const found = all.find((t: AgentTemplate) => t.id === pendingId)
         if (found) {
-          localStorage.removeItem('pending_template_id')
+          safeRemoveItem('pending_template_id')
           handleTemplatePress(found)
         } else {
-          localStorage.removeItem('pending_template_id')
+          safeRemoveItem('pending_template_id')
         }
       }).catch(() => {
-        localStorage.removeItem('pending_template_id')
+        safeRemoveItem('pending_template_id')
       })
       return
     }
 
-    localStorage.removeItem('pending_template_id')
+    safeRemoveItem('pending_template_id')
     handleTemplatePress(template)
   }, [homeTemplates, currentWorkspace?.id, user?.id])
 
   // APP_MODE_DISABLED: pending_app_template deep-link removed
 
-  const myProjects = useMemo(() => {
+  const myProjects = useMemo((): IProject[] => {
     try {
-      return [...(projects?.all ?? [])]
+      const all = projects?.all
+      return [...(Array.isArray(all) ? all : [])]
         .sort((a: any, b: any) => {
           const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
           const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
@@ -290,21 +298,21 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [projects?.all])
 
-  const sharedProjects = useMemo(() => {
+  const sharedProjects = useMemo((): IProject[] => {
     if (!user?.id) return []
     try {
-      const userMembers = membersColl.all.filter((m: any) => m.userId === user.id)
+      const userMembers = membersColl.all.filter((m: IMember) => m.userId === user.id)
       const sharedWsIds = new Set(
         workspaces.all
-          .filter((ws: any) => {
-            const membership = userMembers.find((m: any) => m.workspaceId === ws.id)
+          .filter((ws: IWorkspace) => {
+            const membership = userMembers.find((m: IMember) => m.workspaceId === ws.id)
             return membership && membership.role !== 'owner'
           })
-          .map((ws: any) => ws.id)
+          .map((ws: IWorkspace) => ws.id)
       )
       return [...(projects?.all ?? [])]
-        .filter((p: any) => sharedWsIds.has(p.workspaceId))
-        .sort((a: any, b: any) => {
+        .filter((p) => sharedWsIds.has(p.workspaceId))
+        .sort((a, b) => {
           const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
           const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
           return bTime - aTime
@@ -324,9 +332,9 @@ const HomeScreen = observer(function HomeScreen() {
     void saveInteractionModePreference(mode)
   }, [])
 
-  const handleHomeAgentModeChange = useCallback((mode: AgentMode) => {
-    setAgentMode(mode)
-    void saveAgentModePreference(mode)
+  const handleHomeModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId)
+    void saveModelPreference(modelId)
   }, [])
 
   const typingPlaceholder = useTypingPlaceholder(undefined, {
@@ -353,6 +361,9 @@ const HomeScreen = observer(function HomeScreen() {
           currentWorkspace.id,
           undefined,
           user.id,
+          undefined,
+          undefined,
+          'react-app',
         )
       } catch (err: any) {
         const detail = err?.message || err?.details?.error?.message || String(err)
@@ -421,6 +432,8 @@ const HomeScreen = observer(function HomeScreen() {
         user.id,
         'AGENT',
         template.id,
+        template.techStack,
+        template.settings,
       )
       const chatSession = await actions.createChatSession({
         inferredName: 'Untitled',
@@ -434,7 +447,7 @@ const HomeScreen = observer(function HomeScreen() {
       })
 
       const onboardingMessage = getOnboardingMessage(template.name)
-      const hasIntegrations = template.integrations && template.integrations.length > 0
+      const hasIntegrations = Array.isArray(template.integrations) && template.integrations.length > 0
       projects.loadAll()
       router.push({
         pathname: '/(app)/projects/[id]',
@@ -456,6 +469,10 @@ const HomeScreen = observer(function HomeScreen() {
   // APP_MODE_DISABLED: handleAppTemplatePress removed
 
   if (!isAuthenticated) {
+    if (localMode) {
+      router.replace('/')
+      return null
+    }
     return (
       <SafeAreaView className="flex-1 bg-background">
         <View className="flex-1 items-center justify-center px-6">
@@ -528,8 +545,8 @@ const HomeScreen = observer(function HomeScreen() {
                 onChange={setPrompt}
                 interactionMode={interactionMode}
                 onInteractionModeChange={handleHomeInteractionModeChange}
-                agentMode={agentMode}
-                onAgentModeChange={handleHomeAgentModeChange}
+                selectedModel={selectedModel}
+                onModelChange={handleHomeModelChange}
                 isPro={hasAdvancedModelAccess}
                 onUpgradeClick={() => router.push('/billing')}
               />
@@ -648,11 +665,11 @@ const HomeScreen = observer(function HomeScreen() {
                     marginHorizontal: 'auto',
                   } as any : {}}
                 >
-                  {myProjects.map((project: any) => (
+                  {myProjects.map((project) => (
                     <ProjectCard
                       key={project.id}
-                      name={project.name || 'Untitled'}
-                      description={project.description}
+                      name={String(project.name || 'Untitled')}
+                      description={typeof project.description === 'string' ? project.description : undefined}
                       updatedAt={project.updatedAt}
                       createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}
@@ -680,11 +697,11 @@ const HomeScreen = observer(function HomeScreen() {
                     marginHorizontal: 'auto',
                   } as any : {}}
                 >
-                  {sharedProjects.map((project: any) => (
+                  {sharedProjects.map((project) => (
                     <ProjectCard
                       key={project.id}
-                      name={project.name || 'Untitled'}
-                      description={project.description}
+                      name={String(project.name || 'Untitled')}
+                      description={typeof project.description === 'string' ? project.description : undefined}
                       updatedAt={project.updatedAt}
                       createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}

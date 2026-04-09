@@ -39,6 +39,7 @@ const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..')
 
 const ITEMS_TO_CLEAN = [
   'bundle',
+  'vm-bundle',
   'apps',
   'packages',
   'node_modules',
@@ -52,6 +53,7 @@ const ITEMS_TO_CLEAN = [
   'bun.lock',
   'tsconfig.base.json',
   'prisma.config.local.ts',
+  'seed.db',
 ]
 
 /**
@@ -66,7 +68,6 @@ const EXTERNAL_PACKAGES = [
   'prisma',
   'prisma-adapter-bun-sqlite',
   'sqlite-vec',
-  '@anthropic-ai/claude-agent-sdk',
 ]
 
 /**
@@ -89,7 +90,16 @@ function clean() {
   for (const item of ITEMS_TO_CLEAN) {
     const target = path.join(RESOURCES_DIR, item)
     if (fs.existsSync(target)) {
-      fs.rmSync(target, { recursive: true, force: true })
+      try {
+        fs.rmSync(target, { recursive: true, force: true })
+      } catch {
+        // Fallback for directories with symlinks/hardlinks (e.g. bun node_modules)
+        if (process.platform === 'win32') {
+          execSync(`rmdir /s /q "${target}"`, { stdio: 'pipe' })
+        } else {
+          execSync(`rm -rf "${target}"`, { stdio: 'pipe' })
+        }
+      }
     }
   }
 }
@@ -105,12 +115,35 @@ function main() {
   const bundleDir = path.join(RESOURCES_DIR, 'bundle')
   fs.mkdirSync(bundleDir, { recursive: true })
 
-  // --- Bundle entry points ---
+  // --- Step counter ---
   const externals = EXTERNAL_PACKAGES.map((p) => `--external ${p}`).join(' ')
+  const totalSteps = ENTRY_POINTS.length + 10
+  let step = 0
 
+  const logStep = (label) => console.log(`[${++step}/${totalSteps}] ${label}`)
+
+  // --- Generate Prisma client from local schema (must run before bun build) ---
+  logStep('Generating Prisma client...')
+  try {
+    execSync(
+      `bunx prisma generate --schema=prisma/schema.local.prisma`,
+      {
+        cwd: REPO_ROOT,
+        stdio: 'inherit',
+        env: { ...process.env, DATABASE_URL: 'file:./dummy.db' },
+        timeout: 30_000,
+      },
+    )
+    console.log('  ✓ Prisma client generated')
+  } catch (err) {
+    console.error('  Failed to generate Prisma client:', err.message)
+    process.exit(1)
+  }
+
+  // --- Bundle entry points ---
   for (let i = 0; i < ENTRY_POINTS.length; i++) {
     const { name, input, output } = ENTRY_POINTS[i]
-    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 6}] Bundling ${name}...`)
+    logStep(`Bundling ${name}...`)
 
     const inputPath = path.join(REPO_ROOT, input)
     const tempDir = path.join(bundleDir, `_tmp_${name}`)
@@ -122,8 +155,6 @@ function main() {
       const result = execSync(cmd, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf-8' })
       console.log(`  ${result.trim().split('\n').pop()}`)
 
-      // Move the main entry file to the expected output name.
-      // Also move any .node asset files alongside it.
       const files = fs.readdirSync(tempDir)
       const entryFile = files.find((f) => f.endsWith('.js'))
       if (entryFile) {
@@ -143,10 +174,8 @@ function main() {
     }
   }
 
-  const stepOffset = ENTRY_POINTS.length
-
   // --- Prisma schema ---
-  console.log(`[${stepOffset + 1}/${stepOffset + 8}] Copying Prisma schema...`)
+  logStep('Copying Prisma schema...')
   const prismaDir = path.join(RESOURCES_DIR, 'prisma')
   fs.mkdirSync(prismaDir, { recursive: true })
   const localSchema = path.join(REPO_ROOT, 'prisma', 'schema.local.prisma')
@@ -154,8 +183,28 @@ function main() {
     fs.copyFileSync(localSchema, path.join(prismaDir, 'schema.local.prisma'))
   }
 
+  // --- Generate seed.db from current schema (prevents stale seed after migrations) ---
+  logStep('Generating seed.db...')
+  const seedDbPath = path.join(RESOURCES_DIR, 'seed.db')
+  if (fs.existsSync(seedDbPath)) fs.rmSync(seedDbPath)
+  try {
+    execSync(
+      `bunx prisma db push --schema=prisma/schema.local.prisma --accept-data-loss`,
+      {
+        cwd: REPO_ROOT,
+        stdio: 'inherit',
+        env: { ...process.env, DATABASE_URL: `file:${seedDbPath}` },
+        timeout: 30_000,
+      },
+    )
+    console.log('  ✓ seed.db generated')
+  } catch (err) {
+    console.error('  Failed to generate seed.db:', err.message)
+    process.exit(1)
+  }
+
   // --- Config files ---
-  console.log(`[${stepOffset + 2}/${stepOffset + 8}] Copying config files...`)
+  logStep('Copying config files...')
   const prismaConfig = path.join(REPO_ROOT, 'prisma.config.local.ts')
   if (fs.existsSync(prismaConfig)) {
     fs.copyFileSync(prismaConfig, path.join(RESOURCES_DIR, 'prisma.config.local.ts'))
@@ -163,17 +212,21 @@ function main() {
   }
 
   // --- Install external packages ---
-  console.log(`[${stepOffset + 3}/${stepOffset + 8}] Installing external packages...`)
+  logStep('Installing external packages...')
   const externalPkg = {
     name: 'shogo-desktop-bundle',
     private: true,
     dependencies: {},
   }
 
-  // Read versions from the source package.json files to pin external deps
   const apiPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'apps/api/package.json'), 'utf-8'))
   const agentPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'packages/agent-runtime/package.json'), 'utf-8'))
-  const allSourceDeps = { ...agentPkg.dependencies, ...apiPkg.dependencies }
+  const allSourceDeps = {
+    ...agentPkg.dependencies,
+    ...agentPkg.devDependencies,
+    ...apiPkg.dependencies,
+    ...apiPkg.devDependencies,
+  }
 
   for (const pkg of EXTERNAL_PACKAGES) {
     const version = allSourceDeps[pkg]
@@ -200,7 +253,7 @@ function main() {
   }
 
   // --- Copy canvas-runtime type definitions (used by LSP for canvas code linting) ---
-  console.log(`[${stepOffset + 4}/${stepOffset + 8}] Copying canvas-runtime...`)
+  logStep('Copying canvas-runtime...')
   const canvasRuntimeDir = path.join(REPO_ROOT, 'packages', 'canvas-runtime')
   const canvasRuntimeDest = path.join(RESOURCES_DIR, 'canvas-runtime')
   fs.mkdirSync(canvasRuntimeDest, { recursive: true })
@@ -213,7 +266,7 @@ function main() {
   }
 
   // --- Copy runtime template (Vite scaffold for new projects) ---
-  console.log(`[${stepOffset + 5}/${stepOffset + 8}] Copying runtime template...`)
+  logStep('Copying runtime template...')
   const runtimeTemplateSource = path.join(REPO_ROOT, 'templates', 'runtime-template')
   const runtimeTemplateDest = path.join(RESOURCES_DIR, 'runtime-template')
   if (fs.existsSync(runtimeTemplateSource)) {
@@ -227,7 +280,7 @@ function main() {
   }
 
   // --- Copy agent templates ---
-  console.log(`[${stepOffset + 6}/${stepOffset + 8}] Copying agent templates...`)
+  logStep('Copying agent templates...')
   const templatesSource = path.join(REPO_ROOT, 'packages', 'agent-runtime', 'templates')
   const templatesDest = path.join(RESOURCES_DIR, 'templates')
   if (fs.existsSync(templatesSource)) {
@@ -239,14 +292,10 @@ function main() {
   }
 
   // --- Copy tree-sitter WASM files (needed at runtime by agent-runtime) ---
-  console.log(`[${stepOffset + 7}/${stepOffset + 8}] Copying tree-sitter WASM files...`)
+  logStep('Copying tree-sitter WASM files...')
   const wasmDest = path.join(RESOURCES_DIR, 'tree-sitter-wasm')
   fs.mkdirSync(wasmDest, { recursive: true })
 
-  /**
-   * Locate an installed package directory by walking up from a starting dir.
-   * Works regardless of package manager layout (bun hoisted, npm flat, pnpm, etc.)
-   */
   function findInstalledPkg(pkgName, startDir) {
     let dir = startDir
     while (dir !== path.dirname(dir)) {
@@ -289,18 +338,16 @@ function main() {
     console.warn('  ⚠ tree-sitter-wasms package not found')
   }
 
-  // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
-  console.log(`[${stepOffset + 8}/${stepOffset + 8}] Patching claude-agent-sdk...`)
-  const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
-  if (fs.existsSync(patchScript)) {
-    try {
-      execSync(`bun run "${patchScript}"`, {
-        cwd: RESOURCES_DIR,
-        stdio: 'inherit',
-      })
-    } catch {
-      console.warn('  Patch script failed (non-fatal)')
-    }
+  // --- Prepare VM bundle (Linux bun, templates, wasm for VirtioFS mount) ---
+  logStep('Preparing VM bundle...')
+  try {
+    execSync(
+      `bun run "${path.join(DESKTOP_DIR, 'scripts', 'prepare-vm-bundle-cli.ts')}" --dest resources/vm-bundle --server-js resources/bundle/agent-runtime.js`,
+      { cwd: DESKTOP_DIR, stdio: 'inherit', timeout: 120_000 },
+    )
+    console.log('  ✓ VM bundle ready')
+  } catch (err) {
+    console.warn('  ⚠ VM bundle preparation failed (non-fatal):', err.message)
   }
 
   // --- Summary ---

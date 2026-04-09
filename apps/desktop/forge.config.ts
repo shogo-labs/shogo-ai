@@ -5,50 +5,46 @@ import fs from 'fs'
 
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
 
+const extraResourceCandidates = [
+  './resources/bun',
+  './resources/web',
+  './resources/bundle',
+  './resources/vm-bundle',
+  './resources/node_modules',
+  './resources/templates',
+  './resources/runtime-template',
+  './resources/canvas-runtime',
+  './resources/tree-sitter-wasm',
+  './resources/vm',
+  './resources/vm-helper',
+  './resources/seed.db',
+  './resources/package.json',
+  './prisma',
+  './prisma.config.js',
+]
+
+const extraResource = extraResourceCandidates.filter((p) => fs.existsSync(p))
+
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
     ...(hasIcon ? { icon: './resources/icon' } : {}),
     asar: true,
-    ...(process.platform === 'darwin' && process.env.APPLE_ID ? {
-      osxSign: {
-        optionsForFile: () => ({
-          hardenedRuntime: true,
-          entitlements: './entitlements.plist',
-          'entitlements-inherit': './entitlements.plist',
-        }),
-      },
-      osxNotarize: {
-        tool: 'notarytool' as const,
-        appleId: process.env.APPLE_ID!,
-        appleIdPassword: process.env.APPLE_ID_PASSWORD!,
-        teamId: process.env.APPLE_TEAM_ID!,
-      },
-    } : {}),
+    // Signing and notarization are handled by explicit workflow steps
+    // rather than @electron/osx-sign (which has integration bugs with @electron/packager 18.x).
     ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
       windowsSign: {
         certificateFile: process.env.WINDOWS_CERT_PATH,
         certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
       }
     } : {}),
-    extraResource: [
-      './resources/bun',
-      './resources/web',
-      './resources/bundle',
-      './resources/node_modules',
-      './resources/templates',
-      './resources/runtime-template',
-      './resources/canvas-runtime',
-      './resources/tree-sitter-wasm',
-      './resources/vm',
-      './resources/seed.db',
-      './resources/package.json',
-      './prisma',
-      './prisma.config.js',
-    ],
+    extraResource,
     ignore: [
       /^\/src/,
       /^\/scripts/,
+      /^\/resources/,
+      /^\/native/,
+      /^\/prisma\/migrations/,
       /tsconfig\.json$/,
       /forge\.config\.ts$/,
     ],

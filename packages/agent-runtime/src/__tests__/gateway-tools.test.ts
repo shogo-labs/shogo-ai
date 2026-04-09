@@ -3,7 +3,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
-import { createTools, createHeartbeatTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
+import { createTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
 import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
 
@@ -372,14 +372,6 @@ describe('gateway-tools', () => {
       expect(createTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeUndefined()
       expect(createTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeUndefined()
-    })
-
-    test('createHeartbeatTools excludes exec and send_message', () => {
-      const hbTools = createHeartbeatTools(createCtx())
-      expect(hbTools).toHaveLength(12)
-      expect(hbTools.find((t) => t.name === 'exec')).toBeUndefined()
-      expect(hbTools.find((t) => t.name === 'send_message')).toBeUndefined()
-      expect(hbTools.find((t) => t.name === 'cron')).toBeUndefined()
     })
 
     test('all tools have TypeBox parameters and label', () => {

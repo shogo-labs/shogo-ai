@@ -864,17 +864,5 @@ Missing description.
       }
     })
 
-    test('heartbeat tools include edit_file, glob, grep, ls', () => {
-      const ctx = createCtx()
-      const { createHeartbeatTools } = require('../gateway-tools')
-      const tools = createHeartbeatTools(ctx)
-      const names = tools.map((t: any) => t.name)
-      expect(names).toContain('edit_file')
-      expect(names).toContain('glob')
-      expect(names).toContain('grep')
-      expect(names).toContain('ls')
-      expect(names).not.toContain('task')
-      expect(names).not.toContain('skill')
-    })
   })
 })

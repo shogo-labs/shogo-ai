@@ -206,15 +206,15 @@ function ensureRuntimeTemplate(): void {
 // --- VM isolation ---
 
 function getVMImageDir(): string {
-  const IS_DEV = !require('electron').app.isPackaged
-  const desktopRoot = path.resolve(__dirname, '..')
-  if (IS_DEV) return path.join(desktopRoot, 'resources', 'vm')
-  return path.join(process.resourcesPath!, 'vm')
+  const { app } = require('electron')
+  if (!app.isPackaged) return path.join(path.resolve(__dirname, '..'), 'resources', 'vm')
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+  return path.join(app.getPath('userData'), 'vm-images', arch)
 }
 
-function getVMBundleDir(projectRoot: string, bundleDir: string, isDev: boolean): string {
+function getVMBundleDir(projectRoot: string, isDev: boolean): string {
   if (isDev) return ''
-  return bundleDir
+  return path.join(projectRoot, 'vm-bundle')
 }
 
 function isVMIsolationEnabled(): boolean {
@@ -281,7 +281,6 @@ export async function startLocalServer(): Promise<void> {
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
-    PREWARM_CLAUDE_CODE: 'false',
     SHOGO_BUN_PATH: bunPath,
     AGENT_RUNTIME_ENTRY: IS_DEV
       ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'entry.ts')
@@ -299,7 +298,7 @@ export async function startLocalServer(): Promise<void> {
       SHOGO_VM_ISOLATION: 'true',
       SHOGO_DATA_DIR: getDataDir(),
       SHOGO_VM_IMAGE_DIR: getVMImageDir(),
-      SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, bundleDir, IS_DEV),
+      SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
   }
 
@@ -494,7 +493,7 @@ function baselineMigrations(dbPath: string): void {
 function getSchemaEngineName(): string {
   const platform = process.platform
   const arch = process.arch
-  if (platform === 'win32') return `schema-engine-windows`
+  if (platform === 'win32') return `schema-engine-windows.exe`
   if (platform === 'darwin' && arch === 'arm64') return `schema-engine-darwin-arm64`
   if (platform === 'darwin') return `schema-engine-darwin`
   return `schema-engine-debian-openssl-3.0.x`

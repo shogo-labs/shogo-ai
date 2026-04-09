@@ -34,14 +34,18 @@ import { usePlatformConfig } from "../../lib/platform-config"
 import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import {
+  getModelsByProvider,
+  getModelShortDisplayName,
+  getModelTier,
+  type ModelTier,
+} from "@shogo/model-catalog"
+import {
   ArrowUp,
   Plus,
   Square,
   X,
   Zap,
-  Rocket,
   Lock,
-  Crown,
   File,
   FileText,
   Image as ImageIcon,
@@ -51,17 +55,28 @@ import {
   Bot,
   ClipboardList,
   MessageCircleQuestion,
+  Check,
+  Mic,
 } from "lucide-react-native"
+import { useVoiceInput } from "./useVoiceInput"
+import { VoiceWaveform } from "./VoiceWaveform"
 
-export type AgentMode = "basic" | "advanced"
+export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
+export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
-export interface AgentModeConfig {
-  id: AgentMode
-  label: string
-  description: string
-  Icon: React.ElementType
-  creditHint: string
-  requiresPro?: boolean
+const MODEL_GROUPS = getModelsByProvider().map((g) => ({
+  label: g.label,
+  models: g.models.map((e) => ({
+    id: e.id,
+    displayName: e.displayName,
+    tier: e.tier as ModelTier,
+  })),
+}))
+
+const TIER_LABELS: Record<ModelTier, string> = {
+  premium: "Premium",
+  standard: "Standard",
+  economy: "Economy",
 }
 
 export type InteractionMode = "agent" | "plan" | "ask"
@@ -111,6 +126,7 @@ export interface FileAttachment {
   type: string
 }
 
+
 interface SkillOption {
   name: string
   description: string
@@ -118,40 +134,21 @@ interface SkillOption {
 
 const SKILLS: SkillOption[] = []
 
-export const AGENT_MODES: AgentModeConfig[] = [
-  {
-    id: "basic",
-    label: "Basic",
-    description: "Fast responses, 4x cheaper",
-    Icon: Zap,
-    creditHint: "~0.2 credits",
-    requiresPro: false,
-  },
-  {
-    id: "advanced",
-    label: "Advanced",
-    description: "More capable, better quality",
-    Icon: Rocket,
-    creditHint: "~0.5-1 credits",
-    requiresPro: true,
-  },
-]
-
 export type QueuedMessage = {
   id: string
   content: string
   files?: FileAttachment[]
-  selectedAgentMode?: AgentMode
+  selectedModel?: string
 }
 
 export interface ChatInputProps {
-  onSubmit: (content: string, files?: FileAttachment[], agentMode?: AgentMode) => void
+  onSubmit: (content: string, files?: FileAttachment[], modelId?: string) => void
   disabled?: boolean
   placeholder?: string
   isStreaming?: boolean
   onStop?: () => void
-  agentMode?: AgentMode
-  onAgentModeChange?: (mode: AgentMode) => void
+  selectedModel?: string
+  onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
   queuedMessages?: QueuedMessage[]
@@ -170,8 +167,8 @@ export function ChatInput({
   placeholder = "Ask Shogo...",
   isStreaming = false,
   onStop,
-  agentMode: controlledAgentMode,
-  onAgentModeChange,
+  selectedModel: controlledModel,
+  onModelChange,
   isPro = false,
   onUpgradeClick,
   queuedMessages = [],
@@ -196,36 +193,30 @@ export function ChatInput({
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
-  const [agentModeOpen, setAgentModeOpen] = useState(false)
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
 
-  const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
-    effectiveIsPro ? "advanced" : "basic"
+  const [internalModel, setInternalModel] = useState<string>(
+    effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
   )
-  const agentMode = controlledAgentMode ?? internalAgentMode
+  const currentModelId = controlledModel ?? internalModel
 
-  const handleAgentModeChange = useCallback(
-    (mode: AgentMode) => {
-      const modeConfig = AGENT_MODES.find((m) => m.id === mode)
-
-      if (modeConfig?.requiresPro && !effectiveIsPro) {
+  const handleModelChange = useCallback(
+    (modelId: string) => {
+      const tier = getModelTier(modelId)
+      if (tier !== "economy" && !effectiveIsPro) {
         onUpgradeClick?.()
         return
       }
 
-      if (onAgentModeChange) {
-        onAgentModeChange(mode)
+      if (onModelChange) {
+        onModelChange(modelId)
       } else {
-        setInternalAgentMode(mode)
+        setInternalModel(modelId)
       }
     },
-    [onAgentModeChange, effectiveIsPro, onUpgradeClick]
-  )
-
-  const currentAgentConfig = useMemo(
-    () => AGENT_MODES.find((m) => m.id === agentMode) || AGENT_MODES[1],
-    [agentMode]
+    [onModelChange, effectiveIsPro, onUpgradeClick]
   )
 
   const [internalInteractionMode, setInternalInteractionMode] = useState<InteractionMode>("agent")
@@ -404,6 +395,24 @@ export function ChatInput({
     }
   }, [processFiles])
 
+  const appendTranscriptToInput = useCallback((transcript: string) => {
+    const normalized = transcript.trim()
+    if (!normalized) return
+
+    setInputValue((current) => {
+      const prefix =
+        current.length === 0 || /\s$/.test(current) ? current : `${current} `
+      return `${prefix}${normalized}`
+    })
+    setShowSkillPicker(false)
+    setFilterText("")
+    setTimeout(() => textInputRef.current?.focus(), 0)
+  }, [])
+
+  const voiceInput = useVoiceInput({
+    onTranscript: appendTranscriptToInput,
+  })
+
   const selectSkill = useCallback(
     (skill: SkillOption) => {
       const spaceIndex = inputValue.indexOf(" ")
@@ -417,20 +426,27 @@ export function ChatInput({
 
   const handleSubmit = useCallback(() => {
     const trimmedContent = inputValue.trim()
-    if ((!trimmedContent && pendingFiles.length === 0) || disabled || isProcessingFiles) return
+    if (
+      (!trimmedContent && pendingFiles.length === 0) ||
+      disabled ||
+      isProcessingFiles ||
+      voiceInput.isBusy
+    ) {
+      return
+    }
 
     const fileData: FileAttachment[] | undefined =
       pendingFiles.length > 0
         ? pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type }))
         : undefined
 
-    onSubmit(trimmedContent, fileData, agentMode)
+    onSubmit(trimmedContent, fileData, currentModelId)
     setInputValue("")
     setPendingFiles([])
     setFileError(null)
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, agentMode, inputValue])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, voiceInput.isBusy])
 
   const handleChangeText = useCallback(
     (text: string) => {
@@ -527,6 +543,10 @@ export function ChatInput({
       {/* Error message */}
       {fileError && (
         <Text className="text-sm text-destructive mb-2">{fileError}</Text>
+      )}
+
+      {voiceInput.error && (
+        <Text className="text-sm text-destructive mb-2">{voiceInput.error}</Text>
       )}
 
       {/* Queued messages */}
@@ -694,6 +714,14 @@ export function ChatInput({
           )}
           textAlignVertical="top"
         />
+
+        {voiceInput.canRecord && voiceInput.isRecording && voiceInput.liveTranscript ? (
+          <View className="px-4 pb-1">
+            <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+              {voiceInput.liveTranscript}
+            </Text>
+          </View>
+        ) : null}
 
         {/* Bottom toolbar */}
         <View className="flex-row items-center justify-between p-1.5">
@@ -894,13 +922,13 @@ export function ChatInput({
               </Popover>
             )}
 
-            {/* Model quality selector (Basic / Advanced) */}
+            {/* Model selector */}
             <Popover
               placement="top"
               size="xs"
-              isOpen={agentModeOpen}
-              onOpen={() => setAgentModeOpen(true)}
-              onClose={() => setAgentModeOpen(false)}
+              isOpen={modelPickerOpen}
+              onOpen={() => setModelPickerOpen(true)}
+              onClose={() => setModelPickerOpen(false)}
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
@@ -908,92 +936,84 @@ export function ChatInput({
                   className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                 >
                   <Text className="text-xs text-muted-foreground">
-                    {currentAgentConfig.label}
+                    {getModelShortDisplayName(currentModelId)}
                   </Text>
                   <ChevronDown className="h-2 w-2 text-muted-foreground/60" size={8} />
                 </Pressable>
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="w-[280px] p-0">
-                <View className="py-1">
-                  {AGENT_MODES.map((mode) => {
-                    const isLocked = mode.requiresPro && !effectiveIsPro
-                    const isSelected = mode.id === agentMode
-                    return (
-                      <Pressable
-                        key={mode.id}
-                        onPress={() => {
-                          handleAgentModeChange(mode.id)
-                          setAgentModeOpen(false)
-                        }}
-                        className={cn(
-                          "flex-row items-center gap-3 p-3 rounded-lg mb-1",
-                          isSelected && "bg-accent"
-                        )}
-                      >
-                        <View className="w-8 items-center">
-                          {isLocked ? (
-                            <Lock
-                              className="h-4 w-4 text-muted-foreground"
-                              size={16}
-                            />
-                          ) : (
-                            <mode.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-                          )}
-                        </View>
-                        <View className="flex-1">
-                          <View className="flex-row items-center gap-1.5">
-                            <Text className="font-medium text-sm text-foreground">
-                              {mode.label}
-                            </Text>
-                            {features.billing && mode.requiresPro && (
-                              <View
+              <PopoverContent className="w-[260px] p-0 max-h-[320px]">
+                <ScrollView>
+                  {MODEL_GROUPS.map((group) => (
+                    <View key={group.label}>
+                      <View className="px-3 pt-2.5 pb-1">
+                        <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                          {group.label}
+                        </Text>
+                      </View>
+                      {group.models.map((model) => {
+                        const isSelected = currentModelId === model.id
+                        const isLocked = !effectiveIsPro && model.tier !== "economy"
+                        return (
+                          <Pressable
+                            key={model.id}
+                            onPress={() => {
+                              handleModelChange(model.id)
+                              setModelPickerOpen(false)
+                            }}
+                            className={cn(
+                              "flex-row items-center gap-2.5 px-3 py-2",
+                              isSelected && "bg-accent",
+                              isLocked && "opacity-50"
+                            )}
+                          >
+                            <View className="flex-1">
+                              <Text className={cn("text-sm", isLocked ? "text-muted-foreground" : "text-foreground")}>
+                                {model.displayName}
+                              </Text>
+                            </View>
+                            {isLocked ? (
+                              <Lock className="h-3 w-3 text-muted-foreground" size={12} />
+                            ) : isSelected ? (
+                              <Check className="h-3.5 w-3.5 text-primary" size={14} />
+                            ) : (
+                              <Text
                                 className={cn(
-                                  "flex-row items-center gap-0.5 px-1.5 py-0.5 rounded-full",
-                                  effectiveIsPro
-                                    ? "bg-amber-100 dark:bg-amber-900/30"
-                                    : "bg-muted"
+                                  "text-[10px]",
+                                  model.tier === "premium" ? "text-amber-500" :
+                                  model.tier === "economy" ? "text-emerald-500" :
+                                  "text-muted-foreground"
                                 )}
                               >
-                                <Crown
-                                  className={cn(
-                                    "h-2.5 w-2.5",
-                                    effectiveIsPro
-                                      ? "text-amber-700 dark:text-amber-400"
-                                      : "text-muted-foreground"
-                                  )}
-                                  size={10}
-                                />
-                                <Text
-                                  className={cn(
-                                    "text-[10px] font-semibold",
-                                    effectiveIsPro
-                                      ? "text-amber-700 dark:text-amber-400"
-                                      : "text-muted-foreground"
-                                  )}
-                                >
-                                  PRO
-                                </Text>
-                              </View>
+                                {TIER_LABELS[model.tier]}
+                              </Text>
                             )}
-                          </View>
-                          <Text className="text-xs text-muted-foreground">
-                            {isLocked
-                              ? "Upgrade to unlock"
-                              : features.billing ? `${mode.description} (${mode.creditHint})` : mode.description}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    )
-                  })}
-                </View>
+                          </Pressable>
+                        )
+                      })}
+                    </View>
+                  ))}
+                </ScrollView>
               </PopoverContent>
             </Popover>
 
           </View>
 
           {/* Right side buttons */}
+          {voiceInput.isRecording ? (
+            <View className="flex-row items-center gap-2">
+              <VoiceWaveform />
+              <Pressable
+                onPress={() => voiceInput.toggleRecording().catch(() => {})}
+                role="button"
+                accessibilityLabel="Stop voice recording"
+                className="h-6 w-6 rounded-full bg-foreground/90 items-center justify-center active:opacity-70"
+              >
+                <Square className="text-background" size={10} fill="currentColor" />
+              </Pressable>
+            </View>
+          ) : (
           <View className="flex-row items-center gap-1">
             {contextUsage && (
               <ContextTracker
@@ -1021,43 +1041,68 @@ export function ChatInput({
               />
             </Pressable>
 
-            {/* Always show Stop button while streaming */}
-            {isStreaming && (
-              <Pressable
-                onPress={onStop}
-                accessibilityLabel="Stop"
-                testID="stop-streaming"
-                className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
-              >
-                <Square
-                  className="text-destructive-foreground m-auto"
-                  size={10}
-                />
-              </Pressable>
-            )}
-
-            {/* Show Send/Queue button:
-                1. If not streaming (normal behavior)
-                2. If streaming AND there is text/files to queue
-            */}
-            {(!isStreaming || (inputValue.trim() || pendingFiles.length > 0)) && (
+            {isStreaming ? (
+              <>
+                <Pressable
+                  onPress={onStop}
+                  accessibilityLabel="Stop"
+                  testID="stop-streaming"
+                  className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
+                >
+                  <Square
+                    className="text-destructive-foreground m-auto"
+                    size={10}
+                  />
+                </Pressable>
+                {(inputValue.trim() || pendingFiles.length > 0) && (
+                  <Pressable
+                    onPress={handleSubmit}
+                    disabled={disabled || isProcessingFiles}
+                    role="button"
+                    accessibilityLabel="Queue message"
+                    className="h-5 w-5 rounded-full items-center justify-center bg-primary"
+                  >
+                    <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                  </Pressable>
+                )}
+              </>
+            ) : (inputValue.trim() || pendingFiles.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
-                disabled={disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)}
+                disabled={disabled || isProcessingFiles}
                 role="button"
-                accessibilityLabel={isStreaming ? "Queue message" : "Send message"}
+                accessibilityLabel="Send message"
                 className={cn(
                   "h-5 w-5 rounded-full items-center justify-center bg-primary",
-                  (disabled || isProcessingFiles || (!inputValue.trim() && pendingFiles.length === 0)) && "opacity-50"
+                  (disabled || isProcessingFiles) && "opacity-50"
                 )}
               >
-                <ArrowUp
-                  className="h-3 w-3 text-primary-foreground"
-                  size={12}
+                <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+              </Pressable>
+            ) : voiceInput.canRecord ? (
+              <Pressable
+                onPress={() => {
+                  voiceInput.clearError()
+                  voiceInput.toggleRecording().catch(() => {})
+                }}
+                disabled={disabled || isProcessingFiles}
+                role="button"
+                accessibilityLabel="Start voice recording"
+                className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+              >
+                <Mic
+                  className={cn(
+                    "h-4 w-4",
+                    disabled || isProcessingFiles
+                      ? "text-muted-foreground/40"
+                      : "text-muted-foreground"
+                  )}
+                  size={14}
                 />
               </Pressable>
-            )}
+            ) : null}
           </View>
+          )}
         </View>
       </View>
 

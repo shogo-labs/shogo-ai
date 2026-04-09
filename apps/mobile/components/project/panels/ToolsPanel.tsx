@@ -28,7 +28,6 @@ import {
   Globe,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 
@@ -661,29 +660,22 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                           {tool.toolCount} tool{tool.toolCount !== 1 ? 's' : ''}
                         </Text>
                       </View>
-                      <Tooltip
-                        trigger={(triggerProps) => (
-                          <Pressable
-                            {...triggerProps}
-                            onPress={() => handleUninstall(tool.id)}
-                            disabled={isUninstalling}
-                            className={cn(
-                              'p-2 rounded-md active:bg-destructive/10',
-                              isUninstalling && 'opacity-50',
-                            )}
-                          >
-                            {isUninstalling ? (
-                              <ActivityIndicator size="small" />
-                            ) : (
-                              <Trash2 size={14} className="text-destructive/70" />
-                            )}
-                          </Pressable>
+                      <Pressable
+                        ref={(el: any) => { if (Platform.OS === 'web' && el) el.title = 'Uninstall integration' }}
+                        onPress={() => handleUninstall(tool.id)}
+                        disabled={isUninstalling}
+                        className={cn(
+                          'p-2 rounded-md active:bg-destructive/10',
+                          isUninstalling && 'opacity-50',
                         )}
+                        accessibilityLabel="Uninstall integration"
                       >
-                        <TooltipContent>
-                          <TooltipText>Uninstall integration</TooltipText>
-                        </TooltipContent>
-                      </Tooltip>
+                        {isUninstalling ? (
+                          <ActivityIndicator size="small" />
+                        ) : (
+                          <Trash2 size={14} className="text-destructive/70" />
+                        )}
+                      </Pressable>
                     </View>
                   )
                 })}
@@ -753,53 +745,39 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                         )}
                       </View>
                       <View className="flex-row items-center gap-1">
-                        <Tooltip
-                          trigger={(triggerProps) => (
-                            <Pressable
-                              {...triggerProps}
-                              onPress={() => handleReconnect(toolkit)}
-                              disabled={isReconnecting || isDisconnecting}
-                              className={cn(
-                                'p-2 rounded-md',
-                                isActive ? 'active:bg-muted' : 'active:bg-orange-100 dark:active:bg-orange-900/30',
-                                (isReconnecting || isDisconnecting) && 'opacity-50',
-                              )}
-                            >
-                              {isReconnecting ? (
-                                <Loader2 size={14} className={isActive ? 'text-muted-foreground' : 'text-orange-500'} />
-                              ) : (
-                                <ExternalLink size={14} className={isActive ? 'text-muted-foreground' : 'text-orange-500'} />
-                              )}
-                            </Pressable>
+                        <Pressable
+                          ref={(el: any) => { if (Platform.OS === 'web' && el) el.title = isActive ? 'Reconnect' : 'Fix connection' }}
+                          onPress={() => handleReconnect(toolkit)}
+                          disabled={isReconnecting || isDisconnecting}
+                          className={cn(
+                            'p-2 rounded-md',
+                            isActive ? 'active:bg-muted' : 'active:bg-orange-100 dark:active:bg-orange-900/30',
+                            (isReconnecting || isDisconnecting) && 'opacity-50',
                           )}
+                          accessibilityLabel={isActive ? 'Reconnect' : 'Fix connection'}
                         >
-                          <TooltipContent>
-                            <TooltipText>{isActive ? 'Reconnect' : 'Fix connection'}</TooltipText>
-                          </TooltipContent>
-                        </Tooltip>
-                        <Tooltip
-                          trigger={(triggerProps) => (
-                            <Pressable
-                              {...triggerProps}
-                              onPress={() => handleDisconnect(info.connectionId)}
-                              disabled={isDisconnecting || isReconnecting}
-                              className={cn(
-                                'p-2 rounded-md active:bg-destructive/10',
-                                (isDisconnecting || isReconnecting) && 'opacity-50',
-                              )}
-                            >
-                              {isDisconnecting ? (
-                                <ActivityIndicator size="small" />
-                              ) : (
-                                <Trash2 size={14} className="text-destructive/70" />
-                              )}
-                            </Pressable>
+                          {isReconnecting ? (
+                            <Loader2 size={14} className={isActive ? 'text-muted-foreground' : 'text-orange-500'} />
+                          ) : (
+                            <ExternalLink size={14} className={isActive ? 'text-muted-foreground' : 'text-orange-500'} />
                           )}
+                        </Pressable>
+                        <Pressable
+                          ref={(el: any) => { if (Platform.OS === 'web' && el) el.title = 'Disconnect' }}
+                          onPress={() => handleDisconnect(info.connectionId)}
+                          disabled={isDisconnecting || isReconnecting}
+                          className={cn(
+                            'p-2 rounded-md active:bg-destructive/10',
+                            (isDisconnecting || isReconnecting) && 'opacity-50',
+                          )}
+                          accessibilityLabel="Disconnect"
                         >
-                          <TooltipContent>
-                            <TooltipText>Disconnect</TooltipText>
-                          </TooltipContent>
-                        </Tooltip>
+                          {isDisconnecting ? (
+                            <ActivityIndicator size="small" />
+                          ) : (
+                            <Trash2 size={14} className="text-destructive/70" />
+                          )}
+                        </Pressable>
                       </View>
                     </View>
                   )

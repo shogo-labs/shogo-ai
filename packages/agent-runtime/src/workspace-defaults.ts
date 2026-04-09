@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
@@ -238,6 +238,153 @@ export function seedRuntimeTemplate(dir: string): boolean {
 
   console.log('[workspace-defaults] Seeded runtime template into workspace')
   return true
+}
+
+// ---------------------------------------------------------------------------
+// Tech Stack Seeding
+// ---------------------------------------------------------------------------
+
+function getTechStacksBasePath(): string {
+  const candidates = [
+    join(__dirname, '..', 'tech-stacks'),
+    join(__dirname, '..', '..', '..', 'tech-stacks'),
+    '/app/tech-stacks',
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  return join(__dirname, '..', 'tech-stacks')
+}
+
+export function getTechStackPath(stackId: string): string | null {
+  const base = getTechStacksBasePath()
+  const stackDir = join(base, stackId)
+  if (existsSync(join(stackDir, 'stack.json'))) return stackDir
+  return null
+}
+
+export interface TechStackMeta {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  runtime?: {
+    devServer?: string
+    buildCommand?: string
+    previewPort?: number
+  }
+  capabilities?: {
+    webEnabled?: boolean
+    browserEnabled?: boolean
+    shellEnabled?: boolean
+    heartbeatEnabled?: boolean
+    imageGenEnabled?: boolean
+    memoryEnabled?: boolean
+    quickActionsEnabled?: boolean
+  }
+}
+
+export function loadTechStackMeta(stackId: string): TechStackMeta | null {
+  const stackPath = getTechStackPath(stackId)
+  if (!stackPath) return null
+  try {
+    return JSON.parse(readFileSync(join(stackPath, 'stack.json'), 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
+export function listTechStacks(): TechStackMeta[] {
+  const base = getTechStacksBasePath()
+  if (!existsSync(base)) return []
+  const stacks: TechStackMeta[] = []
+  for (const entry of readdirSync(base)) {
+    const stackJsonPath = join(base, entry, 'stack.json')
+    if (existsSync(stackJsonPath)) {
+      try {
+        stacks.push(JSON.parse(readFileSync(stackJsonPath, 'utf-8')))
+      } catch { /* skip malformed */ }
+    }
+  }
+  return stacks
+}
+
+/**
+ * Seed tech stack files into a workspace.
+ * Copies .shogo/STACK.md and starter/ files from the tech stack.
+ * Only writes files that don't already exist (preserves customizations).
+ * Returns true if files were seeded, false if stack not found.
+ */
+export function seedTechStack(dir: string, stackId: string): boolean {
+  const stackPath = getTechStackPath(stackId)
+  if (!stackPath) {
+    console.warn(`[workspace-defaults] Tech stack "${stackId}" not found — skipping`)
+    return false
+  }
+
+  const stackMd = join(stackPath, '.shogo', 'STACK.md')
+  if (existsSync(stackMd)) {
+    const destShogo = join(dir, '.shogo')
+    mkdirSync(destShogo, { recursive: true })
+    const destStackMd = join(destShogo, 'STACK.md')
+    if (!existsSync(destStackMd)) {
+      copyFileSync(stackMd, destStackMd)
+    }
+  }
+
+  const starterDir = join(stackPath, 'starter')
+  if (existsSync(starterDir)) {
+    cpSync(starterDir, dir, {
+      recursive: true,
+      filter: (src) => {
+        const rel = src.slice(starterDir.length + 1)
+        if (!rel) return true
+        const dest = join(dir, rel)
+        return !existsSync(dest)
+      },
+    })
+  }
+
+  writeFileSync(join(dir, '.tech-stack'), stackId, 'utf-8')
+  console.log(`[workspace-defaults] Tech stack "${stackId}" seeded into workspace`)
+  return true
+}
+
+/**
+ * Run a tech stack's setup script if present.
+ * The script is expected to be idempotent.
+ */
+export async function runTechStackSetup(dir: string, stackId: string): Promise<void> {
+  const stackPath = getTechStackPath(stackId)
+  if (!stackPath) return
+
+  const setupScript = join(stackPath, 'starter', 'setup.sh')
+  if (!existsSync(setupScript)) return
+
+  const destSetup = join(dir, 'setup.sh')
+  if (!existsSync(destSetup)) return
+
+  console.log(`[workspace-defaults] Running tech stack setup for "${stackId}"...`)
+  const { spawn } = await import('child_process')
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('bash', ['setup.sh'], {
+      cwd: dir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    proc.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk) })
+    proc.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk) })
+    proc.on('close', (code) => {
+      if (code === 0) resolve()
+      else {
+        console.warn(`[workspace-defaults] Tech stack setup exited with code ${code}`)
+        resolve()
+      }
+    })
+    proc.on('error', (err) => {
+      console.warn(`[workspace-defaults] Tech stack setup error: ${err.message}`)
+      resolve()
+    })
+  })
 }
 
 /**

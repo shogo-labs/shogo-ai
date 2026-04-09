@@ -12,14 +12,14 @@
  * Endpoints:
  * - POST /ai/v1/chat/completions       - OpenAI-compatible chat completions
  * - GET  /ai/v1/models                 - List available models
- * - POST /ai/anthropic/v1/messages     - Anthropic-native pass-through (for Claude Code CLI)
+ * - POST /ai/anthropic/v1/messages     - Anthropic-native pass-through (for agent-runtime)
  * - POST /ai/anthropic/v1/messages/count_tokens - Token counting pass-through
  * - GET  /ai/anthropic/v1/models       - Anthropic models pass-through  
  * - POST /ai/proxy/tokens              - Generate a proxy token for a project
  *
  * Authentication:
  * - OpenAI-compatible: `Authorization: Bearer <proxy-token>`
- * - Anthropic-native: `x-api-key: <proxy-token>` (Claude Code CLI sends this)
+ * - Anthropic-native: `x-api-key: <proxy-token>` (agent-runtime sends this)
  *
  * Environment Variables:
  * - ANTHROPIC_API_KEY: Anthropic API key (server-side only)
@@ -40,6 +40,7 @@ import {
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
+  resolveAgentModeDefault,
   getMaxOutputTokens,
   type Provider,
   type ImageProvider,
@@ -190,7 +191,7 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: model, isLocal: true }
   }
   if (model === 'basic' || model === 'advanced') {
-    return { resolvedModel: AGENT_MODE_DEFAULTS[model as AgentMode], isLocal: false }
+    return { resolvedModel: resolveAgentModeDefault(model as AgentMode), isLocal: false }
   }
   return { resolvedModel: model, isLocal: false }
 }
@@ -700,7 +701,8 @@ function convertAnthropicStreamEvent(event: any, id: string, model: string): any
 async function proxyAnthropicNonStream(
   request: ChatCompletionRequest,
   apiKey: string,
-  modelConfig: ModelConfig
+  modelConfig: ModelConfig,
+  signal?: AbortSignal,
 ) {
   const body = convertToAnthropicFormat({
     ...request,
@@ -716,6 +718,7 @@ async function proxyAnthropicNonStream(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -857,7 +860,8 @@ async function proxyOpenAIStream(
 async function proxyOpenAINonStream(
   request: ChatCompletionRequest,
   apiKey: string,
-  modelConfig: ModelConfig
+  modelConfig: ModelConfig,
+  signal?: AbortSignal,
 ) {
   const url = getOpenAICompatibleBaseUrl(modelConfig)
   const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
@@ -870,6 +874,7 @@ async function proxyOpenAINonStream(
       model: modelConfig.apiModel,
       stream: false,
     }),
+    signal,
   })
 
   if (!response.ok) {
@@ -998,6 +1003,7 @@ async function generateImageOpenAI(
   apiKey: string,
   model: string,
   params: { prompt: string; size?: string; quality?: string; n?: number },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResponse> {
   const body: Record<string, unknown> = {
     model,
@@ -1015,6 +1021,7 @@ async function generateImageOpenAI(
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -1029,6 +1036,7 @@ async function generateImageGoogle(
   apiKey: string,
   model: string,
   params: { prompt: string; size?: string; n?: number },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResponse> {
   const sizeToAspect: Record<string, string> = {
     '1024x1024': '1:1',
@@ -1055,6 +1063,7 @@ async function generateImageGoogle(
         'x-goog-api-key': apiKey,
       },
       body: JSON.stringify(body),
+      signal,
     }
   )
 
@@ -1079,6 +1088,7 @@ async function generateImageGoogle(
 async function generateImageLocal(
   _model: string,
   params: { prompt: string; size?: string; quality?: string; n?: number },
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResponse> {
   const baseUrl = process.env.LOCAL_IMAGE_GEN_BASE_URL
   if (!baseUrl) throw new Error('LOCAL_IMAGE_GEN_BASE_URL is not configured')
@@ -1097,6 +1107,7 @@ async function generateImageLocal(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {
@@ -1183,10 +1194,14 @@ export function aiProxyRoutes() {
   }
 
   /**
-   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set).
+   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set
+   * and AI_MODE not overridden to 'api-keys' or 'local-llm').
    */
   function isShogoCloudForwarding(): boolean {
-    return process.env.SHOGO_LOCAL_MODE === 'true' && !!process.env.SHOGO_API_KEY
+    if (process.env.SHOGO_LOCAL_MODE !== 'true' || !process.env.SHOGO_API_KEY) return false
+    const aiMode = process.env.AI_MODE
+    if (aiMode === 'api-keys' || aiMode === 'local-llm') return false
+    return true
   }
 
   function getShogoCloudUrl(): string {
@@ -1409,9 +1424,9 @@ export function aiProxyRoutes() {
       } else {
         let result: any
         if (modelConfig.provider === 'anthropic') {
-          result = await proxyAnthropicNonStream(request, apiKey, modelConfig)
+          result = await proxyAnthropicNonStream(request, apiKey, modelConfig, c.req.raw.signal)
         } else {
-          result = await proxyOpenAINonStream(request, apiKey, modelConfig)
+          result = await proxyOpenAINonStream(request, apiKey, modelConfig, c.req.raw.signal)
         }
 
         const totalPrompt = result.usage?.prompt_tokens || 0
@@ -1498,6 +1513,7 @@ export function aiProxyRoutes() {
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify(forwardBody),
+        signal: c.req.raw.signal,
       })
 
       if (!response.ok) {
@@ -1665,11 +1681,11 @@ export function aiProxyRoutes() {
   // Anthropic-Native Pass-Through Endpoints
   // =========================================================================
   // These endpoints accept requests in Anthropic's native API format and
-  // forward them directly to api.anthropic.com. This allows the Claude Code
-  // CLI to use the proxy via ANTHROPIC_BASE_URL without any format conversion.
+  // forward them directly to api.anthropic.com. This allows the agent-runtime
+  // to use the proxy via ANTHROPIC_BASE_URL without any format conversion.
   //
   // Auth: The proxy token is sent via the `x-api-key` header (same header
-  // that Claude Code CLI uses for ANTHROPIC_API_KEY).
+  // used for ANTHROPIC_API_KEY).
 
   /**
    * Validate Anthropic-style auth (x-api-key header contains proxy token).
@@ -1700,7 +1716,7 @@ export function aiProxyRoutes() {
   /**
    * POST /ai/anthropic/v1/messages - Anthropic Messages API pass-through
    *
-   * Claude Code CLI sets ANTHROPIC_BASE_URL to our proxy and sends requests
+   * The agent-runtime sets ANTHROPIC_BASE_URL to our proxy and sends requests
    * here. We validate the proxy token (sent as x-api-key), then forward the
    * request to the real Anthropic API with our server-side API key.
    */
@@ -2007,6 +2023,7 @@ export function aiProxyRoutes() {
           'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
         },
         body,
+        signal: c.req.raw.signal,
       })
       const responseBody = await response.text()
       return new Response(responseBody, {
@@ -2034,6 +2051,7 @@ export function aiProxyRoutes() {
       method: 'POST',
       headers,
       body,
+      signal: c.req.raw.signal,
     })
 
     const responseBody = await response.text()
@@ -2068,6 +2086,7 @@ export function aiProxyRoutes() {
         'x-api-key': anthropicApiKey,
         'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
       },
+      signal: c.req.raw.signal,
     })
 
     const responseBody = await response.text()
@@ -2139,13 +2158,14 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎨 Image generation: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel}`)
 
+      const signal = c.req.raw.signal
       let result: ImageGenerationResponse
       if (imageModel.provider === 'openai') {
-        result = await generateImageOpenAI(apiKey, imageModel.apiModel, body)
+        result = await generateImageOpenAI(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'google') {
-        result = await generateImageGoogle(apiKey, imageModel.apiModel, body)
+        result = await generateImageGoogle(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'local') {
-        result = await generateImageLocal(imageModel.apiModel, body)
+        result = await generateImageLocal(imageModel.apiModel, body, signal)
       } else {
         return c.json(
           { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
@@ -2234,6 +2254,7 @@ export function aiProxyRoutes() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${openaiKey}` },
         body: forwardForm,
+        signal: c.req.raw.signal,
       })
 
       if (!response.ok) {

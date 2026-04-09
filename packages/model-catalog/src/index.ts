@@ -20,6 +20,9 @@ export {
 export {
   MODEL_ALIASES,
   AGENT_MODE_DEFAULTS,
+  setAgentModeOverrides,
+  getAgentModeOverrides,
+  resolveAgentModeDefault,
 } from './aliases'
 
 export {
