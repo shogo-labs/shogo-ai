@@ -7,9 +7,9 @@ import https from 'https'
 import http from 'http'
 
 const GITHUB_REPO = 'shogo-labs/shogo-ai'
-const VM_IMAGE_TAG = 'vm-images-v1'
+const VM_IMAGE_TAG = 'vm-images-v2'
 
-export const VM_IMAGE_VERSION = '1'
+export const VM_IMAGE_VERSION = '2'
 
 export interface DownloadProgress {
   bytesDownloaded: number

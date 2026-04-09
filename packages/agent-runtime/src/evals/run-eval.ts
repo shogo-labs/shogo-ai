@@ -887,11 +887,13 @@ async function main() {
   let vmWorkerConfig: VMWorkerConfig | undefined
 
   if (vmFlag) {
+    const isDarwin = process.platform === 'darwin'
     vmWorkerConfig = {
       containerPrefix: 'eval-vm',
       baseHostPort: BASE_PORT,
       model: modelArg,
       verbose: verboseFlag,
+      ...(isDarwin ? { cpus: 2, memoryMB: 4096 } : {}),
     }
   } else if (localFlag) {
     localWorkerConfig = {
