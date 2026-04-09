@@ -442,6 +442,18 @@ export async function configureWorkerForTask(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ evalLabel: opts.evalLabel }),
       })
+      // Wait for the gateway to be ready after reset (it restarts async)
+      const deadline = Date.now() + 45_000
+      while (Date.now() < deadline) {
+        await Bun.sleep(2_000)
+        try {
+          const hres = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3_000) })
+          if (hres.ok) {
+            const hbody = await hres.json().catch(() => null) as any
+            if (hbody?.gateway?.running === true) break
+          }
+        } catch {}
+      }
     } catch (e: any) {
       console.warn(`      [setup] Session reset failed: ${e.message}`)
     }
