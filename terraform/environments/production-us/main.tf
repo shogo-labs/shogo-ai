@@ -97,17 +97,11 @@ module "us" {
   # System nodes (API, web, CNPG, Knative controllers)
   system_node_ocpus     = 4
   system_node_memory_gb = 24
-  system_pool_size      = 3
+  system_pool_size      = 2
   system_pool_min       = 2
   system_pool_max       = 15
 
-  # Workload nodes (agent runtimes)
-  enable_workload_pool      = true
-  workload_node_ocpus       = 4
-  workload_node_memory_gb   = 24
-  workload_pool_size        = 2
-  workload_pool_min         = 1
-  workload_pool_max         = 100
+  enable_workload_pool = false
 
   # Autoscaler IAM (tenancy-level — only enable in primary region)
   create_autoscaler_iam = true
@@ -167,7 +161,3 @@ output "ocir_prefix"      { value = module.us.ocir_prefix }
 output "s3_endpoint"      { value = module.us.s3_endpoint }
 output "rpc_eu_id"        { value = module.drg_to_eu.rpc_id }
 output "rpc_india_id"     { value = module.drg_to_india.rpc_id }
-
-output "workload_node_pool_id" {
-  value = module.us.workload_node_pool_id
-}
