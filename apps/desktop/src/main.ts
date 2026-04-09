@@ -15,7 +15,7 @@ import fs from 'fs'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
-import { initAutoUpdater } from './updater'
+import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import { registerRecordingIpcHandlers, startMeetingMonitor, cleanupRecording } from './recording'
 import { createTray, destroyTray } from './tray'
 
@@ -408,9 +408,18 @@ app.on('window-all-closed', () => {
 
 let isQuitting = false
 app.on('before-quit', (event) => {
-  console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}`)
+  console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
   if (isQuitting || isCloudMode) return
   isQuitting = true
+
+  if (getIsApplyingUpdate()) {
+    console.log('[Desktop] Update pending — doing fast sync cleanup, letting Squirrel handle restart')
+    cleanupRecording()
+    destroyTray()
+    stopLocalServer().catch(() => {})
+    return
+  }
+
   event.preventDefault()
   console.log('[Desktop] Waiting for server cleanup before exit...')
   cleanupRecording()

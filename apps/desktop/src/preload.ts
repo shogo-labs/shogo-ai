@@ -59,4 +59,14 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   removeNavigateListener: () => {
     ipcRenderer.removeAllListeners('navigate')
   },
+
+  // App updates
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateStatus: (callback: (data: { status: string; releaseName: string | null }) => void) => {
+    ipcRenderer.on('desktop-update-status', (_event, data) => callback(data))
+  },
+  removeUpdateListener: () => {
+    ipcRenderer.removeAllListeners('desktop-update-status')
+  },
 })

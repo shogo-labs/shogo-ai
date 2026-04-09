@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { app, autoUpdater, dialog, BrowserWindow, Notification } from 'electron'
+import { app, autoUpdater, ipcMain, BrowserWindow } from 'electron'
 
 const TAG = '[Updater]'
 const UPDATE_HOST = 'https://update.electronjs.org'
@@ -8,7 +8,22 @@ const REPO = 'shogo-labs/shogo-ai'
 const CHECK_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 const SUPPORTED_PLATFORMS = ['darwin', 'win32']
 
-let updateDownloaded = false
+type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'error'
+
+let currentStatus: UpdateStatus = 'idle'
+let updateReleaseName: string | null = null
+let isApplyingUpdate = false
+
+export function getIsApplyingUpdate(): boolean {
+  return isApplyingUpdate
+}
+
+function broadcastUpdateStatus() {
+  const payload = { status: currentStatus, releaseName: updateReleaseName }
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('desktop-update-status', payload)
+  }
+}
 
 export function initAutoUpdater(): void {
   const platform = process.platform
@@ -30,44 +45,39 @@ export function initAutoUpdater(): void {
     headers: { 'User-Agent': userAgent },
   })
 
+  ipcMain.handle('get-update-status', () => ({
+    status: currentStatus,
+    releaseName: updateReleaseName,
+  }))
+
+  ipcMain.handle('install-update', () => {
+    if (currentStatus === 'ready') {
+      console.log(`${TAG} User triggered restart — applying update`)
+      isApplyingUpdate = true
+      autoUpdater.quitAndInstall()
+    }
+  })
+
   autoUpdater.on('checking-for-update', () => {
     console.log(`${TAG} Checking for updates…`)
   })
 
   autoUpdater.on('update-available', () => {
     console.log(`${TAG} Update available — downloading…`)
-    showNotification('Update available', 'A new version of Shogo is being downloaded…')
+    currentStatus = 'downloading'
+    broadcastUpdateStatus()
   })
 
   autoUpdater.on('update-not-available', () => {
     console.log(`${TAG} App is up to date (v${version})`)
   })
 
-  autoUpdater.on('update-downloaded', (_event, releaseNotes, releaseName) => {
-    updateDownloaded = true
+  autoUpdater.on('update-downloaded', (_event, _releaseNotes, releaseName) => {
     const displayName = releaseName || 'a new version'
     console.log(`${TAG} Update downloaded: ${displayName}`)
-    if (releaseNotes) {
-      console.log(`${TAG} Release notes: ${typeof releaseNotes === 'string' ? releaseNotes.slice(0, 200) : releaseNotes}`)
-    }
-
-    const focusedWindow = BrowserWindow.getFocusedWindow()
-    dialog.showMessageBox(focusedWindow ?? ({} as BrowserWindow), {
-      type: 'info',
-      title: 'Update Ready',
-      message: `Shogo ${displayName} has been downloaded.`,
-      detail: 'The update will be applied when you restart. Restart now?',
-      buttons: ['Restart Now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response === 0) {
-        console.log(`${TAG} User chose to restart — applying update`)
-        autoUpdater.quitAndInstall()
-      } else {
-        console.log(`${TAG} User deferred update — will apply on next restart`)
-      }
-    })
+    currentStatus = 'ready'
+    updateReleaseName = displayName
+    broadcastUpdateStatus()
   })
 
   autoUpdater.on('error', (err: Error) => {
@@ -90,14 +100,8 @@ export function initAutoUpdater(): void {
 
   autoUpdater.checkForUpdates()
   setInterval(() => {
-    if (!updateDownloaded) {
+    if (currentStatus !== 'ready') {
       autoUpdater.checkForUpdates()
     }
   }, CHECK_INTERVAL_MS)
-}
-
-function showNotification(title: string, body: string): void {
-  if (Notification.isSupported()) {
-    new Notification({ title, body }).show()
-  }
 }
