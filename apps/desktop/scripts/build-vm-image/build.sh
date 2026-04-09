@@ -349,13 +349,11 @@ if [ "$ARCH" = "aarch64" ] && file "${OUTPUT_DIR}/vmlinuz" | grep -q "gzip"; the
   echo "Kernel decompressed: $(file "${OUTPUT_DIR}/vmlinuz")"
 fi
 
-# Step 7: Shrink and copy rootfs
+# Step 7: Shrink and save as rootfs-provisioned.qcow2
+# This image has bun, deps, and templates pre-installed — it IS the provisioned image.
+# We only ship rootfs-provisioned.qcow2 to stay under GitHub's 2 GB release asset limit.
 echo "Shrinking rootfs..."
-qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs.qcow2"
-
-# The build already provisions bun, deps, and templates, so this IS the
-# provisioned image. Copy it so the desktop app's ensureOverlay picks it up.
-cp "${OUTPUT_DIR}/rootfs.qcow2" "${OUTPUT_DIR}/rootfs-provisioned.qcow2"
+qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs-provisioned.qcow2"
 
 echo ""
 echo "=== Build complete ==="
@@ -365,5 +363,4 @@ echo ""
 echo "Files:"
 echo "  ${OUTPUT_DIR}/vmlinuz                  - Linux kernel (decompressed for VZ on arm64)"
 echo "  ${OUTPUT_DIR}/initrd.img               - Initial ramdisk"
-echo "  ${OUTPUT_DIR}/rootfs.qcow2             - Root filesystem (base)"
 echo "  ${OUTPUT_DIR}/rootfs-provisioned.qcow2 - Root filesystem (provisioned with bun + deps)"
