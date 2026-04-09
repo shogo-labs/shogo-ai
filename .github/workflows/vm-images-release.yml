@@ -46,8 +46,8 @@ jobs:
         if: steps.vm-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.qemu-pkg }} qemu-utils cloud-image-utils wget
-          sudo modprobe nbd max_part=8
+          sudo apt-get install -y ${{ matrix.qemu-pkg }} qemu-utils cloud-image-utils wget libguestfs-tools
+          sudo modprobe nbd max_part=8 || true
 
       - name: Build VM image
         if: steps.vm-cache.outputs.cache-hit != 'true'
