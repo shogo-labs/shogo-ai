@@ -266,11 +266,13 @@ export async function startLocalServer(): Promise<void> {
   const bunDir = path.dirname(bunPath)
   const pathSep = isWindows ? ';' : ':'
   const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+  const { app } = require('electron') as typeof import('electron')
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
     PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
+    APP_VERSION: app.getVersion(),
     DATABASE_URL: `file:${getDbPath()}`,
     WORKSPACES_DIR: getWorkspacesDir(),
     S3_ENABLED: 'false',

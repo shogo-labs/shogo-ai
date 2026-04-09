@@ -23,10 +23,11 @@ import {
   Wifi,
   WifiOff,
   Monitor,
+  Info,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type InstanceInfo } from '@shogo-ai/sdk'
-import { createHttpClient } from '../../lib/api'
+import { API_URL, createHttpClient } from '../../lib/api'
 import { useAccentTheme } from '../../contexts/accent-theme'
 import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
 
@@ -53,6 +54,7 @@ export default function AdminGeneralPage() {
   const [isSavingName, setIsSavingName] = useState(false)
 
   const [isLoading, setIsLoading] = useState(true)
+  const [buildVersion, setBuildVersion] = useState<{ version: string; buildHash: string } | null>(null)
 
   const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
 
@@ -89,6 +91,14 @@ export default function AdminGeneralPage() {
         if (!cancelled) setIsLoading(false)
       }
     })()
+
+    fetch(`${API_URL}/api/version`, { signal: AbortSignal.timeout(5000) })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data?.version) setBuildVersion(data)
+      })
+      .catch(() => {})
+
     return () => {
       cancelled = true
     }
@@ -402,6 +412,25 @@ export default function AdminGeneralPage() {
 
         {/* Appearance */}
         <AccentColorPicker />
+
+        {/* Build Info */}
+        {buildVersion && (
+          <SectionCard
+            icon={Info}
+            title="About"
+            description="Build and version information"
+          >
+            <View className="gap-3">
+              <InfoRow
+                label="Version"
+                value={buildVersion.version === '0.0.0' ? 'dev' : `v${buildVersion.version}`}
+              />
+              {buildVersion.buildHash && buildVersion.buildHash !== 'dev' && (
+                <InfoRow label="Build" value={buildVersion.buildHash.slice(0, 8)} />
+              )}
+            </View>
+          </SectionCard>
+        )}
       </View>
     </ScrollView>
   )
