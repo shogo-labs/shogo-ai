@@ -5384,7 +5384,7 @@ if (isVMIsolation() && !isKubernetes()) {
       const path = await import('path')
       const crypto = await import('crypto')
       const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
-      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(__dirname, '../../../workspaces')
+      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(import.meta.dir, '../../../workspaces')
       const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
 
       // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
@@ -5401,7 +5401,7 @@ if (isVMIsolation() && !isKubernetes()) {
         }
       }
       const overlayDir = path.join(dataDir, 'vm-overlays')
-      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
+      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(import.meta.dir, '../../desktop/resources/vm')
       const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
 
       // Fire-and-forget: create a provisioned base image for instant cloning.

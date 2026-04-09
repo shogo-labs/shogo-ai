@@ -109,7 +109,7 @@ export async function loadHooksFromDir(dir: string): Promise<Hook[]> {
  * Workspace hooks take precedence (loaded second, can override by name).
  */
 export async function loadAllHooks(workspaceDir: string): Promise<Hook[]> {
-  const bundledDir = resolve(__dirname, 'bundled')
+  const bundledDir = resolve(import.meta.dir, 'bundled')
   const workspaceHooksDir = join(workspaceDir, 'hooks')
 
   const bundled = await loadHooksFromDir(bundledDir)
