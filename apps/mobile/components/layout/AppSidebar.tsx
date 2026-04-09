@@ -83,7 +83,13 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
+import {
+  formatCredits,
+  DAILY_CREDITS,
+  getPlanDisplayName,
+  getTotalCreditsForPlan,
+  getCreditsCapacityForDisplay,
+} from '../../lib/billing-config'
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
@@ -607,14 +613,15 @@ function WorkspaceSwitcher({
   const resolvedPlanId = (billingData.hasActiveSubscription && billingData.subscription?.planId)
     || workspacePlan?.planId
     || 'free'
-  const planType = resolvedPlanId !== 'free'
-    ? resolvedPlanId.charAt(0).toUpperCase() + resolvedPlanId.slice(1)
-    : 'Free'
+  const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
   const effectiveBalance = billingData.effectiveBalance
-  const creditsTotal = effectiveBalance
-    ? Math.max(effectiveBalance.total, 1)
-    : DAILY_CREDITS
-  const creditsRemaining = effectiveBalance?.total ?? DAILY_CREDITS
+  const planIdForCredits = resolvedPlanId !== 'free' ? resolvedPlanId : undefined
+  const creditsRemaining =
+    effectiveBalance?.total ?? getTotalCreditsForPlan(planIdForCredits)
+  const creditsTotal = Math.max(
+    getCreditsCapacityForDisplay(planIdForCredits, effectiveBalance?.total),
+    1,
+  )
 
   return (
     <Popover
