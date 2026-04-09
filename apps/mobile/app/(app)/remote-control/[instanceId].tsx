@@ -502,11 +502,11 @@ function StatusTab({
                 <Text className="text-xs text-muted-foreground">Last tool: <Text className="font-mono text-foreground">{String(agent.lastTool)}</Text></Text>
               </View>
             )}
-            {agent.channels && (
-              <InfoRow label="Active Channels" value={String(Object.keys(agent.channels).length)} />
+            {Array.isArray(agent.channels) && agent.channels.length > 0 && (
+              <InfoRow label="Active Channels" value={String(agent.channels.length)} />
             )}
-            {agent.tokenUsage && (
-              <InfoRow label="Tokens Used" value={String(agent.tokenUsage)} />
+            {Array.isArray(agent.sessions) && agent.sessions.length > 0 && (
+              <InfoRow label="Sessions" value={String(agent.sessions.length)} />
             )}
           </>
         ) : (
@@ -585,7 +585,7 @@ function ChatTab({
           path: '/agent/chat',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            messages: [{ role: 'user', content: [{ type: 'text', text: userMsg }] }],
+            messages: [{ role: 'user', parts: [{ type: 'text', text: userMsg }] }],
           }),
         }),
       })
@@ -686,7 +686,7 @@ function LogsTab({
   showToast,
 }: {
   instanceId: string
-  headers: Record<string, string>
+  headers: () => Record<string, string>
   showToast: (msg: string) => void
 }) {
   const [lines, setLines] = useState<string[]>([])
@@ -710,7 +710,8 @@ function LogsTab({
     try {
       const res = await fetch(`${API_URL}/api/instances/${instanceId}/proxy/stream`, {
         method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: headers(),
         body: JSON.stringify({ method: 'GET', path: '/agent/logs/stream' }),
         signal: abort.signal,
       })
@@ -981,6 +982,7 @@ function ControlsTab({
 }) {
   const [result, setResult] = useState<string | null>(null)
   const [currentModel, setCurrentModel] = useState<string | null>(null)
+  const [channelType, setChannelType] = useState<string | null>(null)
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [loadingModel, setLoadingModel] = useState(false)
 
@@ -995,11 +997,17 @@ function ControlsTab({
   ]
 
   const fetchCurrentModel = useCallback(async () => {
-    const resp = await proxyRequest('GET', '/agent/model')
+    const resp = await proxyRequest('GET', '/agent/status')
     if (resp?.body) {
       try {
         const data = JSON.parse(resp.body)
-        setCurrentModel(data.model || data.modelId || null)
+        setCurrentModel(data.model || null)
+        const channels = data.channels as Array<{ type: string; model?: string; connected?: boolean }> | undefined
+        if (channels && channels.length > 0) {
+          const active = channels.find((ch) => ch.connected) || channels[0]
+          setChannelType(active.type)
+          if (active.model) setCurrentModel(active.model)
+        }
       } catch {}
     }
   }, [proxyRequest])
@@ -1007,19 +1015,22 @@ function ControlsTab({
   useEffect(() => { fetchCurrentModel() }, [fetchCurrentModel])
 
   const switchModel = useCallback(async (modelId: string) => {
+    const target = channelType || 'webchat'
     setLoadingModel(true)
     setShowModelPicker(false)
-    const resp = await proxyRequest('POST', '/agent/model', JSON.stringify({ model: modelId }))
+    const resp = await proxyRequest('PATCH', `/agent/channels/${target}/model`, JSON.stringify({ model: modelId }))
     if (resp && resp.status === 200) {
       setCurrentModel(modelId)
       showToast(`Switched to ${modelId}`)
       setResult(`Model switched to ${modelId}`)
     } else {
-      showToast('Failed to switch model')
-      setResult(`Model switch failed: HTTP ${resp?.status || 'unknown'}`)
+      const errBody = resp?.body ? (() => { try { return JSON.parse(resp.body) } catch { return null } })() : null
+      const errMsg = errBody?.error || `HTTP ${resp?.status || 'unknown'}`
+      showToast(`Model switch failed: ${errMsg}`)
+      setResult(`Model switch failed: ${errMsg}`)
     }
     setLoadingModel(false)
-  }, [proxyRequest, showToast])
+  }, [proxyRequest, showToast, channelType])
 
   const executeAction = useCallback(async (label: string, method: string, path: string, body?: string) => {
     setResult(`Executing: ${label}...`)
