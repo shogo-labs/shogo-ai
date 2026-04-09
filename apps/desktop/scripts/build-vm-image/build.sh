@@ -230,37 +230,56 @@ if (
   echo "  Loop device: $LOOP_DEV"
   sleep 2
 
-  MOUNTED=false
-  for part in "${LOOP_DEV}p1" "${LOOP_DEV}p2" "${LOOP_DEV}p3"; do
+  echo "  Partition table:"
+  sudo fdisk -l "${WORK_DIR}/disk.raw" 2>/dev/null || true
+
+  # Scan ALL partitions for vmlinuz — /boot may be on a dedicated partition
+  FOUND_VMLINUZ=""
+  FOUND_INITRD=""
+  for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
     if [ -b "$part" ]; then
+      echo "  Trying $part..."
       if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
-        MOUNTED=true
-        echo "  Mounted $part"
-        break
+        echo "    Mounted OK. Contents of /boot (if any):"
+        sudo ls "$MOUNT_DIR"/boot/ 2>/dev/null || true
+        V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+        I=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+        sudo umount "$MOUNT_DIR" 2>/dev/null || true
+        if [ -n "$V" ] && [ -n "$I" ]; then
+          FOUND_VMLINUZ="$V"
+          FOUND_INITRD="$I"
+          echo "    Found kernel: $(basename "$V")"
+          break
+        fi
       fi
     fi
   done
 
-  if [ "$MOUNTED" = true ]; then
-    echo "  /boot contents:"
-    sudo ls -la "$MOUNT_DIR"/boot/ 2>/dev/null || echo "  (empty or missing /boot)"
-    sudo ls -la "$MOUNT_DIR"/boot/vmlinuz* "$MOUNT_DIR"/boot/initrd* 2>/dev/null || true
-    VMLINUZ=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
-    INITRD=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
-    if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
-      echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
-      sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
-      sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
+  if [ -n "$FOUND_VMLINUZ" ] && [ -n "$FOUND_INITRD" ]; then
+    # Remount the correct partition to copy files
+    BOOT_PART=""
+    for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
+      if [ -b "$part" ]; then
+        if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+          V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$V" ]; then
+            BOOT_PART="$part"
+            break
+          fi
+          sudo umount "$MOUNT_DIR" 2>/dev/null || true
+        fi
+      fi
+    done
+    if [ -n "$BOOT_PART" ]; then
+      echo "Found: $(basename "$FOUND_VMLINUZ"), $(basename "$FOUND_INITRD") on $BOOT_PART"
+      sudo cp "$FOUND_VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
+      sudo cp "$FOUND_INITRD" "${OUTPUT_DIR}/initrd.img"
       sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
       echo "EXTRACTED_OK"
-    else
-      echo "  WARNING: mounted but no vmlinuz/initrd found in /boot"
-      echo "  Partition table:"
-      sudo fdisk -l "${WORK_DIR}/disk.raw" 2>/dev/null || true
     fi
-    sudo umount "$MOUNT_DIR" 2>/dev/null || true
   else
-    echo "  WARNING: could not mount any partition"
+    echo "  No vmlinuz found on any partition"
   fi
 
   sudo losetup -d "$LOOP_DEV" 2>/dev/null || true
