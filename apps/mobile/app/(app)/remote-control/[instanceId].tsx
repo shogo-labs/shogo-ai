@@ -13,8 +13,8 @@ import {
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useAuth } from '../../../contexts/auth'
 import { API_URL } from '../../../lib/api'
+import { authClient } from '../../../lib/auth-client'
 import {
   getProtocolVersion,
   isCapabilityAvailable,
@@ -83,7 +83,6 @@ const QUALITY_COLORS: Record<ConnectionQuality, string> = {
 export default function InstanceDetailScreen() {
   const { instanceId } = useLocalSearchParams<{ instanceId: string }>()
   const router = useRouter()
-  const { session } = useAuth()
   const [instance, setInstance] = useState<InstanceDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<Tab>('status')
@@ -99,11 +98,12 @@ export default function InstanceDetailScreen() {
 
   const headers = useCallback(() => {
     const h: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (Platform.OS !== 'web' && session?.token) {
-      h.Cookie = `better-auth.session_token=${session.token}`
+    if (Platform.OS !== 'web') {
+      const cookie = (authClient as any).getCookie?.()
+      if (cookie) h.Cookie = cookie
     }
     return h
-  }, [session?.token])
+  }, [])
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg)

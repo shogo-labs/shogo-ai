@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View,
   Text,
@@ -12,9 +12,9 @@ import {
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useAuth } from '../../../contexts/auth'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { API_URL } from '../../../lib/api'
+import { authClient } from '../../../lib/auth-client'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import {
   Monitor,
@@ -65,16 +65,16 @@ function getOsIcon(os: string | null) {
 }
 
 function useAuthHeaders(): Record<string, string> {
-  const { session } = useAuth()
-  if (Platform.OS !== 'web' && session?.token) {
-    return { Cookie: `better-auth.session_token=${session.token}` }
-  }
-  return {}
+  const cookie =
+    Platform.OS !== 'web' ? ((authClient as any).getCookie?.() as string | undefined) : undefined
+  return useMemo(
+    (): Record<string, string> => (cookie ? { Cookie: cookie } : {}),
+    [cookie],
+  )
 }
 
 export default function RemoteControlScreen() {
   const router = useRouter()
-  const { session } = useAuth()
   const workspace = useActiveWorkspace()
   const { localMode, shogoKeyConnected } = usePlatformConfig()
   const [instances, setInstances] = useState<Instance[]>([])
@@ -122,7 +122,7 @@ export default function RemoteControlScreen() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [workspace?.id, session?.token])
+  }, [workspace?.id, authHeaders])
 
   const fetchAggregateActivity = useCallback(async (instanceList: Instance[]) => {
     const onlineIds = instanceList.filter(i => i.status === 'online').map(i => i.id)
@@ -196,7 +196,7 @@ export default function RemoteControlScreen() {
         body: JSON.stringify({ workspaceId: workspace.id }),
       })
     } catch {}
-  }, [workspace?.id, session?.token])
+  }, [workspace?.id, authHeaders])
 
   useEffect(() => {
     fetchInstances()
@@ -254,7 +254,7 @@ export default function RemoteControlScreen() {
       setConnectingId(null)
       setError(err.message)
     }
-  }, [session?.token, router])
+  }, [authHeaders, router])
 
   const handleDelete = useCallback(async (instanceId: string, name: string) => {
     const confirmed = Platform.OS === 'web'
@@ -270,7 +270,7 @@ export default function RemoteControlScreen() {
       })
       setInstances((prev) => prev.filter((i) => i.id !== instanceId))
     } catch {}
-  }, [session?.token])
+  }, [authHeaders])
 
   const onlineInstances = instances.filter((i) => i.status === 'online')
   const heartbeatInstances = instances.filter((i) => i.status === 'heartbeat')
