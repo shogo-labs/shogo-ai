@@ -210,3 +210,50 @@ html,
 body {
   height: 100%;
 }
+
+/* Thin minimal scrollbar — macOS-style, appears on hover, fades when idle */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(150, 150, 150, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0);
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+*:hover > ::-webkit-scrollbar-thumb,
+:hover::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.3);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.5);
+}
+
+.dark * {
+  scrollbar-color: rgba(200, 200, 200, 0.25) transparent;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(200, 200, 200, 0);
+}
+
+.dark *:hover > ::-webkit-scrollbar-thumb,
+.dark :hover::-webkit-scrollbar-thumb {
+  background: rgba(200, 200, 200, 0.25);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 200, 200, 0.4);
+}
