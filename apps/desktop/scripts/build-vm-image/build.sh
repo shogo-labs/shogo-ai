@@ -216,10 +216,59 @@ echo "Extracting kernel and initrd..."
 
 EXTRACTED=false
 
-# Method 1: qemu-nbd (most reliable in CI — no supermin/kernel dependency)
+# Method 1: losetup on raw conversion (reliable on any Linux, no kernel module needed)
+echo "Trying losetup (raw conversion) for extraction..."
+if (
+  set +e
+  MOUNT_DIR="${WORK_DIR}/mnt"
+  mkdir -p "$MOUNT_DIR"
+
+  echo "  Converting qcow2 to raw for loop mount..."
+  qemu-img convert -O raw "${WORK_DIR}/disk.qcow2" "${WORK_DIR}/disk.raw" || exit 1
+
+  LOOP_DEV=$(sudo losetup --find --show --partscan "${WORK_DIR}/disk.raw" 2>/dev/null) || exit 1
+  echo "  Loop device: $LOOP_DEV"
+  sleep 2
+
+  MOUNTED=false
+  for part in "${LOOP_DEV}p1" "${LOOP_DEV}p2" "${LOOP_DEV}p3"; do
+    if [ -b "$part" ]; then
+      if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+        MOUNTED=true
+        echo "  Mounted $part"
+        break
+      fi
+    fi
+  done
+
+  if [ "$MOUNTED" = true ]; then
+    VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+    INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
+    if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
+      echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
+      sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
+      sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
+      sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
+      echo "EXTRACTED_OK"
+    else
+      echo "  WARNING: mounted but no vmlinuz/initrd found in /boot"
+    fi
+    sudo umount "$MOUNT_DIR" 2>/dev/null || true
+  else
+    echo "  WARNING: could not mount any partition"
+  fi
+
+  sudo losetup -d "$LOOP_DEV" 2>/dev/null || true
+  rm -f "${WORK_DIR}/disk.raw"
+) 2>&1 | tee /tmp/losetup-extract.log && grep -q "EXTRACTED_OK" /tmp/losetup-extract.log; then
+  EXTRACTED=true
+else
+  echo "losetup extraction failed, trying qemu-nbd..."
+fi
+
+# Method 2: qemu-nbd
 if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
   echo "Trying qemu-nbd for extraction..."
-  # Run in a subshell so failures don't kill the script under set -e
   if (
     set +e
     sudo modprobe nbd max_part=8 2>/dev/null || exit 1
@@ -227,12 +276,19 @@ if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
     mkdir -p "$MOUNT_DIR"
 
     sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2" || exit 1
-    sleep 2
+    sleep 3
     sudo partprobe /dev/nbd0 2>/dev/null || true
+    sleep 1
 
     MOUNTED=false
-    for part in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p15; do
-      if sudo mount "$part" "$MOUNT_DIR" 2>/dev/null; then MOUNTED=true; break; fi
+    for part in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p3; do
+      if [ -b "$part" ]; then
+        if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+          MOUNTED=true
+          echo "  Mounted $part"
+          break
+        fi
+      fi
     done
 
     if [ "$MOUNTED" = true ]; then
@@ -252,11 +308,11 @@ if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
   ) 2>&1 | tee /tmp/nbd-extract.log && grep -q "EXTRACTED_OK" /tmp/nbd-extract.log; then
     EXTRACTED=true
   else
-    echo "qemu-nbd extraction failed, will try fallback"
+    echo "qemu-nbd extraction failed, trying libguestfs..."
   fi
 fi
 
-# Method 2: libguestfs (requires supermin appliance with a host kernel in /boot)
+# Method 3: libguestfs
 if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
   export LIBGUESTFS_BACKEND=direct
   echo "Trying libguestfs (virt-copy-out) for extraction..."
@@ -271,7 +327,7 @@ if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt
     mv "${OUTPUT_DIR}/${INITRD}" "${OUTPUT_DIR}/initrd.img"
     EXTRACTED=true
   else
-    echo "libguestfs could not list /boot/ contents (supermin may lack a host kernel)"
+    echo "libguestfs could not list /boot/ contents"
   fi
 fi
 
