@@ -95,3 +95,13 @@ export function getTemplateCanvasCodeDir(templateId: string): string | null {
   const dir = join(TEMPLATES_BASE, templateId, 'canvas')
   return existsSync(dir) ? dir : null
 }
+
+/**
+ * Get the path to a template's src/ directory for direct copying.
+ * Templates with React components store them in src/ which merges
+ * on top of the runtime-template during seeding.
+ */
+export function getTemplateSrcDir(templateId: string): string | null {
+  const dir = join(TEMPLATES_BASE, templateId, 'src')
+  return existsSync(dir) ? dir : null
+}

@@ -3,6 +3,7 @@
   "name": "Support Operations",
   "description": "Ticket triage, incident management, SLA monitoring, email-to-Slack alerting, and escalation automation with multi-surface ops dashboards.",
   "category": "operations",
+  "icon": "MessageSquare",
   "tags": [
     "support",
     "tickets",
@@ -45,5 +46,5 @@
       "description": "Monitor support email and forward alerts"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

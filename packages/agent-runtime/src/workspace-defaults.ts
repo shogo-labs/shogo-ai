@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSyn
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir } from './template-loader'
+import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir } from './template-loader'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -174,6 +174,11 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
     if (!existsSync(canvasDest)) {
       cpSync(canvasCodeSrc, canvasDest, { recursive: true })
     }
+  }
+
+  const templateSrcDir = getTemplateSrcDir(templateId)
+  if (templateSrcDir) {
+    cpSync(templateSrcDir, join(dir, 'src'), { recursive: true, force: true })
   }
 
   writeFileSync(join(dir, '.template'), templateId, 'utf-8')

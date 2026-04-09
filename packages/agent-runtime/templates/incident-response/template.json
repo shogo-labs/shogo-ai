@@ -3,6 +3,7 @@
   "name": "Incident Response",
   "description": "Detect, investigate, and escalate production incidents fast. Correlates errors and deploys into a timeline and routes urgent alerts to the right people instantly.",
   "category": "operations",
+  "icon": "Siren",
   "tags": [
     "incidents",
     "on-call",
@@ -12,6 +13,7 @@
     "monitoring"
   ],
   "settings": {
+    "activeMode": "none",
     "heartbeatInterval": 3600,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",
