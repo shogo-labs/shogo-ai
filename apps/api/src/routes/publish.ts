@@ -22,7 +22,7 @@ import { prisma } from "../lib/prisma"
 import * as checkpointService from "../services/checkpoint.service"
 
 // Workspaces directory for checkpoint creation
-const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(__dirname, '../../../../workspaces')
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(import.meta.dir, '../../../../workspaces')
 
 // S3 configuration (CloudFront removed -- published apps route through Kourier ALB)
 const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-staging"

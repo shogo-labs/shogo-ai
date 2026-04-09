@@ -67,7 +67,7 @@ function isElectron(): boolean {
 }
 
 function getDesktopRoot(): string {
-  return path.resolve(__dirname, '..', '..')
+  return path.resolve(import.meta.dir, '..', '..')
 }
 
 export function getVMImageDir(): string {
