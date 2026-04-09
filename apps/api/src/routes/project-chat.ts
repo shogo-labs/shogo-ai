@@ -43,7 +43,7 @@ export interface ProjectChatRoutesConfig {
   runtimeManager?: IRuntimeManager
 }
 
-const PROJECT_ROOT = resolve(__dirname, '../../../..')
+const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 export const FILE_MODIFYING_TOOLS = new Set([
