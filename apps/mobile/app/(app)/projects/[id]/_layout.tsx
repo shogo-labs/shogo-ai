@@ -1093,6 +1093,7 @@ export default observer(function ProjectLayout() {
               userId={user?.id}
               projectId={projectId}
               projectType="unified"
+              isActive={isActive}
               initialMessage={isInitialSession ? capturedInitialMessage : undefined}
               initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
               initialFiles={isInitialSession ? capturedInitialFiles : undefined}
