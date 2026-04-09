@@ -1,8 +1,8 @@
 # =============================================================================
-# Shogo — Production US (Tier 1 Primary)
+# Shogo — Production EU (Tier 1 Replica)
 # =============================================================================
-# Full region: OKE + CNPG (primary) + Object Storage + File Storage
-# Region: us-ashburn-1 | CIDR: 10.0.0.0/16
+# Full region: OKE + CNPG (replica) + Knative + SigNoz
+# Region: eu-frankfurt-1 | CIDR: 10.1.0.0/16
 # =============================================================================
 
 terraform {
@@ -41,7 +41,7 @@ provider "oci" {
   user_ocid        = var.oci_user_ocid
   fingerprint      = var.oci_fingerprint
   private_key_path = var.oci_private_key_path
-  region           = "us-ashburn-1"
+  region           = "eu-frankfurt-1"
 }
 
 provider "cloudflare" {
@@ -49,27 +49,27 @@ provider "cloudflare" {
 }
 
 data "oci_containerengine_cluster_kube_config" "main" {
-  cluster_id = module.us.cluster_id
+  cluster_id = module.eu.cluster_id
 }
 
 provider "kubernetes" {
-  host                   = module.us.cluster_endpoint
+  host                   = module.eu.cluster_endpoint
   cluster_ca_certificate = base64decode(yamldecode(data.oci_containerengine_cluster_kube_config.main.content)["clusters"][0]["cluster"]["certificate-authority-data"])
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "oci"
-    args        = ["ce", "cluster", "generate-token", "--cluster-id", module.us.cluster_id, "--region", "us-ashburn-1"]
+    args        = ["ce", "cluster", "generate-token", "--cluster-id", module.eu.cluster_id, "--region", "eu-frankfurt-1"]
   }
 }
 
 provider "helm" {
   kubernetes {
-    host                   = module.us.cluster_endpoint
+    host                   = module.eu.cluster_endpoint
     cluster_ca_certificate = base64decode(yamldecode(data.oci_containerengine_cluster_kube_config.main.content)["clusters"][0]["cluster"]["certificate-authority-data"])
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "oci"
-      args        = ["ce", "cluster", "generate-token", "--cluster-id", module.us.cluster_id, "--region", "us-ashburn-1"]
+      args        = ["ce", "cluster", "generate-token", "--cluster-id", module.eu.cluster_id, "--region", "eu-frankfurt-1"]
     }
   }
 }
@@ -78,33 +78,31 @@ provider "helm" {
 # Region Module — Tier 1 (Full)
 # =============================================================================
 
-module "us" {
+module "eu" {
   source = "../../modules/oci-region"
 
   tier        = "full"
-  region      = "us-ashburn-1"
-  region_key  = "us"
+  region      = "eu-frankfurt-1"
+  region_key  = "eu"
   environment = "production"
-  vcn_cidr    = "10.0.0.0/16"
+  vcn_cidr    = "10.1.0.0/16"
 
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
-  # ARM64 custom OKE image (A4 Flex) — AD-1 to match existing PVs
-  image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
-  placement_ad_names = ["XYpk:US-ASHBURN-AD-1"]
+  # ARM64 custom OKE image (A2 Flex) — EU region
+  image_id           = "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaiufb7tfc5olbaeerhukwj72ppir3yzigxp26cp2hqqzjtugf2sbq"
+  placement_ad_names = ["XYpk:EU-FRANKFURT-1-AD-1"]
 
-  # System nodes (API, web, CNPG, Knative controllers)
+  # EU uses A2.Flex (A4 not available in this region)
+  system_node_shape     = "VM.Standard.A2.Flex"
   system_node_ocpus     = 4
   system_node_memory_gb = 24
   system_pool_size      = 2
   system_pool_min       = 2
-  system_pool_max       = 15
+  system_pool_max       = 10
 
   enable_workload_pool = false
-
-  # Autoscaler IAM (tenancy-level — only enable in primary region)
-  create_autoscaler_iam = true
 
   # Observability
   signoz_endpoint      = var.signoz_endpoint
@@ -116,48 +114,23 @@ module "us" {
 }
 
 # =============================================================================
-# Cross-Region Peering (DRG)
-# US is the requestor — EU and India accept using this RPC ID
+# Cross-Region Peering (accept US peering)
 # =============================================================================
 
-module "drg_to_eu" {
+module "drg_from_us" {
   source = "../../modules/drg-peering"
 
-  name           = "shogo-production-us"
+  name           = "shogo-production-eu"
   compartment_id = var.compartment_id
-  vcn_id         = module.us.vcn_id
-  peer_region    = "eu-frankfurt-1"
-}
-
-module "drg_to_india" {
-  source = "../../modules/drg-peering"
-
-  name           = "shogo-production-us"
-  compartment_id = var.compartment_id
-  vcn_id         = module.us.vcn_id
-  peer_region    = "ap-mumbai-1"
-}
-
-# =============================================================================
-# Object Storage Replication (US → EU)
-# EU is the only Tier 1 replica; India (Tier 2) reads from US directly
-# =============================================================================
-
-module "replication_to_eu" {
-  source = "../../modules/object-storage-replication"
-
-  compartment_id     = var.compartment_id
-  environment        = "production"
-  destination_region = "eu-frankfurt-1"
+  vcn_id         = module.eu.vcn_id
+  peer_region    = "us-ashburn-1"
+  peer_rpc_id    = var.us_rpc_id
 }
 
 # =============================================================================
 # Outputs
 # =============================================================================
 
-output "cluster_endpoint" { value = module.us.cluster_endpoint }
-output "cluster_id"       { value = module.us.cluster_id }
-output "ocir_prefix"      { value = module.us.ocir_prefix }
-output "s3_endpoint"      { value = module.us.s3_endpoint }
-output "rpc_eu_id"        { value = module.drg_to_eu.rpc_id }
-output "rpc_india_id"     { value = module.drg_to_india.rpc_id }
+output "cluster_endpoint" { value = module.eu.cluster_endpoint }
+output "cluster_id"       { value = module.eu.cluster_id }
+output "ocir_prefix"      { value = module.eu.ocir_prefix }

@@ -74,6 +74,12 @@ variable "nfs_allowed_cidr" {
 # OKE Cluster
 # -----------------------------------------------------------------------------
 
+variable "system_node_shape" {
+  description = "Compute shape for system nodes"
+  type        = string
+  default     = "VM.Standard.A4.Flex"
+}
+
 variable "system_node_ocpus" {
   description = "OCPUs per system node"
   type        = number
