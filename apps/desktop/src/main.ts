@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+
+// Squirrel.Windows launches the app with lifecycle flags during
+// install / update / uninstall. We must handle them immediately
+// and exit before any heavy initialization runs.
+import { handleSquirrelEvent } from './squirrel-startup'
+if (handleSquirrelEvent()) {
+  process.exit(0)
+}
+
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell } from 'electron'
 import path from 'path'
 import fs from 'fs'
