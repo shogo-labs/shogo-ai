@@ -3,6 +3,7 @@
   "name": "Revenue & Finance Ops",
   "description": "Keep your financial health visible and your invoices under control. Pulls live Stripe metrics into a dashboard and automates invoice tracking and overdue follow-ups.",
   "category": "business",
+  "icon": "DollarSign",
   "tags": [
     "revenue",
     "stripe",
@@ -12,6 +13,7 @@
     "payments"
   ],
   "settings": {
+    "activeMode": "none",
     "heartbeatInterval": 3600,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",
