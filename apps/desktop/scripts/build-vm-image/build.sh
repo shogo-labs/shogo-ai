@@ -242,8 +242,11 @@ if (
   done
 
   if [ "$MOUNTED" = true ]; then
-    VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
-    INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
+    echo "  /boot contents:"
+    sudo ls -la "$MOUNT_DIR"/boot/ 2>/dev/null || echo "  (empty or missing /boot)"
+    sudo ls -la "$MOUNT_DIR"/boot/vmlinuz* "$MOUNT_DIR"/boot/initrd* 2>/dev/null || true
+    VMLINUZ=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+    INITRD=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
     if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
       echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
       sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
@@ -252,6 +255,8 @@ if (
       echo "EXTRACTED_OK"
     else
       echo "  WARNING: mounted but no vmlinuz/initrd found in /boot"
+      echo "  Partition table:"
+      sudo fdisk -l "${WORK_DIR}/disk.raw" 2>/dev/null || true
     fi
     sudo umount "$MOUNT_DIR" 2>/dev/null || true
   else
