@@ -224,6 +224,125 @@ export function getQemuInstallState(): QemuInstallState {
 }
 
 // ---------------------------------------------------------------------------
+// winget resolution + direct-download fallback (Windows QEMU install)
+// ---------------------------------------------------------------------------
+
+const QEMU_INSTALLER_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260401.exe'
+
+function resolveWingetPath(): string | null {
+  const candidates: string[] = []
+
+  const localAppData = process.env.LOCALAPPDATA
+  if (localAppData) {
+    candidates.push(path.join(localAppData, 'Microsoft', 'WindowsApps', 'winget.exe'))
+  }
+
+  try {
+    const found = execSync('where winget', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).trim().split('\n')[0]?.trim()
+    if (found) candidates.unshift(found)
+  } catch { /* not on PATH */ }
+
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
+
+  return null
+}
+
+async function downloadQemuInstaller(
+  onProgress: (text: string) => void,
+): Promise<string> {
+  const tmpDir = path.join(os.tmpdir(), 'shogo-qemu-install')
+  fs.mkdirSync(tmpDir, { recursive: true })
+  const dest = path.join(tmpDir, 'qemu-w64-setup.exe')
+
+  if (fs.existsSync(dest)) {
+    const stat = fs.statSync(dest)
+    if (stat.size > 100_000_000) {
+      onProgress('Using previously downloaded installer...\n')
+      return dest
+    }
+    fs.unlinkSync(dest)
+  }
+
+  onProgress(`Downloading QEMU installer from ${QEMU_INSTALLER_URL}...\n`)
+
+  const https = await import('https')
+  const http = await import('http')
+
+  return new Promise<string>((resolve, reject) => {
+    const get = QEMU_INSTALLER_URL.startsWith('https') ? https.get : http.get
+
+    const request = get(QEMU_INSTALLER_URL, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const redirectGet = res.headers.location.startsWith('https') ? https.get : http.get
+        redirectGet(res.headers.location, (res2) => handleResponse(res2)).on('error', reject)
+        return
+      }
+      handleResponse(res)
+    })
+
+    request.on('error', reject)
+
+    function handleResponse(res: import('http').IncomingMessage) {
+      if (res.statusCode !== 200) {
+        reject(new Error(`Download failed: HTTP ${res.statusCode}`))
+        return
+      }
+
+      const totalBytes = parseInt(res.headers['content-length'] || '0', 10)
+      let downloaded = 0
+      let lastReportedPct = -1
+      const file = fs.createWriteStream(dest)
+
+      res.on('data', (chunk: Buffer) => {
+        downloaded += chunk.length
+        if (totalBytes > 0) {
+          const pct = Math.floor((downloaded / totalBytes) * 100)
+          if (pct !== lastReportedPct && pct % 5 === 0) {
+            lastReportedPct = pct
+            const mb = (downloaded / 1024 / 1024).toFixed(1)
+            const totalMb = (totalBytes / 1024 / 1024).toFixed(1)
+            onProgress(`Download progress: ${mb} MB / ${totalMb} MB (${pct}%)\n`)
+          }
+        }
+      })
+
+      res.pipe(file)
+      file.on('finish', () => { file.close(); resolve(dest) })
+      file.on('error', (err) => { fs.unlink(dest, () => {}); reject(err) })
+    }
+  })
+}
+
+async function installQemuFromExe(
+  installerPath: string,
+  onOutput: (text: string) => void,
+): Promise<void> {
+  onOutput('Running QEMU installer (silent)...\n')
+
+  return new Promise<void>((resolve, reject) => {
+    const proc = spawn(installerPath, ['/S'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+
+    proc.stdout?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+    proc.stderr?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+
+    proc.on('error', (err) => reject(err))
+    proc.on('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`QEMU installer exited with code ${code}`))
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
 // WHPX detection (Windows only)
 // ---------------------------------------------------------------------------
 
@@ -365,7 +484,7 @@ export function vmRoutes(): Hono {
   })
 
   // -------------------------------------------------------------------------
-  // QEMU install (Windows only — uses winget)
+  // QEMU install (Windows only — winget or direct download fallback)
   // -------------------------------------------------------------------------
 
   /**
@@ -376,11 +495,12 @@ export function vmRoutes(): Hono {
   })
 
   /**
-   * POST /qemu/install - install QEMU via winget with SSE progress
+   * POST /qemu/install - install QEMU with SSE progress.
+   * Tries winget first; falls back to direct-downloading the official installer.
    */
   router.post('/qemu/install', (c) => {
     if (process.platform !== 'win32') {
-      return c.json({ error: 'QEMU winget install is only available on Windows' }, 400)
+      return c.json({ error: 'QEMU install is only available on Windows' }, 400)
     }
 
     if (isQemuAvailable()) {
@@ -395,33 +515,41 @@ export function vmRoutes(): Hono {
     return streamSSE(c, async (stream) => {
       qemuInstallState = { status: 'installing', output: '' }
 
+      const appendOutput = (text: string) => {
+        qemuInstallState.output += text
+        stream.writeSSE({ event: 'output', data: JSON.stringify({ text }) })
+      }
+
       try {
-        await new Promise<void>((resolve, reject) => {
-          const proc = spawn('winget', [
-            'install',
-            'SoftwareFreedomConservancy.QEMU',
-            '--accept-package-agreements',
-            '--accept-source-agreements',
-          ], {
-            stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true,
+        const wingetPath = resolveWingetPath()
+
+        if (wingetPath) {
+          appendOutput(`Found winget at ${wingetPath}\n`)
+          await new Promise<void>((resolve, reject) => {
+            const proc = spawn(wingetPath, [
+              'install',
+              'SoftwareFreedomConservancy.QEMU',
+              '--accept-package-agreements',
+              '--accept-source-agreements',
+            ], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true,
+            })
+
+            proc.stdout?.on('data', (chunk: Buffer) => appendOutput(chunk.toString()))
+            proc.stderr?.on('data', (chunk: Buffer) => appendOutput(chunk.toString()))
+
+            proc.on('error', (err) => reject(err))
+            proc.on('exit', (code) => {
+              if (code === 0) resolve()
+              else reject(new Error(`winget exited with code ${code}`))
+            })
           })
-
-          const appendOutput = (chunk: Buffer) => {
-            const text = chunk.toString()
-            qemuInstallState.output += text
-            stream.writeSSE({ event: 'output', data: JSON.stringify({ text }) })
-          }
-
-          proc.stdout?.on('data', appendOutput)
-          proc.stderr?.on('data', appendOutput)
-
-          proc.on('error', (err) => reject(err))
-          proc.on('exit', (code) => {
-            if (code === 0) resolve()
-            else reject(new Error(`winget exited with code ${code}`))
-          })
-        })
+        } else {
+          appendOutput('winget not found — downloading QEMU installer directly...\n')
+          const installerPath = await downloadQemuInstaller(appendOutput)
+          await installQemuFromExe(installerPath, appendOutput)
+        }
 
         qemuInstallState = { status: 'complete', output: qemuInstallState.output }
         await stream.writeSSE({
