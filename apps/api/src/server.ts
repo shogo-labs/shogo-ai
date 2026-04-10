@@ -472,6 +472,7 @@ app.use(
       '/api/tech-stacks',
       '/api/instances/heartbeat',
       '/api/instances/ws',
+      '/api/pairing/complete',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()

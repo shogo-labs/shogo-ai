@@ -46,6 +46,7 @@ model User {
   starredProjects     StarredProject[]
   signupAttribution   SignupAttribution?
   apiKeys             ApiKey[]
+  createdPairingCodes PairingCode[] @relation("PairingCodeCreator")
 
   @@map("users")
 }
@@ -1349,16 +1350,18 @@ model PushSubscription {
 }
 
 model PairingCode {
-  id          String    @id @default(cuid())
-  workspaceId String
-  code        String    @unique
-  expiresAt   DateTime
-  usedAt      DateTime?
-  apiKeyId    String?
-  publicKey   String?
-  createdAt   DateTime  @default(now())
+  id              String    @id @default(cuid())
+  workspaceId     String
+  createdByUserId String?
+  code            String    @unique
+  expiresAt       DateTime
+  usedAt          DateTime?
+  apiKeyId        String?
+  publicKey       String?
+  createdAt       DateTime  @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("PairingCodeCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([code])

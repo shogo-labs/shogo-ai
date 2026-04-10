@@ -35,6 +35,8 @@ export interface AuthContext {
   workspaceId?: string
   /** Whether the request is authenticated */
   isAuthenticated: boolean
+  /** True when the session check failed due to a server-side error (DB, etc.) */
+  authError?: boolean
 }
 
 // Extend Hono context types
@@ -90,6 +92,7 @@ export async function authMiddleware(c: Context, next: Next) {
     console.warn("[authMiddleware] Failed to get session:", error)
     c.set("auth", {
       isAuthenticated: false,
+      authError: true,
     })
   }
 
@@ -128,6 +131,12 @@ export async function requireAuth(c: Context, next: Next) {
     const path = new URL(c.req.url).pathname
     if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
       return next()
+    }
+    if (auth?.authError) {
+      return c.json(
+        { error: { code: "service_unavailable", message: "Auth service temporarily unavailable" } },
+        503
+      )
     }
     return c.json(
       { error: { code: "unauthorized", message: "Authentication required" } },

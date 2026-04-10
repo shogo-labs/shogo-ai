@@ -4,12 +4,14 @@
  * Remote Control — QR Pairing
  *
  * Endpoints:
- * - POST /api/pairing/initiate  — Create a short-lived pairing code (session auth)
- * - POST /api/pairing/complete  — Complete pairing with code, create API key (session auth)
+ * - POST /api/pairing/initiate   — Create a short-lived pairing code (session auth)
+ * - POST /api/pairing/complete   — Complete pairing with code, create API key (code = auth)
  * - GET  /api/pairing/:code/status — Poll for pairing completion (session auth)
  *
- * The pairing flow supports an optional publicKey field in the initiation
- * request for future E2E encryption key exchange (Phase 5).
+ * /pairing/complete is intentionally semi-public: the 6-digit code (short-lived,
+ * single-use) acts as the authentication token. This lets a mobile device complete
+ * pairing without needing a pre-existing session — the code creator's identity is
+ * used to mint the API key when the caller has no session.
  */
 
 import { Hono } from 'hono'
@@ -64,6 +66,7 @@ export function pairingRoutes() {
     const pairing = await prisma.pairingCode.create({
       data: {
         workspaceId: body.workspaceId,
+        createdByUserId: auth.userId,
         code,
         expiresAt,
         publicKey: body.publicKey || null,
@@ -77,13 +80,11 @@ export function pairingRoutes() {
     })
   })
 
-  // POST /pairing/complete — Mobile submits the code, gets an API key
+  // POST /pairing/complete — Submit the code, get an API key.
+  // The pairing code itself is the authentication — no session required.
+  // If the caller IS authenticated, their userId is used; otherwise the
+  // code creator's userId is used.
   router.post('/pairing/complete', async (c) => {
-    const auth = c.get('auth') as any
-    if (!auth?.userId) {
-      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-    }
-
     const body = await c.req.json<{ code: string; publicKey?: string }>()
     if (!body.code) {
       return c.json({ error: { code: 'invalid_request', message: 'code required' } }, 400)
@@ -100,8 +101,19 @@ export function pairingRoutes() {
       return c.json({ error: { code: 'code_expired', message: 'This code has expired' } }, 400)
     }
 
+    // Determine the userId: prefer caller's session, fall back to code creator
+    const auth = c.get('auth') as any
+    const userId = auth?.userId || pairing.createdByUserId
+    if (!userId) {
+      return c.json(
+        { error: { code: 'unauthorized', message: 'Could not determine user — try signing in first' } },
+        401,
+      )
+    }
+
+    // Verify the user is a workspace member
     const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: pairing.workspaceId },
+      where: { userId, workspaceId: pairing.workspaceId },
     })
     if (!member) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
@@ -116,7 +128,7 @@ export function pairingRoutes() {
         keyHash,
         keyPrefix: rawKey.slice(0, 12),
         workspaceId: pairing.workspaceId,
-        userId: auth.userId,
+        userId,
       },
     })
 

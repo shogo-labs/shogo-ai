@@ -12,6 +12,7 @@ import { Hono } from 'hono'
 const mockPairingCode = {
   id: 'pair-1',
   workspaceId: 'ws-1',
+  createdByUserId: 'user-1',
   code: '123456',
   expiresAt: new Date(Date.now() + 5 * 60 * 1000),
   usedAt: null as Date | null,
@@ -190,6 +191,29 @@ describe('POST /api/pairing/complete', () => {
     expect(res.status).toBe(400)
     const data = await res.json()
     expect(data.error.code).toBe('code_expired')
+  })
+
+  test('completes pairing without session auth using createdByUserId', async () => {
+    const app = new Hono()
+    app.use('*', async (c, next) => {
+      c.set('auth', { isAuthenticated: false })
+      await next()
+    })
+    app.route('/api', pairingRoutes())
+
+    const res = await app.request('/api/pairing/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: '123456' }),
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.apiKey).toBeTruthy()
+    expect(data.apiKey.startsWith('shogo_sk_')).toBe(true)
+    expect(data.workspaceId).toBe('ws-1')
+
+    const createCall = mockPrisma.apiKey.create.mock.calls.at(-1)?.[0]
+    expect(createCall.data.userId).toBe('user-1')
   })
 })
 
