@@ -133,7 +133,7 @@ export default function OnboardingPage() {
   const [userName, setUserName] = useState('')
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
 
-  const isLocal = localMode && (needsSetup ?? false)
+  const isLocal = !!localMode
   const steps = useMemo(() => (isLocal ? getLocalSteps() : getCloudSteps()), [isLocal])
 
   const context = useMemo(
