@@ -23,8 +23,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Plus,
-  Link2,
 } from 'lucide-react-native'
 import { cn } from '../primitives/cn'
 import type { Instance, UseInstancePickerResult } from '@shogo/shared-app/hooks'
@@ -48,7 +46,6 @@ export interface InstancePickerPopoverProps {
   activeInstance: ActiveInstance | null
   collapsed?: boolean
   workspaceId?: string
-  onPairDevice?: () => void
 }
 
 // ─── Popover body (shared between collapsed/expanded triggers) ──────────────
@@ -56,9 +53,7 @@ export interface InstancePickerPopoverProps {
 function InstancePickerBody({
   picker,
   activeInstance,
-  workspaceId,
-  onPairDevice,
-}: Omit<InstancePickerPopoverProps, 'collapsed'>) {
+}: Omit<InstancePickerPopoverProps, 'collapsed' | 'workspaceId'>) {
   const { instances, loading, connecting, connectError, select, disconnect } = picker
 
   return (
@@ -90,11 +85,11 @@ function InstancePickerBody({
       )}
 
       {!loading && instances.length === 0 && (
-        <View className="px-4 py-3 gap-3">
+        <View className="px-4 py-3 gap-2">
           <View className="gap-2">
             {(['Install Shogo Desktop on your computer',
-              'Enable cloud sync and generate a pairing code',
-              'Pair this device using the code below',
+              'Connect to Shogo Cloud using an API key',
+              'Your instance will appear here once connected',
             ] as const).map((text, i) => (
               <View key={i} className="flex-row items-start gap-2">
                 <Text className="text-xs font-bold text-primary w-4">{i + 1}</Text>
@@ -102,30 +97,6 @@ function InstancePickerBody({
               </View>
             ))}
           </View>
-          {onPairDevice && (
-            <Pressable
-              onPress={onPairDevice}
-              disabled={!workspaceId}
-              className={cn(
-                'flex-row items-center justify-center gap-2 py-2.5 rounded-lg',
-                workspaceId ? 'bg-primary active:opacity-80' : 'bg-muted',
-              )}
-            >
-              <Link2
-                size={14}
-                color={workspaceId ? '#fff' : undefined}
-                className={!workspaceId ? 'text-muted-foreground' : undefined}
-              />
-              <Text
-                className={cn(
-                  'text-sm font-medium',
-                  workspaceId ? 'text-primary-foreground' : 'text-muted-foreground',
-                )}
-              >
-                Pair Device
-              </Text>
-            </Pressable>
-          )}
         </View>
       )}
 
@@ -174,19 +145,6 @@ function InstancePickerBody({
         </View>
       )}
 
-      {!loading && instances.length > 0 && onPairDevice && (
-        <>
-          <View className="h-px bg-border mx-3 my-1" />
-          <Pressable
-            onPress={onPairDevice}
-            disabled={!workspaceId}
-            className="flex-row items-center gap-3 px-4 py-2.5 active:bg-muted"
-          >
-            <Plus size={16} className="text-muted-foreground" />
-            <Text className="text-sm text-muted-foreground">Pair New Device</Text>
-          </Pressable>
-        </>
-      )}
     </ScrollView>
   )
 }
@@ -197,8 +155,6 @@ export function InstancePickerPopover({
   picker,
   activeInstance,
   collapsed,
-  workspaceId,
-  onPairDevice,
 }: InstancePickerPopoverProps) {
   const { isOpen, open, close } = picker
   const label = activeInstance ? activeInstance.name : 'This device'
@@ -266,8 +222,6 @@ export function InstancePickerPopover({
             <InstancePickerBody
               picker={picker}
               activeInstance={activeInstance}
-              workspaceId={workspaceId}
-              onPairDevice={onPairDevice}
             />
           </Pressable>
         </Pressable>

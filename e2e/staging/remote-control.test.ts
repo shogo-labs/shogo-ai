@@ -26,8 +26,7 @@ import { makeTestUser, signUpAndOnboard } from "./helpers"
  *    - Sidebar shows "This device" by default (no remote instance)
  *    - Instance Picker trigger is visible in Resources section
  *    - Opening the picker shows "This device" checked
- *    - Empty state shows pairing instructions
- *    - Pair Device button navigates to /remote-control/pair
+ *    - Empty state shows setup instructions
  *
  * 3. InstancePicker Connect / Disconnect Flow
  *    - With a registered instance, picker shows it in the list
@@ -364,7 +363,7 @@ test.describe("Remote Control — E2E", () => {
     // Test passes in both cases — the component exists even if not visible
   })
 
-  test("2c — empty state shows pairing instructions when no instances exist", async () => {
+  test("2c — empty state shows setup instructions when no instances exist", async () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
 
@@ -386,13 +385,11 @@ test.describe("Remote Control — E2E", () => {
     await trigger.first().click()
     await page.waitForTimeout(500)
 
-    // Should show pairing instructions
+    // Should show setup instructions
     const step1 = page.getByText("Install Shogo Desktop")
-    const pairBtn = page.getByText("Pair Device")
 
     const hasInstructions =
-      (await step1.isVisible({ timeout: 3_000 }).catch(() => false)) ||
-      (await pairBtn.isVisible({ timeout: 3_000 }).catch(() => false))
+      await step1.isVisible({ timeout: 3_000 }).catch(() => false)
 
     if (hasInstructions) {
       expect(hasInstructions).toBe(true)

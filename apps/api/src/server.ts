@@ -58,7 +58,6 @@ import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { checkRedisHealth } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
-import { pairingRoutes } from './routes/pairing'
 import internalRoutes from './routes/internal'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -478,7 +477,6 @@ app.use(
       '/api/tech-stacks',
       '/api/instances/heartbeat',
       '/api/instances/ws',
-      '/api/pairing/complete',
       '/api/vm/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
@@ -1077,10 +1075,9 @@ app.route('/api/internal', evalInternalRoutes())
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
 
-// Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions, pairing
+// Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
-app.route('/api', pairingRoutes())
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)

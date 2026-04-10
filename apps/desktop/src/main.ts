@@ -208,46 +208,6 @@ function registerIpcHandlers(): void {
     return { success: true }
   })
 
-  // ─── Remote Control: QR Pairing ──────────────────────────────────────────
-  ipcMain.handle('pairing-initiate', async (_event, workspaceId: string) => {
-    try {
-      const apiUrl = getApiUrl()
-
-      // Generate ECDH key pair for future E2E encryption
-      let publicKeyB64: string | undefined
-      try {
-        const ecdh = crypto.createECDH('prime256v1')
-        ecdh.generateKeys()
-        publicKeyB64 = ecdh.getPublicKey('base64')
-      } catch {
-        // Proceed without E2E key material
-      }
-
-      const res = await net.fetch(`${apiUrl}/api/pairing/initiate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, publicKey: publicKeyB64 }),
-      })
-      const data = JSON.parse(await res.text())
-      if (!res.ok) return { success: false, error: data.error?.message || 'Failed' }
-      // data.code is a 6-digit string; encode as shogo://pair?code=XXXXXX for QR
-      const qrPayload = `shogo://pair?code=${data.code}`
-      return { success: true, code: data.code, qrPayload, expiresAt: data.expiresAt }
-    } catch (err: any) {
-      return { success: false, error: err.message }
-    }
-  })
-
-  ipcMain.handle('pairing-status', async (_event, code: string) => {
-    try {
-      const apiUrl = getApiUrl()
-      const res = await net.fetch(`${apiUrl}/api/pairing/${code}/status`)
-      return JSON.parse(await res.text())
-    } catch (err: any) {
-      return { status: 'error', error: err.message }
-    }
-  })
-
   // Desktop notification for remote actions
   ipcMain.handle('show-remote-action-notification', (_event, title: string, body: string) => {
     if (Notification.isSupported()) {

@@ -9,7 +9,7 @@
  * - Account: Profile, email, preferences
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -44,9 +44,6 @@ import {
   Zap,
   CreditCard,
   Cloud,
-  Link2,
-  Copy,
-  Check,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -300,14 +297,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
   const [connectError, setConnectError] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
 
-  const [pairingCode, setPairingCode] = useState<string | null>(null)
-  const [pairingExpiresAt, setPairingExpiresAt] = useState<Date | null>(null)
-  const [pairingStatus, setPairingStatus] = useState<
-    'idle' | 'generating' | 'pending' | 'completed' | 'expired' | 'error'
-  >('idle')
-  const [pairingError, setPairingError] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
@@ -323,7 +312,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
 
   useEffect(() => {
     fetchStatus()
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [fetchStatus])
 
   const handleConnect = async () => {
@@ -358,58 +346,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
       await fetchStatus()
     } catch {}
     setDisconnecting(false)
-  }
-
-  const handleGenerateCode = async () => {
-    if (!workspaceId) return
-    setPairingStatus('generating')
-    setPairingError(null)
-    try {
-      const res = await fetch(`${API_URL}/api/pairing/initiate`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setPairingError(data.error?.message || 'Failed to generate code')
-        setPairingStatus('error')
-        return
-      }
-      setPairingCode(data.code)
-      setPairingExpiresAt(new Date(data.expiresAt))
-      setPairingStatus('pending')
-
-      if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(async () => {
-        try {
-          const statusRes = await fetch(
-            `${API_URL}/api/pairing/${data.code}/status`,
-            { credentials: 'include' },
-          )
-          const statusData = await statusRes.json()
-          if (statusData.status === 'completed') {
-            setPairingStatus('completed')
-            if (pollRef.current) clearInterval(pollRef.current)
-            await fetchStatus()
-          } else if (statusData.status === 'expired') {
-            setPairingStatus('expired')
-            if (pollRef.current) clearInterval(pollRef.current)
-          }
-        } catch {}
-      }, 3000)
-    } catch (err: any) {
-      setPairingError(err.message || 'Network error')
-      setPairingStatus('error')
-    }
-  }
-
-  const handleCopyCode = () => {
-    if (!pairingCode) return
-    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(pairingCode)
-    }
   }
 
   if (loading) {
@@ -523,96 +459,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
                   {connecting ? 'Connecting...' : 'Connect'}
                 </Text>
               </Button>
-            </View>
-
-            <View className="flex-row items-center gap-3">
-              <View className="flex-1 h-px bg-border" />
-              <Text className="text-xs text-muted-foreground">or</Text>
-              <View className="flex-1 h-px bg-border" />
-            </View>
-
-            <View className="gap-3">
-              <Text className="text-sm font-medium text-foreground">
-                Generate Pairing Code
-              </Text>
-              <Text className="text-xs text-muted-foreground">
-                Generate a 6-digit code, then enter it on your phone's Instance Picker → Pair Device.
-              </Text>
-
-              {(pairingStatus === 'idle' || pairingStatus === 'error' || pairingStatus === 'expired') && (
-                <View className="gap-2">
-                  <Button
-                    variant="outline"
-                    onPress={handleGenerateCode}
-                    disabled={!workspaceId}
-                    size="sm"
-                    className="self-start"
-                  >
-                    <View className="flex-row items-center gap-2">
-                      <Link2 size={14} className="text-foreground" />
-                      <Text className="text-sm font-medium text-foreground">
-                        {pairingStatus === 'expired' ? 'Generate New Code' : 'Generate Code'}
-                      </Text>
-                    </View>
-                  </Button>
-                  {pairingError && (
-                    <Text className="text-xs text-destructive">{pairingError}</Text>
-                  )}
-                  {pairingStatus === 'expired' && (
-                    <Text className="text-xs text-muted-foreground">Previous code expired.</Text>
-                  )}
-                </View>
-              )}
-
-              {pairingStatus === 'generating' && (
-                <View className="flex-row items-center gap-2">
-                  <ActivityIndicator size="small" />
-                  <Text className="text-sm text-muted-foreground">Generating code...</Text>
-                </View>
-              )}
-
-              {pairingStatus === 'pending' && (
-                <View className="gap-3">
-                  <View className="bg-muted rounded-xl p-5 items-center gap-2">
-                    <Text className="text-xs text-muted-foreground uppercase tracking-wider">
-                      Your pairing code
-                    </Text>
-                    <Text
-                      className="text-3xl font-bold text-foreground"
-                      style={{ fontVariant: ['tabular-nums'], letterSpacing: 8 }}
-                    >
-                      {pairingCode}
-                    </Text>
-                    <Pressable
-                      onPress={handleCopyCode}
-                      className="flex-row items-center gap-1.5 mt-1 px-2 py-1 rounded active:bg-accent/50"
-                    >
-                      <Copy size={12} className="text-muted-foreground" />
-                      <Text className="text-xs text-muted-foreground">Copy code</Text>
-                    </Pressable>
-                  </View>
-                  <View className="flex-row items-center gap-2">
-                    <ActivityIndicator size="small" />
-                    <Text className="text-xs text-muted-foreground">
-                      Waiting for your phone to complete pairing...
-                    </Text>
-                  </View>
-                  {pairingExpiresAt && (
-                    <Text className="text-[11px] text-muted-foreground">
-                      Code expires at {pairingExpiresAt.toLocaleTimeString()}.
-                    </Text>
-                  )}
-                </View>
-              )}
-
-              {pairingStatus === 'completed' && (
-                <View className="flex-row items-center gap-2 p-3 bg-green-500/10 rounded-lg">
-                  <Check size={16} color="#16a34a" />
-                  <Text className="text-sm font-medium" style={{ color: '#16a34a' }}>
-                    Pairing complete! API key has been stored.
-                  </Text>
-                </View>
-              )}
             </View>
           </View>
         )}

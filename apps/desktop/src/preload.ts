@@ -69,9 +69,6 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   removeUpdateListener: () => {
     ipcRenderer.removeAllListeners('desktop-update-status')
   },
-  // Remote Control pairing
-  initiatePairing: (workspaceId: string) => ipcRenderer.invoke('pairing-initiate', workspaceId),
-  getPairingStatus: (code: string) => ipcRenderer.invoke('pairing-status', code),
   showRemoteActionNotification: (title: string, body: string) =>
     ipcRenderer.invoke('show-remote-action-notification', title, body),
 })

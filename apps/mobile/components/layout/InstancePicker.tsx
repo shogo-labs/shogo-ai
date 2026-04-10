@@ -10,7 +10,7 @@
  * Popover UI and auth-aware fetch adapter.
  */
 
-import { useMemo, useCallback } from 'react'
+import { useMemo } from 'react'
 import {
   View,
   Text,
@@ -24,10 +24,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Plus,
-  Link2,
 } from 'lucide-react-native'
-import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   Popover,
@@ -61,8 +58,7 @@ interface InstancePickerProps {
   onNavPress?: () => void
 }
 
-export function InstancePicker({ workspaceId, collapsed, onNavPress }: InstancePickerProps) {
-  const router = useRouter()
+export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) {
   const { instance: activeInstance, setInstance, clearInstance } = useActiveInstance()
 
   const fetchOptions: RequestInit = useMemo(
@@ -93,12 +89,6 @@ export function InstancePicker({ workspaceId, collapsed, onNavPress }: InstanceP
     select,
     disconnect,
   } = picker
-
-  const handlePairDevice = useCallback(() => {
-    close()
-    onNavPress?.()
-    router.push('/(app)/remote-control/pair' as any)
-  }, [close, onNavPress, router])
 
   const label = activeInstance ? activeInstance.name : 'This device'
   const StatusIcon = activeInstance ? Laptop : Monitor
@@ -131,7 +121,7 @@ export function InstancePicker({ workspaceId, collapsed, onNavPress }: InstanceP
       )}
 
       {!loading && instances.length === 0 && (
-        <View className="px-4 py-3 gap-3">
+        <View className="px-4 py-3 gap-2">
           <View className="gap-2">
             <View className="flex-row items-start gap-2">
               <Text className="text-xs font-bold text-primary w-4">1</Text>
@@ -139,26 +129,13 @@ export function InstancePicker({ workspaceId, collapsed, onNavPress }: InstanceP
             </View>
             <View className="flex-row items-start gap-2">
               <Text className="text-xs font-bold text-primary w-4">2</Text>
-              <Text className="text-xs text-muted-foreground flex-1">Enable cloud sync and generate a pairing code</Text>
+              <Text className="text-xs text-muted-foreground flex-1">Connect to Shogo Cloud using an API key</Text>
             </View>
             <View className="flex-row items-start gap-2">
               <Text className="text-xs font-bold text-primary w-4">3</Text>
-              <Text className="text-xs text-muted-foreground flex-1">Pair this device using the code below</Text>
+              <Text className="text-xs text-muted-foreground flex-1">Your instance will appear here once connected</Text>
             </View>
           </View>
-          <Pressable
-            onPress={handlePairDevice}
-            disabled={!workspaceId}
-            className={cn(
-              'flex-row items-center justify-center gap-2 py-2.5 rounded-lg',
-              workspaceId ? 'bg-primary active:opacity-80' : 'bg-muted',
-            )}
-          >
-            <Link2 size={14} color={workspaceId ? '#fff' : undefined} className={!workspaceId ? 'text-muted-foreground' : undefined} />
-            <Text className={cn('text-sm font-medium', workspaceId ? 'text-primary-foreground' : 'text-muted-foreground')}>
-              Pair Device
-            </Text>
-          </Pressable>
         </View>
       )}
 
@@ -202,19 +179,6 @@ export function InstancePicker({ workspaceId, collapsed, onNavPress }: InstanceP
         </View>
       )}
 
-      {!loading && instances.length > 0 && (
-        <>
-          <View className="h-px bg-border mx-3 my-1" />
-          <Pressable
-            onPress={handlePairDevice}
-            disabled={!workspaceId}
-            className="flex-row items-center gap-3 px-4 py-2.5 active:bg-muted"
-          >
-            <Plus size={16} className="text-muted-foreground" />
-            <Text className="text-sm text-muted-foreground">Pair New Device</Text>
-          </Pressable>
-        </>
-      )}
     </View>
   )
 

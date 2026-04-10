@@ -47,8 +47,6 @@ model User {
   signupAttribution   SignupAttribution?
   apiKeys             ApiKey[]
   creatorProfile      CreatorProfile?
-  createdPairingCodes PairingCode[] @relation("PairingCodeCreator")
-
   @@map("users")
 }
 
@@ -134,8 +132,6 @@ model Workspace {
   apiKeys              ApiKey[]
   instances            Instance[]
   meetings             Meeting[]
-  pairingCodes         PairingCode[]
-
   @@map("workspaces")
 }
 
@@ -1344,25 +1340,6 @@ model PushSubscription {
   @@unique([instanceId, pushToken])
   @@index([instanceId])
   @@map("push_subscriptions")
-}
-
-model PairingCode {
-  id              String    @id @default(cuid())
-  workspaceId     String
-  createdByUserId String?
-  code            String    @unique
-  expiresAt       DateTime
-  usedAt          DateTime?
-  apiKeyId        String?
-  publicKey       String?
-  createdAt       DateTime  @default(now())
-
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy User?     @relation("PairingCodeCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
-
-  @@index([workspaceId])
-  @@index([code])
-  @@map("pairing_codes")
 }
 
 // =============================================================================
