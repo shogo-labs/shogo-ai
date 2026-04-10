@@ -184,8 +184,9 @@ export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) 
 
   return (
     <Popover
-      placement="right"
+      placement="right bottom"
       size="sm"
+      shouldFlip
       isOpen={isOpen}
       onOpen={open}
       onClose={close}
@@ -235,8 +236,12 @@ export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) 
       }
     >
       <PopoverBackdrop />
-      <PopoverContent className="w-[280px] p-0">
-        <PopoverBody>
+      <PopoverContent className="w-[280px] p-0 max-h-[80vh]">
+        <PopoverBody
+          className="max-h-[80vh]"
+          showsVerticalScrollIndicator
+          keyboardShouldPersistTaps="handled"
+        >
           {popoverBody}
         </PopoverBody>
       </PopoverContent>
