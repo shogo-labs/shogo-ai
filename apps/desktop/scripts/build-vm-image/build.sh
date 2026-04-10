@@ -22,31 +22,67 @@ OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
 CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
 
-QEMU_ACCEL=""
-if [ -w /dev/kvm ]; then
-  QEMU_ACCEL="-accel kvm"
-  echo "KVM acceleration available"
-fi
+HOST_ARCH="$(uname -m)"
 
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
     CLOUD_IMAGE="noble-server-cloudimg-arm64.img"
     QEMU_SYSTEM="qemu-system-aarch64"
-    QEMU_MACHINE="-machine virt -cpu cortex-a72"
-    QEMU_ACCEL=""  # KVM only works for native arch
+    QEMU_MACHINE="-machine virt"
+    QEMU_EFI_ARGS=""
     ;;
   x86_64|amd64)
     ARCH="x86_64"
     CLOUD_IMAGE="noble-server-cloudimg-amd64.img"
     QEMU_SYSTEM="qemu-system-x86_64"
     QEMU_MACHINE="-machine q35 -cpu max"
+    QEMU_EFI_ARGS=""
     ;;
   *)
     echo "Unsupported architecture: $ARCH"
     exit 1
     ;;
 esac
+
+# Detect KVM availability (only works when host arch matches target arch)
+QEMU_ACCEL=""
+if [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
+  if [ -w /dev/kvm ]; then
+    QEMU_ACCEL="-accel kvm"
+    echo "KVM acceleration available (native arch)"
+  fi
+fi
+
+# aarch64 needs UEFI firmware and a CPU model
+if [ "$ARCH" = "aarch64" ]; then
+  if [ -n "$QEMU_ACCEL" ]; then
+    QEMU_MACHINE="-machine virt -cpu host"
+  else
+    QEMU_MACHINE="-machine virt -cpu cortex-a72"
+  fi
+  # Locate UEFI firmware (required for aarch64 disk boot)
+  EFI_CODE=""
+  for candidate in \
+    /usr/share/AAVMF/AAVMF_CODE.fd \
+    /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+    /usr/share/edk2/aarch64/QEMU_EFI.fd \
+    /opt/homebrew/share/qemu/edk2-aarch64-code.fd; do
+    if [ -f "$candidate" ]; then
+      EFI_CODE="$candidate"
+      break
+    fi
+  done
+  if [ -z "$EFI_CODE" ]; then
+    echo "ERROR: UEFI firmware for aarch64 not found."
+    echo "Install with: sudo apt-get install qemu-efi-aarch64  (Linux) or brew install qemu (macOS)"
+    exit 1
+  fi
+  echo "Using UEFI firmware: $EFI_CODE"
+  EFI_VARS="${WORK_DIR}/efi-vars.fd"
+  dd if=/dev/zero of="$EFI_VARS" bs=1M count=64 2>/dev/null
+  QEMU_EFI_ARGS="-drive if=pflash,format=raw,readonly=on,file=${EFI_CODE} -drive if=pflash,format=raw,file=${EFI_VARS}"
+fi
 
 mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
 
@@ -175,11 +211,12 @@ cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-d
 
 
 # Step 4: Boot and provision
-# aarch64 on x86_64 runs in TCG software emulation (~10x slower) — needs a long timeout
-if [ "$ARCH" = "aarch64" ] && [ -z "$QEMU_ACCEL" ]; then
-  DEFAULT_TIMEOUT=3600
+if [ -n "$QEMU_ACCEL" ]; then
+  DEFAULT_TIMEOUT=600
+elif [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
+  DEFAULT_TIMEOUT=1200  # Native arch TCG (no cross-arch penalty)
 else
-  DEFAULT_TIMEOUT=1200
+  DEFAULT_TIMEOUT=3600  # Cross-arch TCG (very slow)
 fi
 TIMEOUT=${QEMU_TIMEOUT:-$DEFAULT_TIMEOUT}
 echo "Booting VM for provisioning (timeout: ${TIMEOUT}s, accel: ${QEMU_ACCEL:-TCG})..."
@@ -187,10 +224,12 @@ timeout "$TIMEOUT" $QEMU_SYSTEM \
   $QEMU_ACCEL \
   $QEMU_MACHINE \
   -m 4096 -smp 4 \
+  $QEMU_EFI_ARGS \
   -drive file="${WORK_DIR}/disk.qcow2",if=virtio \
   -drive file="${WORK_DIR}/seed.iso",if=virtio,format=raw,readonly=on \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0 \
+  -serial mon:stdio \
   -nographic \
   -no-reboot
 QEMU_EXIT=$?
