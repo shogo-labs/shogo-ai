@@ -24,6 +24,8 @@ CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
 
 HOST_ARCH="$(uname -m)"
 
+mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
+
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
@@ -83,8 +85,6 @@ if [ "$ARCH" = "aarch64" ]; then
   dd if=/dev/zero of="$EFI_VARS" bs=1M count=64 2>/dev/null
   QEMU_EFI_ARGS="-drive if=pflash,format=raw,readonly=on,file=${EFI_CODE} -drive if=pflash,format=raw,file=${EFI_VARS}"
 fi
-
-mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
 
 echo "=== Building Shogo VM image for ${ARCH} ==="
 
