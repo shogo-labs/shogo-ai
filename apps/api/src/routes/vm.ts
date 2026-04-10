@@ -111,11 +111,15 @@ function isQemuAvailable(): boolean {
   } catch { return false }
 }
 
-function isGoHelperAvailable(): boolean {
-  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-  const binaryName = `shogo-vm-${arch}`
-  const desktopRoot = path.resolve(__dirname, '../../../desktop')
-  return fs.existsSync(path.join(desktopRoot, 'native', 'shogo-vm', binaryName))
+function isDarwinQemuAvailable(): boolean {
+  if (fs.existsSync('/opt/homebrew/bin/qemu-system-aarch64')) return true
+  if (fs.existsSync('/usr/local/bin/qemu-system-aarch64')) return true
+  try {
+    execSync('which qemu-system-aarch64', {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000,
+    })
+    return true
+  } catch { return false }
 }
 
 function checkVMAvailable(): boolean {
@@ -123,7 +127,7 @@ function checkVMAvailable(): boolean {
   const hasKernel = fs.existsSync(path.join(imageDir, 'vmlinuz'))
   const hasRootfs = fs.existsSync(path.join(imageDir, 'rootfs-provisioned.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.raw'))
   if (!hasKernel || !hasRootfs) return false
-  if (process.platform === 'darwin') return isGoHelperAvailable()
+  if (process.platform === 'darwin') return isDarwinQemuAvailable()
   if (process.platform === 'win32') return isQemuAvailable()
   return false
 }
@@ -469,8 +473,8 @@ export function vmRoutes(): Hono {
     return c.json({
       platform: process.platform,
       arch: process.arch,
-      hypervisor: isWindows ? 'QEMU with WHPX' : isMac ? 'Apple Virtualization.framework' : 'Unknown',
-      hypervisorFound: isWindows ? isQemuAvailable() : isMac ? isGoHelperAvailable() : false,
+      hypervisor: isWindows ? 'QEMU with WHPX' : isMac ? 'QEMU with HVF' : 'Unknown',
+      hypervisorFound: isWindows ? isQemuAvailable() : isMac ? isDarwinQemuAvailable() : false,
       qemuInstalled: isWindows ? isQemuAvailable() : false,
       whpxEnabled: isWindows ? checkWhpxEnabled() : false,
       executionMode: checkVMAvailable() ? 'VM Isolation' : 'Host Execution (fallback)',

@@ -117,6 +117,23 @@ jobs:
           rm -rf ${{ matrix.bun-target }} bun.zip
           ls -la
 
+      - name: Bundle QEMU for VM isolation
+        if: matrix.arch == 'arm64'
+        run: |
+          brew install qemu dylibbundler
+          mkdir -p apps/desktop/resources/vm
+          QEMU_PREFIX=$(brew --prefix qemu)
+          cp "$QEMU_PREFIX/bin/qemu-system-aarch64" apps/desktop/resources/vm/
+          cp "$QEMU_PREFIX/bin/qemu-img" apps/desktop/resources/vm/
+          cd apps/desktop/resources/vm
+          dylibbundler -of -b -x qemu-system-aarch64 -d lib/ -p @executable_path/lib/
+          dylibbundler -of -b -x qemu-img -d lib/ -p @executable_path/lib/
+          echo "=== Verifying no absolute Homebrew paths remain ==="
+          ! otool -L qemu-system-aarch64 | grep /opt/homebrew
+          ! otool -L qemu-img | grep /opt/homebrew
+          echo "=== Bundled QEMU binaries ==="
+          ls -lhR .
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
