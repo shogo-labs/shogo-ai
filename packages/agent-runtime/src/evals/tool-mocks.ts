@@ -1826,11 +1826,6 @@ GITHUB_LIST_PULL_REQUESTS: {
     paramKeys: ['path', 'content'],
     response: { ok: true, path: 'skills/github-pull-requests.md', bytes: 512 },
   },
-  list_files: {
-    type: 'static',
-    paramKeys: ['path'],
-    response: { files: [], total: 0 },
-  },
   read_file: {
     type: 'static',
     paramKeys: ['path'],
@@ -1888,11 +1883,6 @@ export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
     type: 'static',
     paramKeys: ['path', 'content'],
     response: { ok: true, path: 'skills/airbnb-search.md', bytes: 480 },
-  },
-  list_files: {
-    type: 'static',
-    paramKeys: ['path'],
-    response: { files: [], total: 0 },
   },
   read_file: {
     type: 'static',
@@ -2124,16 +2114,6 @@ GITHUB_LIST_ISSUES: {
 // ---------------------------------------------------------------------------
 
 export const REAL_DATA_UPLOADED_CSV_MOCKS: ToolMockMap = {
-  list_files: {
-    type: 'static',
-    description: 'List files in a directory.',
-    paramKeys: ['directory'],
-    response: {
-      files: [
-        { name: 'expenses.csv', path: 'files/expenses.csv', size: 1245, type: 'file' },
-      ],
-    },
-  },
   read_file: {
     type: 'pattern',
     description: 'Read the contents of a file.',

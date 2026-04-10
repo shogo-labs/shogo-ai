@@ -12,6 +12,8 @@ export interface CloudInitConfig {
   useBundleMount?: boolean
   /** 9p workspace mount tag (macOS/Linux QEMU with 9p support) */
   workspaceMountTag?: string
+  /** Guest path for the workspace 9p mount (default: /workspace) */
+  workspaceMountPath?: string
   /** 9p credential mounts */
   credentialMounts?: Array<{ tag: string; guestPath: string }>
   env?: Record<string, string>
@@ -236,15 +238,10 @@ function buildUserData(config: CloudInitConfig): string {
     '',
   ]
 
-  if (config.workspaceMountTag || config.credentialMounts?.length) {
+  if (config.credentialMounts?.length) {
     lines.push('mounts:')
-    if (config.workspaceMountTag) {
-      lines.push(`  - [${config.workspaceMountTag}, /workspace, 9p, "trans=virtio,msize=524288,version=9p2000.L", "0", "0"]`)
-    }
-    if (config.credentialMounts) {
-      for (const m of config.credentialMounts) {
-        lines.push(`  - [${m.tag}, ${m.guestPath}, 9p, "trans=virtio,version=9p2000.L,ro", "0", "0"]`)
-      }
+    for (const m of config.credentialMounts) {
+      lines.push(`  - [${m.tag}, ${m.guestPath}, 9p, "trans=virtio,version=9p2000.L,ro", "0", "0"]`)
     }
     lines.push('')
   }
@@ -264,11 +261,24 @@ function buildUserData(config: CloudInitConfig): string {
   {
     // Pre-provisioned image path: bun/templates/deps are already in the image.
     // Only server.js + shogo.js + wasm are injected per boot via seed ISO.
-    lines.push('  - mkdir -p /workspace /opt/shogo')
-    lines.push('  - chown shogo:shogo /workspace')
+    const wsMountTag = config.workspaceMountTag
+    const wsMountPath = wsMountTag ? (config.workspaceMountPath || '/workspace') : null
+    const extraDirs = wsMountPath && wsMountPath !== '/workspace' ? ` ${wsMountPath}` : ''
+    lines.push(`  - mkdir -p /workspace /opt/shogo${extraDirs}`)
+    if (wsMountTag) {
+      lines.push(`  - 'mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 ${wsMountTag} ${wsMountPath} || echo WARNING_9p_workspace_mount_failed'`)
+    } else {
+      lines.push('  - chown shogo:shogo /workspace')
+    }
     lines.push(`  - date -s "${new Date().toISOString()}"`)
-    lines.push('  - growpart /dev/vda 1 2>/dev/null || true')
-    lines.push('  - resize2fs /dev/vda1 2>/dev/null || true')
+    lines.push('  - |')
+    lines.push('    ROOT_DEV=$(findmnt -n -o SOURCE /)')
+    lines.push('    ROOT_DISK=$(lsblk -no PKNAME "$ROOT_DEV" 2>/dev/null | head -1)')
+    lines.push('    ROOT_PART=$(echo "$ROOT_DEV" | grep -oP "\\d+$")')
+    lines.push('    if [ -n "$ROOT_DISK" ] && [ -n "$ROOT_PART" ]; then')
+    lines.push('      growpart "/dev/$ROOT_DISK" "$ROOT_PART" 2>/dev/null || true')
+    lines.push('      resize2fs "$ROOT_DEV" 2>/dev/null || true')
+    lines.push('    fi')
     // Ensure bun is a regular file (not a symlink into /root/) and matches
     // the guest architecture. On x86_64 we use the baseline build (no AVX,
     // works with WHPX). On aarch64 we use the standard build.
@@ -338,7 +348,13 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('  - |')
     lines.push('    echo "=== Starting agent-runtime ==="')
     lines.push('    which bun && bun --version || echo "ERROR: bun not found in PATH"')
-    lines.push(`    su - shogo -c "export PATH=/usr/local/bin:\\$PATH; ${envStr} /usr/local/bin/bun run /opt/shogo/server.js 2>&1 | tee /workspace/.agent-runtime.log &"`)
+    if (wsMountTag) {
+      // With security_model=none, run as root inside the VM so 9p operations
+      // bypass guest-side permission checks. The VM itself provides isolation.
+      lines.push(`    export PATH=/usr/local/bin:$PATH; ${envStr} /usr/local/bin/bun run /opt/shogo/server.js 2>&1 | tee /workspace/.agent-runtime.log &`)
+    } else {
+      lines.push(`    su - shogo -c "export PATH=/usr/local/bin:\\$PATH; ${envStr} /usr/local/bin/bun run /opt/shogo/server.js 2>&1 | tee /workspace/.agent-runtime.log &"`)
+    }
     lines.push('    disown 2>/dev/null || true')
     lines.push('  - sync && echo 3 > /proc/sys/vm/drop_caches')
   }

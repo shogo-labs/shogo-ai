@@ -60,7 +60,14 @@ export class Win32VMManager implements VMManager {
     generateSeedISO(seedISOPath, {
       guestAgentPort: VM_DEFAULTS.guestAgentPort,
       useBundleMount: false,
-      env: config.env,
+      ...(config.mountWorkspace ? {
+        workspaceMountTag: 'workspace0',
+        workspaceMountPath: config.workspaceMountPath,
+      } : {}),
+      env: {
+        ...config.env,
+        ...(config.mountWorkspace ? { VM_WORKSPACE_MOUNTED: 'true' } : {}),
+      },
       qemuDir: path.dirname(this.qemuPath),
       extraFiles,
     })
@@ -191,7 +198,7 @@ export class Win32VMManager implements VMManager {
     const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
     const firmwareDir = this.findFirmwareDir()
 
-    return [
+    const args = [
       ...(firmwareDir ? ['-L', firmwareDir] : []),
       '-accel', 'whpx', '-accel', 'tcg',
       '-machine', 'q35', '-cpu', 'Broadwell-v4',
@@ -207,6 +214,15 @@ export class Win32VMManager implements VMManager {
       '-qmp', `tcp:127.0.0.1:${qmpPort},server=on,wait=off`,
       '-nographic',
     ]
+
+    if (config.mountWorkspace && config.workspaceDir) {
+      args.push(
+        '-fsdev', `local,id=ws0,path=${config.workspaceDir},security_model=none`,
+        '-device', 'virtio-9p-pci,fsdev=ws0,mount_tag=workspace0',
+      )
+    }
+
+    return args
   }
 
   /**

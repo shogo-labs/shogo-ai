@@ -4,7 +4,7 @@
  * SQLite-Based Session Persistence
  *
  * Persists session state in a single SQLite database file within the
- * agent workspace. The file lives at {workspaceDir}/sessions.db and is
+ * agent workspace. The file lives at {workspaceDir}/.shogo/sessions.db and is
  * automatically included in the S3 sync, so sessions survive pod restarts.
  *
  * Advantages over file-per-session:
@@ -16,6 +16,7 @@
 
 import { Database } from 'bun:sqlite'
 import { join } from 'path'
+import { existsSync, mkdirSync, renameSync } from 'fs'
 import type { SessionPersistence, SerializedSession } from './session-manager'
 import type { Message } from '@mariozechner/pi-ai'
 
@@ -106,7 +107,22 @@ export class SqliteSessionPersistence implements SessionPersistence {
   private db!: Database
 
   constructor(workspaceDir: string) {
-    const dbPath = join(workspaceDir, 'sessions.db')
+    const shogoDir = join(workspaceDir, '.shogo')
+    mkdirSync(shogoDir, { recursive: true })
+    const dbPath = join(shogoDir, 'sessions.db')
+
+    // Migrate from legacy location at workspace root
+    const legacyPath = join(workspaceDir, 'sessions.db')
+    if (!existsSync(dbPath) && existsSync(legacyPath)) {
+      try {
+        renameSync(legacyPath, dbPath)
+        for (const suffix of ['-wal', '-shm']) {
+          const old = legacyPath + suffix
+          if (existsSync(old)) renameSync(old, dbPath + suffix)
+        }
+      } catch { /* best-effort migration */ }
+    }
+
     // Retry opening the database — a previous process may still hold the lock
     // briefly after being killed (WAL checkpoint, OS flush, etc.)
     const MAX_RETRIES = 8

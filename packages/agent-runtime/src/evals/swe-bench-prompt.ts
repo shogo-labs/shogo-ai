@@ -54,7 +54,7 @@ ${iface}`
 Follow these steps in order. Complete each step before moving to the next.
 
 ### 1. Explore
-Analyze the codebase to understand the relevant code. Use \`grep\`, \`search\`, and \`read_file\` to find the files and functions related to the issue. Read the failing test or traceback to understand expected vs. actual behavior.
+Analyze the codebase to understand the relevant code. Use \`search\`, \`exec\`, and \`read_file\` to find the files and functions related to the issue. Read the failing test or traceback to understand expected vs. actual behavior.
 
 ### 2. Reproduce
 Create a minimal reproduction script that demonstrates the bug. Run it and confirm it fails in the way the issue describes. If the issue includes a code snippet, use that as your starting point.

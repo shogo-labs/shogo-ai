@@ -155,6 +155,7 @@ export interface ProjectTopBarProps {
   activeChatSessionName?: string | null
   // Slot for canvas theme picker
   canvasThemePicker?: React.ReactNode
+  canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
 }
 
@@ -252,6 +253,7 @@ export function ProjectTopBar({
   activeChatSessionId,
   activeChatSessionName,
   canvasThemePicker,
+  canvasThemeSupported,
   onCanvasRefresh,
 }: ProjectTopBarProps) {
   const router = useRouter()
@@ -407,6 +409,7 @@ export function ProjectTopBar({
                   onToggleStar={onToggleStar}
                   onMoveToFolder={onMoveToFolder}
                   folders={folders}
+                  canvasThemeSupported={canvasThemeSupported}
                 />
               </PopoverBody>
             </PopoverContent>
@@ -563,6 +566,7 @@ export function ProjectTopBar({
                   onToggleStar={onToggleStar}
                   onMoveToFolder={onMoveToFolder}
                   folders={folders}
+                  canvasThemeSupported={canvasThemeSupported}
                 />
               </PopoverBody>
             </PopoverContent>
@@ -869,6 +873,7 @@ function ProjectDropdownContent({
   onToggleStar,
   onMoveToFolder,
   folders,
+  canvasThemeSupported,
 }: {
   projects: ProjectSwitcherItem[]
   currentProjectId: string
@@ -888,6 +893,7 @@ function ProjectDropdownContent({
   onToggleStar?: () => void
   onMoveToFolder?: (folderId: string | null) => void
   folders: { id: string; name: string }[]
+  canvasThemeSupported?: boolean | null
 }) {
   const [view, setView] = useState<DropdownView>('menu')
   const router = useRouter()
@@ -924,6 +930,7 @@ function ProjectDropdownContent({
       onToggleStar={onToggleStar}
       onMoveToFolder={onMoveToFolder}
       folders={folders}
+      canvasThemeSupported={canvasThemeSupported}
     />
   )
 }
@@ -951,6 +958,7 @@ function ProjectMenuView({
   onToggleStar,
   onMoveToFolder,
   folders,
+  canvasThemeSupported,
 }: {
   projectId: string
   projectName: string
@@ -970,6 +978,7 @@ function ProjectMenuView({
   onToggleStar?: () => void
   onMoveToFolder?: (folderId: string | null) => void
   folders: { id: string; name: string }[]
+  canvasThemeSupported?: boolean | null
 }) {
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
@@ -1187,11 +1196,12 @@ function ProjectMenuView({
           )
         })}
 
-        {/* Divider */}
-        <View className="h-px bg-border mx-3 my-1" />
-
-        {/* Appearance */}
-        <AppearanceMenu />
+        {canvasThemeSupported !== false && (
+          <>
+            <View className="h-px bg-border mx-3 my-1" />
+            <AppearanceMenu />
+          </>
+        )}
       </ScrollView>
 
       {/* Project Details Modal */}

@@ -245,6 +245,7 @@ export default observer(function ProjectLayout() {
   const canvasEnabled = projectSettings.canvasEnabled !== false
   const canvasMode = (projectSettings.canvasMode as 'json' | 'code') || 'json'
   const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
+  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(canvasMode === 'json' ? true : null)
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
   const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
   const activeMode = rawMode === 'app' ? 'none' : rawMode
@@ -271,6 +272,19 @@ export default observer(function ProjectLayout() {
   const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
     await updateProjectSettings(themeSettings)
   }, [updateProjectSettings])
+
+  const handleCanvasCapabilities = useCallback((caps: { supportsTheme: boolean }) => {
+    setCanvasThemeSupported(caps.supportsTheme)
+  }, [])
+
+  // Reset theme support detection when the iframe reloads (code-mode only).
+  const prevRefreshKeyRef = useRef(iframeRefreshKey)
+  useEffect(() => {
+    if (canvasMode === 'code' && iframeRefreshKey !== prevRefreshKeyRef.current) {
+      prevRefreshKeyRef.current = iframeRefreshKey
+      setCanvasThemeSupported(null)
+    }
+  }, [iframeRefreshKey, canvasMode])
 
   const allProjects = useMemo(() => {
     try {
@@ -1179,6 +1193,7 @@ export default observer(function ProjectLayout() {
       fullBleed={!isWide}
       canvasMode={canvasMode}
       iframeRefreshKey={iframeRefreshKey}
+      onCanvasCapabilities={handleCanvasCapabilities}
     />
   ) : null
 
@@ -1228,6 +1243,7 @@ export default observer(function ProjectLayout() {
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
     activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    canvasThemeSupported,
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
   }
@@ -1583,11 +1599,13 @@ function ChatPanelResizeHandle({
 
 function TopBarBridge({
   canvasActive,
+  canvasThemeSupported,
   effectiveSurfaceId,
   surfaceEntries,
   ...props
 }: React.ComponentProps<typeof ProjectTopBar> & {
   canvasActive: boolean
+  canvasThemeSupported: boolean | null
   effectiveSurfaceId: string | null
 }) {
   const editMode = useEditModeOptional()
@@ -1626,7 +1644,8 @@ function TopBarBridge({
             : undefined
         }
         onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
-        canvasThemePicker={canvasActive ? <CanvasThemePicker /> : undefined}
+        canvasThemePicker={canvasActive && canvasThemeSupported ? <CanvasThemePicker /> : undefined}
+        canvasThemeSupported={canvasThemeSupported}
       />
       {showAddDialog && effectiveSurfaceId && (
         <AddComponentDialog
@@ -1688,6 +1707,7 @@ function CanvasPanel({
   fullBleed,
   canvasMode = 'json',
   iframeRefreshKey = 0,
+  onCanvasCapabilities,
 }: {
   surface: any | null
   surfaces: Map<string, any>
@@ -1703,6 +1723,7 @@ function CanvasPanel({
   fullBleed?: boolean
   canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
+  onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -1766,7 +1787,7 @@ function CanvasPanel({
   if (canvasMode === 'code') {
     return (
       <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} />
+        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} />
       </View>
     )
   }

@@ -280,10 +280,11 @@ export class VMWarmPoolController {
   }
 
   private async bootVM(): Promise<VMPodInfo | null> {
+    let vmId: string | undefined
+    let mgr: ReturnType<typeof this.managerFactory> | undefined
     try {
-      const mgr = this.managerFactory()
+      mgr = this.managerFactory()
 
-      // Each VM needs a unique overlay path to avoid sharing disk images
       const config = { ...this.vmConfig }
       if (config.overlayPath) {
         const ext = config.overlayPath.replace(/.*(\.\w+)$/, '$1')
@@ -292,6 +293,7 @@ export class VMWarmPoolController {
       }
 
       const handle = await mgr.startVM(config)
+      vmId = handle.id
       this.vmHandles.set(handle.id, handle)
       this.vmManagers.set(handle.id, mgr)
       if (config.overlayPath) this.vmOverlayPaths.set(handle.id, config.overlayPath)
@@ -307,6 +309,13 @@ export class VMWarmPoolController {
       }
     } catch (err: any) {
       console.error('[VMWarmPool] Boot failed:', err.message)
+      if (vmId) {
+        try { await mgr?.stopVM(vmId) } catch {}
+        this.vmHandles.delete(vmId)
+        this.vmManagers.delete(vmId)
+        this.cleanupOverlay(vmId)
+        console.log(`[VMWarmPool] Cleaned up failed VM ${vmId}`)
+      }
       return null
     }
   }
