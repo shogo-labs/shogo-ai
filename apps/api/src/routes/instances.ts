@@ -75,7 +75,9 @@ export async function isViewerActive(workspaceId: string): Promise<boolean> {
 
 async function markViewerActive(workspaceId: string) {
   activeViewers.set(workspaceId, Date.now())
-  await markViewerActiveRedis(workspaceId).catch(() => {})
+  await markViewerActiveRedis(workspaceId).catch((err) => {
+    console.warn('[RemoteControl] markViewerActiveRedis failed:', (err as Error).message)
+  })
 }
 
 // ─── Active controllers (Redis-primary, in-memory fallback) ─────────────────
@@ -95,7 +97,9 @@ async function markControllerActive(instanceId: string, userId: string, sessionI
   }
   const key = sessionId || userId
   activeControllers.get(instanceId)!.set(key, { userId, sessionId, lastSeenAt: Date.now() })
-  await markControllerActiveRedis(instanceId, userId, sessionId).catch(() => {})
+  await markControllerActiveRedis(instanceId, userId, sessionId).catch((err) => {
+    console.warn('[RemoteControl] markControllerActiveRedis failed:', (err as Error).message)
+  })
 }
 
 async function getActiveControllers(instanceId: string): Promise<ActiveController[]> {
@@ -201,7 +205,9 @@ export function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
   }
   tunnels.set(instanceId, conn)
 
-  registerTunnelOwnership(instanceId).catch(() => {})
+  registerTunnelOwnership(instanceId).catch((err) => {
+    console.warn('[RemoteControl] registerTunnelOwnership failed:', (err as Error).message)
+  })
 
   prisma.instance.update({
     where: { id: instanceId },
@@ -279,7 +285,9 @@ export function handleInstanceWsClose(ws: WebSocket & { data?: any }) {
     tunnels.delete(instanceId)
   }
 
-  unregisterTunnelOwnership(instanceId).catch(() => {})
+  unregisterTunnelOwnership(instanceId).catch((err) => {
+    console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
+  })
 
   prisma.instance.update({
     where: { id: instanceId },
@@ -1108,10 +1116,14 @@ export function startTunnelHeartbeat() {
     for (const [instanceId, conn] of tunnels) {
       try {
         conn.ws.send(JSON.stringify({ type: 'ping' }))
-        refreshTunnelOwnership(instanceId).catch(() => {})
+        refreshTunnelOwnership(instanceId).catch((err) => {
+          console.warn('[RemoteControl] refreshTunnelOwnership failed:', (err as Error).message)
+        })
       } catch {
         tunnels.delete(instanceId)
-        unregisterTunnelOwnership(instanceId).catch(() => {})
+        unregisterTunnelOwnership(instanceId).catch((err) => {
+          console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
+        })
       }
     }
   }, HEARTBEAT_INTERVAL_MS)

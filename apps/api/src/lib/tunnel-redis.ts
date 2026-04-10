@@ -91,6 +91,20 @@ function getPublisher(): Redis | null {
   return pub
 }
 
+// ─── Health Check ────────────────────────────────────────────────────────────
+
+export async function checkRedisHealth(): Promise<{ healthy: boolean; latencyMs?: number; error?: string }> {
+  const r = getPublisher()
+  if (!r) return { healthy: false, error: 'Redis not initialized' }
+  const start = Date.now()
+  try {
+    const pong = await r.ping()
+    return { healthy: pong === 'PONG', latencyMs: Date.now() - start }
+  } catch (err) {
+    return { healthy: false, latencyMs: Date.now() - start, error: (err as Error).message }
+  }
+}
+
 // ─── Tunnel Ownership ───────────────────────────────────────────────────────
 
 export async function registerTunnelOwnership(instanceId: string): Promise<void> {
@@ -117,7 +131,12 @@ export async function refreshTunnelOwnership(instanceId: string): Promise<void> 
 export async function getTunnelOwner(instanceId: string): Promise<string | null> {
   const r = getPublisher()
   if (!r) return null
-  return r.get(`tunnel:${instanceId}:pod`)
+  try {
+    return await r.get(`tunnel:${instanceId}:pod`)
+  } catch (err) {
+    console.warn(`[TunnelRedis] getTunnelOwner failed for ${instanceId}:`, (err as Error).message)
+    return null
+  }
 }
 
 // ─── Cross-Pod Request Relay ────────────────────────────────────────────────
@@ -360,8 +379,13 @@ export async function markViewerActiveRedis(workspaceId: string): Promise<void> 
 export async function isViewerActiveRedis(workspaceId: string): Promise<boolean> {
   const r = getPublisher()
   if (!r) return false
-  const ts = await r.get(`viewer:${workspaceId}`)
-  return ts !== null
+  try {
+    const ts = await r.get(`viewer:${workspaceId}`)
+    return ts !== null
+  } catch (err) {
+    console.warn('[TunnelRedis] isViewerActiveRedis failed:', (err as Error).message)
+    return false
+  }
 }
 
 // ─── Controller Tracking (Redis-backed) ─────────────────────────────────────
@@ -390,23 +414,33 @@ export async function getActiveControllersRedis(
 ): Promise<ActiveControllerData[]> {
   const r = getPublisher()
   if (!r) return []
-  const all = await r.hgetall(`ctrl:${instanceId}`)
-  const now = Date.now()
-  const result: ActiveControllerData[] = []
-  for (const val of Object.values(all)) {
-    try {
-      const ctrl: ActiveControllerData = JSON.parse(val)
-      if (now - ctrl.lastSeenAt < CONTROLLER_TTL * 1000) {
-        result.push(ctrl)
-      }
-    } catch {}
+  try {
+    const all = await r.hgetall(`ctrl:${instanceId}`)
+    const now = Date.now()
+    const result: ActiveControllerData[] = []
+    for (const val of Object.values(all)) {
+      try {
+        const ctrl: ActiveControllerData = JSON.parse(val)
+        if (now - ctrl.lastSeenAt < CONTROLLER_TTL * 1000) {
+          result.push(ctrl)
+        }
+      } catch {}
+    }
+    return result
+  } catch (err) {
+    console.warn('[TunnelRedis] getActiveControllersRedis failed:', (err as Error).message)
+    return []
   }
-  return result
 }
 
 // ─── Tunnel existence check (cross-pod) ─────────────────────────────────────
 
 export async function isTunnelConnectedAnywhere(instanceId: string): Promise<boolean> {
-  const owner = await getTunnelOwner(instanceId)
-  return owner !== null
+  try {
+    const owner = await getTunnelOwner(instanceId)
+    return owner !== null
+  } catch (err) {
+    console.warn('[TunnelRedis] isTunnelConnectedAnywhere failed:', (err as Error).message)
+    return false
+  }
 }

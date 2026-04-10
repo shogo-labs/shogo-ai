@@ -54,6 +54,7 @@ import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
+import { checkRedisHealth } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { pairingRoutes } from './routes/pairing'
 import internalRoutes from './routes/internal'
@@ -500,9 +501,21 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
-// Health check
-app.get('/api/health', (c) => c.json({ ok: true }))
-app.get('/health', (c) => c.json({ ok: true }))
+// Health check — includes Redis status for multi-pod deployments
+app.get('/api/health', async (c) => {
+  const redis = await checkRedisHealth()
+  if (!redis.healthy) {
+    console.warn('[Health] Redis unhealthy:', redis.error)
+  }
+  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
+})
+app.get('/health', async (c) => {
+  const redis = await checkRedisHealth()
+  if (!redis.healthy) {
+    console.warn('[Health] Redis unhealthy:', redis.error)
+  }
+  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
+})
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
