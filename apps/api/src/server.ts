@@ -5695,6 +5695,7 @@ if (isVMIsolation() && !isKubernetes()) {
       // Read persisted config.json (admin UI settings) as fallback for env vars
       let configMemoryMB = 1536
       let configCpus = 0
+      let configMountWorkspace = false
       try {
         const fs = await import('fs')
         const configDir = process.platform === 'win32'
@@ -5706,11 +5707,14 @@ if (isVMIsolation() && !isKubernetes()) {
         const parsed = JSON.parse(raw)
         if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
         if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
+        if (parsed?.vmIsolation?.mountWorkspace === true) configMountWorkspace = true
       } catch {}
 
       const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
       const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
       const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
+
+      const mountWorkspace = process.env.VM_MOUNT_WORKSPACE === 'true' || configMountWorkspace
 
       await initVMWarmPool(managerFactory, {
         workspaceDir: workspacesDir,
@@ -5725,6 +5729,8 @@ if (isVMIsolation() && !isKubernetes()) {
         overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),
         vmImageDir,
         bundleDir: bundleDir || undefined,
+        mountWorkspace,
+        ...(mountWorkspace ? { workspaceMountPath: '/host-workspaces' } : {}),
       })
       console.log('[VMWarmPool] VM warm pool controller started')
     } catch (err: any) {

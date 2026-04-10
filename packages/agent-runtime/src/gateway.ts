@@ -1357,7 +1357,7 @@ export class AgentGateway {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search', 'impact_radius',
+        'read_file', 'search', 'impact_radius',
         'web', 'browser',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
@@ -2411,7 +2411,7 @@ export class AgentGateway {
   /**
    * Build a context section listing files the user has uploaded to files/.
    * Included in the system prompt so the agent knows what data is available
-   * and can proactively use list_files/search/read_file to access it.
+   * and can proactively use search/read_file to access it.
    */
   private buildUploadedFilesContext(): string | null {
     const filesDir = join(this.workspaceDir, 'files')
@@ -2425,7 +2425,7 @@ export class AgentGateway {
         '## Workspace Uploaded Files',
         '',
         'The user has uploaded the following files to the workspace `files/` directory.',
-        'Use `list_files` to browse, `search` to search content, or `read_file` with path `files/<name>` to read them.',
+        'Use `search` to search content, or `read_file` with path `files/<name>` to read them.',
         '',
       ]
 

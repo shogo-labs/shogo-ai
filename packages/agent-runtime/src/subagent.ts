@@ -25,8 +25,8 @@ import type { ToolContext } from './gateway-tools'
 // ---------------------------------------------------------------------------
 
 const CORE_GATEWAY_TOOLS = new Set([
-  'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
+  'exec', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
+  'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
@@ -107,12 +107,11 @@ export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search an
 Read-only codebase exploration. Find files, search for patterns, read code, and return specific findings with file references.
 
 ## Available Tools
-read_file, glob, grep, ls, web — read-only exploration tools.
+read_file, exec, search, web — exploration tools.
 
 ## Guidelines
-- Use glob to find files by pattern first.
-- Use grep to search for specific patterns, symbols, or strings.
-- Use ls to understand directory structure.
+- Use exec to run shell commands (e.g. find, rg, ls) for file discovery and searching.
+- Use search for semantic code search.
 - Read files to understand implementation details.
 - Use web to look up documentation or external references when needed.
 - Be thorough but concise in your findings.
@@ -135,7 +134,7 @@ export const CODE_REVIEWER_SYSTEM_PROMPT = `You are a code review subagent. Anal
 2. Use \`review_context()\` for a full review bundle: structural subgraph, source hunks, affected flows, and auto-generated guidance.
 3. Use \`impact_radius({ files: [...] })\` to check blast radius for specific files if needed.
 4. Read specific files with \`read_file\` for deeper inspection of risky areas.
-5. Use \`grep\` or \`search\` to trace references or find related code.
+5. Use \`search\` or \`exec\` to trace references or find related code.
 
 ## Review Priorities
 - Untested functions with high risk scores — recommend adding tests.
@@ -163,7 +162,7 @@ export function getBuiltinSubagentConfig(
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
         systemPrompt: EXPLORE_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'glob', 'grep', 'ls', 'web'],
+        toolNames: ['read_file', 'exec', 'search', 'web'],
         disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
         maxTurns: 5,
@@ -180,7 +179,7 @@ export function getBuiltinSubagentConfig(
         name: 'code-reviewer',
         description: 'Code review agent — analyzes changes, risk scores, test gaps, and execution flows',
         systemPrompt: CODE_REVIEWER_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'glob', 'grep', 'ls', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
+        toolNames: ['read_file', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
         disallowedTools: ['task', 'skill'],
         maxTurns: 10,
       }

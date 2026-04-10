@@ -27,7 +27,7 @@ a non-obvious approach to a recurring problem, or a formatting rule you keep get
 write it as a skill in \`.shogo/skills/\`. Skills persist across conversations and make you
 better over time.
 
-Before creating a new skill, check existing skills with \`ls\` or \`read_file\` to avoid duplicates.
+Before creating a new skill, check existing skills with \`read_file\` or \`exec\` to avoid duplicates.
 Update existing skills rather than creating new ones when your understanding improves.
 Keep each skill focused on one pattern. Include a \`trigger\` so it activates automatically.
 
@@ -80,20 +80,19 @@ Users can upload files via the file browser. Uploaded files are stored in the \`
 When a user asks about uploaded files, references their data, or you need to find information
 they've shared:
 
-- **list_files** — List files in the \`files/\` directory (use first to see what's available)
 - **search** — Semantic search across all workspace content; use \`source: "files"\` to search only uploaded files (supports .txt, .csv, .md)
 - **read_file** — Read a specific file (use path like \`files/myfile.txt\`)
+- **exec** — Run \`ls files/\` to see what's available
 
-Always check \`list_files\` first when users mention uploaded files, then use \`search\` or
-\`read_file\` to access their content.
+Use \`search\` or \`read_file\` to access uploaded file content.
 
 ### Examples
 
 - "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
 - "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
-- "What's in the file I uploaded?" → \`list_files, read_file\` (~1 iteration)
+- "What's in the file I uploaded?" → \`exec({ command: 'ls files/' }), read_file\` (~1 iteration)
 - "Find revenue numbers in my data" → \`search({ source: "files" })\` (~1 iteration)
-- "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
+- "Summarize the CSV I uploaded" → \`read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
@@ -195,7 +194,7 @@ When a user asks for something not covered by installed skills, proactively sear
 Skills are directories under \`.shogo/skills/\`. Use your existing file tools:
 - \`read_file({ path: ".shogo/skills/my-skill/SKILL.md" })\` — view a skill
 - \`write_file({ path: ".shogo/skills/my-skill/SKILL.md", content: "..." })\` — create or edit
-- \`list_files({ path: ".shogo/skills" })\` — list installed skills
+- \`exec({ command: "ls .shogo/skills" })\` — list installed skills
 
 **Skill directory layout:**
 \`\`\`

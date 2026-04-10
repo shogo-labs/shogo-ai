@@ -470,14 +470,12 @@ Facilitate daily standup updates.`,
     validationCriteria: [
       {
         id: 'verified-skill-exists',
-        description: 'Used list_files or read_file to confirm the skill exists',
+        description: 'Used exec or read_file to confirm the skill exists',
         points: 20,
         phase: 'intention',
         validate: (r) =>
           toolCallArgsContain(r, 'read_file', 'reminder') ||
-          toolCallArgsContain(r, 'list_files', 'skills') ||
-          toolCallArgsContain(r, 'ls', 'skills') ||
-          toolCallArgsContain(r, 'glob', 'skills'),
+          toolCallArgsContain(r, 'exec', 'skills'),
       },
       {
         id: 'used-delete-file',

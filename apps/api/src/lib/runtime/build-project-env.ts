@@ -38,6 +38,12 @@ export async function buildProjectEnv(
       if (project.name) env.AGENT_NAME = project.name
 
       const settings = project.settings as Record<string, unknown> | null
+
+      // Per-project workspace mount override (default: true = mounted)
+      if (settings?.mountWorkspace === false) {
+        env.MOUNT_WORKSPACE = 'false'
+      }
+
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings

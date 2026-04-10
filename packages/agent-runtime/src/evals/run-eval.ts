@@ -18,7 +18,7 @@
  *   bun run src/evals/run-eval.ts --track canvas --model haiku --build
  */
 
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, statSync } from 'fs'
 import { resolve, join, dirname } from 'path'
 import { tmpdir } from 'os'
 
@@ -111,6 +111,7 @@ const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
 const vmFlag = args.includes('--vm')
+const mountFlag = args.includes('--mount')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
 const runIdArg = getArg(args, 'run-id')
@@ -574,9 +575,50 @@ async function runEvalOnWorker(
         writeFileSync(absPath, content, 'utf-8')
       }
     }
+  } else if (vmFlag && mountFlag) {
+    // 9p mount: the VM manages its own workspace defaults and .shogo is
+    // symlinked to a VM-internal path. Only clean non-essential files and
+    // write the eval's workspace files from the host; they're visible
+    // inside the VM immediately via 9p.
+    if (verboseFlag) console.log(`      [setup] Cleaning workspace (9p mount)...`)
+    if (existsSync(worker.dir)) {
+      const keepEntries = new Set([
+        'node_modules', '.shogo', '.virtfs_metadata',
+        'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json',
+        'AGENTS.md', 'config.json', 'memory',
+      ])
+      try {
+        for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
+          if (keepEntries.has(entry.name)) continue
+          const fullPath = join(worker.dir, entry.name)
+          try { rmSync(fullPath, { recursive: true, force: true }) } catch {}
+        }
+      } catch {}
+    }
+
+    if (verboseFlag) console.log(`      [setup] Writing workspace files via 9p...`)
+    if (ev.workspaceFiles) {
+      for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
+        const absPath = join(worker.dir, relPath)
+        mkdirSync(dirname(absPath), { recursive: true })
+        writeFileSync(absPath, content, 'utf-8')
+      }
+      if (verboseFlag) {
+        console.log(`      [setup] Workspace files visible via 9p mount (${Object.keys(ev.workspaceFiles).length} file(s))`)
+      }
+    }
   } else {
     // Full setup — clean workspace, seed defaults, write workspaceFiles
     if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
+
+    // Remove stale .shogo symlinks left by previous 9p mount runs
+    const shogoPath = join(worker.dir, '.shogo')
+    try {
+      const st = lstatSync(shogoPath)
+      if (st.isSymbolicLink()) {
+        try { statSync(shogoPath) } catch { rmSync(shogoPath, { force: true }) }
+      }
+    } catch {}
 
     if (existsSync(worker.dir)) {
       const keepEntries = new Set([
@@ -611,6 +653,19 @@ async function runEvalOnWorker(
         const absPath = join(worker.dir, relPath)
         mkdirSync(dirname(absPath), { recursive: true })
         writeFileSync(absPath, content, 'utf-8')
+      }
+
+      if (vmFlag) {
+        const seedRes = await fetch(`http://localhost:${worker.port}/agent/workspace/seed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: ev.workspaceFiles }),
+        })
+        if (!seedRes.ok) {
+          console.warn(`[setup] Failed to seed workspace files into VM: ${seedRes.status}`)
+        } else if (verboseFlag) {
+          console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into VM workspace`)
+        }
       }
     }
   }
@@ -853,7 +908,7 @@ async function main() {
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Workers: ${workersArg}`)
-  console.log(`  Mode:    ${vmFlag ? 'VM instance' : localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Mode:    ${vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -892,6 +947,7 @@ async function main() {
       baseHostPort: BASE_PORT,
       model: modelArg,
       verbose: verboseFlag,
+      mount: mountFlag,
     }
   } else if (localFlag) {
     localWorkerConfig = {
