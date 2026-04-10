@@ -248,6 +248,7 @@ export class AgentGateway {
     toolCallCount: number
     contextWindowTokens: number
     estimatedContextTokens: number
+    model: string
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -1769,6 +1770,7 @@ export class AgentGateway {
         toolCallCount: result.toolCalls.length,
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
+        model: modelId,
       }
 
       // UI notifications below may throw if the client disconnected (stop).

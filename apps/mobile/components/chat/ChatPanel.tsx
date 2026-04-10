@@ -1330,6 +1330,7 @@ export const ChatPanel = observer(function ChatPanel({
               .catch((err: any) => console.warn("[ChatPanel] Failed to persist context usage:", err))
           }
         }
+
       }
     },
     onFinish: async ({ message }) => {

@@ -1561,8 +1561,8 @@ function ChatPanelResizeHandle({
     >
       <View
         className={cn(
-          'h-full transition-colors duration-150',
-          active ? 'bg-primary/40' : 'bg-border/50',
+          'h-full transition-all duration-150',
+          active ? 'bg-primary/40' : 'bg-transparent',
         )}
         style={{ width: active ? 3 : 1 }}
       />

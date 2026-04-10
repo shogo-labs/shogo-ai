@@ -34,7 +34,7 @@ import {
   configureAIProxy,
   StreamBufferStore,
 } from '@shogo/shared-runtime'
-import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
@@ -733,9 +733,16 @@ app.post('/agent/chat', async (c) => {
 
         const usage = agentGateway!.consumeLastTurnUsage()
         if (usage) {
+          const dollarCost = calculateDollarCost(
+            usage.model,
+            usage.inputTokens,
+            usage.outputTokens,
+            usage.cacheReadTokens,
+            usage.cacheWriteTokens,
+          )
           writer.write({
             type: 'data-usage',
-            data: usage,
+            data: { ...usage, dollarCost },
           } as any)
         }
 

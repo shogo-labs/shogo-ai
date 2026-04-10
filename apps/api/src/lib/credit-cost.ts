@@ -23,26 +23,21 @@ import {
   getModelTier as catalogGetModelTier,
   getModelBillingModel,
   resolveAgentModeDefault,
+  MODEL_DOLLAR_COSTS,
+  calculateDollarCost,
   type ModelTier,
   type AgentMode,
   type BillingModel,
 } from '@shogo/model-catalog'
 
 export type { ModelTier, AgentMode }
+export { MODEL_DOLLAR_COSTS, calculateDollarCost }
 
 export const CREDIT_DOLLAR_VALUE = 0.10
 export const MIN_CREDIT_COST = 0.2
 export const MIN_CREDIT_COST_ECONOMY = 0.1
 
-export const MODEL_DOLLAR_COSTS = {
-  'gpt-5.4-nano': { inputPerMillion: 0.20, cacheWritePerMillion: 0.25, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
-  haiku:          { inputPerMillion: 0.80, cacheWritePerMillion: 1.00, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
-  'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
-  sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
-  opus:           { inputPerMillion: 15.00, cacheWritePerMillion: 18.75, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
-} as const
-
-export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
+export type ModelName = BillingModel
 
 const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
   'gpt-5.4-nano': 'economy',

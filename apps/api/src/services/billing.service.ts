@@ -213,7 +213,7 @@ export async function consumeCredits(
           creditSource: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: actionMetadata ? JSON.stringify(actionMetadata) : null,
+          actionMetadata: actionMetadata ?? null,
         },
       })
     } catch (e) {
@@ -325,7 +325,7 @@ async function _consumeCreditsTransaction(
         projectId,
         memberId,
         actionType,
-        actionMetadata: actionMetadata ? JSON.stringify(actionMetadata) : null,
+        actionMetadata: actionMetadata ?? null,
         creditCost,
         creditSource,
         balanceBefore,

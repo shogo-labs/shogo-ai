@@ -10,7 +10,7 @@
  * ToolContext, since Pi's execute() signature doesn't accept external context.
  */
 
-import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname } from 'path'
 import { execSync } from 'child_process'
@@ -2960,6 +2960,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+          const subModel = ctx.effectiveModel || ctx.config.model.name
           w.write({
             type: 'data-usage',
             data: {
@@ -2970,6 +2971,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
               iterations: result.iterations,
               toolCallCount: result.toolCalls,
               subagent: 'fork',
+              model: subModel,
+              dollarCost: calculateDollarCost(subModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens),
             },
           })
         }
@@ -3021,6 +3024,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const result = await inst.promise
 
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+        const subModel = ctx.effectiveModel || ctx.config.model.name
         w.write({
           type: 'data-usage',
           data: {
@@ -3031,6 +3035,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
             iterations: result.iterations,
             toolCallCount: result.toolCalls,
             subagent: type,
+            model: subModel,
+            dollarCost: calculateDollarCost(subModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens),
           },
         })
       }
@@ -3250,6 +3256,7 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
 
       const w = ctx.uiWriter
       if (w && r && (r.inputTokens > 0 || r.outputTokens > 0)) {
+        const subModel = ctx.effectiveModel || ctx.config.model.name
         w.write({
           type: 'data-usage',
           data: {
@@ -3260,6 +3267,8 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
             iterations: r.iterations,
             toolCallCount: r.toolCalls,
             subagent: inst.type,
+            model: subModel,
+            dollarCost: calculateDollarCost(subModel, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheWriteTokens),
           },
         })
       }

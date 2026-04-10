@@ -2340,6 +2340,7 @@ function WorkspaceAnalyticsTab() {
         logLoading={usageLog.loading}
         onLogPageChange={setLogPage}
         logPage={logPage}
+        isLocalMode={localMode}
       />
 
       {isBusinessOrHigher ? (

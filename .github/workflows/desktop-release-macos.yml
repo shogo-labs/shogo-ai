@@ -242,8 +242,8 @@ jobs:
 
           find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
             if file "$f" | grep -q "Mach-O"; then
-              echo "  signing: $f"
-              sign_file "$f"
+              echo "  signing (with child entitlements): $f"
+              codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.child.plist "$f" 2>&1 && SIGNED=$((SIGNED + 1)) || echo "  WARNING: failed to sign $f"
             fi
           done
 
