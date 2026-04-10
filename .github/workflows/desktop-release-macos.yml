@@ -252,12 +252,12 @@ jobs:
           }
 
           echo "=== Phase 1: Sign all native binaries (Mach-O, dylib, .node, .so) ==="
-          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.node" \) | sort -r | while read -r f; do
+          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.dylib.*" -o -name "*.so" -o -name "*.node" \) | sort -r | while read -r f; do
             echo "  signing: $f"
             sign_file "$f"
           done
 
-          find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
+          find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.dylib.*" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
             if file "$f" | grep -q "Mach-O"; then
               echo "  signing (with child entitlements): $f"
               codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.child.plist "$f" 2>&1 && SIGNED=$((SIGNED + 1)) || echo "  WARNING: failed to sign $f"
