@@ -199,9 +199,12 @@
   --color-brand-landing: 226 121 39;
 }
 
-/* Override browser default blue focus ring with theme accent on all inputs/textareas */
-input:focus,
-textarea:focus {
+/* Override browser default blue focus ring with theme accent on inputs/textareas.
+   Exclude .outline-none — RN Web chat composers use outline-none; forcing outline-color
+   with !important would override transparent and draw a visible orange line (often
+   clipped to a horizontal segment next to the toolbar). */
+input:focus:not(.outline-none),
+textarea:focus:not(.outline-none) {
   outline-color: rgb(var(--color-ring)) !important;
 }
 
