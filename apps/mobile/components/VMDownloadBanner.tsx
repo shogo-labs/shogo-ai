@@ -3,9 +3,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { View, Text, Pressable, Platform } from 'react-native'
 import { Download, CheckCircle, AlertTriangle, RotateCcw, X } from 'lucide-react-native'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { usePlatformConfig } from '@/lib/platform-config'
 import { API_URL } from '@/lib/api'
 import { cn } from '@shogo/shared-ui/primitives'
+
+const COMPLETE_SEEN_KEY = 'shogo:vmDownloadCompleteSeen'
 
 interface DownloadStatus {
   status: 'idle' | 'downloading' | 'extracting' | 'complete' | 'error'
@@ -27,6 +30,14 @@ export function VMDownloadBanner() {
   const [dismissed, setDismissed] = useState(false)
   const [hidden, setHidden] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const completePersisted = useRef(false)
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    AsyncStorage.getItem(COMPLETE_SEEN_KEY).then((v) => {
+      if (v === '1') setHidden(true)
+    }).catch(() => {})
+  }, [])
 
   const pollStatus = useCallback(async () => {
     try {
@@ -37,7 +48,9 @@ export function VMDownloadBanner() {
       const data: DownloadStatus = await res.json()
       setStatus(data)
 
-      if (data.status === 'complete') {
+      if (data.status === 'complete' && !completePersisted.current) {
+        completePersisted.current = true
+        AsyncStorage.setItem(COMPLETE_SEEN_KEY, '1').catch(() => {})
         setTimeout(() => setHidden(true), 4000)
       }
     } catch { /* server not ready yet */ }

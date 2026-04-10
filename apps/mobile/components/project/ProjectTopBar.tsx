@@ -143,6 +143,7 @@ export interface ProjectTopBarProps {
   onChatSessionsToggle?: () => void
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
+  chatPanelWidth?: number
   chatFullscreenSidebarWidth?: number
   /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
   onSearchChats?: () => void
@@ -242,6 +243,7 @@ export function ProjectTopBar({
   onChatSessionsToggle,
   onChatCollapseToggle,
   onCreateNewSession,
+  chatPanelWidth: chatPanelWidthProp,
   chatFullscreenSidebarWidth,
   onSearchChats,
   onNewChat,
@@ -325,9 +327,7 @@ export function ProjectTopBar({
     return activeTab === tabId
   }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab])
 
-  // Wide layout: two-zone top bar aligned with the chat (480px) and canvas (flex-1) panels below.
-  // Narrow layout: single flat bar with icon tabs and overflow menu.
-  const chatPanelWidth = 480
+  const chatPanelWidth = chatPanelWidthProp ?? 480
   const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
 
   if (!isWide) {

@@ -108,6 +108,10 @@ const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
 const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
+const DEFAULT_CHAT_PANEL_WIDTH = 480
+const MIN_CHAT_PANEL_WIDTH = 320
+const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
+
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
     id: string
@@ -340,6 +344,7 @@ export default observer(function ProjectLayout() {
   )
   const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
   const mountTimeRef = useRef(Date.now())
+  const splitRowRef = useRef<View>(null)
 
   // Restore last-viewed surface from AsyncStorage
   useEffect(() => {
@@ -654,6 +659,28 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
+
+  // Resizable chat panel width (wide split mode only)
+  const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
+  const maxChatPanelWidth = Math.floor(width * 0.5)
+  const clampChatWidth = useCallback((w: number) =>
+    Math.max(MIN_CHAT_PANEL_WIDTH, Math.min(w, Math.floor(width * 0.5))),
+    [width],
+  )
+
+  useEffect(() => {
+    AsyncStorage.getItem(CHAT_PANEL_WIDTH_STORAGE_KEY).then((raw) => {
+      if (raw) {
+        const parsed = parseInt(raw, 10)
+        if (!isNaN(parsed) && parsed > 0) setChatPanelWidth(parsed)
+      }
+    }).catch(() => {})
+  }, [])
+
+  const persistChatPanelWidth = useCallback((w: number) => {
+    setChatPanelWidth(w)
+    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
+  }, [])
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
 
@@ -1185,6 +1212,7 @@ export default observer(function ProjectLayout() {
     onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
+    chatPanelWidth: clampChatWidth(chatPanelWidth),
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
@@ -1233,7 +1261,7 @@ export default observer(function ProjectLayout() {
             )}
 
             {/* Content — chat panel stays mounted across layout/tab changes */}
-            <View className={cn('flex-1', isWide && 'flex-row')}>
+            <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
               <View
                 className={cn(
@@ -1241,10 +1269,11 @@ export default observer(function ProjectLayout() {
                   isChatFullscreen
                     ? 'flex-1 flex-row'
                     : isWide
-                      ? 'w-[480px] shrink-0 bg-background z-10'
+                      ? 'shrink-0 bg-background z-10'
                       : 'relative flex-1',
                   !isChatFullscreen && chatHidden && 'hidden',
                 )}
+                style={!isChatFullscreen && isWide && !chatHidden ? { width: clampChatWidth(chatPanelWidth) } : undefined}
               >
                 {isChatFullscreen && (
                   <View className="w-[280px] bg-muted/50 dark:bg-black/30">
@@ -1306,6 +1335,19 @@ export default observer(function ProjectLayout() {
                   </>
                 )}
               </View>
+
+              {/* Drag handle to resize chat panel (web only, wide split mode) */}
+              {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
+                <ChatPanelResizeHandle
+                  splitRowRef={splitRowRef}
+                  chatPanelWidth={clampChatWidth(chatPanelWidth)}
+                  minWidth={MIN_CHAT_PANEL_WIDTH}
+                  maxWidth={maxChatPanelWidth}
+                  onResize={setChatPanelWidth}
+                  onResizeEnd={persistChatPanelWidth}
+                  defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                />
+              )}
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
@@ -1442,6 +1484,91 @@ export default observer(function ProjectLayout() {
     </>
   )
 })
+
+// ---------------------------------------------------------------------------
+// ChatPanelResizeHandle — web-only drag handle between chat column and canvas
+// ---------------------------------------------------------------------------
+
+function ChatPanelResizeHandle({
+  splitRowRef,
+  chatPanelWidth,
+  minWidth,
+  maxWidth,
+  onResize,
+  onResizeEnd,
+  defaultWidth,
+}: {
+  splitRowRef: React.RefObject<View | null>
+  chatPanelWidth: number
+  minWidth: number
+  maxWidth: number
+  onResize: (w: number) => void
+  onResizeEnd: (w: number) => void
+  defaultWidth: number
+}) {
+  const [dragging, setDragging] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const latestWidthRef = useRef(chatPanelWidth)
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    setDragging(true)
+
+    const container = splitRowRef.current as unknown as HTMLElement | null
+    if (!container) return
+    const containerRect = container.getBoundingClientRect()
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const newWidth = Math.max(minWidth, Math.min(maxWidth, ev.clientX - containerRect.left))
+      latestWidthRef.current = newWidth
+      onResize(newWidth)
+    }
+
+    const onPointerUp = () => {
+      document.removeEventListener('pointermove', onPointerMove)
+      document.removeEventListener('pointerup', onPointerUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setDragging(false)
+      onResizeEnd(latestWidthRef.current)
+    }
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('pointermove', onPointerMove)
+    document.addEventListener('pointerup', onPointerUp)
+  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd])
+
+  const handleDoubleClick = useCallback(() => {
+    onResizeEnd(defaultWidth)
+  }, [defaultWidth, onResizeEnd])
+
+  const active = dragging || hovered
+
+  return (
+    <View
+      // @ts-expect-error web-only event handlers
+      onPointerDown={handlePointerDown}
+      onDoubleClick={handleDoubleClick}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      className="shrink-0 items-center justify-center"
+      style={{
+        width: 5,
+        cursor: 'col-resize' as any,
+        zIndex: 20,
+      }}
+    >
+      <View
+        className={cn(
+          'h-full transition-colors duration-150',
+          active ? 'bg-primary/40' : 'bg-border/50',
+        )}
+        style={{ width: active ? 3 : 1 }}
+      />
+    </View>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // TopBarBridge — reads EditModeContext and passes values to ProjectTopBar
