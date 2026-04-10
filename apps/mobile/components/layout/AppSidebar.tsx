@@ -1352,7 +1352,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-            {features.marketplace && (
+            {/* Marketplace hidden until ready for production */}
+            {false && features.marketplace && (
               <NavItem
                 icon={Store}
                 label="Marketplace"

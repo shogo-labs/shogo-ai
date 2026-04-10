@@ -28,6 +28,7 @@ import {
   Wrench,
   Save,
   Info,
+  ArrowUpCircle,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgress'
@@ -127,6 +128,17 @@ function createHttpBridge() {
     onVMImageDownloadProgress(cb: (p: VMDownloadProgress) => void) {
       progressCallbacks.push(cb)
     },
+
+    async checkVMImageUpdate(): Promise<VMImageUpdateResult> {
+      const res = await fetch(`${base}/api/vm/images/update-check`, { credentials: 'include' })
+      if (!res.ok) return { available: false, currentVersion: null, latestVersion: '' }
+      return res.json()
+    },
+
+    onVMImageUpdateAvailable(_cb: (data: { currentVersion: string | null; latestVersion: string }) => void) {
+      // no-op for HTTP bridge — polling via checkVMImageUpdate instead
+    },
+    removeVMImageUpdateListener() {},
   }
 }
 
@@ -162,6 +174,12 @@ interface VMDownloadProgress {
   totalBytes: number
   percent: number
   stage: string
+}
+
+interface VMImageUpdateResult {
+  available: boolean
+  currentVersion: string | null
+  latestVersion: string
 }
 
 interface VMDiagnostics {
@@ -415,6 +433,8 @@ function VMImagesSection({
   const [downloadState, setDownloadState] = useState<DownloadState>('idle')
   const [progress, setProgress] = useState<VMDownloadProgress | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<VMImageUpdateResult | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
 
   useEffect(() => {
     const bridge = getDesktopBridge()
@@ -423,7 +443,24 @@ function VMImagesSection({
       setProgress(p)
       setDownloadState(p.stage === 'extracting' ? 'extracting' : 'downloading')
     })
+
+    bridge.onVMImageUpdateAvailable?.((data: { currentVersion: string | null; latestVersion: string }) => {
+      setUpdateInfo({ available: true, currentVersion: data.currentVersion, latestVersion: data.latestVersion })
+    })
+
+    return () => bridge.removeVMImageUpdateListener?.()
   }, [])
+
+  useEffect(() => {
+    if (!imageStatus?.imagesPresent) return
+    const bridge = getDesktopBridge()
+    if (!bridge?.checkVMImageUpdate) return
+    setCheckingUpdate(true)
+    bridge.checkVMImageUpdate()
+      .then((result: VMImageUpdateResult) => setUpdateInfo(result))
+      .catch(() => {})
+      .finally(() => setCheckingUpdate(false))
+  }, [imageStatus?.imagesPresent])
 
   const startDownload = useCallback(async () => {
     const bridge = getDesktopBridge()
@@ -434,6 +471,7 @@ function VMImagesSection({
       const result = await bridge.downloadVMImages()
       if (result?.success) {
         setDownloadState('complete')
+        setUpdateInfo(null)
         onRefresh()
       } else {
         setDownloadError(result?.error || 'Download failed')
@@ -466,6 +504,27 @@ function VMImagesSection({
               )}
             </View>
           </View>
+
+          {updateInfo?.available && (
+            <View className="flex-row items-center gap-2 bg-blue-500/10 rounded-lg p-3">
+              <ArrowUpCircle size={16} className="text-blue-500" />
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-blue-500">
+                  Update available: {updateInfo.latestVersion}
+                </Text>
+                <Text className="text-xs text-muted-foreground mt-0.5">
+                  Current: {updateInfo.currentVersion ?? 'unknown'}
+                </Text>
+              </View>
+              <Pressable
+                onPress={startDownload}
+                className="bg-blue-500 px-3 py-1.5 rounded-lg"
+              >
+                <Text className="text-xs font-semibold text-white">Update</Text>
+              </Pressable>
+            </View>
+          )}
+
           <InfoRow label="Image Directory" value={imageStatus?.imageDir ?? '—'} mono />
         </View>
       ) : downloadState === 'complete' ? (

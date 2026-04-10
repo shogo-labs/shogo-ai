@@ -206,6 +206,22 @@ function registerIpcHandlers(): void {
     console.log('[Desktop] User skipped VM image download')
     return { success: true }
   })
+
+  ipcMain.handle('check-vm-image-update', async () => {
+    try {
+      const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+      const imageDir = getVMImageDir()
+      const mgr = new VMImageManager(imageDir)
+      if (!mgr.isImagePresent()) {
+        return { available: false, currentVersion: null, latestVersion: '' }
+      }
+      const result = await mgr.checkForUpdate()
+      return { available: result.available, currentVersion: mgr.getImageVersion(), latestVersion: result.version }
+    } catch (err) {
+      console.warn('[Desktop] VM image update check failed:', err)
+      return { available: false, currentVersion: null, latestVersion: '' }
+    }
+  })
 }
 
 function createWindow(): void {
@@ -359,6 +375,31 @@ function setupSessionHandlers(): void {
   })
 }
 
+const VM_IMAGE_CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
+
+function startVMImageUpdateChecker(): void {
+  async function check() {
+    try {
+      const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+      const imageDir = getVMImageDir()
+      const mgr = new VMImageManager(imageDir)
+      if (!mgr.isImagePresent()) return
+
+      const result = await mgr.checkForUpdate()
+      if (result.available) {
+        console.log(`[Desktop] VM image update available: ${result.version}`)
+        const payload = { currentVersion: mgr.getImageVersion(), latestVersion: result.version }
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('vm-image-update-available', payload)
+        }
+      }
+    } catch { /* network failures are expected — silently retry later */ }
+  }
+
+  setTimeout(check, 60_000)
+  setInterval(check, VM_IMAGE_CHECK_INTERVAL_MS)
+}
+
 app.whenReady().then(async () => {
   const config = readConfig()
   isCloudMode = config.mode === 'cloud'
@@ -391,6 +432,10 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     initAutoUpdater()
+  }
+
+  if (!isCloudMode) {
+    startVMImageUpdateChecker()
   }
 
   app.on('activate', () => {
