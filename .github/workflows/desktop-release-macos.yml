@@ -126,8 +126,8 @@ jobs:
           cp "$QEMU_PREFIX/bin/qemu-system-aarch64" apps/desktop/resources/vm/
           cp "$QEMU_PREFIX/bin/qemu-img" apps/desktop/resources/vm/
           cd apps/desktop/resources/vm
-          dylibbundler -of -b -x qemu-system-aarch64 -d lib/ -p @executable_path/lib/
-          dylibbundler -of -b -x qemu-img -d lib/ -p @executable_path/lib/
+          dylibbundler -of -b -cd -x qemu-system-aarch64 -d lib/ -p @executable_path/lib/
+          dylibbundler -of -b -cd -x qemu-img -d lib/ -p @executable_path/lib/
           echo "=== Verifying no absolute Homebrew paths remain ==="
           ! otool -L qemu-system-aarch64 | grep /opt/homebrew
           ! otool -L qemu-img | grep /opt/homebrew
