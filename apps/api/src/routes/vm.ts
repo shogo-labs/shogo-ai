@@ -162,16 +162,22 @@ let vmDownloadState: VMDownloadState = {
 }
 
 export function getVMDownloadState(): VMDownloadState {
+  if (
+    (vmDownloadState.status === 'downloading' || vmDownloadState.status === 'extracting') &&
+    checkImagesPresent()
+  ) {
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+  }
   return { ...vmDownloadState }
 }
 
 export async function triggerVMImageDownload(): Promise<void> {
-  if (vmDownloadState.status === 'downloading' || vmDownloadState.status === 'extracting') {
+  if (checkImagesPresent()) {
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
     return
   }
 
-  if (checkImagesPresent()) {
-    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+  if (vmDownloadState.status === 'downloading' || vmDownloadState.status === 'extracting') {
     return
   }
 
