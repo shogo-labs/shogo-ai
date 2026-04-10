@@ -279,7 +279,7 @@ export async function startLocalServer(): Promise<void> {
     API_PORT: String(apiPort),
     PORT: String(apiPort),
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),
-    NODE_ENV: IS_DEV ? 'development' : 'production',
+    NODE_ENV: 'development',
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
