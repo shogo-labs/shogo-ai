@@ -218,7 +218,7 @@ export function VMSetupProgress({ onComplete, compact = false }: VMSetupProgress
             </Text>
             {!qemuReady && qemuStatus === 'idle' && (
               <Text className="text-xs text-muted-foreground mt-0.5">
-                Required for VM sandboxing (~200 MB via winget)
+                Required for VM sandboxing (~200 MB)
               </Text>
             )}
             {qemuStatus === 'error' && qemuError && (
