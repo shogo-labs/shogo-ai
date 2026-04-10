@@ -369,6 +369,7 @@ interface UserMenuProps {
   isSuperAdmin?: boolean
   isWide?: boolean
   bottomInset?: number
+  collapsed?: boolean
 }
 
 function UserMenuContent({
@@ -484,7 +485,7 @@ function UserMenuContent({
   )
 }
 
-function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bottomInset = 0 }: UserMenuProps) {
+function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bottomInset = 0, collapsed }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   if (isWide) {
@@ -502,13 +503,18 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
             accessibilityLabel={`${user?.name || 'User'} — open user menu`}
             accessibilityHint="Opens menu with profile, appearance, and sign out options"
             accessibilityState={{ expanded: isOpen }}
-            className="rounded-full active:opacity-80"
+            className="flex-row items-center gap-2 active:opacity-80"
           >
             <Avatar
               fallback={getInitials(user?.name)}
               src={user?.image}
               size="sm"
             />
+            {!collapsed && (
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                {user?.name || 'User'}
+              </Text>
+            )}
           </Pressable>
         )}
       >
@@ -536,13 +542,18 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         accessibilityLabel={`${user?.name || 'User'} — open user menu`}
         accessibilityHint="Opens menu with profile, appearance, and sign out options"
         accessibilityState={{ expanded: isOpen }}
-        className="rounded-full active:opacity-80"
+        className="flex-row items-center gap-2 active:opacity-80"
       >
         <Avatar
           fallback={getInitials(user?.name)}
           src={user?.image}
           size="sm"
         />
+        {!collapsed && (
+          <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+            {user?.name || 'User'}
+          </Text>
+        )}
       </Pressable>
       <Modal
         visible={isOpen}
@@ -1407,25 +1418,21 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             isSuperAdmin={isSuperAdmin}
             isWide={isWide}
             bottomInset={insets.bottom}
+            collapsed={collapsed}
           />
 
           {!collapsed && (
-            <>
-              <View className="flex-1 ml-1">
-                <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
-              </View>
-              <Pressable
-                onPress={() => setInboxOpen(true)}
-                className="relative p-1.5 rounded-md active:bg-muted"
-              >
-                <Inbox size={18} className="text-muted-foreground" />
-                {pendingInvites.length > 0 && (
-                  <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
-                    <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
-                  </View>
-                )}
-              </Pressable>
-            </>
+            <Pressable
+              onPress={() => setInboxOpen(true)}
+              className="relative p-1.5 rounded-md active:bg-muted"
+            >
+              <Inbox size={18} className="text-muted-foreground" />
+              {pendingInvites.length > 0 && (
+                <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
+                  <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
+                </View>
+              )}
+            </Pressable>
           )}
         </View>
       </View>
