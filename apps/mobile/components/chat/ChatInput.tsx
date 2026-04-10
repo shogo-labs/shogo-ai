@@ -551,10 +551,10 @@ export function ChatInput({
 
       {/* Queued messages */}
       {queuedMessages.length > 0 && (
-        <View className="mb-2 rounded-lg border border-border/60 bg-muted/30 overflow-hidden">
+        <View className="rounded-t-lg border-x border-t border-border/60 bg-muted/30 overflow-hidden">
           <Pressable
             onPress={() => setQueueExpanded((prev) => !prev)}
-            className="w-full flex-row items-center justify-between px-3 py-2"
+            className="w-full flex-row items-center justify-between px-2 py-1"
           >
             <View className="flex-row items-center gap-2">
               <ChevronDown
@@ -564,7 +564,7 @@ export function ChatInput({
                 )}
                 size={16}
               />
-              <Text className="font-medium text-sm text-foreground">
+              <Text className="text-sm text-foreground">
                 {queuedMessages.length} Queued
               </Text>
             </View>
@@ -574,9 +574,9 @@ export function ChatInput({
               {queuedMessages.map((msg, index) => (
                 <View
                   key={msg.id}
-                  className="flex-row items-center gap-3 px-3 py-2.5 border-b border-border/40 last:border-b-0"
+                  className="flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0"
                 >
-                  <View className="h-4 w-4 rounded-full border-2 border-muted-foreground/30 flex-shrink-0" />
+                  <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
                   <View className="flex-1 min-w-0">
                     <Text className="text-xs text-foreground" numberOfLines={1}>
                       {msg.content ||
@@ -643,7 +643,8 @@ export function ChatInput({
       <View
         ref={dropZoneRef as any}
         className={cn(
-          "relative rounded-xl border bg-muted/30 overflow-hidden",
+          "relative border bg-muted/30 overflow-hidden",
+          queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
           isDragOver ? "border-primary border-dashed" : "border-border/60"
         )}
       >
