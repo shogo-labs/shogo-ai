@@ -214,7 +214,7 @@ cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-d
 if [ -n "$QEMU_ACCEL" ]; then
   DEFAULT_TIMEOUT=600
 elif [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
-  DEFAULT_TIMEOUT=1200  # Native arch TCG (no cross-arch penalty)
+  DEFAULT_TIMEOUT=1800  # Native arch TCG (no cross-arch penalty)
 else
   DEFAULT_TIMEOUT=3600  # Cross-arch TCG (very slow)
 fi
