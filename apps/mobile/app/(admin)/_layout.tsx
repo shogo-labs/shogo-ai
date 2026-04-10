@@ -30,6 +30,7 @@ import {
   FlaskConical,
   Mic,
   Monitor,
+  ScrollText,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -61,6 +62,7 @@ const LOCAL_SETTINGS_ITEMS = [
   { href: '/(admin)/general' as const, icon: Settings, label: 'General' },
   { href: '/(admin)/meetings' as const, icon: Mic, label: 'Meetings' },
   { href: '/(admin)/vm' as const, icon: Monitor, label: 'VM' },
+  { href: '/(admin)/logs' as const, icon: ScrollText, label: 'Logs' },
   { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' },
 ] as const
 
@@ -346,6 +348,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'
   if (pathname.includes('evals')) return 'Evals'
+  if (pathname.includes('/logs')) return 'Logs'
   if (pathname.includes('/vm')) return 'VM / Sandbox'
   if (pathname.includes('meetings')) return 'Meetings'
   if (pathname.includes('general')) return 'General'

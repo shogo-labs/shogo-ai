@@ -115,6 +115,12 @@ function cleanupStaleProcesses(): void {
     removePidFile()
   }
 
+  // Kill orphaned QEMU processes from a previous session
+  try {
+    execSync('pkill -f qemu-system 2>/dev/null || true', { stdio: 'pipe' })
+    console.log('[Desktop] Killed stale QEMU processes (if any)')
+  } catch {}
+
   // Safety net: kill whatever is on our preferred port
   killProcessOnPort(PREFERRED_PORT)
 }
