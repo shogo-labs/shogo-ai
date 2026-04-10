@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   onVMImageDownloadProgress: (callback: (progress: { bytesDownloaded: number; totalBytes: number; percent: number; stage: string }) => void) => {
     ipcRenderer.on('vm-image-download-progress', (_event, progress) => callback(progress))
   },
+  checkVMImageUpdate: () => ipcRenderer.invoke('check-vm-image-update'),
+  onVMImageUpdateAvailable: (callback: (data: { currentVersion: string | null; latestVersion: string }) => void) => {
+    ipcRenderer.on('vm-image-update-available', (_event, data) => callback(data))
+  },
+  removeVMImageUpdateListener: () => {
+    ipcRenderer.removeAllListeners('vm-image-update-available')
+  },
 
   // Meeting recording
   startRecording: () => ipcRenderer.invoke('start-recording'),

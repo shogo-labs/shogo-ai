@@ -397,6 +397,28 @@ export function vmRoutes(): Hono {
   })
 
   /**
+   * GET /images/update-check - check if a newer VM image is available on GitHub
+   */
+  router.get('/images/update-check', async (c) => {
+    try {
+      const vmModule = await import('../../../desktop/src/vm/index')
+      const imageDir = getVMImageDir()
+      const mgr = new vmModule.VMImageManager(imageDir)
+      if (!checkImagesPresent()) {
+        return c.json({ available: false, currentVersion: null, latestVersion: '' })
+      }
+      const result = await mgr.checkForUpdate()
+      return c.json({
+        available: result.available,
+        currentVersion: getImageVersion(),
+        latestVersion: result.version,
+      })
+    } catch {
+      return c.json({ available: false, currentVersion: getImageVersion(), latestVersion: '' })
+    }
+  })
+
+  /**
    * POST /config - update VM configuration
    */
   router.post('/config', async (c) => {
