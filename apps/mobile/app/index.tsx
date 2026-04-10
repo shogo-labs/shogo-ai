@@ -15,20 +15,25 @@ export default function RootIndex() {
   const [autoSigningIn, setAutoSigningIn] = useState(false)
   const autoSignInAttempted = useRef(false)
 
-  // Local mode: auto-sign-in when not authenticated
+  // Local mode: always auto-sign-in on first load.
+  // Stale cookies from a previous database (e.g. cloud → local switch) can make
+  // isAuthenticated appear true while the server rejects the session. Sign out
+  // first to clear any stale cookies, then sign in as the local user.
   useEffect(() => {
     if (!platformConfig.configLoaded || !platformConfig.localMode) return
-    if (isAuthenticated || authLoading || autoSignInAttempted.current) return
+    if (authLoading || autoSignInAttempted.current) return
     autoSignInAttempted.current = true
     setAutoSigningIn(true)
-    fetch(`${API_URL}/api/local/auto-sign-in`, {
-      method: 'POST',
-      credentials: 'include',
-    })
+    fetch(`${API_URL}/api/auth/sign-out`, { method: 'POST', credentials: 'include' })
+      .catch(() => {})
+      .then(() => fetch(`${API_URL}/api/local/auto-sign-in`, {
+        method: 'POST',
+        credentials: 'include',
+      }))
       .then(() => refreshSession())
       .catch((err) => console.error('[LocalMode] Auto-sign-in failed:', err))
       .finally(() => setAutoSigningIn(false))
-  }, [platformConfig.configLoaded, platformConfig.localMode, isAuthenticated, authLoading, refreshSession])
+  }, [platformConfig.configLoaded, platformConfig.localMode, authLoading, refreshSession])
 
   useEffect(() => {
     if (!isAuthenticated || authLoading) return
