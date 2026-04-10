@@ -227,7 +227,7 @@ export function getQemuInstallState(): QemuInstallState {
 // winget resolution + direct-download fallback (Windows QEMU install)
 // ---------------------------------------------------------------------------
 
-const QEMU_INSTALLER_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260401.exe'
+const QEMU_INSTALLER_URL = 'https://qemu.weilnetz.de/w64/2025/qemu-w64-setup-20251224.exe'
 
 function resolveWingetPath(): string | null {
   const candidates: string[] = []
