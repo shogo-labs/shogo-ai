@@ -32,7 +32,7 @@ const FILE_CONTENT_TOOLS = new Set(['read_file'])
 
 /** All tools whose output is safe to aggressively compress */
 const COMPACTABLE_TOOLS = new Set([
-  'read_file', 'grep', 'glob', 'ls', 'list_files',
+  'read_file',
   'search', 'exec', 'web_search',
   'impact_radius', 'detect_changes', 'review_context',
 ])

@@ -60,7 +60,14 @@ export class DarwinVMManager implements VMManager {
     generateSeedISO(seedISOPath, {
       guestAgentPort: VM_DEFAULTS.guestAgentPort,
       useBundleMount: false,
-      env: config.env,
+      ...(config.mountWorkspace ? {
+        workspaceMountTag: 'workspace0',
+        workspaceMountPath: config.workspaceMountPath,
+      } : {}),
+      env: {
+        ...config.env,
+        ...(config.mountWorkspace ? { VM_WORKSPACE_MOUNTED: 'true' } : {}),
+      },
       qemuDir: path.dirname(this.qemuPath),
       extraFiles,
     })
@@ -200,7 +207,7 @@ export class DarwinVMManager implements VMManager {
       '-smp', String(config.cpus),
       '-kernel', path.join(this.vmImageDir, 'vmlinuz'),
       '-initrd', path.join(this.vmImageDir, 'initrd.img'),
-      '-append', 'root=/dev/vda1 console=ttyAMA0 ds=nocloud quiet systemd.mask=boot-efi.mount',
+      '-append', 'root=LABEL=cloudimg-rootfs rw console=ttyAMA0 ds=nocloud quiet systemd.mask=boot-efi.mount',
       '-drive', `file=${overlayPath},if=virtio,format=qcow2,cache=writeback`,
       ...(fs.existsSync(seedISOPath) ? ['-drive', `file=${seedISOPath},if=virtio,format=raw,readonly=on`] : []),
       '-netdev', `user,id=net0,${hostFwds.join(',')}`,
@@ -209,6 +216,13 @@ export class DarwinVMManager implements VMManager {
       '-nographic',
       '-no-reboot',
     ]
+
+    if (config.mountWorkspace && config.workspaceDir) {
+      args.push(
+        '-fsdev', `local,id=ws0,path=${config.workspaceDir},security_model=none`,
+        '-device', 'virtio-9p-pci,fsdev=ws0,mount_tag=workspace0',
+      )
+    }
 
     return args
   }

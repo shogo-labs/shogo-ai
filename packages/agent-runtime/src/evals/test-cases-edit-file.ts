@@ -65,7 +65,7 @@ function readBeforeFirstEdit(r: EvalResult): boolean {
   const editIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
   if (editIdx === -1) return true
   return r.toolCalls.slice(0, editIdx).some(
-    t => t.name === 'read_file' || t.name === 'grep' || t.name === 'glob'
+    t => t.name === 'read_file' || t.name === 'exec'
   )
 }
 

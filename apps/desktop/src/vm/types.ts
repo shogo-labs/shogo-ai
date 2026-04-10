@@ -32,6 +32,13 @@ export interface VMConfig {
    * Cloud-init copies them from the mounted ISO into /opt/shogo/.
    */
   bundleFiles?: Record<string, Buffer | string>
+  /** Share workspaceDir into the VM via 9p mount instead of using the isolated overlay disk.
+   *  When true, the guest `/workspace` (or `/host-workspaces` for warm pool) is a live view
+   *  of the host directory. */
+  mountWorkspace?: boolean
+  /** Guest path for the 9p workspace mount. Defaults to `/workspace`.
+   *  Set to `/host-workspaces` for warm pool VMs where the parent workspacesDir is shared. */
+  workspaceMountPath?: string
 }
 
 export interface VMHandle {

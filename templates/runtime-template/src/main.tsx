@@ -143,6 +143,42 @@ window.addEventListener('message', (e) => {
 })
 
 // ---------------------------------------------------------------------------
+// Capability detection — report to parent whether the app uses theming
+// ---------------------------------------------------------------------------
+
+function detectThemeSupport(): boolean {
+  for (const sheet of document.styleSheets) {
+    try {
+      for (const rule of sheet.cssRules) {
+        const text = rule.cssText
+        if (
+          text.includes('.dark') ||
+          text.includes('var(--color-') ||
+          text.includes('var(--background') ||
+          text.includes('var(--foreground') ||
+          text.includes('var(--primary') ||
+          text.includes('var(--muted') ||
+          text.includes('var(--border') ||
+          text.includes('var(--card') ||
+          text.includes('var(--accent')
+        ) {
+          return true
+        }
+      }
+    } catch { /* cross-origin stylesheet — skip */ }
+  }
+  return !!document.querySelector('[class*="dark:"]')
+}
+
+function reportCapabilities() {
+  if (window.parent === window) return
+  window.parent.postMessage({
+    type: 'canvas-capabilities',
+    supportsTheme: detectThemeSupport(),
+  }, '*')
+}
+
+// ---------------------------------------------------------------------------
 
 const root = document.getElementById('root')
 if (root) {
@@ -152,4 +188,6 @@ if (root) {
 // Signal the parent that we're ready to receive messages.
 if (window.parent !== window) {
   window.parent.postMessage({ type: 'canvas-ready' }, '*')
+  // Allow styles to finish loading before detecting capabilities.
+  setTimeout(reportCapabilities, 500)
 }

@@ -175,8 +175,14 @@ cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-d
 
 
 # Step 4: Boot and provision
-TIMEOUT=${QEMU_TIMEOUT:-1200}
-echo "Booting VM for provisioning (timeout: ${TIMEOUT}s)..."
+# aarch64 on x86_64 runs in TCG software emulation (~10x slower) — needs a long timeout
+if [ "$ARCH" = "aarch64" ] && [ -z "$QEMU_ACCEL" ]; then
+  DEFAULT_TIMEOUT=3600
+else
+  DEFAULT_TIMEOUT=1200
+fi
+TIMEOUT=${QEMU_TIMEOUT:-$DEFAULT_TIMEOUT}
+echo "Booting VM for provisioning (timeout: ${TIMEOUT}s, accel: ${QEMU_ACCEL:-TCG})..."
 timeout "$TIMEOUT" $QEMU_SYSTEM \
   $QEMU_ACCEL \
   $QEMU_MACHINE \
@@ -186,9 +192,45 @@ timeout "$TIMEOUT" $QEMU_SYSTEM \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0 \
   -nographic \
-  -no-reboot || true
+  -no-reboot
+QEMU_EXIT=$?
+if [ "$QEMU_EXIT" -eq 124 ]; then
+  echo "ERROR: Provisioning timed out after ${TIMEOUT}s. Image may be incomplete."
+  exit 1
+elif [ "$QEMU_EXIT" -ne 0 ]; then
+  echo "WARNING: QEMU exited with code $QEMU_EXIT (non-zero is OK if guest powered off via ACPI)"
+fi
 
-echo "Provisioning complete."
+# Verify provisioning completed by checking for the marker file
+echo "Verifying provisioning marker..."
+MARKER_FOUND=false
+if (
+  set +e
+  VERIFY_DIR="${WORK_DIR}/verify_mnt"
+  mkdir -p "$VERIFY_DIR"
+  qemu-img convert -O raw "${WORK_DIR}/disk.qcow2" "${WORK_DIR}/verify.raw" 2>/dev/null || exit 1
+  LOOP_DEV=$(sudo losetup --find --show --partscan "${WORK_DIR}/verify.raw" 2>/dev/null) || exit 1
+  sleep 1
+  for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
+    if [ -b "$part" ] && sudo mount -o ro,noload "$part" "$VERIFY_DIR" 2>/dev/null; then
+      if [ -f "$VERIFY_DIR/var/lib/cloud/instance/shogo-provisioned" ]; then
+        echo "MARKER_OK"
+      fi
+      sudo umount "$VERIFY_DIR" 2>/dev/null || true
+    fi
+  done
+  sudo losetup -d "$LOOP_DEV" 2>/dev/null || true
+  rm -f "${WORK_DIR}/verify.raw"
+) 2>&1 | tee /tmp/verify-marker.log && grep -q "MARKER_OK" /tmp/verify-marker.log; then
+  MARKER_FOUND=true
+fi
+
+if [ "$MARKER_FOUND" = true ]; then
+  echo "Provisioning verified: marker file found."
+else
+  echo "WARNING: Provisioning marker not found. Image may be incomplete (cloud-init may not have finished)."
+  echo "Continuing anyway — the image may still be usable if core packages were installed."
+fi
 
 # Step 5: Extract kernel and initrd from the image
 echo "Extracting kernel and initrd..."

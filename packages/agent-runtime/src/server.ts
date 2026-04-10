@@ -23,6 +23,8 @@ import {
   unlinkSync,
   readdirSync,
   statSync,
+  lstatSync,
+  symlinkSync,
   rmSync,
   renameSync,
   cpSync,
@@ -87,12 +89,91 @@ const { app, state, logTiming } = await createRuntimeApp({
   internalPaths: ['/agent/heartbeat/trigger'],
   authPrefixes: ['/agent', '/pool'],
   async onAssign(projectId, envVars) {
-    // Clean workspace to prevent cross-project file leakage
-    for (const subdir of ['files', 'memory', 'skills']) {
-      const dirPath = join(WORKSPACE_DIR, subdir)
-      if (existsSync(dirPath)) {
-        rmSync(dirPath, { recursive: true, force: true })
-        mkdirSync(dirPath, { recursive: true })
+    const hostWorkspacesRoot = '/host-workspaces'
+    const sentinelPath = '/tmp/shogo-current-project'
+
+    // --- Re-assignment cleanup: remove orphaned state from previous project ---
+    try {
+      if (existsSync(sentinelPath)) {
+        const oldProjectId = readFileSync(sentinelPath, 'utf-8').trim()
+        if (oldProjectId && oldProjectId !== projectId) {
+          const oldLocalState = `/tmp/shogo-local/${oldProjectId}`
+          if (existsSync(oldLocalState)) {
+            rmSync(oldLocalState, { recursive: true, force: true })
+          }
+          // If /workspace is a stale symlink, remove it so we can recreate below
+          try {
+            const st = lstatSync(WORKSPACE_DIR)
+            if (st.isSymbolicLink()) unlinkSync(WORKSPACE_DIR)
+          } catch {}
+        }
+      }
+    } catch { /* best-effort cleanup */ }
+
+    // Persist current project so the next re-assignment can clean up
+    writeFileSync(sentinelPath, projectId, 'utf-8')
+
+    // --- Decide mount mode: per-project env > boot-time flag ---
+    // MOUNT_WORKSPACE comes from buildProjectEnv (per-project setting).
+    // VM_WORKSPACE_MOUNTED is the boot-time indicator that 9p is available.
+    const perProjectMount = process.env.MOUNT_WORKSPACE
+    const ninePAvailable = process.env.VM_WORKSPACE_MOUNTED === 'true'
+    let useMount = ninePAvailable && perProjectMount !== 'false'
+
+    // Graceful fallback: if mount requested but 9p device is absent, warn and use overlay
+    if (useMount && !existsSync(hostWorkspacesRoot)) {
+      console.warn(`[onAssign] MOUNT_WORKSPACE requested but ${hostWorkspacesRoot} not found — falling back to overlay mode`)
+      useMount = false
+    }
+
+    if (useMount) {
+      // --- Mounted mode: symlink /workspace -> /host-workspaces/<projectId> ---
+      const projectWorkspace = join(hostWorkspacesRoot, projectId)
+      mkdirSync(projectWorkspace, { recursive: true })
+      try {
+        const st = lstatSync(WORKSPACE_DIR)
+        if (st.isSymbolicLink() || st.isFile()) unlinkSync(WORKSPACE_DIR)
+        else if (st.isDirectory()) rmSync(WORKSPACE_DIR, { recursive: true, force: true })
+      } catch {}
+      symlinkSync(projectWorkspace, WORKSPACE_DIR)
+
+      // Keep .shogo/ on the local overlay disk (SQLite doesn't work on 9p).
+      const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
+      mkdirSync(localShogoDir, { recursive: true })
+      const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+      try { lstatSync(workspaceShogoDir); rmSync(workspaceShogoDir, { recursive: true, force: true }) } catch {}
+      symlinkSync(localShogoDir, workspaceShogoDir)
+
+      // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
+      try {
+        const gitignorePath = join(WORKSPACE_DIR, '.gitignore')
+        if (existsSync(gitignorePath)) {
+          const content = readFileSync(gitignorePath, 'utf-8')
+          if (!content.includes('.virtfs_metadata')) {
+            writeFileSync(gitignorePath, content.trimEnd() + '\n.virtfs_metadata\n', 'utf-8')
+          }
+        }
+      } catch { /* best-effort */ }
+    } else {
+      // --- Isolated mode: /workspace stays on overlay disk ---
+      // Ensure /workspace is a real directory (not a stale symlink)
+      try {
+        const st = lstatSync(WORKSPACE_DIR)
+        if (st.isSymbolicLink()) {
+          unlinkSync(WORKSPACE_DIR)
+          mkdirSync(WORKSPACE_DIR, { recursive: true })
+        }
+      } catch {
+        mkdirSync(WORKSPACE_DIR, { recursive: true })
+      }
+
+      // Clean workspace to prevent cross-project file leakage
+      for (const subdir of ['files', 'memory', 'skills']) {
+        const dirPath = join(WORKSPACE_DIR, subdir)
+        if (existsSync(dirPath)) {
+          rmSync(dirPath, { recursive: true, force: true })
+          mkdirSync(dirPath, { recursive: true })
+        }
       }
     }
 
@@ -613,7 +694,7 @@ app.post('/agent/chat', async (c) => {
   }
 
   // Save uploaded files to the agent's files/ directory so they're accessible
-  // to the agent via its workspace tools (read_file, list_files, etc.)
+  // to the agent via its workspace tools (read_file, search, etc.)
   if (userFileParts.length > 0) {
     mkdirSync(FILES_DIR, { recursive: true })
     const savedPaths: string[] = []
@@ -1287,6 +1368,21 @@ app.delete('/agent/tool-mocks', (c) => {
   }
   agentGateway.clearToolMocks()
   return c.json({ ok: true })
+})
+
+app.post('/agent/workspace/seed', async (c) => {
+  const body = await c.req.json<{ files: Record<string, string> }>()
+  if (!body?.files || typeof body.files !== 'object') {
+    return c.json({ error: 'Expected { files: { [path]: content } }' }, 400)
+  }
+  let written = 0
+  for (const [relPath, content] of Object.entries(body.files)) {
+    const absPath = join(WORKSPACE_DIR, relPath)
+    mkdirSync(dirname(absPath), { recursive: true })
+    writeFileSync(absPath, content, 'utf-8')
+    written++
+  }
+  return c.json({ ok: true, written })
 })
 
 // Heartbeat trigger (called by external HeartbeatScheduler).
@@ -2403,6 +2499,26 @@ app.get('*', (c) => {
  */
 async function initializeEssentials(): Promise<void> {
   logTiming('Initializing essentials...')
+
+  // When the workspace is 9p-mounted, keep .shogo/ on the local overlay disk
+  // so SQLite uses a real filesystem with proper locking. For warm pool VMs this
+  // is handled in onAssign; for cold-start VMs (e.g. evals) we do it here.
+  if (process.env.VM_WORKSPACE_MOUNTED === 'true') {
+    const projectId = process.env.PROJECT_ID || 'default'
+    const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
+    mkdirSync(localShogoDir, { recursive: true })
+    const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+    try {
+      const st = lstatSync(workspaceShogoDir)
+      if (!st.isSymbolicLink()) {
+        rmSync(workspaceShogoDir, { recursive: true, force: true })
+        symlinkSync(localShogoDir, workspaceShogoDir)
+      }
+    } catch {
+      try { symlinkSync(localShogoDir, workspaceShogoDir) } catch {}
+    }
+    logTiming('.shogo symlinked to local overlay (9p mount)')
+  }
 
   // Bootstrap workspace files
   ensureWorkspaceFiles()

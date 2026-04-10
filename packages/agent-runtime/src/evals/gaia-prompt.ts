@@ -44,7 +44,7 @@ export function buildGAIAPrompt(opts: {
     '   - `web` with `query` parameter to search for factual information online.',
     '   - `web` with `url` parameter to read specific web pages.',
     '   - `exec` to run calculations, parse data, or process files.',
-    '   - `read_file` / `glob` / `grep` to examine attached files.',
+    '   - `read_file` to examine attached files.',
     '   - `browser` for interactive web pages that require navigation.',
     '   - `transcribe_audio` for audio file analysis.',
     '3. Cross-reference multiple sources when possible.',

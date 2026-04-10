@@ -559,7 +559,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
           const firstEditIdx = r.toolCalls.findIndex(t => t.name === 'edit_file')
           if (firstEditIdx === -1) return false
           return r.toolCalls.slice(0, firstEditIdx).some(t =>
-            t.name === 'read_file' || t.name === 'grep' || t.name === 'read_lints'
+            t.name === 'read_file' || t.name === 'exec' || t.name === 'read_lints'
           )
         },
       },
@@ -892,7 +892,7 @@ export const CANVAS_V2_LINT_EVALS: AgentEval[] = [
           )
           if (firstEditIdx === -1) return false
           return r.toolCalls.slice(0, firstEditIdx).some(t =>
-            t.name === 'read_file' || t.name === 'grep' || t.name === 'read_lints'
+            t.name === 'read_file' || t.name === 'exec' || t.name === 'read_lints'
           )
         },
       },
