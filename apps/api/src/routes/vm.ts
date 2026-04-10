@@ -646,5 +646,86 @@ export function vmRoutes(): Hono {
     }
   })
 
+  // ==========================================================================
+  // Desktop Logs
+  // ==========================================================================
+
+  /**
+   * GET /logs - Read the desktop main.log (last N lines)
+   * Query params:
+   *   lines - number of lines to return (default 500, max 5000)
+   */
+  router.get('/logs', async (c) => {
+    const logPath = getDesktopLogPath()
+    if (!logPath || !fs.existsSync(logPath)) {
+      return c.json({ lines: [], path: logPath, error: 'Log file not found' })
+    }
+
+    const maxLines = Math.min(
+      parseInt(new URL(c.req.url).searchParams.get('lines') || '500', 10),
+      5000,
+    )
+
+    try {
+      const content = fs.readFileSync(logPath, 'utf-8')
+      const allLines = content.split('\n')
+      const tail = allLines.slice(-maxLines).filter(Boolean)
+      return c.json({ lines: tail, path: logPath, total: allLines.length })
+    } catch (err: any) {
+      return c.json({ lines: [], path: logPath, error: err.message }, 500)
+    }
+  })
+
+  /**
+   * GET /logs/stream - SSE stream that tails main.log in real time
+   */
+  router.get('/logs/stream', async (c) => {
+    const logPath = getDesktopLogPath()
+    if (!logPath || !fs.existsSync(logPath)) {
+      return c.json({ error: 'Log file not found' }, 404)
+    }
+
+    return streamSSE(c, async (stream) => {
+      let lastSize = fs.statSync(logPath).size
+      let alive = true
+
+      stream.onAbort(() => { alive = false })
+
+      while (alive) {
+        try {
+          const stat = fs.statSync(logPath)
+          if (stat.size > lastSize) {
+            const fd = fs.openSync(logPath, 'r')
+            const buf = Buffer.alloc(stat.size - lastSize)
+            fs.readSync(fd, buf, 0, buf.length, lastSize)
+            fs.closeSync(fd)
+            lastSize = stat.size
+
+            const newLines = buf.toString('utf-8').split('\n').filter(Boolean)
+            for (const line of newLines) {
+              await stream.writeSSE({ data: line })
+            }
+          } else if (stat.size < lastSize) {
+            lastSize = 0
+          }
+        } catch {
+          break
+        }
+        await stream.sleep(1000)
+      }
+    })
+  })
+
   return router
+}
+
+function getDesktopLogPath(): string | null {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Logs', 'Shogo', 'main.log')
+  }
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+    return path.join(appData, 'Shogo', 'logs', 'main.log')
+  }
+  return path.join(os.homedir(), '.config', 'shogo', 'logs', 'main.log')
 }

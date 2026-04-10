@@ -80,7 +80,8 @@ export class VMWarmPoolController {
 
     console.log(`[VMWarmPool] Starting VM warm pool controller (poolSize: ${this.poolSize})`)
 
-    // Kill orphaned VM helper processes from a previous server session
+    // Kill orphaned QEMU and VM helper processes from a previous server session
+    try { execSync('pkill -f qemu-system', { stdio: 'pipe' }) } catch {}
     try { execSync('pkill -f shogo-vm', { stdio: 'pipe' }) } catch {}
 
     // Purge stale overlay disk images from previous sessions
