@@ -45,6 +45,8 @@ import { aiProxyRoutes } from './routes/ai-proxy'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
+import { adminMarketplaceRoutes } from './routes/admin-marketplace'
+import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
@@ -468,6 +470,7 @@ app.use(
       '/api/ai/',
       '/api/tools/',
       '/api/api-keys/validate',
+      '/api/marketplace',
       '/api/agent-templates',
       '/api/tech-stacks',
       '/api/vm/',
@@ -605,6 +608,7 @@ app.get('/api/config', async (c) => {
       oauth: !localMode,
       analytics: true,
       publishing: !localMode,
+      marketplace: true,
     },
   })
 })
@@ -1032,6 +1036,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // ── Local mode: meeting recording & transcription ────────────────────────
   app.route('/', meetingRoutes)
 }
+
+// Marketplace
+app.route('/api/marketplace', marketplaceRoutes())
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
@@ -4955,6 +4962,8 @@ app.route('/api/admin', createAdminRoutes({
 
 // Hand-written admin routes for custom analytics endpoints
 app.route('/api/admin', adminRoutes())
+
+app.route('/api/admin/marketplace', adminMarketplaceRoutes())
 
 // User attribution endpoint (authenticated users, not admin-only)
 app.route('/api', userAttributionRoute())

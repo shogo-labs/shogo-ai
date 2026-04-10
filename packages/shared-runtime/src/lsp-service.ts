@@ -10,7 +10,7 @@
 
 import { spawn, type Subprocess } from 'bun'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 
 const IS_WINDOWS = process.platform === 'win32'
 const WIN_BIN_EXTENSIONS = ['.exe', '.cmd']
@@ -112,7 +112,7 @@ export class TSLanguageServer {
   private extraInitOptions: Record<string, unknown>
 
   constructor(projectDir: string, opts?: TSLanguageServerOptions) {
-    this.projectDir = projectDir
+    this.projectDir = resolve(projectDir)
     this.serverBin = opts?.serverBin
     this.serverArgs = opts?.serverArgs ?? ['--log-level', '1']
     this.fallbackBinNames = opts?.fallbackBinNames ?? ['typescript-language-server']
@@ -571,7 +571,7 @@ export class WorkspaceLSPManager {
   private warmupPromise: Promise<void> | null = null
 
   constructor(opts: WorkspaceLSPManagerOptions) {
-    this.projectDir = opts.projectDir
+    this.projectDir = resolve(opts.projectDir)
     this.tsServerBin = opts.tsServerBin
     this.pyrightBin = opts.pyrightBin
   }
