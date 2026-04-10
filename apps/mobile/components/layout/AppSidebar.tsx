@@ -11,7 +11,7 @@
  *  - Workspace switcher
  *  - Primary nav: Home + Search (Cmd+K)
  *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
- *  - RESOURCES section: Templates, Remote Control, Docs (external)
+ *  - RESOURCES section: Templates, Instance Picker, API Keys, Docs (external)
  *  - Upgrade to Pro CTA
  *  - User avatar + Sign Out
  */
