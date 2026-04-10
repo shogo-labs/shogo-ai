@@ -9,7 +9,7 @@ on:
         type: string
   push:
     tags:
-      - 'desktop-v*'
+      - 'v*'
 
 env:
   BUN_VERSION: '1.3.11'
@@ -74,8 +74,8 @@ jobs:
 
       - name: Set app version from tag
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/desktop-v}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
           elif [[ -n "${{ inputs.version }}" ]]; then
             VERSION="${{ inputs.version }}"
           else
@@ -116,6 +116,23 @@ jobs:
           mv ${{ matrix.bun-target }}/bun* . || true
           rm -rf ${{ matrix.bun-target }} bun.zip
           ls -la
+
+      - name: Bundle QEMU for VM isolation
+        if: matrix.arch == 'arm64'
+        run: |
+          brew install qemu dylibbundler
+          mkdir -p apps/desktop/resources/vm
+          QEMU_PREFIX=$(brew --prefix qemu)
+          cp "$QEMU_PREFIX/bin/qemu-system-aarch64" apps/desktop/resources/vm/
+          cp "$QEMU_PREFIX/bin/qemu-img" apps/desktop/resources/vm/
+          cd apps/desktop/resources/vm
+          dylibbundler -of -b -cd -x qemu-system-aarch64 -d lib/ -p @executable_path/lib/
+          dylibbundler -of -b -cd -x qemu-img -d lib/ -p @executable_path/lib/
+          echo "=== Verifying no absolute Homebrew paths remain ==="
+          ! otool -L qemu-system-aarch64 | grep /opt/homebrew
+          ! otool -L qemu-img | grep /opt/homebrew
+          echo "=== Bundled QEMU binaries ==="
+          ls -lhR .
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -235,15 +252,15 @@ jobs:
           }
 
           echo "=== Phase 1: Sign all native binaries (Mach-O, dylib, .node, .so) ==="
-          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.node" \) | sort -r | while read -r f; do
+          find "$APP_PATH" -type f \( -name "*.dylib" -o -name "*.dylib.*" -o -name "*.so" -o -name "*.node" \) | sort -r | while read -r f; do
             echo "  signing: $f"
             sign_file "$f"
           done
 
-          find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
+          find "$APP_PATH" -type f -perm +111 ! -name "*.dylib" ! -name "*.dylib.*" ! -name "*.so" ! -name "*.node" ! -name "*.js" ! -name "*.py" ! -name "*.sh" | while read -r f; do
             if file "$f" | grep -q "Mach-O"; then
-              echo "  signing: $f"
-              sign_file "$f"
+              echo "  signing (with child entitlements): $f"
+              codesign "${SIGN_ARGS[@]}" --entitlements ./entitlements.child.plist "$f" 2>&1 && SIGNED=$((SIGNED + 1)) || echo "  WARNING: failed to sign $f"
             fi
           done
 
@@ -284,10 +301,16 @@ jobs:
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 10m 2>&1) || true
+            --wait --timeout 15m 2>&1) || true
           echo "$SUBMIT_OUTPUT"
           SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
-          STATUS=$(echo "$SUBMIT_OUTPUT" | grep "status:" | tail -1 | awk '{print $2}')
+          STATUS=$(echo "$SUBMIT_OUTPUT" | grep "^  *status:" | tail -1 | awk '{print $2}')
+          if [ -z "$STATUS" ] && [ -n "$SUBMISSION_ID" ]; then
+            STATUS=$(xcrun notarytool info "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_ID_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" 2>&1 | grep "status:" | tail -1 | awk '{print $2}')
+          fi
           if [ "$STATUS" != "Accepted" ]; then
             echo "::error::Notarization failed with status: $STATUS"
             echo "Fetching notarization log..."
@@ -327,7 +350,7 @@ jobs:
     name: Create Release
     needs: build-desktop
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:

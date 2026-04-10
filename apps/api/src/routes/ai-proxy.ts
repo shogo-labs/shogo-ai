@@ -491,7 +491,7 @@ async function proxyAnthropicStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void,
+  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number, cacheWriteTokens: number) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
   const body = convertToAnthropicFormat({
@@ -522,6 +522,7 @@ async function proxyAnthropicStream(
   const completionId = `chatcmpl-${Date.now()}`
   let inputTokens = 0
   let cachedInputTokens = 0
+  let cacheWriteTokens = 0
   let outputTokens = 0
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -543,7 +544,8 @@ async function proxyAnthropicStream(
 
           if (event.type === 'message_start' && event.message?.usage) {
             const usage = event.message.usage
-            inputTokens = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
+            inputTokens = usage.input_tokens || 0
+            cacheWriteTokens = usage.cache_creation_input_tokens || 0
             cachedInputTokens = usage.cache_read_input_tokens || 0
           }
           if (event.type === 'message_delta' && event.usage) {
@@ -556,7 +558,7 @@ async function proxyAnthropicStream(
     },
     flush(controller) {
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-      onComplete?.(inputTokens, outputTokens, cachedInputTokens)
+      onComplete?.(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)
     },
   })
 
@@ -886,6 +888,41 @@ async function proxyOpenAINonStream(
 }
 
 // =============================================================================
+// Prompt Cache Boundary Splitting
+// =============================================================================
+
+const CACHE_BOUNDARY = '<|CACHE_BOUNDARY|>'
+
+/**
+ * Split system prompt blocks at the CACHE_BOUNDARY marker so that the stable
+ * prefix gets `cache_control` (enabling Anthropic prompt caching) while the
+ * dynamic suffix does not. Without this, the entire system prompt is one block
+ * whose cache is invalidated every turn because the dynamic content changes.
+ *
+ * Mutates `parsed.system` in place.
+ */
+function splitSystemBlocksForCaching(parsed: any): void {
+  if (!parsed.system || !Array.isArray(parsed.system)) return
+  const newSystem: any[] = []
+  for (const block of parsed.system) {
+    if (block.type !== 'text' || typeof block.text !== 'string' || !block.text.includes(CACHE_BOUNDARY)) {
+      newSystem.push(block)
+      continue
+    }
+    const idx = block.text.indexOf(CACHE_BOUNDARY)
+    const stableText = block.text.slice(0, idx).trimEnd()
+    const dynamicText = block.text.slice(idx + CACHE_BOUNDARY.length).trimStart()
+    if (stableText) {
+      newSystem.push({ type: 'text', text: stableText, cache_control: block.cache_control || { type: 'ephemeral' } })
+    }
+    if (dynamicText) {
+      newSystem.push({ type: 'text', text: dynamicText })
+    }
+  }
+  parsed.system = newSystem
+}
+
+// =============================================================================
 // Billing
 // =============================================================================
 
@@ -907,25 +944,26 @@ async function recordUsage(
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number = 0,
+  cacheWriteTokens: number = 0,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), not a real
   // Project row. Pass null so the UsageEvent FK constraint is satisfied.
   const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
 
   // If a billing session is open, accumulate — the session closer will charge
-  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens)) {
-    const totalTokens = inputTokens + cachedInputTokens + outputTokens
+  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)) {
+    const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId})`)
     return
   }
 
   // No billing session — charge immediately (direct proxy usage)
-  const totalTokens = inputTokens + cachedInputTokens + outputTokens
+  const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
   if (totalTokens === 0) return
 
   try {
     const billingModel = proxyModelToBillingModel(model)
-    const creditCost = calculateCreditCost(inputTokens, outputTokens, billingModel, cachedInputTokens)
+    const { credits: creditCost, dollarCost } = calculateCreditCost(inputTokens, outputTokens, billingModel, cachedInputTokens, cacheWriteTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
@@ -937,11 +975,11 @@ async function recordUsage(
       billingUserId,
       'ai_proxy_completion',
       creditCost,
-      { model, billingModel, inputTokens, outputTokens, totalTokens }
+      { model, billingModel, dollarCost, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens }
     )
 
     if (result.success) {
-      console.log(`[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
+      console.log(`[AI Proxy] 💰 Charged ${creditCost} credits ($${dollarCost.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
     } else {
       console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
     }
@@ -1252,6 +1290,8 @@ export function aiProxyRoutes() {
     const parsed = JSON.parse(body)
     const isStream = !!parsed.stream
 
+    splitSystemBlocksForCaching(parsed)
+
     const forwardHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-api-key': shogoKey,
@@ -1265,7 +1305,7 @@ export function aiProxyRoutes() {
     const response = await fetch(`${cloudUrl}/api/ai/anthropic/v1/messages`, {
       method: 'POST',
       headers: forwardHeaders,
-      body,
+      body: JSON.stringify(parsed),
       signal,
     })
 
@@ -1413,8 +1453,8 @@ export function aiProxyRoutes() {
       // Route to provider
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
-          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok)
+          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok)
           }, c.req.raw.signal)
         } else {
           return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok) => {
@@ -1902,6 +1942,12 @@ export function aiProxyRoutes() {
 
       // Replace the model name with the resolved one before forwarding
       parsed.model = resolvedModel
+
+      // Split system prompt at CACHE_BOUNDARY so Anthropic can cache the stable
+      // prefix independently. The agent-runtime embeds <|CACHE_BOUNDARY|> between
+      // the stable and dynamic zones of the system prompt.
+      splitSystemBlocksForCaching(parsed)
+
       const forwardBody = JSON.stringify(parsed)
 
       const headers: Record<string, string> = {
@@ -1934,10 +1980,11 @@ export function aiProxyRoutes() {
 
       if (!isStream) {
         const responseBody = await response.json() as any
-        const inTok = (responseBody.usage?.input_tokens || 0) + (responseBody.usage?.cache_creation_input_tokens || 0)
+        const inTok = responseBody.usage?.input_tokens || 0
+        const cacheWriteTok = responseBody.usage?.cache_creation_input_tokens || 0
         const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok)
         return c.json(responseBody)
       }
 
@@ -1952,6 +1999,7 @@ export function aiProxyRoutes() {
 
       let streamInputTokens = 0
       let streamCachedInputTokens = 0
+      let streamCacheWriteTokens = 0
       let streamOutputTokens = 0
       const sseDecoder = new TextDecoder()
       let sseBuffer = ''
@@ -1970,7 +2018,8 @@ export function aiProxyRoutes() {
               const event = JSON.parse(data)
               if (event.type === 'message_start' && event.message?.usage) {
                 const usage = event.message.usage
-                streamInputTokens = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
+                streamInputTokens = usage.input_tokens || 0
+                streamCacheWriteTokens = usage.cache_creation_input_tokens || 0
                 streamCachedInputTokens = usage.cache_read_input_tokens || 0
               }
               if (event.type === 'message_delta' && event.usage) {
@@ -1980,7 +2029,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens)
         },
       })
 

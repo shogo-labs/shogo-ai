@@ -56,19 +56,13 @@ import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
 import {
-  OPTIMIZED_MEMORY_GUIDE,
-  OPTIMIZED_PERSONALITY_GUIDE,
-  OPTIMIZED_TOOL_PLANNING_GUIDE,
-  OPTIMIZED_SESSION_SUMMARY_GUIDE,
-  OPTIMIZED_SKILL_MATCHING_GUIDE,
-  OPTIMIZED_MCP_DISCOVERY_GUIDE,
-  OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
   SELF_EVOLUTION_GUIDE,
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
+import { buildGuideRegistry, CAPABILITIES_INDEX } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
@@ -206,58 +200,6 @@ export interface GatewayConfig {
   coordinatorMode?: boolean
 }
 
-const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
-
-When the user changes your personality, tone, role, name, or boundaries, you MUST:
-1. \`read_file\` the target file first
-2. \`edit_file\` to make a **targeted** change to the relevant section
-
-**NEVER** use \`write_file\` to overwrite the entire file — always use \`edit_file\` to change only the relevant section.
-**NEVER** write personality/role/boundary changes to MEMORY.md — memory is for facts and conversation logs only.
-
-### AGENTS.md Sections
-All identity, personality, user preferences, and operating instructions live in **AGENTS.md**:
-- **# Identity** — Name, emoji, and tagline (e.g. "call me Atlas")
-- **# Personality** — Tone, communication style, and boundaries (e.g. "be more formal", "never run shell commands")
-- **# User** — User preferences like name, timezone, interests
-- **# Operating Instructions** — Role definition, capabilities, and priorities
-
-### Example
-
-User: "Be more formal and professional from now on"
-
-\`\`\`
-read_file({ path: "AGENTS.md" })
-edit_file({
-  path: "AGENTS.md",
-  old_string: "## Tone\\n- Direct and helpful, not verbose",
-  new_string: "## Tone\\n- Formal and professional at all times"
-})
-\`\`\`
-
-User: "Call me Atlas"
-
-\`\`\`
-read_file({ path: "AGENTS.md" })
-edit_file({
-  path: "AGENTS.md",
-  old_string: "- **Name:** Shogo",
-  new_string: "- **Name:** Atlas"
-})
-\`\`\`
-
-### When to Update
-- User explicitly corrects your tone, style, or boundaries (e.g. "be more formal")
-- User establishes a new, lasting boundary (e.g. "don't suggest code changes")
-- User assigns a new name, role, or domain focus
-
-### When NOT to Update
-- One-off requests or trivial conversation
-- Information already present in the file
-- Temporary context that doesn't reflect a lasting change
-
-`
-
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -280,6 +222,8 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /** Current guide registry built during loadBootstrapContext, consumed by tool context */
+  private currentGuideRegistry?: Map<string, string>
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
@@ -304,6 +248,7 @@ export class AgentGateway {
     toolCallCount: number
     contextWindowTokens: number
     estimatedContextTokens: number
+    model: string
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -1361,6 +1306,7 @@ export class AgentGateway {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
+      guideRegistry: this.currentGuideRegistry,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1831,6 +1777,7 @@ export class AgentGateway {
         toolCallCount: result.toolCalls.length,
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
+        model: modelId,
       }
 
       // UI notifications below may throw if the client disconnected (stop).
@@ -2061,27 +2008,15 @@ export class AgentGateway {
     // 2. General coding guide (always the same)
     stableParts.push(CODE_AGENT_GENERAL_GUIDE)
 
-    // 3. Behavioral guides (stable unless user edits personality mid-session)
-    const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
-    const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
-    const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
-    const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
+    // 3. Capabilities Index — compact pointers to on-demand guides served by read_guide tool.
+    // Full guide content lives in guide-registry.ts and is returned by the read_guide tool,
+    // saving ~4,600 tokens per turn compared to inlining all guides.
+    this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
+    stableParts.push(CAPABILITIES_INDEX)
 
-    stableParts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
-    stableParts.push(toolPlanningGuide)
-    stableParts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
-    if (this.config.memoryEnabled !== false) {
-      stableParts.push(memoryGuide)
-    }
-    if (this.config.browserEnabled !== false) {
-      stableParts.push(BROWSER_TOOL_GUIDE)
-    }
-    stableParts.push(SELF_EVOLUTION_GUIDE)
     if (this.config.quickActionsEnabled !== false) {
       stableParts.push(QUICK_ACTION_GUIDE)
     }
-    stableParts.push(skillMatchingGuide)
-    stableParts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
     // 4. Security permissions guide (stable once mode is set)
     if (this.permissionEngine) {
@@ -2113,10 +2048,11 @@ export class AgentGateway {
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
 
-    // 5b. Sub-agent orchestration guide
-    stableParts.push(SUBAGENT_GUIDE)
-
-    // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
+    // Separator tells the AI proxy to split the system prompt into two Anthropic
+    // system blocks: the stable prefix gets cache_control, the dynamic suffix
+    // does not. Without this, the entire prompt is one block whose cache is
+    // invalidated every turn because the dynamic content changes.
+    const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
 
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
@@ -2232,7 +2168,9 @@ export class AgentGateway {
       if (teamCtx) dynamicParts.push(teamCtx)
     }
 
-    return [...stableParts, ...dynamicParts].join('\n\n---\n\n')
+    const stableText = stableParts.join('\n\n---\n\n')
+    const dynamicText = dynamicParts.join('\n\n---\n\n')
+    return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
   }
 
   /**

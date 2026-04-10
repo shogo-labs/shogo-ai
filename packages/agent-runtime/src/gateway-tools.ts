@@ -10,7 +10,7 @@
  * ToolContext, since Pi's execute() signature doesn't accept external context.
  */
 
-import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname } from 'path'
 import { execSync } from 'child_process'
@@ -105,6 +105,8 @@ export interface ToolContext {
   effectiveModel?: string
   /** Persistent shell cwd state — survives across exec calls within a session */
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
+  /** On-demand guide registry populated by buildGuideRegistry() */
+  guideRegistry?: Map<string, string>
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -2079,14 +2081,9 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
   return {
     name: 'browser',
     description:
-      'Control a browser. IMPORTANT: You MUST call snapshot before ANY interaction to get element refs — never guess selectors.\n\n' +
-      'Actions: navigate (go to URL), snapshot (get accessibility tree with element refs — ALWAYS call this before interacting), ' +
-      'click (by ref or CSS selector), fill (clear and replace input text), select (dropdown option), ' +
-      'extract (get elements by CSS selector), text (full page text), screenshot (capture visible page as image — you will SEE the image), ' +
-      'evaluate (run JS), scroll (scroll page), wait_for (wait for element), close.\n\n' +
-      'Workflow: navigate → snapshot → read refs → interact using ref numbers → snapshot again after page changes. ' +
-      'Use short incremental waits with snapshot checks rather than long single waits. ' +
-      'CSS selectors work as fallback via the selector parameter, but prefer ref from snapshot.',
+      'Control a browser. MUST snapshot before any interaction to get element refs. ' +
+      'Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. ' +
+      'Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. Use read_guide("browser") for details.',
     label: 'Browser',
     parameters: Type.Object({
       action: Type.Union([
@@ -2455,7 +2452,7 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
 function createToolSearchTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_search',
-    description: 'Search for available tools, integrations, and skills by capability or keyword. Searches managed OAuth integrations (Google Calendar, Slack, GitHub, and hundreds more), and bundled/installed agent skills. For MCP protocol servers (databases, file systems, custom tools), use mcp_search instead.',
+    description: 'Search for managed OAuth integrations and bundled skills by keyword. For MCP servers, use mcp_search.',
     label: 'Search Tools & Skills',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "seo audit", "github ops", "slack mentions")' }),
@@ -2522,7 +2519,7 @@ function createToolSearchTool(ctx: ToolContext): AgentTool {
 function createMcpSearchTool(): AgentTool {
   return {
     name: 'mcp_search',
-    description: 'Search for MCP (Model Context Protocol) servers — standalone tool servers for databases, file systems, APIs, browser automation, and more. These are protocol servers that provide tool functions and may require configuration (env vars, API keys). For managed OAuth integrations (Google Calendar, Slack, GitHub), use tool_search instead.',
+    description: 'Search for MCP protocol servers (databases, file systems, APIs). For managed OAuth integrations, use tool_search.',
     label: 'Search MCP Servers',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "postgres database", "filesystem", "brave search")' }),
@@ -2592,13 +2589,7 @@ function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: `Install a managed OAuth integration or a bundled skill, making it available immediately.
-
-For integrations (Google Calendar, Slack, GitHub, Linear, Notion, and hundreds more) — just provide the name. No API keys needed; authentication is handled automatically.
-
-For skills — use the "skill:" prefix (e.g. tool_install({ name: "skill:github-ops" })). This copies the bundled skill into your skills/ directory where it activates automatically on matching messages.
-
-For MCP protocol servers (databases, file systems, custom tool servers), use mcp_install instead.`,
+    description: 'Install a managed OAuth integration or bundled skill. For integrations, just provide the name (no API keys needed). For skills, use "skill:" prefix. See read_guide("mcp-discovery") for details.',
     label: 'Install Integration or Skill',
     parameters: Type.Object({
       name: Type.String({ description: 'Integration name (e.g. "googlecalendar", "slack") or skill with prefix (e.g. "skill:github-ops", "skill:mktg-seo-audit"). Use tool_search to find available options.' }),
@@ -2703,11 +2694,7 @@ For MCP protocol servers (databases, file systems, custom tool servers), use mcp
 function createMcpInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'mcp_install',
-    description: `Install and start an MCP (Model Context Protocol) server, making its tools available immediately. MCP servers are standalone tool servers for databases, file systems, APIs, and more.
-
-For catalog servers (${MCP_CATALOG.map(e => e.id).join(', ')}), just provide the name. For remote servers, provide a name and URL.
-
-MCP servers are different from managed integrations — they may require environment variables or API keys. For managed OAuth integrations (Google Calendar, Slack, GitHub), use tool_install instead.`,
+    description: `Install and start an MCP server, making its tools available immediately. Catalog: ${MCP_CATALOG.map(e => e.id).join(', ')}. For remote servers, provide name + url. May require env vars for API keys.`,
     label: 'Install MCP Server',
     parameters: Type.Object({
       name: Type.String({ description: 'MCP server name from the catalog (e.g. "postgres", "filesystem", "github") or a custom name when providing a URL.' }),
@@ -2973,6 +2960,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+          const subModel = ctx.effectiveModel || ctx.config.model.name
           w.write({
             type: 'data-usage',
             data: {
@@ -2983,6 +2971,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
               iterations: result.iterations,
               toolCallCount: result.toolCalls,
               subagent: 'fork',
+              model: subModel,
+              dollarCost: calculateDollarCost(subModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens),
             },
           })
         }
@@ -3034,6 +3024,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const result = await inst.promise
 
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+        const subModel = ctx.effectiveModel || ctx.config.model.name
         w.write({
           type: 'data-usage',
           data: {
@@ -3044,6 +3035,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
             iterations: result.iterations,
             toolCallCount: result.toolCalls,
             subagent: type,
+            model: subModel,
+            dollarCost: calculateDollarCost(subModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens),
           },
         })
       }
@@ -3263,6 +3256,7 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
 
       const w = ctx.uiWriter
       if (w && r && (r.inputTokens > 0 || r.outputTokens > 0)) {
+        const subModel = ctx.effectiveModel || ctx.config.model.name
         w.write({
           type: 'data-usage',
           data: {
@@ -3273,6 +3267,8 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
             iterations: r.iterations,
             toolCallCount: r.toolCalls,
             subagent: inst.type,
+            model: subModel,
+            dollarCost: calculateDollarCost(subModel, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheWriteTokens),
           },
         })
       }
@@ -3604,6 +3600,25 @@ function createQuickActionTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function createReadGuideTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'read_guide',
+    description: 'Read a capability guide by name. See the Capabilities Index in your system prompt for available guides.',
+    label: 'Read Guide',
+    parameters: Type.Object({
+      name: Type.String({ description: 'Guide name from the Capabilities Index' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { name: guideName } = params as { name: string }
+      const registry = ctx.guideRegistry
+      if (!registry) return textResult('Guide registry not available.')
+      const content = registry.get(guideName)
+      if (content) return textResult(content)
+      return textResult(`Unknown guide "${guideName}". Available: ${[...registry.keys()].join(', ')}`)
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -3648,6 +3663,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createHeartbeatStatusTool(ctx),
     createCreatePlanTool(ctx),
     createQuickActionTool(ctx),
+    createReadGuideTool(ctx),
   ]
 
   const allToolsGetter = () => tools
@@ -3716,10 +3732,8 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
   return {
     name: 'skill',
     description:
-      'Manage and invoke skills. Default action is "invoke" — runs a skill by name. ' +
-      'Use action "search" to find skills in the registry (CRO, SEO, copywriting, automation, dev tools, and 800+ more). ' +
-      'Use action "install" to install a registry skill into the workspace. ' +
-      'Use action "run_script" to execute a script from a skill\'s scripts/ directory.',
+      'Manage and invoke skills. Actions: invoke (default), search, install, run_script. ' +
+      'See read_guide("skill-matching") for details.',
     label: 'Skill',
     parameters: Type.Object({
       action: Type.Optional(Type.String({ description: 'Action: "invoke" (default), "search", "install", or "run_script"' })),
@@ -4104,13 +4118,9 @@ function createSearchTool(ctx: ToolContext): AgentTool {
   return {
     name: 'search',
     description:
-      'Semantic search across the workspace. Searches code AND uploaded files by default. ' +
-      'Finds content by meaning, not just exact text. ' +
-      'Use for questions like "where is X implemented?", "find tests for Y", "what module handles Z?", ' +
-      'or "find revenue numbers in my data". ' +
+      'Semantic search across the workspace by meaning. Searches code and uploaded files. ' +
       'Returns ranked chunks with file paths and line numbers. ' +
-      'Prefer this over grep when exploring unfamiliar code or searching by concept rather than exact string. ' +
-      'Use source="code" to search only code, source="files" to search only uploaded files in files/.',
+      'Use source="code" for code only, source="files" for uploaded files only.',
     label: 'Search',
     parameters: Type.Object({
       query: Type.String({ description: 'Natural language search query' }),
@@ -4642,23 +4652,15 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'channel_connect',
     description:
-      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, webhook, teams, or webchat). ' +
-      'Saves the config and hot-connects the channel immediately. ' +
-      'For webchat: creates an embeddable chat widget for any website — no external accounts needed.',
+      'Connect a messaging channel. Supported: telegram, discord, email, slack, whatsapp, webhook, teams, webchat. ' +
+      'Saves config and hot-connects immediately.',
     label: 'Connect Channel',
     parameters: Type.Object({
       type: Type.String({
         description: 'Channel type: telegram, discord, email, slack, whatsapp, webhook, teams, or webchat',
       }),
       config: Type.Record(Type.String(), Type.String(), {
-        description:
-          'Channel configuration. For webhook: { secret?: "shared-secret" }. ' +
-          'For telegram: { botToken: "..." }. For discord: { botToken: "...", guildId: "..." }. ' +
-          'For email: { imapHost, smtpHost, username, password }. ' +
-          'For slack: { botToken: "xoxb-...", appToken: "xapp-..." }. ' +
-          'For whatsapp: { accessToken, phoneNumberId, verifyToken }. ' +
-          'For teams: { appId, appPassword, botName? }. ' +
-          'For webchat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? } — all fields optional.',
+        description: 'Channel-specific config keys. The tool returns setup instructions if required keys are missing.',
       }),
       model: Type.Optional(Type.String({
         description: 'AI model ID for this channel (e.g. "claude-sonnet-4-6", "claude-haiku-4-5-20251001"). Economy-tier models work on all plans; standard/premium require Pro. Defaults to "claude-haiku-4-5-20251001".',

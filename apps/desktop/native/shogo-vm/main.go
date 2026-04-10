@@ -150,7 +150,7 @@ func createAndStartVM(params StartParams) (*vz.VirtualMachine, *vz.VirtioSocketD
 	bootLoader, err := vz.NewLinuxBootLoader(
 		params.KernelPath,
 		vz.WithInitrd(params.InitrdPath),
-		vz.WithCommandLine("root=/dev/vda1 console=hvc0 quiet"),
+		vz.WithCommandLine("root=/dev/vda1 console=hvc0 quiet systemd.mask=boot-efi.mount"),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("boot loader: %w", err)

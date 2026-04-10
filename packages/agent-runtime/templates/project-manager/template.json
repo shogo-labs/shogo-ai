@@ -3,6 +3,7 @@
   "name": "Project Manager",
   "description": "Kanban board, sprint planning, standup collection, and team velocity tracking with multi-surface project dashboards.",
   "category": "development",
+  "icon": "Folder",
   "tags": [
     "project",
     "kanban",
@@ -40,5 +41,5 @@
       "description": "Track commits and pull request activity"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

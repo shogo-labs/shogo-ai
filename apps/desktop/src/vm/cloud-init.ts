@@ -232,49 +232,9 @@ function buildUserData(config: CloudInitConfig): string {
     '    sudo: ALL=(ALL) NOPASSWD:ALL',
     '    groups: [sudo]',
     '',
+    'ssh_genkeytypes: []',
+    '',
   ]
-
-  if (config.useBundleMount) {
-    // macOS VirtioFS bundle-mount path (unchanged)
-    lines.push('write_files:')
-    lines.push('  - path: /opt/vsock-bridge.py')
-    lines.push("    permissions: '0755'")
-    lines.push('    content: |')
-    lines.push('      #!/usr/bin/env python3')
-    lines.push('      import socket, threading, sys')
-    lines.push('      def bridge(src, dst):')
-    lines.push('          try:')
-    lines.push('              while True:')
-    lines.push('                  data = src.recv(65536)')
-    lines.push('                  if not data: break')
-    lines.push('                  dst.sendall(data)')
-    lines.push('          except: pass')
-    lines.push('          finally:')
-    lines.push('              try: src.close()')
-    lines.push('              except: pass')
-    lines.push('              try: dst.close()')
-    lines.push('              except: pass')
-    lines.push('      def handle(client, target_port):')
-    lines.push('          try:')
-    lines.push('              tcp = socket.create_connection(("127.0.0.1", target_port))')
-    lines.push('              threading.Thread(target=bridge, args=(client, tcp), daemon=True).start()')
-    lines.push('              threading.Thread(target=bridge, args=(tcp, client), daemon=True).start()')
-    lines.push('          except: client.close()')
-    lines.push('      def serve(vsock_port, tcp_port):')
-    lines.push('          vs = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)')
-    lines.push('          vs.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)')
-    lines.push('          vs.bind((socket.VMADDR_CID_ANY, vsock_port))')
-    lines.push('          vs.listen(32)')
-    lines.push('          while True:')
-    lines.push('              c, _ = vs.accept()')
-    lines.push('              threading.Thread(target=handle, args=(c, tcp_port), daemon=True).start()')
-    lines.push(`      mappings = [(1, ${config.guestAgentPort}), (2, 4100)]`)
-    lines.push('      for vp, tp in mappings:')
-    lines.push('          threading.Thread(target=serve, args=(vp, tp), daemon=True).start()')
-    lines.push('      import time')
-    lines.push('      while True: time.sleep(3600)')
-    lines.push('')
-  }
 
   if (config.workspaceMountTag || config.credentialMounts?.length) {
     lines.push('mounts:')
@@ -289,94 +249,55 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('')
   }
 
+  lines.push('bootcmd:')
+  lines.push('  - systemctl mask multipathd multipathd.socket 2>/dev/null || true')
+  lines.push('  - systemctl stop multipathd 2>/dev/null || true')
+  lines.push('  - systemctl mask boot-efi.mount 2>/dev/null || true')
+  lines.push('  - sysctl -w vm.vfs_cache_pressure=500')
+  lines.push('  - sysctl -w vm.min_free_kbytes=65536')
+  lines.push('  - depmod -a 2>/dev/null || true')
+  lines.push('  - modprobe virtiofs 2>/dev/null || true')
+  lines.push('')
+
   lines.push('runcmd:')
 
-  if (config.useBundleMount) {
-    // macOS VirtioFS bundle-mount provisioning (unchanged)
-    lines.push('  - mkdir -p /workspace /mnt/bundle')
-    lines.push('  - mount -t virtiofs workspace /workspace 2>/dev/null || true')
-    lines.push('  - mount -t virtiofs bundle /mnt/bundle 2>/dev/null || true')
-    lines.push('  - chown shogo:shogo /workspace 2>/dev/null || true')
-    lines.push(`  - date -s "${new Date().toISOString()}"`)
-    lines.push('  - growpart /dev/vda 1 2>/dev/null || true')
-    lines.push('  - resize2fs /dev/vda1 2>/dev/null || true')
-    lines.push('  - mkdir -p /app/templates /packages/sdk/bin')
-    lines.push('  - ln -sf /mnt/bundle/templates/runtime-template /app/templates/runtime-template')
-    lines.push('  - |')
-    lines.push('    if [ ! -d /app/templates/skill-server/node_modules ]; then')
-    lines.push('      mkdir -p /app/templates/skill-server')
-    lines.push('      cp /mnt/bundle/templates/skill-server/package.json /app/templates/skill-server/ 2>/dev/null || true')
-    lines.push('    fi')
-    lines.push('  - ln -sf /mnt/bundle/shogo.js /packages/sdk/bin/shogo.ts')
-    lines.push('  - ln -sf /mnt/bundle/bun /usr/local/bin/bun')
-    lines.push('  - ln -sf /mnt/bundle/node /usr/local/bin/node')
-    lines.push('  - ln -sf /mnt/bundle/npx /usr/local/bin/npx')
-    lines.push('  - ln -sf /mnt/bundle/npm /usr/local/bin/npm')
-    lines.push('  - |')
-    lines.push('    if [ ! -d /app/templates/skill-server/node_modules ]; then')
-    lines.push('      export PATH=/mnt/bundle:$PATH')
-    lines.push('      cd /app/templates/skill-server && /mnt/bundle/bun install 2>/dev/null || true')
-    lines.push('    fi')
-    lines.push('  - |')
-    lines.push('    if ! which typescript-language-server >/dev/null 2>&1; then')
-    lines.push('      export PATH=/mnt/bundle:$PATH')
-    lines.push('      cd /workspace && /mnt/bundle/bun add typescript-language-server typescript 2>/workspace/.lsp-install.log || true')
-    lines.push('    fi')
-
-    const projectId = config.env?.PROJECT_ID || '__POOL__'
-    const envLines = [
-      `    export PROJECT_ID=${shellEscape(projectId)}`,
-      `    export PORT=${config.guestAgentPort}`,
-      `    export WORKSPACE_DIR=/workspace`,
-      `    export AGENT_DIR=/workspace`,
-      `    export PROJECT_DIR=/workspace`,
-      `    export NODE_ENV=development`,
-      `    export TREE_SITTER_WASM_DIR=/mnt/bundle/wasm`,
-      `    export PATH=/mnt/bundle:/workspace/node_modules/.bin:$PATH`,
-    ]
-    const skip = new Set(['PROJECT_ID', 'PORT', 'WORKSPACE_DIR', 'AGENT_DIR', 'PROJECT_DIR', 'NODE_ENV', 'TREE_SITTER_WASM_DIR', 'PATH'])
-    if (config.env) {
-      for (const [k, v] of Object.entries(config.env)) {
-        if (!skip.has(k)) envLines.push(`    export ${k}=${shellEscape(v)}`)
-      }
-    }
-    lines.push('  - |')
-    lines.push(...envLines)
-    lines.push(`    nohup /mnt/bundle/bun run /mnt/bundle/server.js > /workspace/.agent-runtime.log 2>&1 &`)
-    lines.push('    sleep 1')
-    lines.push('    nohup python3 /opt/vsock-bridge.py > /workspace/.vsock-bridge.log 2>&1 &')
-  } else {
-    // Pre-provisioned image (Windows QEMU, or any image with bun pre-installed)
-    // The seed ISO may carry server.js + shogo.js; copy them into the image.
+  {
+    // Pre-provisioned image path: bun/templates/deps are already in the image.
+    // Only server.js + shogo.js + wasm are injected per boot via seed ISO.
     lines.push('  - mkdir -p /workspace /opt/shogo')
     lines.push('  - chown shogo:shogo /workspace')
     lines.push(`  - date -s "${new Date().toISOString()}"`)
     lines.push('  - growpart /dev/vda 1 2>/dev/null || true')
     lines.push('  - resize2fs /dev/vda1 2>/dev/null || true')
-    // Ensure bun is the baseline build (no AVX, works with WHPX) and is
-    // a regular file accessible to all users (not a symlink into /root/).
-    // Old base images have bun as a symlink to /root/.bun/bin/bun (standard
-    // build, not baseline). We must download the actual baseline binary.
+    // Ensure bun is a regular file (not a symlink into /root/) and matches
+    // the guest architecture. On x86_64 we use the baseline build (no AVX,
+    // works with WHPX). On aarch64 we use the standard build.
     lines.push('  - |')
-    lines.push('    NEED_BASELINE=false')
+    lines.push('    NEED_BUN=false')
     lines.push('    if [ -L /usr/local/bin/bun ]; then')
-    lines.push('      echo "bun is a symlink — need baseline replacement"')
-    lines.push('      NEED_BASELINE=true')
+    lines.push('      echo "bun is a symlink — need replacement"')
+    lines.push('      NEED_BUN=true')
     lines.push('    elif ! [ -x /usr/local/bin/bun ]; then')
-    lines.push('      echo "bun not found — need baseline install"')
-    lines.push('      NEED_BASELINE=true')
+    lines.push('      echo "bun not found — need install"')
+    lines.push('      NEED_BUN=true')
     lines.push('    fi')
-    lines.push('    if [ "$NEED_BASELINE" = "true" ]; then')
+    lines.push('    if [ "$NEED_BUN" = "true" ]; then')
     lines.push('      BUN_VER=$(bun --version 2>/dev/null || echo "1.3.11")')
-    lines.push('      echo "Downloading bun-linux-x64-baseline v${BUN_VER}..."')
+    lines.push('      ARCH=$(uname -m)')
+    lines.push('      if [ "$ARCH" = "aarch64" ]; then')
+    lines.push('        BUN_PKG="bun-linux-aarch64"')
+    lines.push('      else')
+    lines.push('        BUN_PKG="bun-linux-x64-baseline"')
+    lines.push('      fi')
+    lines.push('      echo "Downloading ${BUN_PKG} v${BUN_VER}..."')
     lines.push('      cd /tmp')
-    lines.push('      curl -fsSL -o bun-baseline.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VER}/bun-linux-x64-baseline.zip"')
-    lines.push('      if [ -f bun-baseline.zip ]; then')
-    lines.push('        unzip -o bun-baseline.zip -d bun-extract 2>/dev/null')
+    lines.push('      curl -fsSL -o bun-dl.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VER}/${BUN_PKG}.zip"')
+    lines.push('      if [ -f bun-dl.zip ]; then')
+    lines.push('        unzip -o bun-dl.zip -d bun-extract 2>/dev/null')
     lines.push('        rm -f /usr/local/bin/bun')
-    lines.push('        cp bun-extract/bun-linux-x64-baseline/bun /usr/local/bin/bun')
-    lines.push('        rm -rf bun-baseline.zip bun-extract')
-    lines.push('        echo "Installed bun baseline: $(bun --version)"')
+    lines.push('        cp bun-extract/${BUN_PKG}/bun /usr/local/bin/bun')
+    lines.push('        rm -rf bun-dl.zip bun-extract')
+    lines.push('        echo "Installed bun: $(bun --version)"')
     lines.push('      fi')
     lines.push('    fi')
     lines.push('    chmod 755 /usr/local/bin/bun')
@@ -387,7 +308,7 @@ function buildUserData(config: CloudInitConfig): string {
     // Mount the seed ISO to extract bundled files (server.js, shogo.js)
     lines.push('  - |')
     lines.push('    mkdir -p /mnt/seed /packages/sdk/bin')
-    lines.push('    mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || mount /dev/cdrom /mnt/seed 2>/dev/null || true')
+    lines.push('    mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || mount /dev/cdrom /mnt/seed 2>/dev/null || mount -t iso9660 /dev/vdb /mnt/seed 2>/dev/null || true')
     lines.push('    mkdir -p /opt/shogo/wasm')
     lines.push('    for f in /mnt/seed/*; do')
     lines.push('      case "$f" in *.wasm) cp "$f" /opt/shogo/wasm/ ;; *) cp "$f" /opt/shogo/ ;; esac 2>/dev/null || true')
@@ -419,6 +340,7 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('    which bun && bun --version || echo "ERROR: bun not found in PATH"')
     lines.push(`    su - shogo -c "export PATH=/usr/local/bin:\\$PATH; ${envStr} /usr/local/bin/bun run /opt/shogo/server.js 2>&1 | tee /workspace/.agent-runtime.log &"`)
     lines.push('    disown 2>/dev/null || true')
+    lines.push('  - sync && echo 3 > /proc/sys/vm/drop_caches')
   }
 
   return lines.join('\n') + '\n'

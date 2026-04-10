@@ -6,7 +6,7 @@ on:
       version:
         description: 'Image version tag (e.g. vm-images-v1)'
         required: true
-        default: 'vm-images-v1'
+        default: 'vm-images-v3'
         type: string
   push:
     tags:
@@ -46,8 +46,8 @@ jobs:
         if: steps.vm-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.qemu-pkg }} qemu-utils cloud-image-utils wget
-          sudo modprobe nbd max_part=8
+          sudo apt-get install -y ${{ matrix.qemu-pkg }} qemu-utils cloud-image-utils wget libguestfs-tools
+          sudo modprobe nbd max_part=8 || true
 
       - name: Build VM image
         if: steps.vm-cache.outputs.cache-hit != 'true'
@@ -63,7 +63,7 @@ jobs:
       - name: Create tarball
         run: |
           cd apps/desktop/scripts/build-vm-image/output/${{ matrix.vm-arch }}
-          tar czf /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz vmlinuz initrd.img rootfs.qcow2 version.txt
+          tar czf /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz vmlinuz initrd.img rootfs-provisioned.qcow2 version.txt
           ls -lh /tmp/vm-image-${{ matrix.vm-arch }}.tar.gz
 
       - name: Upload tarball artifact

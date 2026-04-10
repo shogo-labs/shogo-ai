@@ -3,6 +3,7 @@
   "name": "Operations Monitor",
   "description": "API health monitoring, service status pages, Slack mention tracking, and alert management with real-time ops dashboards.",
   "category": "operations",
+  "icon": "Wifi",
   "tags": [
     "monitoring",
     "health",
@@ -36,5 +37,5 @@
       "description": "Deliver alerts and watch for mentions"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

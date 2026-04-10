@@ -86,24 +86,17 @@ module "india" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
-  # ARM64 custom OKE image (A4 Flex) — must be created in ap-mumbai-1
-  # Follow docs/oke-arm64-custom-image.md to create per-region image
-  image_id           = "" # TODO: create custom ARM image in ap-mumbai-1
-  placement_ad_names = [] # TODO: determine which AD has A4.Flex capacity
+  # ARM64 custom OKE image (A4 Flex)
+  image_id           = "ocid1.image.oc1.ap-mumbai-1.aaaaaaaaifagpks5y3kwx4ks6vjmhb5tfexqvrznf4uq44pnaduyqlysogkq"
+  placement_ad_names = ["XYpk:AP-MUMBAI-1-AD-1"]
 
-  # Active-active node with local DB — matches US sizing (A4: 6 GB/OCPU)
   system_node_ocpus     = 4
   system_node_memory_gb = 24
-  system_pool_size      = 3
+  system_pool_size      = 4
   system_pool_min       = 2
   system_pool_max       = 10
 
-  enable_workload_pool      = true
-  workload_node_ocpus       = 4
-  workload_node_memory_gb   = 24
-  workload_pool_size        = 1
-  workload_pool_min         = 1
-  workload_pool_max         = 30
+  enable_workload_pool = false
 
   # Data layer points to US primary
   database_primary_endpoint = var.us_database_endpoint
@@ -138,7 +131,3 @@ module "drg_from_us" {
 output "cluster_endpoint" { value = module.india.cluster_endpoint }
 output "cluster_id"       { value = module.india.cluster_id }
 output "ocir_prefix"      { value = module.india.ocir_prefix }
-
-output "workload_node_pool_id" {
-  value = module.india.workload_node_pool_id
-}

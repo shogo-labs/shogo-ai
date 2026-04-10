@@ -13,9 +13,11 @@ import { VMProgress } from '../../components/onboarding/VMProgress'
 import { NameInput } from '../../components/onboarding/steps/NameInput'
 import { AIConfigForm } from '../../components/onboarding/steps/AIConfigForm'
 import { SecurityForm } from '../../components/onboarding/steps/SecurityForm'
+import { MeetingSetupForm } from '../../components/onboarding/steps/MeetingSetupForm'
 import { FeaturesWidget } from '../../components/onboarding/steps/FeaturesWidget'
 import { TemplatesWidget } from '../../components/onboarding/steps/TemplatesWidget'
 import { CompleteWidget } from '../../components/onboarding/steps/CompleteWidget'
+import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgress'
 
 // ---------------------------------------------------------------------------
 // Step sequences
@@ -23,6 +25,10 @@ import { CompleteWidget } from '../../components/onboarding/steps/CompleteWidget
 
 function isDesktop(): boolean {
   return Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop
+}
+
+function isWindows(): boolean {
+  return Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.userAgent.includes('Win')
 }
 
 function getLocalSteps(): OnboardingStep[] {
@@ -43,6 +49,14 @@ function getLocalSteps(): OnboardingStep[] {
       autoAdvance: true,
       advanceDelay: 1200,
     })
+
+    if (isWindows()) {
+      steps.push({
+        id: 'vm-setup',
+        text: "For full sandbox isolation, your system needs QEMU and Windows Hypervisor Platform. Let me help you set those up.",
+        widget: 'vm-setup',
+      })
+    }
   }
 
   steps.push(
@@ -65,6 +79,11 @@ function getLocalSteps(): OnboardingStep[] {
       id: 'security',
       text: "One last thing \u2014 how should I handle permissions on your machine?",
       widget: 'security',
+    },
+    {
+      id: 'meeting-setup',
+      text: "I can also record and transcribe your meetings \u2014 everything stays on your machine. How would you like that set up?",
+      widget: 'meeting-setup',
     },
     {
       id: 'complete',
@@ -114,7 +133,7 @@ export default function OnboardingPage() {
   const [userName, setUserName] = useState('')
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
 
-  const isLocal = localMode && (needsSetup ?? false)
+  const isLocal = !!localMode
   const steps = useMemo(() => (isLocal ? getLocalSteps() : getCloudSteps()), [isLocal])
 
   const context = useMemo(
@@ -145,6 +164,8 @@ export default function OnboardingPage() {
     switch (widget) {
       case 'vm-progress':
         return <VMProgress autoStart />
+      case 'vm-setup':
+        return <VMSetupProgress onComplete={onComplete} />
       case 'name-input':
         return (
           <NameInput
@@ -158,6 +179,8 @@ export default function OnboardingPage() {
         return <AIConfigForm onComplete={onComplete} onSkip={onComplete} />
       case 'security':
         return <SecurityForm onComplete={onComplete} />
+      case 'meeting-setup':
+        return <MeetingSetupForm onComplete={onComplete} />
       case 'features':
         return <FeaturesWidget onComplete={onComplete} />
       case 'templates':

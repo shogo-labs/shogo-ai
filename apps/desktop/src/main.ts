@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+
+// Squirrel.Windows launches the app with lifecycle flags during
+// install / update / uninstall. We must handle them immediately
+// and exit before any heavy initialization runs.
+import { handleSquirrelEvent } from './squirrel-startup'
+if (handleSquirrelEvent()) {
+  process.exit(0)
+}
+
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification } from 'electron'
 import path from 'path'
 import fs from 'fs'
@@ -7,7 +16,9 @@ import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
-import { initAutoUpdater } from './updater'
+import { initAutoUpdater, getIsApplyingUpdate } from './updater'
+import { registerRecordingIpcHandlers, startMeetingMonitor, cleanupRecording } from './recording'
+import { createTray, destroyTray } from './tray'
 
 // --- Persistent file logging ---
 const logDir = process.platform === 'win32'
@@ -252,6 +263,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     title: 'Shogo',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -403,9 +415,8 @@ app.whenReady().then(async () => {
 
   registerProtocol()
   registerIpcHandlers()
+  registerRecordingIpcHandlers()
   buildAppMenu()
-
-  createWindow()
 
   if (!isCloudMode) {
     console.log('[Desktop] Starting local server...')
@@ -417,6 +428,13 @@ app.whenReady().then(async () => {
       return
     }
     setupSessionHandlers()
+  }
+
+  createWindow()
+
+  if (!isCloudMode) {
+    createTray()
+    startMeetingMonitor()
   }
 
   if (app.isPackaged) {
@@ -438,11 +456,22 @@ app.on('window-all-closed', () => {
 
 let isQuitting = false
 app.on('before-quit', (event) => {
-  console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}`)
+  console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}, applyingUpdate=${getIsApplyingUpdate()}`)
   if (isQuitting || isCloudMode) return
   isQuitting = true
+
+  if (getIsApplyingUpdate()) {
+    console.log('[Desktop] Update pending — doing fast sync cleanup, letting Squirrel handle restart')
+    cleanupRecording()
+    destroyTray()
+    stopLocalServer().catch(() => {})
+    return
+  }
+
   event.preventDefault()
   console.log('[Desktop] Waiting for server cleanup before exit...')
+  cleanupRecording()
+  destroyTray()
   stopLocalServer()
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))

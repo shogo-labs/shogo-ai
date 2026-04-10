@@ -180,4 +180,40 @@ app.put('/heartbeat/config/:projectId', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/validate-preview-token
+ *
+ * Called by runtime pods to validate a preview JWT without holding the signing
+ * secret. The API server verifies the token and returns the decoded payload.
+ */
+app.post('/validate-preview-token', async (c) => {
+  if (!(await validateAuth(c))) {
+    return c.json({ valid: false, error: 'Unauthorized' }, 401)
+  }
+
+  let body: { token?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ valid: false, error: 'Invalid request body' }, 400)
+  }
+
+  const token = body.token
+  if (!token || typeof token !== 'string') {
+    return c.json({ valid: false, error: 'token is required' }, 400)
+  }
+
+  try {
+    const { verifyPreviewToken } = await import('../lib/preview-token')
+    const payload = await verifyPreviewToken(token)
+    if (!payload) {
+      return c.json({ valid: false })
+    }
+    return c.json({ valid: true, projectId: payload.projectId, exp: payload.exp })
+  } catch (err: any) {
+    console.error('[Internal] Failed to validate preview token:', err.message)
+    return c.json({ valid: false, error: 'Validation failed' }, 500)
+  }
+})
+
 export default app

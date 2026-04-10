@@ -3,6 +3,7 @@
   "name": "Research Analyst",
   "description": "Deep web research, topic tracking, market monitoring, competitive intelligence, and synthesized analysis across multiple research surfaces.",
   "category": "research",
+  "icon": "Sparkles",
   "tags": [
     "research",
     "web",
@@ -41,5 +42,5 @@
       "description": "Archive research findings and reports"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

@@ -266,18 +266,20 @@ export async function startLocalServer(): Promise<void> {
   const bunDir = path.dirname(bunPath)
   const pathSep = isWindows ? ';' : ':'
   const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+  const { app } = require('electron') as typeof import('electron')
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
     PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
+    APP_VERSION: app.getVersion(),
     DATABASE_URL: `file:${getDbPath()}`,
     WORKSPACES_DIR: getWorkspacesDir(),
     S3_ENABLED: 'false',
     API_PORT: String(apiPort),
     PORT: String(apiPort),
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),
-    NODE_ENV: IS_DEV ? 'development' : 'production',
+    NODE_ENV: 'development',
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
@@ -294,10 +296,10 @@ export async function startLocalServer(): Promise<void> {
     ...(IS_DEV ? {} : {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
     }),
+    SHOGO_DATA_DIR: getDataDir(),
+    SHOGO_VM_IMAGE_DIR: getVMImageDir(),
     ...(vmIsolationAvailable ? {
       SHOGO_VM_ISOLATION: 'true',
-      SHOGO_DATA_DIR: getDataDir(),
-      SHOGO_VM_IMAGE_DIR: getVMImageDir(),
       SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
   }

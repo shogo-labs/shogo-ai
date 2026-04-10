@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Shogo Technologies, Inc.
 #
-# Build a Ubuntu 22.04 VM image for Shogo desktop VM isolation.
+# Build a Ubuntu 24.04 VM image for Shogo desktop VM isolation.
 #
 # Usage:
 #   ./build.sh [aarch64|x86_64]
@@ -20,7 +20,7 @@ ARCH="${1:-$(uname -m)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
-CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/jammy/current"
+CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
 
 QEMU_ACCEL=""
 if [ -w /dev/kvm ]; then
@@ -31,14 +31,14 @@ fi
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
-    CLOUD_IMAGE="jammy-server-cloudimg-arm64.img"
+    CLOUD_IMAGE="noble-server-cloudimg-arm64.img"
     QEMU_SYSTEM="qemu-system-aarch64"
     QEMU_MACHINE="-machine virt -cpu cortex-a72"
     QEMU_ACCEL=""  # KVM only works for native arch
     ;;
   x86_64|amd64)
     ARCH="x86_64"
-    CLOUD_IMAGE="jammy-server-cloudimg-amd64.img"
+    CLOUD_IMAGE="noble-server-cloudimg-amd64.img"
     QEMU_SYSTEM="qemu-system-x86_64"
     QEMU_MACHINE="-machine q35 -cpu max"
     ;;
@@ -54,7 +54,7 @@ echo "=== Building Shogo VM image for ${ARCH} ==="
 
 # Step 1: Download cloud image
 if [ ! -f "${WORK_DIR}/${CLOUD_IMAGE}" ]; then
-  echo "Downloading Ubuntu 22.04 cloud image..."
+  echo "Downloading Ubuntu 24.04 cloud image..."
   wget -q -O "${WORK_DIR}/${CLOUD_IMAGE}" "${CLOUD_IMAGE_BASE}/${CLOUD_IMAGE}"
 fi
 
@@ -77,24 +77,33 @@ packages:
   - wget
   - git
   - openssh-client
-  - build-essential
   - python3
   - python3-pip
   - jq
   - ripgrep
-  - ffmpeg
-  - imagemagick
   - bubblewrap
   - unzip
 
 runcmd:
-  # Install Bun
-  - curl -fsSL https://bun.sh/install | bash
-  - ln -sf /root/.bun/bin/bun /usr/local/bin/bun
-  
-  # Install Node.js LTS via NodeSource
-  - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-  - apt-get install -y nodejs
+  # Install Bun as a regular file (not symlink) for the guest architecture
+  - |
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+      BUN_PKG="bun-linux-aarch64"
+    else
+      BUN_PKG="bun-linux-x64-baseline"
+    fi
+    BUN_VER="1.3.11"
+    cd /tmp
+    curl -fsSL -o bun-dl.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VER}/${BUN_PKG}.zip"
+    unzip -o bun-dl.zip -d bun-extract
+    cp bun-extract/${BUN_PKG}/bun /usr/local/bin/bun
+    chmod 755 /usr/local/bin/bun
+    rm -rf bun-dl.zip bun-extract
+    for alias in node npx npm; do
+      ln -sf /usr/local/bin/bun /usr/local/bin/$alias
+    done
+    echo "bun ready: $(/usr/local/bin/bun --version)"
   
   # Install gh CLI
   - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
@@ -106,7 +115,7 @@ runcmd:
   - echo "shogo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
   
   # Install global Node packages (matches Docker Dockerfile.base)
-  - npm install -g typescript-language-server typescript pyright
+  - /usr/local/bin/bun add -g typescript-language-server typescript pyright
   
   # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
   - |
@@ -141,6 +150,11 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable shogo-agent-runtime
   
+  # Disable unnecessary services to reduce idle memory
+  - systemctl disable --now snapd snapd.socket snapd.seeded 2>/dev/null || true
+  - systemctl disable --now ModemManager packagekit 2>/dev/null || true
+  - systemctl mask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  
   # Clean up
   - apt-get clean
   - rm -rf /var/lib/apt/lists/*
@@ -159,27 +173,6 @@ METADATA
 cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data" 2>/dev/null || \
   genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data"
 
-# Step 3.5: Bundle agent-runtime.js into the image via a second cloud-init file
-# The agent-runtime bundle is built by the monorepo build system and placed at
-# packages/agent-runtime/dist/agent-runtime.js (or bundle/agent-runtime.js for production).
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
-AGENT_RUNTIME_BUNDLE=""
-for candidate in \
-  "${REPO_ROOT}/bundle/agent-runtime.js" \
-  "${REPO_ROOT}/packages/agent-runtime/dist/agent-runtime.js"; do
-  if [ -f "$candidate" ]; then
-    AGENT_RUNTIME_BUNDLE="$candidate"
-    break
-  fi
-done
-
-if [ -n "$AGENT_RUNTIME_BUNDLE" ]; then
-  echo "Bundling agent-runtime from: ${AGENT_RUNTIME_BUNDLE}"
-  mkdir -p "${WORK_DIR}/provision"
-  cp "$AGENT_RUNTIME_BUNDLE" "${WORK_DIR}/provision/agent-runtime.js"
-else
-  echo "WARNING: agent-runtime bundle not found. The VM image will need it copied at boot time."
-fi
 
 # Step 4: Boot and provision
 TIMEOUT=${QEMU_TIMEOUT:-1200}
@@ -202,39 +195,128 @@ echo "Extracting kernel and initrd..."
 
 EXTRACTED=false
 
-# Method 1: qemu-nbd (most reliable in CI — no supermin/kernel dependency)
+# Method 1: losetup on raw conversion (reliable on any Linux, no kernel module needed)
+echo "Trying losetup (raw conversion) for extraction..."
+if (
+  set +e
+  MOUNT_DIR="${WORK_DIR}/mnt"
+  mkdir -p "$MOUNT_DIR"
+
+  echo "  Converting qcow2 to raw for loop mount..."
+  qemu-img convert -O raw "${WORK_DIR}/disk.qcow2" "${WORK_DIR}/disk.raw" || exit 1
+
+  LOOP_DEV=$(sudo losetup --find --show --partscan "${WORK_DIR}/disk.raw" 2>/dev/null) || exit 1
+  echo "  Loop device: $LOOP_DEV"
+  sleep 2
+
+  echo "  Partition table:"
+  sudo fdisk -l "${WORK_DIR}/disk.raw" 2>/dev/null || true
+
+  # Scan ALL partitions for vmlinuz.
+  # On Ubuntu 24.04, /boot is a DEDICATED partition. When mounted at $MOUNT_DIR,
+  # kernel files are at $MOUNT_DIR/vmlinuz-* (top of the /boot partition),
+  # NOT at $MOUNT_DIR/boot/vmlinuz-*. Also check the latter for older layouts.
+  FOUND_VMLINUZ=""
+  FOUND_INITRD=""
+  FOUND_PART=""
+  FOUND_PREFIX=""
+  for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
+    if [ -b "$part" ]; then
+      echo "  Trying $part..."
+      if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+        echo "    Mounted OK. Top-level contents:"
+        sudo ls "$MOUNT_DIR"/ 2>/dev/null || true
+        # Check top-level (for dedicated /boot partition)
+        V=$(sudo ls "$MOUNT_DIR"/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+        I=$(sudo ls "$MOUNT_DIR"/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+        PREFIX=""
+        # Fallback: check $MOUNT_DIR/boot/ (for root partition with embedded /boot)
+        if [ -z "$V" ] || [ -z "$I" ]; then
+          V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+          I=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+          PREFIX="boot/"
+        fi
+        sudo umount "$MOUNT_DIR" 2>/dev/null || true
+        if [ -n "$V" ] && [ -n "$I" ]; then
+          FOUND_VMLINUZ="$V"
+          FOUND_INITRD="$I"
+          FOUND_PART="$part"
+          FOUND_PREFIX="$PREFIX"
+          echo "    Found kernel: $(basename "$V") (prefix: '${PREFIX}')"
+          break
+        fi
+      fi
+    fi
+  done
+
+  if [ -n "$FOUND_VMLINUZ" ] && [ -n "$FOUND_INITRD" ]; then
+    if sudo mount -o ro,noload "$FOUND_PART" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$FOUND_PART" "$MOUNT_DIR" 2>/dev/null; then
+      echo "Found: $(basename "$FOUND_VMLINUZ"), $(basename "$FOUND_INITRD") on $FOUND_PART"
+      sudo cp "$MOUNT_DIR/${FOUND_PREFIX}$(basename "$FOUND_VMLINUZ")" "${OUTPUT_DIR}/vmlinuz"
+      sudo cp "$MOUNT_DIR/${FOUND_PREFIX}$(basename "$FOUND_INITRD")" "${OUTPUT_DIR}/initrd.img"
+      sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
+      echo "EXTRACTED_OK"
+    fi
+  else
+    echo "  No vmlinuz found on any partition"
+  fi
+
+  sudo losetup -d "$LOOP_DEV" 2>/dev/null || true
+  rm -f "${WORK_DIR}/disk.raw"
+) 2>&1 | tee /tmp/losetup-extract.log && grep -q "EXTRACTED_OK" /tmp/losetup-extract.log; then
+  EXTRACTED=true
+else
+  echo "losetup extraction failed, trying qemu-nbd..."
+fi
+
+# Method 2: qemu-nbd
 if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
   echo "Trying qemu-nbd for extraction..."
-  if sudo modprobe nbd max_part=8 2>/dev/null; then
+  if (
+    set +e
+    sudo modprobe nbd max_part=8 2>/dev/null || exit 1
     MOUNT_DIR="${WORK_DIR}/mnt"
     mkdir -p "$MOUNT_DIR"
 
-    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2"
-    sleep 2
+    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2" || exit 1
+    sleep 3
     sudo partprobe /dev/nbd0 2>/dev/null || true
+    sleep 1
 
-    if sudo mount /dev/nbd0p1 "$MOUNT_DIR" 2>/dev/null || sudo mount /dev/nbd0p2 "$MOUNT_DIR" 2>/dev/null; then
+    MOUNTED=false
+    for part in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p3; do
+      if [ -b "$part" ]; then
+        if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+          MOUNTED=true
+          echo "  Mounted $part"
+          break
+        fi
+      fi
+    done
+
+    if [ "$MOUNTED" = true ]; then
       VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
       INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
-
       if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
         echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
         sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
         sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
         sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
-        EXTRACTED=true
+        echo "EXTRACTED_OK"
       fi
-
-      sudo umount "$MOUNT_DIR"
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
     fi
 
-    sudo qemu-nbd --disconnect /dev/nbd0
+    sudo qemu-nbd --disconnect /dev/nbd0 2>/dev/null || true
+  ) 2>&1 | tee /tmp/nbd-extract.log && grep -q "EXTRACTED_OK" /tmp/nbd-extract.log; then
+    EXTRACTED=true
   else
-    echo "nbd kernel module not available, skipping qemu-nbd"
+    echo "qemu-nbd extraction failed, trying libguestfs..."
   fi
 fi
 
-# Method 2: libguestfs (requires supermin appliance with a host kernel in /boot)
+# Method 3: libguestfs
 if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
   export LIBGUESTFS_BACKEND=direct
   echo "Trying libguestfs (virt-copy-out) for extraction..."
@@ -249,7 +331,7 @@ if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt
     mv "${OUTPUT_DIR}/${INITRD}" "${OUTPUT_DIR}/initrd.img"
     EXTRACTED=true
   else
-    echo "libguestfs could not list /boot/ contents (supermin may lack a host kernel)"
+    echo "libguestfs could not list /boot/ contents"
   fi
 fi
 
@@ -267,15 +349,11 @@ if [ "$ARCH" = "aarch64" ] && file "${OUTPUT_DIR}/vmlinuz" | grep -q "gzip"; the
   echo "Kernel decompressed: $(file "${OUTPUT_DIR}/vmlinuz")"
 fi
 
-# Step 7: Shrink and copy rootfs
+# Step 7: Shrink and save as rootfs-provisioned.qcow2
+# This image has bun, deps, and templates pre-installed — it IS the provisioned image.
+# We only ship rootfs-provisioned.qcow2 to stay under GitHub's 2 GB release asset limit.
 echo "Shrinking rootfs..."
-qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs.qcow2"
-
-# Also produce a raw image for Virtualization.framework (macOS)
-if [ "$ARCH" = "aarch64" ]; then
-  echo "Converting rootfs to raw for Virtualization.framework..."
-  qemu-img convert -f qcow2 -O raw "${OUTPUT_DIR}/rootfs.qcow2" "${OUTPUT_DIR}/rootfs.raw"
-fi
+qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs-provisioned.qcow2"
 
 echo ""
 echo "=== Build complete ==="
@@ -283,9 +361,6 @@ echo "Output:"
 ls -lh "${OUTPUT_DIR}/"
 echo ""
 echo "Files:"
-echo "  ${OUTPUT_DIR}/vmlinuz      - Linux kernel (decompressed for VZ on arm64)"
-echo "  ${OUTPUT_DIR}/initrd.img   - Initial ramdisk"
-echo "  ${OUTPUT_DIR}/rootfs.qcow2 - Root filesystem (qcow2, for Windows/QEMU)"
-if [ "$ARCH" = "aarch64" ]; then
-  echo "  ${OUTPUT_DIR}/rootfs.raw   - Root filesystem (raw, for macOS/VZ)"
-fi
+echo "  ${OUTPUT_DIR}/vmlinuz                  - Linux kernel (decompressed for VZ on arm64)"
+echo "  ${OUTPUT_DIR}/initrd.img               - Initial ramdisk"
+echo "  ${OUTPUT_DIR}/rootfs-provisioned.qcow2 - Root filesystem (provisioned with bun + deps)"

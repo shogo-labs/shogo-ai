@@ -52,10 +52,12 @@ import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { pairingRoutes } from './routes/pairing'
 import internalRoutes from './routes/internal'
+import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -473,6 +475,7 @@ app.use(
       '/api/instances/heartbeat',
       '/api/instances/ws',
       '/api/pairing/complete',
+      '/api/vm/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
@@ -610,6 +613,18 @@ app.get('/api/config', async (c) => {
     },
   })
 })
+
+// ── Local mode: VM management endpoints ──────────────────────────────────────
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  app.route('/api/vm', vmRoutes())
+
+  // Auto-download VM images in the background if not present
+  setTimeout(() => {
+    triggerVMImageDownload().catch((err) =>
+      console.error('[VM] Background VM image download failed (non-fatal):', err.message)
+    )
+  }, 5000)
+}
 
 // ── Local mode: auto-sign-in + API key management ───────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
@@ -1018,6 +1033,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
     return c.json({ ok: true, name })
   })
+
+  // ── Local mode: meeting recording & transcription ────────────────────────
+  app.route('/', meetingRoutes)
 }
 
 // Agent template catalog — public, no auth required
@@ -4054,7 +4072,7 @@ Examples:
       const inTok = usage?.inputTokens || usage?.promptTokens || 0
       const outTok = usage?.outputTokens || usage?.completionTokens || 0
       if (inTok + outTok > 0) {
-        const creditCost = calculateCreditCost(inTok, outTok, 'haiku')
+        const { credits: creditCost } = calculateCreditCost(inTok, outTok, 'haiku')
         billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok }).catch(() => {})
       }
     }
@@ -4315,13 +4333,11 @@ app.post('/api/billing/verify-checkout', async (c) => {
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
 
-    const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
-
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
       stripeCustomerId: session.customer as string,
       workspaceId,
-      planId: basePlanId,
+      planId,
       status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
       billingInterval: billingInterval as 'monthly' | 'annual',
       currentPeriodStart: new Date(currentPeriodStart),
@@ -4772,13 +4788,11 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
-            const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
-
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: basePlanId,
+              planId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
@@ -5647,7 +5661,7 @@ if (isVMIsolation() && !isKubernetes()) {
       const path = await import('path')
       const crypto = await import('crypto')
       const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
-      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(__dirname, '../../../workspaces')
+      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(import.meta.dir, '../../../workspaces')
       const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
 
       // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
@@ -5664,7 +5678,7 @@ if (isVMIsolation() && !isKubernetes()) {
         }
       }
       const overlayDir = path.join(dataDir, 'vm-overlays')
-      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
+      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(import.meta.dir, '../../desktop/resources/vm')
       const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
 
       // Fire-and-forget: create a provisioned base image for instant cloning.
@@ -5685,8 +5699,25 @@ if (isVMIsolation() && !isKubernetes()) {
       // Factory: each pool VM gets its own DarwinVMManager instance
       const managerFactory = () => vmModule.createVMManager()
 
-      const memoryMB = parseInt(process.env.VM_MEMORY_MB || '4096', 10)
-      const cpus = parseInt(process.env.VM_CPUS || String(Math.max(2, Math.floor(os.cpus().length / 2))), 10)
+      // Read persisted config.json (admin UI settings) as fallback for env vars
+      let configMemoryMB = 1536
+      let configCpus = 0
+      try {
+        const fs = await import('fs')
+        const configDir = process.platform === 'win32'
+          ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Shogo')
+          : process.platform === 'darwin'
+            ? path.join(home, 'Library', 'Application Support', 'Shogo')
+            : path.join(home, '.config', 'shogo')
+        const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
+        const parsed = JSON.parse(raw)
+        if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
+        if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
+      } catch {}
+
+      const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
+      const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
+      const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
 
       await initVMWarmPool(managerFactory, {
         workspaceDir: workspacesDir,
@@ -5698,7 +5729,7 @@ if (isVMIsolation() && !isKubernetes()) {
         memoryMB,
         cpus,
         networkEnabled: true,
-        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.raw`),
+        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),
         vmImageDir,
         bundleDir: bundleDir || undefined,
       })
