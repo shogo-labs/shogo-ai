@@ -770,6 +770,7 @@ export function withPermissionGate(
 
 export function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   const resolved = resolve(workspaceDir, filePath)
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return resolved
   if (!resolved.startsWith(workspaceDir)) {
     throw new Error(`Path outside workspace: ${filePath}`)
   }
