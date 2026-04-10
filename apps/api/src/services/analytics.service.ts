@@ -466,6 +466,7 @@ export interface UsageLogEntry {
   outputTokens: number
   totalTokens: number
   creditCost: number
+  dollarCost: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -484,6 +485,7 @@ export interface UsageSummaryEntry {
   totalOutputTokens: number
   totalTokens: number
   totalCredits: number
+  totalDollarCost: number
   avgDurationMs: number
 }
 
@@ -531,7 +533,10 @@ export async function getUsageLog(
   const userMap = new Map(users.map((u) => [u.id, u]))
 
   const entries: UsageLogEntry[] = events.map((event) => {
-    const meta = (event.actionMetadata as Record<string, any>) || {}
+    let meta = (event.actionMetadata as Record<string, any>) || {}
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta) } catch { meta = {} }
+    }
     const user = userMap.get(event.memberId)
     return {
       id: event.id,
@@ -545,6 +550,7 @@ export async function getUsageLog(
       outputTokens: meta.outputTokens || 0,
       totalTokens: meta.totalTokens || 0,
       creditCost: event.creditCost,
+      dollarCost: meta.dollarCost || 0,
       durationMs: meta.durationMs || 0,
       success: meta.success !== false,
       createdAt: event.createdAt.toISOString(),
@@ -592,11 +598,15 @@ export async function getUsageSummary(
     totalOutputTokens: number
     totalTokens: number
     totalCredits: number
+    totalDollarCost: number
     totalDurationMs: number
   }>()
 
   for (const event of events) {
-    const meta = (event.actionMetadata as Record<string, any>) || {}
+    let meta = (event.actionMetadata as Record<string, any>) || {}
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta) } catch { meta = {} }
+    }
     const model = meta.model || meta.modelUsed || 'unknown'
     const key = `${event.memberId}::${model}`
     const existing = aggregateMap.get(key)
@@ -607,6 +617,7 @@ export async function getUsageSummary(
       existing.totalOutputTokens += meta.outputTokens || 0
       existing.totalTokens += meta.totalTokens || 0
       existing.totalCredits += event.creditCost
+      existing.totalDollarCost += meta.dollarCost || 0
       existing.totalDurationMs += meta.durationMs || 0
     } else {
       aggregateMap.set(key, {
@@ -618,6 +629,7 @@ export async function getUsageSummary(
         totalOutputTokens: meta.outputTokens || 0,
         totalTokens: meta.totalTokens || 0,
         totalCredits: event.creditCost,
+        totalDollarCost: meta.dollarCost || 0,
         totalDurationMs: meta.durationMs || 0,
       })
     }
@@ -662,6 +674,7 @@ export async function getUsageSummary(
         totalOutputTokens: agg.totalOutputTokens,
         totalTokens: agg.totalTokens,
         totalCredits: agg.totalCredits,
+        totalDollarCost: agg.totalDollarCost,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
       }
     })
@@ -674,6 +687,7 @@ export async function getUsageSummary(
     totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
     totalCredits: summaries.reduce((s, e) => s + e.totalCredits, 0),
+    totalDollarCost: summaries.reduce((s, e) => s + e.totalDollarCost, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
     uniqueModels: new Set(summaries.map((s) => s.model)).size,
@@ -855,6 +869,7 @@ export async function getBillingAnalytics(scope: AnalyticsScope = {}) {
 // ============================================================================
 
 const EXCLUDED_EMAIL_PATTERNS = ['%@test.shogo.ai', '%@shogo.ai', '%@getodin.ai']
+const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
 
 export function realUserWhere(): Prisma.UserWhereInput {
   return {
@@ -868,8 +883,9 @@ export function realUserWhere(): Prisma.UserWhereInput {
 }
 
 function realUserEmailNotLike(): string {
+  const likeOp = isSqlite ? 'NOT LIKE' : 'NOT ILIKE'
   return EXCLUDED_EMAIL_PATTERNS
-    .map(p => `u."email" NOT ILIKE '${p}'`)
+    .map(p => `u."email" ${likeOp} '${p}'`)
     .concat([`u."role" != 'super_admin'`])
     .join(' AND ')
 }

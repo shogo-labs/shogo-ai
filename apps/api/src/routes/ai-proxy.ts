@@ -975,7 +975,7 @@ async function recordUsage(
       billingUserId,
       'ai_proxy_completion',
       creditCost,
-      { model, billingModel, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens }
+      { model, billingModel, dollarCost, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens }
     )
 
     if (result.success) {
