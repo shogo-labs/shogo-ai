@@ -24,6 +24,23 @@ import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
+import {
+  initTunnelRedis,
+  registerTunnelOwnership,
+  unregisterTunnelOwnership,
+  refreshTunnelOwnership,
+  getTunnelOwner,
+  relayTunnelRequest,
+  relayTunnelStreamRequest,
+  setLocalTunnelHandlers,
+  markViewerActiveRedis,
+  isViewerActiveRedis,
+  markControllerActiveRedis,
+  getActiveControllersRedis,
+  isTunnelConnectedAnywhere,
+  getPodId,
+} from '../lib/tunnel-redis'
+import { sendPushToInstance } from '../lib/push-notifications'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -33,17 +50,20 @@ const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
 const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
 const PROXY_TIMEOUT_MS = 30_000
-const STREAM_TIMEOUT_MS = 120_000
+const STREAM_IDLE_TIMEOUT_MS = 30_000
+const STREAM_MAX_TIMEOUT_MS = 600_000
 const HEARTBEAT_INTERVAL_MS = 25_000
+const TUNNEL_WAIT_TIMEOUT_MS = 10_000
+const TUNNEL_WAIT_POLL_MS = 500
 
-// ─── In-memory viewer tracking ──────────────────────────────────────────────
-// Tracks which workspaces have active Remote Control viewers.
-// This is an optimization: if the flag isn't visible (multi-pod), the instance
-// simply stays at the 60s poll and takes up to 60s to pick up a connect request.
+// ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
 const activeViewers = new Map<string, number>()
 
-export function isViewerActive(workspaceId: string): boolean {
+export async function isViewerActive(workspaceId: string): Promise<boolean> {
+  const redisResult = await isViewerActiveRedis(workspaceId)
+  if (redisResult) return true
+
   const ts = activeViewers.get(workspaceId)
   if (!ts) return false
   if (Date.now() - ts > VIEWER_ACTIVE_TTL_MS) {
@@ -53,11 +73,12 @@ export function isViewerActive(workspaceId: string): boolean {
   return true
 }
 
-function markViewerActive(workspaceId: string) {
+async function markViewerActive(workspaceId: string) {
   activeViewers.set(workspaceId, Date.now())
+  await markViewerActiveRedis(workspaceId).catch(() => {})
 }
 
-// ─── Active controllers (multi-device awareness) ───────────────────────────
+// ─── Active controllers (Redis-primary, in-memory fallback) ─────────────────
 
 interface ActiveController {
   userId: string
@@ -68,15 +89,19 @@ interface ActiveController {
 const activeControllers = new Map<string, Map<string, ActiveController>>()
 const CONTROLLER_TTL_MS = 60_000
 
-function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
+async function markControllerActive(instanceId: string, userId: string, sessionId?: string) {
   if (!activeControllers.has(instanceId)) {
     activeControllers.set(instanceId, new Map())
   }
   const key = sessionId || userId
   activeControllers.get(instanceId)!.set(key, { userId, sessionId, lastSeenAt: Date.now() })
+  await markControllerActiveRedis(instanceId, userId, sessionId).catch(() => {})
 }
 
-function getActiveControllers(instanceId: string): ActiveController[] {
+async function getActiveControllers(instanceId: string): Promise<ActiveController[]> {
+  const redisControllers = await getActiveControllersRedis(instanceId).catch(() => [])
+  if (redisControllers.length > 0) return redisControllers
+
   const map = activeControllers.get(instanceId)
   if (!map) return []
   const now = Date.now()
@@ -144,11 +169,11 @@ function generateRequestId(): string {
 
 // ─── Adaptive poll interval ─────────────────────────────────────────────────
 
-function computeNextPollIn(instanceId: string, workspaceId: string, wsRequestedAt: Date | null): number {
+async function computeNextPollIn(instanceId: string, workspaceId: string, wsRequestedAt: Date | null): Promise<number> {
   if (wsRequestedAt && Date.now() - wsRequestedAt.getTime() < WS_REQUEST_TTL_MS) {
     return POLL_INTERVAL_WS_REQUESTED_S
   }
-  if (isViewerActive(workspaceId)) {
+  if (await isViewerActive(workspaceId)) {
     return POLL_INTERVAL_VIEWER_S
   }
   return POLL_INTERVAL_IDLE_S
@@ -176,12 +201,14 @@ export function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
   }
   tunnels.set(instanceId, conn)
 
+  registerTunnelOwnership(instanceId).catch(() => {})
+
   prisma.instance.update({
     where: { id: instanceId },
     data: { status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
   }).catch(() => {})
 
-  console.log(`[RemoteControl] Instance ${instanceId} connected (workspace ${workspaceId})`)
+  console.log(`[RemoteControl] Instance ${instanceId} connected (workspace ${workspaceId}, pod ${getPodId()})`)
 }
 
 export function handleInstanceWsMessage(ws: WebSocket & { data?: any }, raw: string | Buffer) {
@@ -252,6 +279,8 @@ export function handleInstanceWsClose(ws: WebSocket & { data?: any }) {
     tunnels.delete(instanceId)
   }
 
+  unregisterTunnelOwnership(instanceId).catch(() => {})
+
   prisma.instance.update({
     where: { id: instanceId },
     data: { status: 'offline' },
@@ -303,9 +332,9 @@ export async function authenticateInstanceWs(
 
 // ─── Proxy helpers ──────────────────────────────────────────────────────────
 
-function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
+function sendLocalTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
   const conn = tunnels.get(instanceId)
-  if (!conn) return Promise.reject(new Error('Instance is offline'))
+  if (!conn) return Promise.reject(new Error('Instance is offline (local)'))
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -318,43 +347,104 @@ function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<Tunn
   })
 }
 
-function sendTunnelStreamRequest(
+async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promise<TunnelResponse> {
+  const conn = tunnels.get(instanceId)
+  if (conn) return sendLocalTunnelRequest(instanceId, req)
+
+  const ownerPod = await getTunnelOwner(instanceId)
+  if (!ownerPod) throw new Error('Instance is offline')
+
+  const response = await relayTunnelRequest(ownerPod, instanceId, req)
+  if (!response) throw new Error('Empty relay response')
+  return response as TunnelResponse
+}
+
+function sendLocalTunnelStreamRequest(
   instanceId: string,
   req: TunnelRequest,
   onChunk: (chunk: TunnelStreamChunk) => void,
 ): { cancel: () => void } {
   const conn = tunnels.get(instanceId)
   if (!conn) {
-    onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
+    onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline (local)' })
     return { cancel: () => {} }
   }
 
-  const timeout = setTimeout(() => {
-    conn.streamHandlers.delete(req.requestId)
-    onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Stream timed out' })
-  }, STREAM_TIMEOUT_MS)
+  const c = conn
+  let idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
+  const maxTimer = setTimeout(() => kill('max'), STREAM_MAX_TIMEOUT_MS)
 
-  conn.streamHandlers.set(req.requestId, (chunk) => {
+  function kill(reason: string) {
+    clearTimeout(idleTimer)
+    clearTimeout(maxTimer)
+    c.streamHandlers.delete(req.requestId)
+    onChunk({ type: 'stream-error', requestId: req.requestId, error: `Stream timed out (${reason})` })
+  }
+
+  c.streamHandlers.set(req.requestId, (chunk) => {
+    clearTimeout(idleTimer)
+    if (chunk.type === 'stream-chunk') {
+      idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
+    }
     if (chunk.type === 'stream-end' || chunk.type === 'stream-error') {
-      clearTimeout(timeout)
+      clearTimeout(idleTimer)
+      clearTimeout(maxTimer)
     }
     onChunk(chunk)
   })
 
-  conn.ws.send(JSON.stringify({ ...req, stream: true }))
+  c.ws.send(JSON.stringify({ ...req, stream: true }))
 
   return {
     cancel: () => {
-      clearTimeout(timeout)
-      conn.streamHandlers.delete(req.requestId)
-      conn.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
+      clearTimeout(idleTimer)
+      clearTimeout(maxTimer)
+      c.streamHandlers.delete(req.requestId)
+      try {
+        c.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
+      } catch {}
     },
   }
+}
+
+function sendTunnelStreamRequest(
+  instanceId: string,
+  req: TunnelRequest,
+  onChunk: (chunk: TunnelStreamChunk) => void,
+): { cancel: () => void } {
+  const conn = tunnels.get(instanceId)
+  if (conn) return sendLocalTunnelStreamRequest(instanceId, req, onChunk)
+
+  let cancelled = false
+  const cancelRef = { cancel: () => { cancelled = true } }
+
+  getTunnelOwner(instanceId).then((ownerPod) => {
+    if (cancelled) return
+    if (!ownerPod) {
+      onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
+      return
+    }
+    const relay = relayTunnelStreamRequest(ownerPod, instanceId, req, onChunk)
+    cancelRef.cancel = relay.cancel
+  }).catch((err) => {
+    onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
+  })
+
+  return { cancel: () => cancelRef.cancel() }
 }
 
 // ─── REST routes ────────────────────────────────────────────────────────────
 
 export function instanceRoutes() {
+  initTunnelRedis().catch((err) => {
+    console.error('[RemoteControl] Failed to initialize tunnel Redis:', err.message)
+  })
+
+  setLocalTunnelHandlers(
+    (instanceId, req) => sendLocalTunnelRequest(instanceId, req as TunnelRequest),
+    (instanceId, req, onChunk) => sendLocalTunnelStreamRequest(instanceId, req as TunnelRequest, onChunk),
+  )
+
   const router = new Hono()
 
   // POST /instances/heartbeat — HTTP heartbeat from local instance (replaces always-on WS)
@@ -404,8 +494,8 @@ export function instanceRoutes() {
     })
 
     const wsRequested = isWsRequested(instance.wsRequestedAt)
-    const nextPollIn = computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
-    const hasTunnel = tunnels.has(instance.id)
+    const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
+    const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
 
     return c.json({
       instanceId: instance.id,
@@ -434,7 +524,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
-    markViewerActive(body.workspaceId)
+    await markViewerActive(body.workspaceId)
     return c.json({ ok: true })
   })
 
@@ -457,7 +547,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
-    if (tunnels.has(instance.id)) {
+    if (tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)) {
       return c.json({ ok: true, status: 'already_connected' })
     }
 
@@ -466,7 +556,9 @@ export function instanceRoutes() {
       data: { wsRequestedAt: new Date() },
     })
 
-    markViewerActive(instance.workspaceId)
+    await markViewerActive(instance.workspaceId)
+
+    void sendPushToInstance(instance.id, { type: 'ws-requested', priority: 'high' })
 
     return c.json({ ok: true, status: 'requested' })
   })
@@ -495,10 +587,12 @@ export function instanceRoutes() {
       orderBy: { lastSeenAt: 'desc' },
     })
 
-    const withLiveStatus = instances.map((inst) => ({
+    const withLiveStatus = await Promise.all(instances.map(async (inst) => ({
       ...inst,
-      status: tunnels.has(inst.id) ? 'online' : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
-    }))
+      status: tunnels.has(inst.id) || await isTunnelConnectedAnywhere(inst.id)
+        ? 'online'
+        : (isRecentlySeenViaHeartbeat(inst.lastSeenAt) ? 'heartbeat' : 'offline'),
+    })))
 
     return c.json({ instances: withLiveStatus })
   })
@@ -522,10 +616,13 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
+    const controllers = await getActiveControllers(instance.id)
     return c.json({
       ...instance,
-      status: tunnels.has(instance.id) ? 'online' : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
-      controllers: getActiveControllers(instance.id).map((c) => ({
+      status: tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
+        ? 'online'
+        : (isRecentlySeenViaHeartbeat(instance.lastSeenAt) ? 'heartbeat' : 'offline'),
+      controllers: controllers.map((c) => ({
         userId: c.userId,
         lastSeenAt: c.lastSeenAt,
       })),
@@ -607,11 +704,11 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
-    if (!tunnels.has(instance.id)) {
+    if (!tunnels.has(instance.id) && !await isTunnelConnectedAnywhere(instance.id)) {
       return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
     }
 
-    markControllerActive(instance.id, auth.userId)
+    await markControllerActive(instance.id, auth.userId)
 
     const body = await c.req.json<{
       method: string
@@ -672,7 +769,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    if (!tunnels.has(instance.id)) {
+    if (!tunnels.has(instance.id) && !await isTunnelConnectedAnywhere(instance.id)) {
       return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
     }
 
@@ -710,11 +807,11 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
-    if (!tunnels.has(instance.id)) {
+    if (!tunnels.has(instance.id) && !await isTunnelConnectedAnywhere(instance.id)) {
       return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
     }
 
-    markControllerActive(instance.id, auth.userId, auth.sessionId || 'stream')
+    await markControllerActive(instance.id, auth.userId, auth.sessionId || 'stream')
 
     const body = await c.req.json<{
       method: string
@@ -757,7 +854,13 @@ export function instanceRoutes() {
           },
         )
 
-        c.req.raw.signal?.addEventListener('abort', () => cancel())
+        const signal = c.req.raw.signal
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            cancel()
+            try { controller.close() } catch {}
+          }, { once: true })
+        }
       },
     })
 
@@ -803,11 +906,30 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
-    if (!tunnels.has(instanceId)) {
-      return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
+    const localTunnel = tunnels.has(instanceId)
+    let remoteTunnelPod = localTunnel ? null : await getTunnelOwner(instanceId)
+
+    if (!localTunnel && !remoteTunnelPod) {
+      await prisma.instance.update({
+        where: { id: instanceId },
+        data: { wsRequestedAt: new Date() },
+      }).catch(() => {})
+      void sendPushToInstance(instanceId, { type: 'ws-requested', priority: 'high' })
+
+      const deadline = Date.now() + TUNNEL_WAIT_TIMEOUT_MS
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, TUNNEL_WAIT_POLL_MS))
+        if (tunnels.has(instanceId)) break
+        remoteTunnelPod = await getTunnelOwner(instanceId)
+        if (remoteTunnelPod) break
+      }
+
+      if (!tunnels.has(instanceId) && !remoteTunnelPod) {
+        return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
+      }
     }
 
-    markControllerActive(instanceId, auth.userId)
+    await markControllerActive(instanceId, auth.userId)
 
     const wildcardParam = c.req.param('*')
     const incomingUrl = new URL(c.req.url)
@@ -861,7 +983,14 @@ export function instanceRoutes() {
               }
             },
           )
-          c.req.raw.signal?.addEventListener('abort', () => cancel())
+
+          const signal = c.req.raw.signal
+          if (signal) {
+            signal.addEventListener('abort', () => {
+              cancel()
+              try { controller.close() } catch {}
+            }, { once: true })
+          }
         },
       })
 
@@ -933,7 +1062,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    if (!tunnels.has(instance.id)) {
+    if (!tunnels.has(instance.id) && !await isTunnelConnectedAnywhere(instance.id)) {
       return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
     }
 
@@ -979,8 +1108,10 @@ export function startTunnelHeartbeat() {
     for (const [instanceId, conn] of tunnels) {
       try {
         conn.ws.send(JSON.stringify({ type: 'ping' }))
+        refreshTunnelOwnership(instanceId).catch(() => {})
       } catch {
         tunnels.delete(instanceId)
+        unregisterTunnelOwnership(instanceId).catch(() => {})
       }
     }
   }, HEARTBEAT_INTERVAL_MS)
@@ -1005,9 +1136,13 @@ export const _testing = {
   markViewerActive,
   markControllerActive,
   getActiveControllers,
+  sendLocalTunnelRequest,
+  sendLocalTunnelStreamRequest,
   POLL_INTERVAL_IDLE_S,
   POLL_INTERVAL_VIEWER_S,
   POLL_INTERVAL_WS_REQUESTED_S,
   WS_REQUEST_TTL_MS,
   VIEWER_ACTIVE_TTL_MS,
+  STREAM_IDLE_TIMEOUT_MS,
+  STREAM_MAX_TIMEOUT_MS,
 }

@@ -31,7 +31,7 @@ interface CancelMessage {
 type IncomingMessage = TunnelRequest | CancelMessage | { type: 'ping' } | { type: string }
 
 const DEFAULT_POLL_INTERVAL_S = 60
-const WS_IDLE_TIMEOUT_MS = 5 * 60 * 1000
+const WS_IDLE_TIMEOUT_MS = 30 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 25_000
 const BACKOFF_BASE_MS = 1_000
 const BACKOFF_MAX_MS = 60_000
