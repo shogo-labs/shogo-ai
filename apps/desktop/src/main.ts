@@ -163,10 +163,11 @@ function registerIpcHandlers(): void {
       enabled: config.vmIsolation.enabled,
       memoryMB: config.vmIsolation.memoryMB,
       cpus: config.vmIsolation.cpus,
+      mountWorkspace: config.vmIsolation.mountWorkspace,
     }
   })
 
-  ipcMain.handle('set-vm-config', (_event, vmConfig: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) => {
+  ipcMain.handle('set-vm-config', (_event, vmConfig: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) => {
     const current = readConfig()
     writeConfig({
       vmIsolation: { ...current.vmIsolation, ...vmConfig },
