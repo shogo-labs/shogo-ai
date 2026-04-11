@@ -223,6 +223,33 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         )
       }
 
+      // VM isolation: route through the warm pool instead of spawning a local runtime
+      if (process.env.SHOGO_VM_ISOLATION === 'true') {
+        try {
+          const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+          const vmUrl = await getVMProjectUrl(projectId)
+          const host = c.req.header('host') || `localhost:${process.env.API_PORT || process.env.PORT || '8002'}`
+          const protocol = c.req.header('x-forwarded-proto') || 'http'
+          const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
+          return c.json({
+            url: vmUrl,
+            directUrl: vmUrl,
+            agentUrl,
+            canvasBaseUrl: vmUrl,
+            sandbox: SANDBOX_ATTRIBUTES,
+            status: 'running',
+            ready: true,
+            message: 'Runtime ready (VM)',
+          })
+        } catch (vmErr: any) {
+          console.error('[Runtime] VM pool unavailable for sandbox/url:', vmErr.message)
+          return c.json(
+            { url: null, status: 'starting', ready: false, error: { code: "vm_pool_unavailable", message: "VM starting up, please retry..." } },
+            503
+          )
+        }
+      }
+
       // Get or start runtime
       let runtime = runtimeManager.status(projectId)
       if (!runtime || runtime.status === 'stopped') {
@@ -285,6 +312,21 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
           { error: { code: "project_not_found", message: "Project not found" } },
           404
         )
+      }
+
+      // VM isolation: recycle the VM assignment instead of restarting local runtime
+      if (process.env.SHOGO_VM_ISOLATION === 'true') {
+        try {
+          const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+          const url = await getVMProjectUrl(projectId)
+          return c.json({ success: true, projectId, status: 'running', url, port: 0 })
+        } catch (vmErr: any) {
+          console.error('[Runtime] VM pool unavailable for restart:', vmErr.message)
+          return c.json(
+            { error: { code: "vm_pool_unavailable", message: "VM isolation is enabled but the pool is not ready. Retrying..." } },
+            503
+          )
+        }
       }
 
       // Stop first (ignore if not running)
