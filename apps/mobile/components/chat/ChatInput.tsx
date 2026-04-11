@@ -586,38 +586,30 @@ export function ChatInput({
                     </Text>
                   </View>
                   <View className="flex-row items-center gap-0.5">
-                    {onReorderQueuedMessage && (
+                    {onReorderQueuedMessage && queuedMessages.length > 1 && (
                       <>
-                        <Pressable
-                          onPress={() => onReorderQueuedMessage(msg.id, "up")}
-                          disabled={index === 0}
-                          className="h-6 w-6 items-center justify-center"
-                        >
-                          <ChevronUp
-                            className={cn(
-                              "h-3 w-3",
-                              index === 0
-                                ? "text-muted-foreground/30"
-                                : "text-muted-foreground"
-                            )}
-                            size={12}
-                          />
-                        </Pressable>
-                        <Pressable
-                          onPress={() => onReorderQueuedMessage(msg.id, "down")}
-                          disabled={index === queuedMessages.length - 1}
-                          className="h-6 w-6 items-center justify-center"
-                        >
-                          <ChevronDown
-                            className={cn(
-                              "h-3 w-3",
-                              index === queuedMessages.length - 1
-                                ? "text-muted-foreground/30"
-                                : "text-muted-foreground"
-                            )}
-                            size={12}
-                          />
-                        </Pressable>
+                        {index > 0 && (
+                          <Pressable
+                            onPress={() => onReorderQueuedMessage(msg.id, "up")}
+                            className="h-6 w-6 items-center justify-center"
+                          >
+                            <ChevronUp
+                              className="h-3 w-3 text-muted-foreground"
+                              size={12}
+                            />
+                          </Pressable>
+                        )}
+                        {index < queuedMessages.length - 1 && (
+                          <Pressable
+                            onPress={() => onReorderQueuedMessage(msg.id, "down")}
+                            className="h-6 w-6 items-center justify-center"
+                          >
+                            <ChevronDown
+                              className="h-3 w-3 text-muted-foreground"
+                              size={12}
+                            />
+                          </Pressable>
+                        )}
                       </>
                     )}
                     {onRemoveQueuedMessage && (
