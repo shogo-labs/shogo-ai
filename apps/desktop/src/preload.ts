@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   downloadVMImages: () => ipcRenderer.invoke('download-vm-images'),
   skipVMDownload: () => ipcRenderer.invoke('skip-vm-download'),
   getVMStatus: () => ipcRenderer.invoke('get-vm-status'),
-  setVMConfig: (config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) =>
+  setVMConfig: (config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) =>
     ipcRenderer.invoke('set-vm-config', config),
   onVMImageNeeded: (callback: (data: { downloadUrl: string; imageDir: string }) => void) => {
     ipcRenderer.on('vm-image-needed', (_event, data) => callback(data))
@@ -24,6 +24,14 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   onVMImageDownloadProgress: (callback: (progress: { bytesDownloaded: number; totalBytes: number; percent: number; stage: string }) => void) => {
     ipcRenderer.on('vm-image-download-progress', (_event, progress) => callback(progress))
   },
+  checkVMImageUpdate: () => ipcRenderer.invoke('check-vm-image-update'),
+  onVMImageUpdateAvailable: (callback: (data: { currentVersion: string | null; latestVersion: string }) => void) => {
+    ipcRenderer.on('vm-image-update-available', (_event, data) => callback(data))
+  },
+  removeVMImageUpdateListener: () => {
+    ipcRenderer.removeAllListeners('vm-image-update-available')
+  },
+  recycleVMPool: () => ipcRenderer.invoke('recycle-vm-pool'),
 
   // Meeting recording
   startRecording: () => ipcRenderer.invoke('start-recording'),

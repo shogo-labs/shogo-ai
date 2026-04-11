@@ -674,7 +674,7 @@ export class AgentGateway {
     try {
       const thisDir = dirname(fileURLToPath(import.meta.url))
       const pkgDir = join(thisDir, '..')
-      const searchDirs = [pkgDir]
+      const searchDirs = [pkgDir, thisDir, this.workspaceDir]
 
       const tsResult = resolveBin('typescript-language-server', searchDirs, 'lib/cli.mjs')
       const pyResult = resolveBin('pyright', searchDirs)

@@ -164,10 +164,11 @@ function registerIpcHandlers(): void {
       enabled: config.vmIsolation.enabled,
       memoryMB: config.vmIsolation.memoryMB,
       cpus: config.vmIsolation.cpus,
+      mountWorkspace: config.vmIsolation.mountWorkspace,
     }
   })
 
-  ipcMain.handle('set-vm-config', (_event, vmConfig: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) => {
+  ipcMain.handle('set-vm-config', (_event, vmConfig: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) => {
     const current = readConfig()
     writeConfig({
       vmIsolation: { ...current.vmIsolation, ...vmConfig },
@@ -194,13 +195,26 @@ function registerIpcHandlers(): void {
 
     return mgr.downloadImage((progress) => {
       event.sender.send('vm-image-download-progress', progress)
-    }).then(() => {
+    }).then(async () => {
       console.log('[Desktop] VM images downloaded successfully')
+      try {
+        await fetch(`${getApiUrl()}/api/vm/pool/recycle`, { method: 'POST' })
+        console.log('[Desktop] VM pool recycled with new images')
+      } catch { /* pool may not be running */ }
       return { success: true }
     }).catch((err: Error) => {
       console.error('[Desktop] VM image download failed:', err)
       return { success: false, error: err.message }
     })
+  })
+
+  ipcMain.handle('recycle-vm-pool', async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/vm/pool/recycle`, { method: 'POST' })
+      return res.json()
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Recycle failed' }
+    }
   })
 
   ipcMain.handle('skip-vm-download', () => {
@@ -212,6 +226,22 @@ function registerIpcHandlers(): void {
   ipcMain.handle('show-remote-action-notification', (_event, title: string, body: string) => {
     if (Notification.isSupported()) {
       new Notification({ title, body }).show()
+    }
+  })
+
+  ipcMain.handle('check-vm-image-update', async () => {
+    try {
+      const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+      const imageDir = getVMImageDir()
+      const mgr = new VMImageManager(imageDir)
+      if (!mgr.isImagePresent()) {
+        return { available: false, currentVersion: null, latestVersion: '' }
+      }
+      const result = await mgr.checkForUpdate()
+      return { available: result.available, currentVersion: mgr.getImageVersion(), latestVersion: result.version }
+    } catch (err) {
+      console.warn('[Desktop] VM image update check failed:', err)
+      return { available: false, currentVersion: null, latestVersion: '' }
     }
   })
 }
@@ -367,6 +397,31 @@ function setupSessionHandlers(): void {
   })
 }
 
+const VM_IMAGE_CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
+
+function startVMImageUpdateChecker(): void {
+  async function check() {
+    try {
+      const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
+      const imageDir = getVMImageDir()
+      const mgr = new VMImageManager(imageDir)
+      if (!mgr.isImagePresent()) return
+
+      const result = await mgr.checkForUpdate()
+      if (result.available) {
+        console.log(`[Desktop] VM image update available: ${result.version}`)
+        const payload = { currentVersion: mgr.getImageVersion(), latestVersion: result.version }
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('vm-image-update-available', payload)
+        }
+      }
+    } catch { /* network failures are expected — silently retry later */ }
+  }
+
+  setTimeout(check, 60_000)
+  setInterval(check, VM_IMAGE_CHECK_INTERVAL_MS)
+}
+
 app.whenReady().then(async () => {
   const config = readConfig()
   isCloudMode = config.mode === 'cloud'
@@ -399,6 +454,10 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     initAutoUpdater()
+  }
+
+  if (!isCloudMode) {
+    startVMImageUpdateChecker()
   }
 
   app.on('activate', () => {

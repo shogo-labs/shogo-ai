@@ -50,6 +50,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let stopped = false
 let currentPollInterval = DEFAULT_POLL_INTERVAL_S
 let wsReconnectAttempt = 0
+let lastHeartbeatError: string | null = null
 const activeAbortControllers = new Map<string, AbortController>()
 
 function getReconnectDelay(): number {
@@ -159,6 +160,10 @@ async function heartbeatLoop() {
   try {
     const result = await sendHeartbeat()
     currentPollInterval = result.nextPollIn || DEFAULT_POLL_INTERVAL_S
+    if (lastHeartbeatError) {
+      console.log('[InstanceTunnel] Heartbeat recovered')
+      lastHeartbeatError = null
+    }
 
     if (result.wsRequested && !ws) {
       console.log('[InstanceTunnel] Cloud requested WebSocket — connecting...')
@@ -166,7 +171,10 @@ async function heartbeatLoop() {
       return
     }
   } catch (err: any) {
-    console.error(`[InstanceTunnel] Heartbeat error: ${err.message}`)
+    if (err.message !== lastHeartbeatError) {
+      console.error(`[InstanceTunnel] Heartbeat error: ${err.message}`)
+      lastHeartbeatError = err.message
+    }
     currentPollInterval = DEFAULT_POLL_INTERVAL_S
   }
 

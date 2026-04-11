@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RuntimeCheckResults, ModelCheckResult, WorkspaceIntegrity } from './types'
+import type { RuntimeCheckResults, ModelCheckResult, WorkspaceIntegrity, ViteBuildReadiness } from './types'
 
 const LOG_PREFIX = 'runtime-check'
 const FETCH_TIMEOUT_MS = 5_000
@@ -292,6 +292,35 @@ function checkCanvasApiContract(
 }
 
 // ---------------------------------------------------------------------------
+// Vite build readiness check
+// ---------------------------------------------------------------------------
+
+function checkViteBuildReadiness(workspaceDir: string, verbose?: boolean): ViteBuildReadiness {
+  const hasPackageJson = existsSync(join(workspaceDir, 'package.json'))
+  const hasViteConfig = existsSync(join(workspaceDir, 'vite.config.ts')) || existsSync(join(workspaceDir, 'vite.config.js'))
+  const hasAppTsx = existsSync(join(workspaceDir, 'src', 'App.tsx')) || existsSync(join(workspaceDir, 'src', 'App.jsx'))
+  const hasTsConfig = existsSync(join(workspaceDir, 'tsconfig.json'))
+  const hasNodeModules = existsSync(join(workspaceDir, 'node_modules'))
+  const hasViteBin = existsSync(join(workspaceDir, 'node_modules', '.bin', 'vite'))
+
+  const ready = hasPackageJson && hasViteConfig && hasAppTsx && hasViteBin
+
+  if (verbose) {
+    const items = [
+      `package.json=${hasPackageJson ? 'OK' : 'MISS'}`,
+      `vite.config=${hasViteConfig ? 'OK' : 'MISS'}`,
+      `src/App.tsx=${hasAppTsx ? 'OK' : 'MISS'}`,
+      `tsconfig=${hasTsConfig ? 'OK' : 'MISS'}`,
+      `node_modules=${hasNodeModules ? 'OK' : 'MISS'}`,
+      `vite-bin=${hasViteBin ? 'OK' : 'MISS'}`,
+    ]
+    console.log(`  [${LOG_PREFIX}] Vite build readiness: ${ready ? 'READY' : 'NOT READY'} (${items.join(', ')})`)
+  }
+
+  return { hasPackageJson, hasViteConfig, hasAppTsx, hasTsConfig, hasNodeModules, hasViteBin, ready }
+}
+
+// ---------------------------------------------------------------------------
 // Main check
 // ---------------------------------------------------------------------------
 
@@ -312,8 +341,13 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
   // 0. Canvas compilation check (independent of skill server)
   const { compiles: canvasCompiles, errors: canvasCompileErrors } = checkCanvasCompilation(workspaceDir, verbose)
 
-  if (!hasSchema && canvasCompiles === null) {
-    if (verbose) console.log(`  [${LOG_PREFIX}] No schema.prisma or canvas source files, skipping runtime checks`)
+  // 0a. Vite build readiness (always check when src/ exists or package.json exists)
+  const viteBuildReadiness = (existsSync(join(workspaceDir, 'package.json')) || existsSync(join(workspaceDir, 'src')))
+    ? checkViteBuildReadiness(workspaceDir, verbose)
+    : null
+
+  if (!hasSchema && canvasCompiles === null && !viteBuildReadiness) {
+    if (verbose) console.log(`  [${LOG_PREFIX}] No schema.prisma, canvas source files, or Vite project — skipping runtime checks`)
     return null
   }
 
@@ -478,6 +512,13 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
     }
   }
 
+  if (viteBuildReadiness && !viteBuildReadiness.ready) {
+    if (!viteBuildReadiness.hasPackageJson) errors.push('Vite: missing package.json')
+    if (!viteBuildReadiness.hasViteConfig) errors.push('Vite: missing vite.config.ts')
+    if (!viteBuildReadiness.hasAppTsx) errors.push('Vite: missing src/App.tsx')
+    if (!viteBuildReadiness.hasViteBin) errors.push('Vite: missing node_modules/.bin/vite (deps not installed)')
+  }
+
   return {
     serverHealthy,
     healthEndpoint,
@@ -491,6 +532,7 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
     canvasPortCorrect,
     canvasCompiles,
     canvasCompileErrors,
+    viteBuildReadiness,
     errors,
   }
 }

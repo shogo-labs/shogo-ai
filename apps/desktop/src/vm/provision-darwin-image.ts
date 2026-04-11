@@ -94,6 +94,30 @@ function buildProvisionCloudInit(): { metaData: string; userData: string } {
     '    echo \'{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}\' > package.json',
     '    /usr/local/bin/bun install',
     '    echo "skill-server deps installed"',
+    '  - |',
+    '    mkdir -p /mnt/seed',
+    '    mount /dev/vdb /mnt/seed 2>/dev/null || mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || true',
+    '    if [ -f /mnt/seed/runtime-template.tar.gz ]; then',
+    '      tar -xzf /mnt/seed/runtime-template.tar.gz -C /app/templates/',
+    '      echo "runtime-template extracted from seed ISO"',
+    '    else',
+    '      echo "WARNING: runtime-template.tar.gz not found in seed ISO"',
+    '    fi',
+    '    umount /mnt/seed 2>/dev/null || true',
+    '  - |',
+    '    cd /app/templates/runtime-template',
+    '    /usr/local/bin/bun install',
+    '    echo "runtime-template deps installed"',
+    '  - |',
+    '    mkdir -p /opt/shogo/templates',
+    '    ln -sf /app/templates/runtime-template /opt/shogo/templates/runtime-template',
+    '    echo "runtime-template symlinked to /opt/shogo/templates/"',
+    '  - |',
+    '    cd /opt/shogo',
+    '    echo \'{"name":"vm-bundle","private":true}\' > package.json',
+    '    /usr/local/bin/bun add typescript-language-server typescript pyright',
+    '    /usr/local/bin/bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine',
+    '    echo "shogo.js deps installed at /opt/shogo/node_modules"',
     '  - cloud-init clean --logs',
     '  - sync',
     '  - echo "=== PROVISION COMPLETE ==="',
@@ -103,11 +127,19 @@ function buildProvisionCloudInit(): { metaData: string; userData: string } {
   return { metaData, userData }
 }
 
-function createSeedISO(isoPath: string, metaData: string, userData: string) {
+function createSeedISO(
+  isoPath: string,
+  metaData: string,
+  userData: string,
+  extraFiles?: Array<{ name: string; content: Buffer }>,
+) {
   const tmpDir = path.join(os.tmpdir(), 'shogo-provision-seed')
   fs.mkdirSync(tmpDir, { recursive: true })
   fs.writeFileSync(path.join(tmpDir, 'meta-data'), metaData)
   fs.writeFileSync(path.join(tmpDir, 'user-data'), userData)
+  if (extraFiles) {
+    for (const f of extraFiles) fs.writeFileSync(path.join(tmpDir, f.name), f.content)
+  }
 
   if (process.platform === 'darwin') {
     execSync(
@@ -147,8 +179,18 @@ async function main() {
   const { metaData, userData } = buildProvisionCloudInit()
   const seedISOPath = path.join(os.tmpdir(), 'shogo-provision-seed.iso')
   if (fs.existsSync(seedISOPath)) fs.rmSync(seedISOPath, { force: true })
+
+  console.log('Creating runtime-template tarball from repo...')
+  const templateTar = execSync(
+    `tar -czf - --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git -C "${path.join(REPO_ROOT, 'templates')}" runtime-template`,
+    { maxBuffer: 10 * 1024 * 1024 },
+  )
+  console.log(`  runtime-template.tar.gz: ${(templateTar.length / 1024).toFixed(1)} KB`)
+
   console.log('Creating seed ISO...')
-  createSeedISO(seedISOPath, metaData, userData)
+  createSeedISO(seedISOPath, metaData, userData, [
+    { name: 'runtime-template.tar.gz', content: templateTar },
+  ])
 
   console.log('Booting VM for provisioning...')
   const proc = spawn(qemuBin, [

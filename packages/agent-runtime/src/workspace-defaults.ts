@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, realpathSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
@@ -199,25 +199,38 @@ const RUNTIME_TEMPLATE_SKIP = new Set([
 
 /**
  * Resolve the path to the runtime-template directory.
- * In Docker: /app/templates/runtime-template
- * In local dev: ../../templates/runtime-template (relative to src/)
+ *
+ * Candidate paths (checked in order, first with package.json wins):
+ * - RUNTIME_TEMPLATE_DIR env override (any environment)
+ * - Relative to source tree (local dev: __dirname is packages/agent-runtime/src/)
+ * - Adjacent to bundled server.js (VM guest: __dirname is /opt/shogo/)
+ * - /app/templates/runtime-template (Docker / K8s)
+ * - /opt/shogo/templates/runtime-template (VM pre-provisioned rootfs)
  */
-function getRuntimeTemplatePath(): string | null {
+export function getRuntimeTemplatePath(): string | null {
+  const envOverride = process.env.RUNTIME_TEMPLATE_DIR
   const candidates = [
+    ...(envOverride ? [envOverride] : []),
     join(__dirname, '..', '..', '..', 'templates', 'runtime-template'),
+    join(__dirname, 'templates', 'runtime-template'),
     '/app/templates/runtime-template',
+    '/opt/shogo/templates/runtime-template',
   ]
   for (const p of candidates) {
-    if (existsSync(join(p, 'package.json'))) return p
+    if (existsSync(join(p, 'package.json'))) {
+      // Resolve symlinks so cpSync doesn't choke on a symlink-to-directory.
+      // The VM image symlinks /opt/shogo/templates/runtime-template → /app/templates/runtime-template/
+      try { return realpathSync(p) } catch { return p }
+    }
   }
   return null
 }
 
 /**
- * Copy runtime-template files into a workspace so it's a working
- * Vite + React project out of the box. Copies node_modules if the
- * template has pre-installed deps (from Docker build). Skips files
- * that already exist to preserve user modifications (e.g. after S3 restore).
+ * Copy runtime-template source files into a workspace so it's a working
+ * Vite + React project out of the box. Excludes node_modules (platform-specific)
+ * — those are handled by ensureWorkspaceDeps() which copies pre-built modules
+ * from the template or falls back to `bun install`.
  *
  * Returns true if files were copied, false if template was not found
  * or workspace already has a package.json.
@@ -227,7 +240,7 @@ export function seedRuntimeTemplate(dir: string): boolean {
 
   const templatePath = getRuntimeTemplatePath()
   if (!templatePath) {
-    console.warn('[workspace-defaults] runtime-template not found — skipping')
+    console.error('[workspace-defaults] ERROR: runtime-template not found in any candidate path — workspace will lack Vite/React/Tailwind setup')
     return false
   }
 
@@ -394,8 +407,14 @@ export async function runTechStackSetup(dir: string, stackId: string): Promise<v
 
 /**
  * Ensure workspace has node_modules installed.
- * If the template copy included pre-installed node_modules, this is a no-op.
- * Otherwise, runs `bun install` to install dependencies.
+ *
+ * Fast path: if the runtime-template in the image has pre-installed
+ * node_modules (from provisioning), copy them directly — avoids a
+ * full `bun install` on every workspace creation. This runs at
+ * runtime inside the target environment so the binaries are always
+ * platform-compatible.
+ *
+ * Fallback: runs `bun install` when no pre-built modules are available.
  */
 export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   if (!existsSync(join(dir, 'package.json'))) return
@@ -404,6 +423,23 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
 
   const viteBin = join(dir, 'node_modules', '.bin', 'vite')
   if (existsSync(viteBin)) return
+
+  // Fast path: copy pre-installed node_modules from the image template.
+  // This is safe because we're running on the same platform that built them.
+  const templatePath = getRuntimeTemplatePath()
+  const templateModules = templatePath ? join(templatePath, 'node_modules') : null
+  if (templateModules && existsSync(join(templateModules, '.bin', 'vite'))) {
+    console.log('[workspace-defaults] Copying pre-installed node_modules from template...')
+    try {
+      cpSync(templateModules, join(dir, 'node_modules'), { recursive: true })
+      if (existsSync(viteBin)) {
+        console.log('[workspace-defaults] Pre-installed deps ready (copied from template)')
+        return
+      }
+    } catch (err: any) {
+      console.warn(`[workspace-defaults] Failed to copy template node_modules: ${err.message}`)
+    }
+  }
 
   console.log('[workspace-defaults] Installing workspace dependencies...')
   const { spawn } = await import('child_process')

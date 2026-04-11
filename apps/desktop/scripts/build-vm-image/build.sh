@@ -18,29 +18,29 @@ set -euo pipefail
 
 ARCH="${1:-$(uname -m)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
 CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
 
-QEMU_ACCEL=""
-if [ -w /dev/kvm ]; then
-  QEMU_ACCEL="-accel kvm"
-  echo "KVM acceleration available"
-fi
+HOST_ARCH="$(uname -m)"
+
+mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
 
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
     CLOUD_IMAGE="noble-server-cloudimg-arm64.img"
     QEMU_SYSTEM="qemu-system-aarch64"
-    QEMU_MACHINE="-machine virt -cpu cortex-a72"
-    QEMU_ACCEL=""  # KVM only works for native arch
+    QEMU_MACHINE="-machine virt"
+    QEMU_EFI_ARGS=""
     ;;
   x86_64|amd64)
     ARCH="x86_64"
     CLOUD_IMAGE="noble-server-cloudimg-amd64.img"
     QEMU_SYSTEM="qemu-system-x86_64"
     QEMU_MACHINE="-machine q35 -cpu max"
+    QEMU_EFI_ARGS=""
     ;;
   *)
     echo "Unsupported architecture: $ARCH"
@@ -48,7 +48,44 @@ case "$ARCH" in
     ;;
 esac
 
-mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
+# Detect KVM availability (only works when host arch matches target arch)
+QEMU_ACCEL=""
+if [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
+  if [ -w /dev/kvm ]; then
+    QEMU_ACCEL="-accel kvm"
+    echo "KVM acceleration available (native arch)"
+  fi
+fi
+
+# aarch64 needs UEFI firmware and a CPU model
+if [ "$ARCH" = "aarch64" ]; then
+  if [ -n "$QEMU_ACCEL" ]; then
+    QEMU_MACHINE="-machine virt -cpu host"
+  else
+    QEMU_MACHINE="-machine virt -cpu cortex-a72"
+  fi
+  # Locate UEFI firmware (required for aarch64 disk boot)
+  EFI_CODE=""
+  for candidate in \
+    /usr/share/AAVMF/AAVMF_CODE.fd \
+    /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+    /usr/share/edk2/aarch64/QEMU_EFI.fd \
+    /opt/homebrew/share/qemu/edk2-aarch64-code.fd; do
+    if [ -f "$candidate" ]; then
+      EFI_CODE="$candidate"
+      break
+    fi
+  done
+  if [ -z "$EFI_CODE" ]; then
+    echo "ERROR: UEFI firmware for aarch64 not found."
+    echo "Install with: sudo apt-get install qemu-efi-aarch64  (Linux) or brew install qemu (macOS)"
+    exit 1
+  fi
+  echo "Using UEFI firmware: $EFI_CODE"
+  EFI_VARS="${WORK_DIR}/efi-vars.fd"
+  dd if=/dev/zero of="$EFI_VARS" bs=1M count=64 2>/dev/null
+  QEMU_EFI_ARGS="-drive if=pflash,format=raw,readonly=on,file=${EFI_CODE} -drive if=pflash,format=raw,file=${EFI_VARS}"
+fi
 
 echo "=== Building Shogo VM image for ${ARCH} ==="
 
@@ -114,8 +151,14 @@ runcmd:
   - useradd -m -s /bin/bash shogo
   - echo "shogo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
   
-  # Install global Node packages (matches Docker Dockerfile.base)
-  - /usr/local/bin/bun add -g typescript-language-server typescript pyright
+  # Install LSP + Prisma packages into /opt/shogo/node_modules/ (where shogo.js resolves them)
+  - mkdir -p /opt/shogo
+  - |
+    cd /opt/shogo
+    printf '{"name":"vm-bundle","private":true}' > package.json
+    /usr/local/bin/bun add typescript-language-server typescript pyright
+    /usr/local/bin/bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine
+    echo "shogo.js deps installed at /opt/shogo/node_modules"
   
   # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
   - |
@@ -123,6 +166,26 @@ runcmd:
     printf '{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}' \
       > /app/templates/skill-server/package.json
     cd /app/templates/skill-server && /usr/local/bin/bun install
+  
+  # Extract runtime-template from seed ISO (tarball created at build time from repo)
+  - |
+    mkdir -p /mnt/seed
+    mount /dev/vdb /mnt/seed 2>/dev/null || mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || true
+    if [ -f /mnt/seed/runtime-template.tar.gz ]; then
+      mkdir -p /app/templates
+      tar -xzf /mnt/seed/runtime-template.tar.gz -C /app/templates/
+      echo "runtime-template extracted from seed ISO"
+    else
+      echo "WARNING: runtime-template.tar.gz not found in seed ISO"
+    fi
+    umount /mnt/seed 2>/dev/null || true
+  - |
+    cd /app/templates/runtime-template
+    /usr/local/bin/bun install
+    echo "runtime-template deps installed"
+  - |
+    mkdir -p /opt/shogo/templates
+    ln -sf /app/templates/runtime-template /opt/shogo/templates/runtime-template
   
   # Install agent-runtime bundle (same process as K8s pods)
   - mkdir -p /opt/shogo
@@ -164,22 +227,36 @@ runcmd:
   - poweroff
 USERDATA
 
-cat > "${WORK_DIR}/meta-data" << METADATA
+SEED_TMP="${WORK_DIR}/seed-tmp"
+rm -rf "$SEED_TMP"
+mkdir -p "$SEED_TMP"
+
+mv "${WORK_DIR}/user-data" "${SEED_TMP}/user-data"
+
+cat > "${SEED_TMP}/meta-data" << METADATA
 instance-id: shogo-build-$(date +%s)
 local-hostname: shogo-vm
 METADATA
 
-# Create seed ISO
-cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data" 2>/dev/null || \
-  genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data"
+# Tar the runtime-template from the repo (single source of truth — no hardcoded versions)
+echo "Creating runtime-template tarball from repo..."
+tar -czf "${SEED_TMP}/runtime-template.tar.gz" \
+  --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git \
+  -C "${REPO_ROOT}/templates" runtime-template
+echo "  $(du -h "${SEED_TMP}/runtime-template.tar.gz" | cut -f1) runtime-template.tar.gz"
+
+# Create seed ISO from directory (includes user-data, meta-data, and template tarball)
+genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "$SEED_TMP"
+rm -rf "$SEED_TMP"
 
 
 # Step 4: Boot and provision
-# aarch64 on x86_64 runs in TCG software emulation (~10x slower) — needs a long timeout
-if [ "$ARCH" = "aarch64" ] && [ -z "$QEMU_ACCEL" ]; then
-  DEFAULT_TIMEOUT=3600
+if [ -n "$QEMU_ACCEL" ]; then
+  DEFAULT_TIMEOUT=600
+elif [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
+  DEFAULT_TIMEOUT=1800  # Native arch TCG (no cross-arch penalty)
 else
-  DEFAULT_TIMEOUT=1200
+  DEFAULT_TIMEOUT=3600  # Cross-arch TCG (very slow)
 fi
 TIMEOUT=${QEMU_TIMEOUT:-$DEFAULT_TIMEOUT}
 echo "Booting VM for provisioning (timeout: ${TIMEOUT}s, accel: ${QEMU_ACCEL:-TCG})..."
@@ -187,10 +264,12 @@ timeout "$TIMEOUT" $QEMU_SYSTEM \
   $QEMU_ACCEL \
   $QEMU_MACHINE \
   -m 4096 -smp 4 \
+  $QEMU_EFI_ARGS \
   -drive file="${WORK_DIR}/disk.qcow2",if=virtio \
   -drive file="${WORK_DIR}/seed.iso",if=virtio,format=raw,readonly=on \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0 \
+  -serial mon:stdio \
   -nographic \
   -no-reboot
 QEMU_EXIT=$?
