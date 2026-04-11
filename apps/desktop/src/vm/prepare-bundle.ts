@@ -40,9 +40,9 @@ export interface PrepareVMBundleOptions {
   prebuiltShogoJs?: string
   /**
    * When true, only produce the files needed for seed ISO embedding
-   * (server.js, shogo.js, tree-sitter.wasm). Skips Linux bun download,
-   * templates, prisma packages, and other heavyweight deps that are
-   * pre-installed in rootfs-provisioned.qcow2.
+   * (server.js, shogo.js, wasm files). Skips Linux bun download,
+   * templates, prisma packages, and LSP servers that are
+   * pre-installed in rootfs-provisioned.qcow2 at /opt/shogo/node_modules/.
    */
   lightMode?: boolean
 }
@@ -290,8 +290,12 @@ export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
   // --- Tree-sitter wasm files (always needed — embedded in seed ISO) ---
   copyWasmFiles(join(destDir, 'wasm'), repoRoot)
 
-  // With pre-provisioned images, bun/prisma/LSP/templates are baked into
-  // rootfs-provisioned.qcow2. Only JS + wasm need to be in the bundle.
+  // With pre-provisioned images the following are baked into rootfs-provisioned.qcow2:
+  //   - /usr/local/bin/bun (+ node/npx/npm aliases)
+  //   - /opt/shogo/node_modules/ (prisma, typescript-language-server, typescript, pyright)
+  //   - /app/templates/runtime-template/ (+ symlink at /opt/shogo/templates/)
+  //   - /app/templates/skill-server/
+  // Only JS bundles + wasm files need to be in the seed ISO.
   if (!lightMode) {
     // --- Prisma packages ---
     if (!existsSync(join(destDir, 'node_modules', '@prisma', 'internals'))) {
