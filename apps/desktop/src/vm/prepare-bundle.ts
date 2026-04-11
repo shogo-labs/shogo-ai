@@ -290,7 +290,7 @@ export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
   // --- Tree-sitter wasm files (always needed — embedded in seed ISO) ---
   copyWasmFiles(join(destDir, 'wasm'), repoRoot)
 
-  // With pre-provisioned images, bun/templates/deps are baked into
+  // With pre-provisioned images, bun/prisma/LSP/templates are baked into
   // rootfs-provisioned.qcow2. Only JS + wasm need to be in the bundle.
   if (!lightMode) {
     // --- Prisma packages ---

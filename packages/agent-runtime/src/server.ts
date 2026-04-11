@@ -82,6 +82,11 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
+const workspaceStatus = {
+  templateSeeded: false,
+  depsInstalled: false,
+}
+
 const { app, state, logTiming } = await createRuntimeApp({
   name: 'agent-runtime',
   workDir: WORKSPACE_DIR,
@@ -197,6 +202,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,
+    workspace: workspaceStatus,
   }),
 })
 
@@ -280,7 +286,10 @@ function ensureWorkspaceFiles(): void {
   // For non-JS stacks like python-data, we skip the runtime template.
   const jsStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
   if (!techStackId || jsStacks.has(techStackId)) {
-    seedRuntimeTemplate(WORKSPACE_DIR)
+    const seeded = seedRuntimeTemplate(WORKSPACE_DIR)
+    workspaceStatus.templateSeeded = seeded || existsSync(join(WORKSPACE_DIR, 'package.json'))
+  } else {
+    workspaceStatus.templateSeeded = true
   }
 }
 
@@ -2551,6 +2560,7 @@ async function initializeEssentials(): Promise<void> {
   } else {
     try {
       await ensureWorkspaceDeps(WORKSPACE_DIR)
+      workspaceStatus.depsInstalled = true
       logTiming('Workspace deps ready')
     } catch (err: any) {
       console.error('[agent-runtime] Workspace deps install failed:', err.message)
@@ -2610,6 +2620,7 @@ async function startGateway(): Promise<void> {
     // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
     try {
       await ensureWorkspaceDeps(WORKSPACE_DIR)
+      workspaceStatus.depsInstalled = true
     } catch (err: any) {
       console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
     }
@@ -2716,6 +2727,7 @@ if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   ensureWorkspaceFiles()
   ensureWorkspaceDeps(WORKSPACE_DIR).then(() => {
+    workspaceStatus.depsInstalled = true
     logTiming('Pool mode: workspace pre-seeded, ready for assignment')
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
