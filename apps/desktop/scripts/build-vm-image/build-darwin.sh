@@ -92,8 +92,14 @@ runcmd:
   - useradd -m -s /bin/bash shogo
   - echo "shogo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
   
-  # Install global Node packages (matches Docker Dockerfile.base)
-  - /usr/local/bin/bun add -g typescript-language-server typescript pyright
+  # Install LSP + Prisma packages into /opt/shogo/node_modules/ (where shogo.js resolves them)
+  - mkdir -p /opt/shogo
+  - |
+    cd /opt/shogo
+    printf '{"name":"vm-bundle","private":true}' > package.json
+    /usr/local/bin/bun add typescript-language-server typescript pyright
+    /usr/local/bin/bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine
+    echo "shogo.js deps installed at /opt/shogo/node_modules"
   
   # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
   - |

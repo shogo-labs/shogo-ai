@@ -258,10 +258,13 @@ export class DarwinVMManager implements VMManager {
       if (fs.existsSync(p)) files[name] = fs.readFileSync(p)
     }
 
-    const wasmPath = path.join(bundleDir, 'wasm', 'tree-sitter.wasm')
-    if (fs.existsSync(wasmPath)) {
-      files['tree-sitter.wasm'] = fs.readFileSync(wasmPath)
-    } else {
+    const wasmDir = path.join(bundleDir, 'wasm')
+    if (fs.existsSync(wasmDir)) {
+      for (const f of fs.readdirSync(wasmDir)) {
+        if (f.endsWith('.wasm')) files[f] = fs.readFileSync(path.join(wasmDir, f))
+      }
+    }
+    if (!files['tree-sitter.wasm']) {
       const bunModBase = path.join(bundleDir, '..', '..', 'node_modules', '.bun')
       if (fs.existsSync(bunModBase)) {
         try {

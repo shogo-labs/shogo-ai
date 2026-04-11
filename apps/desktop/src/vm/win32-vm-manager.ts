@@ -287,12 +287,13 @@ export class Win32VMManager implements VMManager {
       if (fs.existsSync(p)) files[name] = fs.readFileSync(p)
     }
 
-    // tree-sitter.wasm for code parsing (avoids crash from hardcoded build paths)
-    const wasmPath = path.join(bundleDir, 'wasm', 'tree-sitter.wasm')
-    if (fs.existsSync(wasmPath)) {
-      files['tree-sitter.wasm'] = fs.readFileSync(wasmPath)
-    } else {
-      // Fall back to searching node_modules
+    const wasmDir = path.join(bundleDir, 'wasm')
+    if (fs.existsSync(wasmDir)) {
+      for (const f of fs.readdirSync(wasmDir)) {
+        if (f.endsWith('.wasm')) files[f] = fs.readFileSync(path.join(wasmDir, f))
+      }
+    }
+    if (!files['tree-sitter.wasm']) {
       const bunModBase = path.join(bundleDir, '..', '..', 'node_modules', '.bun')
       if (fs.existsSync(bunModBase)) {
         try {
