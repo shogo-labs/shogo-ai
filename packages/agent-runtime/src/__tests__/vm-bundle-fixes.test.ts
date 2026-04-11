@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
-const REPO_ROOT = path.resolve(__dirname, '../../../../..')
+const REPO_ROOT = path.resolve(__dirname, '../../../..')
 
 // ---------------------------------------------------------------------------
 // 1. readBundleDir wasm fix — both VM managers must read ALL .wasm files
