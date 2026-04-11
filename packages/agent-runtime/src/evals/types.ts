@@ -127,6 +127,16 @@ export interface WorkspaceIntegrity {
   prismaClient: boolean
 }
 
+export interface ViteBuildReadiness {
+  hasPackageJson: boolean
+  hasViteConfig: boolean
+  hasAppTsx: boolean
+  hasTsConfig: boolean
+  hasNodeModules: boolean
+  hasViteBin: boolean
+  ready: boolean
+}
+
 export interface RuntimeCheckResults {
   /** Whether the skill server /health endpoint responded with { ok: true }. null = no skill server. */
   serverHealthy: boolean | null
@@ -151,6 +161,8 @@ export interface RuntimeCheckResults {
   canvasCompiles: boolean | null
   /** Individual compile errors (file path + message) when canvasCompiles is false. */
   canvasCompileErrors: string[]
+  /** Vite build readiness — template files + deps present. null = check not run. */
+  viteBuildReadiness: ViteBuildReadiness | null
   errors: string[]
 }
 

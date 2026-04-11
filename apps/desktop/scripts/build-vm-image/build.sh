@@ -18,6 +18,7 @@ set -euo pipefail
 
 ARCH="${1:-$(uname -m)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
 CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
@@ -161,6 +162,26 @@ runcmd:
       > /app/templates/skill-server/package.json
     cd /app/templates/skill-server && /usr/local/bin/bun install
   
+  # Extract runtime-template from seed ISO (tarball created at build time from repo)
+  - |
+    mkdir -p /mnt/seed
+    mount /dev/vdb /mnt/seed 2>/dev/null || mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || true
+    if [ -f /mnt/seed/runtime-template.tar.gz ]; then
+      mkdir -p /app/templates
+      tar -xzf /mnt/seed/runtime-template.tar.gz -C /app/templates/
+      echo "runtime-template extracted from seed ISO"
+    else
+      echo "WARNING: runtime-template.tar.gz not found in seed ISO"
+    fi
+    umount /mnt/seed 2>/dev/null || true
+  - |
+    cd /app/templates/runtime-template
+    /usr/local/bin/bun install
+    echo "runtime-template deps installed"
+  - |
+    mkdir -p /opt/shogo/templates
+    ln -sf /app/templates/runtime-template /opt/shogo/templates/runtime-template
+  
   # Install agent-runtime bundle (same process as K8s pods)
   - mkdir -p /opt/shogo
   
@@ -201,14 +222,27 @@ runcmd:
   - poweroff
 USERDATA
 
-cat > "${WORK_DIR}/meta-data" << METADATA
+SEED_TMP="${WORK_DIR}/seed-tmp"
+rm -rf "$SEED_TMP"
+mkdir -p "$SEED_TMP"
+
+mv "${WORK_DIR}/user-data" "${SEED_TMP}/user-data"
+
+cat > "${SEED_TMP}/meta-data" << METADATA
 instance-id: shogo-build-$(date +%s)
 local-hostname: shogo-vm
 METADATA
 
-# Create seed ISO
-cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data" 2>/dev/null || \
-  genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data"
+# Tar the runtime-template from the repo (single source of truth — no hardcoded versions)
+echo "Creating runtime-template tarball from repo..."
+tar -czf "${SEED_TMP}/runtime-template.tar.gz" \
+  --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git \
+  -C "${REPO_ROOT}/templates" runtime-template
+echo "  $(du -h "${SEED_TMP}/runtime-template.tar.gz" | cut -f1) runtime-template.tar.gz"
+
+# Create seed ISO from directory (includes user-data, meta-data, and template tarball)
+genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "$SEED_TMP"
+rm -rf "$SEED_TMP"
 
 
 # Step 4: Boot and provision

@@ -106,12 +106,20 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
           const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
           const url = await getVMProjectUrl(projectId)
           return c.json({ success: true, projectId, status: 'running', url, port: 0 })
-        } catch {
-          // VM pool not ready, fall through to host runtime
+        } catch (vmErr: any) {
+          // When VM isolation is enabled, falling back to the host RuntimeManager
+          // creates a split-brain: the preview renders from the host but the agent
+          // operates inside the VM and sees a different workspace. Log and return
+          // an error so the client can retry instead of silently diverging.
+          console.error('[Runtime] VM pool unavailable, not falling back to host runtime to avoid split-brain:', vmErr.message)
+          return c.json(
+            { error: { code: "vm_pool_unavailable", message: "VM isolation is enabled but the pool is not ready. Retrying..." } },
+            503
+          )
         }
       }
 
-      // Start or get existing runtime
+      // Start or get existing runtime (non-VM path)
       const runtime = await runtimeManager.start(projectId)
 
       return c.json({
