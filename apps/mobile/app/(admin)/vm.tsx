@@ -72,7 +72,7 @@ function createHttpBridge() {
       return res.json()
     },
 
-    async setVMConfig(config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) {
+    async setVMConfig(config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) {
       const res = await fetch(`${base}/api/vm/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -167,6 +167,7 @@ interface VMStatus {
   enabled: boolean | 'auto'
   memoryMB: number
   cpus: number
+  mountWorkspace: boolean
 }
 
 interface VMDownloadProgress {
@@ -619,6 +620,7 @@ function VMConfigSection({
   const [memoryMB, setMemoryMB] = useState(String(vmStatus.memoryMB))
   const [cpus, setCpus] = useState(String(vmStatus.cpus))
   const [enabled, setEnabled] = useState<boolean | 'auto'>(vmStatus.enabled)
+  const [mountWorkspace, setMountWorkspace] = useState(vmStatus.mountWorkspace)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null)
 
@@ -626,6 +628,7 @@ function VMConfigSection({
     setMemoryMB(String(vmStatus.memoryMB))
     setCpus(String(vmStatus.cpus))
     setEnabled(vmStatus.enabled)
+    setMountWorkspace(vmStatus.mountWorkspace)
   }, [vmStatus])
 
   const handleSave = async () => {
@@ -638,6 +641,7 @@ function VMConfigSection({
         enabled,
         memoryMB: parseInt(memoryMB, 10) || 1536,
         cpus: parseInt(cpus, 10) || 0,
+        mountWorkspace,
       })
       setMessage({ type: 'ok', text: 'Settings saved — restart the app to apply changes' })
       onSaved()
@@ -683,6 +687,40 @@ function VMConfigSection({
                   className={cn(
                     'text-sm font-medium',
                     enabled === opt.value ? 'text-primary' : 'text-foreground',
+                  )}
+                >
+                  {opt.label}
+                </Text>
+                <Text className="text-[10px] text-muted-foreground mt-0.5">{opt.desc}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        {/* Workspace Mode */}
+        <View className="gap-1.5">
+          <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            Workspace Filesystem
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            {([
+              { value: true, label: 'Host Mount', desc: 'Share host project files into the VM via 9p — agent edits your files directly' },
+              { value: false, label: 'Isolated', desc: 'Agent gets an isolated filesystem inside the VM — no host access' },
+            ] as const).map((opt) => (
+              <Pressable
+                key={String(opt.value)}
+                onPress={() => setMountWorkspace(opt.value)}
+                className={cn(
+                  'flex-1 min-w-[100px] border rounded-lg px-3 py-2.5',
+                  mountWorkspace === opt.value
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border bg-background',
+                )}
+              >
+                <Text
+                  className={cn(
+                    'text-sm font-medium',
+                    mountWorkspace === opt.value ? 'text-primary' : 'text-foreground',
                   )}
                 >
                   {opt.label}

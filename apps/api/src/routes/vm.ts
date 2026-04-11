@@ -23,6 +23,7 @@ interface VMIsolationConfig {
   enabled: boolean | 'auto'
   memoryMB: number
   cpus: number
+  mountWorkspace: boolean
 }
 
 interface DesktopConfig {
@@ -35,6 +36,7 @@ const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
   memoryMB: 1536,
   cpus: 0,
+  mountWorkspace: true,
 }
 
 const DEFAULT_CONFIG: DesktopConfig = {
@@ -380,6 +382,7 @@ export function vmRoutes(): Hono {
       enabled: config.vmIsolation.enabled,
       memoryMB: config.vmIsolation.memoryMB,
       cpus: config.vmIsolation.cpus,
+      mountWorkspace: config.vmIsolation.mountWorkspace,
     })
   })
 
@@ -422,7 +425,7 @@ export function vmRoutes(): Hono {
    * POST /config - update VM configuration
    */
   router.post('/config', async (c) => {
-    const body = await c.req.json<{ enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }>()
+    const body = await c.req.json<{ enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }>()
     const current = readConfig()
     const updated = writeConfig({
       vmIsolation: { ...current.vmIsolation, ...body },
