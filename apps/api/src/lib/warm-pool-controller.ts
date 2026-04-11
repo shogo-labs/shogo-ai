@@ -943,6 +943,7 @@ export class WarmPoolController {
     usedCpuMillis: number
     limitCpuMillis: number
   } | null> {
+    if (process.env.SHOGO_LOCAL_MODE === 'true') return null
     try {
       const coreApi = getCoreApi()
       const nodeResponse = await coreApi.listNode()

@@ -29,15 +29,26 @@ export function resolveBin(
   searchDirs: string[],
   directEntryPath?: string,
 ): { resolved: string; viaBun: boolean } | undefined {
+  const isBunRuntime = typeof Bun !== 'undefined'
+
+  // On Windows under Bun, .bin shims (.cmd wrappers, extensionless bash scripts)
+  // can't be executed by Bun. Use the direct JS entry point instead.
+  if (IS_WINDOWS && isBunRuntime && directEntryPath) {
+    for (const dir of searchDirs) {
+      const entry = join(dir, 'node_modules', name, directEntryPath)
+      if (existsSync(entry)) return { resolved: entry, viaBun: true }
+    }
+  }
+
   for (const dir of searchDirs) {
     const base = join(dir, 'node_modules', '.bin', name)
-    if (existsSync(base)) return { resolved: base, viaBun: false }
     if (IS_WINDOWS) {
       for (const ext of WIN_BIN_EXTENSIONS) {
         const withExt = base + ext
         if (existsSync(withExt)) return { resolved: withExt, viaBun: false }
       }
     }
+    if (existsSync(base)) return { resolved: base, viaBun: false }
   }
 
   if (directEntryPath) {
