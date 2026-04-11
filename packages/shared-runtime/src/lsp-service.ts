@@ -164,6 +164,10 @@ export class TSLanguageServer {
       )
     }
 
+    // In Bun runtime, always spawn via bun — .bin shims use #!/usr/bin/env node
+    // which may not exist (e.g. packaged Electron apps ship bun, not node)
+    if (typeof Bun !== 'undefined') spawnViaBun = true
+
     console.log(`[${this.label}] Starting ${serverPath}${spawnViaBun ? ' (via bun)' : ''}`)
     console.log(`[${this.label}] Project directory: ${this.projectDir}`)
 
@@ -793,7 +797,10 @@ export class WorkspaceLSPManager {
     this.pyDirtyFiles.clear()
 
     try {
-      const proc = spawn([this.pyrightBin, '--outputjson', ...files], {
+      const cmd = typeof Bun !== 'undefined'
+        ? ['bun', this.pyrightBin, '--outputjson', ...files]
+        : [this.pyrightBin, '--outputjson', ...files]
+      const proc = spawn(cmd, {
         cwd: this.projectDir,
         env: { ...process.env },
         stdout: 'pipe',
