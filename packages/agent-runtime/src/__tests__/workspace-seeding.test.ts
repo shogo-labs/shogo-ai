@@ -193,6 +193,82 @@ describe('seedWorkspaceDefaults', () => {
 })
 
 // ---------------------------------------------------------------------------
+// ensureWorkspaceDeps — platform detection
+// ---------------------------------------------------------------------------
+
+describe('ensureWorkspaceDeps platform detection', () => {
+  const DEPS_DIR = '/tmp/test-workspace-deps-platform'
+
+  beforeEach(() => {
+    rmSync(DEPS_DIR, { recursive: true, force: true })
+    mkdirSync(DEPS_DIR, { recursive: true })
+    writeFileSync(join(DEPS_DIR, 'package.json'), '{"name":"test","dependencies":{"vite":"^5"}}')
+  })
+
+  afterEach(() => {
+    rmSync(DEPS_DIR, { recursive: true, force: true })
+  })
+
+  test('detects wrong-platform marker and reinstalls', async () => {
+    mkdirSync(join(DEPS_DIR, 'node_modules', '.bin'), { recursive: true })
+    writeFileSync(join(DEPS_DIR, 'node_modules', '.bin', 'vite'), '#!/bin/sh')
+    writeFileSync(join(DEPS_DIR, 'node_modules', '.shogo-platform'), 'linux-arm64-fake\n')
+
+    const currentPlatform = `${process.platform}-${process.arch}`
+    expect(currentPlatform).not.toBe('linux-arm64-fake')
+
+    // This should detect the mismatch, nuke node_modules, and reinstall
+    // We can't easily test the full bun install in unit tests, but we can
+    // verify the old node_modules got removed
+    try {
+      await ensureWorkspaceDeps(DEPS_DIR)
+    } catch {
+      // bun install may fail in test env — that's fine, we're testing detection
+    }
+    // The fake .shogo-platform should be gone (node_modules was nuked)
+    const markerAfter = existsSync(join(DEPS_DIR, 'node_modules', '.shogo-platform'))
+      ? require('fs').readFileSync(join(DEPS_DIR, 'node_modules', '.shogo-platform'), 'utf-8').trim()
+      : null
+    // Either nuked (no marker) or reinstalled (correct marker)
+    if (markerAfter) {
+      expect(markerAfter).toBe(currentPlatform)
+    }
+  })
+
+  test('skips reinstall when platform marker matches', async () => {
+    const currentPlatform = `${process.platform}-${process.arch}`
+    mkdirSync(join(DEPS_DIR, 'node_modules', '.bin'), { recursive: true })
+    writeFileSync(join(DEPS_DIR, 'node_modules', '.bin', 'vite'), '#!/bin/sh')
+    writeFileSync(join(DEPS_DIR, 'node_modules', '.shogo-platform'), currentPlatform + '\n')
+
+    await ensureWorkspaceDeps(DEPS_DIR)
+
+    // Should have returned early — marker still intact
+    const marker = require('fs').readFileSync(
+      join(DEPS_DIR, 'node_modules', '.shogo-platform'), 'utf-8'
+    ).trim()
+    expect(marker).toBe(currentPlatform)
+  })
+
+  test('detects wrong-platform rollup packages when no marker exists', async () => {
+    mkdirSync(join(DEPS_DIR, 'node_modules', '.bin'), { recursive: true })
+    writeFileSync(join(DEPS_DIR, 'node_modules', '.bin', 'vite'), '#!/bin/sh')
+    // Simulate macOS rollup in a Linux env (or vice versa)
+    const foreignOs = process.platform === 'linux' ? 'darwin' : 'linux'
+    mkdirSync(join(DEPS_DIR, 'node_modules', '@rollup', `rollup-${foreignOs}-arm64`), { recursive: true })
+    // No .shogo-platform marker
+
+    try {
+      await ensureWorkspaceDeps(DEPS_DIR)
+    } catch {
+      // bun install may fail — testing detection, not install
+    }
+    // The foreign rollup package should be gone
+    expect(existsSync(join(DEPS_DIR, 'node_modules', '@rollup', `rollup-${foreignOs}-arm64`))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Full workspace bootstrap — template + defaults together
 // ---------------------------------------------------------------------------
 

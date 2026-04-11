@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, unlinkSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
@@ -100,9 +100,26 @@ export function resolveWorkspaceConfigFilePath(dir: string, filename: string): s
   return null
 }
 
+/**
+ * Remove stale .shogo symlinks left by previous VM 9p mount runs.
+ * The VM creates .shogo -> /tmp/shogo-local/<id>/.shogo which becomes a
+ * broken symlink on the host after the VM exits. mkdirSync({recursive:true})
+ * sees the symlink entry but can't traverse it, causing ENOENT.
+ */
+function removeStaleShogoSymlink(dir: string): void {
+  const shogoDir = join(dir, '.shogo')
+  try {
+    const st = lstatSync(shogoDir)
+    if (st.isSymbolicLink()) {
+      try { statSync(shogoDir) } catch { rmSync(shogoDir, { force: true }) }
+    }
+  } catch {}
+}
+
 export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
+  removeStaleShogoSymlink(dir)
   mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
 
@@ -121,6 +138,7 @@ export function seedWorkspaceDefaults(dir: string): void {
 export function resetWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
+  removeStaleShogoSymlink(dir)
   mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
@@ -143,6 +161,7 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
   const shogoSrc = getTemplateShogoDir(templateId)
   if (shogoSrc) {
+    removeStaleShogoSymlink(dir)
     const destShogo = join(dir, '.shogo')
     if (!existsSync(destShogo)) {
       cpSync(shogoSrc, destShogo, { recursive: true })
@@ -405,33 +424,88 @@ export async function runTechStackSetup(dir: string, stackId: string): Promise<v
   })
 }
 
+const PLATFORM_TAG = `${process.platform}-${process.arch}`
+
+function readPlatformMarker(dir: string): string | null {
+  const marker = join(dir, 'node_modules', '.shogo-platform')
+  if (!existsSync(marker)) return null
+  try { return readFileSync(marker, 'utf-8').trim() } catch { return null }
+}
+
+function writePlatformMarker(dir: string): void {
+  try { writeFileSync(join(dir, 'node_modules', '.shogo-platform'), PLATFORM_TAG + '\n') } catch {}
+}
+
 /**
- * Ensure workspace has node_modules installed.
+ * Detect if node_modules contains native binaries for a different platform.
+ * Checks @rollup/ packages which have predictable platform-specific naming.
+ * Returns the detected foreign platform string, or null if OK.
+ */
+function detectWrongPlatformNativeDeps(dir: string): string | null {
+  const rollupDir = join(dir, 'node_modules', '@rollup')
+  if (!existsSync(rollupDir)) return null
+  try {
+    const entries = readdirSync(rollupDir)
+    const platformPkgs = entries.filter(e => e.startsWith('rollup-'))
+    if (platformPkgs.length === 0) return null
+    const os = process.platform === 'linux' ? 'linux' : process.platform === 'darwin' ? 'darwin' : 'win32'
+    const hasCorrect = platformPkgs.some(e => e.includes(`-${os}-`))
+    if (hasCorrect) return null
+    return platformPkgs[0]?.replace('rollup-', '') ?? 'unknown'
+  } catch { return null }
+}
+
+/**
+ * Ensure workspace has node_modules installed with correct platform binaries.
+ *
+ * Platform detection: a `.shogo-platform` marker records what OS+arch the
+ * modules were installed for. If it doesn't match the current platform
+ * (e.g. macOS modules mounted into a Linux VM), we nuke and reinstall.
  *
  * Fast path: if the runtime-template in the image has pre-installed
  * node_modules (from provisioning), copy them directly — avoids a
- * full `bun install` on every workspace creation. This runs at
- * runtime inside the target environment so the binaries are always
- * platform-compatible.
+ * full `bun install` on every workspace creation.
  *
  * Fallback: runs `bun install` when no pre-built modules are available.
  */
 export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   if (!existsSync(join(dir, 'package.json'))) return
-  if (existsSync(join(dir, 'node_modules', '.package-lock.json')) ||
-      existsSync(join(dir, 'node_modules', '.cache'))) return
 
   const viteBin = join(dir, 'node_modules', '.bin', 'vite')
-  if (existsSync(viteBin)) return
+  const nodeModules = join(dir, 'node_modules')
+
+  // Check for wrong-platform modules (e.g. macOS host-mounted into Linux VM)
+  const installedPlatform = readPlatformMarker(dir)
+  if (installedPlatform && installedPlatform !== PLATFORM_TAG) {
+    console.log(`[workspace-defaults] node_modules built for ${installedPlatform}, need ${PLATFORM_TAG} — reinstalling`)
+    try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
+  } else if (existsSync(viteBin)) {
+    if (installedPlatform === PLATFORM_TAG) return
+    // No marker — check for wrong-platform native binaries (rollup)
+    if (!installedPlatform && existsSync(nodeModules)) {
+      const wrongPlatform = detectWrongPlatformNativeDeps(dir)
+      if (wrongPlatform) {
+        console.log(`[workspace-defaults] Detected ${wrongPlatform} native deps, need ${PLATFORM_TAG} — reinstalling`)
+        try { rmSync(nodeModules, { recursive: true, force: true }) } catch {}
+      } else {
+        writePlatformMarker(dir)
+        return
+      }
+    }
+  }
 
   // Fast path: copy pre-installed node_modules from the image template.
-  // This is safe because we're running on the same platform that built them.
   const templatePath = getRuntimeTemplatePath()
   const templateModules = templatePath ? join(templatePath, 'node_modules') : null
-  if (templateModules && existsSync(join(templateModules, '.bin', 'vite'))) {
+  const templatePlatform = templatePath ? readPlatformMarker(templatePath) : null
+  const templateUsable = templateModules
+    && existsSync(join(templateModules, '.bin', 'vite'))
+    && (!templatePlatform || templatePlatform === PLATFORM_TAG)
+  if (templateUsable) {
     console.log('[workspace-defaults] Copying pre-installed node_modules from template...')
     try {
-      cpSync(templateModules, join(dir, 'node_modules'), { recursive: true })
+      cpSync(templateModules!, join(dir, 'node_modules'), { recursive: true })
+      writePlatformMarker(dir)
       if (existsSync(viteBin)) {
         console.log('[workspace-defaults] Pre-installed deps ready (copied from template)')
         return
@@ -468,6 +542,7 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
     })
     proc.on('error', reject)
   })
+  writePlatformMarker(dir)
   console.log('[workspace-defaults] Workspace dependencies installed')
 }
 

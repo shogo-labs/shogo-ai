@@ -107,6 +107,7 @@ function buildProvisionCloudInit(): { metaData: string; userData: string } {
     '  - |',
     '    cd /app/templates/runtime-template',
     '    /usr/local/bin/bun install',
+    '    echo "linux-$(uname -m)" > node_modules/.shogo-platform',
     '    echo "runtime-template deps installed"',
     '  - |',
     '    mkdir -p /opt/shogo/templates',

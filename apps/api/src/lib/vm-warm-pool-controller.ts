@@ -62,6 +62,7 @@ export class VMWarmPoolController {
   private vmHandles = new Map<string, VMManagerHandle>()
   private vmManagers = new Map<string, VMManagerInterface>()
   private vmOverlayPaths = new Map<string, string>()
+  private pendingAssignments = new Map<string, Promise<string>>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
   private started = false
   private consecutiveBootFailures = 0
@@ -186,16 +187,11 @@ export class VMWarmPoolController {
 
   /**
    * Get the URL for a project, claiming and assigning a VM if needed.
-   * Throws immediately if recent boots have all failed, so the caller
-   * can fall back to local RuntimeManager without a multi-minute wait.
+   * Serializes concurrent requests for the same project to prevent
+   * multiple VMs being claimed/booted for one project.
    */
   async getProjectUrl(projectId: string): Promise<string> {
-    if (this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES) {
-      throw new Error(
-        `VM warm pool disabled after ${this.consecutiveBootFailures} consecutive boot failures`
-      )
-    }
-
+    // Fast path: already assigned and within grace period
     const existing = this.assigned.get(projectId)
     if (existing) {
       const age = Date.now() - (existing.assignedAt || 0)
@@ -219,14 +215,36 @@ export class VMWarmPoolController {
         })
         if (probe.ok) return existing.url
       } catch {
-        // VM is dead after grace period, evict and re-assign
+        // VM is dead after grace period — fall through to evict + re-assign
       }
+    }
+
+    // Serialize concurrent assignment attempts for the same project so only
+    // one VM gets claimed even if multiple requests arrive simultaneously.
+    const inflight = this.pendingAssignments.get(projectId)
+    if (inflight) return inflight
+
+    const promise = this._assignProject(projectId).finally(() => {
+      this.pendingAssignments.delete(projectId)
+    })
+    this.pendingAssignments.set(projectId, promise)
+    return promise
+  }
+
+  private async _assignProject(projectId: string): Promise<string> {
+    if (this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES) {
+      throw new Error(
+        `VM warm pool disabled after ${this.consecutiveBootFailures} consecutive boot failures`
+      )
+    }
+
+    // Evict dead VM if one was assigned previously
+    if (this.assigned.has(projectId)) {
       this.evict(projectId)
     }
 
     const pod = this.claim()
     if (!pod) {
-      // Cold start: boot a fresh VM inline
       const freshPod = await this.bootVM()
       if (!freshPod) throw new Error('Failed to boot VM for project')
       await this.assign(freshPod, projectId)
