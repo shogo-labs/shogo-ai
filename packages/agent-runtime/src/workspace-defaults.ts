@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, realpathSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
@@ -217,7 +217,11 @@ export function getRuntimeTemplatePath(): string | null {
     '/opt/shogo/templates/runtime-template',
   ]
   for (const p of candidates) {
-    if (existsSync(join(p, 'package.json'))) return p
+    if (existsSync(join(p, 'package.json'))) {
+      // Resolve symlinks so cpSync doesn't choke on a symlink-to-directory.
+      // The VM image symlinks /opt/shogo/templates/runtime-template → /app/templates/runtime-template/
+      try { return realpathSync(p) } catch { return p }
+    }
   }
   return null
 }
