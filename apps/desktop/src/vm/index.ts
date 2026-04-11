@@ -126,7 +126,8 @@ function getQemuPath(): string {
   if (isElectron()) {
     const { app } = require('electron')
     if (!app.isPackaged) return findQemuBinary()
-    return path.join(process.resourcesPath!, 'vm', 'qemu-system-x86_64.exe')
+    const bundled = path.join(process.resourcesPath!, 'vm', 'qemu-system-x86_64.exe')
+    if (fs.existsSync(bundled)) return bundled
   }
   return findQemuBinary()
 }
