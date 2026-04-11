@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   removeVMImageUpdateListener: () => {
     ipcRenderer.removeAllListeners('vm-image-update-available')
   },
+  recycleVMPool: () => ipcRenderer.invoke('recycle-vm-pool'),
 
   // Meeting recording
   startRecording: () => ipcRenderer.invoke('start-recording'),

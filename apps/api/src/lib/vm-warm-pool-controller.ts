@@ -344,6 +344,35 @@ export class VMWarmPoolController {
     }
   }
 
+  async recyclePool(): Promise<void> {
+    console.log('[VMWarmPool] Recycling pool — stopping all VMs and booting fresh ones')
+
+    const stops: Promise<void>[] = []
+    for (const [, pod] of this.available) {
+      const handle = this.vmHandles.get(pod.vmId)
+      const mgr = this.vmManagers.get(pod.vmId)
+      if (handle && mgr) stops.push(mgr.stopVM(handle).catch(() => {}))
+      this.cleanupOverlay(pod.vmId)
+      this.vmHandles.delete(pod.vmId)
+      this.vmManagers.delete(pod.vmId)
+    }
+    for (const [, pod] of this.assigned) {
+      const handle = this.vmHandles.get(pod.vmId)
+      const mgr = this.vmManagers.get(pod.vmId)
+      if (handle && mgr) stops.push(mgr.stopVM(handle).catch(() => {}))
+      this.cleanupOverlay(pod.vmId)
+      this.vmHandles.delete(pod.vmId)
+      this.vmManagers.delete(pod.vmId)
+    }
+    await Promise.allSettled(stops)
+
+    this.available.clear()
+    this.assigned.clear()
+
+    await this.reconcile()
+    console.log('[VMWarmPool] Pool recycled — fresh VMs booted')
+  }
+
   getStatus() {
     return {
       available: this.available.size,
@@ -402,5 +431,11 @@ export async function stopVMWarmPool(): Promise<void> {
   if (vmWarmPoolController) {
     await vmWarmPoolController.stop()
     vmWarmPoolController = null
+  }
+}
+
+export async function recycleVMWarmPool(): Promise<void> {
+  if (vmWarmPoolController) {
+    await vmWarmPoolController.recyclePool()
   }
 }
