@@ -68,6 +68,9 @@ const EXTERNAL_PACKAGES = [
   'prisma',
   'prisma-adapter-bun-sqlite',
   'sqlite-vec',
+  'typescript-language-server',
+  'typescript',
+  'pyright',
 ]
 
 /**
