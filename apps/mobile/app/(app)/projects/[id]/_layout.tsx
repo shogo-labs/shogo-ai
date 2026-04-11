@@ -314,10 +314,14 @@ export default observer(function ProjectLayout() {
     headers: nativeHeaders,
   })
 
-  // When a remote instance is active, route all agent traffic through the
-  // transparent cloud proxy instead of hitting the direct agent URL.
+  // When a remote instance is active, route project runtime traffic through
+  // the instance tunnel and back into the desktop API's project agent-proxy.
   const { remoteAgentBaseUrl } = useActiveInstance()
-  const agentUrl = remoteAgentBaseUrl ?? resolvedAgentUrl
+  const remoteProjectAgentBaseUrl = useMemo(() => {
+    if (!remoteAgentBaseUrl || !projectId) return null
+    return `${remoteAgentBaseUrl}/api/projects/${projectId}/agent-proxy`
+  }, [remoteAgentBaseUrl, projectId])
+  const agentUrl = remoteProjectAgentBaseUrl ?? resolvedAgentUrl
 
   // APP_MODE_DISABLED: app template copy effect removed
 
@@ -1158,7 +1162,7 @@ export default observer(function ProjectLayout() {
               projectId={projectId}
               projectType="unified"
               isActive={isActive}
-              localAgentUrl={remoteAgentBaseUrl ?? undefined}
+              localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
               initialMessage={isInitialSession ? capturedInitialMessage : undefined}
               initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
               initialFiles={isInitialSession ? capturedInitialFiles : undefined}

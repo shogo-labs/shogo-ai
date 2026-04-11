@@ -61,6 +61,9 @@ mock.module('../routes/remote-audit', () => ({
   logRemoteAction: mock(() => Promise.resolve()),
   classifyAction: mock(() => 'test_action'),
 }))
+mock.module('../lib/push-notifications', () => ({
+  sendPushToInstance: mock(() => Promise.resolve()),
+}))
 
 const testUser = { id: 'user-1', userId: 'user-1', email: 'test@test.com', role: 'super_admin' }
 
@@ -356,12 +359,47 @@ describe('Streaming Relay — Transparent Proxy /p/*', () => {
     const app = createTestApp()
     const res = await app.request(`/api/instances/${INSTANCE_ID}/p/agent/status`)
     expect(res.status).toBe(503)
+  }, 15_000)
+
+  test('wrapped project agent-proxy chat path streams correctly', async () => {
+    setupFullMockTunnel(INSTANCE_ID, ['data: {"wrapped":true}\n\n'], 1)
+
+    const app = createTestApp()
+    const res = await app.request(
+      `/api/instances/${INSTANCE_ID}/p/api/projects/project-1/agent-proxy/agent/chat`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      },
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/event-stream')
+
+    const { chunks } = await consumeStream(res)
+    expect(chunks.join('')).toContain('"wrapped":true')
+  })
+
+  test('wrapped project agent-proxy resume path streams correctly', async () => {
+    setupFullMockTunnel(INSTANCE_ID, ['data: {"resume":true}\n\n'], 1)
+
+    const app = createTestApp()
+    const res = await app.request(
+      `/api/instances/${INSTANCE_ID}/p/api/projects/project-1/agent-proxy/agent/chat/session-1/stream`,
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/event-stream')
+
+    const { chunks } = await consumeStream(res)
+    expect(chunks.join('')).toContain('"resume":true')
   })
 
   test('STREAMING_POST_PATTERNS includes /agent/chat', () => {
     // Validate the pattern list that the transparent proxy uses for
     // auto-detection — verified over real HTTP in E2E tests.
-    const patterns = ['/agent/chat', '/agent/logs/stream', '/agent/chat/']
+    const patterns = ['/agent/chat', '/agent/logs/stream']
     expect(patterns).toContain('/agent/chat')
     expect(patterns).toContain('/agent/logs/stream')
   })

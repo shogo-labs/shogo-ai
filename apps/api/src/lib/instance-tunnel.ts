@@ -64,6 +64,21 @@ function getApiPort(): number {
 }
 
 function buildLocalUrl(path: string): string {
+  // Agent paths (/agent/*) need to be routed to the agent runtime process,
+  // which runs on a separate port from the API server. Resolve the port via
+  // RuntimeManager by finding the first active project with a running agent.
+  if (path.startsWith('/agent/') || path === '/agent') {
+    try {
+      const manager = getRuntimeManager()
+      const projectIds = manager.getActiveProjects()
+      for (const pid of projectIds) {
+        const s = manager.status(pid)
+        if (s?.agentPort && s.status === 'running') {
+          return `http://localhost:${s.agentPort}${path}`
+        }
+      }
+    } catch {}
+  }
   return `http://localhost:${getApiPort()}${path}`
 }
 

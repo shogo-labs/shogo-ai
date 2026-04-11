@@ -122,6 +122,16 @@ export async function unregisterTunnelOwnership(instanceId: string): Promise<voi
   }
 }
 
+/**
+ * Force-evict tunnel ownership regardless of which pod owns it.
+ * Used when a relay to the owning pod times out, indicating the owner is dead.
+ */
+export async function evictTunnelOwnership(instanceId: string): Promise<void> {
+  const r = getPublisher()
+  if (!r) return
+  await r.del(`tunnel:${instanceId}:pod`)
+}
+
 export async function refreshTunnelOwnership(instanceId: string): Promise<void> {
   const r = getPublisher()
   if (!r) return
@@ -137,6 +147,52 @@ export async function getTunnelOwner(instanceId: string): Promise<string | null>
     console.warn(`[TunnelRedis] getTunnelOwner failed for ${instanceId}:`, (err as Error).message)
     return null
   }
+}
+
+/**
+ * Verify that a tunnel-owning pod is actually alive by publishing a ping
+ * and waiting for a pong response within a short timeout. Returns true if
+ * the pod responds, false otherwise.
+ */
+export async function verifyPodAlive(podId: string, timeoutMs = 3000): Promise<boolean> {
+  const r = getPublisher()
+  if (!r) return false
+  if (podId === POD_ID) return true
+
+  const probeId = `probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingRelayResponses.delete(probeId)
+      resolve(false)
+    }, timeoutMs)
+
+    pendingRelayResponses.set(probeId, {
+      resolve: () => {
+        clearTimeout(timer)
+        pendingRelayResponses.delete(probeId)
+        resolve(true)
+      },
+      reject: () => {
+        clearTimeout(timer)
+        pendingRelayResponses.delete(probeId)
+        resolve(false)
+      },
+      timeout: timer,
+    })
+
+    const msg: RelayRequest = {
+      relayId: probeId,
+      instanceId: '__probe__',
+      replyPod: POD_ID,
+      request: { type: 'request', requestId: probeId, method: 'GET', path: '/__probe__' },
+    }
+    r.publish(`tunnel:pod:${podId}:request`, JSON.stringify(msg)).catch(() => {
+      clearTimeout(timer)
+      pendingRelayResponses.delete(probeId)
+      resolve(false)
+    })
+  })
 }
 
 // ─── Cross-Pod Request Relay ────────────────────────────────────────────────
@@ -249,6 +305,16 @@ function handleSubMessage(channel: string, message: string) {
 }
 
 async function handleIncomingRelayRequest(msg: RelayRequest) {
+  // Respond to liveness probes immediately without needing a local tunnel handler
+  if (msg.instanceId === '__probe__') {
+    const r = getPublisher()
+    if (r) {
+      const reply: RelayResponse = { relayId: msg.relayId, response: { type: 'response', requestId: msg.request.requestId, status: 200 } }
+      await r.publish(`tunnel:pod:${msg.replyPod}:request`, JSON.stringify(reply))
+    }
+    return
+  }
+
   if (!localSendFn) return
 
   try {

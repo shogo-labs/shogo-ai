@@ -28,6 +28,7 @@ import {
   initTunnelRedis,
   registerTunnelOwnership,
   unregisterTunnelOwnership,
+  evictTunnelOwnership,
   refreshTunnelOwnership,
   getTunnelOwner,
   relayTunnelRequest,
@@ -39,6 +40,7 @@ import {
   getActiveControllersRedis,
   isTunnelConnectedAnywhere,
   getPodId,
+  verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
 
@@ -55,6 +57,9 @@ const STREAM_MAX_TIMEOUT_MS = 600_000
 const HEARTBEAT_INTERVAL_MS = 25_000
 const TUNNEL_WAIT_TIMEOUT_MS = 10_000
 const TUNNEL_WAIT_POLL_MS = 500
+const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream']
+const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
+const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -185,6 +190,33 @@ async function computeNextPollIn(instanceId: string, workspaceId: string, wsRequ
 
 function isWsRequested(wsRequestedAt: Date | null): boolean {
   return !!wsRequestedAt && Date.now() - wsRequestedAt.getTime() < WS_REQUEST_TTL_MS
+}
+
+function normalizeTransparentProxyPath(path: string): string {
+  const pathWithoutQuery = path.split('?')[0] || path
+  const wrappedProjectPath = pathWithoutQuery.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)?$/)
+  if (wrappedProjectPath) {
+    return wrappedProjectPath[1] || '/'
+  }
+  return pathWithoutQuery
+}
+
+function isStreamingTransparentProxyRequest(method: string, path: string): boolean {
+  const normalizedPath = normalizeTransparentProxyPath(path)
+
+  if (method === 'POST') {
+    return STREAMING_POST_PATTERNS.some((pattern) =>
+      normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`),
+    )
+  }
+
+  if (method === 'GET') {
+    return STREAMING_GET_PATTERNS.some((pattern) =>
+      normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`),
+    ) || CHAT_RESUME_STREAM_RE.test(normalizedPath)
+  }
+
+  return false
 }
 
 // ─── WebSocket handler (called from Bun.serve websocket config) ─────────────
@@ -362,9 +394,29 @@ async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promis
   const ownerPod = await getTunnelOwner(instanceId)
   if (!ownerPod) throw new Error('Instance is offline')
 
-  const response = await relayTunnelRequest(ownerPod, instanceId, req)
-  if (!response) throw new Error('Empty relay response')
-  return response as TunnelResponse
+  if (ownerPod === getPodId()) {
+    await evictTunnelOwnership(instanceId).catch(() => {})
+    throw new Error('Instance is offline')
+  }
+
+  const alive = await verifyPodAlive(ownerPod)
+  if (!alive) {
+    await evictTunnelOwnership(instanceId).catch(() => {})
+    console.warn(`[RemoteControl] Proactively evicted dead pod ${ownerPod} for instance ${instanceId} (sendTunnelRequest)`)
+    throw new Error('Instance is offline')
+  }
+
+  try {
+    const response = await relayTunnelRequest(ownerPod, instanceId, req)
+    if (!response) throw new Error('Empty relay response')
+    return response as TunnelResponse
+  } catch (err: any) {
+    if (err.message === 'Cross-pod relay timed out') {
+      await evictTunnelOwnership(instanceId).catch(() => {})
+      console.warn(`[RemoteControl] Evicted stale tunnel owner ${ownerPod} for instance ${instanceId} after relay timeout`)
+    }
+    throw err
+  }
 }
 
 function sendLocalTunnelStreamRequest(
@@ -426,9 +478,21 @@ function sendTunnelStreamRequest(
   let cancelled = false
   const cancelRef = { cancel: () => { cancelled = true } }
 
-  getTunnelOwner(instanceId).then((ownerPod) => {
+  getTunnelOwner(instanceId).then(async (ownerPod) => {
     if (cancelled) return
     if (!ownerPod) {
+      onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
+      return
+    }
+    if (ownerPod === getPodId()) {
+      evictTunnelOwnership(instanceId).catch(() => {})
+      onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
+      return
+    }
+    const alive = await verifyPodAlive(ownerPod)
+    if (!alive) {
+      await evictTunnelOwnership(instanceId).catch(() => {})
+      console.warn(`[RemoteControl] Proactively evicted dead pod ${ownerPod} for instance ${instanceId} (sendTunnelStreamRequest)`)
       onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
       return
     }
@@ -892,9 +956,6 @@ export function instanceRoutes() {
   // Streaming is auto-detected for POST requests to known streaming paths
   // (e.g. /agent/chat, /agent/logs/stream).
 
-  const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream', '/agent/chat/']
-  const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
-
   router.all('/instances/:id/p/*', async (c) => {
     const auth = c.get('auth') as any
     if (!auth?.userId) {
@@ -916,6 +977,25 @@ export function instanceRoutes() {
 
     const localTunnel = tunnels.has(instanceId)
     let remoteTunnelPod = localTunnel ? null : await getTunnelOwner(instanceId)
+
+    // If Redis says a remote pod owns this tunnel but that pod is actually us
+    // and we don't have a local connection, the ownership is stale. Evict it.
+    if (!localTunnel && remoteTunnelPod === getPodId()) {
+      await evictTunnelOwnership(instanceId).catch(() => {})
+      remoteTunnelPod = null
+    }
+
+    // If Redis points to a different pod, verify it's actually alive before
+    // committing to a 30s relay timeout. Dead pods (e.g. from a dev server
+    // restart) will never respond. Evict and fall through to the wake-up path.
+    if (!localTunnel && remoteTunnelPod && remoteTunnelPod !== getPodId()) {
+      const alive = await verifyPodAlive(remoteTunnelPod)
+      if (!alive) {
+        console.warn(`[RemoteControl] Proactively evicting dead pod ${remoteTunnelPod} for instance ${instanceId}`)
+        await evictTunnelOwnership(instanceId).catch(() => {})
+        remoteTunnelPod = null
+      }
+    }
 
     if (!localTunnel && !remoteTunnelPod) {
       await prisma.instance.update({
@@ -939,10 +1019,16 @@ export function instanceRoutes() {
 
     await markControllerActive(instanceId, auth.userId)
 
-    const wildcardParam = c.req.param('*')
+    // Extract the path after /instances/:id/p/ by parsing the URL directly.
+    // c.req.param('*') returns undefined with Hono's nested routing (app.route),
+    // so we strip the known prefix from the full pathname instead.
     const incomingUrl = new URL(c.req.url)
+    const prefix = `/api/instances/${instanceId}/p/`
+    const afterPrefix = incomingUrl.pathname.startsWith(prefix)
+      ? incomingUrl.pathname.slice(prefix.length)
+      : ''
     const qs = incomingUrl.search
-    const agentPath = '/' + (wildcardParam || '') + qs
+    const agentPath = '/' + afterPrefix + qs
     const method = c.req.method
     const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH'
     const body = hasBody ? await c.req.text() : undefined
@@ -954,10 +1040,7 @@ export function instanceRoutes() {
     const accept = c.req.header('accept')
     if (accept) forwardHeaders['accept'] = accept
 
-    const pathWithoutQuery = agentPath.split('?')[0]
-    const isStreaming =
-      (method === 'POST' && STREAMING_POST_PATTERNS.some((p) => pathWithoutQuery === p || pathWithoutQuery.startsWith(p + '/'))) ||
-      (method === 'GET' && STREAMING_GET_PATTERNS.some((p) => pathWithoutQuery === p || pathWithoutQuery.startsWith(p + '/')))
+    const isStreaming = isStreamingTransparentProxyRequest(method, agentPath)
 
     if (isStreaming) {
       void logRemoteAction({
