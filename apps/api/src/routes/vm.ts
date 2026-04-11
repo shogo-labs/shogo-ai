@@ -434,6 +434,19 @@ export function vmRoutes(): Hono {
   })
 
   /**
+   * POST /pool/recycle - stop all running VMs and boot fresh ones from current images
+   */
+  router.post('/pool/recycle', async (c) => {
+    try {
+      const { recycleVMWarmPool } = await import('../lib/vm-warm-pool-controller')
+      await recycleVMWarmPool()
+      return c.json({ success: true })
+    } catch (err: any) {
+      return c.json({ success: false, error: err?.message || 'Recycle failed' }, 500)
+    }
+  })
+
+  /**
    * GET /images/download-status - poll current download state
    */
   router.get('/images/download-status', (c) => {
@@ -467,6 +480,12 @@ export function vmRoutes(): Hono {
         })
 
         vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+
+        // Recycle the VM warm pool so new VMs boot from the fresh images
+        try {
+          const { recycleVMWarmPool } = await import('../lib/vm-warm-pool-controller')
+          await recycleVMWarmPool()
+        } catch { /* pool may not be running */ }
 
         await stream.writeSSE({
           event: 'complete',

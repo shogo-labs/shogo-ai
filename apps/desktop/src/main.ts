@@ -194,13 +194,26 @@ function registerIpcHandlers(): void {
 
     return mgr.downloadImage((progress) => {
       event.sender.send('vm-image-download-progress', progress)
-    }).then(() => {
+    }).then(async () => {
       console.log('[Desktop] VM images downloaded successfully')
+      try {
+        await fetch(`${getApiUrl()}/api/vm/pool/recycle`, { method: 'POST' })
+        console.log('[Desktop] VM pool recycled with new images')
+      } catch { /* pool may not be running */ }
       return { success: true }
     }).catch((err: Error) => {
       console.error('[Desktop] VM image download failed:', err)
       return { success: false, error: err.message }
     })
+  })
+
+  ipcMain.handle('recycle-vm-pool', async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/vm/pool/recycle`, { method: 'POST' })
+      return res.json()
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Recycle failed' }
+    }
   })
 
   ipcMain.handle('skip-vm-download', () => {

@@ -139,6 +139,14 @@ function createHttpBridge() {
       // no-op for HTTP bridge — polling via checkVMImageUpdate instead
     },
     removeVMImageUpdateListener() {},
+
+    async recycleVMPool(): Promise<{ success: boolean; error?: string }> {
+      const res = await fetch(`${base}/api/vm/pool/recycle`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      return res.json()
+    },
   }
 }
 
@@ -622,6 +630,7 @@ function VMConfigSection({
   const [enabled, setEnabled] = useState<boolean | 'auto'>(vmStatus.enabled)
   const [mountWorkspace, setMountWorkspace] = useState(vmStatus.mountWorkspace)
   const [saving, setSaving] = useState(false)
+  const [recycling, setRecycling] = useState(false)
   const [message, setMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null)
 
   useEffect(() => {
@@ -649,6 +658,22 @@ function VMConfigSection({
       setMessage({ type: 'error', text: err?.message || 'Failed to save' })
     } finally {
       setSaving(false)
+    }
+    setTimeout(() => setMessage(null), 6000)
+  }
+
+  const handleRecycle = async () => {
+    const bridge = getDesktopBridge()
+    if (!bridge) return
+    setRecycling(true)
+    setMessage(null)
+    try {
+      await bridge.recycleVMPool()
+      setMessage({ type: 'ok', text: 'VMs recycled — fresh instances booted with current images' })
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Failed to recycle VMs' })
+    } finally {
+      setRecycling(false)
     }
     setTimeout(() => setMessage(null), 6000)
   }
@@ -763,7 +788,7 @@ function VMConfigSection({
           </Text>
         </View>
 
-        {/* Save */}
+        {/* Save + Recycle */}
         <View className="flex-row items-center gap-3 mt-1">
           <Pressable
             onPress={handleSave}
@@ -785,6 +810,28 @@ function VMConfigSection({
               )}
             >
               Save
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleRecycle}
+            disabled={recycling}
+            className={cn(
+              'flex-row items-center gap-1.5 px-4 py-2 rounded-lg border',
+              recycling ? 'bg-muted border-muted' : 'bg-background border-border',
+            )}
+          >
+            {recycling ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <RotateCcw size={13} className="text-foreground" />
+            )}
+            <Text
+              className={cn(
+                'text-sm font-medium',
+                recycling ? 'text-muted-foreground' : 'text-foreground',
+              )}
+            >
+              Recycle VMs
             </Text>
           </Pressable>
           {message && (
