@@ -37,6 +37,14 @@ export class Win32VMManager implements VMManager {
   async startVM(config: VMConfig): Promise<VMHandle> {
     if (this.vmRunning) throw new Error('VM already running')
 
+    const kernel = path.join(this.vmImageDir, 'vmlinuz')
+    const initrd = path.join(this.vmImageDir, 'initrd.img')
+    if (!fs.existsSync(kernel) || !fs.existsSync(initrd)) {
+      throw new Error(
+        `VM images not found at ${this.vmImageDir} — download required via Settings > VM`
+      )
+    }
+
     const vmId = crypto.randomUUID()
     const dataDir = this.getVMDataDir(vmId)
     fs.mkdirSync(dataDir, { recursive: true })
@@ -253,8 +261,8 @@ export class Win32VMManager implements VMManager {
     if (!fs.existsSync(source)) throw new Error(`Base VM image not found: ${source}`)
 
     const qemuImg = path.join(path.dirname(this.qemuPath), 'qemu-img.exe')
-    execSync(`"${qemuImg}" create -f qcow2 -b "${source}" -F qcow2 "${overlayPath}"`, { stdio: 'pipe', timeout: 10000 })
-    execSync(`"${qemuImg}" resize "${overlayPath}" 10G`, { stdio: 'pipe', timeout: 10000 })
+    execSync(`"${qemuImg}" create -f qcow2 -b "${source}" -F qcow2 "${overlayPath}"`, { stdio: 'pipe', timeout: 60000 })
+    execSync(`"${qemuImg}" resize "${overlayPath}" 10G`, { stdio: 'pipe', timeout: 60000 })
   }
 
   private getVMDataDir(vmId: string): string {

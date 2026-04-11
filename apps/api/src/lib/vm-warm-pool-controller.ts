@@ -54,6 +54,8 @@ export interface VMManagerInterface {
  */
 export type VMManagerFactory = () => VMManagerInterface
 
+const MAX_CONSECUTIVE_FAILURES = 3
+
 export class VMWarmPoolController {
   private available = new Map<string, VMPodInfo>()
   private assigned = new Map<string, VMPodInfo>()
@@ -62,6 +64,7 @@ export class VMWarmPoolController {
   private vmOverlayPaths = new Map<string, string>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
   private started = false
+  private consecutiveBootFailures = 0
   private managerFactory: VMManagerFactory
 
   constructor(
@@ -81,8 +84,12 @@ export class VMWarmPoolController {
     console.log(`[VMWarmPool] Starting VM warm pool controller (poolSize: ${this.poolSize})`)
 
     // Kill orphaned QEMU and VM helper processes from a previous server session
-    try { execSync('pkill -f qemu-system', { stdio: 'pipe' }) } catch {}
-    try { execSync('pkill -f shogo-vm', { stdio: 'pipe' }) } catch {}
+    if (process.platform === 'win32') {
+      try { execSync('taskkill /F /IM qemu-system-x86_64.exe', { stdio: 'pipe' }) } catch {}
+    } else {
+      try { execSync('pkill -f qemu-system', { stdio: 'pipe' }) } catch {}
+      try { execSync('pkill -f shogo-vm', { stdio: 'pipe' }) } catch {}
+    }
 
     // Purge stale overlay disk images from previous sessions
     if (this.vmConfig.overlayPath) {
@@ -179,8 +186,16 @@ export class VMWarmPoolController {
 
   /**
    * Get the URL for a project, claiming and assigning a VM if needed.
+   * Throws immediately if recent boots have all failed, so the caller
+   * can fall back to local RuntimeManager without a multi-minute wait.
    */
   async getProjectUrl(projectId: string): Promise<string> {
+    if (this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES) {
+      throw new Error(
+        `VM warm pool disabled after ${this.consecutiveBootFailures} consecutive boot failures`
+      )
+    }
+
     const existing = this.assigned.get(projectId)
     if (existing) {
       const age = Date.now() - (existing.assignedAt || 0)
@@ -263,6 +278,10 @@ export class VMWarmPoolController {
     const needed = this.poolSize - this.available.size
     if (needed <= 0) return
 
+    if (this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES) {
+      return
+    }
+
     console.log(`[VMWarmPool] Reconcile: need ${needed} more VMs (available: ${this.available.size}, target: ${this.poolSize})`)
 
     const bootPromises = []
@@ -299,8 +318,10 @@ export class VMWarmPoolController {
       this.vmManagers.set(handle.id, mgr)
       if (config.overlayPath) this.vmOverlayPaths.set(handle.id, config.overlayPath)
 
-      await this.waitForHealth(handle.agentUrl)
+      const boundMgr = mgr
+      await this.waitForHealth(handle.agentUrl, () => boundMgr.isRunning(handle))
 
+      this.consecutiveBootFailures = 0
       return {
         id: `vm-${handle.id}`,
         vmId: handle.id,
@@ -309,9 +330,10 @@ export class VMWarmPoolController {
         ready: true,
       }
     } catch (err: any) {
-      console.error('[VMWarmPool] Boot failed:', err.message)
+      this.consecutiveBootFailures++
+      console.error(`[VMWarmPool] Boot failed (${this.consecutiveBootFailures}/${MAX_CONSECUTIVE_FAILURES}): ${err.message}`)
       if (vmId) {
-        try { await mgr?.stopVM(vmId) } catch {}
+        try { await mgr?.stopVM(vmId as any) } catch {}
         this.vmHandles.delete(vmId)
         this.vmManagers.delete(vmId)
         this.cleanupOverlay(vmId)
@@ -321,8 +343,11 @@ export class VMWarmPoolController {
     }
   }
 
-  private async waitForHealth(url: string): Promise<void> {
+  private async waitForHealth(url: string, isAlive?: () => boolean): Promise<void> {
     for (let i = 0; i < HEALTH_CHECK_RETRIES; i++) {
+      if (isAlive && !isAlive()) {
+        throw new Error('VM process exited before becoming healthy')
+      }
       try {
         const res = await fetch(`${url}/health`, {
           signal: AbortSignal.timeout(2000),
