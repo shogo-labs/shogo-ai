@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import {
   getRuntimeTemplatePath,
@@ -42,7 +42,9 @@ describe('getRuntimeTemplatePath', () => {
 
     process.env.RUNTIME_TEMPLATE_DIR = fakeDir
     const result = getRuntimeTemplatePath()
-    expect(result).toBe(fakeDir)
+    // realpathSync may resolve /tmp → /private/tmp on macOS
+    expect(result).not.toBeNull()
+    expect(result!.endsWith('test-runtime-template-override')).toBe(true)
 
     rmSync(fakeDir, { recursive: true, force: true })
   })
@@ -54,6 +56,30 @@ describe('getRuntimeTemplatePath', () => {
     const result = getRuntimeTemplatePath()
     // Should still find the source tree candidate in local dev
     expect(result).not.toBeNull()
+  })
+
+  test('resolves symlinks so cpSync does not choke on symlink-to-directory', () => {
+    // Reproduces the VM crash: /opt/shogo/templates/runtime-template is a symlink
+    // to /app/templates/runtime-template/. Without realpathSync, cpSync throws
+    // "cannot overwrite non-directory ... with directory ..."
+    const realDir = '/tmp/test-template-real'
+    const symlinkDir = '/tmp/test-template-symlink'
+    rmSync(realDir, { recursive: true, force: true })
+    rmSync(symlinkDir, { recursive: true, force: true })
+    mkdirSync(realDir, { recursive: true })
+    writeFileSync(join(realDir, 'package.json'), '{}')
+    symlinkSync(realDir, symlinkDir)
+
+    process.env.RUNTIME_TEMPLATE_DIR = symlinkDir
+    const result = getRuntimeTemplatePath()
+    // Should resolve the symlink to the real directory path
+    // (realpathSync may also resolve /tmp → /private/tmp on macOS)
+    expect(result).not.toBeNull()
+    expect(result!.endsWith('test-template-real')).toBe(true)
+    expect(result).not.toContain('symlink')
+
+    rmSync(realDir, { recursive: true, force: true })
+    rmSync(symlinkDir, { force: true })
   })
 })
 
@@ -92,6 +118,32 @@ describe('seedRuntimeTemplate', () => {
     expect(result).toBe(true)
     expect(existsSync(join(TEST_DIR, 'node_modules'))).toBe(false)
     expect(existsSync(join(TEST_DIR, 'dist'))).toBe(false)
+  })
+
+  test('works when template path is a symlink (VM provisioned image)', () => {
+    // The VM image has /opt/shogo/templates/runtime-template → /app/templates/runtime-template
+    // This must not crash with "cannot overwrite non-directory ... with directory ..."
+    const realTemplate = getRuntimeTemplatePath()
+    expect(realTemplate).not.toBeNull()
+
+    const symlinkPath = '/tmp/test-template-symlink-seed'
+    rmSync(symlinkPath, { force: true })
+    symlinkSync(realTemplate!, symlinkPath)
+
+    const origEnv = process.env.RUNTIME_TEMPLATE_DIR
+    process.env.RUNTIME_TEMPLATE_DIR = symlinkPath
+
+    try {
+      const result = seedRuntimeTemplate(TEST_DIR)
+      expect(result).toBe(true)
+      expect(existsSync(join(TEST_DIR, 'package.json'))).toBe(true)
+      expect(existsSync(join(TEST_DIR, 'vite.config.ts'))).toBe(true)
+      expect(existsSync(join(TEST_DIR, 'src', 'App.tsx'))).toBe(true)
+    } finally {
+      if (origEnv === undefined) delete process.env.RUNTIME_TEMPLATE_DIR
+      else process.env.RUNTIME_TEMPLATE_DIR = origEnv
+      rmSync(symlinkPath, { force: true })
+    }
   })
 })
 
