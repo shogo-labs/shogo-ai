@@ -150,8 +150,9 @@ runcmd:
   - useradd -m -s /bin/bash shogo
   - echo "shogo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
   
-  # Install global Node packages (matches Docker Dockerfile.base)
-  - /usr/local/bin/bun add -g typescript-language-server typescript pyright
+  # Install LSP servers into /opt/shogo/node_modules/ where agent-runtime's resolveBin finds them
+  - mkdir -p /opt/shogo
+  - cd /opt/shogo && /usr/local/bin/bun add typescript-language-server typescript pyright
   
   # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
   - |
