@@ -146,6 +146,8 @@ interface TunnelRequest {
   path: string
   headers?: Record<string, string>
   body?: string
+  /** From /api/projects/:id/agent-proxy/... before path normalization; desktop uses this to start the right runtime. */
+  projectId?: string
 }
 
 interface TunnelResponse {
@@ -956,7 +958,11 @@ export function instanceRoutes() {
   // Streaming is auto-detected for POST requests to known streaming paths
   // (e.g. /agent/chat, /agent/logs/stream).
 
-  router.all('/instances/:id/p/*', async (c) => {
+  // Use :rest{.+} so the full suffix after /p/ is always captured. A trailing /*
+  // alone does not populate c.req.param('*') reliably under app.route('/api', …),
+  // and manual pathname slicing can miss edge cases — leaving afterPrefix empty
+  // normalizes to "/" and breaks tunnel forwarding.
+  router.all('/instances/:id/p/:rest{.+}', async (c) => {
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
@@ -1019,16 +1025,15 @@ export function instanceRoutes() {
 
     await markControllerActive(instanceId, auth.userId)
 
-    // Extract the path after /instances/:id/p/ by parsing the URL directly.
-    // c.req.param('*') returns undefined with Hono's nested routing (app.route),
-    // so we strip the known prefix from the full pathname instead.
     const incomingUrl = new URL(c.req.url)
-    const prefix = `/api/instances/${instanceId}/p/`
-    const afterPrefix = incomingUrl.pathname.startsWith(prefix)
-      ? incomingUrl.pathname.slice(prefix.length)
-      : ''
     const qs = incomingUrl.search
-    const agentPath = '/' + afterPrefix + qs
+    const afterPrefix = c.req.param('rest') || ''
+    const rawPath = '/' + afterPrefix
+    const tunnelProjectId = rawPath.match(
+      /^\/api\/projects\/([^/]+)\/agent-proxy(?:\/|$)/,
+    )?.[1]
+    const agentPath = normalizeTransparentProxyPath(rawPath) + qs
+
     const method = c.req.method
     const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH'
     const body = hasBody ? await c.req.text() : undefined
@@ -1061,6 +1066,7 @@ export function instanceRoutes() {
               requestId,
               method,
               path: agentPath,
+              projectId: tunnelProjectId,
               headers: forwardHeaders,
               body,
             },
@@ -1101,6 +1107,7 @@ export function instanceRoutes() {
         requestId,
         method,
         path: agentPath,
+        projectId: tunnelProjectId,
         headers: forwardHeaders,
         body,
       })

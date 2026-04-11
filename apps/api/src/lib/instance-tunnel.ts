@@ -21,6 +21,7 @@ interface TunnelRequest {
   headers?: Record<string, string>
   body?: string
   stream?: boolean
+  projectId?: string
 }
 
 interface CancelMessage {
@@ -63,23 +64,45 @@ function getApiPort(): number {
   return parseInt(process.env.PORT || process.env.API_PORT || '8002', 10)
 }
 
-function buildLocalUrl(path: string): string {
-  // Agent paths (/agent/*) need to be routed to the agent runtime process,
-  // which runs on a separate port from the API server. Resolve the port via
-  // RuntimeManager by finding the first active project with a running agent.
+function splitPathAndQuery(pathWithQuery: string): { pathname: string; search: string } {
+  const q = pathWithQuery.indexOf('?')
+  if (q === -1) return { pathname: pathWithQuery, search: '' }
+  return { pathname: pathWithQuery.slice(0, q), search: pathWithQuery.slice(q) }
+}
+
+/**
+ * Resolve where to send a tunneled path. /agent/* goes to the agent-runtime HTTP
+ * server (not the desktop API). If the runtime is cold, start it — same as
+ * app.all('/api/projects/:id/agent-proxy/*') in server.ts — so quick-actions
+ * and chat do not fall through to GET /agent/* on the API port (404).
+ */
+async function resolveLocalAgentUrl(pathWithQuery: string, projectId?: string): Promise<string> {
+  const { pathname, search } = splitPathAndQuery(pathWithQuery)
+  const path = pathname || '/'
+
   if (path.startsWith('/agent/') || path === '/agent') {
     try {
       const manager = getRuntimeManager()
-      const projectIds = manager.getActiveProjects()
-      for (const pid of projectIds) {
-        const s = manager.status(pid)
-        if (s?.agentPort && s.status === 'running') {
-          return `http://localhost:${s.agentPort}${path}`
+      const candidates = projectId ? [projectId] : manager.getActiveProjects()
+      for (const pid of candidates) {
+        try {
+          let runtime = manager.status(pid)
+          if (!runtime?.agentPort || runtime.status !== 'running') {
+            runtime = await manager.start(pid)
+          }
+          if (runtime?.agentPort && runtime.status === 'running') {
+            return `http://localhost:${runtime.agentPort}${path}${search}`
+          }
+        } catch (err: any) {
+          console.warn(`[InstanceTunnel] Agent URL resolve failed for ${pid}: ${err?.message ?? err}`)
+          if (projectId) break
         }
       }
-    } catch {}
+    } catch (err: any) {
+      console.warn(`[InstanceTunnel] resolveLocalAgentUrl: ${err?.message ?? err}`)
+    }
   }
-  return `http://localhost:${getApiPort()}${path}`
+  return `http://localhost:${getApiPort()}${path}${search}`
 }
 
 function getCloudUrl(): string {
@@ -206,7 +229,7 @@ async function handleRequest(msg: TunnelRequest) {
   activeAbortControllers.set(msg.requestId, controller)
 
   try {
-    const url = buildLocalUrl(msg.path)
+    const url = await resolveLocalAgentUrl(msg.path, msg.projectId)
     const init: RequestInit = {
       method: msg.method,
       headers: msg.headers,

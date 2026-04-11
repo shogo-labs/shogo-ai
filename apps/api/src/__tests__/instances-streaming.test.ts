@@ -327,15 +327,9 @@ function setupFullMockTunnel(
 
 // ─── Transparent Proxy /p/* — streaming detection ───────────────────────────
 //
-// NOTE: Hono's `app.request()` test utility does not propagate wildcard
-// params correctly for sub-routed paths (`app.route('/api', router)`).
-// `c.req.param('*')` returns '' in-process, so the transparent proxy cannot
-// resolve `agentPath` and the streaming auto-detection always falls through
-// to the non-streaming codepath.
-//
-// This is NOT a production issue — Bun.serve + real HTTP correctly sets the
-// wildcard param. The E2E test (e2e/staging/streaming-latency.test.ts)
-// validates the full transparent proxy streaming path over HTTP.
+// NOTE: The transparent proxy uses `/instances/:id/p/:rest{.+}` so the path
+// suffix is always available via c.req.param('rest'). Older `/*` + pathname
+// slicing could miss the suffix in some cases.
 //
 // Here we verify: (a) the route pattern matches, (b) fallback to
 // non-streaming works, and (c) the streaming patterns themselves are correct.
