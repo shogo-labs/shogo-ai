@@ -339,41 +339,8 @@ test.describe("API Key Feature — Full E2E", () => {
   })
 
   // =========================================================================
-  // 5. Remote Control — UI Navigation
+  // 5. API Keys — UI Navigation
   // =========================================================================
-
-  test("5a — Remote Control page loads and shows correct state", async () => {
-    await page.goto("/remote-control")
-    await page.waitForSelector("text=Remote Control", { timeout: 15_000 })
-    await page.waitForTimeout(2_000)
-
-    const hasInstances = await page.getByText("Online").isVisible().catch(() => false)
-    const hasEmptyState = await page
-      .getByText("No instances registered")
-      .isVisible()
-      .catch(() => false)
-    // If neither state appears, the instances table may not be migrated yet
-    if (!hasInstances && !hasEmptyState) {
-      test.skip(true, "Remote Control page may not be functional — instance table not migrated")
-      return
-    }
-    expect(hasInstances || hasEmptyState).toBeTruthy()
-  })
-
-  test("5b — Empty state links to API Keys page", async () => {
-    const hasEmptyState = await page
-      .getByText("No instances registered")
-      .isVisible()
-      .catch(() => false)
-
-    if (hasEmptyState) {
-      const createKeyLink = page.getByText("Create API Key")
-      expect(await createKeyLink.isVisible()).toBeTruthy()
-      await createKeyLink.click()
-      await page.waitForURL(/api-keys/, { timeout: 10_000 })
-      await page.waitForSelector("text=API Keys", { timeout: 10_000 })
-    }
-  })
 
   test("5c — API Keys page shows the created key in the table", async () => {
     await page.goto("/api-keys")

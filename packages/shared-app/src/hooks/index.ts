@@ -15,3 +15,18 @@ export {
   type UseFeaturePollingResult,
   type PollableDomain,
 } from './useFeaturePolling'
+export {
+  ActiveInstanceProvider,
+  useActiveInstance,
+  localStorageAdapter,
+  type ActiveInstance,
+  type ActiveInstanceContextValue,
+  type ActiveInstanceProviderProps,
+  type InstanceStorageAdapter,
+} from './useActiveInstance'
+export {
+  useInstancePicker,
+  type Instance,
+  type UseInstancePickerOptions,
+  type UseInstancePickerResult,
+} from './useInstancePicker'

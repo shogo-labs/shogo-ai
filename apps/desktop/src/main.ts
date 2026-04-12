@@ -9,9 +9,10 @@ if (handleSquirrelEvent()) {
   process.exit(0)
 }
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
@@ -219,6 +220,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle('skip-vm-download', () => {
     console.log('[Desktop] User skipped VM image download')
     return { success: true }
+  })
+
+  // Desktop notification for remote actions
+  ipcMain.handle('show-remote-action-notification', (_event, title: string, body: string) => {
+    if (Notification.isSupported()) {
+      new Notification({ title, body }).show()
+    }
   })
 
   ipcMain.handle('check-vm-image-update', async () => {

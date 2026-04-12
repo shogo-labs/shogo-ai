@@ -21,6 +21,7 @@ interface TunnelRequest {
   headers?: Record<string, string>
   body?: string
   stream?: boolean
+  projectId?: string
 }
 
 interface CancelMessage {
@@ -28,11 +29,20 @@ interface CancelMessage {
   requestId: string
 }
 
-type IncomingMessage = TunnelRequest | CancelMessage | { type: 'ping' }
+type IncomingMessage = TunnelRequest | CancelMessage | { type: 'ping' } | { type: string }
 
 const DEFAULT_POLL_INTERVAL_S = 60
-const WS_IDLE_TIMEOUT_MS = 5 * 60 * 1000
+const WS_IDLE_TIMEOUT_MS = 30 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 25_000
+const BACKOFF_BASE_MS = 1_000
+const BACKOFF_MAX_MS = 60_000
+
+/**
+ * Protocol version advertised in heartbeat metadata. Bump when new
+ * tunnel message types or proxy endpoints are added so mobile can
+ * gate features for older desktops.
+ */
+export const TUNNEL_PROTOCOL_VERSION = 2
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let ws: WebSocket | null = null
@@ -44,12 +54,55 @@ let wsReconnectAttempt = 0
 let lastHeartbeatError: string | null = null
 const activeAbortControllers = new Map<string, AbortController>()
 
+function getReconnectDelay(): number {
+  const delay = Math.min(BACKOFF_BASE_MS * Math.pow(2, wsReconnectAttempt), BACKOFF_MAX_MS)
+  const jitter = delay * 0.2 * Math.random()
+  return delay + jitter
+}
+
 function getApiPort(): number {
   return parseInt(process.env.PORT || process.env.API_PORT || '8002', 10)
 }
 
-function buildLocalUrl(path: string): string {
-  return `http://localhost:${getApiPort()}${path}`
+function splitPathAndQuery(pathWithQuery: string): { pathname: string; search: string } {
+  const q = pathWithQuery.indexOf('?')
+  if (q === -1) return { pathname: pathWithQuery, search: '' }
+  return { pathname: pathWithQuery.slice(0, q), search: pathWithQuery.slice(q) }
+}
+
+/**
+ * Resolve where to send a tunneled path. /agent/* goes to the agent-runtime HTTP
+ * server (not the desktop API). If the runtime is cold, start it — same as
+ * app.all('/api/projects/:id/agent-proxy/*') in server.ts — so quick-actions
+ * and chat do not fall through to GET /agent/* on the API port (404).
+ */
+async function resolveLocalAgentUrl(pathWithQuery: string, projectId?: string): Promise<string> {
+  const { pathname, search } = splitPathAndQuery(pathWithQuery)
+  const path = pathname || '/'
+
+  if (path.startsWith('/agent/') || path === '/agent') {
+    try {
+      const manager = getRuntimeManager()
+      const candidates = projectId ? [projectId] : manager.getActiveProjects()
+      for (const pid of candidates) {
+        try {
+          let runtime = manager.status(pid)
+          if (!runtime?.agentPort || runtime.status !== 'running') {
+            runtime = await manager.start(pid)
+          }
+          if (runtime?.agentPort && runtime.status === 'running') {
+            return `http://localhost:${runtime.agentPort}${path}${search}`
+          }
+        } catch (err: any) {
+          console.warn(`[InstanceTunnel] Agent URL resolve failed for ${pid}: ${err?.message ?? err}`)
+          if (projectId) break
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[InstanceTunnel] resolveLocalAgentUrl: ${err?.message ?? err}`)
+    }
+  }
+  return `http://localhost:${getApiPort()}${path}${search}`
 }
 
 function getCloudUrl(): string {
@@ -75,6 +128,9 @@ async function collectMetadata(): Promise<Record<string, unknown>> {
     arch: osArch(),
     apiPort: getApiPort(),
     uptime: process.uptime(),
+    protocolVersion: TUNNEL_PROTOCOL_VERSION,
+    apiVersion: process.env.npm_package_version || '0.1.0',
+    tunnelStatus: ws?.readyState === WebSocket.OPEN ? 'connected' : 'polling',
   }
 
   try {
@@ -173,7 +229,7 @@ async function handleRequest(msg: TunnelRequest) {
   activeAbortControllers.set(msg.requestId, controller)
 
   try {
-    const url = buildLocalUrl(msg.path)
+    const url = await resolveLocalAgentUrl(msg.path, msg.projectId)
     const init: RequestInit = {
       method: msg.method,
       headers: msg.headers,
@@ -319,13 +375,26 @@ function connectWs() {
       handleRequest(msg as TunnelRequest).catch((err) => {
         console.error(`[InstanceTunnel] Error handling request: ${err.message}`)
       })
+      return
     }
+
+    // Unknown message types are silently ignored for forward compatibility
   }
 
   ws.onclose = (event) => {
     console.log(`[InstanceTunnel] WebSocket closed: code=${event.code} reason=${event.reason || 'none'}`)
     cleanupWs()
-    scheduleNextPoll(currentPollInterval)
+
+    if (stopped) return
+
+    if (event.code === 1000 || event.code === 4000) {
+      scheduleNextPoll(currentPollInterval)
+    } else {
+      wsReconnectAttempt++
+      const delay = getReconnectDelay()
+      console.log(`[InstanceTunnel] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${wsReconnectAttempt})`)
+      scheduleNextPoll(Math.ceil(delay / 1000))
+    }
   }
 
   ws.onerror = (event) => {
@@ -390,9 +459,15 @@ export const _testing = {
   cleanupWs,
   getCloudUrl,
   buildWsUrl,
+  getReconnectDelay,
   DEFAULT_POLL_INTERVAL_S,
+  BACKOFF_BASE_MS,
+  BACKOFF_MAX_MS,
+  TUNNEL_PROTOCOL_VERSION,
   get currentPollInterval() { return currentPollInterval },
   set currentPollInterval(v: number) { currentPollInterval = v },
+  get wsReconnectAttempt() { return wsReconnectAttempt },
+  set wsReconnectAttempt(v: number) { wsReconnectAttempt = v },
   get ws() { return ws },
   get stopped() { return stopped },
 }

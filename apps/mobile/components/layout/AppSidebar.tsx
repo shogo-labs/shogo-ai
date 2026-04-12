@@ -11,7 +11,7 @@
  *  - Workspace switcher
  *  - Primary nav: Home + Search (Cmd+K)
  *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
- *  - RESOURCES section: Templates, Remote Control, Docs (external)
+ *  - RESOURCES section: Templates, Instance Picker, API Keys, Docs (external)
  *  - Upgrade to Pro CTA
  *  - User avatar + Sign Out
  */
@@ -62,6 +62,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  Laptop,
   Settings,
   Zap,
   Check,
@@ -74,6 +75,8 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
+import { InstancePicker } from './InstancePicker'
+import { useActiveInstance } from '../../contexts/active-instance'
 import { ShogoLogoMark } from '../branding/ShogoLogoMark'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -1104,6 +1107,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
+  const { instance: activeRemoteInstance } = useActiveInstance()
 
   let allWorkspaces: any[]
   try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
@@ -1229,6 +1233,18 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           </Pressable>
         )}
       </View>
+
+      {/* ── Remote instance indicator ── */}
+      {activeRemoteInstance && !collapsed && (
+        <View className="px-3 py-1.5 bg-primary/10 border-b border-primary/20">
+          <View className="flex-row items-center gap-2">
+            <Laptop size={12} className="text-primary" />
+            <Text className="text-[11px] text-primary font-medium flex-1" numberOfLines={1}>
+              Controlling: {activeRemoteInstance.name}
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* ── Workspace Switcher ── */}
       <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
@@ -1363,11 +1379,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                 onNavPress={onNavPress}
               />
             )}
-            <NavItem
-              icon={Monitor}
-              label="Remote Control"
-              href="/(app)/remote-control"
-              active={isRouteActive(pathname, '/(app)/remote-control')}
+            <InstancePicker
+              workspaceId={currentWorkspace?.id}
               collapsed={collapsed}
               onNavPress={onNavPress}
             />

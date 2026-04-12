@@ -3,6 +3,7 @@
 export {
   extractTextContent,
   formatErrorMessage,
+  isTunnelDisconnectError,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
