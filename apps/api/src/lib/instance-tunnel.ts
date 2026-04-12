@@ -230,9 +230,19 @@ async function handleRequest(msg: TunnelRequest) {
 
   try {
     const url = await resolveLocalAgentUrl(msg.path, msg.projectId)
+    const headers = { ...(msg.headers || {}) }
+
+    // If forwarding to local agent runtime, inject the runtime token.
+    // We do this locally so the token is derived using THIS machine's
+    // local signing secret (which may differ from the cloud gateway's secret).
+    if (msg.projectId && (msg.path.startsWith('/agent/') || msg.path === '/agent')) {
+      const { deriveRuntimeToken } = await import('./runtime-token')
+      headers['x-runtime-token'] = deriveRuntimeToken(msg.projectId)
+    }
+
     const init: RequestInit = {
       method: msg.method,
-      headers: msg.headers,
+      headers: headers,
       signal: controller.signal,
     }
     if (msg.body && msg.method !== 'GET' && msg.method !== 'HEAD') {

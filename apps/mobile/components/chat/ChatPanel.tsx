@@ -60,7 +60,7 @@ import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
-import { agentFetch } from "../../lib/agent-fetch"
+
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
@@ -601,6 +601,20 @@ export const ChatPanel = observer(function ChatPanel({
     })
   }, [controlledIsCollapsed])
 
+
+  const nativeHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return (): Record<string, string> => {
+      const cookie = authClient.getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
+
+  const expoFetch = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return require('expo/fetch').fetch as typeof globalThis.fetch
+  }, [])
+
   // Quick actions state
   const [quickActions, setQuickActions] = useState<{ label: string; prompt: string }[]>([])
 
@@ -608,7 +622,12 @@ export const ChatPanel = observer(function ChatPanel({
     const url = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
     if (!url) return
     try {
-      const res = await agentFetch(`${url}/agent/quick-actions`)
+      const fetchFn = expoFetch ?? globalThis.fetch
+      const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+      const res = await fetchFn(`${url}/agent/quick-actions`, {
+        headers,
+        credentials: Platform.OS === 'web' ? 'include' : undefined,
+      } as any)
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data?.actions)) {
@@ -618,7 +637,7 @@ export const ChatPanel = observer(function ChatPanel({
     } catch {
       // Silently ignore — quick actions are non-critical
     }
-  }, [localAgentUrl, projectId])
+  }, [localAgentUrl, projectId, nativeHeaders, expoFetch])
 
   useEffect(() => {
     if (!isActive) return
@@ -825,18 +844,7 @@ export const ChatPanel = observer(function ChatPanel({
     return () => clearTimeout(timer)
   }, [toolErrorBanner])
 
-  const nativeHeaders = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
-    return (): Record<string, string> => {
-      const cookie = authClient.getCookie()
-      return cookie ? { Cookie: cookie } : {}
-    }
-  }, [])
 
-  const expoFetch = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
-    return require('expo/fetch').fetch as typeof globalThis.fetch
-  }, [])
 
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
@@ -1513,7 +1521,13 @@ export const ChatPanel = observer(function ChatPanel({
         await new Promise((r) => setTimeout(r, RECONNECT_POLL_MS))
         if (cancelled) return
         try {
-          const res = await fetch(`${localAgentUrl}/agent/health`, { signal: AbortSignal.timeout(5000) })
+          const fetchFn = expoFetch ?? globalThis.fetch
+          const hdrs: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+          const res = await fetchFn(`${localAgentUrl}/agent/health`, {
+            headers: hdrs,
+            credentials: Platform.OS === 'web' ? 'include' : undefined,
+            signal: AbortSignal.timeout(5000),
+          } as any)
           if (res.ok) {
             if (!cancelled) {
               setTunnelReconnecting(false)
