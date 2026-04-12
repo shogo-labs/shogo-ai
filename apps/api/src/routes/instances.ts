@@ -52,6 +52,7 @@ const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
 const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
 const PROXY_TIMEOUT_MS = 30_000
+const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000
 const STREAM_IDLE_TIMEOUT_MS = 30_000
 const STREAM_MAX_TIMEOUT_MS = 600_000
 const HEARTBEAT_INTERVAL_MS = 25_000
@@ -194,28 +195,45 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
   return !!wsRequestedAt && Date.now() - wsRequestedAt.getTime() < WS_REQUEST_TTL_MS
 }
 
+/**
+ * Strip the /api/projects/:pid/agent-proxy wrapper from a tunneled path,
+ * returning the clean agent path (e.g. "/agent/quick-actions").
+ *
+ * IMPORTANT: only strips query-free path segments. Callers must handle
+ * query strings separately (append after normalization).
+ */
 function normalizeTransparentProxyPath(path: string): string {
   const pathWithoutQuery = path.split('?')[0] || path
   const wrappedProjectPath = pathWithoutQuery.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)?$/)
   if (wrappedProjectPath) {
-    return wrappedProjectPath[1] || '/'
+    // group 1 is undefined when the path ends exactly at /agent-proxy —
+    // forward to /agent (the runtime's root) rather than "/" which 404s.
+    return wrappedProjectPath[1] || '/agent'
   }
   return pathWithoutQuery
 }
 
-function isStreamingTransparentProxyRequest(method: string, path: string): boolean {
-  const normalizedPath = normalizeTransparentProxyPath(path)
+/**
+ * Decide whether a request should use the streaming tunnel pipeline.
+ *
+ * `cleanPath` must already be normalized (no project-proxy wrapper, no
+ * query string).  We intentionally do NOT call normalizeTransparentProxyPath
+ * again here to avoid double-normalization bugs.
+ */
+function isStreamingRequest(method: string, cleanPath: string): boolean {
+  // Strip query string defensively in case a caller still passes one.
+  const pathOnly = cleanPath.split('?')[0] || cleanPath
 
   if (method === 'POST') {
     return STREAMING_POST_PATTERNS.some((pattern) =>
-      normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`),
+      pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
     )
   }
 
   if (method === 'GET') {
     return STREAMING_GET_PATTERNS.some((pattern) =>
-      normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`),
-    ) || CHAT_RESUME_STREAM_RE.test(normalizedPath)
+      pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
+    ) || CHAT_RESUME_STREAM_RE.test(pathOnly)
   }
 
   return false
@@ -433,7 +451,10 @@ function sendLocalTunnelStreamRequest(
   }
 
   const c = conn
-  let idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
+  let gotFirstChunk = false
+  // Use a generous timeout for the first chunk — the local agent may need
+  // to cold-start the runtime AND wait for the first LLM token.
+  let idleTimer = setTimeout(() => kill('idle'), STREAM_FIRST_CHUNK_TIMEOUT_MS)
   const maxTimer = setTimeout(() => kill('max'), STREAM_MAX_TIMEOUT_MS)
 
   function kill(reason: string) {
@@ -446,6 +467,8 @@ function sendLocalTunnelStreamRequest(
   c.streamHandlers.set(req.requestId, (chunk) => {
     clearTimeout(idleTimer)
     if (chunk.type === 'stream-chunk') {
+      gotFirstChunk = true
+      // After the first chunk, switch to the tighter inter-chunk timeout.
       idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
     }
     if (chunk.type === 'stream-end' || chunk.type === 'stream-error') {
@@ -1029,10 +1052,19 @@ export function instanceRoutes() {
     const qs = incomingUrl.search
     const afterPrefix = c.req.param('rest') || ''
     const rawPath = '/' + afterPrefix
+
+    // Extract projectId from wrapped agent-proxy paths before stripping
     const tunnelProjectId = rawPath.match(
       /^\/api\/projects\/([^/]+)\/agent-proxy(?:\/|$)/,
     )?.[1]
-    const agentPath = normalizeTransparentProxyPath(rawPath) + qs
+
+    // ── Path normalization ─────────────────────────────────────────────
+    // Strip the /api/projects/:pid/agent-proxy prefix so the desktop
+    // tunnel receives the clean path (e.g. "/agent/quick-actions")
+    // instead of the full cloud gateway path which would 404 on the
+    // local agent.  Query string is appended AFTER normalization.
+    const cleanPath = normalizeTransparentProxyPath(rawPath)
+    const agentPath = cleanPath + qs
 
     const method = c.req.method
     const hasBody = method === 'POST' || method === 'PUT' || method === 'PATCH'
@@ -1045,7 +1077,9 @@ export function instanceRoutes() {
     const accept = c.req.header('accept')
     if (accept) forwardHeaders['accept'] = accept
 
-    const isStreaming = isStreamingTransparentProxyRequest(method, agentPath)
+    // Use the pre-normalized path (no query string) for streaming detection
+    // to avoid double-normalization bugs.
+    const isStreaming = isStreamingRequest(method, cleanPath)
 
     if (isStreaming) {
       void logRemoteAction({
@@ -1245,6 +1279,7 @@ export const _testing = {
   POLL_INTERVAL_WS_REQUESTED_S,
   WS_REQUEST_TTL_MS,
   VIEWER_ACTIVE_TTL_MS,
+  STREAM_FIRST_CHUNK_TIMEOUT_MS,
   STREAM_IDLE_TIMEOUT_MS,
   STREAM_MAX_TIMEOUT_MS,
 }
