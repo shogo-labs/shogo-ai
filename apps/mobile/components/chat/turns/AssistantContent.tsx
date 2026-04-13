@@ -35,6 +35,9 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
+import { analyzeContent } from "../long-text-utils"
+import { LongTextPreviewCard } from "../LongTextPreviewCard"
+import { FileViewerModal } from "../FileViewerModal"
 
 function safeErrorString(error: unknown): string | undefined {
   if (error == null) return undefined
@@ -248,24 +251,74 @@ function ImageThumbnail({
 }
 
 function FileThumbnail({
+  url,
   mediaType,
   index,
 }: {
+  url: string
   mediaType: string
   index: number
 }) {
+  const [showModal, setShowModal] = useState(false)
+  const [fileContent, setFileContent] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
   const label = mediaType.includes("pdf")
     ? "PDF"
     : mediaType.split("/").pop()?.toUpperCase() || "FILE"
 
+  const isTextLike =
+    mediaType.startsWith("text/") ||
+    mediaType.includes("json") ||
+    mediaType.includes("xml") ||
+    mediaType.includes("javascript") ||
+    mediaType.includes("yaml")
+
+  const handlePress = useCallback(async () => {
+    if (!isTextLike) {
+      Linking.openURL(url)
+      return
+    }
+    if (fileContent !== null) {
+      setShowModal(true)
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await fetch(url)
+      const text = await res.text()
+      setFileContent(text)
+      setShowModal(true)
+    } catch {
+      Linking.openURL(url)
+    } finally {
+      setLoading(false)
+    }
+  }, [url, isTextLike, fileContent])
+
   return (
-    <View
-      className="flex-row items-center gap-2 rounded-md border border-border bg-muted px-3 py-2"
-      accessibilityLabel={`File attachment ${index + 1}: ${label}`}
-    >
-      <FileText size={16} className="text-muted-foreground" />
-      <Text className="text-xs text-muted-foreground">{label} attached</Text>
-    </View>
+    <>
+      <Pressable
+        onPress={handlePress}
+        className="flex-row items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2"
+        accessibilityLabel={`File attachment ${index + 1}: ${label}`}
+        accessibilityRole="button"
+      >
+        <FileText size={16} className="text-muted-foreground" />
+        <Text className="text-xs text-muted-foreground">
+          {loading ? "Loading…" : `${label} · Tap to view`}
+        </Text>
+      </Pressable>
+      {fileContent !== null && (
+        <FileViewerModal
+          visible={showModal}
+          onClose={() => setShowModal(false)}
+          content={fileContent}
+          title={`${label} File`}
+          kind={mediaType.includes("json") ? "json" : "plain"}
+        />
+      )}
+    </>
   )
 }
 
@@ -357,6 +410,16 @@ export function AssistantContent({
         }
 
         if (part.type === "text") {
+          const sizeInfo = analyzeContent(part.text)
+          if (sizeInfo.isLong && !isStreaming) {
+            return (
+              <LongTextPreviewCard
+                key={part.id}
+                text={part.text}
+                title="Assistant Response"
+              />
+            )
+          }
           return (
             <View key={part.id}>
               <MarkdownText
@@ -550,6 +613,7 @@ export function AssistantContent({
           return (
             <FileThumbnail
               key={part.id}
+              url={part.url}
               mediaType={part.mediaType}
               index={index}
             />

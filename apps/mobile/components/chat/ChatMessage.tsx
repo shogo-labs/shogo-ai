@@ -11,6 +11,8 @@
 import { View, Text } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { MarkdownText } from "./MarkdownText"
+import { analyzeContent } from "./long-text-utils"
+import { LongTextPreviewCard } from "./LongTextPreviewCard"
 
 export interface ChatMessageProps {
   message: {
@@ -23,6 +25,8 @@ export interface ChatMessageProps {
 
 export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) {
   const isUser = message.role === "user"
+  const contentInfo = message.content ? analyzeContent(message.content) : null
+  const isLongText = contentInfo?.isLong ?? false
 
   return (
     <View
@@ -39,7 +43,12 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
             : "bg-gray-100 dark:bg-gray-800 mr-auto"
         )}
       >
-        {isUser ? (
+        {isLongText && !isStreaming ? (
+          <LongTextPreviewCard
+            text={message.content}
+            title={isUser ? "Your Message" : "Response"}
+          />
+        ) : isUser ? (
           <Text
             className={cn("text-sm text-foreground")}
           >
