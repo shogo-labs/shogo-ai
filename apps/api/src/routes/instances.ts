@@ -1084,6 +1084,14 @@ export function instanceRoutes() {
     const accept = c.req.header('accept')
     if (accept) forwardHeaders['accept'] = accept
 
+    // Inject the cloud-authenticated userId so the desktop API can
+    // identify who is making the request without needing a session
+    // cookie.  The desktop's auth middleware trusts this header when
+    // the request originates from the local tunnel handler (loopback).
+    forwardHeaders['x-tunnel-auth-user-id'] = auth.userId
+    if (auth.email) forwardHeaders['x-tunnel-auth-email'] = auth.email
+    if (auth.name) forwardHeaders['x-tunnel-auth-name'] = auth.name
+
     // Use the pre-normalized path (no query string) for streaming detection
     // to avoid double-normalization bugs.
     const isStreaming = isStreamingRequest(method, cleanPath)

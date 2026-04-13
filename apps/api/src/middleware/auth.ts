@@ -70,7 +70,27 @@ export async function authMiddleware(c: Context, next: Next) {
     } catch {}
   }
 
-  // 2. Try Better Auth session (cookies)
+  // 2. Try tunnel-forwarded auth (from cloud proxy via instance tunnel).
+  //    The cloud transparent proxy authenticates the user via session cookie,
+  //    then injects x-tunnel-auth-user-id into the tunnel request. The
+  //    desktop's tunnel handler (instance-tunnel.ts) forwards this header
+  //    when it sends the request to localhost. We trust it because:
+  //    - The tunnel handler runs in-process (loopback to our own API port)
+  //    - The cloud proxy already verified the session
+  //    - External requests can't reach this header without going through the tunnel
+  const tunnelUserId = c.req.header("x-tunnel-auth-user-id")
+  if (tunnelUserId) {
+    c.set("auth", {
+      userId: tunnelUserId,
+      email: c.req.header("x-tunnel-auth-email") || undefined,
+      name: c.req.header("x-tunnel-auth-name") || undefined,
+      isAuthenticated: true,
+    })
+    await next()
+    return
+  }
+
+  // 3. Try Better Auth session (cookies)
   try {
     const session = await auth.api.getSession({
       headers: c.req.raw.headers,
