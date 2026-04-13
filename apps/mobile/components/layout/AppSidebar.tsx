@@ -1379,8 +1379,11 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                 onNavPress={onNavPress}
               />
             )}
-            <InstancePicker
-              workspaceId={currentWorkspace?.id}
+            <NavItem
+              icon={Monitor}
+              label="Remote Control"
+              href="/(app)/remote-control"
+              active={isRouteActive(pathname, '/(app)/remote-control')}
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
