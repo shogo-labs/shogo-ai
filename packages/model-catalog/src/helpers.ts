@@ -4,6 +4,7 @@
 import {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
+  AUTO_MODEL_ID,
   type ModelEntry,
   type ImageModelEntry,
   type ModelId,
@@ -15,6 +16,11 @@ import {
   type BillingModel,
 } from './models'
 import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
+
+/** Check if a model ID is the special "auto" routing value. */
+export function isAutoModel(id: string): boolean {
+  return id === AUTO_MODEL_ID
+}
 
 // ---------------------------------------------------------------------------
 // Resolution
@@ -61,6 +67,7 @@ export function getImageModelEntry(id: string): ImageModelEntry | undefined {
 /** Full display name, e.g. "Claude Sonnet 4.6". Falls back to the raw ID. */
 export function getModelDisplayName(id: string): string {
   if (!id) return 'Unknown'
+  if (id === AUTO_MODEL_ID) return 'Auto'
   const entry = getModelEntry(id)
   if (entry) return entry.displayName
   return id.length > 20 ? id.slice(0, 20) + '...' : id
@@ -69,6 +76,7 @@ export function getModelDisplayName(id: string): string {
 /** Short display name for compact UIs, e.g. "Sonnet 4.6". Falls back to the raw ID. */
 export function getModelShortDisplayName(id: string): string {
   if (!id) return 'Unknown'
+  if (id === AUTO_MODEL_ID) return 'Auto'
   const entry = getModelEntry(id)
   if (entry) return entry.shortDisplayName
   return id.length > 20 ? id.slice(0, 20) + '...' : id
@@ -105,6 +113,7 @@ export function inferProviderFromModel(modelId: string, fallback: string = 'anth
  * 'standard' (fail-safe: blocks free users).
  */
 export function getModelTier(id: string): ModelTier {
+  if (id === AUTO_MODEL_ID) return 'economy'
   const entry = getModelEntry(id)
   if (entry) return entry.tier
 

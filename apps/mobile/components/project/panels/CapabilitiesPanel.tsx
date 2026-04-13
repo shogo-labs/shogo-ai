@@ -36,7 +36,7 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { agentFetch } from '../../../lib/agent-fetch'
-import { getAvailableModels, getModelsByProvider, type ModelTier } from '@shogo/model-catalog'
+import { getAvailableModels, getModelsByProvider, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
 import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
 import { api, createHttpClient, type TechStackSummary } from '../../../lib/api'
@@ -342,9 +342,12 @@ export function CapabilitiesPanel({
 
   if (!visible) return null
 
-  const resolvedModel = AVAILABLE_MODELS.find(
-    m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
-  )
+  const isAutoSelected = currentModel?.name === AUTO_MODEL_ID
+  const resolvedModel = isAutoSelected
+    ? { provider: 'auto', name: AUTO_MODEL_ID, displayName: 'Auto', tier: 'standard' as ModelTier }
+    : AVAILABLE_MODELS.find(
+        m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
+      )
 
   const enabledCount = CAPABILITIES.filter(c => capabilities[c.key]).length
 
@@ -519,6 +522,22 @@ export function CapabilitiesPanel({
                   <PopoverBackdrop />
                   <PopoverContent className="p-0 min-w-[220px]">
                     <PopoverBody>
+                      <Pressable
+                        onPress={() => handleModelChange({ provider: 'auto', name: AUTO_MODEL_ID, displayName: 'Auto', tier: 'standard' })}
+                        className={cn(
+                          'flex-row items-center gap-2.5 px-3 py-2.5',
+                          'active:bg-muted',
+                          isAutoSelected && 'bg-accent',
+                        )}
+                      >
+                        <Zap size={14} className="text-primary" />
+                        <View className="flex-1">
+                          <Text className="text-sm font-medium text-foreground">Auto</Text>
+                          <Text className="text-[10px] text-muted-foreground">Picks the best model per turn to save cost</Text>
+                        </View>
+                        {isAutoSelected && <Check size={14} className="text-primary" />}
+                      </Pressable>
+                      <View className="h-px bg-border/50 mx-2" />
                       {MODEL_GROUPS.map((group) => (
                         <View key={group.label}>
                           <View className="px-3 pt-2.5 pb-1">

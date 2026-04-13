@@ -22,6 +22,7 @@
 import type { AgentTool, AgentEvent, StreamFn } from '@mariozechner/pi-agent-core'
 import { Agent } from '@mariozechner/pi-agent-core'
 import type { Message, Model, Api, ImageContent } from '@mariozechner/pi-ai'
+import { streamSimple as piStreamSimple } from '@mariozechner/pi-ai'
 import { LoopDetector, type LoopDetectorConfig, type LoopDetectorResult } from './loop-detector'
 import type { ToolContext } from './gateway-tools'
 import {
@@ -100,6 +101,12 @@ export interface AgentLoopOptions {
    * Returns the new compacted history to retry with. Capped at 1 retry.
    */
   onContextOverflow?: () => Promise<Message[] | null>
+  /**
+   * Model router callback. Called at each turn_end to resolve the model
+   * for the next iteration. When set, the agent's model is updated
+   * dynamically between turns. Return undefined to keep the current model.
+   */
+  onResolveNextModel?: (iteration: number) => { model: Model; provider: string } | undefined
 }
 
 export interface ToolCallRecord {
@@ -122,6 +129,8 @@ export interface AgentLoopResult {
   loopBreak?: LoopDetectorResult
   /** Set if the agent encountered an error (provider failure, etc.). Partial results are still available. */
   error?: Error
+  /** The actual model ID used for the final iteration (may differ from initial if router is active). */
+  effectiveModelId?: string
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -171,6 +180,21 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let iterations = 0
   let loopBreak: LoopDetectorResult | undefined
   let abortTriggered = false
+  let currentModelId = modelId
+
+  // Mutable model ref for mid-loop model switching.
+  // Pi Agent Core snapshots `config.model` once at `_runLoop` entry, so
+  // mutating `agent.state.model` has no effect. Instead we intercept the
+  // streamFn and swap the model argument before each LLM call.
+  let overrideModel: Model | undefined
+  const baseStreamFn = options.streamFn
+  const routingStreamFn: StreamFn | undefined = options.onResolveNextModel
+    ? (origModel, context, opts) => {
+        const effectiveModel = overrideModel ?? origModel
+        if (baseStreamFn) return baseStreamFn(effectiveModel, context, opts)
+        return piStreamSimple(effectiveModel, context, opts)
+      }
+    : undefined
 
   const { signal } = options
 
@@ -188,7 +212,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     },
     toolExecution: 'parallel',
     convertToLlm: defaultConvertToLlm,
-    streamFn: options.streamFn,
+    streamFn: routingStreamFn ?? options.streamFn,
     getApiKey: (prov) => {
       if (apiKey && prov === provider) return apiKey
       return resolveApiKey(prov)
@@ -267,6 +291,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         if (iterations >= maxIterations && !abortTriggered) {
           abortTriggered = true
           agent.abort()
+        }
+        if (options.onResolveNextModel && !abortTriggered) {
+          const next = options.onResolveNextModel(iterations)
+          if (next) {
+            overrideModel = next.model
+            currentModelId = (next.model as any).id ?? (next.model as any).name ?? modelId
+          }
         }
         break
       }
@@ -358,6 +389,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     newMessages,
     loopBreak,
     error: promptError || implicitError,
+    effectiveModelId: currentModelId,
   }
 
   await onAgentEnd?.(result)
