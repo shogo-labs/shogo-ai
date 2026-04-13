@@ -15,6 +15,7 @@ import { useCallback, type ReactNode } from 'react'
 import { Platform } from 'react-native'
 import { SDKDomainProvider } from '@shogo/shared-app/domain'
 import { useAuth } from './auth'
+import { useActiveInstance } from './active-instance'
 import { API_URL } from '../lib/api'
 import { authClient } from '../lib/auth-client'
 
@@ -42,10 +43,23 @@ const isNative = Platform.OS !== 'web'
 
 export function DomainProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
+  const { remoteAgentBaseUrl } = useActiveInstance()
 
   const getAuthCookie = useCallback(() => {
     return authClient.getCookie() || null
   }, [])
+
+  // When a remote desktop instance is selected, remoteAgentBaseUrl is
+  // e.g. "https://studio.shogo.ai/api/instances/<id>/p".
+  // Passing it as remoteProxyBaseUrl activates the HTTP interceptor which
+  // rewrites stateful API calls (projects, chat, etc.) to go through the
+  // tunnel to the desktop instead of hitting the cloud backend directly.
+  const remoteProxyBaseUrl = remoteAgentBaseUrl ?? null
+
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log('[DomainProvider] remoteProxyBaseUrl:', remoteProxyBaseUrl)
+  }
 
   return (
     <SDKDomainProvider
@@ -53,6 +67,10 @@ export function DomainProvider({ children }: { children: ReactNode }) {
       userId={user?.id ?? null}
       credentials={isNative ? 'omit' : 'include'}
       getAuthCookie={isNative ? getAuthCookie : undefined}
+      remoteProxyBaseUrl={remoteProxyBaseUrl}
+      onRemoteError={(error, path) => {
+        console.warn('[DomainProvider] Remote request failed:', path, error.message)
+      }}
     >
       {children}
     </SDKDomainProvider>

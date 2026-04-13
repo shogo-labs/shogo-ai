@@ -30,3 +30,12 @@ export {
   type UseInstancePickerOptions,
   type UseInstancePickerResult,
 } from './useInstancePicker'
+export {
+  useSyncClient,
+  type UseSyncClientOptions,
+  type UseSyncClientResult,
+} from './useSyncClient'
+export {
+  useRemoteState,
+  type RemoteState,
+} from './useRemoteState'

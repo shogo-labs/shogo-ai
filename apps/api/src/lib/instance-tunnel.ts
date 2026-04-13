@@ -41,8 +41,13 @@ const BACKOFF_MAX_MS = 60_000
  * Protocol version advertised in heartbeat metadata. Bump when new
  * tunnel message types or proxy endpoints are added so mobile can
  * gate features for older desktops.
+ *
+ * Version history:
+ *   1 — Initial tunnel with chat proxy
+ *   2 — Transparent proxy (any HTTP request)
+ *   3 — Remote state sync (projects, history routed through tunnel)
  */
-export const TUNNEL_PROTOCOL_VERSION = 2
+export const TUNNEL_PROTOCOL_VERSION = 3
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let ws: WebSocket | null = null
