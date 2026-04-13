@@ -64,6 +64,7 @@ import {
   useSDKDomain,
   useSDKReady,
   useDomainActions,
+  useIsRemoteSource,
 } from '@shogo/shared-app/domain'
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -219,6 +220,7 @@ export default observer(function AllProjectsPage() {
   const store = useSDKDomain() as IDomainStore
   const sdkReady = useSDKReady()
   const actions = useDomainActions()
+  const isRemoteSource = useIsRemoteSource()
   const toast = useToast()
   const { width } = useWindowDimensions()
   const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
@@ -267,33 +269,56 @@ export default observer(function AllProjectsPage() {
   }, [sdkReady, store, user?.id])
 
   useEffect(() => {
-    if (!currentWorkspace?.id || !store) return
-
-    store.projectCollection.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
-      console.warn('[AllProjectsPage] Failed to load projects:', err),
-    )
-    store.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
-      console.warn('[AllProjectsPage] Failed to load folders:', err),
-    )
-  }, [currentWorkspace?.id, store])
+    if (!store) return
+    // When connected to a remote desktop, projects/folders live on the remote DB
+    // with a different workspaceId than the cloud workspace. Skip the filter so
+    // the remote returns all its projects; the sidebar "Recent" already works
+    // this way (no workspaceId filter).
+    if (isRemoteSource) {
+      store.projectCollection.loadAll().catch((err: any) =>
+        console.warn('[AllProjectsPage] Failed to load projects:', err),
+      )
+      store.folderCollection?.loadAll().catch((err: any) =>
+        console.warn('[AllProjectsPage] Failed to load folders:', err),
+      )
+    } else {
+      if (!currentWorkspace?.id) return
+      store.projectCollection.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
+        console.warn('[AllProjectsPage] Failed to load projects:', err),
+      )
+      store.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
+        console.warn('[AllProjectsPage] Failed to load folders:', err),
+      )
+    }
+  }, [currentWorkspace?.id, store, isRemoteSource])
 
   // Load starred projects
   useEffect(() => {
-    if (!currentWorkspace?.id || !user?.id || !store?.starredProjectCollection) return
+    if (!user?.id || !store?.starredProjectCollection) return
+    if (!isRemoteSource && !currentWorkspace?.id) return
+
+    const filter: Record<string, string> = { userId: user.id }
+    if (!isRemoteSource && currentWorkspace?.id) {
+      filter.workspaceId = currentWorkspace.id
+    }
 
     store.starredProjectCollection
-      .loadAll({ userId: user.id, workspaceId: currentWorkspace.id })
+      .loadAll(filter)
       .then(() => {
         const starredAll = Array.isArray(store.starredProjectCollection.all) ? store.starredProjectCollection.all : []
         const ids = new Set(
           starredAll
-            .filter((s: any) => s.userId === user.id && s.workspaceId === currentWorkspace.id)
+            .filter((s: any) => {
+              if (s.userId !== user.id) return false
+              if (!isRemoteSource && currentWorkspace?.id) return s.workspaceId === currentWorkspace.id
+              return true
+            })
             .map((s: any) => s.projectId),
         )
         setStarredIds(ids)
       })
       .catch((e) => console.error('[Projects] Failed to load starred projects:', e))
-  }, [currentWorkspace?.id, user?.id, store])
+  }, [currentWorkspace?.id, user?.id, store, isRemoteSource])
 
   const rawProjects = store?.projectCollection?.all
   const allProjects = (Array.isArray(rawProjects) ? rawProjects : []) as Project[]
@@ -323,7 +348,7 @@ export default observer(function AllProjectsPage() {
       currentFolderId ? p.folderId === currentFolderId : !p.folderId,
     )
 
-    if (currentWorkspace?.id) {
+    if (currentWorkspace?.id && !isRemoteSource) {
       result = result.filter((p: any) => p.workspaceId === currentWorkspace.id)
     }
 
@@ -357,7 +382,7 @@ export default observer(function AllProjectsPage() {
     })
 
     return result
-  }, [allProjects, currentFolderId, currentWorkspace?.id, searchQuery, sortBy, visibilityFilter, statusFilter])
+  }, [allProjects, currentFolderId, currentWorkspace?.id, isRemoteSource, searchQuery, sortBy, visibilityFilter, statusFilter])
 
   // Handlers
   const handleProjectPress = useCallback(
@@ -373,7 +398,14 @@ export default observer(function AllProjectsPage() {
 
   const handleToggleStar = useCallback(
     async (projectId: string) => {
-      if (!currentWorkspace?.id || !user?.id) return
+      if (!user?.id) return
+      // Resolve the workspaceId: when remote, use the project's own workspaceId
+      // (which belongs to the remote DB) instead of the cloud workspace.
+      const project = allProjects.find((p) => p.id === projectId) as any
+      const wsId = isRemoteSource
+        ? project?.workspaceId
+        : currentWorkspace?.id
+      if (!wsId) return
       try {
         const isStarred = starredIds.has(projectId)
         if (isStarred) {
@@ -392,7 +424,7 @@ export default observer(function AllProjectsPage() {
           await store?.starredProjectCollection?.create({
             projectId,
             userId: user.id,
-            workspaceId: currentWorkspace.id,
+            workspaceId: wsId,
           })
           setStarredIds((prev) => new Set(prev).add(projectId))
         }
@@ -400,7 +432,7 @@ export default observer(function AllProjectsPage() {
         console.error('[AllProjectsPage] Failed to toggle star:', err)
       }
     },
-    [currentWorkspace?.id, user?.id, starredIds, store],
+    [currentWorkspace?.id, user?.id, starredIds, store, allProjects, isRemoteSource],
   )
 
   const [renameProject, setRenameProject] = useState<Project | null>(null)
