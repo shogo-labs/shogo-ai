@@ -1453,3 +1453,97 @@ export function deriveSourceTag(data: {
   if (data.method === 'google') return 'google-oauth'
   return 'direct'
 }
+
+// ============================================================================
+// Routing Analytics
+// ============================================================================
+
+/**
+ * Get smart routing savings analytics. Queries usage events that have
+ * routingSavings in their actionMetadata (produced by the model router).
+ */
+export async function getRoutingAnalytics(
+  scope: AnalyticsScope = {},
+  period: AnalyticsPeriod = '30d'
+) {
+  const since = periodToDate(period)
+  const where = {
+    ...scopeWhere(scope),
+    createdAt: { gte: since },
+    actionType: 'chat_message',
+  }
+
+  const events = await prisma.usageEvent.findMany({
+    where,
+    select: {
+      creditCost: true,
+      actionMetadata: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: 'asc' },
+  })
+
+  let totalCreditsSaved = 0
+  let totalDollarSaved = 0
+  let routedTurns = 0
+  let totalTurns = events.length
+  let totalActualCost = 0
+  let totalCeilingCost = 0
+  const modelUsage: Record<string, { requests: number; tokens: number }> = {}
+  const dailySavings: { date: string; saved: number; actual: number }[] = []
+  const dailyMap = new Map<string, { saved: number; actual: number }>()
+
+  for (const event of events) {
+    const meta = parseActionMetadata(event.actionMetadata)
+    if (!meta?.routingSavings) continue
+
+    const rs = meta.routingSavings as any
+    routedTurns++
+    totalCreditsSaved += rs.creditsSaved ?? 0
+    totalDollarSaved += rs.dollarSaved ?? 0
+    totalActualCost += rs.actualCost ?? event.creditCost
+    totalCeilingCost += rs.ceilingCost ?? event.creditCost
+
+    if (rs.modelBreakdown) {
+      for (const [model, usage] of Object.entries(rs.modelBreakdown as Record<string, any>)) {
+        const existing = modelUsage[model] ?? { requests: 0, tokens: 0 }
+        existing.requests += usage.requests ?? 0
+        existing.tokens += usage.tokens ?? 0
+        modelUsage[model] = existing
+      }
+    }
+
+    const dateKey = event.createdAt.toISOString().split('T')[0]
+    const day = dailyMap.get(dateKey) ?? { saved: 0, actual: 0 }
+    day.saved += rs.creditsSaved ?? 0
+    day.actual += rs.actualCost ?? event.creditCost
+    dailyMap.set(dateKey, day)
+  }
+
+  for (const [date, data] of dailyMap) {
+    dailySavings.push({ date, ...data })
+  }
+  dailySavings.sort((a, b) => a.date.localeCompare(b.date))
+
+  const savingsPercent = totalCeilingCost > 0
+    ? Math.round((totalCreditsSaved / totalCeilingCost) * 100)
+    : 0
+
+  return {
+    totalCreditsSaved: Math.round(totalCreditsSaved * 10) / 10,
+    totalDollarSaved: Math.round(totalDollarSaved * 1000) / 1000,
+    routedTurns,
+    totalTurns,
+    savingsPercent,
+    totalActualCost: Math.round(totalActualCost * 10) / 10,
+    totalCeilingCost: Math.round(totalCeilingCost * 10) / 10,
+    modelUsage,
+    dailySavings,
+  }
+}
+
+function parseActionMetadata(raw: any): Record<string, any> | null {
+  if (!raw) return null
+  if (typeof raw === 'object') return raw
+  try { return JSON.parse(raw) } catch { return null }
+}
