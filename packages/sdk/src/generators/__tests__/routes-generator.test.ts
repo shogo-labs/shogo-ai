@@ -152,7 +152,7 @@ describe('Routes Generator', () => {
       it('should pass where to Prisma findMany', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('await prisma.project.findMany({')
+        expect(result!.code).toContain('prisma.project.findMany({')
         expect(result!.code).toContain('where,')
         expect(result!.code).toContain('include,')
         expect(result!.code).toContain('orderBy,')
@@ -284,11 +284,13 @@ describe('Routes Generator', () => {
         const result = generateModelRoutes(mockProjectModel)
 
         expect(result!.code).toContain('function buildContext(c: any, body?: any) {')
+        expect(result!.code).toContain('const auth = c.get("auth")')
         expect(result!.code).toContain('return {')
         expect(result!.code).toContain('body: body || {},')
         expect(result!.code).toContain('params: c.req.param() || {},')
         expect(result!.code).toContain('query: Object.fromEntries(new URL(c.req.url).searchParams),')
-        expect(result!.code).toContain('userId: c.get("auth")?.userId,')
+        expect(result!.code).toContain('userId: auth?.userId,')
+        expect(result!.code).toContain('tunnelAuthenticated: !!auth?.tunnelAuthenticated,')
         expect(result!.code).toContain('prisma: getPrisma(),')
       })
     })
@@ -339,6 +341,7 @@ describe('Routes Generator', () => {
       expect(result.code).toContain('params: Record<string, string>')
       expect(result.code).toContain('query: Record<string, string>')
       expect(result.code).toContain('userId?: string')
+      expect(result.code).toContain('tunnelAuthenticated: boolean')
       expect(result.code).toContain('prisma: any')
     })
 

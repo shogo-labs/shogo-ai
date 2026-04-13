@@ -24,6 +24,7 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
   prisma: any
 }
 
@@ -69,15 +70,16 @@ export const folderHooks: FolderHooks = {
     const workspaceId = ctx.query.workspaceId
 
     if (workspaceId) {
-      // Verify user has access to this workspace
-      const membership = await ctx.prisma.member.findFirst({
-        where: { userId, workspaceId },
-      })
+      if (!ctx.tunnelAuthenticated) {
+        const membership = await ctx.prisma.member.findFirst({
+          where: { userId, workspaceId },
+        })
 
-      if (!membership) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this workspace" },
+        if (!membership) {
+          return {
+            ok: false,
+            error: { code: "forbidden", message: "Access denied to this workspace" },
+          }
         }
       }
 
@@ -91,16 +93,17 @@ export const folderHooks: FolderHooks = {
     }
 
     // No workspaceId - return folders from all accessible workspaces
+    const whereClause = ctx.tunnelAuthenticated ? {} : {
+      workspace: {
+        members: {
+          some: { userId },
+        },
+      },
+    }
     return {
       ok: true,
       data: {
-        where: {
-          workspace: {
-            members: {
-              some: { userId },
-            },
-          },
-        },
+        where: whereClause,
         include: { parent: true, workspace: true },
       },
     }
@@ -117,6 +120,8 @@ export const folderHooks: FolderHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const folder = await ctx.prisma.folder.findUnique({
       where: { id },
@@ -165,15 +170,16 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    // Verify user has access to create in this workspace (member or higher)
-    const membership = await ctx.prisma.member.findFirst({
-      where: { userId, workspaceId },
-    })
+    if (!ctx.tunnelAuthenticated) {
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
 
-    if (!membership) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
       }
     }
 
@@ -191,6 +197,8 @@ export const folderHooks: FolderHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const folder = await ctx.prisma.folder.findUnique({
       where: { id },
@@ -230,6 +238,8 @@ export const folderHooks: FolderHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const folder = await ctx.prisma.folder.findUnique({
       where: { id },

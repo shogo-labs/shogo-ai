@@ -37,6 +37,12 @@ export interface AuthContext {
   isAuthenticated: boolean
   /** True when the session check failed due to a server-side error (DB, etc.) */
   authError?: boolean
+  /**
+   * True when the request was authenticated via tunnel headers
+   * (x-tunnel-auth-user-id). The cloud proxy already verified workspace
+   * membership, so local DB membership checks can be skipped.
+   */
+  tunnelAuthenticated?: boolean
 }
 
 // Extend Hono context types
@@ -85,6 +91,7 @@ export async function authMiddleware(c: Context, next: Next) {
       email: c.req.header("x-tunnel-auth-email") || undefined,
       name: c.req.header("x-tunnel-auth-name") || undefined,
       isAuthenticated: true,
+      tunnelAuthenticated: true,
     })
     await next()
     return
@@ -212,6 +219,13 @@ export async function requireProjectAccess(c: Context, next: Next) {
       { error: { code: "unauthorized", message: "Authentication required" } },
       401
     )
+  }
+
+  // Tunnel-authenticated requests already had workspace membership verified
+  // by the cloud proxy — skip local DB membership checks.
+  if (auth?.tunnelAuthenticated) {
+    await next()
+    return
   }
 
   const projectId = c.req.param("projectId")

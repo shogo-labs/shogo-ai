@@ -24,6 +24,7 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
   prisma: any
 }
 
@@ -74,27 +75,29 @@ export const chatSessionHooks: ChatSessionHooks = {
 
     // If projectId is specified, verify user has access to that project
     if (projectId || contextId) {
-      const targetProjectId = projectId || contextId
-      const project = await ctx.prisma.project.findUnique({
-        where: { id: targetProjectId },
-        include: { workspace: { include: { members: true } } },
-      })
+      if (!ctx.tunnelAuthenticated) {
+        const targetProjectId = projectId || contextId
+        const project = await ctx.prisma.project.findUnique({
+          where: { id: targetProjectId },
+          include: { workspace: { include: { members: true } } },
+        })
 
-      if (!project) {
-        return {
-          ok: false,
-          error: { code: "not_found", message: "Project not found" },
+        if (!project) {
+          return {
+            ok: false,
+            error: { code: "not_found", message: "Project not found" },
+          }
+        }
+
+        const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
+        if (!hasAccess) {
+          return {
+            ok: false,
+            error: { code: "forbidden", message: "Access denied to this project" },
+          }
         }
       }
-
-      const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-      if (!hasAccess) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this project" },
-        }
-      }
-    } else {
+    } else if (!ctx.tunnelAuthenticated) {
       // No specific project - filter to only accessible projects
       where.project = {
         workspace: {
@@ -126,6 +129,8 @@ export const chatSessionHooks: ChatSessionHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const session = await ctx.prisma.chatSession.findUnique({
       where: { id },
@@ -184,7 +189,7 @@ export const chatSessionHooks: ChatSessionHooks = {
     }
 
     // If contextId (projectId) is provided, verify access
-    if (input.contextId) {
+    if (input.contextId && !ctx.tunnelAuthenticated) {
       const project = await ctx.prisma.project.findUnique({
         where: { id: input.contextId },
         include: { workspace: { include: { members: true } } },
@@ -220,6 +225,8 @@ export const chatSessionHooks: ChatSessionHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const session = await ctx.prisma.chatSession.findUnique({
       where: { id },
@@ -266,6 +273,8 @@ export const chatSessionHooks: ChatSessionHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const session = await ctx.prisma.chatSession.findUnique({
       where: { id },
