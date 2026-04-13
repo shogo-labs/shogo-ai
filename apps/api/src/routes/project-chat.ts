@@ -658,7 +658,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.
-      openSession(projectId, project.workspaceId, billingUserId || 'system')
+      openSession(projectId, project.workspaceId, billingUserId || 'system', parsedBody?.agentMode)
 
       // Forward headers
       const headers: Record<string, string> = {

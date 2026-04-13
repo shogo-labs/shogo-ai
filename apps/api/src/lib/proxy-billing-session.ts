@@ -23,11 +23,20 @@ import * as billingService from '../services/billing.service'
 
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000 // 10 min safety net
 
+interface ModelUsageEntry {
+  inputTokens: number
+  cachedInputTokens: number
+  cacheWriteTokens: number
+  outputTokens: number
+  requestCount: number
+}
+
 interface BillingSession {
   projectId: string
   workspaceId: string
   userId: string
   model: string
+  ceilingModel: string
   inputTokens: number
   cachedInputTokens: number
   cacheWriteTokens: number
@@ -35,6 +44,8 @@ interface BillingSession {
   requestCount: number
   openedAt: number
   lastActivityAt: number
+  /** Per-model token breakdown for routing savings calculation */
+  modelBreakdown: Map<string, ModelUsageEntry>
 }
 
 const sessions = new Map<string, BillingSession>()
@@ -60,6 +71,7 @@ export function openSession(
   projectId: string,
   workspaceId: string,
   userId: string,
+  ceilingModel?: string,
 ): void {
   // If there's an existing session (shouldn't happen, but safety), flush it first
   const existing = sessions.get(projectId)
@@ -73,6 +85,7 @@ export function openSession(
     workspaceId,
     userId,
     model: 'sonnet',
+    ceilingModel: ceilingModel ? proxyModelToBillingModel(ceilingModel) : 'sonnet',
     inputTokens: 0,
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
@@ -80,6 +93,7 @@ export function openSession(
     requestCount: 0,
     openedAt: Date.now(),
     lastActivityAt: Date.now(),
+    modelBreakdown: new Map(),
   })
 }
 
@@ -113,6 +127,22 @@ export function accumulateUsage(
   session.requestCount += 1
   session.model = model
   session.lastActivityAt = Date.now()
+
+  const entry = session.modelBreakdown.get(model) ?? {
+    inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, requestCount: 0,
+  }
+  entry.inputTokens += inputTokens
+  entry.cachedInputTokens += cachedInputTokens
+  entry.cacheWriteTokens += cacheWriteTokens
+  entry.outputTokens += outputTokens
+  entry.requestCount += 1
+  session.modelBreakdown.set(model, entry)
+
+  // Track highest-tier model seen as the ceiling for savings calculation
+  if (session.requestCount === 1) {
+    session.ceilingModel = proxyModelToBillingModel(model)
+  }
+
   return true
 }
 
@@ -142,6 +172,33 @@ export async function closeSession(
   )
   const durationMs = Date.now() - session.openedAt
 
+  // Compute routing savings: what would it have cost if all requests used the ceiling model?
+  const isAutoRouted = session.modelBreakdown.size > 1
+    || (session.modelBreakdown.size === 1 && !session.modelBreakdown.has(session.ceilingModel))
+  let routingSavings: Record<string, unknown> | undefined
+  if (isAutoRouted) {
+    const ceilingBillingModel = proxyModelToBillingModel(session.ceilingModel)
+    const { credits: ceilingCredits, dollarCost: ceilingDollar } = calculateCreditCost(
+      session.inputTokens, session.outputTokens, ceilingBillingModel,
+      session.cachedInputTokens, session.cacheWriteTokens,
+    )
+    const breakdown: Record<string, { requests: number; tokens: number }> = {}
+    for (const [model, entry] of session.modelBreakdown) {
+      breakdown[proxyModelToBillingModel(model)] = {
+        requests: entry.requestCount,
+        tokens: entry.inputTokens + entry.cachedInputTokens + entry.cacheWriteTokens + entry.outputTokens,
+      }
+    }
+    routingSavings = {
+      ceilingModel: ceilingBillingModel,
+      creditsSaved: Math.max(0, ceilingCredits - creditCost),
+      dollarSaved: Math.max(0, ceilingDollar - dollarCost),
+      ceilingCost: ceilingCredits,
+      actualCost: creditCost,
+      modelBreakdown: breakdown,
+    }
+  }
+
   try {
     const result = await billingService.consumeCredits(
       session.workspaceId,
@@ -160,6 +217,7 @@ export async function closeSession(
         dollarCost,
         requestCount: session.requestCount,
         durationMs,
+        ...(routingSavings ? { routingSavings } : {}),
       }
     )
 
