@@ -987,6 +987,13 @@ export function instanceRoutes() {
   // normalizes to "/" and breaks tunnel forwarding.
   router.all('/instances/:id/p/:rest{.+}', async (c) => {
     const auth = c.get('auth') as any
+    const restPath = c.req.param('rest') || ''
+    console.log(`[TransparentProxy] ${c.req.method} /instances/${c.req.param('id')}/p/${restPath}`, {
+      hasAuth: !!auth?.userId,
+      userId: auth?.userId ?? null,
+      authError: auth?.authError ?? false,
+      hasCookie: !!c.req.header('cookie'),
+    })
     if (!auth?.userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
