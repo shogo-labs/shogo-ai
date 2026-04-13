@@ -449,7 +449,10 @@ export function startInstanceTunnel() {
 }
 
 export function isTunnelConnected(): boolean {
-  return ws !== null && ws.readyState === WebSocket.OPEN
+  if (ws !== null && ws.readyState === WebSocket.OPEN) return true
+  // Heartbeat polling keeps the instance reachable even without an open WebSocket.
+  // The WS is on-demand (only opens when a remote controller is active).
+  return !stopped && !!process.env.SHOGO_API_KEY && lastHeartbeatError === null && pollTimer !== null
 }
 
 export function stopInstanceTunnel() {
