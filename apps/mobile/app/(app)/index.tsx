@@ -216,27 +216,50 @@ const HomeScreen = observer(function HomeScreen() {
 
   useEffect(() => {
     if (!isAuthenticated) return
-    setWorkspaceError(false)
-    projects.loadAll().catch((e: any) => console.error('[Home] Failed to load projects:', e))
-    workspaces.loadAll().catch((err: any) => {
-      console.error('[Home] Failed to load workspaces:', err)
-      setWorkspaceError(true)
-    })
-    if (user?.id) {
-      membersColl.loadAll({ userId: user.id }).catch((e: any) => console.error('[Home] Failed to load memberships:', e))
+    let cancelled = false
+
+    async function loadData(attempt = 0) {
+      setWorkspaceError(false)
+      const results = await Promise.allSettled([
+        projects.loadAll(),
+        workspaces.loadAll(),
+        user?.id ? membersColl.loadAll({ userId: user.id }) : Promise.resolve(),
+      ])
+
+      const hasTransientFailure = results.some(
+        (r) => r.status === 'rejected' && (r.reason?.status === 401 || r.reason?.status === 503),
+      )
+
+      if (hasTransientFailure && attempt < 2 && !cancelled) {
+        await new Promise((r) => setTimeout(r, 1500))
+        if (!cancelled) return loadData(attempt + 1)
+        return
+      }
+
+      if (results[0].status === 'rejected')
+        console.error('[Home] Failed to load projects:', results[0].reason)
+      if (results[1].status === 'rejected') {
+        console.error('[Home] Failed to load workspaces:', results[1].reason)
+        setWorkspaceError(true)
+      }
+      if (results[2].status === 'rejected')
+        console.error('[Home] Failed to load memberships:', results[2].reason)
     }
+
+    loadData()
 
     async function fetchTemplates() {
       try {
         const agentData = await api.getAgentTemplates(http)
         const templates = Array.isArray(agentData) ? agentData : []
         setHomeTemplates(templates.slice(0, 6))
-        // APP_MODE_DISABLED: app template fetch removed
       } catch (err) {
         console.error('[Home] Failed to fetch templates:', err)
       }
     }
     fetchTemplates()
+
+    return () => { cancelled = true }
   }, [isAuthenticated, user?.id, http])
 
   const currentWorkspace = useActiveWorkspace()

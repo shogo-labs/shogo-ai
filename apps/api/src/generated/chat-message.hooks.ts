@@ -24,6 +24,7 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
   prisma: any
 }
 
@@ -102,15 +103,17 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    // Check if user is a member of the project's workspace
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+    // Tunnel-authenticated requests skip local membership checks
+    if (!ctx.tunnelAuthenticated) {
+      const hasAccess = session.project?.workspace?.members?.some(
+        (m: any) => m.userId === userId
+      )
 
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this chat session" },
+      if (!hasAccess) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this chat session" },
+        }
       }
     }
 
@@ -136,6 +139,8 @@ export const chatMessageHooks: ChatMessageHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const message = await ctx.prisma.chatMessage.findUnique({
       where: { id },
@@ -196,35 +201,36 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    // Check session access (same as beforeList)
-    const session = await ctx.prisma.chatSession.findUnique({
-      where: { id: sessionId },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
+    if (!ctx.tunnelAuthenticated) {
+      const session = await ctx.prisma.chatSession.findUnique({
+        where: { id: sessionId },
+        include: {
+          project: {
+            include: {
+              workspace: {
+                include: { members: true },
+              },
             },
           },
         },
-      },
-    })
+      })
 
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Chat session not found" },
+      if (!session) {
+        return {
+          ok: false,
+          error: { code: "not_found", message: "Chat session not found" },
+        }
       }
-    }
 
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+      const hasAccess = session.project?.workspace?.members?.some(
+        (m: any) => m.userId === userId
+      )
 
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Cannot create messages in this session" },
+      if (!hasAccess) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Cannot create messages in this session" },
+        }
       }
     }
 

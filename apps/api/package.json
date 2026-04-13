@@ -39,6 +39,7 @@
     "better-auth": "^1.2.8",
     "fflate": "^0.8.2",
     "hono": "^4.7.10",
+    "ioredis": "^5.10.1",
     "nanoid": "^5.0.9",
     "nodemailer": "^8.0.3",
     "pg": "^8.13.1",

@@ -35,6 +35,14 @@ export interface AuthContext {
   workspaceId?: string
   /** Whether the request is authenticated */
   isAuthenticated: boolean
+  /** True when the session check failed due to a server-side error (DB, etc.) */
+  authError?: boolean
+  /**
+   * True when the request was authenticated via tunnel headers
+   * (x-tunnel-auth-user-id). The cloud proxy already verified workspace
+   * membership, so local DB membership checks can be skipped.
+   */
+  tunnelAuthenticated?: boolean
 }
 
 // Extend Hono context types
@@ -68,7 +76,28 @@ export async function authMiddleware(c: Context, next: Next) {
     } catch {}
   }
 
-  // 2. Try Better Auth session (cookies)
+  // 2. Try tunnel-forwarded auth (from cloud proxy via instance tunnel).
+  //    The cloud transparent proxy authenticates the user via session cookie,
+  //    then injects x-tunnel-auth-user-id into the tunnel request. The
+  //    desktop's tunnel handler (instance-tunnel.ts) forwards this header
+  //    when it sends the request to localhost. We trust it because:
+  //    - The tunnel handler runs in-process (loopback to our own API port)
+  //    - The cloud proxy already verified the session
+  //    - External requests can't reach this header without going through the tunnel
+  const tunnelUserId = c.req.header("x-tunnel-auth-user-id")
+  if (tunnelUserId) {
+    c.set("auth", {
+      userId: tunnelUserId,
+      email: c.req.header("x-tunnel-auth-email") || undefined,
+      name: c.req.header("x-tunnel-auth-name") || undefined,
+      isAuthenticated: true,
+      tunnelAuthenticated: true,
+    })
+    await next()
+    return
+  }
+
+  // 3. Try Better Auth session (cookies)
   try {
     const session = await auth.api.getSession({
       headers: c.req.raw.headers,
@@ -90,6 +119,7 @@ export async function authMiddleware(c: Context, next: Next) {
     console.warn("[authMiddleware] Failed to get session:", error)
     c.set("auth", {
       isAuthenticated: false,
+      authError: true,
     })
   }
 
@@ -128,6 +158,12 @@ export async function requireAuth(c: Context, next: Next) {
     const path = new URL(c.req.url).pathname
     if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
       return next()
+    }
+    if (auth?.authError) {
+      return c.json(
+        { error: { code: "service_unavailable", message: "Auth service temporarily unavailable" } },
+        503
+      )
     }
     return c.json(
       { error: { code: "unauthorized", message: "Authentication required" } },
@@ -183,6 +219,13 @@ export async function requireProjectAccess(c: Context, next: Next) {
       { error: { code: "unauthorized", message: "Authentication required" } },
       401
     )
+  }
+
+  // Tunnel-authenticated requests already had workspace membership verified
+  // by the cloud proxy — skip local DB membership checks.
+  if (auth?.tunnelAuthenticated) {
+    await next()
+    return
   }
 
   const projectId = c.req.param("projectId")
