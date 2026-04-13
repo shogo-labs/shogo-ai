@@ -80,6 +80,8 @@ export interface SubagentResult {
   newMessages?: Message[]
   /** Unique agent ID for transcript persistence and resume. */
   agentId?: string
+  /** The actual model used for the final iteration (may differ from config if router active). */
+  effectiveModel?: string
 }
 
 export interface SubagentStreamCallbacks {
@@ -613,6 +615,7 @@ export async function runSubagent(
       responseText: result.text,
       newMessages: result.newMessages,
       agentId,
+      effectiveModel: result.effectiveModelId,
     }
   } catch (err: any) {
     console.error(`Subagent ${config.name} failed: ${err.message}`)
