@@ -86,11 +86,15 @@ export const projectHooks: ProjectHooks = {
     }
 
     const superAdmin = await isSuperAdmin(ctx)
-    const workspaceId = ctx.query.workspaceId
+    let workspaceId = ctx.query.workspaceId
+
+    // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
+    if (ctx.tunnelAuthenticated && workspaceId) {
+      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
+      if (localWs) workspaceId = localWs.id
+    }
 
     if (workspaceId) {
-      // Tunnel-authenticated requests already had membership verified by the cloud proxy.
-      // Super admins can view any workspace; normal users need membership.
       if (!superAdmin && !ctx.tunnelAuthenticated) {
         const membership = await ctx.prisma.member.findFirst({
           where: { userId, workspaceId },
@@ -108,6 +112,17 @@ export const projectHooks: ProjectHooks = {
         ok: true,
         data: {
           where: { workspaceId },
+          include: { workspace: true, folder: true },
+        },
+      }
+    }
+
+    // Tunnel-authenticated: return all local projects (no membership filter)
+    if (ctx.tunnelAuthenticated) {
+      return {
+        ok: true,
+        data: {
+          where: {},
           include: { workspace: true, folder: true },
         },
       }
@@ -188,6 +203,16 @@ export const projectHooks: ProjectHooks = {
       return {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
+      }
+    }
+
+    // Tunnel-authenticated requests carry the cloud workspaceId which doesn't
+    // exist in the local SQLite DB. Remap to the local workspace so the FK
+    // constraint is satisfied. The desktop only has one workspace.
+    if (ctx.tunnelAuthenticated) {
+      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
+      if (localWs) {
+        input.workspaceId = localWs.id
       }
     }
 

@@ -67,7 +67,13 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    const workspaceId = ctx.query.workspaceId
+    let workspaceId = ctx.query.workspaceId
+
+    // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
+    if (ctx.tunnelAuthenticated && workspaceId) {
+      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
+      if (localWs) workspaceId = localWs.id
+    }
 
     if (workspaceId) {
       if (!ctx.tunnelAuthenticated) {
@@ -160,6 +166,12 @@ export const folderHooks: FolderHooks = {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
+    }
+
+    // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
+    if (ctx.tunnelAuthenticated) {
+      const localWs = await ctx.prisma.workspace.findFirst({ select: { id: true } })
+      if (localWs) input.workspaceId = localWs.id
     }
 
     const workspaceId = input.workspaceId
