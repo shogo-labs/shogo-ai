@@ -123,15 +123,6 @@ export const CommandPalette = observer(function CommandPalette({
         keywords: ['templates', 'starter'],
       },
       {
-        id: 'nav-remote-control',
-        label: 'Remote Control',
-        description: 'Manage local Shogo instances',
-        icon: BarChart3,
-        href: '/(app)/remote-control',
-        category: 'navigation',
-        keywords: ['remote', 'control', 'instances', 'local', 'dashboard'],
-      },
-      {
         id: 'nav-api-keys',
         label: 'API Keys',
         description: 'Create and manage API keys',

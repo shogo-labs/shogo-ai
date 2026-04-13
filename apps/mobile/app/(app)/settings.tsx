@@ -43,6 +43,7 @@ import {
   MessageSquare,
   Zap,
   CreditCard,
+  Cloud,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -279,6 +280,194 @@ function SettingsSidebar({
 }
 
 // ============================================================================
+// REMOTE ACCESS SECTION (local mode only)
+// ============================================================================
+
+function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
+  const [status, setStatus] = useState<{
+    connected: boolean
+    keyMask?: string
+    cloudUrl?: string
+    workspace?: { name: string } | null
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [apiKey, setApiKey] = useState('')
+  const [cloudUrl, setCloudUrl] = useState('https://studio.shogo.ai')
+  const [connecting, setConnecting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState(false)
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
+      const data = await res.json()
+      setStatus(data)
+      if (data.cloudUrl) setCloudUrl(data.cloudUrl)
+    } catch {
+      setStatus({ connected: false })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchStatus()
+  }, [fetchStatus])
+
+  const handleConnect = async () => {
+    if (!apiKey.trim()) return
+    setConnecting(true)
+    setConnectError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: apiKey.trim(), cloudUrl: cloudUrl.trim() }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        setConnectError(data.error || 'Failed to connect')
+        return
+      }
+      setApiKey('')
+      await fetchStatus()
+    } catch (err: any) {
+      setConnectError(err.message || 'Network error')
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const handleDisconnect = async () => {
+    setDisconnecting(true)
+    try {
+      await fetch(`${API_URL}/api/local/shogo-key`, { method: 'DELETE', credentials: 'include' })
+      await fetchStatus()
+    } catch {}
+    setDisconnecting(false)
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <Skeleton className="h-6 w-40 mb-2" />
+          <Skeleton className="h-4 w-60" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <View className="px-6 py-5">
+          <View className="flex-row items-center gap-2 mb-1">
+            <Cloud size={18} className="text-primary" />
+            <Text className="text-base font-semibold text-foreground">
+              Remote Access
+            </Text>
+          </View>
+          <Text className="text-sm text-muted-foreground">
+            Connect to Shogo Cloud to control this desktop from your phone or another computer.
+          </Text>
+        </View>
+
+        <Separator />
+
+        {status?.connected ? (
+          <View className="px-6 py-5 gap-4">
+            <View className="flex-row items-center gap-2">
+              <View className="h-2.5 w-2.5 rounded-full bg-green-500" />
+              <Text className="text-sm font-medium text-foreground">Connected to Shogo Cloud</Text>
+            </View>
+
+            <View className="gap-2.5">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">API Key</Text>
+                <Text className="text-sm font-mono text-foreground">{status.keyMask}</Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">Cloud URL</Text>
+                <Text className="text-sm text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
+              </View>
+              {status.workspace?.name && (
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm text-muted-foreground">Workspace</Text>
+                  <Text className="text-sm text-foreground">{status.workspace.name}</Text>
+                </View>
+              )}
+            </View>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleDisconnect}
+              disabled={disconnecting}
+              className="self-start"
+            >
+              <Text className="text-sm font-medium text-foreground">
+                {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              </Text>
+            </Button>
+          </View>
+        ) : (
+          <View className="px-6 py-5 gap-5">
+            <View className="gap-3">
+              <Text className="text-sm font-medium text-foreground">
+                Connect with API Key
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                Create an API key from your Shogo Cloud workspace, then paste it here.
+              </Text>
+              <View className="gap-2">
+                <View>
+                  <Text className="text-xs text-muted-foreground mb-1">Cloud URL</Text>
+                  <Input
+                    value={cloudUrl}
+                    onChangeText={setCloudUrl}
+                    placeholder="https://studio.shogo.ai"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+                <View>
+                  <Text className="text-xs text-muted-foreground mb-1">API Key</Text>
+                  <Input
+                    value={apiKey}
+                    onChangeText={setApiKey}
+                    placeholder="shogo_sk_..."
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry
+                  />
+                </View>
+              </View>
+
+              {connectError && (
+                <Text className="text-xs text-destructive">{connectError}</Text>
+              )}
+
+              <Button
+                onPress={handleConnect}
+                disabled={connecting || !apiKey.trim()}
+                size="sm"
+                className="self-start"
+              >
+                <Text className={cn('text-sm font-medium', apiKey.trim() && !connecting ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                  {connecting ? 'Connecting...' : 'Connect'}
+                </Text>
+              </Button>
+            </View>
+          </View>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ============================================================================
 // WORKSPACE SETTINGS TAB
 // ============================================================================
 
@@ -471,6 +660,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
           )}
         </CardContent>
       </Card>
+
+      {localMode && <RemoteAccessSection workspaceId={currentWorkspace?.id} />}
 
       {!localMode && (
         <>

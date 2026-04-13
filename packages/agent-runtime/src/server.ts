@@ -2284,17 +2284,53 @@ app.post('/agent/import', async (c) => {
 
 // Console log for forwarding (matches runtime pattern)
 const consoleLogs: string[] = []
+const logStreamListeners = new Set<(line: string) => void>()
+
 app.post('/console-log/append', async (c) => {
   const { line } = await c.req.json()
   if (line) {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+    for (const listener of logStreamListeners) {
+      try { listener(line) } catch {}
+    }
   }
   return c.json({ ok: true })
 })
 
 app.get('/console-log', (c) => {
   return c.json({ logs: consoleLogs })
+})
+
+app.get('/agent/logs/stream', (c) => {
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      const send = (text: string) => {
+        try { controller.enqueue(encoder.encode(text + '\n')) } catch {}
+      }
+
+      for (const line of consoleLogs.slice(-100)) {
+        send(line)
+      }
+
+      const listener = (line: string) => send(line)
+      logStreamListeners.add(listener)
+
+      c.req.raw.signal.addEventListener('abort', () => {
+        logStreamListeners.delete(listener)
+        try { controller.close() } catch {}
+      })
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
 })
 
 

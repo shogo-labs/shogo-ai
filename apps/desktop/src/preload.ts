@@ -77,4 +77,6 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   removeUpdateListener: () => {
     ipcRenderer.removeAllListeners('desktop-update-status')
   },
+  showRemoteActionNotification: (title: string, body: string) =>
+    ipcRenderer.invoke('show-remote-action-notification', title, body),
 })

@@ -64,6 +64,7 @@ import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/ch
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
 import { MODEL_CATALOG } from '@shogo/model-catalog'
 import { agentFetch } from '../../../../lib/agent-fetch'
+import { useActiveInstance } from '../../../../contexts/active-instance'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
@@ -308,10 +309,19 @@ export default observer(function ProjectLayout() {
   }, [])
 
   // Resolve agent + preview URLs
-  const { agentUrl, previewUrl, canvasBaseUrl } = useAgentUrl(API_URL!, projectId, {
+  const { agentUrl: resolvedAgentUrl, previewUrl, canvasBaseUrl } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
+
+  // When a remote instance is active, route project runtime traffic through
+  // the instance tunnel and back into the desktop API's project agent-proxy.
+  const { remoteAgentBaseUrl } = useActiveInstance()
+  const remoteProjectAgentBaseUrl = useMemo(() => {
+    if (!remoteAgentBaseUrl || !projectId) return null
+    return `${remoteAgentBaseUrl}/api/projects/${projectId}/agent-proxy`
+  }, [remoteAgentBaseUrl, projectId])
+  const agentUrl = remoteProjectAgentBaseUrl ?? resolvedAgentUrl
 
   // APP_MODE_DISABLED: app template copy effect removed
 
@@ -1152,6 +1162,7 @@ export default observer(function ProjectLayout() {
               projectId={projectId}
               projectType="unified"
               isActive={isActive}
+              localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
               initialMessage={isInitialSession ? capturedInitialMessage : undefined}
               initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
               initialFiles={isInitialSession ? capturedInitialFiles : undefined}
