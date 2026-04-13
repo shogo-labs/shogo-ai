@@ -11,7 +11,7 @@
  * relying on browser-style credential cookies).
  */
 
-import { useCallback, type ReactNode } from 'react'
+import { useCallback, useEffect, type ReactNode } from 'react'
 import { Platform } from 'react-native'
 import { SDKDomainProvider } from '@shogo/shared-app/domain'
 import { useAuth } from './auth'
@@ -43,7 +43,7 @@ const isNative = Platform.OS !== 'web'
 
 export function DomainProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
-  const { remoteAgentBaseUrl } = useActiveInstance()
+  const { instance, remoteAgentBaseUrl } = useActiveInstance()
 
   const getAuthCookie = useCallback(() => {
     return authClient.getCookie() || null
@@ -56,10 +56,13 @@ export function DomainProvider({ children }: { children: ReactNode }) {
   // tunnel to the desktop instead of hitting the cloud backend directly.
   const remoteProxyBaseUrl = remoteAgentBaseUrl ?? null
 
-  if (__DEV__) {
-    // eslint-disable-next-line no-console
-    console.log('[DomainProvider] remoteProxyBaseUrl:', remoteProxyBaseUrl)
-  }
+  // Debug: log when remote routing state changes (not on every render)
+  useEffect(() => {
+    console.log('[DomainProvider] Remote routing state changed:', {
+      instance: instance ? { id: instance.instanceId, name: instance.name } : null,
+      remoteProxyBaseUrl,
+    })
+  }, [instance, remoteProxyBaseUrl])
 
   return (
     <SDKDomainProvider

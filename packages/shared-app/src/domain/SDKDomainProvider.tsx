@@ -27,49 +27,79 @@ import {
   type RemoteInterceptorConfig,
 } from '../services/remote-http-interceptor'
 
-let moduleHttpClient: HttpClient | null = null
+let moduleRawHttpClient: HttpClient | null = null
+let moduleProxiedHttpClient: HttpClient | null = null
+let moduleRemoteConfigRef: { current: RemoteInterceptorConfig } | null = null
 let moduleStore: IDomainStore | null = null
 let moduleFacades: SDKDomainFacades | null = null
 let moduleUserId: string | null = null
 
+/**
+ * Get or create the singleton domain store.
+ *
+ * CRITICAL: The MST store's environment `env.http` must be the PROXIED
+ * HttpClient (not the raw one) so that every collection action
+ * (`loadAll`, `create`, `update`, `delete`) goes through the remote
+ * interceptor when a desktop instance is connected.
+ *
+ * The proxy reads its config from `remoteConfigRef` on every request,
+ * so we only need to create it once — config changes are picked up
+ * automatically via the ref.
+ */
 function getOrCreateStore(
   apiBaseUrl: string,
   userId: string | null,
+  remoteConfigRef: { current: RemoteInterceptorConfig },
   credentials?: RequestCredentials,
   getAuthCookie?: () => string | null,
 ): {
+  rawHttp: HttpClient
   http: HttpClient
   store: IDomainStore
   facades: SDKDomainFacades
 } {
+  // Always keep the module-level config ref in sync so the proxy
+  // (which reads from moduleRemoteConfigRef) picks up the latest
+  // React-managed config even across singleton reuse paths.
+  moduleRemoteConfigRef = remoteConfigRef
+
   if (moduleStore !== null && moduleUserId === userId) {
-    return { http: moduleHttpClient!, store: moduleStore, facades: moduleFacades! }
+    return { rawHttp: moduleRawHttpClient!, http: moduleProxiedHttpClient!, store: moduleStore, facades: moduleFacades! }
   }
 
   if (moduleStore !== null && moduleUserId !== userId) {
     moduleUserId = userId
     moduleStore.clearAll()
-    return { http: moduleHttpClient!, store: moduleStore, facades: moduleFacades! }
+    return { rawHttp: moduleRawHttpClient!, http: moduleProxiedHttpClient!, store: moduleStore, facades: moduleFacades! }
   }
 
   moduleUserId = userId
+  moduleRemoteConfigRef = remoteConfigRef
 
-  moduleHttpClient = new HttpClient({
+  moduleRawHttpClient = new HttpClient({
     baseUrl: apiBaseUrl,
     getToken: () => null,
     credentials,
     getAuthCookie,
   })
 
+  // Create the remote-aware proxy BEFORE creating the MST store.
+  // This ensures getEnv(self).http inside every collection action
+  // goes through the interceptor and routes to desktop when connected.
+  moduleProxiedHttpClient = createRemoteAwareHttpClient(
+    moduleRawHttpClient,
+    () => moduleRemoteConfigRef!.current,
+  )
+
   const env: ISDKEnvironment = {
-    http: moduleHttpClient,
+    http: moduleProxiedHttpClient, // ← PROXIED, not raw
     context: userId ? { userId } : undefined,
   }
 
   moduleStore = createDomainStore(env)
   moduleFacades = createDomainFacades(moduleStore)
 
-  return { http: moduleHttpClient, store: moduleStore, facades: moduleFacades }
+  return { rawHttp: moduleRawHttpClient, http: moduleProxiedHttpClient, store: moduleStore, facades: moduleFacades }
 }
 
 function createDomainFacades(store: IDomainStore) {
@@ -152,11 +182,11 @@ export function SDKDomainProvider({
   const prevUserIdRef = useRef<string | null | undefined>(undefined)
   const prevRemoteUrlRef = useRef<string | null | undefined>(undefined)
 
-  const { http: rawHttp, store, facades } = getOrCreateStore(apiBaseUrl, userId, credentials, getAuthCookie)
-
-  // ─── Remote-aware HttpClient ────────────────────────────────────────
-  // Store the config in a ref so the Proxy always reads the latest value
-  // without needing to recreate the proxy on every render.
+  // ─── Remote config ref ──────────────────────────────────────────────
+  // The ref is shared with the module-level proxy created in
+  // getOrCreateStore(). Updating it here reactively re-targets ALL
+  // HTTP calls — both from React hooks (useSDKHttp) AND from MST
+  // collection actions (getEnv(self).http).
   const remoteConfigRef = useRef<RemoteInterceptorConfig>({
     remoteProxyBaseUrl: remoteProxyBaseUrl ?? null,
   })
@@ -180,10 +210,8 @@ export function SDKDomainProvider({
     onRemoteError: handleRemoteError,
   }
 
-  // Create the proxy once and reuse it — it reads config from the ref
-  const http = useMemo(
-    () => createRemoteAwareHttpClient(rawHttp, () => remoteConfigRef.current),
-    [rawHttp],
+  const { http, store, facades } = getOrCreateStore(
+    apiBaseUrl, userId, remoteConfigRef, credentials, getAuthCookie,
   )
 
   // When remote connection changes, clear stale data and hydrate from new source.
@@ -320,7 +348,9 @@ export function useRemoteError(): string | null {
 }
 
 export function resetSDKDomainStore(): void {
-  moduleHttpClient = null
+  moduleRawHttpClient = null
+  moduleProxiedHttpClient = null
+  moduleRemoteConfigRef = null
   moduleStore = null
   moduleFacades = null
   moduleUserId = null
