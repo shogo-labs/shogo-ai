@@ -43,7 +43,7 @@ export interface ProjectChatRoutesConfig {
   runtimeManager?: IRuntimeManager
 }
 
-const PROJECT_ROOT = resolve(__dirname, '../../../..')
+const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 export const FILE_MODIFYING_TOOLS = new Set([
@@ -475,14 +475,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const { getProjectPodUrl } = await import("../lib/knative-project-manager")
       return await getProjectPodUrl(projectId)
     } else if (isVMIsolation()) {
-      // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s)
-      // Falls through to local RuntimeManager if the warm pool isn't ready yet
-      try {
-        const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
-        return await getVMProjectUrl(projectId)
-      } catch {
-        console.warn(`[ProjectChat] VM warm pool not ready, falling back to local RuntimeManager for ${projectId}`)
-      }
+      // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s).
+      // Do NOT fall back to local RuntimeManager — that creates a split-brain
+      // where the preview renders from the host but the agent runs in the VM.
+      const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+      return await getVMProjectUrl(projectId)
     }
     if (runtimeManager) {
       // Local development: Use RuntimeManager

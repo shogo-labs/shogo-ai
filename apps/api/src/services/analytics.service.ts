@@ -266,6 +266,49 @@ export async function getGrowthTimeSeries(
 }
 
 // ============================================================================
+// Member Usage Stats (People table)
+// ============================================================================
+
+/**
+ * Per-member credit usage for the people/settings table.
+ * Returns current-month and all-time totals keyed by memberId (userId).
+ */
+export async function getMemberUsageStats(
+  workspaceId: string
+): Promise<{
+  monthly: Record<string, number>
+  total: Record<string, number>
+}> {
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+
+  const [monthlyRows, totalRows] = await Promise.all([
+    prisma.usageEvent.groupBy({
+      by: ['memberId'],
+      where: { workspaceId, createdAt: { gte: monthStart } },
+      _sum: { creditCost: true },
+    }),
+    prisma.usageEvent.groupBy({
+      by: ['memberId'],
+      where: { workspaceId },
+      _sum: { creditCost: true },
+    }),
+  ])
+
+  const monthly: Record<string, number> = {}
+  for (const row of monthlyRows) {
+    monthly[row.memberId] = row._sum.creditCost ?? 0
+  }
+
+  const total: Record<string, number> = {}
+  for (const row of totalRows) {
+    total[row.memberId] = row._sum.creditCost ?? 0
+  }
+
+  return { monthly, total }
+}
+
+// ============================================================================
 // Usage Analytics
 // ============================================================================
 
@@ -433,6 +476,7 @@ export interface UsageLogEntry {
   outputTokens: number
   totalTokens: number
   creditCost: number
+  dollarCost: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -451,6 +495,7 @@ export interface UsageSummaryEntry {
   totalOutputTokens: number
   totalTokens: number
   totalCredits: number
+  totalDollarCost: number
   avgDurationMs: number
 }
 
@@ -512,6 +557,7 @@ export async function getUsageLog(
       outputTokens: meta.outputTokens || 0,
       totalTokens: meta.totalTokens || 0,
       creditCost: event.creditCost,
+      dollarCost: meta.dollarCost || 0,
       durationMs: meta.durationMs || 0,
       success: meta.success !== false,
       createdAt: event.createdAt.toISOString(),
@@ -559,6 +605,7 @@ export async function getUsageSummary(
     totalOutputTokens: number
     totalTokens: number
     totalCredits: number
+    totalDollarCost: number
     totalDurationMs: number
   }>()
 
@@ -574,6 +621,7 @@ export async function getUsageSummary(
       existing.totalOutputTokens += meta.outputTokens || 0
       existing.totalTokens += meta.totalTokens || 0
       existing.totalCredits += event.creditCost
+      existing.totalDollarCost += meta.dollarCost || 0
       existing.totalDurationMs += meta.durationMs || 0
     } else {
       aggregateMap.set(key, {
@@ -585,6 +633,7 @@ export async function getUsageSummary(
         totalOutputTokens: meta.outputTokens || 0,
         totalTokens: meta.totalTokens || 0,
         totalCredits: event.creditCost,
+        totalDollarCost: meta.dollarCost || 0,
         totalDurationMs: meta.durationMs || 0,
       })
     }
@@ -629,6 +678,7 @@ export async function getUsageSummary(
         totalOutputTokens: agg.totalOutputTokens,
         totalTokens: agg.totalTokens,
         totalCredits: agg.totalCredits,
+        totalDollarCost: agg.totalDollarCost,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
       }
     })
@@ -641,6 +691,7 @@ export async function getUsageSummary(
     totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
     totalCredits: summaries.reduce((s, e) => s + e.totalCredits, 0),
+    totalDollarCost: summaries.reduce((s, e) => s + e.totalDollarCost, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
     uniqueModels: new Set(summaries.map((s) => s.model)).size,
@@ -822,21 +873,28 @@ export async function getBillingAnalytics(scope: AnalyticsScope = {}) {
 // ============================================================================
 
 const EXCLUDED_EMAIL_PATTERNS = ['%@test.shogo.ai', '%@shogo.ai', '%@getodin.ai']
+const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
 
 export function realUserWhere(): Prisma.UserWhereInput {
   return {
     AND: [
       { role: { not: 'super_admin' } },
       ...EXCLUDED_EMAIL_PATTERNS.map(pattern => ({
-        NOT: { email: { contains: pattern.replace('%', ''), mode: 'insensitive' as const } },
+        NOT: {
+          email: {
+            contains: pattern.replace('%', ''),
+            ...(isSqlite ? {} : { mode: 'insensitive' as const }),
+          },
+        },
       })),
     ],
   }
 }
 
 function realUserEmailNotLike(): string {
+  const likeOp = isSqlite ? 'NOT LIKE' : 'NOT ILIKE'
   return EXCLUDED_EMAIL_PATTERNS
-    .map(p => `u."email" NOT ILIKE '${p}'`)
+    .map(p => `u."email" ${likeOp} '${p}'`)
     .concat([`u."role" != 'super_admin'`])
     .join(' AND ')
 }
@@ -862,7 +920,48 @@ export async function getUserFunnel(
   const since = periodToDate(period)
   const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
 
-  const result = await prisma.$queryRawUnsafe<FunnelResult[]>(`
+  const result = await prisma.$queryRawUnsafe<FunnelResult[]>(
+    isSqlite
+      ? `
+    WITH real_users AS (
+      SELECT u."id", u."email", u."onboardingCompleted", u."createdAt"
+      FROM "users" u
+      WHERE u."createdAt" >= ? ${filter}
+    ),
+    user_projects AS (
+      SELECT p."createdBy" AS "userId", MIN(p."createdAt") AS "firstProjectAt"
+      FROM "projects" p
+      WHERE p."createdBy" IS NOT NULL
+      GROUP BY p."createdBy"
+    ),
+    user_messages AS (
+      SELECT cs."contextId" AS "projectId", p."createdBy" AS "userId",
+             COUNT(*) AS "msgCount", MIN(cm."createdAt") AS "firstMessageAt"
+      FROM "chat_messages" cm
+      JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+      JOIN "projects" p ON p."id" = cs."contextId"
+      WHERE cm."role" = 'user' AND p."createdBy" IS NOT NULL
+      GROUP BY cs."contextId", p."createdBy"
+    ),
+    user_msg_totals AS (
+      SELECT "userId", CAST(SUM("msgCount") AS INTEGER) AS "totalMessages",
+             MIN("firstMessageAt") AS "firstMessageAt"
+      FROM user_messages
+      GROUP BY "userId"
+    )
+    SELECT
+      CAST(COUNT(ru."id") AS INTEGER) AS "signups",
+      CAST(COUNT(CASE WHEN ru."onboardingCompleted" THEN 1 END) AS INTEGER) AS "onboarded",
+      CAST(COUNT(up."userId") AS INTEGER) AS "createdProject",
+      CAST(COUNT(CASE WHEN umt."totalMessages" > 0 THEN 1 END) AS INTEGER) AS "sentMessage",
+      CAST(COUNT(CASE WHEN umt."totalMessages" >= 5 THEN 1 END) AS INTEGER) AS "engaged",
+      ROUND(AVG((julianday(up."firstProjectAt") - julianday(ru."createdAt")) * 1440.0), 1) AS "avgMinToFirstProject",
+      ROUND(AVG((julianday(umt."firstMessageAt") - julianday(ru."createdAt")) * 1440.0), 1) AS "avgMinToFirstMessage"
+    FROM real_users ru
+    LEFT JOIN user_projects up ON up."userId" = ru."id"
+    LEFT JOIN user_msg_totals umt ON umt."userId" = ru."id"
+  `
+      : `
     WITH real_users AS (
       SELECT u."id", u."email", u."onboardingCompleted", u."createdAt"
       FROM "users" u
@@ -900,7 +999,9 @@ export async function getUserFunnel(
     FROM real_users ru
     LEFT JOIN user_projects up ON up."userId" = ru."id"
     LEFT JOIN user_msg_totals umt ON umt."userId" = ru."id"
-  `, since)
+  `,
+    since
+  )
 
   return result[0] ?? {
     signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0,
@@ -976,29 +1077,55 @@ export async function getUserActivityTable(
         where: { createdBy: { in: userIds } },
         _count: true,
       }),
-      prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
-        SELECT p."createdBy" AS "userId", COUNT(cm."id")::int AS "count"
-        FROM "chat_messages" cm
-        JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
-        JOIN "projects" p ON p."id" = cs."contextId"
-        WHERE cm."role" = 'user' AND p."createdBy" = ANY($1::text[])
-        GROUP BY p."createdBy"
-      `, userIds),
-      prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
-        SELECT p."createdBy" AS "userId", COUNT(DISTINCT cs."id")::int AS "count"
-        FROM "chat_sessions" cs
-        JOIN "projects" p ON p."id" = cs."contextId"
-        WHERE p."createdBy" = ANY($1::text[])
-        GROUP BY p."createdBy"
-      `, userIds),
-      prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
-        SELECT p."createdBy" AS "userId", COUNT(tcl."id")::int AS "count"
-        FROM "tool_call_logs" tcl
-        JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
-        JOIN "projects" p ON p."id" = cs."contextId"
-        WHERE p."createdBy" = ANY($1::text[])
-        GROUP BY p."createdBy"
-      `, userIds),
+      isSqlite
+        ? prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+            SELECT p."createdBy" AS "userId", CAST(COUNT(cm."id") AS INTEGER) AS "count"
+            FROM "chat_messages" cm
+            JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+            JOIN "projects" p ON p."id" = cs."contextId"
+            WHERE cm."role" = 'user' AND p."createdBy" IN (${userIds.map(() => '?').join(',')})
+            GROUP BY p."createdBy"
+          `, ...userIds)
+        : prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+            SELECT p."createdBy" AS "userId", COUNT(cm."id")::int AS "count"
+            FROM "chat_messages" cm
+            JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+            JOIN "projects" p ON p."id" = cs."contextId"
+            WHERE cm."role" = 'user' AND p."createdBy" = ANY($1::text[])
+            GROUP BY p."createdBy"
+          `, userIds),
+      isSqlite
+        ? prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+            SELECT p."createdBy" AS "userId", CAST(COUNT(DISTINCT cs."id") AS INTEGER) AS "count"
+            FROM "chat_sessions" cs
+            JOIN "projects" p ON p."id" = cs."contextId"
+            WHERE p."createdBy" IN (${userIds.map(() => '?').join(',')})
+            GROUP BY p."createdBy"
+          `, ...userIds)
+        : prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+            SELECT p."createdBy" AS "userId", COUNT(DISTINCT cs."id")::int AS "count"
+            FROM "chat_sessions" cs
+            JOIN "projects" p ON p."id" = cs."contextId"
+            WHERE p."createdBy" = ANY($1::text[])
+            GROUP BY p."createdBy"
+          `, userIds),
+      isSqlite
+        ? prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+            SELECT p."createdBy" AS "userId", CAST(COUNT(tcl."id") AS INTEGER) AS "count"
+            FROM "tool_call_logs" tcl
+            JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+            JOIN "projects" p ON p."id" = cs."contextId"
+            WHERE p."createdBy" IN (${userIds.map(() => '?').join(',')})
+            GROUP BY p."createdBy"
+          `, ...userIds)
+        : prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+            SELECT p."createdBy" AS "userId", COUNT(tcl."id")::int AS "count"
+            FROM "tool_call_logs" tcl
+            JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+            JOIN "projects" p ON p."id" = cs."contextId"
+            WHERE p."createdBy" = ANY($1::text[])
+            GROUP BY p."createdBy"
+          `, userIds),
       prisma.usageEvent.groupBy({
         by: ['memberId'],
         where: { memberId: { in: userIds } },
@@ -1053,7 +1180,43 @@ export async function getTemplateEngagement(
     totalToolCalls: number
     engagedUsers: number
     totalUsers: number
-  }[]>(`
+  }[]>(
+    isSqlite
+      ? `
+    WITH template_projects AS (
+      SELECT p."templateId", p."id" AS "projectId", p."createdBy"
+      FROM "projects" p
+      JOIN "users" u ON u."id" = p."createdBy"
+      WHERE p."templateId" IS NOT NULL ${filter}
+    ),
+    project_msgs AS (
+      SELECT tp."templateId", tp."projectId", tp."createdBy",
+             CAST(COUNT(cm."id") AS INTEGER) AS "msgCount"
+      FROM template_projects tp
+      LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
+      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+      GROUP BY tp."templateId", tp."projectId", tp."createdBy"
+    ),
+    project_tools AS (
+      SELECT tp."templateId", CAST(COUNT(tcl."id") AS INTEGER) AS "toolCalls"
+      FROM template_projects tp
+      LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
+      LEFT JOIN "tool_call_logs" tcl ON tcl."chatSessionId" = cs."id"
+      GROUP BY tp."templateId"
+    )
+    SELECT
+      pm."templateId" AS "templateId",
+      CAST(COUNT(DISTINCT pm."projectId") AS INTEGER) AS "projects",
+      ROUND(AVG(pm."msgCount"), 1) AS "avgMessages",
+      CAST(COALESCE(MAX(pt."toolCalls"), 0) AS INTEGER) AS "totalToolCalls",
+      CAST(COUNT(DISTINCT CASE WHEN pm."msgCount" >= 2 THEN pm."createdBy" END) AS INTEGER) AS "engagedUsers",
+      CAST(COUNT(DISTINCT pm."createdBy") AS INTEGER) AS "totalUsers"
+    FROM project_msgs pm
+    LEFT JOIN project_tools pt ON pt."templateId" = pm."templateId"
+    GROUP BY pm."templateId"
+    ORDER BY "projects" DESC
+  `
+      : `
     WITH template_projects AS (
       SELECT p."templateId", p."id" AS "projectId", p."createdBy"
       FROM "projects" p
@@ -1086,7 +1249,8 @@ export async function getTemplateEngagement(
     LEFT JOIN project_tools pt ON pt."templateId" = pm."templateId"
     GROUP BY pm."templateId"
     ORDER BY "projects" DESC
-  `)
+  `
+  )
 
   return {
     templates: rows.map(r => ({
@@ -1128,7 +1292,29 @@ export async function getChatConversations(
     role: string
     content: string
     sentAt: Date
-  }[]>(`
+  }[]>(
+    isSqlite
+      ? `
+    SELECT
+      cs."id" AS "sessionId",
+      u."name" AS "userName",
+      p."name" AS "projectName",
+      p."templateId",
+      cm."role",
+      CASE
+        WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
+        THEN substr(cm."content", -${ASSISTANT_TRUNCATE_LENGTH})
+        ELSE cm."content"
+      END AS "content",
+      cm."createdAt" AS "sentAt"
+    FROM "chat_messages" cm
+    JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+    JOIN "projects" p ON p."id" = cs."contextId"
+    JOIN "users" u ON u."id" = p."createdBy"
+    WHERE cm."createdAt" >= ? ${filter}
+    ORDER BY cs."id", cm."createdAt" ASC
+  `
+      : `
     SELECT
       cs."id" AS "sessionId",
       u."name" AS "userName",
@@ -1147,7 +1333,9 @@ export async function getChatConversations(
     JOIN "users" u ON u."id" = p."createdBy"
     WHERE cm."createdAt" >= $1 ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
-  `, since)
+  `,
+    since
+  )
 
   const grouped = new Map<string, ConversationThread>()
   for (const row of rows) {
@@ -1192,7 +1380,24 @@ export async function getSourceBreakdown(
     count: number
     withProject: number
     withMessage: number
-  }[]>(`
+  }[]>(
+    isSqlite
+      ? `
+    SELECT
+      COALESCE(sa."sourceTag", 'unknown') AS "tag",
+      CAST(COUNT(DISTINCT u."id") AS INTEGER) AS "count",
+      CAST(COUNT(DISTINCT CASE WHEN p."id" IS NOT NULL THEN u."id" END) AS INTEGER) AS "withProject",
+      CAST(COUNT(DISTINCT CASE WHEN cm."id" IS NOT NULL THEN u."id" END) AS INTEGER) AS "withMessage"
+    FROM "users" u
+    LEFT JOIN "signup_attributions" sa ON sa."userId" = u."id"
+    LEFT JOIN "projects" p ON p."createdBy" = u."id"
+    LEFT JOIN "chat_sessions" cs ON cs."contextId" = p."id"
+    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+    WHERE u."createdAt" >= ? ${filter}
+    GROUP BY COALESCE(sa."sourceTag", 'unknown')
+    ORDER BY "count" DESC
+  `
+      : `
     SELECT
       COALESCE(sa."sourceTag", 'unknown') AS "tag",
       COUNT(DISTINCT u."id")::int AS "count",
@@ -1206,7 +1411,9 @@ export async function getSourceBreakdown(
     WHERE u."createdAt" >= $1 ${filter}
     GROUP BY COALESCE(sa."sourceTag", 'unknown')
     ORDER BY "count" DESC
-  `, since)
+  `,
+    since
+  )
 
   return {
     sources: rows.map(r => ({

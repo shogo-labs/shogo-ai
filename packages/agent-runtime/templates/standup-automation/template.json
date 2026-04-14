@@ -3,6 +3,7 @@
   "name": "Standup Automation",
   "description": "Eliminate manual standup overhead by auto-generating summaries from GitHub and Slack activity, and compiling team updates into a single digest.",
   "category": "operations",
+  "icon": "Calendar",
   "tags": [
     "standup",
     "async",
@@ -12,6 +13,7 @@
     "automation"
   ],
   "settings": {
+    "activeMode": "none",
     "heartbeatInterval": 3600,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",

@@ -68,6 +68,7 @@ import {
   Inbox,
   Shield,
   Key,
+  Store,
   Mic,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -83,7 +84,13 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
+import {
+  formatCredits,
+  DAILY_CREDITS,
+  getPlanDisplayName,
+  getTotalCreditsForPlan,
+  getCreditsCapacityForDisplay,
+} from '../../lib/billing-config'
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
@@ -363,6 +370,7 @@ interface UserMenuProps {
   isSuperAdmin?: boolean
   isWide?: boolean
   bottomInset?: number
+  collapsed?: boolean
 }
 
 function UserMenuContent({
@@ -478,7 +486,7 @@ function UserMenuContent({
   )
 }
 
-function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bottomInset = 0 }: UserMenuProps) {
+function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bottomInset = 0, collapsed }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   if (isWide) {
@@ -496,13 +504,18 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
             accessibilityLabel={`${user?.name || 'User'} — open user menu`}
             accessibilityHint="Opens menu with profile, appearance, and sign out options"
             accessibilityState={{ expanded: isOpen }}
-            className="rounded-full active:opacity-80"
+            className="flex-row items-center gap-2 active:opacity-80"
           >
             <Avatar
               fallback={getInitials(user?.name)}
               src={user?.image}
               size="sm"
             />
+            {!collapsed && (
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                {user?.name || 'User'}
+              </Text>
+            )}
           </Pressable>
         )}
       >
@@ -530,13 +543,18 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         accessibilityLabel={`${user?.name || 'User'} — open user menu`}
         accessibilityHint="Opens menu with profile, appearance, and sign out options"
         accessibilityState={{ expanded: isOpen }}
-        className="rounded-full active:opacity-80"
+        className="flex-row items-center gap-2 active:opacity-80"
       >
         <Avatar
           fallback={getInitials(user?.name)}
           src={user?.image}
           size="sm"
         />
+        {!collapsed && (
+          <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+            {user?.name || 'User'}
+          </Text>
+        )}
       </Pressable>
       <Modal
         visible={isOpen}
@@ -607,14 +625,15 @@ function WorkspaceSwitcher({
   const resolvedPlanId = (billingData.hasActiveSubscription && billingData.subscription?.planId)
     || workspacePlan?.planId
     || 'free'
-  const planType = resolvedPlanId !== 'free'
-    ? resolvedPlanId.charAt(0).toUpperCase() + resolvedPlanId.slice(1)
-    : 'Free'
+  const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
   const effectiveBalance = billingData.effectiveBalance
-  const creditsTotal = effectiveBalance
-    ? Math.max(effectiveBalance.total, 1)
-    : DAILY_CREDITS
-  const creditsRemaining = effectiveBalance?.total ?? DAILY_CREDITS
+  const planIdForCredits = resolvedPlanId !== 'free' ? resolvedPlanId : undefined
+  const creditsRemaining =
+    effectiveBalance?.total ?? getTotalCreditsForPlan(planIdForCredits)
+  const creditsTotal = Math.max(
+    getCreditsCapacityForDisplay(planIdForCredits, effectiveBalance?.total),
+    1,
+  )
 
   return (
     <Popover
@@ -1333,6 +1352,17 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
+            {/* Marketplace hidden until ready for production */}
+            {false && features.marketplace && (
+              <NavItem
+                icon={Store}
+                label="Marketplace"
+                href="/(app)/marketplace"
+                active={isRouteActive(pathname, '/(app)/marketplace')}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            )}
             <NavItem
               icon={Monitor}
               label="Remote Control"
@@ -1400,25 +1430,21 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             isSuperAdmin={isSuperAdmin}
             isWide={isWide}
             bottomInset={insets.bottom}
+            collapsed={collapsed}
           />
 
           {!collapsed && (
-            <>
-              <View className="flex-1 ml-1">
-                <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
-              </View>
-              <Pressable
-                onPress={() => setInboxOpen(true)}
-                className="relative p-1.5 rounded-md active:bg-muted"
-              >
-                <Inbox size={18} className="text-muted-foreground" />
-                {pendingInvites.length > 0 && (
-                  <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
-                    <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
-                  </View>
-                )}
-              </Pressable>
-            </>
+            <Pressable
+              onPress={() => setInboxOpen(true)}
+              className="relative p-1.5 rounded-md active:bg-muted"
+            >
+              <Inbox size={18} className="text-muted-foreground" />
+              {pendingInvites.length > 0 && (
+                <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
+                  <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
+                </View>
+              )}
+            </Pressable>
           )}
         </View>
       </View>

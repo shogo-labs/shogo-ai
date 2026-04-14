@@ -106,9 +106,33 @@ export function getTotalCreditsForPlan(planId: string | undefined): number {
   return DAILY_CREDITS
 }
 
+/**
+ * Capacity shown as "remaining / total" when the ledger can exceed the plan baseline
+ * (e.g. credit packs). Denominator must not stay at the plan floor while balance is higher.
+ */
+export function getCreditsCapacityForDisplay(
+  planId: string | undefined,
+  remainingTotal: number | undefined,
+): number {
+  const baseline = getTotalCreditsForPlan(planId)
+  if (remainingTotal === undefined) return baseline
+  return Math.max(baseline, remainingTotal)
+}
+
 export function formatCredits(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return n % 1 === 0 ? String(n) : n.toFixed(2)
+  const rounded = Math.round(n * 100) / 100
+  if (rounded % 1 === 0) return rounded.toLocaleString('en-US')
+  return rounded.toLocaleString('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })
+}
+
+/** Extract a display-friendly plan name from a tiered planId (e.g. "business_1200" → "Business"). */
+export function getPlanDisplayName(planId: string | undefined): string {
+  if (!planId) return 'Free'
+  const base = planId.split('_')[0]
+  return base.charAt(0).toUpperCase() + base.slice(1)
 }
 
 export interface CurrencyDisplay {

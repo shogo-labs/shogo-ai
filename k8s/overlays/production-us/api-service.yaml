@@ -21,6 +21,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -236,7 +239,7 @@ spec:
                   key: SIGNOZ_INGESTION_KEY
                   optional: true
             - name: WARM_POOL_MIN_PODS
-              value: "10"
+              value: "5"
             - name: REGION_ID
               value: "us-ashburn-1"
             - name: REGION_LABEL
@@ -277,8 +280,18 @@ spec:
               value: "noreply@updates.shogo.ai"
             - name: SMTP_FROM_NAME
               value: "Shogo"
+            - name: EVAL_CALLBACK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: EVAL_CALLBACK_SECRET
+                  optional: true
             - name: BUN_JSC_forceRAMSize
               value: "5905580032"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "15"]
           resources:
             requests:
               memory: "1Gi"
@@ -286,4 +299,5 @@ spec:
             limits:
               memory: "6Gi"
               cpu: "3"
+      terminationGracePeriodSeconds: 630
       timeoutSeconds: 1800

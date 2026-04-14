@@ -3,7 +3,18 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { transcribe, isLocalTranscriptionAvailable } from '../services/transcription.service'
+import {
+  transcribe,
+  isLocalTranscriptionAvailable,
+  getSherpaOfflinePath,
+  getInstalledModels,
+} from '../services/transcription.service'
+import {
+  isDiarizationAvailable,
+  diarize,
+  mergeTranscriptWithSpeakers,
+  splitTextBySpeakers,
+} from '../services/diarization.service'
 import {
   startRecording as startRec,
   stopRecording as stopRec,
@@ -56,6 +67,7 @@ const MEETING_CONFIG_KEYS = [
   'MEETING_AUTO_STOP_SECONDS',
   'MEETING_WHISPER_MODEL',
   'MEETING_USE_CLOUD_TRANSCRIPTION',
+  'MEETING_DIARIZATION_ENABLED',
 ] as const
 
 const MEETING_CONFIG_DEFAULTS: Record<string, string> = {
@@ -66,6 +78,7 @@ const MEETING_CONFIG_DEFAULTS: Record<string, string> = {
   MEETING_AUTO_STOP_SECONDS: '60',
   MEETING_WHISPER_MODEL: 'base.en',
   MEETING_USE_CLOUD_TRANSCRIPTION: 'false',
+  MEETING_DIARIZATION_ENABLED: 'true',
 }
 
 function configToMeetingResponse(rows: { key: string; value: string }[]) {
@@ -79,6 +92,7 @@ function configToMeetingResponse(rows: { key: string; value: string }[]) {
     autoStopSeconds: parseInt(map.MEETING_AUTO_STOP_SECONDS ?? MEETING_CONFIG_DEFAULTS.MEETING_AUTO_STOP_SECONDS, 10),
     whisperModel: map.MEETING_WHISPER_MODEL ?? MEETING_CONFIG_DEFAULTS.MEETING_WHISPER_MODEL,
     useCloudTranscription: (map.MEETING_USE_CLOUD_TRANSCRIPTION ?? MEETING_CONFIG_DEFAULTS.MEETING_USE_CLOUD_TRANSCRIPTION) === 'true',
+    diarizationEnabled: (map.MEETING_DIARIZATION_ENABLED ?? MEETING_CONFIG_DEFAULTS.MEETING_DIARIZATION_ENABLED) === 'true',
   }
 }
 
@@ -106,6 +120,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
       autoStopSeconds: 'MEETING_AUTO_STOP_SECONDS',
       whisperModel: 'MEETING_WHISPER_MODEL',
       useCloudTranscription: 'MEETING_USE_CLOUD_TRANSCRIPTION',
+      diarizationEnabled: 'MEETING_DIARIZATION_ENABLED',
     }
 
     for (const [field, dbKey] of Object.entries(fieldToKey)) {
@@ -131,107 +146,44 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
   }
 })
 
-// Transcription status/capability check (includes installed model info)
+// Transcription + diarization status/capability check
 meetingRoutes.get('/api/local/meetings/transcription-status', async (c) => {
-  const whisperDir = resolve(process.cwd(), 'apps', 'desktop', 'resources', 'whisper')
-  const modelsDir = join(whisperDir, 'models')
-
-  // Check for binary: local resources dir or system PATH (e.g. from brew)
-  let binaryInstalled = existsSync(join(whisperDir, 'whisper-cli'))
-  if (!binaryInstalled) {
-    try {
-      execSync('which whisper-cli', { encoding: 'utf-8' })
-      binaryInstalled = true
-    } catch {}
-  }
-
-  const ALL_MODELS = ['tiny.en', 'base.en', 'small.en', 'medium.en', 'tiny', 'base', 'small', 'medium']
-  const installedModels: string[] = []
-  for (const model of ALL_MODELS) {
-    if (existsSync(join(modelsDir, `ggml-${model}.bin`))) {
-      installedModels.push(model)
-    }
-  }
+  const binaryInstalled = !!getSherpaOfflinePath()
+  const installedModels = getInstalledModels()
+  const diarizationAvailable = isDiarizationAvailable()
 
   return c.json({
     localAvailable: isLocalTranscriptionAvailable(),
     cloudAvailable: !!(process.env.OPENAI_API_KEY || process.env.AI_PROXY_URL),
     binaryInstalled,
     installedModels,
+    diarizationAvailable,
   })
 })
 
-const MODEL_URLS: Record<string, string> = {
-  'tiny.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
-  'tiny': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
-  'base.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin',
-  'base': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
-  'small.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin',
-  'small': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
-  'medium.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin',
-  'medium': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin',
-}
-
-// Install whisper binary (via Homebrew on macOS) + download a model
-meetingRoutes.post('/api/local/meetings/install-whisper', async (c) => {
+// Install sherpa-onnx binaries + models
+meetingRoutes.post('/api/local/meetings/install-sherpa', async (c) => {
   const { model = 'base.en' } = await c.req.json<{ model?: string }>().catch(() => ({ model: 'base.en' }))
-
-  if (!MODEL_URLS[model]) {
-    return c.json({ error: `Unknown model: ${model}` }, 400)
-  }
-
-  const whisperDir = resolve(process.cwd(), 'apps', 'desktop', 'resources', 'whisper')
-  mkdirSync(join(whisperDir, 'models'), { recursive: true })
 
   const steps: string[] = []
 
   try {
-    // 1. Ensure whisper-cli binary is available
-    const localBinary = join(whisperDir, 'whisper-cli')
-    let hasBinary = existsSync(localBinary)
-    if (!hasBinary) {
-      try {
-        execSync('which whisper-cli', { encoding: 'utf-8' })
-        hasBinary = true
-        steps.push('Binary found in PATH')
-      } catch {}
+    const scriptPath = resolve(process.cwd(), 'apps', 'desktop', 'scripts', 'download-sherpa.mjs')
+    if (!existsSync(scriptPath)) {
+      return c.json({ error: 'download-sherpa.mjs not found' }, 500)
     }
 
-    if (!hasBinary) {
-      if (process.platform === 'darwin') {
-        try {
-          execSync('which brew', { encoding: 'utf-8' })
-          steps.push('Installing whisper-cpp via Homebrew...')
-          execSync('brew install whisper-cpp', { timeout: 300_000, encoding: 'utf-8' })
-          steps.push('Binary installed via Homebrew')
-        } catch (brewErr: any) {
-          return c.json({
-            error: 'Homebrew is required to install whisper-cpp on macOS. Install Homebrew first: https://brew.sh',
-            steps,
-          }, 400)
-        }
-      } else {
-        return c.json({
-          error: 'Automatic whisper install is only supported on macOS via Homebrew. On Linux, install whisper-cpp manually and ensure whisper-cli is in PATH.',
-          steps,
-        }, 400)
-      }
-    } else {
-      steps.push('Binary already installed')
-    }
-
-    // 2. Download model if missing
-    const modelPath = join(whisperDir, 'models', `ggml-${model}.bin`)
-    if (!existsSync(modelPath)) {
-      steps.push(`Downloading model ${model}...`)
-      execSync(`curl -fSL -o "${modelPath}" "${MODEL_URLS[model]}"`, { timeout: 600_000 })
-      steps.push(`Model ${model} installed`)
-    } else {
-      steps.push(`Model ${model} already installed`)
-    }
+    steps.push(`Installing sherpa-onnx with model ${model}...`)
+    execSync(`node "${scriptPath}" --model ${model}`, {
+      timeout: 600_000,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    steps.push('sherpa-onnx installed successfully')
 
     return c.json({ ok: true, steps })
   } catch (err: any) {
+    steps.push(`Error: ${err.message}`)
     return c.json({ error: err.message, steps }, 500)
   }
 })
@@ -327,7 +279,6 @@ meetingRoutes.post('/api/local/meetings', async (c) => {
       },
     })
 
-    // Kick off transcription in the background
     transcribeMeeting(meeting.id, body.audioPath).catch((err) => {
       console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
     })
@@ -379,7 +330,6 @@ meetingRoutes.post('/api/local/meetings/:id/attach', async (c) => {
       data: { projectId },
     })
 
-    // Write transcript as a markdown file into the project workspace
     if (meeting.transcript) {
       writeTranscriptToProject(projectId, meeting)
     }
@@ -421,16 +371,17 @@ meetingRoutes.delete('/api/local/meetings/:id', async (c) => {
     const meeting = await db.meeting.findUnique({ where: { id } })
     if (!meeting) return c.json({ error: 'Meeting not found' }, 404)
 
-    // Delete audio file
     if (meeting.audioPath && existsSync(meeting.audioPath)) {
-      try {
-        unlinkSync(meeting.audioPath)
-      } catch (err) {
+      try { unlinkSync(meeting.audioPath) } catch (err) {
         console.warn(`[Meetings] Failed to delete audio file: ${meeting.audioPath}`, err)
       }
     }
 
-    // Delete JSON transcript file if it exists
+    // Clean up resampled 16k file and JSON transcript if they exist
+    const resampledPath = meeting.audioPath?.replace(/\.wav$/, '-16k.wav')
+    if (resampledPath && existsSync(resampledPath)) {
+      try { unlinkSync(resampledPath) } catch {}
+    }
     const jsonPath = meeting.audioPath?.replace(/\.[^.]+$/, '.json')
     if (jsonPath && existsSync(jsonPath)) {
       try { unlinkSync(jsonPath) } catch {}
@@ -474,6 +425,22 @@ function getAudioDuration(audioPath: string): number {
   }
 }
 
+async function getMeetingConfig(): Promise<{ diarizationEnabled: boolean; whisperModel: string }> {
+  try {
+    const rows = await db.localConfig.findMany({
+      where: { key: { in: ['MEETING_DIARIZATION_ENABLED', 'MEETING_WHISPER_MODEL'] } },
+    })
+    const map: Record<string, string> = {}
+    for (const r of rows) map[r.key] = r.value
+    return {
+      diarizationEnabled: (map.MEETING_DIARIZATION_ENABLED ?? 'true') === 'true',
+      whisperModel: map.MEETING_WHISPER_MODEL ?? 'base.en',
+    }
+  } catch {
+    return { diarizationEnabled: true, whisperModel: 'base.en' }
+  }
+}
+
 async function transcribeMeeting(
   meetingId: string,
   audioPath: string,
@@ -502,22 +469,46 @@ async function transcribeMeeting(
       return
     }
 
-    const result = await transcribe(audioPath, {
-      model: options?.model,
-      preferLocal: options?.preferLocal ?? true,
-    })
+    const config = await getMeetingConfig()
+    const model = options?.model || config.whisperModel
+
+    // Run transcription and (optionally) diarization in parallel
+    const shouldDiarize = config.diarizationEnabled && isDiarizationAvailable()
+
+    const [transcriptionResult, diarizationResult] = await Promise.all([
+      transcribe(audioPath, { model, preferLocal: options?.preferLocal ?? true }),
+      shouldDiarize
+        ? diarize(audioPath).catch((err) => {
+            console.warn(`[Meetings] Diarization failed (continuing without): ${err.message}`)
+            return null
+          })
+        : Promise.resolve(null),
+    ])
+
+    let segments = transcriptionResult.segments
+
+    // Merge speaker labels into transcript segments
+    if (diarizationResult && diarizationResult.segments.length > 0) {
+      const hasTimedSegments = segments.length > 1 || (segments.length === 1 && segments[0].end > 0)
+      if (hasTimedSegments) {
+        segments = mergeTranscriptWithSpeakers(segments, diarizationResult.segments)
+      } else {
+        segments = splitTextBySpeakers(transcriptionResult.text, diarizationResult.segments)
+      }
+    }
 
     const transcriptJson = JSON.stringify({
-      text: result.text,
-      segments: result.segments,
-      language: result.language,
+      text: transcriptionResult.text,
+      segments,
+      language: transcriptionResult.language,
+      numSpeakers: diarizationResult?.numSpeakers || 0,
     })
 
     const updated = await db.meeting.update({
       where: { id: meetingId },
       data: {
         transcript: transcriptJson,
-        duration: Math.round(result.duration) || undefined,
+        duration: Math.round(transcriptionResult.duration) || undefined,
         status: 'ready',
       },
     })
@@ -526,7 +517,10 @@ async function transcribeMeeting(
       writeTranscriptToProject(updated.projectId, updated)
     }
 
-    console.log(`[Meetings] Transcription complete for ${meetingId}: ${result.segments.length} segments`)
+    console.log(
+      `[Meetings] Transcription complete for ${meetingId}: ${segments.length} segments` +
+      (diarizationResult ? `, ${diarizationResult.numSpeakers} speakers` : ''),
+    )
   } catch (err: any) {
     console.error(`[Meetings] Transcription error for ${meetingId}:`, err)
     await db.meeting.update({
@@ -549,7 +543,7 @@ function writeTranscriptToProject(projectId: string, meeting: any): void {
   const meetingsDir = join(projectDir, '.meetings')
   mkdirSync(meetingsDir, { recursive: true })
 
-  let parsed: { text: string; segments?: { start: number; end: number; text: string }[] } | null = null
+  let parsed: { text: string; segments?: { start: number; end: number; text: string; speaker?: string }[]; numSpeakers?: number } | null = null
   try {
     parsed = JSON.parse(meeting.transcript)
   } catch {
@@ -565,12 +559,19 @@ function writeTranscriptToProject(projectId: string, meeting: any): void {
   let md = `# ${meeting.title || 'Meeting Transcript'}\n\n`
   md += `**Date:** ${date.toLocaleString()}\n`
   if (meeting.duration) md += `**Duration:** ${Math.floor(meeting.duration / 60)}m ${meeting.duration % 60}s\n`
+  if (parsed.numSpeakers && parsed.numSpeakers > 0) {
+    md += `**Speakers:** ${parsed.numSpeakers}\n`
+  }
   md += '\n---\n\n'
 
   if (parsed.segments && parsed.segments.length > 0) {
     for (const seg of parsed.segments) {
       const ts = formatTimestamp(seg.start)
-      md += `**[${ts}]** ${seg.text}\n\n`
+      if (seg.speaker) {
+        md += `**[${ts}] ${seg.speaker.toUpperCase()}:** ${seg.text}\n\n`
+      } else {
+        md += `**[${ts}]** ${seg.text}\n\n`
+      }
     }
   } else {
     md += parsed.text + '\n'

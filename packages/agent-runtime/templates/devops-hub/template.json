@@ -3,6 +3,7 @@
   "name": "DevOps Hub",
   "description": "Engineering command center with PR triage, code review, CI/CD monitoring, release management, standup generation, and team velocity metrics across multiple dashboards.",
   "category": "development",
+  "icon": "GitBranch",
   "tags": [
     "github",
     "git",
@@ -50,5 +51,5 @@
       "description": "Sync issues and track sprint progress"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

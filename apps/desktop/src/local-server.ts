@@ -115,6 +115,12 @@ function cleanupStaleProcesses(): void {
     removePidFile()
   }
 
+  // Kill orphaned QEMU processes from a previous session
+  try {
+    execSync('pkill -f qemu-system 2>/dev/null || true', { stdio: 'pipe' })
+    console.log('[Desktop] Killed stale QEMU processes (if any)')
+  } catch {}
+
   // Safety net: kill whatever is on our preferred port
   killProcessOnPort(PREFERRED_PORT)
 }
@@ -279,7 +285,7 @@ export async function startLocalServer(): Promise<void> {
     API_PORT: String(apiPort),
     PORT: String(apiPort),
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),
-    NODE_ENV: IS_DEV ? 'development' : 'production',
+    NODE_ENV: 'development',
     BETTER_AUTH_SECRET: getOrCreateAuthSecret(),
     BETTER_AUTH_URL: `http://localhost:${apiPort}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
@@ -296,10 +302,10 @@ export async function startLocalServer(): Promise<void> {
     ...(IS_DEV ? {} : {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
     }),
+    SHOGO_DATA_DIR: getDataDir(),
+    SHOGO_VM_IMAGE_DIR: getVMImageDir(),
     ...(vmIsolationAvailable ? {
       SHOGO_VM_ISOLATION: 'true',
-      SHOGO_DATA_DIR: getDataDir(),
-      SHOGO_VM_IMAGE_DIR: getVMImageDir(),
       SHOGO_VM_BUNDLE_DIR: getVMBundleDir(projectRoot, IS_DEV),
     } : {}),
   }

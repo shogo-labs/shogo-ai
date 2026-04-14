@@ -18,7 +18,7 @@
  *   bun run src/evals/run-eval.ts --track canvas --model haiku --build
  */
 
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, statSync } from 'fs'
 import { resolve, join, dirname } from 'path'
 import { tmpdir } from 'os'
 
@@ -72,6 +72,7 @@ import { SKILL_SERVER_TEMPLATE_EVALS } from './test-cases-skill-server-templates
 import { EDIT_FILE_EVALS } from './test-cases-edit-file'
 import { CHANNEL_CONNECT_EVALS } from './test-cases-channel-connect'
 import { CANVAS_V2_LINT_EVALS } from './test-cases-canvas-v2-lint'
+import { WORKSPACE_PARITY_EVALS } from './test-cases-workspace-parity'
 import { BUG_FIX_EVALS } from './test-cases-bug-fix'
 import { CODING_DISCIPLINE_EVALS } from './test-cases-coding-discipline'
 import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
@@ -111,6 +112,7 @@ const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
 const vmFlag = args.includes('--vm')
+const mountFlag = args.includes('--mount')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
 const runIdArg = getArg(args, 'run-id')
@@ -164,6 +166,7 @@ function getEvals(track: string): AgentEval[] {
     case 'code-agent-v2': return CODE_AGENT_V2_EVALS
     case 'canvas-v2': return CANVAS_V2_EVALS
     case 'canvas-v2-lint': return CANVAS_V2_LINT_EVALS
+    case 'workspace-parity': return WORKSPACE_PARITY_EVALS
     case 'cli-routing': return CLI_ROUTING_EVALS
     case 'skill-system': return SKILL_SYSTEM_EVALS
     case 'skill-server': return SKILL_SERVER_EVALS
@@ -190,9 +193,9 @@ function getEvals(track: string): AgentEval[] {
     case 'token-budget': return TOKEN_BUDGET_EVALS
     case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
-    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
+    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
       process.exit(1)
   }
 }
@@ -574,9 +577,50 @@ async function runEvalOnWorker(
         writeFileSync(absPath, content, 'utf-8')
       }
     }
+  } else if (vmFlag && mountFlag) {
+    // 9p mount: the VM manages its own workspace defaults and .shogo is
+    // symlinked to a VM-internal path. Only clean non-essential files and
+    // write the eval's workspace files from the host; they're visible
+    // inside the VM immediately via 9p.
+    if (verboseFlag) console.log(`      [setup] Cleaning workspace (9p mount)...`)
+    if (existsSync(worker.dir)) {
+      const keepEntries = new Set([
+        'node_modules', '.shogo', '.virtfs_metadata',
+        'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json',
+        'AGENTS.md', 'config.json', 'memory',
+      ])
+      try {
+        for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
+          if (keepEntries.has(entry.name)) continue
+          const fullPath = join(worker.dir, entry.name)
+          try { rmSync(fullPath, { recursive: true, force: true }) } catch {}
+        }
+      } catch {}
+    }
+
+    if (verboseFlag) console.log(`      [setup] Writing workspace files via 9p...`)
+    if (ev.workspaceFiles) {
+      for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
+        const absPath = join(worker.dir, relPath)
+        mkdirSync(dirname(absPath), { recursive: true })
+        writeFileSync(absPath, content, 'utf-8')
+      }
+      if (verboseFlag) {
+        console.log(`      [setup] Workspace files visible via 9p mount (${Object.keys(ev.workspaceFiles).length} file(s))`)
+      }
+    }
   } else {
     // Full setup — clean workspace, seed defaults, write workspaceFiles
     if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
+
+    // Remove stale .shogo symlinks left by previous 9p mount runs
+    const shogoPath = join(worker.dir, '.shogo')
+    try {
+      const st = lstatSync(shogoPath)
+      if (st.isSymbolicLink()) {
+        try { statSync(shogoPath) } catch { rmSync(shogoPath, { force: true }) }
+      }
+    } catch {}
 
     if (existsSync(worker.dir)) {
       const keepEntries = new Set([
@@ -611,6 +655,19 @@ async function runEvalOnWorker(
         const absPath = join(worker.dir, relPath)
         mkdirSync(dirname(absPath), { recursive: true })
         writeFileSync(absPath, content, 'utf-8')
+      }
+
+      if (vmFlag) {
+        const seedRes = await fetch(`http://localhost:${worker.port}/agent/workspace/seed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: ev.workspaceFiles }),
+        })
+        if (!seedRes.ok) {
+          console.warn(`[setup] Failed to seed workspace files into VM: ${seedRes.status}`)
+        } else if (verboseFlag) {
+          console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into VM workspace`)
+        }
       }
     }
   }
@@ -853,7 +910,7 @@ async function main() {
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Workers: ${workersArg}`)
-  console.log(`  Mode:    ${vmFlag ? 'VM instance' : localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Mode:    ${vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -892,6 +949,7 @@ async function main() {
       baseHostPort: BASE_PORT,
       model: modelArg,
       verbose: verboseFlag,
+      mount: mountFlag,
     }
   } else if (localFlag) {
     localWorkerConfig = {
@@ -935,6 +993,38 @@ async function main() {
     globalWorkers = []
     if (!localFlag) cleanupDockerEnvFile()
     process.exit(1)
+  }
+
+  // VM preflight: verify workspace provisioning inside the VM
+  if (vmFlag) {
+    console.log('Running VM preflight checks...')
+    let preflightOk = true
+    for (const w of workers) {
+      try {
+        const res = await fetch(`http://localhost:${w.port}/health`, { signal: AbortSignal.timeout(5_000) })
+        const body = await res.json() as any
+        const ws = body?.workspace
+        const tpl = ws?.templateSeeded
+        const deps = ws?.depsInstalled
+        const status = `templateSeeded=${tpl ?? 'n/a'}, depsInstalled=${deps ?? 'n/a'}`
+        if (tpl && deps) {
+          console.log(`  Worker ${w.id}: ${status} ✓`)
+        } else {
+          console.warn(`  Worker ${w.id}: ${status} ✗`)
+          preflightOk = false
+        }
+      } catch (err: any) {
+        console.warn(`  Worker ${w.id}: preflight failed — ${err.message}`)
+        preflightOk = false
+      }
+    }
+    if (!preflightOk) {
+      console.warn('\n⚠  VM preflight: workspace not fully provisioned. Template or deps may be missing.')
+      console.warn('   Evals with useRuntimeTemplate will likely fail. Rebuild the VM image.')
+      console.warn('')
+    } else {
+      console.log('  VM preflight passed.\n')
+    }
   }
 
   console.log('')

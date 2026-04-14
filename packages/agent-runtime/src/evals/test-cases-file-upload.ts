@@ -5,7 +5,7 @@
  *
  * Tests the agent's ability to discover and use files uploaded to the
  * workspace `files/` directory. The system prompt dynamically lists
- * uploaded files and the agent should use `list_files`, `search`,
+ * uploaded files and the agent should use `search`, `exec`,
  * and `read_file` to interact with them.
  */
 
@@ -98,17 +98,6 @@ const PLAIN_TEXT_LOG = `[2026-02-20 14:32:01] ERROR auth-service: SAML assertion
 // ---------------------------------------------------------------------------
 
 const FILE_UPLOAD_SINGLE_CSV_MOCKS: ToolMockMap = {
-  list_files: {
-    type: 'static',
-    description: 'List files in the workspace files/ directory.',
-    paramKeys: ['path'],
-    response: {
-      files: [
-        { name: 'sales-report.csv', size: 312, modified: '2026-02-25T10:00:00Z' },
-      ],
-      total: 1,
-    },
-  },
   read_file: {
     type: 'pattern',
     description: 'Read a file from the workspace.',
@@ -160,20 +149,6 @@ const FILE_UPLOAD_SINGLE_CSV_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 const FILE_UPLOAD_MULTI_MOCKS: ToolMockMap = {
-  list_files: {
-    type: 'static',
-    description: 'List files in the workspace files/ directory.',
-    paramKeys: ['path'],
-    response: {
-      files: [
-        { name: 'sales-report.csv', size: 312, modified: '2026-02-25T10:00:00Z' },
-        { name: 'meeting-notes.md', size: 890, modified: '2026-02-25T09:30:00Z' },
-        { name: 'config.json', size: 245, modified: '2026-02-24T14:00:00Z' },
-        { name: 'deploy.log', size: 567, modified: '2026-02-25T11:00:00Z' },
-      ],
-      total: 4,
-    },
-  },
   read_file: {
     type: 'pattern',
     description: 'Read a file from the workspace.',
@@ -266,10 +241,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-files',
-        description: 'Used list_files to check the files/ directory',
+        description: 'Used exec, read_file, or search to check the files/ directory',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files'),
+        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'mentions-csv',
@@ -536,7 +511,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Used list_files or search to discover available data',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'search') || usedTool(r, 'read_file'),
+        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'search') || usedTool(r, 'read_file'),
       },
       {
         id: 'read-the-data',
@@ -597,14 +572,6 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     input: 'Yes, what went wrong in the deployment?',
     maxScore: 100,
     toolMocks: {
-      list_files: {
-        type: 'static',
-        paramKeys: ['path'],
-        response: {
-          files: [{ name: 'deploy.log', size: 567, modified: '2026-02-25T11:00:00Z' }],
-          total: 1,
-        },
-      },
       read_file: {
         type: 'static',
         paramKeys: ['path'],
@@ -730,11 +697,6 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     input: 'Can you check my uploaded files for budget data?',
     maxScore: 100,
     toolMocks: {
-      list_files: {
-        type: 'static',
-        paramKeys: ['path'],
-        response: { files: [], total: 0 },
-      },
       search: {
         type: 'static',
         paramKeys: ['query'],
@@ -749,10 +711,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'checked-files',
-        description: 'Attempted to check files via list_files or search',
+        description: 'Attempted to check files via exec, search, or read_file',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'search'),
+        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'search') || usedTool(r, 'read_file'),
       },
       {
         id: 'reports-no-files',
@@ -868,16 +830,6 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     input: 'Summarize the file I uploaded.',
     maxScore: 100,
     toolMocks: {
-      list_files: {
-        type: 'static',
-        paramKeys: ['path'],
-        response: {
-          files: [
-            { name: 'quarterly-report.csv', size: 312, modified: '2026-02-25T10:00:00Z' },
-          ],
-          total: 1,
-        },
-      },
       read_file: {
         type: 'static',
         paramKeys: ['path'],
@@ -899,10 +851,10 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'discovers-file',
-        description: 'Used list_files to discover which file was uploaded',
+        description: 'Used exec, read_file, or search to discover which file was uploaded',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files'),
+        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'reads-file',

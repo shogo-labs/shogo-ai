@@ -3,6 +3,7 @@
   "name": "Research & Topic Tracking",
   "description": "Go deep on any topic and stay current as it evolves. Aggregates findings from multiple sources into a structured canvas and delivers daily digests of new developments.",
   "category": "research",
+  "icon": "BookOpen",
   "tags": [
     "research",
     "web-search",
@@ -12,6 +13,7 @@
     "canvas"
   ],
   "settings": {
+    "activeMode": "none",
     "heartbeatInterval": 3600,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",

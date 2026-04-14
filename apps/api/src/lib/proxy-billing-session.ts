@@ -157,6 +157,7 @@ export async function closeSession(
         totalTokens,
         model: session.model,
         billingModel,
+        dollarCost,
         requestCount: session.requestCount,
         durationMs,
       }
