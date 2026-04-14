@@ -276,24 +276,6 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
-  router.get('/projects/:projectId/analytics/routing', async (c) => {
-    try {
-      const projectId = c.req.param('projectId')
-      const auth = c.get('auth')
-      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
-
-      const workspaceId = await checkProjectAccess(auth.userId!, projectId)
-      if (!workspaceId) {
-        return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
-      }
-
-      const data = await analytics.getRoutingAnalytics({ workspaceId, projectId }, period)
-      return c.json({ ok: true, data })
-    } catch (error: any) {
-      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
-    }
-  })
-
   router.get('/projects/:projectId/analytics/usage', async (c) => {
     try {
       const projectId = c.req.param('projectId')
