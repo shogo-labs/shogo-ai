@@ -12,7 +12,6 @@ import {
   RefreshCw,
   AlertTriangle,
   DollarSign,
-  Sparkles,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -41,18 +40,6 @@ interface ChatData {
   totalToolCalls: number
   avgMessagesPerSession: number
   dailySessions: Array<{ date: string; count: number }>
-}
-
-interface RoutingData {
-  totalCreditsSaved: number
-  totalDollarSaved: number
-  routedTurns: number
-  totalTurns: number
-  savingsPercent: number
-  totalActualCost: number
-  totalCeilingCost: number
-  modelUsage: Record<string, { requests: number; tokens: number }>
-  dailySavings: Array<{ date: string; saved: number; actual: number }>
 }
 
 interface DailyActivityPoint {
@@ -197,8 +184,6 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
   const overview = useProjectAnalytics<OverviewData>(http, projectId, 'overview', period, visible)
   const usage = useProjectAnalytics<UsageData>(http, projectId, 'usage', period, visible)
   const chat = useProjectAnalytics<ChatData>(http, projectId, 'chat', period, visible)
-  const routing = useProjectAnalytics<RoutingData>(http, projectId, 'routing', period, visible)
-
   const dailyActivity = useMemo(
     () => buildDailyActivitySeries(period, usage.data?.dailyUsage, chat.data?.dailySessions),
     [period, usage.data?.dailyUsage, chat.data?.dailySessions],
@@ -208,7 +193,6 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
     overview.reload()
     usage.reload()
     chat.reload()
-    routing.reload()
   }
 
   const isLoading = overview.loading || usage.loading || chat.loading
@@ -295,84 +279,6 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
                 <Text className="text-xs text-muted-foreground">credits consumed</Text>
               </View>
               <Text className="text-xs text-muted-foreground">{usage.data.totalEvents} total events</Text>
-            </View>
-          )}
-
-          {/* Smart Routing Savings */}
-          {routing.data && routing.data.routedTurns > 0 && (
-            <View className="border border-emerald-500/30 bg-emerald-500/5 rounded-lg p-3 gap-2.5">
-              <View className="flex-row items-center gap-2">
-                <Sparkles size={14} className="text-emerald-500" />
-                <Text className="text-xs font-medium text-foreground">Smart Routing Savings</Text>
-                {routing.data.savingsPercent > 0 && (
-                  <View className="ml-auto bg-emerald-500/15 px-1.5 py-0.5 rounded">
-                    <Text className="text-[10px] font-semibold text-emerald-600">
-                      {routing.data.savingsPercent}% saved
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              <View className="flex-row items-baseline gap-1">
-                <Text className="text-2xl font-bold text-emerald-600">
-                  {routing.data.totalCreditsSaved.toFixed(1)}
-                </Text>
-                <Text className="text-xs text-muted-foreground">credits saved</Text>
-              </View>
-
-              <View className="flex-row gap-4">
-                <View className="flex-1">
-                  <Text className="text-[10px] text-muted-foreground">Actual cost</Text>
-                  <Text className="text-sm font-medium text-foreground">
-                    {routing.data.totalActualCost.toFixed(1)} cr
-                  </Text>
-                </View>
-                <View className="flex-1">
-                  <Text className="text-[10px] text-muted-foreground">Without routing</Text>
-                  <Text className="text-sm font-medium text-muted-foreground line-through">
-                    {routing.data.totalCeilingCost.toFixed(1)} cr
-                  </Text>
-                </View>
-                <View className="flex-1">
-                  <Text className="text-[10px] text-muted-foreground">Routed turns</Text>
-                  <Text className="text-sm font-medium text-foreground">
-                    {routing.data.routedTurns}/{routing.data.totalTurns}
-                  </Text>
-                </View>
-              </View>
-
-              {Object.keys(routing.data.modelUsage).length > 1 && (
-                <View className="gap-1.5 mt-1">
-                  <Text className="text-[10px] text-muted-foreground font-medium">Model distribution</Text>
-                  {Object.entries(routing.data.modelUsage)
-                    .sort(([, a], [, b]) => b.requests - a.requests)
-                    .map(([model, usage]) => {
-                      const totalRequests = Object.values(routing.data!.modelUsage).reduce((s, u) => s + u.requests, 0)
-                      const pct = totalRequests > 0 ? (usage.requests / totalRequests) * 100 : 0
-                      return (
-                        <View key={model}>
-                          <View className="flex-row justify-between mb-0.5">
-                            <Text className="text-[10px] text-muted-foreground capitalize">{model}</Text>
-                            <Text className="text-[10px] font-medium text-foreground">
-                              {usage.requests} req ({pct.toFixed(0)}%)
-                            </Text>
-                          </View>
-                          <View className="h-1.5 bg-muted rounded-full overflow-hidden">
-                            <View
-                              className={cn(
-                                'h-full rounded-full',
-                                model.includes('haiku') || model.includes('nano') || model.includes('mini')
-                                  ? 'bg-emerald-500'
-                                  : 'bg-primary',
-                              )}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </View>
-                        </View>
-                      )
-                    })}
-                </View>
-              )}
             </View>
           )}
 
