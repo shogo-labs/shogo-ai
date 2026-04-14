@@ -319,6 +319,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       setTimeout(() => textInputRef.current?.focus(), 0)
     }, [])
 
+    const handleRemoveLongText = useCallback(() => {
+      setValue("")
+      setLongTextCollapsed(false)
+      setLongTextViewerOpen(false)
+    }, [setValue])
+
     const handleSubmit = useCallback(() => {
       const trimmedContent = value.trim()
       if (
@@ -437,28 +443,38 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           {/* TextInput or collapsed long-text card */}
           {longTextCollapsed && longTextInfo ? (
             <View className="px-3 pt-3 pb-1 gap-2">
-              <Pressable
-                onPress={() => setLongTextViewerOpen(true)}
-                className={cn(
-                  "rounded-lg border border-border bg-muted/50 p-3 gap-1.5",
-                  LONG_TEXT_CHIP_LAYOUT_CLASS
-                )}
-                accessibilityLabel="View pasted text"
-                accessibilityRole="button"
-              >
-                <View className="flex-row items-center gap-2">
-                  <FileText size={16} className="text-primary" />
-                  <Text className="flex-1 text-xs font-medium text-foreground min-w-0" numberOfLines={1}>
-                    {kindLabel(longTextInfo.kind).toUpperCase()}
+              <View className={cn("relative", LONG_TEXT_CHIP_LAYOUT_CLASS)}>
+                <Pressable
+                  onPress={() => setLongTextViewerOpen(true)}
+                  className={cn(
+                    "w-full rounded-lg border border-border bg-muted/50 p-3 pr-10 gap-1.5"
+                  )}
+                  accessibilityLabel="View pasted text"
+                  accessibilityRole="button"
+                >
+                  <View className="flex-row items-center gap-2">
+                    <FileText size={16} className="text-primary" />
+                    <Text className="flex-1 text-xs font-medium text-foreground min-w-0" numberOfLines={1}>
+                      {kindLabel(longTextInfo.kind).toUpperCase()}
+                    </Text>
+                    <Text className="text-[10px] text-muted-foreground flex-shrink-0">
+                      {longTextInfo.sizeLabel} · {longTextInfo.lines} lines
+                    </Text>
+                  </View>
+                  <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+                    {value.slice(0, 200).replace(/\n/g, " ")}
                   </Text>
-                  <Text className="text-[10px] text-muted-foreground flex-shrink-0">
-                    {longTextInfo.sizeLabel} · {longTextInfo.lines} lines
-                  </Text>
-                </View>
-                <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
-                  {value.slice(0, 200).replace(/\n/g, " ")}
-                </Text>
-              </Pressable>
+                </Pressable>
+                <Pressable
+                  onPress={handleRemoveLongText}
+                  className="absolute top-1.5 right-1.5 z-10 rounded-full bg-background/90 p-1 border border-border/60"
+                  accessibilityLabel="Remove pasted text"
+                  accessibilityRole="button"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <X size={14} className="text-muted-foreground" />
+                </Pressable>
+              </View>
               <Pressable
                 onPress={handleShowInTextField}
                 className="self-start"
