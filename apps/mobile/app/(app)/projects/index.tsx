@@ -58,7 +58,7 @@ import {
   Trash2,
   ArrowRightLeft,
   Pencil,
-  Upload,
+  Download,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -1466,7 +1466,7 @@ export default observer(function AllProjectsPage() {
             disabled={isImporting}
             className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input active:bg-muted"
           >
-            <Upload size={14} className="text-muted-foreground" />
+            <Download size={14} className="text-muted-foreground" />
             <Text className="text-xs text-foreground">{isImporting ? 'Importing...' : 'Import'}</Text>
           </Pressable>
 

@@ -867,7 +867,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               disabled={isExporting}
               className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
             >
-              <Download size={12} className="text-muted-foreground" />
+              <Upload size={12} className="text-muted-foreground" />
               <Text className="text-xs text-muted-foreground">
                 {isExporting ? 'Exporting...' : 'Export Agent'}
               </Text>
@@ -876,7 +876,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               onPress={handleImport}
               className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
             >
-              <Upload size={12} className="text-muted-foreground" />
+              <Download size={12} className="text-muted-foreground" />
               <Text className="text-xs text-muted-foreground">Import Agent</Text>
             </Pressable>
           </View>
