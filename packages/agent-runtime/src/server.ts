@@ -1555,6 +1555,45 @@ function walkFilesTree(dir: string, rootDir: string): any[] {
   return results
 }
 
+// Bundle all workspace files for project export (called by the API server in K8s mode)
+const BUNDLE_EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', 'dist', '.cache', '.next', 'build', '.turbo', '.expo',
+])
+const BUNDLE_MAX_FILE_SIZE = 10 * 1024 * 1024
+
+function collectBundleFiles(dir: string, baseDir: string): Record<string, string> {
+  const files: Record<string, string> = {}
+  if (!existsSync(dir)) return files
+
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (BUNDLE_EXCLUDED_DIRS.has(entry.name)) continue
+    if (entry.name.startsWith('.install-ok')) continue
+
+    const fullPath = join(dir, entry.name)
+    const relPath = require('path').relative(baseDir, fullPath).replace(/\\/g, '/')
+
+    if (entry.isDirectory()) {
+      Object.assign(files, collectBundleFiles(fullPath, baseDir))
+    } else if (entry.isFile()) {
+      try {
+        const stat = statSync(fullPath)
+        if (stat.size > BUNDLE_MAX_FILE_SIZE) continue
+        const buf = readFileSync(fullPath)
+        files[relPath] = Buffer.from(buf).toString('base64')
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+  return files
+}
+
+app.get('/agent/workspace/bundle', (c) => {
+  const files = collectBundleFiles(WORKSPACE_DIR, WORKSPACE_DIR)
+  return c.json({ files })
+})
+
 // Recursive file tree for the file browser UI
 app.get('/agent/workspace/tree', (c) => {
   mkdirSync(FILES_DIR, { recursive: true })
@@ -2223,6 +2262,24 @@ app.delete('/agent/tools/:id', async (c) => {
 })
 
 // Agent export/import — bundle workspace into a shareable .shogo config
+function collectExportDir(dir: string, prefix: string, out: Record<string, string>): void {
+  if (!existsSync(dir)) return
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      collectExportDir(fullPath, relPath, out)
+    } else if (entry.isFile()) {
+      try {
+        const stat = statSync(fullPath)
+        if (stat.size > 5 * 1024 * 1024) continue
+        out[relPath] = readFileSync(fullPath, 'utf-8')
+      } catch { /* skip unreadable */ }
+    }
+  }
+}
+
 app.get('/agent/export', async (c) => {
   const exportFiles: Record<string, string> = {}
   const exportableFiles = [
@@ -2236,15 +2293,25 @@ app.get('/agent/export', async (c) => {
     }
   }
 
-  const skillsDir = join(WORKSPACE_DIR, 'skills')
-  if (existsSync(skillsDir)) {
-    const { readdirSync } = require('fs')
-    const skillFiles = readdirSync(skillsDir) as string[]
-    for (const file of skillFiles) {
-      if (file.endsWith('.md')) {
-        exportFiles[`skills/${file}`] = readFileSync(join(skillsDir, file), 'utf-8')
+  // Collect all .md files at workspace root (agent may create custom ones)
+  if (existsSync(WORKSPACE_DIR)) {
+    const rootEntries = readdirSync(WORKSPACE_DIR, { withFileTypes: true })
+    for (const entry of rootEntries) {
+      if (entry.isFile() && entry.name.endsWith('.md') && !exportFiles[entry.name]) {
+        exportFiles[entry.name] = readFileSync(join(WORKSPACE_DIR, entry.name), 'utf-8')
       }
     }
+  }
+
+  collectExportDir(join(WORKSPACE_DIR, 'skills'), 'skills', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, 'files'), 'files', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, 'memory'), 'memory', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, '.shogo', 'skills'), '.shogo/skills', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, '.shogo', 'plans'), '.shogo/plans', exportFiles)
+
+  const quickActionsPath = join(WORKSPACE_DIR, '.shogo', 'quick-actions.json')
+  if (existsSync(quickActionsPath)) {
+    exportFiles['.shogo/quick-actions.json'] = readFileSync(quickActionsPath, 'utf-8')
   }
 
   const bundle = {
