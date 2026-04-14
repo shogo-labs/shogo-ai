@@ -3,6 +3,7 @@
   "name": "HR & Recruiting",
   "description": "Hiring pipeline management, candidate tracking, interview scheduling, and recruiting metrics with multi-surface talent dashboards.",
   "category": "business",
+  "icon": "Users",
   "tags": [
     "hiring",
     "recruiting",
@@ -39,5 +40,5 @@
       "description": "Coordinate with hiring teams"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

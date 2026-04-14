@@ -10,7 +10,7 @@
  * Usage: pass --vm to run-eval.ts to use VM isolation.
  */
 
-import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, readFileSync, chmodSync } from 'fs'
 import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { type DockerWorker, REPO_ROOT } from './docker-worker'
@@ -35,6 +35,10 @@ export interface VMWorkerConfig {
   cpus?: number
   vmImageDir?: string
   envOverrides?: Record<string, string>
+  /** Share the host workspace dir into the VM via 9p mount instead of using
+   *  the isolated overlay disk. Files written to the host dir are visible
+   *  inside the VM immediately. */
+  mount?: boolean
 }
 
 interface VMHandle {
@@ -68,31 +72,26 @@ let _bundleFiles: Record<string, Buffer> | null = null
  * the seed ISO.
  */
 function ensureVMBundle(): Record<string, Buffer> {
-  if (_bundleDir && _bundleFiles && existsSync(join(_bundleDir, 'server.js'))) {
-    return _bundleFiles
-  }
+  if (_bundleFiles) return _bundleFiles
 
   const dir = resolve(tmpdir(), 'shogo-vm-eval-bundle')
+  rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
 
   const { execSync } = require('child_process')
-  if (!existsSync(join(dir, 'server.js'))) {
-    console.log('  Building agent-runtime bundle for VM...')
-    execSync(
-      `bun build src/server.ts --outdir "${dir}" --target bun --external electron --external playwright-core --external playwright`,
-      { cwd: resolve(REPO_ROOT, 'packages/agent-runtime'), stdio: 'pipe' },
-    )
-  }
-  if (!existsSync(join(dir, 'shogo.js'))) {
-    console.log('  Building shogo CLI bundle for VM...')
-    execSync(
-      `bun build packages/sdk/bin/shogo.ts --outfile "${join(dir, 'shogo.js')}" --target bun ` +
-        `--external electron --external playwright-core --external playwright ` +
-        `--external @prisma/prisma-schema-wasm --external @prisma/engines ` +
-        `--external @prisma/fetch-engine --external @prisma/internals`,
-      { cwd: REPO_ROOT, stdio: 'pipe' },
-    )
-  }
+  console.log('  Building agent-runtime bundle for VM...')
+  execSync(
+    `bun build src/server.ts --outdir "${dir}" --target bun --external electron --external playwright-core --external playwright`,
+    { cwd: resolve(REPO_ROOT, 'packages/agent-runtime'), stdio: 'pipe' },
+  )
+  console.log('  Building shogo CLI bundle for VM...')
+  execSync(
+    `bun build packages/sdk/bin/shogo.ts --outfile "${join(dir, 'shogo.js')}" --target bun ` +
+      `--external electron --external playwright-core --external playwright ` +
+      `--external @prisma/prisma-schema-wasm --external @prisma/engines ` +
+      `--external @prisma/fetch-engine --external @prisma/internals`,
+    { cwd: REPO_ROOT, stdio: 'pipe' },
+  )
 
   const readBuf = (f: string) => {
     const p = join(dir, f)
@@ -144,6 +143,12 @@ export async function startVMWorker(
   console.log(`  Starting VM worker ${id} (${name}) on port ${port}...`)
 
   mkdirSync(dir, { recursive: true })
+  if (config.mount) {
+    // 9p with security_model=mapped-file: the guest sees host UID/permissions
+    // for files without metadata. Make the workspace world-writable so the
+    // guest shogo user can create files before cloud-init chown takes effect.
+    chmodSync(dir, 0o777)
+  }
 
   const manager = createVMManager()
   const vmImageDir = config.vmImageDir || getVMImageDir()
@@ -179,6 +184,7 @@ export async function startVMWorker(
     skillServerHostPort: skillHostPort,
     env: vmEnv,
     bundleFiles,
+    mountWorkspace: config.mount === true,
   })
 
   _vmHandles.set(id, { handle, manager, overlayPath })

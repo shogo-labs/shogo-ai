@@ -46,6 +46,7 @@ model User {
   starredProjects     StarredProject[]
   signupAttribution   SignupAttribution?
   apiKeys             ApiKey[]
+  creatorProfile      CreatorProfile?
 
   @@map("users")
 }
@@ -181,6 +182,7 @@ model Project {
   starredBy        StarredProject[]
   agentConfig      AgentConfig?
   meetings         Meeting[]
+  marketplaceListing  MarketplaceListing?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -465,7 +467,7 @@ model Subscription {
   workspaceId         String
   stripeSubscriptionId String            @unique
   stripeCustomerId    String
-  planId              PlanId
+  planId              String
   status              SubscriptionStatus
   billingInterval     BillingInterval
   currentPeriodStart  DateTime
@@ -479,13 +481,6 @@ model Subscription {
 
   @@unique([workspaceId])
   @@map("subscriptions")
-}
-
-enum PlanId {
-  basic
-  pro
-  business
-  enterprise
 }
 
 enum SubscriptionStatus {
@@ -1344,6 +1339,265 @@ model EvalRun {
   @@index([status])
   @@index([createdAt])
   @@map("eval_runs")
+}
+
+// =============================================================================
+// MARKETPLACE (Agent Marketplace & Creator Economy)
+// =============================================================================
+
+enum PayoutStatus {
+  not_setup
+  pending_verification
+  verified
+  requires_update
+  disabled
+}
+
+enum CreatorTier {
+  newcomer
+  builder
+  craftsman
+  expert
+  master
+}
+
+enum BadgeType {
+  first_agent
+  popular_10
+  popular_100
+  popular_1000
+  top_rated
+  five_star
+  prolific_builder
+  master_builder
+  active_maintainer
+  streak_3
+  streak_6
+  streak_12
+  multi_category
+  early_adopter
+  verified_creator
+}
+
+enum PricingModel {
+  free
+  one_time
+  subscription
+}
+
+enum InstallModel {
+  fork
+  linked
+}
+
+enum ListingStatus {
+  draft
+  in_review
+  published
+  suspended
+  archived
+}
+
+enum InstallStatus {
+  active
+  cancelled
+  expired
+}
+
+enum TransactionType {
+  purchase
+  subscription_payment
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  refunded
+}
+
+model CreatorProfile {
+  id                      String       @id @default(cuid())
+  userId                  String       @unique
+  displayName             String
+  bio                     String?
+  avatarUrl               String?
+  websiteUrl              String?
+  stripeCustomAccountId   String?
+  payoutStatus            PayoutStatus @default(not_setup)
+  payoutDetailsSubmittedAt DateTime?
+  verified                Boolean      @default(false)
+  totalEarningsInCents    Int          @default(0)
+  pendingPayoutInCents    Int          @default(0)
+  totalPaidOutInCents     Int          @default(0)
+  creatorTier             CreatorTier  @default(newcomer)
+  reputationScore         Int          @default(0)
+  totalAgentsPublished    Int          @default(0)
+  totalInstalls           Int          @default(0)
+  averageAgentRating      Float        @default(0)
+  totalVersionsShipped    Int          @default(0)
+  activeMaintenanceStreak Int          @default(0)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badges       CreatorBadge[]
+  listings     MarketplaceListing[]
+  transactions MarketplaceTransaction[] @relation("CreatorTransactions")
+
+  @@index([creatorTier])
+  @@index([reputationScore(sort: Desc)])
+  @@map("creator_profiles")
+}
+
+model CreatorBadge {
+  id        String    @id @default(cuid())
+  creatorId String
+  badgeType BadgeType
+  earnedAt  DateTime  @default(now())
+  metadata  Json?
+
+  creator CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@unique([creatorId, badgeType])
+  @@index([creatorId])
+  @@map("creator_badges")
+}
+
+model MarketplaceListing {
+  id                   String        @id @default(cuid())
+  projectId            String        @unique
+  creatorId            String
+  slug                 String        @unique
+  title                String
+  shortDescription     String
+  longDescription      String?       @db.Text
+  category             String?
+  tags                 String[]      @default([])
+  iconUrl              String?
+  screenshotUrls       String[]      @default([])
+  pricingModel         PricingModel  @default(free)
+  priceInCents         Int?
+  monthlyPriceInCents  Int?
+  annualPriceInCents   Int?
+  installModel         InstallModel  @default(fork)
+  status               ListingStatus @default(draft)
+  currentVersion       String        @default("1.0.0")
+  stripePriceId        String?
+  stripeMonthlyPriceId String?
+  stripeAnnualPriceId  String?
+  installCount         Int           @default(0)
+  averageRating        Float         @default(0)
+  reviewCount          Int           @default(0)
+  publishedAt          DateTime?
+  featuredAt           DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator      CreatorProfile           @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  versions     MarketplaceListingVersion[]
+  installs     MarketplaceInstall[]
+  reviews      MarketplaceReview[]
+  transactions MarketplaceTransaction[]
+
+  @@index([creatorId])
+  @@index([status])
+  @@index([category])
+  @@index([pricingModel])
+  @@index([installCount(sort: Desc)])
+  @@index([averageRating(sort: Desc)])
+  @@index([publishedAt(sort: Desc)])
+  @@map("marketplace_listings")
+}
+
+model MarketplaceListingVersion {
+  id                String   @id @default(cuid())
+  listingId         String
+  version           String
+  changelog         String?  @db.Text
+  workspaceSnapshot Json?
+
+  createdAt DateTime @default(now())
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([listingId, version])
+  @@index([listingId])
+  @@map("marketplace_listing_versions")
+}
+
+model MarketplaceInstall {
+  id                   String        @id @default(cuid())
+  listingId            String
+  projectId            String
+  workspaceId          String
+  userId               String
+  installModel         InstallModel
+  installedVersion     String
+  stripeSubscriptionId String?
+  status               InstallStatus @default(active)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  listing      MarketplaceListing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  reviews      MarketplaceReview[]
+  transactions MarketplaceTransaction[]
+
+  @@index([listingId])
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("marketplace_installs")
+}
+
+model MarketplaceReview {
+  id        String   @id @default(cuid())
+  listingId String
+  userId    String
+  installId String
+  rating    Int
+  title     String?
+  body      String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  install MarketplaceInstall @relation(fields: [installId], references: [id], onDelete: Cascade)
+
+  @@unique([listingId, userId])
+  @@index([listingId])
+  @@index([userId])
+  @@map("marketplace_reviews")
+}
+
+model MarketplaceTransaction {
+  id                   String            @id @default(cuid())
+  listingId            String
+  installId            String?
+  buyerUserId          String
+  creatorId            String
+  type                 TransactionType
+  amountInCents        Int
+  platformFeeInCents   Int
+  creatorAmountInCents Int
+  stripePaymentIntentId String?
+  stripeTransferId     String?
+  currency             String            @default("usd")
+  status               TransactionStatus @default(pending)
+  createdAt            DateTime          @default(now())
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  install MarketplaceInstall? @relation(fields: [installId], references: [id], onDelete: SetNull)
+  creator CreatorProfile     @relation("CreatorTransactions", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+  @@index([creatorId])
+  @@index([buyerUserId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("marketplace_transactions")
 }
 
 model EvalRunResult {

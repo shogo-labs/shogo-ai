@@ -8,6 +8,10 @@ export interface VMIsolationConfig {
   enabled: boolean | 'auto'
   memoryMB: number
   cpus: number
+  /** Share the host workspace directory into the VM via 9p mount.
+   *  When true (default), the VM sees host project files via 9p.
+   *  When false, the VM uses an isolated overlay disk. */
+  mountWorkspace: boolean
 }
 
 export interface MeetingConfig {
@@ -31,6 +35,7 @@ const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
   memoryMB: 1536,
   cpus: 0,  // 0 = auto (half physical cores)
+  mountWorkspace: true,
 }
 
 const DEFAULT_MEETING_CONFIG: MeetingConfig = {

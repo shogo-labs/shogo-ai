@@ -87,7 +87,7 @@ function validateSkill(input: Record<string, unknown>): ValidationResult {
   // Tools are valid
   const VALID_TOOLS = new Set([
     'exec', 'read_file', 'write_file', 'edit_file', 'delete_file',
-    'glob', 'grep', 'ls', 'web', 'browser',
+    'web', 'browser',
     'memory_read', 'memory_search',
     'send_message', 'cron', 'read_lints',
   ])
@@ -122,7 +122,7 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
 
   const VALID_TOOLS = new Set([
     'exec', 'read_file', 'write_file', 'edit_file', 'delete_file',
-    'glob', 'grep', 'ls', 'web', 'browser',
+    'web', 'browser',
     'memory_read', 'memory_search',
     'send_message', 'cron', 'read_lints',
   ])

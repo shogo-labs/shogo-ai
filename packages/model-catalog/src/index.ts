@@ -38,5 +38,7 @@ export {
   getMaxOutputTokens,
   getAvailableModels,
   getModelsByProvider,
+  MODEL_DOLLAR_COSTS,
+  calculateDollarCost,
   type AvailableModelFilter,
 } from './helpers'

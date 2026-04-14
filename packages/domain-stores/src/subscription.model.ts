@@ -22,7 +22,7 @@ export const SubscriptionModel = types
     workspaceId: types.string,
     stripeSubscriptionId: types.string,
     stripeCustomerId: types.string,
-    planId: types.enumeration("PlanId", ["pro", "business", "enterprise"]),
+    planId: types.string,
     status: types.enumeration("SubscriptionStatus", ["active", "past_due", "canceled", "trialing", "paused"]),
     billingInterval: types.enumeration("BillingInterval", ["monthly", "annual"]),
     currentPeriodStart: types.number,

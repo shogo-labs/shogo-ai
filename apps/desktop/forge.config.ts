@@ -4,6 +4,7 @@ import type { ForgeConfig } from '@electron-forge/cli'
 import fs from 'fs'
 
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
+const hasInstallGif = fs.existsSync('./resources/install-splash.gif')
 
 const extraResourceCandidates = [
   './resources/bun',
@@ -17,7 +18,7 @@ const extraResourceCandidates = [
   './resources/tree-sitter-wasm',
   './resources/vm',
   './resources/vm-helper',
-  './resources/whisper',
+  './resources/sherpa-onnx',
   './resources/shogo-audio',
   './resources/seed.db',
   './resources/package.json',
@@ -63,6 +64,7 @@ const config: ForgeConfig = {
         name: 'Shogo',
         setupExe: 'Shogo-Setup.exe',
         ...(hasIcon ? { setupIcon: './resources/icon.ico', iconUrl: 'https://raw.githubusercontent.com/shogo-labs/shogo-ai/main/apps/desktop/resources/icon.ico' } : {}),
+        ...(hasInstallGif ? { loadingGif: './resources/install-splash.gif' } : {}),
         ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
           certificateFile: process.env.WINDOWS_CERT_PATH,
           certificatePassword: process.env.WINDOWS_CERT_PASSWORD,

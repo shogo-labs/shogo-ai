@@ -28,8 +28,10 @@ import {
   Wrench,
   Save,
   Info,
+  ArrowUpCircle,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { VMSetupProgress } from '../../components/onboarding/steps/VMSetupProgress'
 
 // =============================================================================
 // Desktop Bridge
@@ -70,7 +72,7 @@ function createHttpBridge() {
       return res.json()
     },
 
-    async setVMConfig(config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number }) {
+    async setVMConfig(config: { enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }) {
       const res = await fetch(`${base}/api/vm/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +128,25 @@ function createHttpBridge() {
     onVMImageDownloadProgress(cb: (p: VMDownloadProgress) => void) {
       progressCallbacks.push(cb)
     },
+
+    async checkVMImageUpdate(): Promise<VMImageUpdateResult> {
+      const res = await fetch(`${base}/api/vm/images/update-check`, { credentials: 'include' })
+      if (!res.ok) return { available: false, currentVersion: null, latestVersion: '' }
+      return res.json()
+    },
+
+    onVMImageUpdateAvailable(_cb: (data: { currentVersion: string | null; latestVersion: string }) => void) {
+      // no-op for HTTP bridge — polling via checkVMImageUpdate instead
+    },
+    removeVMImageUpdateListener() {},
+
+    async recycleVMPool(): Promise<{ success: boolean; error?: string }> {
+      const res = await fetch(`${base}/api/vm/pool/recycle`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      return res.json()
+    },
   }
 }
 
@@ -154,6 +175,7 @@ interface VMStatus {
   enabled: boolean | 'auto'
   memoryMB: number
   cpus: number
+  mountWorkspace: boolean
 }
 
 interface VMDownloadProgress {
@@ -163,11 +185,19 @@ interface VMDownloadProgress {
   stage: string
 }
 
+interface VMImageUpdateResult {
+  available: boolean
+  currentVersion: string | null
+  latestVersion: string
+}
+
 interface VMDiagnostics {
   platform: string
   arch: string
   hypervisor: string
   hypervisorFound: boolean
+  qemuInstalled: boolean
+  whpxEnabled: boolean
   executionMode: string
   imageDir: string
   logFile: string
@@ -412,6 +442,8 @@ function VMImagesSection({
   const [downloadState, setDownloadState] = useState<DownloadState>('idle')
   const [progress, setProgress] = useState<VMDownloadProgress | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<VMImageUpdateResult | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
 
   useEffect(() => {
     const bridge = getDesktopBridge()
@@ -420,7 +452,24 @@ function VMImagesSection({
       setProgress(p)
       setDownloadState(p.stage === 'extracting' ? 'extracting' : 'downloading')
     })
+
+    bridge.onVMImageUpdateAvailable?.((data: { currentVersion: string | null; latestVersion: string }) => {
+      setUpdateInfo({ available: true, currentVersion: data.currentVersion, latestVersion: data.latestVersion })
+    })
+
+    return () => bridge.removeVMImageUpdateListener?.()
   }, [])
+
+  useEffect(() => {
+    if (!imageStatus?.imagesPresent) return
+    const bridge = getDesktopBridge()
+    if (!bridge?.checkVMImageUpdate) return
+    setCheckingUpdate(true)
+    bridge.checkVMImageUpdate()
+      .then((result: VMImageUpdateResult) => setUpdateInfo(result))
+      .catch(() => {})
+      .finally(() => setCheckingUpdate(false))
+  }, [imageStatus?.imagesPresent])
 
   const startDownload = useCallback(async () => {
     const bridge = getDesktopBridge()
@@ -431,6 +480,7 @@ function VMImagesSection({
       const result = await bridge.downloadVMImages()
       if (result?.success) {
         setDownloadState('complete')
+        setUpdateInfo(null)
         onRefresh()
       } else {
         setDownloadError(result?.error || 'Download failed')
@@ -463,6 +513,27 @@ function VMImagesSection({
               )}
             </View>
           </View>
+
+          {updateInfo?.available && (
+            <View className="flex-row items-center gap-2 bg-blue-500/10 rounded-lg p-3">
+              <ArrowUpCircle size={16} className="text-blue-500" />
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-blue-500">
+                  Update available: {updateInfo.latestVersion}
+                </Text>
+                <Text className="text-xs text-muted-foreground mt-0.5">
+                  Current: {updateInfo.currentVersion ?? 'unknown'}
+                </Text>
+              </View>
+              <Pressable
+                onPress={startDownload}
+                className="bg-blue-500 px-3 py-1.5 rounded-lg"
+              >
+                <Text className="text-xs font-semibold text-white">Update</Text>
+              </Pressable>
+            </View>
+          )}
+
           <InfoRow label="Image Directory" value={imageStatus?.imageDir ?? '—'} mono />
         </View>
       ) : downloadState === 'complete' ? (
@@ -557,13 +628,16 @@ function VMConfigSection({
   const [memoryMB, setMemoryMB] = useState(String(vmStatus.memoryMB))
   const [cpus, setCpus] = useState(String(vmStatus.cpus))
   const [enabled, setEnabled] = useState<boolean | 'auto'>(vmStatus.enabled)
+  const [mountWorkspace, setMountWorkspace] = useState(vmStatus.mountWorkspace)
   const [saving, setSaving] = useState(false)
+  const [recycling, setRecycling] = useState(false)
   const [message, setMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null)
 
   useEffect(() => {
     setMemoryMB(String(vmStatus.memoryMB))
     setCpus(String(vmStatus.cpus))
     setEnabled(vmStatus.enabled)
+    setMountWorkspace(vmStatus.mountWorkspace)
   }, [vmStatus])
 
   const handleSave = async () => {
@@ -576,6 +650,7 @@ function VMConfigSection({
         enabled,
         memoryMB: parseInt(memoryMB, 10) || 1536,
         cpus: parseInt(cpus, 10) || 0,
+        mountWorkspace,
       })
       setMessage({ type: 'ok', text: 'Settings saved — restart the app to apply changes' })
       onSaved()
@@ -583,6 +658,22 @@ function VMConfigSection({
       setMessage({ type: 'error', text: err?.message || 'Failed to save' })
     } finally {
       setSaving(false)
+    }
+    setTimeout(() => setMessage(null), 6000)
+  }
+
+  const handleRecycle = async () => {
+    const bridge = getDesktopBridge()
+    if (!bridge) return
+    setRecycling(true)
+    setMessage(null)
+    try {
+      await bridge.recycleVMPool()
+      setMessage({ type: 'ok', text: 'VMs recycled — fresh instances booted with current images' })
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Failed to recycle VMs' })
+    } finally {
+      setRecycling(false)
     }
     setTimeout(() => setMessage(null), 6000)
   }
@@ -631,6 +722,40 @@ function VMConfigSection({
           </View>
         </View>
 
+        {/* Workspace Mode */}
+        <View className="gap-1.5">
+          <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            Workspace Filesystem
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            {([
+              { value: true, label: 'Host Mount', desc: 'Share host project files into the VM via 9p — agent edits your files directly' },
+              { value: false, label: 'Isolated', desc: 'Agent gets an isolated filesystem inside the VM — no host access' },
+            ] as const).map((opt) => (
+              <Pressable
+                key={String(opt.value)}
+                onPress={() => setMountWorkspace(opt.value)}
+                className={cn(
+                  'flex-1 min-w-[100px] border rounded-lg px-3 py-2.5',
+                  mountWorkspace === opt.value
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border bg-background',
+                )}
+              >
+                <Text
+                  className={cn(
+                    'text-sm font-medium',
+                    mountWorkspace === opt.value ? 'text-primary' : 'text-foreground',
+                  )}
+                >
+                  {opt.label}
+                </Text>
+                <Text className="text-[10px] text-muted-foreground mt-0.5">{opt.desc}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
         {/* Memory */}
         <View className="gap-1">
           <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -663,7 +788,7 @@ function VMConfigSection({
           </Text>
         </View>
 
-        {/* Save */}
+        {/* Save + Recycle */}
         <View className="flex-row items-center gap-3 mt-1">
           <Pressable
             onPress={handleSave}
@@ -685,6 +810,28 @@ function VMConfigSection({
               )}
             >
               Save
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleRecycle}
+            disabled={recycling}
+            className={cn(
+              'flex-row items-center gap-1.5 px-4 py-2 rounded-lg border',
+              recycling ? 'bg-muted border-muted' : 'bg-background border-border',
+            )}
+          >
+            {recycling ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <RotateCcw size={13} className="text-foreground" />
+            )}
+            <Text
+              className={cn(
+                'text-sm font-medium',
+                recycling ? 'text-muted-foreground' : 'text-foreground',
+              )}
+            >
+              Recycle VMs
             </Text>
           </Pressable>
           {message && (
@@ -737,6 +884,12 @@ function DiagnosticsSection({
           label="Hypervisor Status"
           value={diagnostics?.hypervisorFound ? 'Found' : 'Not found'}
         />
+        {isWindows && (
+          <>
+            <InfoRow label="QEMU" value={diagnostics?.qemuInstalled ? 'Installed' : 'Not installed'} />
+            <InfoRow label="WHPX" value={diagnostics?.whpxEnabled ? 'Enabled' : 'Not enabled'} />
+          </>
+        )}
         <InfoRow
           label="Execution Mode"
           value={diagnostics?.executionMode ?? (vmStatus?.available ? 'VM Isolation' : 'Host Execution (fallback)')}
@@ -748,15 +901,19 @@ function DiagnosticsSection({
           <InfoRow label="Log File" value={diagnostics.logFile} mono />
         )}
 
-        {!vmStatus?.available && (
+        {!vmStatus?.available && isWindows && (
+          <View className="mt-2">
+            <VMSetupProgress compact />
+          </View>
+        )}
+
+        {!vmStatus?.available && !isWindows && (
           <View className="flex-row items-start gap-2 bg-muted/50 rounded-lg p-3 mt-1">
             <Info size={14} className="text-muted-foreground mt-0.5" />
             <Text className="text-xs text-muted-foreground flex-1">
-              {isWindows
-                ? 'VM isolation requires QEMU installed (winget install qemu) and VM images downloaded. Ensure Windows Hypervisor Platform (WHPX) is enabled in Windows Features.'
-                : isMac
-                  ? 'VM isolation requires macOS 13+ with Apple Silicon or Intel with Hypervisor.framework entitlements.'
-                  : 'VM isolation is not supported on this platform.'}
+              {isMac
+                ? 'VM isolation requires macOS 13+ with Apple Silicon or Intel with Hypervisor.framework entitlements.'
+                : 'VM isolation is not supported on this platform.'}
             </Text>
           </View>
         )}

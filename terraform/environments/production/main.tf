@@ -130,16 +130,11 @@ module "oke" {
 
   node_ocpus     = 4
   node_memory_gb = 24
-  node_pool_size = 3
+  node_pool_size = 2
   node_pool_min  = 2
   node_pool_max  = 15
 
-  enable_workload_pool      = true
-  workload_node_ocpus       = 4
-  workload_node_memory_gb   = 24
-  workload_pool_size        = 2
-  workload_pool_min         = 1
-  workload_pool_max         = 100
+  enable_workload_pool = false
 
   tags = local.tags
 }
@@ -310,9 +305,4 @@ output "file_system_export_path" {
 output "github_actions_group" {
   description = "IAM group for GitHub Actions CI/CD"
   value       = module.github_oidc.group_name
-}
-
-output "workload_node_pool_id" {
-  description = "Workload node pool OCID"
-  value       = module.oke.workload_node_pool_id
 }

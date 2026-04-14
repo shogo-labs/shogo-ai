@@ -23,12 +23,14 @@ const globalForPrisma = globalThis as unknown as {
 const ARRAY_FIELDS = new Set([
   'schemas', 'affectedPackages', 'applicablePatterns', 'acceptanceCriteria',
   'given', 'then', 'completedTasks', 'failedTasks', 'tags', 'supportedConfig',
+  'screenshotUrls',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.
 const JSON_OBJECT_FIELDS = new Set([
   'summary', 'cost', 'byCategory', 'resources', 'progress',
   'tokens', 'phaseScores', 'criteria', 'antiPatterns',
+  'workspaceSnapshot', 'metadata', 'settings', 'channels',
   'actionMetadata',
 ])
 

@@ -44,7 +44,7 @@ function collectWorkspaceFiles(
     if (entry.name.startsWith('.install-ok')) continue
 
     const fullPath = join(dir, entry.name)
-    const relPath = relative(baseDir, fullPath)
+    const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
 
     if (entry.isDirectory()) {
       Object.assign(files, collectWorkspaceFiles(fullPath, baseDir))
@@ -341,7 +341,7 @@ export function projectExportImportRoutes() {
 
     for (const [path, data] of Object.entries(unzipped)) {
       if (!path.startsWith('workspace/')) continue
-      const relPath = path.slice('workspace/'.length)
+      const relPath = path.slice('workspace/'.length).replace(/\\/g, '/')
       if (!relPath || relPath.includes('..') || relPath.startsWith('/')) continue
 
       const destPath = join(projectDir, relPath)

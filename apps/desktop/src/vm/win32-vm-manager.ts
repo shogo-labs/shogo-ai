@@ -37,6 +37,14 @@ export class Win32VMManager implements VMManager {
   async startVM(config: VMConfig): Promise<VMHandle> {
     if (this.vmRunning) throw new Error('VM already running')
 
+    const kernel = path.join(this.vmImageDir, 'vmlinuz')
+    const initrd = path.join(this.vmImageDir, 'initrd.img')
+    if (!fs.existsSync(kernel) || !fs.existsSync(initrd)) {
+      throw new Error(
+        `VM images not found at ${this.vmImageDir} — download required via Settings > VM`
+      )
+    }
+
     const vmId = crypto.randomUUID()
     const dataDir = this.getVMDataDir(vmId)
     fs.mkdirSync(dataDir, { recursive: true })
@@ -60,7 +68,14 @@ export class Win32VMManager implements VMManager {
     generateSeedISO(seedISOPath, {
       guestAgentPort: VM_DEFAULTS.guestAgentPort,
       useBundleMount: false,
-      env: config.env,
+      ...(config.mountWorkspace ? {
+        workspaceMountTag: 'workspace0',
+        workspaceMountPath: config.workspaceMountPath,
+      } : {}),
+      env: {
+        ...config.env,
+        ...(config.mountWorkspace ? { VM_WORKSPACE_MOUNTED: 'true' } : {}),
+      },
       qemuDir: path.dirname(this.qemuPath),
       extraFiles,
     })
@@ -191,7 +206,7 @@ export class Win32VMManager implements VMManager {
     const { config, overlayPath, seedISOPath, qmpPort, hostFwds } = opts
     const firmwareDir = this.findFirmwareDir()
 
-    return [
+    const args = [
       ...(firmwareDir ? ['-L', firmwareDir] : []),
       '-accel', 'whpx', '-accel', 'tcg',
       '-machine', 'q35', '-cpu', 'Broadwell-v4',
@@ -207,6 +222,15 @@ export class Win32VMManager implements VMManager {
       '-qmp', `tcp:127.0.0.1:${qmpPort},server=on,wait=off`,
       '-nographic',
     ]
+
+    if (config.mountWorkspace && config.workspaceDir) {
+      args.push(
+        '-fsdev', `local,id=ws0,path=${config.workspaceDir},security_model=none`,
+        '-device', 'virtio-9p-pci,fsdev=ws0,mount_tag=workspace0',
+      )
+    }
+
+    return args
   }
 
   /**
@@ -237,8 +261,8 @@ export class Win32VMManager implements VMManager {
     if (!fs.existsSync(source)) throw new Error(`Base VM image not found: ${source}`)
 
     const qemuImg = path.join(path.dirname(this.qemuPath), 'qemu-img.exe')
-    execSync(`"${qemuImg}" create -f qcow2 -b "${source}" -F qcow2 "${overlayPath}"`, { stdio: 'pipe', timeout: 10000 })
-    execSync(`"${qemuImg}" resize "${overlayPath}" 10G`, { stdio: 'pipe', timeout: 10000 })
+    execSync(`"${qemuImg}" create -f qcow2 -b "${source}" -F qcow2 "${overlayPath}"`, { stdio: 'pipe', timeout: 60000 })
+    execSync(`"${qemuImg}" resize "${overlayPath}" 10G`, { stdio: 'pipe', timeout: 60000 })
   }
 
   private getVMDataDir(vmId: string): string {
@@ -263,12 +287,13 @@ export class Win32VMManager implements VMManager {
       if (fs.existsSync(p)) files[name] = fs.readFileSync(p)
     }
 
-    // tree-sitter.wasm for code parsing (avoids crash from hardcoded build paths)
-    const wasmPath = path.join(bundleDir, 'wasm', 'tree-sitter.wasm')
-    if (fs.existsSync(wasmPath)) {
-      files['tree-sitter.wasm'] = fs.readFileSync(wasmPath)
-    } else {
-      // Fall back to searching node_modules
+    const wasmDir = path.join(bundleDir, 'wasm')
+    if (fs.existsSync(wasmDir)) {
+      for (const f of fs.readdirSync(wasmDir)) {
+        if (f.endsWith('.wasm')) files[f] = fs.readFileSync(path.join(wasmDir, f))
+      }
+    }
+    if (!files['tree-sitter.wasm']) {
       const bunModBase = path.join(bundleDir, '..', '..', 'node_modules', '.bun')
       if (fs.existsSync(bunModBase)) {
         try {

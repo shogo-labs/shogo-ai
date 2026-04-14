@@ -45,7 +45,11 @@ import {
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
+import {
+  getTotalCreditsForPlan,
+  getCreditsCapacityForDisplay,
+  getPlanDisplayName,
+} from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
@@ -103,6 +107,10 @@ type ActiveTab = 'chat' | 'canvas'
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
 const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
+
+const DEFAULT_CHAT_PANEL_WIDTH = 480
+const MIN_CHAT_PANEL_WIDTH = 320
+const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -174,12 +182,16 @@ export default observer(function ProjectLayout() {
   }, [store?.workspaceCollection?.all, project?.workspaceId])
 
   const planLabel = billingData.subscription
-    ? billingData.subscription.planId.charAt(0).toUpperCase() +
-      billingData.subscription.planId.slice(1)
+    ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
 
-  const creditsTotal = getTotalCreditsForPlan(billingData.subscription?.planId)
-  const creditsRemaining = billingData.effectiveBalance?.total ?? creditsTotal
+  const creditsRemaining =
+    billingData.effectiveBalance?.total ??
+    getTotalCreditsForPlan(billingData.subscription?.planId)
+  const creditsTotal = getCreditsCapacityForDisplay(
+    billingData.subscription?.planId,
+    billingData.effectiveBalance?.total,
+  )
 
   const isStarred = useMemo(() => {
     try {
@@ -232,6 +244,7 @@ export default observer(function ProjectLayout() {
   const canvasEnabled = projectSettings.canvasEnabled !== false
   const canvasMode = (projectSettings.canvasMode as 'json' | 'code') || 'json'
   const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
+  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(canvasMode === 'json' ? true : null)
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
   const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
   const activeMode = rawMode === 'app' ? 'none' : rawMode
@@ -258,6 +271,19 @@ export default observer(function ProjectLayout() {
   const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
     await updateProjectSettings(themeSettings)
   }, [updateProjectSettings])
+
+  const handleCanvasCapabilities = useCallback((caps: { supportsTheme: boolean }) => {
+    setCanvasThemeSupported(caps.supportsTheme)
+  }, [])
+
+  // Reset theme support detection when the iframe reloads (code-mode only).
+  const prevRefreshKeyRef = useRef(iframeRefreshKey)
+  useEffect(() => {
+    if (canvasMode === 'code' && iframeRefreshKey !== prevRefreshKeyRef.current) {
+      prevRefreshKeyRef.current = iframeRefreshKey
+      setCanvasThemeSupported(null)
+    }
+  }, [iframeRefreshKey, canvasMode])
 
   const allProjects = useMemo(() => {
     try {
@@ -332,6 +358,7 @@ export default observer(function ProjectLayout() {
   )
   const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
   const mountTimeRef = useRef(Date.now())
+  const splitRowRef = useRef<View>(null)
 
   // Restore last-viewed surface from AsyncStorage
   useEffect(() => {
@@ -646,6 +673,28 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
+
+  // Resizable chat panel width (wide split mode only)
+  const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
+  const maxChatPanelWidth = Math.floor(width * 0.5)
+  const clampChatWidth = useCallback((w: number) =>
+    Math.max(MIN_CHAT_PANEL_WIDTH, Math.min(w, Math.floor(width * 0.5))),
+    [width],
+  )
+
+  useEffect(() => {
+    AsyncStorage.getItem(CHAT_PANEL_WIDTH_STORAGE_KEY).then((raw) => {
+      if (raw) {
+        const parsed = parseInt(raw, 10)
+        if (!isNaN(parsed) && parsed > 0) setChatPanelWidth(parsed)
+      }
+    }).catch(() => {})
+  }, [])
+
+  const persistChatPanelWidth = useCallback((w: number) => {
+    setChatPanelWidth(w)
+    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
+  }, [])
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
 
@@ -1137,6 +1186,7 @@ export default observer(function ProjectLayout() {
       fullBleed={!isWide}
       canvasMode={canvasMode}
       iframeRefreshKey={iframeRefreshKey}
+      onCanvasCapabilities={handleCanvasCapabilities}
     />
   ) : null
 
@@ -1177,6 +1227,7 @@ export default observer(function ProjectLayout() {
     onChatSessionsToggle: isChatFullscreen ? undefined : () => setShowChatSessions((s: boolean) => !s),
     onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
+    chatPanelWidth: clampChatWidth(chatPanelWidth),
     chatFullscreenSidebarWidth: isChatFullscreen ? 280 : undefined,
     onSearchChats: isChatFullscreen ? () => setSidebarSearchOpen(true) : undefined,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
@@ -1185,6 +1236,7 @@ export default observer(function ProjectLayout() {
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
     activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    canvasThemeSupported,
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
   }
@@ -1225,7 +1277,7 @@ export default observer(function ProjectLayout() {
             )}
 
             {/* Content — chat panel stays mounted across layout/tab changes */}
-            <View className={cn('flex-1', isWide && 'flex-row')}>
+            <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
               <View
                 className={cn(
@@ -1233,10 +1285,11 @@ export default observer(function ProjectLayout() {
                   isChatFullscreen
                     ? 'flex-1 flex-row'
                     : isWide
-                      ? 'w-[480px] shrink-0 bg-background z-10'
+                      ? 'shrink-0 bg-background z-10'
                       : 'relative flex-1',
                   !isChatFullscreen && chatHidden && 'hidden',
                 )}
+                style={!isChatFullscreen && isWide && !chatHidden ? { width: clampChatWidth(chatPanelWidth) } : undefined}
               >
                 {isChatFullscreen && (
                   <View className="w-[280px] bg-muted/50 dark:bg-black/30">
@@ -1298,6 +1351,19 @@ export default observer(function ProjectLayout() {
                   </>
                 )}
               </View>
+
+              {/* Drag handle to resize chat panel (web only, wide split mode) */}
+              {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
+                <ChatPanelResizeHandle
+                  splitRowRef={splitRowRef}
+                  chatPanelWidth={clampChatWidth(chatPanelWidth)}
+                  minWidth={MIN_CHAT_PANEL_WIDTH}
+                  maxWidth={maxChatPanelWidth}
+                  onResize={setChatPanelWidth}
+                  onResizeEnd={persistChatPanelWidth}
+                  defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                />
+              )}
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
@@ -1436,16 +1502,103 @@ export default observer(function ProjectLayout() {
 })
 
 // ---------------------------------------------------------------------------
+// ChatPanelResizeHandle — web-only drag handle between chat column and canvas
+// ---------------------------------------------------------------------------
+
+function ChatPanelResizeHandle({
+  splitRowRef,
+  chatPanelWidth,
+  minWidth,
+  maxWidth,
+  onResize,
+  onResizeEnd,
+  defaultWidth,
+}: {
+  splitRowRef: React.RefObject<View | null>
+  chatPanelWidth: number
+  minWidth: number
+  maxWidth: number
+  onResize: (w: number) => void
+  onResizeEnd: (w: number) => void
+  defaultWidth: number
+}) {
+  const [dragging, setDragging] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const latestWidthRef = useRef(chatPanelWidth)
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    setDragging(true)
+
+    const container = splitRowRef.current as unknown as HTMLElement | null
+    if (!container) return
+    const containerRect = container.getBoundingClientRect()
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const newWidth = Math.max(minWidth, Math.min(maxWidth, ev.clientX - containerRect.left))
+      latestWidthRef.current = newWidth
+      onResize(newWidth)
+    }
+
+    const onPointerUp = () => {
+      document.removeEventListener('pointermove', onPointerMove)
+      document.removeEventListener('pointerup', onPointerUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setDragging(false)
+      onResizeEnd(latestWidthRef.current)
+    }
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('pointermove', onPointerMove)
+    document.addEventListener('pointerup', onPointerUp)
+  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd])
+
+  const handleDoubleClick = useCallback(() => {
+    onResizeEnd(defaultWidth)
+  }, [defaultWidth, onResizeEnd])
+
+  const active = dragging || hovered
+
+  return (
+    <View
+      // @ts-expect-error web-only event handlers
+      onPointerDown={handlePointerDown}
+      onDoubleClick={handleDoubleClick}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      className="shrink-0 items-center justify-center"
+      style={{
+        width: 5,
+        cursor: 'col-resize' as any,
+        zIndex: 20,
+      }}
+    >
+      <View
+        className={cn(
+          'h-full transition-all duration-150',
+          active ? 'bg-primary/40' : 'bg-transparent',
+        )}
+        style={{ width: active ? 3 : 1 }}
+      />
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // TopBarBridge — reads EditModeContext and passes values to ProjectTopBar
 // ---------------------------------------------------------------------------
 
 function TopBarBridge({
   canvasActive,
+  canvasThemeSupported,
   effectiveSurfaceId,
   surfaceEntries,
   ...props
 }: React.ComponentProps<typeof ProjectTopBar> & {
   canvasActive: boolean
+  canvasThemeSupported: boolean | null
   effectiveSurfaceId: string | null
 }) {
   const editMode = useEditModeOptional()
@@ -1484,7 +1637,8 @@ function TopBarBridge({
             : undefined
         }
         onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
-        canvasThemePicker={canvasActive ? <CanvasThemePicker /> : undefined}
+        canvasThemePicker={canvasActive && canvasThemeSupported ? <CanvasThemePicker /> : undefined}
+        canvasThemeSupported={canvasThemeSupported}
       />
       {showAddDialog && effectiveSurfaceId && (
         <AddComponentDialog
@@ -1546,6 +1700,7 @@ function CanvasPanel({
   fullBleed,
   canvasMode = 'json',
   iframeRefreshKey = 0,
+  onCanvasCapabilities,
 }: {
   surface: any | null
   surfaces: Map<string, any>
@@ -1561,6 +1716,7 @@ function CanvasPanel({
   fullBleed?: boolean
   canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
+  onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -1624,7 +1780,7 @@ function CanvasPanel({
   if (canvasMode === 'code') {
     return (
       <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} />
+        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} />
       </View>
     )
   }

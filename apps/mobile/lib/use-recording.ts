@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Platform } from 'react-native'
 import { createHttpClient } from './api'
+import { usePlatformConfig } from './platform-config'
 
 function getDesktop(): any | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null
@@ -16,7 +17,7 @@ function getDesktop(): any | null {
  *
  * Works in two modes:
  *  - Electron desktop: communicates via window.shogoDesktop IPC bridge
- *  - Dev/web mode: communicates via REST API + polling
+ *  - Dev/web mode (local only): communicates via REST API + polling
  */
 export function useRecording() {
   const [isRecording, setIsRecording] = useState(false)
@@ -24,6 +25,7 @@ export function useRecording() {
   const [recordingId, setRecordingId] = useState<string | null>(null)
   const desktop = useRef(getDesktop())
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const { localMode, configLoaded } = usePlatformConfig()
 
   // Electron IPC mode
   useEffect(() => {
@@ -67,10 +69,11 @@ export function useRecording() {
     }
   }, [])
 
-  // API polling mode (non-Electron): poll frequently while recording, slowly when idle
+  // API polling mode (non-Electron, local only): poll frequently while recording, slowly when idle
   useEffect(() => {
     if (desktop.current) return
     if (Platform.OS !== 'web') return
+    if (!configLoaded || !localMode) return
 
     const http = createHttpClient()
     const poll = async () => {
@@ -93,64 +96,58 @@ export function useRecording() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [isRecording])
-
-  const startRecording = useCallback(async () => {
-    const d = desktop.current
-    if (d) {
-      const result = await d.startRecording()
-      if (result && 'error' in result) {
-        console.error('Failed to start recording:', result.error)
-      }
-      return
-    }
-
-    // API mode
-    try {
-      const http = createHttpClient()
-      const { data } = await http.post<{ id: string; audioPath: string } | { error: string }>(
-        '/api/local/meetings/recording/start',
-        {},
-      )
-      if ('error' in data) {
-        console.error('Failed to start recording:', data.error)
-      } else {
-        setIsRecording(true)
-        setRecordingId(data.id)
-        setDuration(0)
-      }
-    } catch (err: any) {
-      console.error('Failed to start recording:', err)
-    }
-  }, [])
-
-  const stopRecording = useCallback(async () => {
-    const d = desktop.current
-    if (d) {
-      await d.stopRecording()
-      return
-    }
-
-    // API mode — stop endpoint auto-creates the meeting record + kicks off transcription
-    try {
-      const http = createHttpClient()
-      await http.post('/api/local/meetings/recording/stop', {})
-      setIsRecording(false)
-      setRecordingId(null)
-      setDuration(0)
-    } catch (err: any) {
-      console.error('Failed to stop recording:', err)
-    }
-  }, [])
+  }, [isRecording, configLoaded, localMode])
 
   return {
     isRecording,
     duration,
     recordingId,
-    startRecording,
-    stopRecording,
+    startRecording: useCallback(async () => {
+      const d = desktop.current
+      if (d) {
+        const result = await d.startRecording()
+        if (result && 'error' in result) {
+          console.error('Failed to start recording:', result.error)
+        }
+        return
+      }
+
+      try {
+        const http = createHttpClient()
+        const { data } = await http.post<{ id: string; audioPath: string } | { error: string }>(
+          '/api/local/meetings/recording/start',
+          {},
+        )
+        if ('error' in data) {
+          console.error('Failed to start recording:', data.error)
+        } else {
+          setIsRecording(true)
+          setRecordingId(data.id)
+          setDuration(0)
+        }
+      } catch (err: any) {
+        console.error('Failed to start recording:', err)
+      }
+    }, []),
+    stopRecording: useCallback(async () => {
+      const d = desktop.current
+      if (d) {
+        await d.stopRecording()
+        return
+      }
+
+      try {
+        const http = createHttpClient()
+        await http.post('/api/local/meetings/recording/stop', {})
+        setIsRecording(false)
+        setRecordingId(null)
+        setDuration(0)
+      } catch (err: any) {
+        console.error('Failed to stop recording:', err)
+      }
+    }, []),
     isDesktop: !!desktop.current,
-    isLocal: Platform.OS === 'web',
+    isLocal: localMode,
   }
 }
 

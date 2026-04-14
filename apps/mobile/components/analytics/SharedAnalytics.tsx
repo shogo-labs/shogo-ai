@@ -63,6 +63,7 @@ export interface UsageSummaryEntry {
   totalOutputTokens: number
   totalTokens: number
   totalCredits: number
+  totalDollarCost: number
   avgDurationMs: number
 }
 
@@ -74,6 +75,7 @@ export interface UsageSummaryData {
     totalOutputTokens: number
     totalTokens: number
     totalCredits: number
+    totalDollarCost: number
     totalToolCalls: number
     uniqueUsers: number
     uniqueModels: number
@@ -92,6 +94,7 @@ export interface UsageLogEntry {
   outputTokens: number
   totalTokens: number
   creditCost: number
+  dollarCost: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -131,6 +134,12 @@ export function formatDuration(ms: number): string {
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`
   if (ms >= 1_000) return `${(ms / 1_000).toFixed(1)}s`
   return `${ms}ms`
+}
+
+export function formatDollarCost(cost: number): string {
+  if (cost === 0) return '$0.00'
+  if (cost < 0.01) return `$${cost.toFixed(4)}`
+  return `$${cost.toFixed(2)}`
 }
 
 const FAMILY_BG_COLOR: Record<ModelFamily, string> = {
@@ -339,9 +348,9 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
 // Usage Table - Summary + Event Log views
 // =============================================================================
 
-type SortKey = 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalCredits'
+type SortKey = 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalCredits' | 'totalDollarCost'
 
-export function UsageSummaryView({ data }: { data: UsageSummaryData }) {
+export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData; isLocalMode?: boolean }) {
   const [sortKey, setSortKey] = useState<SortKey>('totalTokens')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -382,8 +391,10 @@ export function UsageSummaryView({ data }: { data: UsageSummaryData }) {
           <Text className="text-base font-bold text-foreground">{formatNumber(data.totals.totalRequests)}</Text>
         </View>
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
-          <Text className="text-[10px] text-muted-foreground mb-0.5">Credits</Text>
-          <Text className="text-base font-bold text-foreground">{data.totals.totalCredits.toFixed(1)}</Text>
+          <Text className="text-[10px] text-muted-foreground mb-0.5">{isLocalMode ? 'Cost' : 'Credits'}</Text>
+          <Text className="text-base font-bold text-foreground">
+            {isLocalMode ? formatDollarCost(data.totals.totalDollarCost) : data.totals.totalCredits.toFixed(1)}
+          </Text>
         </View>
       </View>
 
@@ -406,8 +417,8 @@ export function UsageSummaryView({ data }: { data: UsageSummaryData }) {
         <Pressable onPress={() => toggleSort('totalTokens')} className="w-16 flex-row items-center justify-end gap-1">
           <Text className="text-[10px] font-medium text-muted-foreground">Tokens</Text>
         </Pressable>
-        <Pressable onPress={() => toggleSort('totalCredits')} className="w-14 flex-row items-center justify-end gap-1">
-          <Text className="text-[10px] font-medium text-muted-foreground">Credits</Text>
+        <Pressable onPress={() => toggleSort(isLocalMode ? 'totalDollarCost' : 'totalCredits')} className="w-14 flex-row items-center justify-end gap-1">
+          <Text className="text-[10px] font-medium text-muted-foreground">{isLocalMode ? 'Cost' : 'Credits'}</Text>
         </Pressable>
       </View>
 
@@ -454,7 +465,7 @@ export function UsageSummaryView({ data }: { data: UsageSummaryData }) {
                 {formatNumber(entry.totalTokens)}
               </Text>
               <Text className="w-14 text-right text-[10px] font-mono text-foreground">
-                {entry.totalCredits.toFixed(1)}
+                {isLocalMode ? formatDollarCost(entry.totalDollarCost) : entry.totalCredits.toFixed(1)}
               </Text>
             </View>
           ))}
@@ -468,10 +479,12 @@ export function UsageEventLogView({
   data,
   onPageChange,
   currentPage,
+  isLocalMode,
 }: {
   data: UsageLogData
   onPageChange?: (p: number) => void
   currentPage: number
+  isLocalMode?: boolean
 }) {
   const totalPages = Math.ceil(data.total / data.limit)
 
@@ -487,7 +500,7 @@ export function UsageEventLogView({
         <Text className="flex-1 text-[10px] font-medium text-muted-foreground">User</Text>
         <Text className="w-20 text-[10px] font-medium text-muted-foreground">Model</Text>
         <Text className="w-14 text-right text-[10px] font-medium text-muted-foreground">Tokens</Text>
-        <Text className="w-12 text-right text-[10px] font-medium text-muted-foreground">Cr</Text>
+        <Text className="w-12 text-right text-[10px] font-medium text-muted-foreground">{isLocalMode ? '$' : 'Cr'}</Text>
         <View className="w-10 items-end">
           <Clock size={10} className="text-muted-foreground" />
         </View>
@@ -537,7 +550,7 @@ export function UsageEventLogView({
                 {formatNumber(entry.totalTokens)}
               </Text>
               <Text className="w-12 text-right text-[10px] font-mono text-foreground">
-                {entry.creditCost.toFixed(1)}
+                {isLocalMode ? formatDollarCost(entry.dollarCost) : entry.creditCost.toFixed(1)}
               </Text>
               <Text className="w-10 text-right text-[9px] text-muted-foreground">
                 {formatDuration(entry.durationMs)}
@@ -583,6 +596,7 @@ export function UsageTableSection({
   onLogPageChange,
   logPage,
   title,
+  isLocalMode,
 }: {
   summaryData: UsageSummaryData | null
   logData: UsageLogData | null
@@ -591,6 +605,7 @@ export function UsageTableSection({
   onLogPageChange: (p: number) => void
   logPage: number
   title?: string
+  isLocalMode?: boolean
 }) {
   const [view, setView] = useState<'summary' | 'detail'>('summary')
 
@@ -638,7 +653,7 @@ export function UsageTableSection({
         summaryLoading ? (
           <View className="items-center py-8"><ActivityIndicator /></View>
         ) : summaryData ? (
-          <UsageSummaryView data={summaryData} />
+          <UsageSummaryView data={summaryData} isLocalMode={isLocalMode} />
         ) : (
           <View className="py-8 items-center">
             <Text className="text-sm text-muted-foreground">No usage data available</Text>
@@ -647,7 +662,7 @@ export function UsageTableSection({
       ) : logLoading ? (
         <View className="items-center py-8"><ActivityIndicator /></View>
       ) : logData ? (
-        <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} />
+        <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} isLocalMode={isLocalMode} />
       ) : (
         <View className="py-8 items-center">
           <Text className="text-sm text-muted-foreground">No usage events available</Text>

@@ -105,6 +105,7 @@ module "oke" {
   image_id           = var.image_id
   placement_ad_names = var.placement_ad_names
 
+  node_shape     = var.system_node_shape
   node_ocpus     = var.system_node_ocpus
   node_memory_gb = var.system_node_memory_gb
   node_pool_size = var.system_pool_size

@@ -248,6 +248,7 @@ export class AgentGateway {
     toolCallCount: number
     contextWindowTokens: number
     estimatedContextTokens: number
+    model: string
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -669,7 +670,7 @@ export class AgentGateway {
     try {
       const thisDir = dirname(fileURLToPath(import.meta.url))
       const pkgDir = join(thisDir, '..')
-      const searchDirs = [pkgDir]
+      const searchDirs = [pkgDir, thisDir, this.workspaceDir]
 
       const tsResult = resolveBin('typescript-language-server', searchDirs, 'lib/cli.mjs')
       const pyResult = resolveBin('pyright', searchDirs)
@@ -1356,7 +1357,7 @@ export class AgentGateway {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search', 'impact_radius',
+        'read_file', 'search', 'impact_radius',
         'web', 'browser',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
@@ -1769,6 +1770,7 @@ export class AgentGateway {
         toolCallCount: result.toolCalls.length,
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
+        model: modelId,
       }
 
       // UI notifications below may throw if the client disconnected (stop).
@@ -2409,7 +2411,7 @@ export class AgentGateway {
   /**
    * Build a context section listing files the user has uploaded to files/.
    * Included in the system prompt so the agent knows what data is available
-   * and can proactively use list_files/search/read_file to access it.
+   * and can proactively use search/read_file to access it.
    */
   private buildUploadedFilesContext(): string | null {
     const filesDir = join(this.workspaceDir, 'files')
@@ -2423,7 +2425,7 @@ export class AgentGateway {
         '## Workspace Uploaded Files',
         '',
         'The user has uploaded the following files to the workspace `files/` directory.',
-        'Use `list_files` to browse, `search` to search content, or `read_file` with path `files/<name>` to read them.',
+        'Use `search` to search content, or `read_file` with path `files/<name>` to read them.',
         '',
       ]
 

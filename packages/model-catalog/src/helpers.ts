@@ -158,6 +158,46 @@ export function getModelFamily(id: string): ModelFamily {
 }
 
 // ---------------------------------------------------------------------------
+// Dollar cost calculation (per 1M tokens by billing-model bucket)
+// ---------------------------------------------------------------------------
+
+export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
+  inputPerMillion: number
+  cacheWritePerMillion: number
+  cachedInputPerMillion: number
+  outputPerMillion: number
+}> = {
+  'gpt-5.4-nano': { inputPerMillion: 0.20, cacheWritePerMillion: 0.25, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
+  haiku:          { inputPerMillion: 0.80, cacheWritePerMillion: 1.00, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
+  'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
+  sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
+  opus:           { inputPerMillion: 15.00, cacheWritePerMillion: 18.75, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
+}
+
+/**
+ * Calculate raw dollar cost from token counts and a model identifier.
+ * Resolves the model to its billing bucket first.
+ *
+ * `inputTokens` = non-cached input. Pass cached/write counts separately.
+ */
+export function calculateDollarCost(
+  modelOrAgentMode: string | undefined,
+  inputTokens: number,
+  outputTokens: number,
+  cachedInputTokens: number = 0,
+  cacheWriteTokens: number = 0,
+): number {
+  const billing = modelOrAgentMode ? getModelBillingModel(modelOrAgentMode) : 'sonnet'
+  const costs = MODEL_DOLLAR_COSTS[billing] ?? MODEL_DOLLAR_COSTS.sonnet
+  return (
+    (inputTokens * costs.inputPerMillion / 1_000_000) +
+    (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +
+    (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
+    (outputTokens * costs.outputPerMillion / 1_000_000)
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Filtered model lists (for UI pickers)
 // ---------------------------------------------------------------------------
 
