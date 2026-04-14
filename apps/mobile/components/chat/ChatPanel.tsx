@@ -788,6 +788,7 @@ export const ChatPanel = observer(function ChatPanel({
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{ content: string; files?: FileAttachment[] } | null>(null)
+  const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
 
   type QueuedMessage = {
     id: string
@@ -1451,6 +1452,9 @@ export const ChatPanel = observer(function ChatPanel({
   if (isActive && messages.length > 0) {
     cachedMessagesRef.current = messages
   }
+  if (messages.length > 0) {
+    lastNonEmptyMessagesRef.current = messages
+  }
 
   const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
   const filesChangedFiredRef = useRef(false)
@@ -1516,6 +1520,32 @@ export const ChatPanel = observer(function ChatPanel({
   const displayMessages = useMemo((): UIMessage[] => {
     const effectiveMessages = stoppedMessages ?? messages
     if (effectiveMessages.length > 0) return effectiveMessages
+
+    // While streaming/sending, show the last known messages (plus an optimistic
+    // user bubble) so the conversation doesn't vanish during the brief gap
+    // before the AI SDK populates its internal state.
+    if (isStreaming || isSendingMessageRef.current) {
+      const fallback = lastNonEmptyMessagesRef.current
+      const lastInput = lastUserInputRef.current
+      const lastFallbackMsg = fallback[fallback.length - 1]
+      const needsOptimisticUser =
+        lastInput?.content && (!lastFallbackMsg || lastFallbackMsg.role !== "user")
+
+      if (fallback.length > 0 || needsOptimisticUser) {
+        if (needsOptimisticUser) {
+          return [
+            ...fallback,
+            {
+              id: "optimistic-user-pending",
+              role: "user",
+              parts: [{ type: "text", text: lastInput!.content }],
+            } as unknown as UIMessage,
+          ]
+        }
+        return fallback
+      }
+    }
+
     const text = (pendingInitialMessage ?? initialMessage ?? initialMessageRef.current ?? "").trim()
     if (text !== "") {
       return [
@@ -1527,7 +1557,7 @@ export const ChatPanel = observer(function ChatPanel({
       ]
     }
     return []
-  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage])
+  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage, isStreaming])
 
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
@@ -2284,6 +2314,7 @@ export const ChatPanel = observer(function ChatPanel({
       setMessageQueue([])
       isProcessingQueueRef.current = false
     }
+    lastNonEmptyMessagesRef.current = []
   }, [currentSessionId])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
