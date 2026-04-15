@@ -191,6 +191,7 @@ export default observer(function ProjectLayout() {
   const creditsTotal = getCreditsCapacityForDisplay(
     billingData.subscription?.planId,
     billingData.effectiveBalance?.total,
+    billingData.effectiveBalance?.monthlyAllocation,
   )
 
   const isStarred = useMemo(() => {

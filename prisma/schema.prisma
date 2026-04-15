@@ -501,6 +501,7 @@ model CreditLedger {
   workspaceId      String   @unique
   monthlyCredits   Float    @default(0)
   dailyCredits     Float    @default(0)
+  monthlyAllocation Float   @default(0)
   dailyCreditsDispensedThisMonth Float @default(0)
   anniversaryDay   Int
   lastDailyReset   DateTime
