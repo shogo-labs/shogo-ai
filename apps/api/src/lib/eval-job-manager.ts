@@ -102,6 +102,7 @@ export async function createEvalJob(opts: {
                 { name: 'EVAL_CALLBACK_SECRET', value: opts.callbackSecret },
                 { name: 'RUNTIME_IMAGE', value: RUNTIME_IMAGE },
                 { name: 'SYSTEM_NAMESPACE', value: NAMESPACE },
+                { name: 'NODE_EXTRA_CA_CERTS', value: '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt' },
                 {
                   name: 'ANTHROPIC_API_KEY',
                   valueFrom: { secretKeyRef: { name: 'api-secrets', key: 'ANTHROPIC_API_KEY' } },
