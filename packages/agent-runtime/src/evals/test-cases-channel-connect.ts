@@ -9,7 +9,7 @@
  */
 
 import type { AgentEval } from './types'
-import { usedTool, toolCallArgsContain, responseContains } from './eval-helpers'
+import { usedTool, usedToolAnywhere, toolCallArgsContain, responseContains } from './eval-helpers'
 
 export const CHANNEL_CONNECT_EVALS: AgentEval[] = [
   {
@@ -25,7 +25,7 @@ export const CHANNEL_CONNECT_EVALS: AgentEval[] = [
         description: 'Attempted channel_connect for telegram',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'channel_connect') && toolCallArgsContain(r, 'channel_connect', 'telegram'),
+        validate: (r) => usedToolAnywhere(r, 'channel_connect') && toolCallArgsContain(r, 'channel_connect', 'telegram'),
       },
       {
         id: 'mentions-botfather',
@@ -68,7 +68,7 @@ export const CHANNEL_CONNECT_EVALS: AgentEval[] = [
         description: 'Called channel_connect',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'channel_connect'),
+        validate: (r) => usedToolAnywhere(r, 'channel_connect'),
       },
       {
         id: 'correct-type',
@@ -111,7 +111,7 @@ export const CHANNEL_CONNECT_EVALS: AgentEval[] = [
         points: 30,
         phase: 'intention',
         validate: (r) => {
-          const triedConnect = usedTool(r, 'channel_connect') && toolCallArgsContain(r, 'channel_connect', 'discord')
+          const triedConnect = usedToolAnywhere(r, 'channel_connect') && toolCallArgsContain(r, 'channel_connect', 'discord')
           const explainedSetup = responseContains(r, 'discord') && responseContains(r, 'bot')
           return triedConnect || explainedSetup
         },
@@ -159,7 +159,7 @@ export const CHANNEL_CONNECT_EVALS: AgentEval[] = [
         description: 'Called channel_connect with type webchat',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'channel_connect') && toolCallArgsContain(r, 'channel_connect', 'webchat'),
+        validate: (r) => usedToolAnywhere(r, 'channel_connect') && toolCallArgsContain(r, 'channel_connect', 'webchat'),
       },
       {
         id: 'confirms-setup',

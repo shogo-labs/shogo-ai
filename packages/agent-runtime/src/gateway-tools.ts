@@ -106,6 +106,8 @@ export interface ToolContext {
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
+  /** Eval mock functions — propagated to subagents so mocked tools work in delegated calls */
+  toolMockFns?: Map<string, (params: Record<string, any>) => any>
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts

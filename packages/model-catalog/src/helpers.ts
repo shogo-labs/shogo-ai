@@ -89,7 +89,7 @@ export function inferProviderFromModel(modelId: string, fallback: string = 'anth
   const entry = getModelEntry(modelId)
   if (entry) return entry.provider
 
-  if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3') || modelId.startsWith('o4')) return 'openai'
+  if (modelId.startsWith('gpt')) return 'openai'
   if (modelId.startsWith('claude')) return 'anthropic'
   if (modelId.startsWith('gemini')) return 'google'
   return fallback
@@ -152,7 +152,6 @@ export function getModelFamily(id: string): ModelFamily {
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
-  if (lower.startsWith('o1') || lower.startsWith('o3') || lower.startsWith('o4')) return 'o-series'
   if (lower.startsWith('gpt')) return 'gpt'
   return 'other'
 }

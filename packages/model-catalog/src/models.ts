@@ -4,7 +4,7 @@
 export type Provider = 'anthropic' | 'openai' | 'google' | 'local'
 export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'o-series' | 'other'
+export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
 export type BillingModel = 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
 export type AgentMode = 'basic' | 'advanced'
@@ -207,31 +207,6 @@ export const MODEL_CATALOG = {
     billingModel: 'gpt-5.4-nano',
     maxOutputTokens: 128_000,
   },
-  'o3': {
-    id: 'o3',
-    provider: 'openai',
-    apiModel: 'o3',
-    displayName: 'o3',
-    shortDisplayName: 'o3',
-    tier: 'premium',
-    family: 'o-series',
-    generation: 'current',
-    billingModel: 'opus',
-    maxOutputTokens: 100_000,
-  },
-  'o4-mini': {
-    id: 'o4-mini',
-    provider: 'openai',
-    apiModel: 'o4-mini',
-    displayName: 'o4 Mini',
-    shortDisplayName: 'o4 Mini',
-    tier: 'standard',
-    family: 'o-series',
-    generation: 'current',
-    billingModel: 'sonnet',
-    maxOutputTokens: 100_000,
-  },
-
   // OpenAI — legacy
   'gpt-4.1': {
     id: 'gpt-4.1',
@@ -280,42 +255,6 @@ export const MODEL_CATALOG = {
     generation: 'legacy',
     billingModel: 'sonnet',
     maxOutputTokens: 4_096,
-  },
-  'o1': {
-    id: 'o1',
-    provider: 'openai',
-    apiModel: 'o1',
-    displayName: 'o1',
-    shortDisplayName: 'o1',
-    tier: 'premium',
-    family: 'o-series',
-    generation: 'legacy',
-    billingModel: 'opus',
-    maxOutputTokens: 100_000,
-  },
-  'o1-mini': {
-    id: 'o1-mini',
-    provider: 'openai',
-    apiModel: 'o1-mini',
-    displayName: 'o1 Mini',
-    shortDisplayName: 'o1 Mini',
-    tier: 'economy',
-    family: 'o-series',
-    generation: 'legacy',
-    billingModel: 'haiku',
-    maxOutputTokens: 65_536,
-  },
-  'o3-mini': {
-    id: 'o3-mini',
-    provider: 'openai',
-    apiModel: 'o3-mini',
-    displayName: 'o3 Mini',
-    shortDisplayName: 'o3 Mini',
-    tier: 'economy',
-    family: 'o-series',
-    generation: 'legacy',
-    billingModel: 'haiku',
-    maxOutputTokens: 65_536,
   },
 } as const satisfies Record<string, ModelEntry>
 
