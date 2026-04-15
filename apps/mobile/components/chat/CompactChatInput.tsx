@@ -41,8 +41,8 @@ import {
   Check,
   Mic,
   Square,
-  Zap,
 } from "lucide-react-native"
+import { AutoModelOption } from "./AutoModelOption"
 import {
   INTERACTION_MODES,
   DEFAULT_MODEL_PRO,
@@ -583,23 +583,13 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 <PopoverBackdrop />
                 <PopoverContent className="w-[260px] p-0 max-h-[320px]">
                   <ScrollView>
-                    <Pressable
-                      onPress={() => {
+                    <AutoModelOption
+                      currentModelId={currentModelId}
+                      onSelect={() => {
                         handleModelChange(AUTO_MODEL_ID)
                         setModelPickerOpen(false)
                       }}
-                      className={cn(
-                        "flex-row items-center gap-2.5 px-3 py-2.5",
-                        currentModelId === AUTO_MODEL_ID && "bg-accent",
-                      )}
-                    >
-                      <Zap size={14} className="text-primary" />
-                      <View className="flex-1">
-                        <Text className="text-sm font-medium text-foreground">Auto</Text>
-                        <Text className="text-[10px] text-muted-foreground">Best model per turn</Text>
-                      </View>
-                      {currentModelId === AUTO_MODEL_ID && <Check className="h-3.5 w-3.5 text-primary" size={14} />}
-                    </Pressable>
+                    />
                     <View className="h-px bg-border/50 mx-2" />
                     {MODEL_GROUPS.map((group) => (
                       <View key={group.label}>

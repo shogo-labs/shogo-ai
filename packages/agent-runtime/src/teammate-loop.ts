@@ -195,12 +195,9 @@ export function startTeammateLoop(
           }
         }
 
-        const tmBaseModel = config.model || modelConfig?.name || 'claude-haiku-4-5-20251001'
-        const tmBaseProvider = config.provider || modelConfig?.provider || 'anthropic'
-
         const result = await runAgentLoop({
-          provider: tmBaseProvider,
-          model: tmBaseModel,
+          provider: config.provider || modelConfig?.provider || 'anthropic',
+          model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
           system: config.systemPrompt,
           prompt,
           history,

@@ -47,8 +47,8 @@ import {
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
   isAutoModel,
+  AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
-import { AUTO_MODEL_ID } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
