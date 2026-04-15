@@ -794,8 +794,63 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           responseHeaders.set("Access-Control-Allow-Methods", "POST, OPTIONS")
           responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id")
 
-          // Tee the stream: one for the client, one for usage tracking
-          const [clientStream, trackingStream] = response.body!.tee()
+          // Instead of tee() (which stops pulling when the client
+          // branch is cancelled on browser disconnect), we read the
+          // fetch body in a background loop and independently push
+          // chunks to both the client stream and usage tracking.
+          // This ensures billing/persistence always sees the full
+          // stream even if the browser drops the connection early.
+          const bgReader = response.body!.getReader()
+          const trackingChunks: Uint8Array[] = []
+          let trackingResolve: (() => void) | null = null
+          let trackingDone = false
+          const trackingStream = new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (trackingChunks.length > 0) {
+                controller.enqueue(trackingChunks.shift()!)
+                return
+              }
+              if (trackingDone) {
+                controller.close()
+                return
+              }
+              return new Promise<void>((resolve) => { trackingResolve = resolve })
+            },
+          })
+
+          let clientEnqueueErrors = 0
+          const clientStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              ;(async () => {
+                try {
+                  let chunkCount = 0
+                  while (true) {
+                    const { done, value } = await bgReader.read()
+                    if (done) break
+                    chunkCount++
+                    trackingChunks.push(value)
+                    trackingResolve?.()
+                    trackingResolve = null
+                    try { controller.enqueue(value) } catch {
+                      if (clientEnqueueErrors === 0) {
+                        console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)
+                      }
+                      clientEnqueueErrors++
+                    }
+                  }
+                  console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors`)
+                } catch (err: any) {
+                  console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
+                  try { controller.error(err) } catch { /* client gone */ }
+                } finally {
+                  trackingDone = true
+                  trackingResolve?.()
+                  trackingResolve = null
+                  try { controller.close() } catch { /* already closed */ }
+                }
+              })()
+            },
+          })
 
           trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
