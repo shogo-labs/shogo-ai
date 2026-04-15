@@ -84,6 +84,7 @@ export async function createEvalJob(opts: {
         },
         spec: {
           restartPolicy: 'Never',
+          serviceAccountName: 'api-service-account',
           containers: [
             {
               name: 'eval-runner',
@@ -98,6 +99,8 @@ export async function createEvalJob(opts: {
               ],
               env: [
                 { name: 'EVAL_CALLBACK_SECRET', value: opts.callbackSecret },
+                { name: 'RUNTIME_IMAGE', value: RUNTIME_IMAGE },
+                { name: 'SYSTEM_NAMESPACE', value: NAMESPACE },
                 {
                   name: 'ANTHROPIC_API_KEY',
                   valueFrom: { secretKeyRef: { name: 'api-secrets', key: 'ANTHROPIC_API_KEY' } },
@@ -107,8 +110,8 @@ export async function createEvalJob(opts: {
                   valueFrom: { secretKeyRef: { name: 'api-secrets', key: 'OPENAI_API_KEY', optional: true } },
                 },
                 {
-                  name: 'GOOGLE_AI_API_KEY',
-                  valueFrom: { secretKeyRef: { name: 'api-secrets', key: 'GOOGLE_AI_API_KEY', optional: true } },
+                  name: 'GOOGLE_API_KEY',
+                  valueFrom: { secretKeyRef: { name: 'api-secrets', key: 'GOOGLE_API_KEY', optional: true } },
                 },
                 {
                   name: 'WEB_CACHE_REDIS_URL',

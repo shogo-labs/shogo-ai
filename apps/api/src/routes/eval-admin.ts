@@ -17,6 +17,7 @@
 import { Hono } from 'hono'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
+import { MODEL_CATALOG, MODEL_ALIASES } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import { authMiddleware, requireAuth } from '../middleware/auth'
@@ -36,7 +37,10 @@ const VALID_TRACKS = [
   'nonprofit', 'adversarial', 'cross-cutting',
 ]
 
-const VALID_MODELS = ['haiku', 'sonnet', 'opus', 'gpt-5.4-mini', 'gpt54mini']
+const VALID_MODELS = new Set([
+  ...Object.keys(MODEL_CATALOG),
+  ...Object.keys(MODEL_ALIASES),
+])
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -661,7 +665,7 @@ export function evalAdminRoutes(): Hono {
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    if (!VALID_MODELS.includes(model)) {
+    if (!VALID_MODELS.has(model)) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 

@@ -43,10 +43,12 @@ import {
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
 import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
+import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, getK8sWorkerUrl } from './k8s-worker'
 
 loadEnvFromDisk(REPO_ROOT)
 
 import { runEval } from './runner'
+import { calculateDollarCost } from '@shogo/model-catalog'
 import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
@@ -112,6 +114,7 @@ const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
 const vmFlag = args.includes('--vm')
+const k8sFlag = args.includes('--k8s') || (!localFlag && !vmFlag && !args.includes('--docker') && !!process.env.KUBERNETES_SERVICE_HOST)
 const mountFlag = args.includes('--mount')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
@@ -144,6 +147,11 @@ async function postCallback(path: string, body: any, timeoutMs = 30_000): Promis
 const BASE_PORT = 6400
 const SKILL_SERVER_BASE_PORT = 4100
 const CONTAINER_SKILL_PORT = 4100
+
+function getWorkerBaseUrl(worker: DockerWorker): string {
+  if (k8sFlag) return getK8sWorkerUrl(worker)
+  return `http://localhost:${worker.port}`
+}
 
 function getEvals(track: string): AgentEval[] {
   switch (track) {
@@ -609,6 +617,23 @@ async function runEvalOnWorker(
         console.log(`      [setup] Workspace files visible via 9p mount (${Object.keys(ev.workspaceFiles).length} file(s))`)
       }
     }
+  } else if (k8sFlag) {
+    // K8s mode — no shared filesystem; seed workspace via HTTP
+    if (verboseFlag) console.log(`      [setup] Seeding workspace via K8s pod HTTP...`)
+    const base = getWorkerBaseUrl(worker)
+
+    if (ev.workspaceFiles) {
+      const seedRes = await fetch(`${base}/agent/workspace/seed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: ev.workspaceFiles }),
+      })
+      if (!seedRes.ok) {
+        console.warn(`[setup] Failed to seed workspace files into K8s pod: ${seedRes.status}`)
+      } else if (verboseFlag) {
+        console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into K8s pod workspace`)
+      }
+    }
   } else {
     // Full setup — clean workspace, seed defaults, write workspaceFiles
     if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
@@ -658,7 +683,8 @@ async function runEvalOnWorker(
       }
 
       if (vmFlag) {
-        const seedRes = await fetch(`http://localhost:${worker.port}/agent/workspace/seed`, {
+        const base = getWorkerBaseUrl(worker)
+        const seedRes = await fetch(`${base}/agent/workspace/seed`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ files: ev.workspaceFiles }),
@@ -683,19 +709,19 @@ async function runEvalOnWorker(
     evalLabel,
     mocks: buildMockPayload(ev.toolMocks),
     verbose: verboseFlag,
-  })
+  }, k8sFlag ? getWorkerBaseUrl(worker) : undefined)
 
   if (verboseFlag) console.log(`      [setup] Sending eval prompt...`)
 
   const startTime = Date.now()
   console.log(`[${evalLabel}] Worker ${worker.id}: ${ev.name}`)
 
-  const statsCollector = (!localFlag && !vmFlag) ? new DockerStatsCollector(worker.containerName) : null
+  const statsCollector = (!localFlag && !vmFlag && !k8sFlag) ? new DockerStatsCollector(worker.containerName) : null
   statsCollector?.start()
 
   try {
     const result = await runEval(ev, {
-      agentEndpoint: `http://localhost:${worker.port}/agent/chat`,
+      agentEndpoint: `${getWorkerBaseUrl(worker)}/agent/chat`,
       timeoutMs: 300_000,
       verbose: verboseFlag,
       workspaceDir: worker.dir,
@@ -722,7 +748,7 @@ async function runEvalOnWorker(
       if (ev.useSkillServer) {
         try {
           if (verboseFlag) console.log(`      [runtime] Syncing skill server...`)
-          const syncRes = await fetch(`http://localhost:${worker.port}/agent/skill-server/sync`, {
+          const syncRes = await fetch(`${getWorkerBaseUrl(worker)}/agent/skill-server/sync`, {
             method: 'POST',
             signal: AbortSignal.timeout(180_000),
           })
@@ -739,7 +765,7 @@ async function runEvalOnWorker(
       }
 
       const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
-      const canvasExpected = (localFlag || vmFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
+      const canvasExpected = (localFlag || vmFlag || k8sFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
       const runtimeResults = await runRuntimeChecks({
         workspaceDir: worker.dir,
         skillServerPort: hostSkillPort,
@@ -894,7 +920,7 @@ async function runEvalOnWorker(
 // ---------------------------------------------------------------------------
 
 let globalWorkers: DockerWorker[] = []
-const stopWorker = vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
+const stopWorker = k8sFlag ? stopK8sWorkerSync : vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
 
 registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorker })
 
@@ -905,12 +931,12 @@ registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorke
 async function main() {
   console.log('')
   console.log('='.repeat(60))
-  console.log(`AGENT RUNTIME EVAL (${vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
+  console.log(`AGENT RUNTIME EVAL (${k8sFlag ? 'K8s' : vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
   console.log('='.repeat(60))
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
   console.log(`  Workers: ${workersArg}`)
-  console.log(`  Mode:    ${vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Mode:    ${k8sFlag ? 'K8s pod' : vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -938,12 +964,29 @@ async function main() {
     process.exit(1)
   }
 
-  // Worker config setup — one of three backends
+  // Worker config setup — one of four backends
   let dockerWorkerConfig: DockerWorkerConfig | undefined
   let localWorkerConfig: LocalWorkerConfig | undefined
   let vmWorkerConfig: VMWorkerConfig | undefined
+  let k8sWorkerConfig: K8sWorkerConfig | undefined
 
-  if (vmFlag) {
+  if (k8sFlag) {
+    const image = process.env.RUNTIME_IMAGE || DEFAULT_RUNTIME_IMAGE
+    const namespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    k8sWorkerConfig = {
+      containerPrefix: 'eval-worker',
+      baseHostPort: BASE_PORT,
+      model: modelArg,
+      verbose: verboseFlag,
+      image,
+      namespace,
+      runId: runIdArg,
+      envOverrides: {
+        AGENT_MAX_ITERATIONS: '100',
+        WEB_CACHE_REDIS_URL: `redis://redis-master.${namespace}:6379`,
+      },
+    }
+  } else if (vmFlag) {
     vmWorkerConfig = {
       containerPrefix: 'eval-vm',
       baseHostPort: BASE_PORT,
@@ -978,11 +1021,13 @@ async function main() {
   const workers: DockerWorker[] = []
   try {
     for (let i = 0; i < workersArg; i++) {
-      const w = vmFlag
-        ? await startVMWorker(i, vmWorkerConfig!)
-        : localFlag
-          ? await startLocalWorker(i, localWorkerConfig!)
-          : await startDockerWorker(i, dockerWorkerConfig!)
+      const w = k8sFlag
+        ? await startK8sWorker(i, k8sWorkerConfig!)
+        : vmFlag
+          ? await startVMWorker(i, vmWorkerConfig!)
+          : localFlag
+            ? await startLocalWorker(i, localWorkerConfig!)
+            : await startDockerWorker(i, dockerWorkerConfig!)
       workers.push(w)
       globalWorkers.push(w)
       if (i < workersArg - 1) await Bun.sleep(1_000)
@@ -991,7 +1036,7 @@ async function main() {
     console.error(`Failed to start workers: ${err.message}`)
     globalWorkers.forEach(stopWorker)
     globalWorkers = []
-    if (!localFlag) cleanupDockerEnvFile()
+    if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
     process.exit(1)
   }
 
@@ -1001,7 +1046,7 @@ async function main() {
     let preflightOk = true
     for (const w of workers) {
       try {
-        const res = await fetch(`http://localhost:${w.port}/health`, { signal: AbortSignal.timeout(5_000) })
+        const res = await fetch(`${getWorkerBaseUrl(w)}/health`, { signal: AbortSignal.timeout(5_000) })
         const body = await res.json() as any
         const ws = body?.workspace
         const tpl = ws?.templateSeeded
@@ -1072,13 +1117,18 @@ async function main() {
   }
 
   async function ensureWorkerHealthy(worker: DockerWorker) {
-    if (!(await isWorkerHealthy(worker))) {
+    const healthy = k8sFlag
+      ? await (await import('./k8s-worker')).isK8sWorkerHealthy(worker)
+      : await isWorkerHealthy(worker)
+    if (!healthy) {
       if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
       stopWorker(worker)
       await Bun.sleep(500)
-      const fresh = localFlag
-        ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
-        : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
+      const fresh = k8sFlag
+        ? await startK8sWorker(worker.id, k8sWorkerConfig!)
+        : localFlag
+          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
+          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
       Object.assign(worker, fresh)
     }
   }
@@ -1188,7 +1238,7 @@ async function main() {
   console.log('Stopping workers...')
   workers.forEach(stopWorker)
   globalWorkers = []
-  if (!localFlag) cleanupDockerEnvFile()
+  if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
 
   // Summary
   const passed = results.filter(r => r.passed).length
@@ -1200,12 +1250,13 @@ async function main() {
   const totalOutput = results.reduce((s, r) => s + r.metrics.tokens.output, 0)
   const totalCacheRead = results.reduce((s, r) => s + r.metrics.tokens.cacheRead, 0)
   const totalCacheWrite = results.reduce((s, r) => s + r.metrics.tokens.cacheWrite, 0)
-  const pricing = PRICING[modelArg] || PRICING.haiku
-  const totalCost =
-    totalInput * pricing.input +
-    totalOutput * pricing.output +
-    totalCacheRead * pricing.cacheRead +
-    totalCacheWrite * pricing.cacheWrite
+  const pricing = PRICING[modelArg]
+  const totalCost = pricing
+    ? totalInput * pricing.input +
+      totalOutput * pricing.output +
+      totalCacheRead * pricing.cacheRead +
+      totalCacheWrite * pricing.cacheWrite
+    : calculateDollarCost(modelArg, totalInput, totalOutput, totalCacheRead, totalCacheWrite)
   const totalToolCalls = results.reduce((s, r) => s + r.metrics.toolCallCount, 0)
   const totalFailed = results.reduce((s, r) => s + r.metrics.failedToolCalls, 0)
 
@@ -1419,6 +1470,6 @@ main().catch(async err => {
   }
   globalWorkers.forEach(stopWorker)
   globalWorkers = []
-  if (!localFlag) cleanupDockerEnvFile()
+  if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
   process.exit(1)
 })
