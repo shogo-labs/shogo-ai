@@ -94,6 +94,7 @@ const ENV_PREFIXES = [
 function buildWorkerEnvVars(config: K8sWorkerConfig): k8s.V1EnvVar[] {
   const vars: k8s.V1EnvVar[] = [
     { name: 'NODE_ENV', value: 'development' },
+    { name: 'PROJECT_ID', value: `eval-worker-${config.containerPrefix}` },
     { name: 'PORT', value: '8080' },
     { name: 'WORKSPACE_DIR', value: '/app/workspace' },
     { name: 'AGENT_DIR', value: '/app/workspace' },
