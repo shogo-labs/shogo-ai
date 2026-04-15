@@ -327,13 +327,14 @@ function checkViteBuildReadiness(workspaceDir: string, verbose?: boolean): ViteB
 export interface RuntimeCheckOptions {
   workspaceDir: string
   skillServerPort: number
+  skillServerHost?: string
   canvasExpectedPort?: number
   evalId: string
   verbose?: boolean
 }
 
 export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<RuntimeCheckResults | null> {
-  const { workspaceDir, skillServerPort, canvasExpectedPort, evalId, verbose } = opts
+  const { workspaceDir, skillServerPort, skillServerHost, canvasExpectedPort, evalId, verbose } = opts
   const canvasPort = canvasExpectedPort ?? skillServerPort
   const schemaPath = join(workspaceDir, '.shogo/server/schema.prisma')
   const hasSchema = existsSync(schemaPath)
@@ -372,7 +373,9 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
   let discoveredRoutePaths: string[] = []
 
   if (hasSchema) {
-    const baseUrl = `http://localhost:${skillServerPort}`
+    const baseUrl = skillServerHost
+      ? `http://${skillServerHost}:${skillServerPort}`
+      : `http://localhost:${skillServerPort}`
 
     // 1. Health check with retries
     for (let attempt = 1; attempt <= HEALTH_RETRY_COUNT; attempt++) {
