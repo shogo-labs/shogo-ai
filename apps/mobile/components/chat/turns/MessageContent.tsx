@@ -193,8 +193,7 @@ export function MessageContent({
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"
-  const contentInfo = content ? analyzeContent(content) : null
-  const isLongText = contentInfo?.isLong ?? false
+  const isLongText = isUser && content ? analyzeContent(content).isLong : false
 
   const baseClasses = cn(
     "rounded-md px-3 py-1.5",
@@ -247,16 +246,12 @@ export function MessageContent({
   return (
     <View className={cn(baseClasses, "gap-2")}>
       {content ? (
-        isLongText && !isStreaming ? (
-          <LongTextPreviewCard text={content} title="Response" />
-        ) : (
           <MarkdownText
             className="text-xs text-foreground prose-sm"
             isStreaming={isStreaming}
           >
             {content}
           </MarkdownText>
-        )
       ) : null}
       {images.length > 0 && (
         <View className="flex-row flex-wrap gap-2">

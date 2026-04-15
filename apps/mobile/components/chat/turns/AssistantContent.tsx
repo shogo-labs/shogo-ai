@@ -35,8 +35,6 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
-import { analyzeContent } from "../long-text-utils"
-import { LongTextPreviewCard } from "../LongTextPreviewCard"
 import { FileViewerModal } from "../FileViewerModal"
 
 function safeErrorString(error: unknown): string | undefined {
@@ -410,16 +408,6 @@ export function AssistantContent({
         }
 
         if (part.type === "text") {
-          const sizeInfo = analyzeContent(part.text)
-          if (sizeInfo.isLong && !isStreaming) {
-            return (
-              <LongTextPreviewCard
-                key={part.id}
-                text={part.text}
-                title="Assistant Response"
-              />
-            )
-          }
           return (
             <View key={part.id}>
               <MarkdownText

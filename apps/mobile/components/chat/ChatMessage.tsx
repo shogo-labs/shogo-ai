@@ -25,8 +25,7 @@ export interface ChatMessageProps {
 
 export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) {
   const isUser = message.role === "user"
-  const contentInfo = message.content ? analyzeContent(message.content) : null
-  const isLongText = contentInfo?.isLong ?? false
+  const isLongText = isUser && message.content ? analyzeContent(message.content).isLong : false
 
   return (
     <View
@@ -43,17 +42,19 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
             : "bg-gray-100 dark:bg-gray-800 mr-auto"
         )}
       >
-        {isLongText && !isStreaming ? (
-          <LongTextPreviewCard
-            text={message.content}
-            title={isUser ? "Your Message" : "Response"}
-          />
-        ) : isUser ? (
-          <Text
-            className={cn("text-sm text-foreground")}
-          >
-            {message.content}
-          </Text>
+        {isUser ? (
+          isLongText && !isStreaming ? (
+            <LongTextPreviewCard
+              text={message.content}
+              title="Your Message"
+            />
+          ) : (
+            <Text
+              className={cn("text-sm text-foreground")}
+            >
+              {message.content}
+            </Text>
+          )
         ) : (
           <MarkdownText
             className="text-sm text-foreground prose-sm"
