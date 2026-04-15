@@ -172,6 +172,7 @@ export async function startVMWorker(
   }
   if (process.env.ANTHROPIC_API_KEY && !vmEnv.ANTHROPIC_API_KEY) vmEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
   if (process.env.OPENAI_API_KEY && !vmEnv.OPENAI_API_KEY) vmEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY
+  if (process.env.GOOGLE_API_KEY && !vmEnv.GOOGLE_API_KEY) vmEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY
 
   const handle = await manager.startVM({
     workspaceDir: dir,

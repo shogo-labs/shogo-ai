@@ -34,6 +34,7 @@ import {
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
+import { getAvailableModels, MODEL_ALIASES } from '@shogo/model-catalog'
 import { API_URL } from '../../../lib/api'
 
 const API_BASE = `${API_URL}/api/admin/evals`
@@ -47,7 +48,12 @@ const TRACK_OPTIONS = [
   'startup-cto', 'freelancer', 'content-creator', 'nonprofit', 'event-planner',
 ]
 
-const MODEL_OPTIONS = ['haiku', 'sonnet', 'opus']
+const EVAL_ALIASES = ['haiku', 'sonnet', 'opus', 'gpt54mini']
+const ALIAS_TARGETS = new Set(EVAL_ALIASES.map(a => MODEL_ALIASES[a]).filter(Boolean))
+const CATALOG_IDS = getAvailableModels({ generation: 'current' })
+  .map(m => m.id)
+  .filter(id => !ALIAS_TARGETS.has(id as any))
+const MODEL_OPTIONS = [...EVAL_ALIASES, ...CATALOG_IDS]
 
 interface RunSummary {
   dirName: string
@@ -358,7 +364,6 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
   const [track, setTrack] = useState<string>('agentic')
   const [model, setModel] = useState<string>('sonnet')
   const [workers, setWorkers] = useState<string>('2')
-  const [mode, setMode] = useState<'docker' | 'local' | 'vm'>('vm')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -370,7 +375,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track, model, workers: Number(workers), local: mode === 'local', vm: mode === 'vm' }),
+        body: JSON.stringify({ track, model, workers: Number(workers) }),
       })
       const json = await res.json()
       if (!json.ok) {
@@ -423,29 +428,6 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
                 placeholder="2"
                 placeholderTextColor="#999"
               />
-            </View>
-          </View>
-
-          <View className="gap-1">
-            <Text className="text-xs font-medium text-muted-foreground">Mode</Text>
-            <View className="flex-row gap-2">
-              {(['docker', 'local', 'vm'] as const).map((m) => (
-                <Pressable
-                  key={m}
-                  onPress={() => setMode(m)}
-                  className={cn(
-                    'flex-1 py-2 rounded-lg border items-center',
-                    mode === m ? 'bg-primary border-primary' : 'border-border bg-background'
-                  )}
-                >
-                  <Text className={cn(
-                    'text-xs font-semibold',
-                    mode === m ? 'text-primary-foreground' : 'text-muted-foreground'
-                  )}>
-                    {m === 'docker' ? 'Docker' : m === 'local' ? 'Local' : 'VM'}
-                  </Text>
-                </Pressable>
-              ))}
             </View>
           </View>
 

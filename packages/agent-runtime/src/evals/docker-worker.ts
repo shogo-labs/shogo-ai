@@ -161,7 +161,7 @@ export function loadEnvFromDisk(repoRoot: string): void {
 // ---------------------------------------------------------------------------
 
 const ENV_PREFIXES = [
-  'ANTHROPIC_', 'AI_PROXY_', 'OPENAI_', 'AWS_', 'STRIPE_',
+  'ANTHROPIC_', 'AI_PROXY_', 'OPENAI_', 'GOOGLE_API_KEY', 'AWS_', 'STRIPE_',
   'GITHUB_TOKEN', 'GITLAB_TOKEN', 'COMPOSIO_', 'SERPER_',
   'HUGGINGFACEHUB_', 'WEBARENA_', 'WEB_CACHE_',
 ]
@@ -411,8 +411,9 @@ export async function isWorkerHealthy(worker: DockerWorker): Promise<boolean> {
 export async function configureWorkerForTask(
   worker: DockerWorker,
   opts: WorkerSetupOptions,
+  baseUrlOverride?: string,
 ): Promise<void> {
-  const base = `http://localhost:${worker.port}`
+  const base = baseUrlOverride || `http://localhost:${worker.port}`
 
   if (opts.model) {
     const defaultModel = 'claude-sonnet-4-6'
