@@ -80,6 +80,7 @@ jobs:
       needs_build: ${{ steps.decide.outputs.needs_build }}
       runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
       environment: ${{ steps.resolve-env.outputs.environment }}
+      app_version: ${{ steps.resolve-version.outputs.version }}
 
     steps:
       - name: Resolve environment
@@ -99,6 +100,20 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve app version from tag
+        id: resolve-version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#android-v}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Extracted version from tag: $VERSION"
+          else
+            VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Using app.json version: $VERSION"
+          fi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -182,6 +197,22 @@ jobs:
 
       - name: Install dependencies
         run: bun install
+
+      - name: Sync app version
+        working-directory: apps/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+              fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            } else {
+              console.log('Version already matches: ' + appJson.expo.version);
+            }
+          "
 
       - name: Build workspace packages
         run: bun run build
@@ -297,7 +328,7 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Set versionCode from run number
+      - name: Sync app version and versionCode
         working-directory: apps/mobile
         env:
           VERSION_CODE_OFFSET: 100
@@ -305,10 +336,15 @@ jobs:
           node -e "
             const fs = require('fs');
             const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+            }
             const versionCode = ${{ github.run_number }} + parseInt(process.env.VERSION_CODE_OFFSET);
             appJson.expo.android.versionCode = versionCode;
             fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
-            console.log('Set versionCode to ' + versionCode);
+            console.log('Set version=' + appJson.expo.version + ' versionCode=' + versionCode);
           "
 
       - name: Expo Prebuild
