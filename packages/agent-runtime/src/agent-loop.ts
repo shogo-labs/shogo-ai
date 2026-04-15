@@ -122,6 +122,10 @@ export interface AgentLoopResult {
   loopBreak?: LoopDetectorResult
   /** Set if the agent encountered an error (provider failure, etc.). Partial results are still available. */
   error?: Error
+  /** True when the loop stopped because maxIterations was reached, NOT because the model finished naturally */
+  maxIterationsExhausted?: boolean
+  /** The stop reason from the last LLM response (e.g. 'end_turn', 'tool_use', 'max_tokens') */
+  lastStopReason?: string
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -171,6 +175,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let iterations = 0
   let loopBreak: LoopDetectorResult | undefined
   let abortTriggered = false
+  let maxIterationsExhausted = false
+  let lastStopReason: string | undefined
 
   const { signal } = options
 
@@ -264,8 +270,18 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       case 'turn_end': {
         iterations++
         onIteration?.(iterations)
+        // Track the stop reason from the last assistant message
+        const msgs = agent.state.messages
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === 'assistant' && (msgs[i] as any).stopReason) {
+            lastStopReason = (msgs[i] as any).stopReason
+            break
+          }
+        }
         if (iterations >= maxIterations && !abortTriggered) {
+          maxIterationsExhausted = true
           abortTriggered = true
+          console.warn(\`[AgentLoop] Max iterations (\${maxIterations}) exhausted — aborting. Last stop reason: \${lastStopReason}. The agent may not have completed its task.\`)
           agent.abort()
         }
         break
@@ -358,6 +374,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     newMessages,
     loopBreak,
     error: promptError || implicitError,
+    maxIterationsExhausted,
+    lastStopReason,
   }
 
   await onAgentEnd?.(result)

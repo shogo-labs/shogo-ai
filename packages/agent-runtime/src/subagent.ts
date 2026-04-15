@@ -559,32 +559,84 @@ export async function runSubagent(
 
   const model = resolveModelTier(config.modelTier, config.model || parentCtx.effectiveModel || parentCtx.config.model.name)
   const provider = config.provider || parentCtx.config.model.provider
-  const maxIterations = config.maxTurns || (isFork ? 200 : 10)
+  const iterationsPerPass = config.maxTurns || (isFork ? 200 : 10)
+  const MAX_SUBAGENT_CONTINUATIONS = isFork ? 10 : 5
 
   try {
-    const result = await runAgentLoop({
-      provider,
-      model,
-      system: systemPrompt,
-      history,
-      prompt,
-      tools,
-      maxIterations,
-      maxTokens: config.maxTokens,
-      thinkingLevel,
-      loopDetection: config.loopDetection,
-      streamFn: options?.streamFn,
-      onToolCall: callbacks?.onToolCall,
-      onTextDelta: callbacks?.onTextDelta,
-      onThinkingStart: callbacks?.onThinkingStart,
-      onThinkingDelta: callbacks?.onThinkingDelta,
-      onThinkingEnd: callbacks?.onThinkingEnd,
-      onBeforeToolCall: callbacks?.onBeforeToolCall,
-      onAfterToolCall: callbacks?.onAfterToolCall,
-      onToolCallStart: callbacks?.onToolCallStart,
-      onToolCallDelta: callbacks?.onToolCallDelta,
-      onToolCallEnd: callbacks?.onToolCallEnd,
-    })
+    let currentHistory = history
+    let currentPrompt = prompt
+    let result: Awaited<ReturnType<typeof runAgentLoop>>
+    let continuationCount = 0
+    let allToolCalls: any[] = []
+    let totalInputTokens = 0
+    let totalOutputTokens = 0
+    let totalCacheReadTokens = 0
+    let totalCacheWriteTokens = 0
+    let totalIterations = 0
+    let allNewMessages: any[] = []
+
+    while (true) {
+      result = await runAgentLoop({
+        provider,
+        model,
+        system: systemPrompt,
+        history: currentHistory,
+        prompt: currentPrompt,
+        tools,
+        maxIterations: iterationsPerPass,
+        maxTokens: config.maxTokens,
+        thinkingLevel,
+        loopDetection: config.loopDetection,
+        streamFn: options?.streamFn,
+        onToolCall: callbacks?.onToolCall,
+        onTextDelta: callbacks?.onTextDelta,
+        onThinkingStart: callbacks?.onThinkingStart,
+        onThinkingDelta: callbacks?.onThinkingDelta,
+        onThinkingEnd: callbacks?.onThinkingEnd,
+        onBeforeToolCall: callbacks?.onBeforeToolCall,
+        onAfterToolCall: callbacks?.onAfterToolCall,
+        onToolCallStart: callbacks?.onToolCallStart,
+        onToolCallDelta: callbacks?.onToolCallDelta,
+        onToolCallEnd: callbacks?.onToolCallEnd,
+      })
+
+      allToolCalls.push(...result.toolCalls)
+      totalInputTokens += result.inputTokens
+      totalOutputTokens += result.outputTokens
+      totalCacheReadTokens += result.cacheReadTokens
+      totalCacheWriteTokens += result.cacheWriteTokens
+      totalIterations += result.iterations
+      allNewMessages.push(...result.newMessages)
+
+      if (
+        result.maxIterationsExhausted &&
+        !result.loopBreak &&
+        !result.error &&
+        continuationCount < MAX_SUBAGENT_CONTINUATIONS
+      ) {
+        continuationCount++
+        console.log(
+          `[Subagent:${config.name}] Auto-continuing (pass ${continuationCount}/${MAX_SUBAGENT_CONTINUATIONS}) — ` +
+          `${result.iterations} iterations, ${result.toolCalls.length} tool calls, lastStop=${result.lastStopReason}`
+        )
+        currentHistory = [...history, ...allNewMessages]
+        currentPrompt = 'Continue — you ran out of steps. Pick up exactly where you left off and complete the remaining work.'
+        continue
+      }
+      break
+    }
+
+    // Merge accumulated results
+    result = {
+      ...result!,
+      toolCalls: allToolCalls,
+      iterations: totalIterations,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      cacheReadTokens: totalCacheReadTokens,
+      cacheWriteTokens: totalCacheWriteTokens,
+      newMessages: allNewMessages,
+    }
 
     callbacks?.onEnd?.(config.name)
 
