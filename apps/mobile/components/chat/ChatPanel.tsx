@@ -724,6 +724,7 @@ export const ChatPanel = observer(function ChatPanel({
     return () => {
       if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
       if (loadOlderWebDebounceRef.current) clearTimeout(loadOlderWebDebounceRef.current)
+      if (contextUsageTimerRef.current) clearTimeout(contextUsageTimerRef.current)
     }
   }, [])
 
@@ -837,6 +838,8 @@ export const ChatPanel = observer(function ChatPanel({
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
   const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
+  const contextUsageThrottleRef = useRef<{ inputTokens: number; contextWindowTokens: number } | null>(null)
+  const contextUsageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!toolErrorBanner) return
@@ -900,7 +903,9 @@ export const ChatPanel = observer(function ChatPanel({
       )
     },
     onData: async (dataPart) => {
-      console.log("[ChatPanel:onData] Received data part:", dataPart.type, dataPart)
+      if ((dataPart as any).type !== "data-context-usage") {
+        console.log("[ChatPanel:onData] Received data part:", dataPart.type, dataPart)
+      }
 
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
@@ -1318,10 +1323,18 @@ export const ChatPanel = observer(function ChatPanel({
       if ((dataPart as any).type === "data-context-usage") {
         const ctx = (dataPart as any).data
         if (ctx?.inputTokens && ctx?.contextWindowTokens) {
-          setContextUsage({
+          contextUsageThrottleRef.current = {
             inputTokens: ctx.inputTokens,
             contextWindowTokens: ctx.contextWindowTokens,
-          })
+          }
+          if (!contextUsageTimerRef.current) {
+            contextUsageTimerRef.current = setTimeout(() => {
+              contextUsageTimerRef.current = null
+              if (contextUsageThrottleRef.current) {
+                setContextUsage(contextUsageThrottleRef.current)
+              }
+            }, 500)
+          }
         }
       }
 
