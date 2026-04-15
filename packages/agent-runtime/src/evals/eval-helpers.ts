@@ -19,9 +19,27 @@ export function usedToolInFinalTurn(result: EvalResult, toolName: string): boole
   return result.finalTurnToolCalls.some(t => t.name === toolName)
 }
 
-/** True if `toolName` was NOT called in any turn. */
+/** True if `toolName` was NOT called in any turn (including via subagents). */
 export function neverUsedTool(result: EvalResult, toolName: string): boolean {
   return !result.toolCalls.some(t => t.name === toolName)
+}
+
+/**
+ * True if `toolName` was called anywhere — directly by the main agent OR
+ * inside a subagent (flattened by runner.ts). Equivalent to usedTool() after
+ * subagent tool call flattening, but semantically clearer for delegated tools.
+ */
+export function usedToolAnywhere(result: EvalResult, toolName: string): boolean {
+  return result.toolCalls.some(t => t.name === toolName)
+}
+
+/** True if the agent delegated to a specific subagent type via agent_spawn. */
+export function delegatedTo(result: EvalResult, subagentType: string): boolean {
+  return result.toolCalls.some(t =>
+    t.name === 'agent_spawn' &&
+    typeof t.input === 'object' && t.input !== null &&
+    (t.input as Record<string, unknown>).type === subagentType,
+  )
 }
 
 /** True if `toolName` was NOT called in the final turn. */

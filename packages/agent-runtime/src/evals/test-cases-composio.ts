@@ -30,8 +30,10 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   usedToolInFinalTurn,
   neverUsedTool,
+  delegatedTo,
   toolCallCount,
   responseContains,
   toolCallArgsContain,
@@ -62,14 +64,14 @@ export const COMPOSIO_EVALS: AgentEval[] = [
         description: 'Used tool_search to find Google Calendar',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Used tool_install to connect Composio integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'install-no-command',
@@ -124,14 +126,14 @@ export const COMPOSIO_EVALS: AgentEval[] = [
         description: 'Used tool_search to find GitHub',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Used tool_install (for Composio, not npm)',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'install-composio-name',
@@ -221,7 +223,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Did NOT use tool_search at all (skill provides the info)',
         points: 25,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search'),
+        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'fewer-tool-calls',
@@ -242,7 +244,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Still called tool_install to ensure Composio is connected',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
     ],
     antiPatterns: [
@@ -268,14 +270,14 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Used tool_search to find Gmail',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Used tool_install for Gmail (returns authUrl)',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'showed-auth-url',
@@ -323,14 +325,14 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Used tool_search to find Gmail',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Used tool_install for Gmail via Composio',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'used-gmail-send',
@@ -385,7 +387,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Completed the full Composio discovery flow',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'tool_search') && usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search') && usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-prs',
@@ -489,7 +491,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Searched and installed the Airbnb MCP server',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'tool_search') && usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search') && usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'used-airbnb-search',
@@ -603,7 +605,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Did NOT use tool_search (tools already available from context)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search'),
+        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'used-create-event',
@@ -658,14 +660,14 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
         description: 'Used tool_search to find integrations',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Installed Composio via tool_install',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-emails',
@@ -756,14 +758,14 @@ tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, t
         description: 'Used tool_search since no email skill was loaded',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Installed Composio for Gmail',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'used-gmail-send',

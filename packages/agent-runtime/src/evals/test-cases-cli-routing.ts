@@ -17,7 +17,9 @@ import type { AgentEval } from './types'
 import type { ToolMockMap } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   neverUsedTool,
+  delegatedTo,
   execCommandContains,
   wroteEnvFile,
   responseContains,
@@ -385,7 +387,7 @@ const ghPreferCli: AgentEval = {
       description: 'Did NOT use tool_install for GitHub',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install'),
+      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-issues',
@@ -426,7 +428,7 @@ const stripePreferCli: AgentEval = {
       description: 'Did NOT use tool_install for Stripe',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install'),
+      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-subscription',
@@ -467,7 +469,7 @@ const glabPreferCli: AgentEval = {
       description: 'Did NOT use mcp_install for GitLab',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'mcp_install'),
+      validate: (r) => neverUsedTool(r, 'mcp_install') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-pipelines',
@@ -508,7 +510,7 @@ const awsPreferCli: AgentEval = {
       description: 'Did NOT use tool_install or mcp_install',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install') && neverUsedTool(r, 'mcp_install'),
+      validate: (r) => neverUsedTool(r, 'tool_install') && neverUsedTool(r, 'mcp_install') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-buckets',
@@ -548,7 +550,7 @@ const ghActionsPreferCli: AgentEval = {
       description: 'Did NOT use tool_install',
       points: 25,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install'),
+      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-runs',
@@ -619,7 +621,7 @@ const antiPatternSkipEnv: AgentEval = {
       description: 'Used gh CLI, not tool_install',
       points: 30,
       phase: 'execution',
-      validate: (r) => execCommandContains(r, 'gh ') && neverUsedTool(r, 'tool_install'),
+      validate: (r) => execCommandContains(r, 'gh ') && neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
     },
     {
       id: 'mentions-results',
@@ -646,7 +648,7 @@ const fallbackToManaged: AgentEval = {
       description: 'Searched for GitHub integration via tool_search',
       points: 40,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'tool_search') || usedTool(r, 'tool_install'),
+      validate: (r) => usedToolAnywhere(r, 'tool_search') || usedToolAnywhere(r, 'tool_install'),
     },
     {
       id: 'did-not-write-env',
@@ -719,7 +721,7 @@ const multiTokenSingleTurn: AgentEval = {
       description: 'Did not fall back to managed integrations',
       points: 15,
       phase: 'execution',
-      validate: (r) => neverUsedTool(r, 'tool_install'),
+      validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
     },
   ],
 }

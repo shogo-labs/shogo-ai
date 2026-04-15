@@ -114,12 +114,15 @@ export function buildGuideRegistry(promptOverrides?: Map<string, string>): Map<s
 export const CAPABILITIES_INDEX = `## Capabilities Index
 Read the full guide with \`read_guide({ name: "..." })\` before using these capabilities for the first time.
 
-- **mcp-discovery**: Tool discovery via CLI-first tools, managed integrations (tool_search/tool_install), and MCP servers (mcp_search/mcp_install). Read before installing or searching for tools.
-- **subagent**: Agent orchestration — explore, general-purpose, code-reviewer, fork mode, and team swarm. Read before delegating tasks.
-- **browser**: Browser automation via snapshot/ref/click workflow. Read before any browser interaction.
+- **mcp-discovery**: Tool discovery via CLI-first tools, managed integrations, and MCP servers. Delegated — use \`agent_spawn({ type: "integration", prompt: "..." })\`. Read before first delegation.
+- **subagent**: Agent orchestration — explore, general-purpose, code-reviewer, browser, integration, channel, media, devops, fork mode, and team swarm. Read before delegating tasks.
+- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use \`agent_spawn({ type: "browser", prompt: "..." })\`. The \`web\` tool for HTTP fetching is available directly. Read the guide before first browser delegation.
 - **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.
 - **personality**: Rules for updating AGENTS.md identity/personality. Read before modifying personality, tone, or role.
 - **skill-matching**: Skill discovery, trigger matching, and management in .shogo/skills/. Read before skill operations.
 - **self-evolution**: When and how to write reusable skills. Read when you discover a reusable pattern or workaround.
 - **tool-planning**: Batching tool calls and handling uploaded files in files/. Reference when planning complex multi-step tool sequences.
-- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.`
+- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.
+- **media**: Image generation and audio transcription. Delegated — use \`agent_spawn({ type: "media", prompt: "..." })\`.
+- **channel**: Channel connection and messaging (Telegram, Discord, webchat). Delegated — use \`agent_spawn({ type: "channel", prompt: "..." })\`.
+- **devops**: Heartbeat scheduling, monitoring, and skill server sync. Delegated — use \`agent_spawn({ type: "devops", prompt: "..." })\`.`

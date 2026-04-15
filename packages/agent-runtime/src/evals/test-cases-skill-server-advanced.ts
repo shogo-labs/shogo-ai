@@ -27,6 +27,7 @@ import type { AgentEval, EvalResult } from './types'
 import type { ToolMockMap } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   responseContains,
   toolCallsJson,
   toolCallArgsContain,
@@ -465,7 +466,7 @@ const EMAIL_SLACK_RECON_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: EMAIL_SLACK_RECON_MOCKS,
   validationCriteria: [
-    { id: 'used-tool-search', description: 'Used tool_search to discover integrations', points: 2, phase: 'intention', validate: (r) => usedTool(r, 'tool_search') },
+    { id: 'used-tool-search', description: 'Used tool_search to discover integrations', points: 2, phase: 'intention', validate: (r) => usedToolAnywhere(r, 'tool_search') },
     { id: 'installed-integrations', description: 'Installed Gmail and Slack via tool_install before using them', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') && installedIntegration(r, 'slack') },
     { id: 'called-both', description: 'Called both Gmail and Slack integration tools', points: 4, phase: 'execution', validate: (r) => usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
     { id: 'wrote-schema', description: 'Wrote schema.prisma with action-item model', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },

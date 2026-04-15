@@ -21,6 +21,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { BUSINESS_USER_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -328,7 +329,7 @@ const PHASE_1: AgentEval = {
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'slack'),
     },
     {
@@ -347,7 +348,7 @@ const PHASE_1: AgentEval = {
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'email'),
     },
     {
@@ -365,7 +366,7 @@ const PHASE_1: AgentEval = {
       description: 'Configured heartbeat for daily check-ins',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
     },
     {
       id: 'quiet-hours',
@@ -768,7 +769,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'intention',
       validate: (r) => {
-        const searched = usedTool(r, 'tool_search') || usedTool(r, 'mcp_search')
+        const searched = usedToolAnywhere(r, 'tool_search') || usedToolAnywhere(r, 'mcp_search')
         const mentioned = toolCallsJson(r).includes('github')
         return searched && mentioned
       },
@@ -779,7 +780,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'tool_install') || usedTool(r, 'mcp_install'),
+        usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
     },
     // Turn 2: Calendar
     {
@@ -845,7 +846,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'intention',
       validate: (r) => {
-        const usedScheduling = usedTool(r, 'heartbeat_configure') || usedTool(r, 'write_file')
+        const usedScheduling = usedToolAnywhere(r, 'heartbeat_configure') || usedTool(r, 'write_file')
         const text = r.responseText.toLowerCase()
         const mentionsSchedule = text.includes('friday') || text.includes('weekly') ||
                                   text.includes('automat') || text.includes('schedule')

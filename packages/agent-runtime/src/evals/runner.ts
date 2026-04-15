@@ -17,6 +17,7 @@ import type {
   CriterionResult,
   ToolCallRecord,
   EvalMetrics,
+  PromptBreakdown,
 } from './types'
 
 export interface EvalRunnerConfig {
@@ -46,6 +47,7 @@ export interface ParsedAgentResponse {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  promptBreakdown?: PromptBreakdown
 }
 
 /**
@@ -125,6 +127,7 @@ async function parseSSEStream(
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
+  let promptBreakdown: PromptBreakdown | undefined
 
   const reader = response.body?.getReader()
   if (!reader) throw new Error('No response body')
@@ -222,6 +225,13 @@ async function parseSSEStream(
               }
               break
             }
+            case 'data-prompt-breakdown': {
+              promptBreakdown = data.data || data
+              if (verbose && promptBreakdown) {
+                console.log(`      [SSE] Prompt breakdown: ${promptBreakdown.sections?.length} sections, ~${promptBreakdown.grandEstTokens?.toLocaleString()} est tokens`)
+              }
+              break
+            }
             case 'error': {
               const errText = data.errorText || data.message || data.error || JSON.stringify(data)
               if (verbose) console.log(`      [SSE] ERROR event: ${errText}`)
@@ -244,7 +254,40 @@ async function parseSSEStream(
     console.log(`      [SSE] Complete: ${toolCalls.length} tools, ${stepCount} steps`)
   }
 
-  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
+  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, promptBreakdown }
+}
+
+// ---------------------------------------------------------------------------
+// Subagent tool call flattening
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract tool calls made by subagents from agent_spawn / agent_result outputs
+ * and append them to the flat toolCalls array with viaSubagent=true.
+ * This lets eval assertions check tools used inside subagents.
+ */
+function flattenSubagentToolCalls(toolCalls: ToolCallRecord[]): ToolCallRecord[] {
+  const nested: ToolCallRecord[] = []
+  for (const tc of toolCalls) {
+    if (tc.name !== 'agent_spawn' && tc.name !== 'agent_result') continue
+    const output = tc.output as any
+    if (!output || typeof output !== 'object') continue
+
+    const parts: any[] = output.parts || output.result?.parts
+    if (!Array.isArray(parts)) continue
+
+    for (const part of parts) {
+      if (part?.type !== 'tool' || !part.tool?.toolName) continue
+      nested.push({
+        name: part.tool.toolName,
+        input: part.tool.args ?? {},
+        output: part.tool.result,
+        error: part.tool.state === 'error',
+        viaSubagent: true,
+      })
+    }
+  }
+  return nested
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +349,7 @@ export async function runEval(
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
+  let promptBreakdown: PromptBreakdown | undefined
 
   try {
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
@@ -342,6 +386,7 @@ export async function runEval(
               outputTokens += resp.outputTokens
               cacheReadTokens += resp.cacheReadTokens
               cacheWriteTokens += resp.cacheWriteTokens
+              if (!promptBreakdown && resp.promptBreakdown) promptBreakdown = resp.promptBreakdown
             } catch (e: any) {
               errors.push(`History turn error: ${e.message}`)
             }
@@ -361,8 +406,18 @@ export async function runEval(
     outputTokens += response.outputTokens
     cacheReadTokens += response.cacheReadTokens
     cacheWriteTokens += response.cacheWriteTokens
+    if (!promptBreakdown && response.promptBreakdown) promptBreakdown = response.promptBreakdown
   } catch (err: any) {
     errors.push(err.message)
+  }
+
+  // Flatten subagent tool calls so eval assertions can see tools used inside
+  // agent_spawn / agent_result (e.g. usedToolAnywhere checks).
+  const nestedCalls = flattenSubagentToolCalls(toolCalls)
+  if (nestedCalls.length > 0) {
+    toolCalls.push(...nestedCalls)
+    const nestedFinal = flattenSubagentToolCalls(finalTurnToolCalls)
+    if (nestedFinal.length > 0) finalTurnToolCalls.push(...nestedFinal)
   }
 
   const endTime = Date.now()
@@ -397,6 +452,7 @@ export async function runEval(
     metrics,
     errors: errors.length > 0 ? errors : undefined,
     workspaceDir: cfg.workspaceDir,
+    promptBreakdown,
   }
 
   let totalScore = 0

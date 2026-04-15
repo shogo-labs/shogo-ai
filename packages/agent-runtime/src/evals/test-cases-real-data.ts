@@ -24,7 +24,9 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   neverUsedTool,
+  delegatedTo,
   responseContains,
 } from './eval-helpers'
 
@@ -52,14 +54,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Used tool_search to find a GitHub integration',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-integration',
         description: 'Used tool_install to connect the integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-real-issues',
@@ -195,14 +197,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Used tool_search to find Google Sheets integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Used tool_install to connect Composio',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-sheet-data',
@@ -348,7 +350,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Did NOT search for MCP integrations (user explicitly asked for fake data)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search'),
+        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'built-ui',
@@ -400,14 +402,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Used tool_search to find GitHub integration (triggered by "my GitHub issues")',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-integration',
         description: 'Used tool_install to connect the integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-real-data',

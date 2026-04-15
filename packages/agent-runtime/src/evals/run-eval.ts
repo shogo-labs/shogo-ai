@@ -742,6 +742,19 @@ async function runEvalOnWorker(
       : ''
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
 
+    if (result.promptBreakdown && verboseFlag) {
+      const bd = result.promptBreakdown
+      const maxLabel = Math.max(...bd.sections.map(s => s.label.length), 'tool-schemas (XX)'.length)
+      for (const sec of bd.sections) {
+        const tag = sec.zone === 'stable' ? 'S' : 'D'
+        console.log(`      ${sec.label.padEnd(maxLabel)} [${tag}]: ${sec.chars.toLocaleString().padStart(7)} chars ~${sec.estTokens.toLocaleString().padStart(6)} tok`)
+      }
+      console.log(`      ${''.padEnd(maxLabel + 30, '─')}`)
+      console.log(`      ${'System prompt total'.padEnd(maxLabel)}    : ${bd.totalChars.toLocaleString().padStart(7)} chars ~${bd.totalEstTokens.toLocaleString().padStart(6)} tok`)
+      console.log(`      ${`Tool schemas (${bd.toolCount})`.padEnd(maxLabel)}    : ${bd.toolSchemaChars.toLocaleString().padStart(7)} chars ~${bd.toolSchemaEstTokens.toLocaleString().padStart(6)} tok`)
+      console.log(`      ${'Grand total'.padEnd(maxLabel)}    :                ~${bd.grandEstTokens.toLocaleString().padStart(6)} tok`)
+    }
+
     if (result.score > 0) {
       // Force the skill server to regenerate + restart with the latest schema
       // before probing routes. This eliminates file-watcher timing races.

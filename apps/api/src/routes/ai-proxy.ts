@@ -146,7 +146,7 @@ function resolveModel(model: string): ModelConfig | null {
       displayName: model,
     }
   }
-  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
+  if (model.startsWith('gpt')) {
     return {
       provider: 'openai',
       apiModel: model,

@@ -17,24 +17,33 @@
  *
  *   sumUsage (pi-adapter.ts) sums across ALL iterations in a single turn.
  *   If the agent makes a tool call, the second iteration reads the cached
- *   prefix (~11k) while also writing new messages to cache, roughly doubling
+ *   prefix while also writing new messages to cache, roughly doubling
  *   the total reported tokens.
  *
- *   Verified baseline (April 2026, Haiku, fresh session, 53 tools):
- *     - System prompt (stable + dynamic): ~2,400 tokens
- *     - Tool definitions (53 tools):      ~8,900 tokens
+ *   Verified baseline (April 2026, Haiku, fresh session, eval workspace):
+ *     - System prompt (stable + dynamic): ~4,400 tokens
+ *     - Tool definitions (~32 tools):     ~4,600 tokens
+ *     - Dynamic workspace content:        ~1,400 tokens
+ *       (AGENTS.md, workspace file tree, skills, etc.)
+ *     - STACK.md preview (~200 words):    ~300 tokens
+ *       (full STACK.md available via read_file; saves ~5,900 tok/turn)
  *     - User message overhead:            ~350 tokens
- *     Total first message:                ~11,600 tokens
+ *     Total first message:                ~12,500 tokens (cache_write)
  *
- *   Ceiling of 18,000 allows for rich workspace content (AGENTS.md, MEMORY.md,
- *   workspace tree, installed tools, skills) without masking real regressions.
- *   Floor of 8,000 catches accidentally gutted prompts.
+ *   17 tools are now delegated to subagents (browser, tool_*, mcp_*,
+ *   channel_*, send_message, generate_image, transcribe_audio, heartbeat_*,
+ *   skill_server_sync), saving ~4,000 schema tokens vs the original 53 tools.
+ *   The `web` tool stays on the main agent for direct HTTP fetching.
+ *
+ *   Ceiling of 16,000 accounts for the eval workspace's seeded content
+ *   while still catching regressions.
+ *   Floor of 5,000 catches accidentally gutted prompts.
  */
 
 import type { AgentEval } from './types'
 
-const TOKEN_CEILING = 18_000
-const TOKEN_FLOOR = 8_000
+const TOKEN_CEILING = 16_000
+const TOKEN_FLOOR = 5_000
 
 function totalInputTokens(r: { metrics: { tokens: { input: number; cacheRead: number; cacheWrite: number } } }): number {
   return r.metrics.tokens.input + r.metrics.tokens.cacheWrite + r.metrics.tokens.cacheRead

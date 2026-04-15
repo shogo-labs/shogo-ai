@@ -19,6 +19,7 @@ import type { AgentEval, EvalResult } from './types'
 import { FREELANCER_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -306,7 +307,7 @@ const PHASE_1: AgentEval = {
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'email'),
     },
     {
@@ -331,14 +332,14 @@ const PHASE_1: AgentEval = {
       description: 'Installed calendar-related tool or MCP',
       points: 4,
       phase: 'execution',
-      validate: (r) => usedTool(r, 'tool_install') || usedTool(r, 'mcp_install'),
+      validate: (r) => usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
     },
     {
       id: 'heartbeat-configured',
       description: 'Configured heartbeat or recurring reminder',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
     },
     {
       id: 'friday-schedule',

@@ -224,6 +224,8 @@ export class AgentGateway {
   private promptOverrides = new Map<string, string>()
   /** Current guide registry built during loadBootstrapContext, consumed by tool context */
   private currentGuideRegistry?: Map<string, string>
+  /** Per-section prompt breakdown from the last loadBootstrapContext() call */
+  lastPromptBreakdown?: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
@@ -1301,6 +1303,7 @@ export class AgentGateway {
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
       guideRegistry: this.currentGuideRegistry,
+      toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1348,17 +1351,29 @@ export class AgentGateway {
     if (this.config.quickActionsEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'quick_action')
     }
-    // Code analysis tools are only available via the code-reviewer subagent
-    const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context'])
+    // Code analysis tools are only available via subagents (code-reviewer, explore)
+    const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context', 'impact_radius'])
     assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
+
+    // Tools delegated to dedicated subagents — removed from the main agent to
+    // reduce per-request token cost. Spawn via agent_spawn({ type: "<subagent>" }).
+    const SUBAGENT_ONLY_TOOLS = new Set([
+      'browser',                                                                       // -> browser subagent
+      'tool_search', 'tool_install', 'tool_uninstall',                                // -> integration subagent
+      'mcp_search', 'mcp_install', 'mcp_uninstall',                                   // -> integration subagent
+      'channel_connect', 'channel_disconnect', 'channel_list', 'send_message',        // -> channel subagent
+      'generate_image', 'transcribe_audio',                                            // -> media subagent
+      'heartbeat_configure', 'heartbeat_status', 'skill_server_sync',                 // -> devops subagent
+    ])
+    assembledTools = assembledTools.filter(t => !SUBAGENT_ONLY_TOOLS.has(t.name))
 
     // Interaction mode tool restrictions
     if (interactionMode === 'ask') {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'search', 'impact_radius',
-        'web', 'browser',
+        'read_file', 'search',
+        'web',
         'memory_read', 'memory_search',
         'ask_user', 'todo_write', 'create_plan',
         'skill',
@@ -1566,6 +1581,46 @@ export class AgentGateway {
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
         } as any)
+      }
+
+      // Prompt breakdown: compute tool schema size and emit per-section breakdown
+      if (this.lastPromptBreakdown) {
+        const toolSchemaChars = tools.reduce((sum, t) => {
+          const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
+          return sum + schema.length
+        }, 0)
+        const toolSchemaEstTokens = Math.ceil(toolSchemaChars / 4)
+
+        const breakdown = this.lastPromptBreakdown
+        const totalChars = breakdown.reduce((s, sec) => s + sec.chars, 0)
+        const totalEstTokens = breakdown.reduce((s, sec) => s + sec.estTokens, 0)
+        const grandEstTokens = totalEstTokens + toolSchemaEstTokens
+
+        const lines = ['[AgentGateway] Prompt breakdown:']
+        const maxLabel = Math.max(...breakdown.map(s => s.label.length), 'tool-schemas (XX)'.length)
+        for (const sec of breakdown) {
+          const tag = sec.zone === 'stable' ? 'S' : 'D'
+          lines.push(`  ${sec.label.padEnd(maxLabel)} [${tag}]: ${sec.chars.toLocaleString().padStart(7)} chars ~${sec.estTokens.toLocaleString().padStart(6)} tok`)
+        }
+        lines.push(`  ${''.padEnd(maxLabel + 30, '─')}`)
+        lines.push(`  ${'System prompt total'.padEnd(maxLabel)}    : ${totalChars.toLocaleString().padStart(7)} chars ~${totalEstTokens.toLocaleString().padStart(6)} tok`)
+        lines.push(`  ${`Tool schemas (${tools.length})`.padEnd(maxLabel)}    : ${toolSchemaChars.toLocaleString().padStart(7)} chars ~${toolSchemaEstTokens.toLocaleString().padStart(6)} tok`)
+        lines.push(`  ${'Grand total'.padEnd(maxLabel)}    :                ~${grandEstTokens.toLocaleString().padStart(6)} tok`)
+        console.log(lines.join('\n'))
+
+        const breakdownPayload = {
+          sections: breakdown,
+          totalChars,
+          totalEstTokens,
+          toolSchemaChars,
+          toolSchemaEstTokens,
+          toolCount: tools.length,
+          grandEstTokens,
+        }
+
+        if (uiWriter) {
+          uiWriter.write({ type: 'data-prompt-breakdown', data: breakdownPayload } as any)
+        }
       }
 
       const result = await runAgentLoop({
@@ -1989,31 +2044,41 @@ export class AgentGateway {
 
     const stableParts: string[] = []
     const dynamicParts: string[] = []
+    const sections: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }> = []
+
+    const pushStable = (label: string, content: string) => {
+      stableParts.push(content)
+      sections.push({ label, zone: 'stable', chars: content.length, estTokens: Math.ceil(content.length / 4) })
+    }
+    const pushDynamic = (label: string, content: string) => {
+      dynamicParts.push(content)
+      sections.push({ label, zone: 'dynamic', chars: content.length, estTokens: Math.ceil(content.length / 4) })
+    }
 
     // ---- STABLE ZONE: rarely changes within a session ----
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
     if (activeMode !== 'canvas') {
-      stableParts.push(CANVAS_FILE_REFERENCE)
+      pushStable('canvas-file-reference', CANVAS_FILE_REFERENCE)
     }
 
     // 2. General coding guide (always the same)
-    stableParts.push(CODE_AGENT_GENERAL_GUIDE)
+    pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
 
     // 3. Capabilities Index — compact pointers to on-demand guides served by read_guide tool.
     // Full guide content lives in guide-registry.ts and is returned by the read_guide tool,
     // saving ~4,600 tokens per turn compared to inlining all guides.
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
-    stableParts.push(CAPABILITIES_INDEX)
+    pushStable('capabilities-index', CAPABILITIES_INDEX)
 
     if (this.config.quickActionsEnabled !== false) {
-      stableParts.push(QUICK_ACTION_GUIDE)
+      pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
 
     // 4. Security permissions guide (stable once mode is set)
     if (this.permissionEngine) {
-      stableParts.push([
+      pushStable('security-permissions', [
         '## Security Permissions',
         '',
         'This agent runs with a security permission system. Some tool calls may be blocked or require user approval through a UI dialog (not through chat).',
@@ -2024,7 +2089,7 @@ export class AgentGateway {
     }
 
     // 5. Error notification guide (always the same)
-    stableParts.push([
+    pushStable('error-notification-guide', [
       '## CRITICAL: Error Notifications (MUST follow)',
       '',
       'You have a tool called `notify_user_error`. You MUST call it whenever:',
@@ -2052,13 +2117,37 @@ export class AgentGateway {
     // 6. Project identity files (change when user edits them)
     // SOUL.md, USER.md, IDENTITY.md were consolidated into AGENTS.md but are
     // still read here for backwards compatibility with existing workspaces.
-    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md', 'STACK.md']
+    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
     for (const filename of files) {
       const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
       if (filepath) {
         const content = readFileSync(filepath, 'utf-8').trim()
         if (content) {
-          dynamicParts.push(content)
+          pushDynamic(filename.toLowerCase().replace('.md', ''), content)
+        }
+      }
+    }
+
+    // 6b. STACK.md — preview-truncated to save tokens. The full file is
+    // available to the agent via read_file when it needs the complete reference.
+    const STACK_PREVIEW_WORDS = 200
+    const stackPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'STACK.md')
+    if (stackPath) {
+      const fullStack = readFileSync(stackPath, 'utf-8').trim()
+      if (fullStack) {
+        const words = fullStack.split(/\s+/)
+        if (words.length <= STACK_PREVIEW_WORDS) {
+          pushDynamic('stack', fullStack)
+        } else {
+          const preview = words.slice(0, STACK_PREVIEW_WORDS).join(' ')
+          const relativePath = stackPath.startsWith(this.workspaceDir)
+            ? stackPath.slice(this.workspaceDir.length + 1)
+            : stackPath
+          pushDynamic('stack', [
+            preview,
+            '',
+            `(Truncated — ${words.length} words total. Full reference: \`read_file({ path: "${relativePath}" })\`)`,
+          ].join('\n'))
         }
       }
     }
@@ -2068,7 +2157,7 @@ export class AgentGateway {
     if (memoryPath) {
       const memory = readFileSync(memoryPath, 'utf-8').trim()
       if (memory) {
-        dynamicParts.push(`## Memory\n${memory}`)
+        pushDynamic('memory', `## Memory\n${memory}`)
       }
     }
 
@@ -2077,7 +2166,7 @@ export class AgentGateway {
     if (existsSync(heartbeatLogPath)) {
       const heartbeatLog = readFileSync(heartbeatLogPath, 'utf-8').trim()
       if (heartbeatLog) {
-        dynamicParts.push(`## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`)
+        pushDynamic('heartbeat-log', `## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`)
       }
     }
 
@@ -2089,7 +2178,7 @@ export class AgentGateway {
       const agentTemplate = readFileSync(agentTemplatePath, 'utf-8').trim()
       if (agentTemplate) {
         const humanName = agentTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        dynamicParts.push([
+        pushDynamic('agent-template', [
           '## Agent Template Context',
           '',
           `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
@@ -2103,7 +2192,7 @@ export class AgentGateway {
     // 9. Current date/time context (changes every turn)
     const now = new Date()
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
-    dynamicParts.push([
+    pushDynamic('current-context', [
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
@@ -2116,29 +2205,29 @@ export class AgentGateway {
     ].join('\n'))
 
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
-    dynamicParts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
+    pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
 
     // 10. Dynamic workspace context (changes as files are added/removed)
     const installedToolsContext = this.buildInstalledToolsContext()
     if (installedToolsContext) {
-      dynamicParts.push(installedToolsContext)
+      pushDynamic('installed-tools', installedToolsContext)
     }
 
     const uploadedFilesContext = this.buildUploadedFilesContext()
     if (uploadedFilesContext) {
-      dynamicParts.push(uploadedFilesContext)
+      pushDynamic('uploaded-files', uploadedFilesContext)
     }
 
     const workspaceTree = this.buildWorkspaceTreeContext()
     if (workspaceTree) {
-      dynamicParts.push(workspaceTree)
+      pushDynamic('workspace-tree', workspaceTree)
     }
 
     // 11. Skills and skill server (can change when skills are installed)
     if (this.skills.length > 0) {
       const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
-        dynamicParts.push(skillsSection)
+        pushDynamic('skills', skillsSection)
       }
     }
 
@@ -2146,20 +2235,22 @@ export class AgentGateway {
     if (this.config.quickActionsEnabled !== false && this.quickActions.length > 0) {
       const qaSection = buildQuickActionsPromptSection(this.quickActions)
       if (qaSection) {
-        dynamicParts.push(qaSection)
+        pushDynamic('quick-actions', qaSection)
       }
     }
 
     const skillServerSection = this.buildSkillServerPromptSection()
     if (skillServerSection) {
-      dynamicParts.push(skillServerSection)
+      pushDynamic('skill-server', skillServerSection)
     }
 
     // 12. Active team context (persisted in SQLite, survives session resets)
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
-      if (teamCtx) dynamicParts.push(teamCtx)
+      if (teamCtx) pushDynamic('team-context', teamCtx)
     }
+
+    this.lastPromptBreakdown = sections
 
     const stableText = stableParts.join('\n\n---\n\n')
     const dynamicText = dynamicParts.join('\n\n---\n\n')

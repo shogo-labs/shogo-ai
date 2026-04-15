@@ -109,6 +109,8 @@ export interface ToolCallRecord {
   output: unknown
   durationMs?: number
   error?: boolean
+  /** True when this tool call was made by a subagent, not the main agent directly. */
+  viaSubagent?: boolean
 }
 
 export interface ModelCheckResult {
@@ -166,6 +168,23 @@ export interface RuntimeCheckResults {
   errors: string[]
 }
 
+export interface PromptBreakdownSection {
+  label: string
+  zone: 'stable' | 'dynamic'
+  chars: number
+  estTokens: number
+}
+
+export interface PromptBreakdown {
+  sections: PromptBreakdownSection[]
+  totalChars: number
+  totalEstTokens: number
+  toolSchemaChars: number
+  toolSchemaEstTokens: number
+  toolCount: number
+  grandEstTokens: number
+}
+
 export interface EvalResult {
   eval: AgentEval
   passed: boolean
@@ -195,6 +214,8 @@ export interface EvalResult {
   /** Post-eval runtime validation results. Adds bonus criteria to score. */
   runtimeChecks?: RuntimeCheckResults
   runtimeWarnings?: string[]
+  /** Per-section prompt token breakdown from the first turn. */
+  promptBreakdown?: PromptBreakdown
 }
 
 export interface CriterionResult {

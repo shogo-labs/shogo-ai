@@ -21,6 +21,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { STARTUP_CTO_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -236,7 +237,7 @@ const PHASE_1: AgentEval = {
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'slack'),
     },
     {
@@ -259,7 +260,7 @@ const PHASE_1: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'tool_install') || usedTool(r, 'mcp_install') ||
+        usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install') ||
         toolCallArgsContain(r, 'exec', 'gh '),
     },
     {
@@ -269,7 +270,7 @@ const PHASE_1: AgentEval = {
       phase: 'intention',
       validate: (r) =>
         responseContains(r, 'digest') || responseContains(r, 'heartbeat') ||
-        responseContains(r, 'schedule') || usedTool(r, 'heartbeat_configure'),
+        responseContains(r, 'schedule') || usedToolAnywhere(r, 'heartbeat_configure'),
     },
     {
       id: 'clarifies-channel-or-timezone',

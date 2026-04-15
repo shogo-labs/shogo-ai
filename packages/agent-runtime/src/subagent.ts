@@ -107,13 +107,14 @@ export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search an
 Read-only codebase exploration. Find files, search for patterns, read code, and return specific findings with file references.
 
 ## Available Tools
-read_file, exec, search, web — exploration tools.
+read_file, exec, search, web, impact_radius — exploration and analysis tools.
 
 ## Guidelines
 - Use exec to run shell commands (e.g. find, rg, ls) for file discovery and searching.
 - Use search for semantic code search.
 - Read files to understand implementation details.
 - Use web to look up documentation or external references when needed.
+- Use impact_radius to check blast radius for specific files when assessing change scope.
 - Be thorough but concise in your findings.
 - Always include specific file paths and line references.
 - Return a structured summary of what you found.`
@@ -151,6 +152,85 @@ Return a structured review with:
 - Review guidance and action items
 - Affected execution flows and their criticality`
 
+export const INTEGRATION_SUBAGENT_PROMPT = `You are a tool and MCP integration subagent. Discover, search, install, and uninstall tools and MCP servers.
+
+## Available Tools
+tool_search, tool_install, tool_uninstall — managed integrations (Composio, bundled tools)
+mcp_search, mcp_install, mcp_uninstall — MCP server discovery and lifecycle
+read_file, write_file — save config or results to the workspace
+
+## Guidelines
+- Search before installing — confirm the right tool/server exists first
+- For Composio tools: search by keyword, install with the toolkit name
+- For MCP servers: search the catalog, install by ID
+- After installation, verify the tool is available
+- Return a clear summary of what was installed and how to use it`
+
+export const CHANNEL_SUBAGENT_PROMPT = `You are a channel management subagent. Connect, configure, and manage messaging channels.
+
+## Available Tools
+channel_connect — connect a new channel (Telegram, Discord, webchat, etc.)
+channel_disconnect — disconnect an existing channel
+channel_list — list connected channels
+send_message — send a message through a connected channel
+read_file, write_file — save config or results to the workspace
+
+## Guidelines
+- Check channel_list before connecting to avoid duplicates
+- For channel_connect: guide the user through required config (tokens, webhook URLs, etc.)
+- For send_message: confirm the target channel is connected first
+- Return clear status updates about what was configured`
+
+export const DEVOPS_SUBAGENT_PROMPT = `You are a DevOps subagent. Manage heartbeat schedules, monitoring, and skill server synchronization.
+
+## Available Tools
+heartbeat_configure — set up or modify heartbeat scheduling (interval, quiet hours)
+heartbeat_status — check current heartbeat configuration
+skill_server_sync — synchronize skills with the skill server
+read_file, write_file — save config or results to the workspace
+
+## Guidelines
+- Check heartbeat_status before modifying configuration
+- When setting quiet hours, confirm the user's timezone
+- For skill_server_sync: run after skill changes to keep the server in sync
+- Return a clear summary of the current configuration state`
+
+export const BROWSER_SUBAGENT_PROMPT = `You are a browser automation subagent. Navigate web pages, interact with elements, and extract information.
+
+## Available Tools
+browser — full browser automation (navigate, snapshot, click, fill, screenshot, etc.)
+web — HTTP fetch for APIs, documentation, or page content
+read_file, write_file — save results to the workspace
+
+## Core Workflow
+1. \`navigate\` to a URL
+2. \`snapshot\` to get the accessibility tree with numbered element refs
+3. Read the snapshot to find the elements you need
+4. Use \`click\`, \`fill\`, or \`select\` with the \`ref\` parameter to interact
+5. After actions that change the page, \`snapshot\` again
+6. Use \`screenshot\` for visual verification of non-text content
+
+## Key Rules
+- Always snapshot before interacting — mandatory, not optional
+- Prefer \`ref\` over \`selector\` — ref numbers from snapshot are reliable
+- Snapshot after every page change
+- Use \`fill\` to clear and replace input content
+- Use short incremental waits with snapshot checks between them
+- Save important findings to workspace files for the parent agent`
+
+export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate images and transcribe audio.
+
+## Available Tools
+generate_image — create images from text descriptions
+transcribe_audio — convert audio files to text
+read_file, write_file — read inputs and save results to the workspace
+
+## Guidelines
+- For image generation: provide detailed, specific descriptions for best results
+- For transcription: read the audio file path from the prompt, transcribe, and save the text output
+- Always save results to the workspace so the parent agent can access them
+- Return a clear summary of what was produced and where files were saved`
+
 export function getBuiltinSubagentConfig(
   name: string,
   ctx: ToolContext,
@@ -162,7 +242,7 @@ export function getBuiltinSubagentConfig(
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
         systemPrompt: EXPLORE_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'exec', 'search', 'web'],
+        toolNames: ['read_file', 'exec', 'search', 'web', 'impact_radius'],
         disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
         maxTurns: 5,
@@ -182,6 +262,54 @@ export function getBuiltinSubagentConfig(
         toolNames: ['read_file', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
         disallowedTools: ['task', 'skill'],
         maxTurns: 10,
+      }
+    case 'browser':
+      return {
+        name: 'browser',
+        description: 'Browser automation and web research agent',
+        systemPrompt: BROWSER_SUBAGENT_PROMPT,
+        toolNames: ['browser', 'web', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        model: 'claude-haiku-4-5',
+        maxTurns: 15,
+      }
+    case 'integration':
+      return {
+        name: 'integration',
+        description: 'Tool and MCP server discovery, installation, and management',
+        systemPrompt: INTEGRATION_SUBAGENT_PROMPT,
+        toolNames: ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall', 'read_file', 'write_file'],
+        includeInstalledTools: true,
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 10,
+      }
+    case 'channel':
+      return {
+        name: 'channel',
+        description: 'Channel connection and messaging agent',
+        systemPrompt: CHANNEL_SUBAGENT_PROMPT,
+        toolNames: ['channel_connect', 'channel_disconnect', 'channel_list', 'send_message', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 5,
+      }
+    case 'media':
+      return {
+        name: 'media',
+        description: 'Image generation and audio transcription agent',
+        systemPrompt: MEDIA_SUBAGENT_PROMPT,
+        toolNames: ['generate_image', 'transcribe_audio', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        model: 'claude-haiku-4-5',
+        maxTurns: 5,
+      }
+    case 'devops':
+      return {
+        name: 'devops',
+        description: 'Heartbeat scheduling, monitoring, and skill server management',
+        systemPrompt: DEVOPS_SUBAGENT_PROMPT,
+        toolNames: ['heartbeat_configure', 'heartbeat_status', 'skill_server_sync', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 5,
       }
     default:
       return null
@@ -409,6 +537,24 @@ export async function runSubagent(
     if (config.readonly) {
       tools = tools.filter(t => READONLY_TOOLS.has(t.name))
     }
+  }
+
+  // Apply eval mock interceptors so subagent tool calls hit the same mocks
+  // as the main agent (prevents real network calls during evals).
+  if (parentCtx.toolMockFns && parentCtx.toolMockFns.size > 0) {
+    tools = tools.map(tool => {
+      const mockFn = parentCtx.toolMockFns!.get(tool.name)
+      if (!mockFn) return tool
+      const realExecute = tool.execute
+      return {
+        ...tool,
+        execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
+          const result = mockFn(params)
+          if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
+          return { type: 'text' as const, value: typeof result === 'string' ? result : JSON.stringify(result) }
+        },
+      }
+    })
   }
 
   const model = resolveModelTier(config.modelTier, config.model || parentCtx.effectiveModel || parentCtx.config.model.name)
