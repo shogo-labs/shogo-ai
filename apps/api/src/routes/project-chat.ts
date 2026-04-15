@@ -335,30 +335,56 @@ async function trackUsageFromStream(
     console.log(`[ProjectChat] 💰 Billing session closed — charged ${creditCost} credits for project ${project.id}`)
   }
 
-  // Persist assistant message first so we have a messageId for tool call logs.
+  // Persist assistant message as a BACKUP.
+  // The primary persistence path is the frontend's onFinish callback.
+  // This server-side path acts as a fallback when the client disconnects
+  // before onFinish fires. We delay briefly and check for duplicates to
+  // avoid creating a second copy if the frontend already persisted.
   let assistantMessageId: string | null = null
 
   if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
     try {
+      // Brief delay: give the frontend's onFinish a chance to persist first
+      await new Promise(resolve => setTimeout(resolve, 3000))
+
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (session) {
-        // Use orderedParts which preserves the natural interleaving of
-        // text and tool calls as they appeared in the stream.
-        // Filter out empty text/reasoning parts that can accumulate from keepalive pings.
-        const parts = orderedParts.filter(
-          (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim()))
-        )
-
-        const message = await prisma.chatMessage.create({
-          data: {
-            sessionId: chatSessionId,
-            role: 'assistant',
-            content: accumulatedText,
-            parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
-          },
+        // Check if the frontend already persisted an assistant message for
+        // this turn (created after the most recent user message).
+        const latestUserMsg = await prisma.chatMessage.findFirst({
+          where: { sessionId: chatSessionId, role: 'user' },
+          orderBy: { createdAt: 'desc' },
+          select: { createdAt: true },
         })
-        assistantMessageId = message.id
-        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
+        const existingAssistant = latestUserMsg
+          ? await prisma.chatMessage.findFirst({
+              where: {
+                sessionId: chatSessionId,
+                role: 'assistant',
+                createdAt: { gte: latestUserMsg.createdAt },
+              },
+            })
+          : null
+
+        if (existingAssistant) {
+          assistantMessageId = existingAssistant.id
+          console.log(`[ProjectChat] Assistant message already persisted by frontend for session ${chatSessionId}, skipping server-side creation`)
+        } else {
+          const parts = orderedParts.filter(
+            (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim()))
+          )
+
+          const message = await prisma.chatMessage.create({
+            data: {
+              sessionId: chatSessionId,
+              role: 'assistant',
+              content: accumulatedText,
+              parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+            },
+          })
+          assistantMessageId = message.id
+          console.log(`[ProjectChat] 💾 Persisted assistant message [backup] (${accumulatedText.length} chars, ${toolCallCount} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
+        }
 
         prisma.project.update({
           where: { id: project.id },
