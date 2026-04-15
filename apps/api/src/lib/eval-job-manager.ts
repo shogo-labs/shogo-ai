@@ -89,6 +89,7 @@ export async function createEvalJob(opts: {
             {
               name: 'eval-runner',
               image: RUNTIME_IMAGE,
+              workingDir: '/app/packages/agent-runtime',
               command: [
                 'bun', 'run', 'src/evals/run-eval.ts',
                 '--track', opts.track,
