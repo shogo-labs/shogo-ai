@@ -82,6 +82,7 @@ export async function allocateMonthlyCredits(
     create: {
       workspaceId,
       monthlyCredits,
+      monthlyAllocation: monthlyCredits,
       dailyCredits: DAILY_CREDITS,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
@@ -89,6 +90,7 @@ export async function allocateMonthlyCredits(
     },
     update: {
       monthlyCredits,
+      monthlyAllocation: monthlyCredits,
       lastMonthlyReset: now,
     },
   });

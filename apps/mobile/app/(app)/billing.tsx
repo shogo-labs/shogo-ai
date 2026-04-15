@@ -131,6 +131,7 @@ export default observer(function BillingPage() {
   const creditsTotal = getCreditsCapacityForDisplay(
     subscription?.planId,
     effectiveBalance?.total,
+    effectiveBalance?.monthlyAllocation,
   )
 
   const planName = subscription
