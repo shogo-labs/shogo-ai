@@ -43,7 +43,7 @@ import {
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
 import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
-import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, getK8sWorkerUrl, getK8sWorkerIp } from './k8s-worker'
+import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, getK8sWorkerUrl } from './k8s-worker'
 
 loadEnvFromDisk(REPO_ROOT)
 
@@ -94,7 +94,7 @@ import { TEAMMATE_COORDINATION_EVALS } from './test-cases-teammate-coordination'
 import { KNOWLEDGE_GRAPH_EVALS } from './test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
 import { buildMockPayload } from './tool-mocks'
-import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary } from './types'
+import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary, RuntimeCheckResults } from './types'
 import { runRuntimeChecks } from './runtime-checks'
 import { DockerStatsCollector, formatMillicores } from './docker-stats-collector'
 
@@ -777,16 +777,32 @@ async function runEvalOnWorker(
         }
       }
 
-      const hostSkillPort = k8sFlag ? CONTAINER_SKILL_PORT : SKILL_SERVER_BASE_PORT + worker.id
-      const canvasExpected = (localFlag || vmFlag || k8sFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
-      const runtimeResults = await runRuntimeChecks({
-        workspaceDir: worker.dir,
-        skillServerPort: hostSkillPort,
-        skillServerHost: k8sFlag ? getK8sWorkerIp(worker) : undefined,
-        canvasExpectedPort: canvasExpected,
-        evalId: ev.id,
-        verbose: verboseFlag,
-      })
+      let runtimeResults: RuntimeCheckResults | null = null
+      if (k8sFlag) {
+        try {
+          const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ canvasExpectedPort: CONTAINER_SKILL_PORT, evalId: ev.id, verbose: verboseFlag }),
+            signal: AbortSignal.timeout(120_000),
+          })
+          const body = await res.json() as { ok: boolean; results: RuntimeCheckResults | null; error?: string }
+          if (body.ok) runtimeResults = body.results
+          else if (verboseFlag) console.log(`      [runtime] Remote runtime checks failed: ${body.error}`)
+        } catch (err: any) {
+          console.warn(`      [runtime] Remote runtime checks error: ${err.message}`)
+        }
+      } else {
+        const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
+        const canvasExpected = (localFlag || vmFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
+        runtimeResults = await runRuntimeChecks({
+          workspaceDir: worker.dir,
+          skillServerPort: hostSkillPort,
+          canvasExpectedPort: canvasExpected,
+          evalId: ev.id,
+          verbose: verboseFlag,
+        })
+      }
       if (runtimeResults) {
         result.runtimeChecks = runtimeResults
         result.runtimeWarnings = result.runtimeWarnings || []
