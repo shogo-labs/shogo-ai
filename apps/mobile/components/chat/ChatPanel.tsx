@@ -51,6 +51,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
   formatErrorMessage,
+  isTunnelDisconnectError,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
@@ -59,7 +60,7 @@ import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
-import { agentFetch } from "../../lib/agent-fetch"
+
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
@@ -600,6 +601,20 @@ export const ChatPanel = observer(function ChatPanel({
     })
   }, [controlledIsCollapsed])
 
+
+  const nativeHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return (): Record<string, string> => {
+      const cookie = authClient.getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
+
+  const expoFetch = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return require('expo/fetch').fetch as typeof globalThis.fetch
+  }, [])
+
   // Quick actions state
   const [quickActions, setQuickActions] = useState<{ label: string; prompt: string }[]>([])
 
@@ -607,7 +622,12 @@ export const ChatPanel = observer(function ChatPanel({
     const url = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
     if (!url) return
     try {
-      const res = await agentFetch(`${url}/agent/quick-actions`)
+      const fetchFn = expoFetch ?? globalThis.fetch
+      const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+      const res = await fetchFn(`${url}/agent/quick-actions`, {
+        headers,
+        credentials: Platform.OS === 'web' ? 'include' : undefined,
+      } as any)
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data?.actions)) {
@@ -617,7 +637,7 @@ export const ChatPanel = observer(function ChatPanel({
     } catch {
       // Silently ignore — quick actions are non-critical
     }
-  }, [localAgentUrl, projectId])
+  }, [localAgentUrl, projectId, nativeHeaders, expoFetch])
 
   useEffect(() => {
     if (!isActive) return
@@ -825,18 +845,7 @@ export const ChatPanel = observer(function ChatPanel({
     return () => clearTimeout(timer)
   }, [toolErrorBanner])
 
-  const nativeHeaders = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
-    return (): Record<string, string> => {
-      const cookie = authClient.getCookie()
-      return cookie ? { Cookie: cookie } : {}
-    }
-  }, [])
 
-  const expoFetch = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
-    return require('expo/fetch').fetch as typeof globalThis.fetch
-  }, [])
 
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
@@ -1483,13 +1492,60 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
+  const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
+
+  const isRemoteInstance = !!localAgentUrl
+  const isTunnelError = !!(error && isRemoteInstance && isTunnelDisconnectError(error.message))
+
   const errorBannerText = useMemo(
-    () => (error ? formatErrorMessage(error.message) : emptyResponseError) ?? '',
-    [error?.message, emptyResponseError]
+    () => {
+      if (isTunnelError && tunnelReconnecting) return 'Connection to desktop instance lost. Reconnecting\u2026'
+      if (isTunnelError) return 'Connection to desktop instance lost. Tap Reconnect to retry.'
+      return (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ''
+    },
+    [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting]
   )
   useEffect(() => {
     setErrorBannerExpanded(false)
   }, [errorBannerText])
+
+  useEffect(() => {
+    if (!isTunnelError || !localAgentUrl) {
+      setTunnelReconnecting(false)
+      return
+    }
+    setTunnelReconnecting(true)
+
+    let cancelled = false
+    const RECONNECT_POLL_MS = 3000
+    const MAX_RECONNECT_POLLS = 20
+
+    async function pollForReconnect() {
+      for (let i = 0; i < MAX_RECONNECT_POLLS && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, RECONNECT_POLL_MS))
+        if (cancelled) return
+        try {
+          const fetchFn = expoFetch ?? globalThis.fetch
+          const hdrs: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+          const res = await fetchFn(`${localAgentUrl}/agent/health`, {
+            headers: hdrs,
+            credentials: Platform.OS === 'web' ? 'include' : undefined,
+            signal: AbortSignal.timeout(5000),
+          } as any)
+          if (res.ok) {
+            if (!cancelled) {
+              setTunnelReconnecting(false)
+              handleRetryRef.current?.()
+            }
+            return
+          }
+        } catch {}
+      }
+      if (!cancelled) setTunnelReconnecting(false)
+    }
+    pollForReconnect()
+    return () => { cancelled = true }
+  }, [isTunnelError, localAgentUrl])
 
   const errorBannerNeedsReadMore =
     errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
@@ -2476,6 +2532,9 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages, sendMessageInternal, setMessages])
 
+  const handleRetryRef = useRef<(() => void) | null>(null)
+  handleRetryRef.current = handleRetry
+
   const messageListMessages = messages.map((msg) => ({
     id: msg.id,
     role: msg.role as "user" | "assistant",
@@ -2822,8 +2881,14 @@ export const ChatPanel = observer(function ChatPanel({
           {/* Error Alert — cap long messages so the sidebar layout stays usable */}
           {(error || emptyResponseError) && (
             <View className="px-4 pb-2 max-w-3xl w-full self-center">
-              <View className="flex-row items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-                <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" size={16} />
+              <View className={`flex-row items-start gap-2 rounded-lg border p-3 ${
+                isTunnelError
+                  ? 'border-orange-400/50 bg-orange-50 dark:bg-orange-950/30'
+                  : 'border-destructive/50 bg-destructive/10'
+              }`}>
+                <AlertCircle className={`h-4 w-4 shrink-0 mt-0.5 ${
+                  isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
+                }`} size={16} />
                 <View className="flex-1 min-w-0 flex-row items-start justify-between gap-2">
                   <View className="flex-1 min-w-0 pr-1">
                     {errorBannerExpanded ? (
@@ -2832,13 +2897,13 @@ export const ChatPanel = observer(function ChatPanel({
                         className="max-h-48"
                         showsVerticalScrollIndicator
                       >
-                        <Text className="text-sm text-destructive" selectable>
+                        <Text className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
                           {errorBannerText}
                         </Text>
                       </ScrollView>
                     ) : (
                       <Text
-                        className="text-sm text-destructive"
+                        className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
                         numberOfLines={4}
                         selectable
                       >
@@ -2854,18 +2919,30 @@ export const ChatPanel = observer(function ChatPanel({
                           errorBannerExpanded ? 'Show less error detail' : 'Read full error message'
                         }
                       >
-                        <Text className="text-xs font-semibold text-destructive">
+                        <Text className={`text-xs font-semibold ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}>
                           {errorBannerExpanded ? 'Show less' : 'Read more'}
                         </Text>
                       </Pressable>
                     )}
                   </View>
-                  <Pressable
-                    onPress={handleRetry}
-                    className="shrink-0 rounded-md border border-destructive/30 px-1 py-1.5 self-start"
-                  >
-                    <Text className="text-sm text-destructive font-medium">Retry</Text>
-                  </Pressable>
+                  {tunnelReconnecting ? (
+                    <View className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1.5 self-start">
+                      <Text className="text-sm text-orange-600 dark:text-orange-400 font-medium">Reconnecting…</Text>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={handleRetry}
+                      className={`shrink-0 rounded-md border px-1 py-1.5 self-start ${
+                        isTunnelError
+                          ? 'border-orange-400/30'
+                          : 'border-destructive/30'
+                      }`}
+                    >
+                      <Text className={`text-sm font-medium ${
+                        isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
+                      }`}>{isTunnelError ? 'Reconnect' : 'Retry'}</Text>
+                    </Pressable>
+                  )}
                 </View>
               </View>
             </View>

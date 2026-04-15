@@ -12,6 +12,7 @@ import { useColorScheme } from 'react-native'
 import * as Sentry from '@sentry/react-native'
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
+import { ActiveInstanceProvider } from '../contexts/active-instance'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 import { AccentThemeProvider } from '../contexts/accent-theme'
@@ -69,15 +70,17 @@ function RootLayoutInner() {
     <GluestackUIProvider mode={theme}>
       <PostHogProvider>
         <AuthProvider>
-          <UpdateBanner />
-          <StatusBar style={statusBarScheme === 'dark' ? 'light' : 'dark'} />
-          <Stack screenOptions={{ headerShown: false, lazy: true }}>
-            <Stack.Screen name="index" />
-            <Stack.Screen name="(auth)" />
-            <Stack.Screen name="(onboarding)" />
-            <Stack.Screen name="(app)" />
-            <Stack.Screen name="(admin)" />
-          </Stack>
+          <ActiveInstanceProvider>
+            <UpdateBanner />
+            <StatusBar style={statusBarScheme === 'dark' ? 'light' : 'dark'} />
+            <Stack screenOptions={{ headerShown: false, lazy: true }}>
+              <Stack.Screen name="index" />
+              <Stack.Screen name="(auth)" />
+              <Stack.Screen name="(onboarding)" />
+              <Stack.Screen name="(app)" />
+              <Stack.Screen name="(admin)" />
+            </Stack>
+          </ActiveInstanceProvider>
         </AuthProvider>
       </PostHogProvider>
     </GluestackUIProvider>

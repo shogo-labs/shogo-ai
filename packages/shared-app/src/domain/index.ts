@@ -16,6 +16,8 @@ export {
   useSubscriptionCollection,
   useChatSessionCollection,
   useChatMessageCollection,
+  useIsRemoteSource,
+  useRemoteError,
   resetSDKDomainStore,
   useDomainActions,
   type SDKDomainFacades,

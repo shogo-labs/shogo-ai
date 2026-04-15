@@ -270,6 +270,10 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /** Tracks the current high-level task description for remote status */
+  private _currentTask: string | null = null
+  /** Tracks the last tool name invoked for remote status */
+  private _lastTool: string | null = null
   /** Dynamic sub-agent registry and lifecycle manager */
   public agentManager = new AgentManager()
   private teamManager?: TeamManager
@@ -1167,11 +1171,13 @@ export class AgentGateway {
       await prevTurn.catch(() => {})
     }
 
+    this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
     const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
     } finally {
+      this._currentTask = null
       if (this.turnLocks.get(sessionId) === turnPromise) {
         this.turnLocks.delete(sessionId)
       }
@@ -1682,6 +1688,7 @@ export class AgentGateway {
           }
         },
         onToolCallStart: (toolName, toolCallId) => {
+          this._lastTool = toolName
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -2847,8 +2854,13 @@ export class AgentGateway {
       } catch { /* skip */ }
     }
 
+    const activeTurnCount = this.turnLocks.size
+
     return {
       running: this.running,
+      status: activeTurnCount > 0 ? 'active' : this.running ? 'idle' : 'stopped',
+      currentTask: this._currentTask,
+      lastTool: this._lastTool,
       heartbeat: {
         enabled: this.config.heartbeatEnabled,
         intervalSeconds: this.config.heartbeatInterval,
