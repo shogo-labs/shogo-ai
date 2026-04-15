@@ -43,7 +43,7 @@ import {
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
 import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
-import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, getK8sWorkerUrl } from './k8s-worker'
+import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, stopK8sWorker, getK8sWorkerUrl } from './k8s-worker'
 
 loadEnvFromDisk(REPO_ROOT)
 
@@ -952,6 +952,14 @@ async function runEvalOnWorker(
 let globalWorkers: DockerWorker[] = []
 const stopWorker = k8sFlag ? stopK8sWorkerSync : vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
 
+async function cleanupWorkers(workers: DockerWorker[]): Promise<void> {
+  if (k8sFlag) {
+    await Promise.allSettled(workers.map(w => stopK8sWorker(w)))
+  } else {
+    workers.forEach(stopWorker)
+  }
+}
+
 registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorker })
 
 // ---------------------------------------------------------------------------
@@ -1064,7 +1072,7 @@ async function main() {
     }
   } catch (err: any) {
     console.error(`Failed to start workers: ${err.message}`)
-    globalWorkers.forEach(stopWorker)
+    await cleanupWorkers(globalWorkers)
     globalWorkers = []
     if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
     process.exit(1)
@@ -1266,7 +1274,7 @@ async function main() {
   // Stop workers
   console.log('')
   console.log('Stopping workers...')
-  workers.forEach(stopWorker)
+  await cleanupWorkers(workers)
   globalWorkers = []
   if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
 
@@ -1498,7 +1506,7 @@ main().catch(async err => {
   if (useCallback) {
     await postCallback(`/evals/${runIdArg}/fail`, { error: String(err?.message ?? err) })
   }
-  globalWorkers.forEach(stopWorker)
+  await cleanupWorkers(globalWorkers)
   globalWorkers = []
   if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
   process.exit(1)
