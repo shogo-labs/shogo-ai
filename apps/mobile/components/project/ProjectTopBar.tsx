@@ -62,7 +62,7 @@ import {
   ClipboardList,
   RefreshCw,
   GitCommit,
-  Download,
+  Upload,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -1070,7 +1070,7 @@ function ProjectMenuView({
       onPress: () => { setShowDetailsModal(true) },
     },
     {
-      icon: Download,
+      icon: Upload,
       label: isExporting ? 'Exporting...' : 'Export project',
       onPress: handleExportProject,
     },
