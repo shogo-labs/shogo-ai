@@ -94,11 +94,13 @@ export const MONTHLY_DAILY_CAP = 30
 export function getTotalCreditsForPlan(planId: string | undefined): number {
   if (!planId) return (PLAN_CREDITS['free'] || 0) + DAILY_CREDITS
 
-  if (PLAN_CREDITS[planId] !== undefined) {
-    return PLAN_CREDITS[planId] + DAILY_CREDITS
+  const normalizedId = planId.toLowerCase()
+
+  if (PLAN_CREDITS[normalizedId] !== undefined) {
+    return PLAN_CREDITS[normalizedId] + DAILY_CREDITS
   }
 
-  const match = planId.match(/^(free|basic|pro|business|enterprise)_(\d+)$/)
+  const match = normalizedId.match(/^(free|basic|pro|business|enterprise)_(\d+)$/)
   if (match) {
     return parseInt(match[2], 10) * 2 + DAILY_CREDITS
   }
@@ -107,15 +109,27 @@ export function getTotalCreditsForPlan(planId: string | undefined): number {
 }
 
 /**
- * Capacity shown as "remaining / total" when the ledger can exceed the plan baseline
- * (e.g. credit packs). Denominator must not stay at the plan floor while balance is higher.
+ * Compute the "total capacity" for display in "remaining / total" credit indicators.
+ *
+ * Uses monthlyAllocation from the CreditLedger (the original allocation that does
+ * not decrease with usage) when available. Falls back to deriving from planId.
  */
 export function getCreditsCapacityForDisplay(
   planId: string | undefined,
   remainingTotal: number | undefined,
+  monthlyAllocation?: number,
 ): number {
+  if (monthlyAllocation && monthlyAllocation > 0) {
+    return monthlyAllocation + DAILY_CREDITS
+  }
+
   const baseline = getTotalCreditsForPlan(planId)
+
   if (remainingTotal === undefined) return baseline
+
+  // For backward compat (before monthlyAllocation is populated), if remaining
+  // exceeds the plan baseline, use remaining as a conservative estimate of the
+  // initial allocation so the display doesn't show remaining > total.
   return Math.max(baseline, remainingTotal)
 }
 

@@ -631,7 +631,7 @@ function WorkspaceSwitcher({
   const creditsRemaining =
     effectiveBalance?.total ?? getTotalCreditsForPlan(planIdForCredits)
   const creditsTotal = Math.max(
-    getCreditsCapacityForDisplay(planIdForCredits, effectiveBalance?.total),
+    getCreditsCapacityForDisplay(planIdForCredits, effectiveBalance?.total, effectiveBalance?.monthlyAllocation),
     1,
   )
 
