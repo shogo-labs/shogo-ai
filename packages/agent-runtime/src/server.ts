@@ -2634,6 +2634,15 @@ async function initializeEssentials(): Promise<void> {
   ensureWorkspaceFiles()
   logTiming('Workspace files ready')
 
+  // Seed tech stack if specified (covers warm pool assignment path where
+  // TECH_STACK_ID is injected after module-level code has already run).
+  // seedTechStack is idempotent — only writes files that don't already exist.
+  const tsId = process.env.TECH_STACK_ID
+  if (tsId) {
+    seedTechStack(WORKSPACE_DIR, tsId)
+    logTiming(`Tech stack seeded: ${tsId}`)
+  }
+
   // Initialize S3 sync BEFORE loading canvas state so that downloaded files
   // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
   if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {

@@ -284,6 +284,7 @@ export function seedRuntimeTemplate(dir: string): boolean {
 function getTechStacksBasePath(): string {
   const candidates = [
     join(__dirname, '..', 'tech-stacks'),
+    join(__dirname, 'tech-stacks'),
     join(__dirname, '..', '..', '..', 'tech-stacks'),
     '/app/tech-stacks',
   ]

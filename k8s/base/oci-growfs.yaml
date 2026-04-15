@@ -16,15 +16,28 @@ spec:
       priorityClassName: system-node-critical
       initContainers:
       - name: growfs
-        image: busybox:latest
+        image: busybox:1.36
         command:
         - sh
         - -c
         - |
-          chroot /host /usr/libexec/oci-growfs -y || true
-          chroot /host pvresize /dev/sda3 || true
-          chroot /host lvextend -l +100%FREE /dev/ocivolume/root || true
-          chroot /host xfs_growfs / || true
+          echo "[growfs] Starting filesystem expansion..."
+          echo "[growfs] Step 1/4: oci-growfs (expand GPT partition)"
+          chroot /host /usr/libexec/oci-growfs -y 2>&1 || echo "[growfs] oci-growfs returned non-zero (partition likely already expanded)"
+
+          echo "[growfs] Step 2/4: pvresize (tell LVM about new partition size)"
+          chroot /host pvresize /dev/sda3 2>&1
+          sleep 2
+
+          echo "[growfs] Step 3/4: lvextend (grow logical volume into free space)"
+          chroot /host lvextend -l +100%FREE /dev/ocivolume/root 2>&1 || echo "[growfs] lvextend: no free space or already at max"
+
+          echo "[growfs] Step 4/4: xfs_growfs (expand filesystem to fill LV)"
+          chroot /host xfs_growfs / 2>&1
+
+          DF_OUT=$(chroot /host df -h / 2>&1 | tail -1)
+          echo "[growfs] Final state: $DF_OUT"
+          echo "[growfs] Done."
         securityContext:
           privileged: true
         volumeMounts:
