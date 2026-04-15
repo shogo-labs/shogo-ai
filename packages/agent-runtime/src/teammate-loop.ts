@@ -16,9 +16,6 @@ import { runAgentLoop } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
 import type { TeamManager, MailboxMessage, TaskInfo } from './team-manager'
 import { teammateStorage, type TeammateContext } from './teammate-context'
-import { selectModel, buildModelTierMap, RoutingState, type ModelRouterOptions } from './model-router'
-import { resolveModel as piResolveModel } from './pi-adapter'
-import { resolveModelId, inferProviderFromModel } from '@shogo/model-catalog'
 
 const POLL_INTERVAL_MS = 500
 const AUTO_COMPACT_TOKEN_THRESHOLD = 80_000
@@ -37,7 +34,6 @@ export interface TeammateLoopConfig {
   maxTurnsPerWake?: number
   initialPrompt?: string
   uiWriter?: { write(chunk: Record<string, any>): void }
-  enableAutoRouting?: boolean
 }
 
 export interface TeammateLoopCallbacks {
@@ -202,15 +198,6 @@ export function startTeammateLoop(
         const tmBaseModel = config.model || modelConfig?.name || 'claude-haiku-4-5-20251001'
         const tmBaseProvider = config.provider || modelConfig?.provider || 'anthropic'
 
-        let tmRouterOptions: ModelRouterOptions | undefined
-        let tmRoutingState: RoutingState | undefined
-        if (config.enableAutoRouting) {
-          const tierMap = buildModelTierMap(tmBaseModel)
-          tmRouterOptions = { ceilingModel: tmBaseModel, availableModels: tierMap }
-          tmRoutingState = new RoutingState()
-          tmRoutingState.startNewTurn()
-        }
-
         const result = await runAgentLoop({
           provider: tmBaseProvider,
           model: tmBaseModel,
@@ -221,21 +208,6 @@ export function startTeammateLoop(
           maxIterations: config.maxTurnsPerWake || 50,
           signal: workAbort.signal,
           thinkingLevel: 'low',
-          onResolveNextModel: (tmRouterOptions && tmRoutingState) ? (iteration) => {
-            const decision = selectModel({
-              prompt: 'continue',
-              history: [],
-              contextTokens: estimateTokens(allMessages),
-              isToolFollowUp: true,
-              iterationIndex: iteration,
-              consecutiveToolErrors: tmRoutingState!.consecutiveToolErrors,
-              previousTurnCorrective: false,
-            }, tmRouterOptions!)
-            tmRoutingState!.recordDecision(decision)
-            const nextModelId = resolveModelId(decision.selectedModel)
-            const nextProvider = inferProviderFromModel(decision.selectedModel, tmBaseProvider)
-            return { model: piResolveModel(nextProvider, nextModelId), provider: nextProvider }
-          } : undefined,
           onTextDelta: w ? (delta) => {
             if (!tmTextId) {
               tmTextId = `tm-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`

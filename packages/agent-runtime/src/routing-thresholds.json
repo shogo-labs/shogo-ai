@@ -40,23 +40,6 @@
     "lowThreshold": 0.4
   },
   "escalation": {
-    "maxFallbackRetries": 1,
-    "consecutiveFailuresForEscalation": 2
-  },
-  "correctivePatterns": [
-    "no",
-    "wrong",
-    "that's wrong",
-    "that's not right",
-    "not right",
-    "incorrect",
-    "try again",
-    "redo",
-    "undo",
-    "revert",
-    "fix that",
-    "that's incorrect",
-    "not what i asked",
-    "not what i wanted"
-  ]
+    "maxFallbackRetries": 1
+  }
 }

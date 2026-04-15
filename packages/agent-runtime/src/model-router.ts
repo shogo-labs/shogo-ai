@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Model Router — Intelligent Turn-Level Model Selection
+ * Model Router — Spawn-Time Sub-Agent Model Selection
  *
- * Classifies each agent turn's complexity and routes it to the cheapest
- * model capable of handling it. Uses pure heuristics (no LLM call),
- * runs synchronously in <1ms per turn, and includes automatic fallback
- * escalation when a cheaper model produces a bad output.
+ * Classifies a sub-agent task's complexity at spawn time and selects the
+ * cheapest model capable of handling it. The main agent always runs on the
+ * user's chosen model; this router only fires when spawning sub-agents.
+ *
+ * Uses pure heuristics (no LLM call), runs synchronously in <1ms,
+ * and includes automatic fallback escalation when a cheaper model
+ * fails the sub-agent task.
  */
 
 import { getModelTier, getModelEntry, type ModelTier } from '@shogo/model-catalog'
-import type { Message } from '@mariozechner/pi-ai'
 import thresholdsJson from './routing-thresholds.json'
 
 // ---------------------------------------------------------------------------
@@ -28,11 +30,10 @@ export interface RoutingConfig {
   highPrecisionTools: string[]
   destructiveExecPatterns: string[]
   confidence: { highThreshold: number; lowThreshold: number }
-  escalation: { maxFallbackRetries: number; consecutiveFailuresForEscalation: number }
-  correctivePatterns: string[]
+  escalation: { maxFallbackRetries: number }
 }
 
-let _config: RoutingConfig = thresholdsJson as RoutingConfig
+let _config: RoutingConfig = thresholdsJson as any
 
 export function getRoutingConfig(): RoutingConfig {
   return _config
@@ -49,7 +50,8 @@ export function setRoutingConfig(config: RoutingConfig): void {
 export type ComplexityTier = 'simple' | 'moderate' | 'complex'
 
 export interface RoutingDecision {
-  turnId: string
+  spawnId: string
+  subagentType: string
   signals: Record<string, number>
   confidence: number
   classifiedTier: ComplexityTier
@@ -59,19 +61,18 @@ export interface RoutingDecision {
   highPrecisionToolDetected?: string
   fallbackTriggered: boolean
   fallbackReason?: string
-  escalatedTo?: string
+  escalatedFrom?: string
 }
 
-export interface ClassificationInput {
+export interface SpawnClassificationInput {
+  /** The task prompt / directive given to the sub-agent */
   prompt: string
-  history: Message[]
-  pendingToolNames?: string[]
-  pendingToolArgs?: Record<string, any>
+  /** Sub-agent type name (e.g. 'explore', 'general-purpose', 'code-reviewer', 'fork') */
+  subagentType: string
+  /** Tool names available to the sub-agent */
+  toolNames?: string[]
+  /** Estimated context tokens being passed to the sub-agent */
   contextTokens: number
-  isToolFollowUp: boolean
-  iterationIndex: number
-  consecutiveToolErrors: number
-  previousTurnCorrective: boolean
 }
 
 export interface ModelTierMap {
@@ -81,63 +82,70 @@ export interface ModelTierMap {
 }
 
 // ---------------------------------------------------------------------------
-// Signal weights
+// Signal weights (tuned for spawn-time task classification)
 // ---------------------------------------------------------------------------
 
 const SIGNAL_WEIGHTS = {
-  toolFollowUp: 0.25,
-  shortMessage: 0.15,
-  midLoopIteration: 0.20,
+  shortPrompt: 0.20,
   simpleKeyword: 0.15,
   complexKeyword: -0.30,
   highContextPenalty: -0.25,
-  correctivePenalty: -0.40,
+  exploreAgent: 0.30,
+  forkAgent: -0.15,
+  codeReviewAgent: -0.20,
 } as const
 
 const SIMPLE_KEYWORDS = new Set([
-  'yes', 'no', 'ok', 'okay', 'sure', 'thanks', 'rename', 'fix', 'typo',
-  'add', 'remove', 'delete', 'run', 'test', 'import', 'update', 'change',
-  'move', 'copy', 'done', 'next', 'continue', 'go', 'proceed',
+  'find', 'search', 'list', 'read', 'check', 'verify', 'count', 'show',
+  'look', 'grep', 'locate', 'scan', 'inspect', 'print', 'log', 'status',
+  'rename', 'move', 'copy', 'delete', 'remove', 'add', 'update', 'fix',
+  'typo', 'import', 'export', 'format', 'lint', 'test', 'run',
 ])
 
 const COMPLEX_KEYWORDS = new Set([
   'design', 'architect', 'explain', 'why', 'debug', 'refactor', 'migrate',
   'optimize', 'performance', 'security', 'compare', 'analyze', 'strategy',
   'plan', 'review', 'evaluate', 'trade-off', 'tradeoff', 'complex',
+  'implement', 'build', 'create', 'integrate', 'deploy', 'configure',
 ])
 
 // ---------------------------------------------------------------------------
 // Classifier
 // ---------------------------------------------------------------------------
 
-export function classifyTurn(input: ClassificationInput): { tier: ComplexityTier; confidence: number; signals: Record<string, number>; reason: string } {
+export function classifySpawnTask(input: SpawnClassificationInput): {
+  tier: ComplexityTier
+  confidence: number
+  signals: Record<string, number>
+  reason: string
+} {
   const config = _config
   const signals: Record<string, number> = {}
   let simplicityScore = 0
 
-  // Signal 1: Tool follow-up
-  if (input.isToolFollowUp) {
-    signals.toolFollowUp = SIGNAL_WEIGHTS.toolFollowUp
-    simplicityScore += SIGNAL_WEIGHTS.toolFollowUp
+  // Signal 1: Sub-agent type bias
+  if (input.subagentType === 'explore') {
+    signals.exploreAgent = SIGNAL_WEIGHTS.exploreAgent
+    simplicityScore += SIGNAL_WEIGHTS.exploreAgent
+  } else if (input.subagentType === 'fork') {
+    signals.forkAgent = SIGNAL_WEIGHTS.forkAgent
+    simplicityScore += SIGNAL_WEIGHTS.forkAgent
+  } else if (input.subagentType === 'code-reviewer') {
+    signals.codeReviewAgent = SIGNAL_WEIGHTS.codeReviewAgent
+    simplicityScore += SIGNAL_WEIGHTS.codeReviewAgent
   }
 
-  // Signal 2: Short message
+  // Signal 2: Prompt length
   const promptLen = input.prompt.trim().length
-  if (promptLen < 50) {
-    signals.shortMessage = SIGNAL_WEIGHTS.shortMessage
-    simplicityScore += SIGNAL_WEIGHTS.shortMessage
+  if (promptLen < 100) {
+    signals.shortPrompt = SIGNAL_WEIGHTS.shortPrompt
+    simplicityScore += SIGNAL_WEIGHTS.shortPrompt
   } else if (promptLen > 500) {
-    signals.longMessage = -0.10
+    signals.longPrompt = -0.10
     simplicityScore -= 0.10
   }
 
-  // Signal 3: Mid-loop iteration (not first turn)
-  if (input.iterationIndex > 0) {
-    signals.midLoopIteration = SIGNAL_WEIGHTS.midLoopIteration
-    simplicityScore += SIGNAL_WEIGHTS.midLoopIteration
-  }
-
-  // Signal 4: Keyword analysis
+  // Signal 3: Keyword analysis on task prompt
   const promptLower = input.prompt.toLowerCase()
   const words = promptLower.split(/\s+/)
   const hasSimple = words.some(w => SIMPLE_KEYWORDS.has(w))
@@ -152,29 +160,17 @@ export function classifyTurn(input: ClassificationInput): { tier: ComplexityTier
     simplicityScore += SIGNAL_WEIGHTS.complexKeyword
   }
 
-  // Signal 5: High context penalty
+  // Signal 4: High context penalty
   const defaultFloor = config.contextFloors.default?.maxEffectiveContext ?? 30000
   if (input.contextTokens > defaultFloor) {
     signals.highContextPenalty = SIGNAL_WEIGHTS.highContextPenalty
     simplicityScore += SIGNAL_WEIGHTS.highContextPenalty
   }
 
-  // Signal 6: Corrective re-prompt
-  if (input.previousTurnCorrective) {
-    signals.correctivePenalty = SIGNAL_WEIGHTS.correctivePenalty
-    simplicityScore += SIGNAL_WEIGHTS.correctivePenalty
-  }
-
-  // Signal 7: High-precision tool detected
-  const hpTool = detectHighPrecisionTool(input.pendingToolNames, input.pendingToolArgs)
+  // Signal 5: High-precision tool detected in sub-agent's tool set
+  const hpTool = detectHighPrecisionTool(input.toolNames)
   if (hpTool) {
     signals.highPrecisionTool = -0.50
-    simplicityScore -= 0.50
-  }
-
-  // Signal 8: Consecutive tool errors
-  if (input.consecutiveToolErrors >= config.escalation.consecutiveFailuresForEscalation) {
-    signals.consecutiveErrors = -0.50
     simplicityScore -= 0.50
   }
 
@@ -210,38 +206,13 @@ export function classifyTurn(input: ClassificationInput): { tier: ComplexityTier
 // High-precision tool detection
 // ---------------------------------------------------------------------------
 
-function detectHighPrecisionTool(
-  toolNames?: string[],
-  toolArgs?: Record<string, any>,
-): string | undefined {
+function detectHighPrecisionTool(toolNames?: string[]): string | undefined {
   if (!toolNames || toolNames.length === 0) return undefined
   const config = _config
-
   for (const name of toolNames) {
-    if (config.highPrecisionTools.includes(name)) {
-      if (name === 'exec' && toolArgs) {
-        const cmd = String(toolArgs.command || toolArgs.cmd || '').toLowerCase()
-        const isDestructive = config.destructiveExecPatterns.some(p => cmd.includes(p))
-        if (isDestructive) return `exec:${cmd.slice(0, 40)}`
-        continue
-      }
-      return name
-    }
+    if (config.highPrecisionTools.includes(name)) return name
   }
   return undefined
-}
-
-// ---------------------------------------------------------------------------
-// Corrective re-prompt detection
-// ---------------------------------------------------------------------------
-
-export function isCorrectivePrompt(prompt: string): boolean {
-  const lower = prompt.toLowerCase().trim()
-  return _config.correctivePatterns.some(p => {
-    if (lower === p) return true
-    if (lower.startsWith(p + ' ') || lower.startsWith(p + ',') || lower.startsWith(p + '.')) return true
-    return false
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -254,24 +225,25 @@ export interface ModelRouterOptions {
 }
 
 /**
- * Select the best model for a turn. Returns the model ID to use.
- * Pure function — no side effects, no network calls, <1ms execution.
+ * Select the best model for a sub-agent spawn. Pure function — no side
+ * effects, no network calls, <1ms execution.
  */
-export function selectModel(
-  input: ClassificationInput,
+export function selectModelForSpawn(
+  input: SpawnClassificationInput,
   options: ModelRouterOptions,
 ): RoutingDecision {
   const config = _config
-  const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const spawnId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
-  const classification = classifyTurn(input)
-  const hpTool = detectHighPrecisionTool(input.pendingToolNames, input.pendingToolArgs)
+  const classification = classifySpawnTask(input)
+  const hpTool = detectHighPrecisionTool(input.toolNames)
 
   // High-precision tools always force at least standard tier
   if (hpTool) {
     const model = resolveAtLeastStandard(options)
     return {
-      turnId,
+      spawnId,
+      subagentType: input.subagentType,
       signals: classification.signals,
       confidence: classification.confidence,
       classifiedTier: 'complex',
@@ -292,7 +264,8 @@ export function selectModel(
   if (input.contextTokens > candidateFloor) {
     const model = resolveAtLeastStandard(options)
     return {
-      turnId,
+      spawnId,
+      subagentType: input.subagentType,
       signals: classification.signals,
       confidence: classification.confidence,
       classifiedTier: classification.tier,
@@ -306,7 +279,8 @@ export function selectModel(
   // Confidence gate: only downgrade on high confidence
   if (classification.confidence < config.confidence.highThreshold && classification.tier === 'simple') {
     return {
-      turnId,
+      spawnId,
+      subagentType: input.subagentType,
       signals: classification.signals,
       confidence: classification.confidence,
       classifiedTier: classification.tier,
@@ -319,7 +293,8 @@ export function selectModel(
 
   const model = tierToModel(classification.tier, options)
   return {
-    turnId,
+    spawnId,
+    subagentType: input.subagentType,
     signals: classification.signals,
     confidence: classification.confidence,
     classifiedTier: classification.tier,
@@ -345,11 +320,11 @@ function resolveAtLeastStandard(options: ModelRouterOptions): string {
 }
 
 // ---------------------------------------------------------------------------
-// Fallback escalation
+// Fallback escalation (for spawn-time retry)
 // ---------------------------------------------------------------------------
 
 /**
- * Given a failed routing decision, produce the escalated model.
+ * Given a failed routing decision, produce the escalated model for retry.
  * Returns null if no further escalation is possible (already at ceiling).
  */
 export function escalateModel(
@@ -357,7 +332,6 @@ export function escalateModel(
   options: ModelRouterOptions,
   reason: string,
 ): RoutingDecision | null {
-  const config = _config
   const current = decision.selectedModel
 
   let escalatedModel: string | null = null
@@ -375,7 +349,7 @@ export function escalateModel(
     selectedModel: escalatedModel,
     fallbackTriggered: true,
     fallbackReason: reason,
-    escalatedTo: escalatedModel,
+    escalatedFrom: current,
   }
 }
 
@@ -412,49 +386,5 @@ export function buildModelTierMap(ceilingModelId: string): ModelTierMap {
     economy: ceilingModelId,
     standard: ceilingModelId,
     premium: ceilingModelId,
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Session-level routing state
-// ---------------------------------------------------------------------------
-
-export class RoutingState {
-  consecutiveToolErrors = 0
-  previousTurnCorrective = false
-  fallbackRetriesThisTurn = 0
-  lastDecision: RoutingDecision | null = null
-  decisions: RoutingDecision[] = []
-
-  recordToolSuccess(): void {
-    this.consecutiveToolErrors = 0
-  }
-
-  recordToolError(): void {
-    this.consecutiveToolErrors++
-  }
-
-  recordCorrectivePrompt(prompt: string): void {
-    this.previousTurnCorrective = isCorrectivePrompt(prompt)
-  }
-
-  startNewTurn(): void {
-    this.fallbackRetriesThisTurn = 0
-  }
-
-  canFallback(): boolean {
-    return this.fallbackRetriesThisTurn < _config.escalation.maxFallbackRetries
-  }
-
-  recordFallback(): void {
-    this.fallbackRetriesThisTurn++
-  }
-
-  recordDecision(decision: RoutingDecision): void {
-    this.lastDecision = decision
-    this.decisions.push(decision)
-    if (this.decisions.length > 100) {
-      this.decisions = this.decisions.slice(-50)
-    }
   }
 }
