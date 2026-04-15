@@ -24,6 +24,7 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
   prisma: any
 }
 

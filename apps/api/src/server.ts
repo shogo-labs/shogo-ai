@@ -56,6 +56,9 @@ import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
+import { checkRedisHealth } from './lib/tunnel-redis'
+import { remoteAuditRoutes } from './routes/remote-audit'
+import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
@@ -473,6 +476,8 @@ app.use(
       '/api/marketplace',
       '/api/agent-templates',
       '/api/tech-stacks',
+      '/api/instances/heartbeat',
+      '/api/instances/ws',
       '/api/vm/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
@@ -498,9 +503,21 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
-// Health check
-app.get('/api/health', (c) => c.json({ ok: true }))
-app.get('/health', (c) => c.json({ ok: true }))
+// Health check — includes Redis status for multi-pod deployments
+app.get('/api/health', async (c) => {
+  const redis = await checkRedisHealth()
+  if (!redis.healthy) {
+    console.warn('[Health] Redis unhealthy:', redis.error)
+  }
+  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
+})
+app.get('/health', async (c) => {
+  const redis = await checkRedisHealth()
+  if (!redis.healthy) {
+    console.warn('[Health] Redis unhealthy:', redis.error)
+  }
+  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
+})
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
@@ -1059,8 +1076,11 @@ app.route('/api/internal', evalInternalRoutes())
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
 
-// Remote Control — Instance registry and tunnel proxy
+// Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+app.route('/api', remoteAuditRoutes())
+// Sync engine — Phase 2 event-driven bidirectional sync
+app.route('/api', syncRoutes())
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)

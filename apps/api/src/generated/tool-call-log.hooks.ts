@@ -24,6 +24,7 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
   prisma: any
 }
 
@@ -82,7 +83,7 @@ export const toolCallLogHooks: ToolCallLogHooks = {
     }
 
     // Verify user has access to the chat session
-    if (chatSessionId) {
+    if (chatSessionId && !ctx.tunnelAuthenticated) {
       const session = await ctx.prisma.chatSession.findUnique({
         where: { id: chatSessionId },
         include: {
@@ -136,6 +137,8 @@ export const toolCallLogHooks: ToolCallLogHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (ctx.tunnelAuthenticated) return { ok: true }
 
     const toolCall = await ctx.prisma.toolCallLog.findUnique({
       where: { id },
