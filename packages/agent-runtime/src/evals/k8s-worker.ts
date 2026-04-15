@@ -156,6 +156,7 @@ export async function startK8sWorker(
         {
           name: 'eval-worker',
           image: config.image,
+          imagePullPolicy: 'Always',
           env: buildWorkerEnvVars(config),
           ports: [{ containerPort: 8080 }],
           resources: {
