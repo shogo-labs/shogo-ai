@@ -48,16 +48,7 @@ import {
   setAgentModeOverrides,
   isAutoModel,
 } from '@shogo/model-catalog'
-import {
-  AUTO_MODEL_ID,
-  selectModel,
-  buildModelTierMap,
-  RoutingState,
-  isCorrectivePrompt,
-  type RoutingDecision,
-  type ModelRouterOptions,
-} from './model-router'
-import { resolveModel as piResolveModel } from './pi-adapter'
+import { AUTO_MODEL_ID } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -1266,15 +1257,8 @@ export class AgentGateway {
     const provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
     const modelId = resolveModelAlias(effectiveAlias)
 
-    let routerOptions: ModelRouterOptions | undefined
-    let routingState: RoutingState | undefined
     if (autoRouting) {
-      const tierMap = buildModelTierMap(modelId)
-      routerOptions = { ceilingModel: modelId, availableModels: tierMap }
-      routingState = new RoutingState()
-      routingState.recordCorrectivePrompt(prompt)
-      routingState.startNewTurn()
-      console.log(`${this.logPrefix} LLM turn: AUTO routing enabled (ceiling=${modelId}, economy=${tierMap.economy}, standard=${tierMap.standard}) provider=${provider}`)
+      console.log(`${this.logPrefix} LLM turn: AUTO mode (main agent uses ${modelId}, sub-agents routed at spawn) provider=${provider}`)
     } else {
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
@@ -1324,6 +1308,7 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
+      autoRouting,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
@@ -1649,32 +1634,9 @@ export class AgentGateway {
         }
       }
 
-      // Auto routing: compute initial model selection for this turn
-      let initialModelId = modelId
-      let initialProvider = provider
-      if (autoRouting && routerOptions && routingState) {
-        const initialDecision = selectModel({
-          prompt,
-          history,
-          pendingToolNames: undefined,
-          contextTokens: runningContextEstimate,
-          isToolFollowUp: false,
-          iterationIndex: 0,
-          consecutiveToolErrors: routingState.consecutiveToolErrors,
-          previousTurnCorrective: routingState.previousTurnCorrective,
-        }, routerOptions)
-        routingState.recordDecision(initialDecision)
-        initialModelId = resolveModelAlias(initialDecision.selectedModel)
-        initialProvider = inferProviderFromModel(initialDecision.selectedModel, this.config.model.provider)
-        console.log(`${this.logPrefix} [Router] Initial: tier=${initialDecision.classifiedTier} model=${initialModelId} confidence=${initialDecision.confidence.toFixed(2)} reason=${initialDecision.reason}`)
-        if (uiWriter) {
-          uiWriter.write({ type: 'data-routing-decision', data: initialDecision } as any)
-        }
-      }
-
       const result = await runAgentLoop({
-        provider: initialProvider,
-        model: initialModelId,
+        provider,
+        model: modelId,
         system: systemPrompt,
         history,
         prompt,
@@ -1685,25 +1647,6 @@ export class AgentGateway {
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
         signal: turnAbort.signal,
-        onResolveNextModel: (autoRouting && routerOptions && routingState) ? (iteration) => {
-          const decision = selectModel({
-            prompt: 'continue',
-            history: [],
-            contextTokens: runningContextEstimate,
-            isToolFollowUp: true,
-            iterationIndex: iteration,
-            consecutiveToolErrors: routingState!.consecutiveToolErrors,
-            previousTurnCorrective: false,
-          }, routerOptions!)
-          routingState!.recordDecision(decision)
-          const nextModelId = resolveModelAlias(decision.selectedModel)
-          const nextProvider = inferProviderFromModel(decision.selectedModel, this.config.model.provider)
-          console.log(`${this.logPrefix} [Router] Iter ${iteration}: tier=${decision.classifiedTier} model=${nextModelId} confidence=${decision.confidence.toFixed(2)} reason=${decision.reason}`)
-          if (uiWriter) {
-            uiWriter.write({ type: 'data-routing-decision', data: decision } as any)
-          }
-          return { model: piResolveModel(nextProvider, nextModelId), provider: nextProvider }
-        } : undefined,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
           const fileStateSummary = this.fileStateCache.size > 0
@@ -1795,10 +1738,8 @@ export class AgentGateway {
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
           if (isError) {
             console.error(`${this.logPrefix} Tool error: ${toolName}`, JSON.stringify(result).substring(0, 500))
-            routingState?.recordToolError()
           } else {
             console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 300))
-            routingState?.recordToolSuccess()
           }
           // Wait for onBeforeToolCall's flush gate so the client receives
           // tool-input-start in a separate HTTP chunk before we send the output.
@@ -1886,7 +1827,7 @@ export class AgentGateway {
 
       // Store usage for callers (server.ts includes it in the `finish` event)
       const estimatedContextTokens = this.sessionManager.estimateTokens(session)
-      const effectiveModel = result.effectiveModelId || initialModelId
+      const effectiveModel = result.effectiveModelId || modelId
       this._lastTurnUsage = {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
