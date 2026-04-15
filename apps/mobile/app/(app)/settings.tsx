@@ -44,6 +44,7 @@ import {
   Zap,
   CreditCard,
   Cloud,
+  Server,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -62,6 +63,7 @@ import { useBillingData } from '@shogo/shared-app/hooks'
 import { getCreditsCapacityForDisplay, formatCredits } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
+import { ComputeTab } from '../../components/settings/ComputeTab'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -89,9 +91,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'analytics'
+type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'compute' | 'analytics'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'analytics']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'compute', 'analytics']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -106,6 +108,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
+  { id: 'compute', label: 'Compute', icon: Server },
   { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
 ]
@@ -202,6 +205,7 @@ function SettingsSidebar({
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
     ...(showBilling
       ? [
+          { id: 'compute' as TabId, label: 'Compute' },
           { id: 'billing' as TabId, label: 'Billing' },
           { id: 'analytics' as TabId, label: 'Usage' },
         ]
@@ -2338,8 +2342,22 @@ function InviteMembersModal({
 
 function BillingTab() {
   const router = useRouter()
+  const http = useDomainHttp()
   const workspace = useActiveWorkspace()
   const { subscription, effectiveBalance } = useBillingData(workspace?.id)
+  const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspace?.id) return
+    let cancelled = false
+    api.getWorkspaceInstance(http, workspace.id).then((inst: any) => {
+      if (cancelled || !inst) return
+      const size = inst.size ?? 'micro'
+      const labels: Record<string, string> = { micro: 'Micro (0.5 CPU, 2 GB)', small: 'Small (1 CPU, 4 GB)', medium: 'Medium (2 CPU, 8 GB)', large: 'Large (4 CPU, 16 GB)', xlarge: 'XLarge (8 CPU, 32 GB)' }
+      setInstanceLabel(labels[size] ?? size)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [http, workspace?.id])
 
   const planId = subscription?.planId?.toLowerCase() ?? 'free'
   const planLabel = planId.startsWith('enterprise')
@@ -2416,6 +2434,16 @@ function BillingTab() {
                 : 'Loading...'}
             </Text>
           </View>
+
+          {instanceLabel && (
+            <>
+              <Separator />
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">Instance</Text>
+                <Text className="text-sm font-medium text-foreground">{instanceLabel}</Text>
+              </View>
+            </>
+          )}
 
           <Separator />
 
@@ -2585,6 +2613,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'people' && !isLocal && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
+      {activeTab === 'compute' && !isLocal && <ComputeTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
     </>
@@ -2610,6 +2639,7 @@ export default observer(function SettingsPage() {
   useEffect(() => {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'compute' && isLocal) setActiveTab('workspace')
     if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
