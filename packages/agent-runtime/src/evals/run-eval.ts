@@ -43,7 +43,7 @@ import {
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
 import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
-import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, getK8sWorkerUrl } from './k8s-worker'
+import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, getK8sWorkerUrl, getK8sWorkerIp } from './k8s-worker'
 
 loadEnvFromDisk(REPO_ROOT)
 
@@ -777,11 +777,12 @@ async function runEvalOnWorker(
         }
       }
 
-      const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
+      const hostSkillPort = k8sFlag ? CONTAINER_SKILL_PORT : SKILL_SERVER_BASE_PORT + worker.id
       const canvasExpected = (localFlag || vmFlag || k8sFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
       const runtimeResults = await runRuntimeChecks({
         workspaceDir: worker.dir,
         skillServerPort: hostSkillPort,
+        skillServerHost: k8sFlag ? getK8sWorkerIp(worker) : undefined,
         canvasExpectedPort: canvasExpected,
         evalId: ev.id,
         verbose: verboseFlag,

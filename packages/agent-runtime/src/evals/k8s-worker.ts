@@ -82,6 +82,10 @@ export function getK8sWorkerUrl(worker: DockerWorker): string {
   return `http://${ip}:8080`
 }
 
+export function getK8sWorkerIp(worker: DockerWorker): string | undefined {
+  return _podIPs.get(worker.containerName)
+}
+
 // ---------------------------------------------------------------------------
 // Env passthrough (mirrors docker-worker ENV_PREFIXES)
 // ---------------------------------------------------------------------------

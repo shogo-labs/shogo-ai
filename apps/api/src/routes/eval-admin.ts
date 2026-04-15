@@ -56,7 +56,7 @@ function isProcessAlive(pid: number): boolean {
 function getCallbackUrl(): string {
   if (isKubernetes()) {
     const ns = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
-    return `http://api.${ns}.svc.cluster.local:8002`
+    return `http://api.${ns}.svc.cluster.local`
   }
   const port = process.env.API_PORT || '8002'
   return `http://localhost:${port}`
