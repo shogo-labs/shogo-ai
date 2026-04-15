@@ -11,6 +11,16 @@
 
 import { prisma, Prisma } from '../lib/prisma'
 
+/** Parse actionMetadata that may have been double-JSON-stringified. */
+function parseMeta(raw: unknown): Record<string, any> {
+  if (!raw) return {}
+  if (typeof raw === 'object') return raw as Record<string, any>
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) } catch { return {} }
+  }
+  return {}
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -533,10 +543,7 @@ export async function getUsageLog(
   const userMap = new Map(users.map((u) => [u.id, u]))
 
   const entries: UsageLogEntry[] = events.map((event) => {
-    let meta = (event.actionMetadata as Record<string, any>) || {}
-    if (typeof meta === 'string') {
-      try { meta = JSON.parse(meta) } catch { meta = {} }
-    }
+    const meta = parseMeta(event.actionMetadata)
     const user = userMap.get(event.memberId)
     return {
       id: event.id,
@@ -603,10 +610,7 @@ export async function getUsageSummary(
   }>()
 
   for (const event of events) {
-    let meta = (event.actionMetadata as Record<string, any>) || {}
-    if (typeof meta === 'string') {
-      try { meta = JSON.parse(meta) } catch { meta = {} }
-    }
+    const meta = parseMeta(event.actionMetadata)
     const model = meta.model || meta.modelUsed || 'unknown'
     const key = `${event.memberId}::${model}`
     const existing = aggregateMap.get(key)
