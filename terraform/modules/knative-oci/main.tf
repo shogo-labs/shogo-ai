@@ -176,6 +176,13 @@ resource "null_resource" "knative_config" {
         enable-service-access-logging: "true"
         drain-time-seconds: "15"
       YAML
+
+      # Aggressive revision GC to prevent stale pods/images from accumulating.
+      # Keep at most 2 inactive revisions per service, GC after 30m idle.
+      kubectl patch configmap/config-gc \
+        --namespace knative-serving \
+        --type merge \
+        --patch '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"48h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}'
     EOT
   }
 }

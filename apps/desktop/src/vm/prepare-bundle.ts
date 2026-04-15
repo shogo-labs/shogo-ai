@@ -320,6 +320,14 @@ export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
     // --- Templates ---
     copyTemplates(destDir, repoRoot)
 
+    // --- Tech stacks (react-app, python-data, etc.) ---
+    const techStacksSrc = resolve(repoRoot, 'packages/agent-runtime/tech-stacks')
+    const techStacksDest = join(destDir, 'tech-stacks')
+    if (!existsSync(techStacksDest) && existsSync(techStacksSrc)) {
+      console.log('  Copying tech stacks for VM...')
+      cpSync(techStacksSrc, techStacksDest, { recursive: true })
+    }
+
     // --- typescript-language-server (used by LSP inside the VM) ---
     if (!existsSync(join(destDir, 'node_modules', 'typescript-language-server'))) {
       console.log('  Installing typescript-language-server for VM...')
