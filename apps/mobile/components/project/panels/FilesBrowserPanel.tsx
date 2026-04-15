@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -288,6 +288,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const [nativeKeyboardHeight, setNativeKeyboardHeight] = useState(0)
 
   const hasChanges = content !== savedContent
+  const treeJsonRef = useRef('')
 
   useEffect(() => {
     if (Platform.OS === 'web' || !visible) {
@@ -310,16 +311,21 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   // Data Loading
   // -------------------------------------------------------------------------
 
-  const loadTree = useCallback(async () => {
+  const loadTree = useCallback(async (showLoading = true) => {
     if (!client) return
-    setIsLoadingTree(true)
+    if (showLoading) setIsLoadingTree(true)
     setError(null)
     try {
-      setTree(await client.getWorkspaceTree())
+      const newTree = await client.getWorkspaceTree()
+      const json = JSON.stringify(newTree)
+      if (json !== treeJsonRef.current) {
+        treeJsonRef.current = json
+        setTree(newTree)
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
-      setIsLoadingTree(false)
+      if (showLoading) setIsLoadingTree(false)
     }
   }, [client])
 
@@ -365,7 +371,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
   useEffect(() => {
     if (!visible || !client) return
-    const id = setInterval(loadTree, 5000)
+    const id = setInterval(() => loadTree(false), 5000)
     return () => clearInterval(id)
   }, [visible, client, loadTree])
 
@@ -792,7 +798,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
               {/* General file tree */}
               <Text className="text-[10px] font-medium text-muted-foreground px-2 py-1 mt-2">
-                FILES
+                PROJECT FILES
               </Text>
               {tree.length === 0 ? (
                 <Text className="text-xs text-muted-foreground px-2 py-2 italic">

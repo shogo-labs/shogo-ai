@@ -1526,7 +1526,27 @@ function mimeToExtension(mimeType: string): string {
   return MIME_EXTENSIONS[mimeType] || `.${mimeType.split('/').pop() || 'bin'}`
 }
 
-function walkFilesTree(dir: string, rootDir: string): any[] {
+const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
+  'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
+  'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
+  'memory', 'scripts',
+])
+
+const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
+  'bun.lock', '.virtfs_metadata',
+  'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md',
+  'package.json', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts',
+  'postcss.config.js', 'postcss.config.mjs', 'components.json',
+  'pyrightconfig.json', 'LICENSE', 'README.md',
+  '.app-template',
+])
+
+function walkFilesTree(
+  dir: string,
+  rootDir: string,
+  excludeDirs?: Set<string>,
+  excludeFiles?: Set<string>,
+): any[] {
   if (!existsSync(dir)) return []
   const results: any[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1535,14 +1555,16 @@ function walkFilesTree(dir: string, rootDir: string): any[] {
     const relPath = absPath.slice(rootDir.length + 1)
     const stat = statSync(absPath)
     if (entry.isDirectory()) {
+      if (excludeDirs?.has(entry.name)) continue
       results.push({
         name: entry.name,
         path: relPath,
         type: 'directory',
         modified: stat.mtimeMs,
-        children: walkFilesTree(absPath, rootDir),
+        children: walkFilesTree(absPath, rootDir, excludeDirs, excludeFiles),
       })
     } else {
+      if (excludeFiles?.has(entry.name)) continue
       results.push({
         name: entry.name,
         path: relPath,
@@ -1594,33 +1616,45 @@ app.get('/agent/workspace/bundle', (c) => {
   return c.json({ files })
 })
 
+function resolveWorkspacePath(subPath: string): string | null {
+  const resolved = resolve(WORKSPACE_DIR, subPath)
+  if (!resolved.startsWith(resolve(WORKSPACE_DIR))) return null
+  return resolved
+}
+
 // Recursive file tree for the file browser UI
 app.get('/agent/workspace/tree', (c) => {
-  mkdirSync(FILES_DIR, { recursive: true })
-  const tree = walkFilesTree(FILES_DIR, resolve(FILES_DIR))
+  const tree = walkFilesTree(WORKSPACE_DIR, resolve(WORKSPACE_DIR), WORKSPACE_TREE_EXCLUDE_DIRS, WORKSPACE_TREE_EXCLUDE_FILES)
   return c.json({ tree })
 })
 
-// Read a file from files/
+// Read a file from the workspace
 app.get('/agent/workspace/files/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
-  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
+  const resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
+  if (!existsSync(resolved)) {
+    const fallback = resolveFilesPath(subPath)
+    if (fallback && existsSync(fallback)) {
+      const content = readFileSync(fallback, 'utf-8')
+      return c.json({ path: subPath, content, bytes: content.length })
+    }
+    return c.json({ error: 'File not found' }, 404)
+  }
 
   const content = readFileSync(resolved, 'utf-8')
   return c.json({ path: subPath, content, bytes: content.length })
 })
 
-// Write/create a file in files/
+// Write/create a file in the workspace
 app.put('/agent/workspace/files/*', async (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  const resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
 
   const { content } = await c.req.json()
   const dir = dirname(resolved)
@@ -1630,13 +1664,13 @@ app.put('/agent/workspace/files/*', async (c) => {
   return c.json({ ok: true, path: subPath, bytes: content.length })
 })
 
-// Delete a file from files/
+// Delete a file from the workspace
 app.delete('/agent/workspace/files/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  const resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
   if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
 
   unlinkSync(resolved)
@@ -1707,13 +1741,13 @@ app.get('/agent/workspace/download/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/download/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  let resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  let resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
 
   if (!existsSync(resolved)) {
-    const wsRoot = resolve(WORKSPACE_DIR, subPath)
-    if (wsRoot.startsWith(resolve(WORKSPACE_DIR)) && existsSync(wsRoot) && /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(subPath)) {
-      resolved = wsRoot
+    const fallback = resolveFilesPath(subPath)
+    if (fallback && existsSync(fallback)) {
+      resolved = fallback
     } else {
       return c.json({ error: 'File not found' }, 404)
     }
