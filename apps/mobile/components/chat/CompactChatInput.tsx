@@ -51,6 +51,8 @@ import {
 import { usePlatformConfig } from "../../lib/platform-config"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
+import { analyzeContent, kindLabel, LONG_TEXT_CHIP_LAYOUT_CLASS } from "./long-text-utils"
+import { FileViewerModal } from "./FileViewerModal"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -292,6 +294,37 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onTranscript: appendTranscriptToInput,
     })
 
+    const [longTextCollapsed, setLongTextCollapsed] = useState(false)
+    const [longTextViewerOpen, setLongTextViewerOpen] = useState(false)
+
+    const longTextInfo = useMemo(() => {
+      if (!value || value.length < 2000) return null
+      const info = analyzeContent(value)
+      return info.isLong ? info : null
+    }, [value])
+
+    const prevWasLongRef = useRef(false)
+    useEffect(() => {
+      const isLong = longTextInfo !== null
+      if (isLong && !prevWasLongRef.current) {
+        setLongTextCollapsed(true)
+      } else if (!isLong) {
+        setLongTextCollapsed(false)
+      }
+      prevWasLongRef.current = isLong
+    }, [longTextInfo])
+
+    const handleShowInTextField = useCallback(() => {
+      setLongTextCollapsed(false)
+      setTimeout(() => textInputRef.current?.focus(), 0)
+    }, [])
+
+    const handleRemoveLongText = useCallback(() => {
+      setValue("")
+      setLongTextCollapsed(false)
+      setLongTextViewerOpen(false)
+    }, [setValue])
+
     const handleSubmit = useCallback(() => {
       const trimmedContent = value.trim()
       if (
@@ -407,32 +440,77 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <Text className="text-sm text-destructive px-4 pb-2">{voiceInput.error}</Text>
           )}
 
-          {/* TextInput */}
-          <TextInput
-            ref={textInputRef}
-            placeholder={placeholderText}
-            placeholderTextColor="#9ca3af"
-            accessibilityLabel="Describe the agent you want to build"
-            value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
-            onChangeText={setValue}
-            onSubmitEditing={handleSubmit}
-            onKeyPress={(e: any) => {
-              if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
-                e.preventDefault()
-                handleSubmit()
-              }
-            }}
-            editable={!disabled && !isLoading && !voiceInput.isRecording}
-            multiline
-            blurOnSubmit={false}
-            className={cn(
-              "min-h-[80px] max-h-[200px] w-full",
-              "px-4 pt-4 text-xs text-foreground",
-              disabled && "opacity-50",
-              Platform.OS === "web" && "outline-none"
-            )}
-            textAlignVertical="top"
-          />
+          {/* TextInput or collapsed long-text card */}
+          {longTextCollapsed && longTextInfo ? (
+            <View className="px-3 pt-3 pb-1 gap-2">
+              <View className={cn("relative", LONG_TEXT_CHIP_LAYOUT_CLASS)}>
+                <Pressable
+                  onPress={() => setLongTextViewerOpen(true)}
+                  className={cn(
+                    "w-full rounded-lg border border-border bg-muted/50 p-3 pr-10 gap-1.5"
+                  )}
+                  accessibilityLabel="View pasted text"
+                  accessibilityRole="button"
+                >
+                  <View className="flex-row items-center gap-2">
+                    <FileText size={16} className="text-primary" />
+                    <Text className="flex-1 text-xs font-medium text-foreground min-w-0" numberOfLines={1}>
+                      {kindLabel(longTextInfo.kind).toUpperCase()}
+                    </Text>
+                    <Text className="text-[10px] text-muted-foreground flex-shrink-0">
+                      {longTextInfo.sizeLabel} · {longTextInfo.lines} lines
+                    </Text>
+                  </View>
+                  <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+                    {value.slice(0, 200).replace(/\n/g, " ")}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleRemoveLongText}
+                  className="absolute top-1.5 right-1.5 z-10 rounded-full bg-background/90 p-1 border border-border/60"
+                  accessibilityLabel="Remove pasted text"
+                  accessibilityRole="button"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <X size={14} className="text-muted-foreground" />
+                </Pressable>
+              </View>
+              <Pressable
+                onPress={handleShowInTextField}
+                className="self-start"
+              >
+                <Text className="text-[11px] text-primary font-medium">
+                  Show in text field ›
+                </Text>
+              </Pressable>
+            </View>
+          ) : (
+            <TextInput
+              ref={textInputRef}
+              placeholder={placeholderText}
+              placeholderTextColor="#9ca3af"
+              accessibilityLabel="Describe the agent you want to build"
+              value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
+              onChangeText={setValue}
+              onSubmitEditing={handleSubmit}
+              onKeyPress={(e: any) => {
+                if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
+              editable={!disabled && !isLoading && !voiceInput.isRecording}
+              multiline
+              blurOnSubmit={false}
+              className={cn(
+                "min-h-[80px] max-h-[200px] w-full",
+                "px-4 pt-4 text-xs text-foreground",
+                disabled && "opacity-50",
+                Platform.OS === "web" && "outline-none"
+              )}
+              textAlignVertical="top"
+            />
+          )}
 
           {/* Bottom toolbar */}
           <View className="flex-row items-center justify-between p-1.5">
@@ -712,6 +790,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             )}
           </View>
         </View>
+
+        {longTextInfo && (
+          <FileViewerModal
+            visible={longTextViewerOpen}
+            onClose={() => setLongTextViewerOpen(false)}
+            content={value}
+            title={`${kindLabel(longTextInfo.kind)} content`}
+            kind={longTextInfo.kind}
+            sizeLabel={longTextInfo.sizeLabel}
+          />
+        )}
 
         {Platform.OS !== "web" && (
           <AttachSourceSheet
