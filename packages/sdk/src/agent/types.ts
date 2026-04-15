@@ -87,6 +87,14 @@ export interface SearchResult {
   highlights?: string[]
 }
 
+/**
+ * Response body from `GET /agent/workspace/bundle`.
+ * Keys are paths relative to the workspace; values are base64-encoded raw file bytes.
+ */
+export interface WorkspaceBundle {
+  files: Record<string, string>
+}
+
 /** Response body from `GET /agent/export`. */
 export interface AgentExportBundle {
   version: string
