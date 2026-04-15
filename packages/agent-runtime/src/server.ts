@@ -2455,6 +2455,29 @@ app.post('/agent/skill-server/sync', async (c) => {
 })
 
 // =============================================================================
+// Runtime checks (used by eval harness in K8s mode — runs checks locally where
+// workspace files and skill server are colocated)
+// =============================================================================
+
+app.post('/agent/runtime-checks', async (c) => {
+  const { runRuntimeChecks } = await import('./evals/runtime-checks')
+  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean }>()
+  const skillServerPort = agentGateway?.getSkillServerPort() ?? 4100
+  try {
+    const results = await runRuntimeChecks({
+      workspaceDir: WORKSPACE_DIR,
+      skillServerPort,
+      canvasExpectedPort: body.canvasExpectedPort ?? skillServerPort,
+      evalId: body.evalId,
+      verbose: body.verbose,
+    })
+    return c.json({ ok: true, results })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message || String(err) }, 500)
+  }
+})
+
+// =============================================================================
 // Template API Proxy (forward /api/* to the template's Hono server)
 // =============================================================================
 
