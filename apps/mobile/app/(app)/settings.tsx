@@ -2164,8 +2164,10 @@ function BillingTab() {
   const totalCredits = getCreditsCapacityForDisplay(
     hasActiveSubscription ? subscription?.planId : undefined,
     effectiveBalance?.total,
+    effectiveBalance?.monthlyAllocation,
   )
-  const creditsUsed = totalCredits - (effectiveBalance?.total ?? 0)
+  const creditsRemaining = effectiveBalance?.total ?? 0
+  const creditsUsed = Math.max(0, totalCredits - creditsRemaining)
   const usagePct = totalCredits > 0 ? Math.min(100, Math.round((creditsUsed / totalCredits) * 100)) : 0
 
   if (!workspace?.id) {
