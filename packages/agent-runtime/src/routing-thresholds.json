@@ -23,21 +23,8 @@
     "prisma_migrate",
     "sql_execute"
   ],
-  "destructiveExecPatterns": [
-    "rm ",
-    "rm -",
-    "rmdir",
-    "drop ",
-    "delete ",
-    "truncate ",
-    "format ",
-    "--force",
-    "git push -f",
-    "git reset --hard"
-  ],
   "confidence": {
-    "highThreshold": 0.8,
-    "lowThreshold": 0.4
+    "highThreshold": 0.8
   },
   "escalation": {
     "maxFallbackRetries": 1

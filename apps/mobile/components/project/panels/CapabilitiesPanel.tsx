@@ -162,6 +162,8 @@ interface ModelOption {
   tier: ModelTier
 }
 
+const AUTO_MODEL_OPTION: ModelOption = { provider: 'auto', name: AUTO_MODEL_ID, displayName: 'Auto', tier: 'standard' as ModelTier }
+
 const AVAILABLE_MODELS: ModelOption[] = getAvailableModels({ generation: 'current' }).map(e => ({
   provider: e.provider,
   name: e.id,
@@ -344,7 +346,7 @@ export function CapabilitiesPanel({
 
   const isAutoSelected = currentModel?.name === AUTO_MODEL_ID
   const resolvedModel = isAutoSelected
-    ? { provider: 'auto', name: AUTO_MODEL_ID, displayName: 'Auto', tier: 'standard' as ModelTier }
+    ? AUTO_MODEL_OPTION
     : AVAILABLE_MODELS.find(
         m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
       )
@@ -523,7 +525,7 @@ export function CapabilitiesPanel({
                   <PopoverContent className="p-0 min-w-[220px]">
                     <PopoverBody>
                       <Pressable
-                        onPress={() => handleModelChange({ provider: 'auto', name: AUTO_MODEL_ID, displayName: 'Auto', tier: 'standard' })}
+                        onPress={() => handleModelChange(AUTO_MODEL_OPTION)}
                         className={cn(
                           'flex-row items-center gap-2.5 px-3 py-2.5',
                           'active:bg-muted',

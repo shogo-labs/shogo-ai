@@ -81,7 +81,7 @@ export interface SubagentResult {
   /** Unique agent ID for transcript persistence and resume. */
   agentId?: string
   /** The actual model used for the final iteration (may differ from config if router active). */
-  effectiveModel?: string
+  effectiveModelId?: string
 }
 
 export interface SubagentStreamCallbacks {
@@ -647,7 +647,7 @@ export async function runSubagent(
       responseText: result.text,
       newMessages: result.newMessages,
       agentId,
-      effectiveModel: result.effectiveModelId,
+      effectiveModelId: result.effectiveModelId,
     }
   }
 
@@ -666,7 +666,7 @@ export async function runSubagent(
         }
         callbacks?.onStart?.(config.name, config.description, agentId)
         result = await runOnce(escalated.selectedModel)
-        result.effectiveModel = escalated.selectedModel
+        result.effectiveModelId = escalated.selectedModel
         callbacks?.onEnd?.(config.name)
       }
     }
@@ -680,7 +680,7 @@ export async function runSubagent(
         console.log(`[Subagent:${config.name}] [Router] Error escalation: ${routingDecision.selectedModel} → ${escalated.selectedModel}`)
         try {
           const retryResult = await runOnce(escalated.selectedModel)
-          retryResult.effectiveModel = escalated.selectedModel
+          retryResult.effectiveModelId = escalated.selectedModel
           callbacks?.onEnd?.(config.name)
           return retryResult
         } catch (retryErr: any) {

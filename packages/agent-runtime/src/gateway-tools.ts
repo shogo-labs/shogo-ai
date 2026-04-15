@@ -2729,7 +2729,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
-          const subModel = result.effectiveModel || ctx.effectiveModel || ctx.config.model.name
+          const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
           w.write({
             type: 'data-usage',
             data: {
@@ -2793,7 +2793,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const result = await inst.promise
 
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
-        const subModel = result.effectiveModel || ctx.effectiveModel || ctx.config.model.name
+        const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
         w.write({
           type: 'data-usage',
           data: {

@@ -12,14 +12,10 @@
  * fails the sub-agent task.
  */
 
-import { getModelTier, getModelEntry, type ModelTier } from '@shogo/model-catalog'
+import { getModelTier, getModelEntry, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
 import thresholdsJson from './routing-thresholds.json'
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-export const AUTO_MODEL_ID = 'auto'
+export { AUTO_MODEL_ID }
 
 // ---------------------------------------------------------------------------
 // Config (loaded from JSON, overridable at runtime)
@@ -28,8 +24,7 @@ export const AUTO_MODEL_ID = 'auto'
 export interface RoutingConfig {
   contextFloors: Record<string, { maxEffectiveContext: number }>
   highPrecisionTools: string[]
-  destructiveExecPatterns: string[]
-  confidence: { highThreshold: number; lowThreshold: number }
+  confidence: { highThreshold: number }
   escalation: { maxFallbackRetries: number }
 }
 
