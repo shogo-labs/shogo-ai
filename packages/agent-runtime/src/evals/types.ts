@@ -87,6 +87,10 @@ export interface AgentEval {
   tags?: string[]
   /** Agent mode required for this eval (e.g. 'basic', 'advanced') */
   requiredAgent?: string
+  /** Pre-defined responses for ask_user calls. When the agent calls ask_user,
+   *  the runner sends the next response as a follow-up user message.
+   *  Responses are consumed in order; if exhausted, subsequent ask_user calls get no response. */
+  askUserResponses?: string[]
 }
 
 export interface ConversationTurn {
@@ -199,6 +203,8 @@ export interface EvalResult {
   toolCalls: ToolCallRecord[]
   /** Tool calls from only the final evaluated turn. Use for negative execution checks. */
   finalTurnToolCalls: ToolCallRecord[]
+  /** Tool calls grouped by turn index for per-turn inspection. */
+  perTurnToolCalls: ToolCallRecord[][]
   criteriaResults: CriterionResult[]
   triggeredAntiPatterns: string[]
   timing: {

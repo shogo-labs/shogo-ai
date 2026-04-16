@@ -344,10 +344,35 @@ const PHASE_1: AgentEval = {
   input:
     "What can you actually help a YouTuber with? Like specifically — I need to understand what's possible " +
     "before I start asking for things. I don't want to waste time asking for stuff you can't do.",
+  askUserResponses: [
+    'Just use the email credentials I gave you. My timezone is America/Los_Angeles.',
+    'Morning means 9am Pacific time. Just set up the reminders for Monday and Thursday.',
+    'Sounds good, just tell me what you can do — keep it simple, no tech jargon.',
+  ],
   workspaceFiles: phase1Workspace(),
   toolMocks: CONTENT_CREATOR_MOCKS,
-  maxScore: 26,
+  maxScore: 31,
   validationCriteria: [
+    // --- Interaction phase: validate the agent asks good questions ---
+    {
+      id: 'asked-about-schedule',
+      description: 'Agent clarified morning time or timezone for reminders',
+      points: 3,
+      phase: 'interaction',
+      validate: (r) => {
+        const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
+        return allText.includes('ask_user') &&
+          (allText.includes('timezone') || allText.includes('time zone') || allText.includes('morning') || allText.includes('what time'))
+      },
+    },
+    {
+      id: 'asked-clarification',
+      description: 'Agent used ask_user to clarify at least one detail',
+      points: 2,
+      phase: 'interaction',
+      validate: (r) => toolCallsJson(r).includes('ask_user'),
+    },
+    // --- Execution phase: validate actual tool usage after answers ---
     {
       id: 'email-connected',
       description: 'Connected email channel',

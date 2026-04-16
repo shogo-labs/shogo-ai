@@ -319,10 +319,39 @@ const PHASE_1: AgentEval = {
   input:
     "One more thing — check in with me every morning. Quick summary of what's happening. " +
     "But don't bug me after 7pm.",
+  askUserResponses: [
+    'Sounds great! Let\'s start with channels and automations. Use the tokens I gave you directly.',
+    'Just use the credentials I provided. My timezone is America/New_York.',
+    'Morning means 8am. Use America/New_York timezone. Just set it up.',
+  ],
   workspaceFiles: phase1Workspace(),
   toolMocks: BUSINESS_USER_MOCKS,
-  maxScore: 30,
+  maxScore: 37,
   validationCriteria: [
+    // --- Interaction phase: validate the agent asks good questions ---
+    {
+      id: 'asked-about-timezone',
+      description: 'Agent asked about timezone before configuring heartbeat',
+      points: 4,
+      phase: 'interaction',
+      validate: (r) => {
+        const json = toolCallsJson(r)
+        const text = r.responseText.toLowerCase()
+        const allText = (json + ' ' + text).toLowerCase()
+        return json.includes('ask_user') && (allText.includes('timezone') || allText.includes('time zone'))
+      },
+    },
+    {
+      id: 'asked-about-schedule',
+      description: 'Agent clarified morning time or quiet hours details',
+      points: 3,
+      phase: 'interaction',
+      validate: (r) => {
+        const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
+        return allText.includes('morning') || allText.includes('what time') || allText.includes('quiet')
+      },
+    },
+    // --- Execution phase: validate actual tool usage after answers ---
     {
       id: 'slack-connected',
       description: 'Connected Slack channel with provided tokens',
