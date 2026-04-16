@@ -198,7 +198,7 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity }
+    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams }
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,

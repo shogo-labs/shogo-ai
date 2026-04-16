@@ -50,7 +50,7 @@ export interface RuntimeAppConfig {
    * Returns activity stats for the /pool/activity endpoint.
    * If not provided, only HTTP request tracking is used.
    */
-  getActivityStats?: () => { activeSessions: number; lastActivityAt: number | null }
+  getActivityStats?: () => { activeSessions: number; lastActivityAt: number | null; activeStreams?: number }
   /**
    * Extra data to include in the /health response.
    */
@@ -402,10 +402,12 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     const now = Date.now()
     const lastSessionActivity = activityStats.lastActivityAt ?? (state.poolAssignedAt ?? SERVER_START_TIME)
     const lastActivity = Math.max(state.lastRequestAt, lastSessionActivity)
+    const streams = activityStats.activeStreams ?? 0
     return c.json({
       projectId: state.currentProjectId,
       lastActivityAt: lastActivity,
-      idleSeconds: Math.floor((now - lastActivity) / 1000),
+      idleSeconds: streams > 0 ? 0 : Math.floor((now - lastActivity) / 1000),
+      activeStreams: streams,
       activeSessions: activityStats.activeSessions,
       lastRequestAt: state.lastRequestAt,
       lastSessionActivityAt: lastSessionActivity,
