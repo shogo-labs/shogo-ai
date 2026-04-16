@@ -353,6 +353,21 @@ export function escalateModel(
 // ---------------------------------------------------------------------------
 
 /**
+ * Cross-provider tier map used by Auto mode. Picks the globally cheapest
+ * model per complexity tier regardless of provider:
+ *   simple   -> GPT-5.4 Nano  ($0.20/$1.25 per MTok)
+ *   moderate -> Claude Haiku   ($0.80/$4.00 per MTok)
+ *   complex  -> Claude Sonnet  ($3.00/$15.00 per MTok)
+ */
+export function buildAutoTierMap(): ModelTierMap {
+  return {
+    economy: 'gpt-5.4-nano',
+    standard: 'claude-haiku-4-5-20251001',
+    premium: 'claude-sonnet-4-6',
+  }
+}
+
+/**
  * Build a ModelTierMap from the catalog. Picks the best current-generation
  * model for each tier within the same provider family as the ceiling model.
  */

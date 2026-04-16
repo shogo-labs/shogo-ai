@@ -3901,12 +3901,13 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
 app.get('/api/admin/settings/agent-models', async (c) => {
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced'] } },
+      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
     })
-    const overrides: Record<string, string | null> = { basic: null, advanced: null }
+    const overrides: Record<string, string | null> = { basic: null, advanced: null, defaultMode: null }
     for (const row of rows) {
       if (row.key === 'agent-model.basic') overrides.basic = row.value
       if (row.key === 'agent-model.advanced') overrides.advanced = row.value
+      if (row.key === 'agent-model.default-mode') overrides.defaultMode = row.value
     }
     return c.json(overrides)
   } catch (err: any) {
@@ -3936,6 +3937,20 @@ app.put('/api/admin/settings/agent-models', async (c) => {
           update: { value: String(value), updatedBy: userId },
         })
         overrides[mode] = String(value)
+      }
+    }
+
+    // Handle defaultMode separately (not a model override, just a mode preference)
+    if (body.defaultMode !== undefined) {
+      const modeValue = body.defaultMode
+      if (modeValue === null || modeValue === '') {
+        await prisma.platformSetting.deleteMany({ where: { key: 'agent-model.default-mode' } })
+      } else {
+        await prisma.platformSetting.upsert({
+          where: { key: 'agent-model.default-mode' },
+          create: { key: 'agent-model.default-mode', value: String(modeValue), updatedBy: userId },
+          update: { value: String(modeValue), updatedBy: userId },
+        })
       }
     }
 
@@ -5594,7 +5609,7 @@ await (async () => {
   try {
     const { setAgentModeOverrides } = await import('@shogo/model-catalog')
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced'] } },
+      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
     })
     if (rows.length > 0) {
       const overrides: Record<string, string> = {}
@@ -5603,7 +5618,8 @@ await (async () => {
         if (row.key === 'agent-model.advanced') overrides.advanced = row.value
       }
       setAgentModeOverrides(overrides)
-      console.log('[AgentModels] Loaded admin model overrides:', overrides)
+      const defaultMode = rows.find(r => r.key === 'agent-model.default-mode')?.value
+      console.log('[AgentModels] Loaded admin model overrides:', overrides, defaultMode ? `defaultMode=${defaultMode}` : '')
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
