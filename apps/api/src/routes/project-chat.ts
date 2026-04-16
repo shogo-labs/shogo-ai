@@ -479,7 +479,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Do NOT fall back to local RuntimeManager — that creates a split-brain
       // where the preview renders from the host but the agent runs in the VM.
       const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
-      return await getVMProjectUrl(projectId)
+      const maxRetries = 5
+      const retryDelayMs = 3000
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await getVMProjectUrl(projectId)
+        } catch (err) {
+          if (attempt === maxRetries) throw err
+          console.log(`[ProjectChat] VM not ready (attempt ${attempt}/${maxRetries}), retrying in ${retryDelayMs}ms...`)
+          await new Promise(r => setTimeout(r, retryDelayMs))
+        }
+      }
     }
     if (runtimeManager) {
       // Local development: Use RuntimeManager
