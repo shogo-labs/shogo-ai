@@ -730,6 +730,7 @@ export const ChatPanel = observer(function ChatPanel({
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
   const currentSessionId = chatSessionId ?? null
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
+  const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const isModelControlled = controlledSelectedModel !== undefined
 
@@ -809,6 +810,17 @@ export const ChatPanel = observer(function ChatPanel({
   const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{ content: string; files?: FileAttachment[] } | null>(null)
   const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
+
+  // Reset stale state synchronously when the session changes so we never
+  // render one frame of the previous session's messages before showing
+  // the loading indicator for the new session.
+  if (prevSessionIdRef.current !== currentSessionId) {
+    prevSessionIdRef.current = currentSessionId
+    cachedMessagesRef.current = null
+    lastNonEmptyMessagesRef.current = []
+    isLoadingMessagesRef.current = false
+    setIsInitialLoadComplete(!currentSessionId)
+  }
 
   type QueuedMessage = {
     id: string
@@ -2069,7 +2081,9 @@ export const ChatPanel = observer(function ChatPanel({
     })
   }, [isInitialLoadComplete, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Effect 2: Sync MobX → AI SDK state when data arrives
+  // Effect 2: Sync MobX → AI SDK state when data arrives.
+  // This is a fallback for when messages appear in MobX before Effect 1 finishes,
+  // e.g. from a real-time sync. It must NOT race with Effect 1's load cycle.
   useEffect(() => {
     if (persistedMessagesFromMobX.length > 0) {
       if (isStreamingRef.current) {
@@ -2112,6 +2126,11 @@ export const ChatPanel = observer(function ChatPanel({
       setMessages(aiMessages)
     } else if (currentSessionId) {
       if (initialMessageRef.current?.trim()) {
+        return
+      }
+      // Don't clear messages while Effect 1 is still loading — that would
+      // cause a flicker (messages → empty → loading → messages).
+      if (isLoadingMessagesRef.current) {
         return
       }
       setMessages([])
