@@ -770,6 +770,9 @@ export function ProjectTopBar({
 
         {/* Right actions */}
         <View className="flex-row items-center gap-0.5">
+          {isCanvasActive && (
+            <PublishDropdown projectId={projectId} projectName={projectName} />
+          )}
           {!hasActiveSubscription && (
             <Pressable
               onPress={() => router.push('/(app)/billing' as any)}
