@@ -400,6 +400,7 @@ import {
   selectModelForSpawn,
   escalateModel,
   buildAutoTierMap,
+  formatRoutingLog,
   type RoutingDecision,
   type ModelRouterOptions,
   type SpawnClassificationInput,
@@ -591,7 +592,7 @@ export async function runSubagent(
     }
     routingDecision = selectModelForSpawn(classInput, routerOptions)
     model = routingDecision.selectedModel
-    console.log(`[Subagent:${config.name}] [Router] Spawn: tier=${routingDecision.classifiedTier} model=${model} confidence=${routingDecision.confidence.toFixed(2)} reason=${routingDecision.reason}`)
+    console.log(`[Subagent:${config.name}] ${formatRoutingLog(routingDecision, prompt)}`)
     if (parentCtx.uiWriter) {
       parentCtx.uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
     }

@@ -8,6 +8,7 @@ import {
   escalateModel,
   buildAutoTierMap,
   buildModelTierMap,
+  formatRoutingLog,
   setRoutingConfig,
   getRoutingConfig,
   type SpawnClassificationInput,
@@ -366,5 +367,71 @@ describe('escalateModel', () => {
 
     const d4 = escalateModel(d3!, opts, 'step 3')
     expect(d4).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatRoutingLog
+// ---------------------------------------------------------------------------
+
+describe('formatRoutingLog', () => {
+  const autoTiers = buildAutoTierMap()
+  const opts: ModelRouterOptions = {
+    ceilingModel: autoTiers.premium,
+    availableModels: autoTiers,
+  }
+
+  test('includes model name, tier, confidence, and triggers', () => {
+    const decision = selectModelForSpawn({
+      prompt: 'find all test files',
+      subagentType: 'explore',
+      toolNames: [],
+      contextTokens: 1000,
+    }, opts)
+    const log = formatRoutingLog(decision, 'find all test files')
+
+    expect(log).toContain('[Auto]')
+    expect(log).toContain('SIMPLE')
+    expect(log).toContain('confidence')
+    expect(log).toContain('triggers:')
+    expect(log).toContain('explore-type agent')
+    expect(log).toContain('prompt: "find all test files"')
+  })
+
+  test('truncates long prompts', () => {
+    const longPrompt = 'a'.repeat(100)
+    const decision = selectModelForSpawn({
+      prompt: longPrompt,
+      subagentType: 'general-purpose',
+      toolNames: [],
+      contextTokens: 1000,
+    }, opts)
+    const log = formatRoutingLog(decision, longPrompt)
+    expect(log).toContain('...')
+    expect(log.length).toBeLessThan(500)
+  })
+
+  test('shows override note for high-precision tools', () => {
+    const decision = selectModelForSpawn({
+      prompt: 'deploy',
+      subagentType: 'general-purpose',
+      toolNames: ['deploy'],
+      contextTokens: 1000,
+    }, opts)
+    const log = formatRoutingLog(decision, 'deploy')
+    expect(log).toContain('OVERRIDE')
+    expect(log).toContain('high_precision_tool')
+  })
+
+  test('shows baseline message when no strong signals', () => {
+    const filler = 'xylophone '.repeat(15)
+    const decision = selectModelForSpawn({
+      prompt: filler,
+      subagentType: 'general-purpose',
+      toolNames: [],
+      contextTokens: 15000,
+    }, opts)
+    const log = formatRoutingLog(decision, filler)
+    expect(log).toContain('no strong signals')
   })
 })

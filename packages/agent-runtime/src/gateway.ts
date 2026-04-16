@@ -49,7 +49,7 @@ import {
   isAutoModel,
   AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
-import { selectModelForSpawn, buildAutoTierMap, type SpawnClassificationInput } from './model-router'
+import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -1279,7 +1279,7 @@ export class AgentGateway {
       })
       modelId = routingDecision.selectedModel
       provider = inferProviderFromModel(modelId, this.config.model.provider)
-      console.log(`${this.logPrefix} LLM turn: AUTO mode tier=${routingDecision.classifiedTier} model=${modelId} confidence=${routingDecision.confidence.toFixed(2)} reason=${routingDecision.reason} provider=${provider}`)
+      console.log(`${this.logPrefix} ${formatRoutingLog(routingDecision, prompt)}`)
       if (uiWriter) {
         uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
       }

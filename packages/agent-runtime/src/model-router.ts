@@ -12,7 +12,7 @@
  * fails the sub-agent task.
  */
 
-import { getModelTier, getModelEntry, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { getModelTier, getModelEntry, getModelShortDisplayName, AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
 import thresholdsJson from './routing-thresholds.json'
 
 export { AUTO_MODEL_ID }
@@ -95,13 +95,15 @@ const SIMPLE_KEYWORDS = new Set([
   'look', 'grep', 'locate', 'scan', 'inspect', 'print', 'log', 'status',
   'rename', 'move', 'copy', 'delete', 'remove', 'add', 'update', 'fix',
   'typo', 'import', 'export', 'format', 'lint', 'test', 'run',
+  'commit', 'push', 'pull', 'install', 'create', 'open', 'close',
+  'write', 'save', 'send', 'set', 'get', 'review', 'summarize',
 ])
 
 const COMPLEX_KEYWORDS = new Set([
   'design', 'architect', 'explain', 'why', 'debug', 'refactor', 'migrate',
   'optimize', 'performance', 'security', 'compare', 'analyze', 'strategy',
-  'plan', 'review', 'evaluate', 'trade-off', 'tradeoff', 'complex',
-  'implement', 'build', 'create', 'integrate', 'deploy', 'configure',
+  'evaluate', 'trade-off', 'tradeoff', 'complex',
+  'implement', 'integrate', 'deploy', 'configure',
 ])
 
 // ---------------------------------------------------------------------------
@@ -397,4 +399,49 @@ export function buildModelTierMap(ceilingModelId: string): ModelTierMap {
     standard: ceilingModelId,
     premium: ceilingModelId,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Human-readable routing log
+// ---------------------------------------------------------------------------
+
+const SIGNAL_DESCRIPTIONS: Record<string, string> = {
+  exploreAgent: 'explore-type agent',
+  forkAgent: 'fork agent (complex)',
+  codeReviewAgent: 'code review (needs precision)',
+  shortPrompt: 'short prompt (<100 chars)',
+  longPrompt: 'long prompt (>500 chars)',
+  simpleKeyword: 'simple keywords (find, list, search...)',
+  complexKeyword: 'complex keywords (design, refactor, analyze...)',
+  highContextPenalty: 'large context window',
+  highPrecisionTool: 'high-risk tool detected',
+}
+
+export function formatRoutingLog(decision: RoutingDecision, prompt: string): string {
+  const model = getModelShortDisplayName(decision.selectedModel)
+  const tier = decision.classifiedTier.toUpperCase()
+  const conf = (decision.confidence * 100).toFixed(0)
+
+  const triggers = Object.entries(decision.signals)
+    .filter(([, v]) => v !== 0)
+    .map(([k, v]) => {
+      const desc = SIGNAL_DESCRIPTIONS[k] || k
+      return `${v > 0 ? '+' : ''}${v.toFixed(2)} ${desc}`
+    })
+
+  const promptSnippet = prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt
+  const triggerList = triggers.length > 0
+    ? triggers.join(', ')
+    : 'no strong signals (baseline moderate)'
+
+  let overrideNote = ''
+  if (decision.reason.startsWith('high_precision_tool:')) {
+    overrideNote = ` [OVERRIDE: ${decision.reason}]`
+  } else if (decision.reason.startsWith('context_floor_exceeded:')) {
+    overrideNote = ` [OVERRIDE: context too large for cheaper model]`
+  } else if (decision.reason.startsWith('low_confidence_fallback:')) {
+    overrideNote = ` [OVERRIDE: low confidence, using standard]`
+  }
+
+  return `[Auto] → ${model} (${tier}, ${conf}% confidence)${overrideNote} | triggers: ${triggerList} | prompt: "${promptSnippet}"`
 }
