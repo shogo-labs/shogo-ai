@@ -21,7 +21,7 @@
 
 import type { AgentTool, AgentEvent, StreamFn } from '@mariozechner/pi-agent-core'
 import { Agent } from '@mariozechner/pi-agent-core'
-import type { Message, Model, Api, ImageContent } from '@mariozechner/pi-ai'
+import type { Message, Api, ImageContent } from '@mariozechner/pi-ai'
 import { LoopDetector, type LoopDetectorConfig, type LoopDetectorResult } from './loop-detector'
 import type { ToolContext } from './gateway-tools'
 import {
@@ -122,6 +122,8 @@ export interface AgentLoopResult {
   loopBreak?: LoopDetectorResult
   /** Set if the agent encountered an error (provider failure, etc.). Partial results are still available. */
   error?: Error
+  /** The actual model ID used for the final iteration (may differ from initial if router is active). */
+  effectiveModelId?: string
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -171,6 +173,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let iterations = 0
   let loopBreak: LoopDetectorResult | undefined
   let abortTriggered = false
+  let currentModelId = modelId
 
   const { signal } = options
 
@@ -358,6 +361,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     newMessages,
     loopBreak,
     error: promptError || implicitError,
+    effectiveModelId: currentModelId,
   }
 
   await onAgentEnd?.(result)

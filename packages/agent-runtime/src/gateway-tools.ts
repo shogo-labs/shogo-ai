@@ -102,6 +102,8 @@ export interface ToolContext {
   teammateHandles?: Map<string, TeammateLoopHandle>
   /** Effective model ID for this turn (accounts for session modelOverride + alias resolution) */
   effectiveModel?: string
+  /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
+  autoRouting?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
   /** On-demand guide registry populated by buildGuideRegistry() */
@@ -2727,7 +2729,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
-          const subModel = ctx.effectiveModel || ctx.config.model.name
+          const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
           w.write({
             type: 'data-usage',
             data: {
@@ -2791,7 +2793,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const result = await inst.promise
 
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
-        const subModel = ctx.effectiveModel || ctx.config.model.name
+        const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
         w.write({
           type: 'data-usage',
           data: {

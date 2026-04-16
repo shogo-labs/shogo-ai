@@ -46,6 +46,8 @@ import {
   resolveModelId,
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
+  isAutoModel,
+  AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
@@ -1255,9 +1257,17 @@ export class AgentGateway {
 
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelAlias = session.modelOverride || this.config.model.name
-    const provider = inferProviderFromModel(modelAlias, this.config.model.provider)
-    const modelId = resolveModelAlias(modelAlias)
-    console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+    const autoRouting = isAutoModel(modelAlias)
+    const baseModelForAuto = this.config.model.name
+    const effectiveAlias = autoRouting ? baseModelForAuto : modelAlias
+    const provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
+    const modelId = resolveModelAlias(effectiveAlias)
+
+    if (autoRouting) {
+      console.log(`${this.logPrefix} LLM turn: AUTO mode (main agent uses ${modelId}, sub-agents routed at spawn) provider=${provider}`)
+    } else {
+      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+    }
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
     // When there's no uiWriter (heartbeat, channel, webhook turns),
@@ -1304,6 +1314,7 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
+      autoRouting,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
@@ -1640,7 +1651,7 @@ export class AgentGateway {
         maxIterations: parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10),
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
-        thinkingLevel: resolveThinkingLevel(session.modelOverride),
+        thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
         signal: turnAbort.signal,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
@@ -1823,6 +1834,7 @@ export class AgentGateway {
 
       // Store usage for callers (server.ts includes it in the `finish` event)
       const estimatedContextTokens = this.sessionManager.estimateTokens(session)
+      const effectiveModel = result.effectiveModelId || modelId
       this._lastTurnUsage = {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
@@ -1832,7 +1844,7 @@ export class AgentGateway {
         toolCallCount: result.toolCalls.length,
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
-        model: modelId,
+        model: effectiveModel,
       }
 
       // UI notifications below may throw if the client disconnected (stop).

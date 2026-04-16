@@ -113,6 +113,7 @@ export function accumulateUsage(
   session.requestCount += 1
   session.model = model
   session.lastActivityAt = Date.now()
+
   return true
 }
 
