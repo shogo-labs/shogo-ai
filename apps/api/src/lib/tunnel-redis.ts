@@ -14,6 +14,7 @@
 
 import Redis from 'ioredis'
 
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-master:6379'
 const POD_ID = process.env.HOSTNAME || crypto.randomUUID()
 
@@ -36,41 +37,56 @@ export function getPodId(): string {
 export async function initTunnelRedis(): Promise<void> {
   if (initialized) return
 
-  pub = new Redis(REDIS_URL, {
-    maxRetriesPerRequest: 3,
-    connectTimeout: 5000,
-    lazyConnect: true,
-    retryStrategy(times) {
-      if (times > 5) return null
-      return Math.min(times * 500, 3000)
-    },
-  })
-  pub.on('error', (err) => {
-    console.error('[TunnelRedis] Publisher error:', err.message)
-  })
+  if (isLocalMode) {
+    initialized = true
+    console.log('[TunnelRedis] Skipped — local mode (single process, no cross-pod relay needed)')
+    return
+  }
 
-  sub = new Redis(REDIS_URL, {
-    maxRetriesPerRequest: 3,
-    connectTimeout: 5000,
-    lazyConnect: true,
-    retryStrategy(times) {
-      if (times > 5) return null
-      return Math.min(times * 500, 3000)
-    },
-  })
-  sub.on('error', (err) => {
-    console.error('[TunnelRedis] Subscriber error:', err.message)
-  })
+  try {
+    pub = new Redis(REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      connectTimeout: 5000,
+      lazyConnect: true,
+      retryStrategy(times) {
+        if (times > 5) return null
+        return Math.min(times * 500, 3000)
+      },
+    })
+    pub.on('error', (err) => {
+      console.error('[TunnelRedis] Publisher error:', err.message)
+    })
 
-  await Promise.all([pub.connect(), sub.connect()])
+    sub = new Redis(REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      connectTimeout: 5000,
+      lazyConnect: true,
+      retryStrategy(times) {
+        if (times > 5) return null
+        return Math.min(times * 500, 3000)
+      },
+    })
+    sub.on('error', (err) => {
+      console.error('[TunnelRedis] Subscriber error:', err.message)
+    })
 
-  await sub.subscribe(`tunnel:pod:${POD_ID}:request`)
-  await sub.subscribe(`tunnel:pod:${POD_ID}:stream-request`)
+    await Promise.all([pub.connect(), sub.connect()])
 
-  sub.on('message', handleSubMessage)
+    await sub.subscribe(`tunnel:pod:${POD_ID}:request`)
+    await sub.subscribe(`tunnel:pod:${POD_ID}:stream-request`)
+
+    sub.on('message', handleSubMessage)
+
+    console.log(`[TunnelRedis] Initialized (pod=${POD_ID})`)
+  } catch (err) {
+    console.error('[TunnelRedis] Failed to connect — falling back to in-memory only:', (err as Error).message)
+    try { pub?.disconnect() } catch {}
+    try { sub?.disconnect() } catch {}
+    pub = null
+    sub = null
+  }
 
   initialized = true
-  console.log(`[TunnelRedis] Initialized (pod=${POD_ID})`)
 }
 
 export async function shutdownTunnelRedis(): Promise<void> {
