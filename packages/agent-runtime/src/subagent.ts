@@ -80,6 +80,8 @@ export interface SubagentResult {
   newMessages?: Message[]
   /** Unique agent ID for transcript persistence and resume. */
   agentId?: string
+  /** The actual model used for the final iteration (may differ from config if router active). */
+  effectiveModelId?: string
 }
 
 export interface SubagentStreamCallbacks {
@@ -394,6 +396,14 @@ function parseAgentFrontmatter(raw: string): CustomAgentDef {
 // ---------------------------------------------------------------------------
 
 import { CONCURRENT_SAFE_TOOLS } from './tool-orchestration'
+import {
+  selectModelForSpawn,
+  escalateModel,
+  buildModelTierMap,
+  type RoutingDecision,
+  type ModelRouterOptions,
+  type SpawnClassificationInput,
+} from './model-router'
 
 const MODEL_TIER_MAP: Record<ModelTierName, string> = {
   fast: 'claude-haiku-4-5',
@@ -557,14 +567,40 @@ export async function runSubagent(
     })
   }
 
-  const model = resolveModelTier(config.modelTier, config.model || parentCtx.effectiveModel || parentCtx.config.model.name)
+  const parentModel = config.model || parentCtx.effectiveModel || parentCtx.config.model.name
   const provider = config.provider || parentCtx.config.model.provider
   const maxIterations = config.maxTurns || (isFork ? 200 : 10)
 
-  try {
+  // Spawn-time model routing: when Auto mode is active and no explicit
+  // model_tier was set by the main agent, use the router to pick the
+  // cheapest model capable of handling this sub-agent's task.
+  let model: string
+  let routingDecision: RoutingDecision | undefined
+  let routerOptions: ModelRouterOptions | undefined
+
+  const useAutoRouting = parentCtx.autoRouting && !config.modelTier && !config.model
+  if (useAutoRouting) {
+    routerOptions = { ceilingModel: parentModel, availableModels: buildModelTierMap(parentModel) }
+    const classInput: SpawnClassificationInput = {
+      prompt,
+      subagentType: config.name,
+      toolNames: tools.map(t => t.name),
+      contextTokens: estimateContextTokens(history, prompt, systemPrompt),
+    }
+    routingDecision = selectModelForSpawn(classInput, routerOptions)
+    model = routingDecision.selectedModel
+    console.log(`[Subagent:${config.name}] [Router] Spawn: tier=${routingDecision.classifiedTier} model=${model} confidence=${routingDecision.confidence.toFixed(2)} reason=${routingDecision.reason}`)
+    if (parentCtx.uiWriter) {
+      parentCtx.uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
+    }
+  } else {
+    model = resolveModelTier(config.modelTier, parentModel)
+  }
+
+  const runOnce = async (runModel: string): Promise<SubagentResult> => {
     const result = await runAgentLoop({
       provider,
-      model,
+      model: runModel,
       system: systemPrompt,
       history,
       prompt,
@@ -585,8 +621,6 @@ export async function runSubagent(
       onToolCallDelta: callbacks?.onToolCallDelta,
       onToolCallEnd: callbacks?.onToolCallEnd,
     })
-
-    callbacks?.onEnd?.(config.name)
 
     // Persist transcript if session persistence is available
     if (parentCtx.sessionPersistence && parentCtx.sessionId && result.newMessages) {
@@ -613,8 +647,48 @@ export async function runSubagent(
       responseText: result.text,
       newMessages: result.newMessages,
       agentId,
+      effectiveModelId: result.effectiveModelId,
     }
+  }
+
+  try {
+    let result = await runOnce(model)
+    callbacks?.onEnd?.(config.name)
+
+    // Spawn-time fallback: if auto-routed sub-agent produced a bad result
+    // (empty response, error text), escalate and retry with a higher tier.
+    if (useAutoRouting && routingDecision && routerOptions && isSubagentFailure(result)) {
+      const escalated = escalateModel(routingDecision, routerOptions, `subagent_failure:${config.name}`)
+      if (escalated) {
+        console.log(`[Subagent:${config.name}] [Router] Escalating: ${routingDecision.selectedModel} → ${escalated.selectedModel} (reason: ${escalated.fallbackReason})`)
+        if (parentCtx.uiWriter) {
+          parentCtx.uiWriter.write({ type: 'data-routing-decision', data: escalated })
+        }
+        callbacks?.onStart?.(config.name, config.description, agentId)
+        result = await runOnce(escalated.selectedModel)
+        result.effectiveModelId = escalated.selectedModel
+        callbacks?.onEnd?.(config.name)
+      }
+    }
+
+    return result
   } catch (err: any) {
+    // If auto-routed and the cheap model threw, try escalation
+    if (useAutoRouting && routingDecision && routerOptions) {
+      const escalated = escalateModel(routingDecision, routerOptions, `subagent_error:${err.message?.slice(0, 80)}`)
+      if (escalated) {
+        console.log(`[Subagent:${config.name}] [Router] Error escalation: ${routingDecision.selectedModel} → ${escalated.selectedModel}`)
+        try {
+          const retryResult = await runOnce(escalated.selectedModel)
+          retryResult.effectiveModelId = escalated.selectedModel
+          callbacks?.onEnd?.(config.name)
+          return retryResult
+        } catch (retryErr: any) {
+          console.error(`[Subagent:${config.name}] Escalated retry also failed: ${retryErr.message}`)
+        }
+      }
+    }
+
     console.error(`Subagent ${config.name} failed: ${err.message}`)
     callbacks?.onEnd?.(config.name)
     return {
@@ -629,6 +703,33 @@ export async function runSubagent(
       agentId,
     }
   }
+}
+
+/**
+ * Checks if a sub-agent result looks like a failure (empty or error output).
+ */
+function isSubagentFailure(result: SubagentResult): boolean {
+  if (!result.responseText || result.responseText.trim().length === 0) return true
+  if (result.responseText.startsWith('Subagent failed:')) return true
+  if (result.iterations === 0 && result.toolCalls === 0) return true
+  return false
+}
+
+/**
+ * Rough token estimate for spawn-time routing decisions.
+ */
+function estimateContextTokens(history: Message[], prompt: string, systemPrompt: string): number {
+  let chars = systemPrompt.length + prompt.length
+  for (const m of history) {
+    if (typeof m.content === 'string') {
+      chars += m.content.length
+    } else if (Array.isArray(m.content)) {
+      for (const block of m.content) {
+        if ('text' in block) chars += (block as any).text.length
+      }
+    }
+  }
+  return Math.ceil(chars / 4)
 }
 
 /**

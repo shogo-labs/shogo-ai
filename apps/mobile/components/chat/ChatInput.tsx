@@ -37,6 +37,7 @@ import {
   getModelsByProvider,
   getModelShortDisplayName,
   getModelTier,
+  AUTO_MODEL_ID,
   type ModelTier,
 } from "@shogo/model-catalog"
 import {
@@ -58,6 +59,7 @@ import {
   Check,
   Mic,
 } from "lucide-react-native"
+import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
 import { analyzeContent, kindLabel, LONG_TEXT_CHIP_LAYOUT_CLASS } from "./long-text-utils"
@@ -1011,6 +1013,15 @@ export function ChatInput({
               <PopoverBackdrop />
               <PopoverContent className="w-[260px] p-0 max-h-[320px]">
                 <ScrollView>
+                  <AutoModelOption
+                    currentModelId={currentModelId}
+                    onSelect={() => {
+                      handleModelChange(AUTO_MODEL_ID)
+                      setModelPickerOpen(false)
+                    }}
+                    compact
+                  />
+                  <View className="h-px bg-border/50 mx-2" />
                   {MODEL_GROUPS.map((group) => (
                     <View key={group.label}>
                       <View className="px-3 pt-2.5 pb-1">

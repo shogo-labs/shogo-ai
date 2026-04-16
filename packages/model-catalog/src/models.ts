@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+/** Special model ID that enables the intelligent model router. */
+export const AUTO_MODEL_ID = 'auto' as const
+
 export type Provider = 'anthropic' | 'openai' | 'google' | 'local'
 export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
