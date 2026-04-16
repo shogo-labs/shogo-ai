@@ -342,8 +342,13 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           : undefined
 
       onSubmit(trimmedContent, fileData)
+      setValue("")
+      setPendingFiles([])
       setFileError(null)
-    }, [value, disabled, isLoading, onSubmit, pendingFiles, voiceInput.isBusy])
+      setLongTextCollapsed(false)
+      setLongTextViewerOpen(false)
+      textInputRef.current?.focus()
+    }, [value, disabled, isLoading, onSubmit, pendingFiles, voiceInput.isBusy, setValue])
 
     const getFileIcon = useCallback((fileType: string) => {
       if (fileType.startsWith("image/")) {
