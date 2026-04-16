@@ -312,7 +312,7 @@ function checkAntiPattern(
     }
   }
 
-  if (p.includes('unnecessary') || p.includes('clarif')) {
+  if (p === 'unnecessary-clarification' || p === 'unnecessary-questions') {
     const questions = ['what kind', 'which one', 'do you want', 'would you prefer', 'could you clarify']
     return questions.some(q => responseText.toLowerCase().includes(q))
   }
@@ -351,12 +351,58 @@ export async function runEval(
   let responseText = ''
   let toolCalls: ToolCallRecord[] = []
   let finalTurnToolCalls: ToolCallRecord[] = []
+  const perTurnToolCalls: ToolCallRecord[][] = []
   let stepCount = 0
   let inputTokens = 0
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
   let promptBreakdown: PromptBreakdown | undefined
+
+  const askUserResponseQueue = [...(eval_.askUserResponses ?? [])]
+
+  function accumulate(resp: ParsedAgentResponse) {
+    stepCount += resp.stepCount
+    inputTokens += resp.inputTokens
+    outputTokens += resp.outputTokens
+    cacheReadTokens += resp.cacheReadTokens
+    cacheWriteTokens += resp.cacheWriteTokens
+    if (!promptBreakdown && resp.promptBreakdown) promptBreakdown = resp.promptBreakdown
+  }
+
+  function responseHasAskUser(resp: ParsedAgentResponse): boolean {
+    return resp.toolCalls.some(tc => tc.name === 'ask_user')
+  }
+
+  /**
+   * After an LLM-generated response, check if the agent called ask_user.
+   * If so and we have queued responses, send the next one as a follow-up
+   * user message and return the execution response. Repeats up to maxFollowUps
+   * times in case the agent asks again.
+   */
+  async function handleAskUserFollowUps(
+    messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }>,
+    resp: ParsedAgentResponse,
+  ): Promise<ParsedAgentResponse | null> {
+    const MAX_FOLLOW_UPS = 3
+    let current = resp
+    let lastExecResp: ParsedAgentResponse | null = null
+
+    for (let f = 0; f < MAX_FOLLOW_UPS; f++) {
+      if (!responseHasAskUser(current) || askUserResponseQueue.length === 0) break
+      const followUp = askUserResponseQueue.shift()!
+      if (cfg.verbose) console.log(`      [ask_user] Auto-responding (${f + 1}): ${followUp.slice(0, 80)}...`)
+      messages.push({ role: 'user', parts: [{ type: 'text', text: followUp }] })
+      const execResp = await sendTurn(messages, cfg)
+      messages.push({ role: 'assistant', parts: [{ type: 'text', text: execResp.text }] })
+      toolCalls.push(...execResp.toolCalls)
+      perTurnToolCalls.push(execResp.toolCalls)
+      accumulate(execResp)
+      lastExecResp = execResp
+      current = execResp
+    }
+    return lastExecResp
+  }
 
   try {
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
@@ -377,23 +423,22 @@ export async function runEval(
           messages.push({ role: 'user', parts: [{ type: 'text', text: turn.content }] })
           const nextTurn = history[i + 1]
           if (nextTurn?.role === 'assistant') {
-            // Use the scripted assistant response directly
             messages.push({ role: 'assistant', parts: [{ type: 'text', text: nextTurn.content }] })
-            i++ // skip the assistant turn in the loop
+            i++
           } else {
-            // No scripted response — generate one via the LLM
             try {
               const resp = await sendTurn(messages, cfg)
               messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
-              // Accumulate history turn tool calls so scoring considers the
-              // full conversation, not just the final turn (Issue 4 fix)
               toolCalls.push(...resp.toolCalls)
-              stepCount += resp.stepCount
-              inputTokens += resp.inputTokens
-              outputTokens += resp.outputTokens
-              cacheReadTokens += resp.cacheReadTokens
-              cacheWriteTokens += resp.cacheWriteTokens
-              if (!promptBreakdown && resp.promptBreakdown) promptBreakdown = resp.promptBreakdown
+              perTurnToolCalls.push(resp.toolCalls)
+              accumulate(resp)
+
+              // If the agent asked clarifying questions, send eval-defined responses
+              try {
+                await handleAskUserFollowUps(messages, resp)
+              } catch (e: any) {
+                errors.push(`ask_user follow-up error: ${e.message}`)
+              }
             } catch (e: any) {
               errors.push(`History turn error: ${e.message}`)
             }
@@ -408,12 +453,19 @@ export async function runEval(
     responseText = response.text
     finalTurnToolCalls = response.toolCalls
     toolCalls.push(...response.toolCalls)
-    stepCount += response.stepCount
-    inputTokens += response.inputTokens
-    outputTokens += response.outputTokens
-    cacheReadTokens += response.cacheReadTokens
-    cacheWriteTokens += response.cacheWriteTokens
-    if (!promptBreakdown && response.promptBreakdown) promptBreakdown = response.promptBreakdown
+    perTurnToolCalls.push(response.toolCalls)
+    accumulate(response)
+
+    // Handle ask_user on the final turn too
+    try {
+      const execResp = await handleAskUserFollowUps(messages, response)
+      if (execResp) {
+        responseText = execResp.text
+        finalTurnToolCalls = execResp.toolCalls
+      }
+    } catch (e: any) {
+      errors.push(`ask_user follow-up error: ${e.message}`)
+    }
   } catch (err: any) {
     errors.push(err.message)
   }
@@ -453,6 +505,7 @@ export async function runEval(
     responseText,
     toolCalls,
     finalTurnToolCalls,
+    perTurnToolCalls,
     criteriaResults: [],
     triggeredAntiPatterns: [],
     timing: { startTime, endTime, durationMs },

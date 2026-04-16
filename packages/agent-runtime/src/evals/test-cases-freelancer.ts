@@ -297,10 +297,35 @@ const PHASE_1: AgentEval = {
   ],
   input:
     "One more thing — remind me every Friday at 3pm to send out invoices. I always forget and then I'm chasing money.",
+  askUserResponses: [
+    'Just use the email credentials I gave you. Connect it now.',
+    'My timezone is America/Chicago. 3pm Central time on Fridays.',
+    'Yes, just set it up. Thanks!',
+  ],
   workspaceFiles: phase1Workspace(),
   toolMocks: FREELANCER_MOCKS,
-  maxScore: 28,
+  maxScore: 33,
   validationCriteria: [
+    // --- Interaction phase: validate the agent asks good questions ---
+    {
+      id: 'asked-about-timezone',
+      description: 'Agent asked about timezone for scheduling',
+      points: 3,
+      phase: 'interaction',
+      validate: (r) => {
+        const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
+        return allText.includes('ask_user') &&
+          (allText.includes('timezone') || allText.includes('time zone'))
+      },
+    },
+    {
+      id: 'asked-clarification',
+      description: 'Agent used ask_user to clarify at least one detail',
+      points: 2,
+      phase: 'interaction',
+      validate: (r) => toolCallsJson(r).includes('ask_user'),
+    },
+    // --- Execution phase: validate actual tool usage after answers ---
     {
       id: 'email-connected',
       description: 'Connected email channel',
