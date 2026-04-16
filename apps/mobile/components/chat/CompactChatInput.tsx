@@ -34,7 +34,7 @@ import {
   X,
   File,
   FileText,
-  ImageIcon,
+  Image as ImageIcon,
   ChevronDown,
   Lock,
   Check,
