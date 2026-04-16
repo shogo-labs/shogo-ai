@@ -45,6 +45,7 @@ export type EvalCategory =
   | 'event-planner'
   | 'subagent-coordination'
   | 'teammate-coordination'
+  | 'plan'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -73,7 +74,9 @@ export interface AgentEval {
   /** Seed .shogo/server/ with the canonical skill server scaffold (shogo.config.json, prisma.config.ts, base schema). */
   useSkillServer?: boolean
   /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
-  initialMode?: 'canvas' | 'app' | 'none'
+  initialMode?: 'canvas' | 'app' | 'plan' | 'none'
+  /** Interaction mode sent in the request body (e.g. 'plan' for plan-mode evals). */
+  interactionMode?: 'agent' | 'plan' | 'ask'
   /** Pipeline name — evals sharing a pipeline run sequentially on one worker, each inheriting the prior phase's workspace. */
   pipeline?: string
   /** 1-based ordering within a pipeline. Phase 1 gets full workspace setup; phase 2+ skip cleanup and use pipelineFiles. */

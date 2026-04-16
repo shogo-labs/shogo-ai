@@ -167,6 +167,35 @@ export function lastSkillServerExecSucceeded(result: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Plan tool validation
+// ---------------------------------------------------------------------------
+
+/** True if any create_plan or update_plan call has `value` in the given `field` (case-insensitive). */
+export function planToolArgsContain(result: EvalResult, field: string, value: string): boolean {
+  return result.toolCalls
+    .filter(t => t.name === 'create_plan' || t.name === 'update_plan')
+    .some(t => {
+      const input = t.input as Record<string, any>
+      const fieldVal = input[field]
+      if (typeof fieldVal === 'string') {
+        return fieldVal.toLowerCase().includes(value.toLowerCase())
+      }
+      if (Array.isArray(fieldVal)) {
+        return JSON.stringify(fieldVal).toLowerCase().includes(value.toLowerCase())
+      }
+      return false
+    })
+}
+
+/** Returns the number of todos in the first create_plan or update_plan call. */
+export function planTodoCount(result: EvalResult): number {
+  const planCall = result.toolCalls.find(t => t.name === 'create_plan' || t.name === 'update_plan')
+  if (!planCall) return 0
+  const input = planCall.input as Record<string, any>
+  return Array.isArray(input.todos) ? input.todos.length : 0
+}
+
+// ---------------------------------------------------------------------------
 // Schema validation
 // ---------------------------------------------------------------------------
 

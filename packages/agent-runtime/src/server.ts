@@ -1015,6 +1015,63 @@ app.get('/agent/plans/:filename', async (c) => {
   return c.json({ filename, content })
 })
 
+app.put('/agent/plans/:filename', async (c) => {
+  const filename = c.req.param('filename')
+  if (!filename || !filename.endsWith('.plan.md')) {
+    return c.json({ error: 'Invalid plan filename' }, 400)
+  }
+  const filepath = join(WORKSPACE_DIR, '.shogo', 'plans', filename)
+  if (!existsSync(filepath)) {
+    return c.json({ error: 'Plan not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({} as any))
+  const existing = readFileSync(filepath, 'utf-8')
+  const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/)
+  if (!fmMatch) {
+    return c.json({ error: 'Could not parse plan frontmatter' }, 500)
+  }
+
+  const fm = fmMatch[1]
+  const existingName = fm.match(/name:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+  const existingOverview = fm.match(/overview:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+  const existingBody = existing.substring(existing.indexOf('---', 4) + 3).trim()
+  const existingCreatedAt = fm.match(/createdAt:\s*"?([^"\n]*)"?/)?.[1] ?? new Date().toISOString()
+  const existingStatus = fm.match(/status:\s*(\S+)/)?.[1] ?? 'pending'
+
+  const updatedName = body.name ?? existingName
+  const updatedOverview = body.overview ?? existingOverview
+  const updatedBody = body.plan ?? existingBody.replace(/^#[^\n]*\n*/, '')
+
+  let todosYaml: string
+  if (body.todos && Array.isArray(body.todos)) {
+    todosYaml = body.todos.map((t: any) =>
+      `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: ${t.status ?? 'pending'}`
+    ).join('\n')
+  } else {
+    const todosMatch = fm.match(/todos:\n([\s\S]*)$/)
+    todosYaml = todosMatch?.[1]?.trimEnd() ?? ''
+  }
+
+  const content = [
+    '---',
+    `name: ${JSON.stringify(updatedName)}`,
+    `overview: ${JSON.stringify(updatedOverview)}`,
+    `createdAt: ${JSON.stringify(existingCreatedAt)}`,
+    `status: ${body.status ?? existingStatus}`,
+    'todos:',
+    todosYaml,
+    '---',
+    '',
+    `# ${updatedName}`,
+    '',
+    updatedBody,
+  ].join('\n')
+
+  writeFileSync(filepath, content, 'utf-8')
+  return c.json({ updated: true, filename })
+})
+
 app.delete('/agent/plans/:filename', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || !filename.endsWith('.plan.md')) {

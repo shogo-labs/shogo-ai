@@ -1297,8 +1297,15 @@ export const ChatPanel = observer(function ChatPanel({
         const planData = (dataPart as any).data
         if (planData) {
           setPendingPlan(planData)
+          if (planData.filepath) {
+            planStream?.setStreamingPlanFilepath(planData.filepath)
+          }
           planStream?.notifyPlanCreated()
         }
+      }
+
+      if ((dataPart as any).type === "data-plan-update") {
+        planStream?.notifyPlanCreated()
       }
 
       // Handle permission approval requests from the agent runtime
@@ -2167,6 +2174,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   useEffect(() => {
     planStream?.setStreamingPlan(derivedStreamingPlan)
+    if (derivedStreamingPlan) {
+      planStream?.setStreamingPlanFilepath(null)
+    }
   }, [derivedStreamingPlan, planStream])
 
   // Auto-scroll to bottom when messages change

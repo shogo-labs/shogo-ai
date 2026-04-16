@@ -197,10 +197,21 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
   }, [visible, fetchPlans, planStream?.planRefreshNonce])
 
   useEffect(() => {
-    if (selectedPlan) {
+    if (selectedPlan && selectedPlan !== "__streaming__") {
       fetchPlanDetail(selectedPlan)
     }
   }, [selectedPlan, fetchPlanDetail])
+
+  // Transition from streaming to persisted plan once the file is saved
+  useEffect(() => {
+    if (selectedPlan !== "__streaming__") return
+    const filepath = planStream?.streamingPlanFilepath
+    if (!filepath) return
+    const filename = filepath.split("/").pop()
+    if (!filename) return
+    setSelectedPlan(filename)
+    setPlanContent(null)
+  }, [selectedPlan, planStream?.streamingPlanFilepath])
 
   const handleBuild = useCallback(() => {
     if (!planContent || !selectedPlan || !onBuildPlan) return
@@ -227,11 +238,22 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
       )
     : plans
 
-  // Detail view
-  if (selectedPlan && planContent) {
-    const plan = plans.find((p) => p.filename === selectedPlan)
-    const todos = extractTodos(planContent)
-    const body = extractPlanBody(planContent)
+  const isStreamingDetail = selectedPlan === "__streaming__"
+  const streamingData = planStream?.streamingPlan
+
+  // Detail view — works for both persisted plans and the live streaming plan
+  if (selectedPlan && (planContent || isStreamingDetail)) {
+    const plan = isStreamingDetail ? null : plans.find((p) => p.filename === selectedPlan)
+    const todos = isStreamingDetail
+      ? (streamingData?.todos ?? []).map((t) => ({ ...t, status: "pending" }))
+      : extractTodos(planContent!)
+    const body = isStreamingDetail
+      ? (streamingData?.plan ?? "")
+      : extractPlanBody(planContent!)
+    const detailName = isStreamingDetail
+      ? (streamingData?.name || "Creating plan...")
+      : (plan?.name || selectedPlan)
+    const isBuildDisabled = isStreamingDetail || !onBuildPlan || detailLoading
 
     return (
       <View className="flex-1 bg-background">
@@ -248,14 +270,19 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
             <ArrowLeft className="h-4 w-4 text-foreground" size={16} />
           </Pressable>
           <View className="flex-1 min-w-0">
-            <Text className="font-semibold text-sm text-foreground" numberOfLines={1}>
-              {plan?.name || selectedPlan}
-            </Text>
-            {plan && (
+            <View className="flex-row items-center gap-2">
+              {isStreamingDetail && <ActivityIndicator size="small" />}
+              <Text className="font-semibold text-sm text-foreground flex-shrink" numberOfLines={1}>
+                {detailName}
+              </Text>
+            </View>
+            {isStreamingDetail ? (
+              <Text className="text-xs text-primary">Generating...</Text>
+            ) : plan ? (
               <Text className="text-xs text-muted-foreground">
                 {formatDate(plan.createdAt)} · {plan.status}
               </Text>
-            )}
+            ) : null}
           </View>
 
           {/* Model selector */}
@@ -325,27 +352,29 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
           {/* Build button */}
           <Pressable
             onPress={handleBuild}
-            disabled={!onBuildPlan || detailLoading}
+            disabled={isBuildDisabled}
             className={cn(
               "flex-row items-center gap-1.5 rounded-lg px-3.5 py-1.5",
-              onBuildPlan ? "bg-amber-400 dark:bg-amber-500 active:bg-amber-500 dark:active:bg-amber-600" : "bg-muted opacity-50"
+              !isBuildDisabled ? "bg-amber-400 dark:bg-amber-500 active:bg-amber-500 dark:active:bg-amber-600" : "bg-muted opacity-50"
             )}
           >
             <Play className="h-3.5 w-3.5 text-black" size={14} />
             <Text className="text-xs font-bold text-black">Build</Text>
           </Pressable>
 
-          <Pressable
-            onPress={() => handleDelete(selectedPlan)}
-            className="h-8 w-8 items-center justify-center rounded-lg"
-          >
-            <Trash2 className="h-4 w-4 text-destructive" size={16} />
-          </Pressable>
+          {!isStreamingDetail && (
+            <Pressable
+              onPress={() => handleDelete(selectedPlan)}
+              className="h-8 w-8 items-center justify-center rounded-lg"
+            >
+              <Trash2 className="h-4 w-4 text-destructive" size={16} />
+            </Pressable>
+          )}
         </View>
 
         {/* Detail body */}
         <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
-          {detailLoading ? (
+          {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
           ) : (
             <>
@@ -420,42 +449,25 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
 
       {/* List */}
       <ScrollView className="flex-1">
-        {/* Streaming plan live preview */}
+        {/* Streaming plan — clickable list entry that opens the detail view */}
         {planStream?.streamingPlan ? (
-          <View className="border-b border-primary/30 bg-primary/5">
-            <View className="flex-row items-center gap-2 px-4 pt-3 pb-1">
-              <ActivityIndicator size="small" />
-              <Text className="text-xs font-semibold text-primary">Creating plan...</Text>
-            </View>
-            <View className="px-4 py-2">
+          <Pressable
+            onPress={() => setSelectedPlan("__streaming__")}
+            className="flex-row items-center gap-3 px-4 py-3 border-b border-primary/30 bg-primary/5 active:bg-primary/10"
+          >
+            <ActivityIndicator size="small" />
+            <View className="flex-1 min-w-0">
               <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                {planStream.streamingPlan.name}
+                {planStream.streamingPlan.name || "Creating plan..."}
               </Text>
               {planStream.streamingPlan.overview ? (
                 <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={2}>
                   {planStream.streamingPlan.overview}
                 </Text>
               ) : null}
+              <Text className="text-xs text-primary mt-1">Generating...</Text>
             </View>
-            {planStream.streamingPlan.plan ? (
-              <View className="px-4 pb-2 overflow-hidden" style={{ maxHeight: 300 }}>
-                <MarkdownText>{planStream.streamingPlan.plan}</MarkdownText>
-              </View>
-            ) : null}
-            {planStream.streamingPlan.todos.length > 0 && (
-              <View className="px-4 pb-3 border-t border-border/50 pt-2">
-                <Text className="text-xs font-semibold text-muted-foreground mb-1">
-                  TASKS ({planStream.streamingPlan.todos.length})
-                </Text>
-                {planStream.streamingPlan.todos.map((todo) => (
-                  <View key={todo.id} className="flex-row items-start gap-2 py-1">
-                    <Circle className="h-3.5 w-3.5 text-muted-foreground mt-0.5" size={14} />
-                    <Text className="text-xs text-foreground flex-1">{todo.content}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
+          </Pressable>
         ) : planStream?.isPlanStreaming && filteredPlans.length === 0 && !loading ? (
           <View className="items-center justify-center py-12 px-4">
             <ActivityIndicator className="mb-3" />
