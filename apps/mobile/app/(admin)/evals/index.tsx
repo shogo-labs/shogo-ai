@@ -359,10 +359,13 @@ function FilterBar({
 // Trigger Form
 // ---------------------------------------------------------------------------
 
+const AGENT_MODE_OPTIONS = ['none', 'basic', 'advanced', 'auto'] as const
+
 function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const [track, setTrack] = useState<string>('agentic')
   const [model, setModel] = useState<string>('sonnet')
+  const [agentMode, setAgentMode] = useState<string>('none')
   const [workers, setWorkers] = useState<string>('2')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -371,11 +374,13 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
     setSubmitting(true)
     setError(null)
     try {
+      const payload: Record<string, unknown> = { track, model, workers: Number(workers) }
+      if (agentMode !== 'none') payload.agentMode = agentMode
       const res = await fetch(`${API_BASE}/runs/trigger`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track, model, workers: Number(workers) }),
+        body: JSON.stringify(payload),
       })
       const json = await res.json()
       if (!json.ok) {
@@ -418,6 +423,15 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
               <Text className="text-xs font-medium text-muted-foreground">Model</Text>
               <Select value={model} options={MODEL_OPTIONS} onChange={setModel} />
             </View>
+            <View className="gap-1 min-w-[100px]">
+              <Text className="text-xs font-medium text-muted-foreground">Agent Mode</Text>
+              <Select
+                value={agentMode}
+                options={AGENT_MODE_OPTIONS}
+                onChange={setAgentMode}
+                renderLabel={(v) => v === 'none' ? 'Default' : v.charAt(0).toUpperCase() + v.slice(1)}
+              />
+            </View>
             <View className="gap-1 min-w-[90px]">
               <Text className="text-xs font-medium text-muted-foreground">Workers</Text>
               <TextInput
@@ -449,7 +463,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
               <Play size={14} className="text-primary-foreground" />
             )}
             <Text className="text-sm font-semibold text-primary-foreground">
-              {submitting ? 'Starting...' : `Run ${track} (${model})`}
+              {submitting ? 'Starting...' : `Run ${track} (${model}${agentMode !== 'none' ? ` / ${agentMode}` : ''})`}
             </Text>
           </Pressable>
         </View>

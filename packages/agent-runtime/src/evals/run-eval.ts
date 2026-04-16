@@ -110,6 +110,7 @@ const modelArg = getArg(args, 'model', 'haiku')!
 const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const filterArg = getArg(args, 'filter')
 const tagsArg = getArg(args, 'tags')
+const agentModeArg = getArg(args, 'agent-mode') as 'basic' | 'advanced' | 'auto' | undefined
 const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'general' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
@@ -127,10 +128,10 @@ const useCallback = !!(runIdArg && callbackUrlArg)
 
 async function postCallback(path: string, body: any, timeoutMs = 30_000): Promise<void> {
   if (!useCallback) return
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
-    await fetch(`${callbackUrlArg}/api/internal${path}`, {
+    const resp = await fetch(`${callbackUrlArg}/api/internal${path}`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -139,7 +140,17 @@ async function postCallback(path: string, body: any, timeoutMs = 30_000): Promis
       },
       body: JSON.stringify(body),
     })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`)
+    }
+  } finally {
     clearTimeout(timer)
+  }
+}
+
+async function postCallbackSafe(path: string, body: any, timeoutMs = 30_000): Promise<void> {
+  try {
+    await postCallback(path, body, timeoutMs)
   } catch (err: any) {
     console.warn(`[callback] Failed to POST ${path}: ${err.message}`)
   }
@@ -727,6 +738,7 @@ async function runEvalOnWorker(
       timeoutMs: 300_000,
       verbose: verboseFlag,
       workspaceDir: worker.dir,
+      agentMode: agentModeArg,
     })
 
     const resourceMetrics = statsCollector?.stop() ?? null
@@ -930,6 +942,7 @@ async function runEvalOnWorker(
       responseText: '',
       toolCalls: [],
       finalTurnToolCalls: [],
+      perTurnToolCalls: [],
       criteriaResults: [],
       triggeredAntiPatterns: [],
       timing: { startTime, endTime: Date.now(), durationMs: Date.now() - startTime },
@@ -973,10 +986,11 @@ async function main() {
   console.log('='.repeat(60))
   console.log(`AGENT RUNTIME EVAL (${k8sFlag ? 'K8s' : vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
   console.log('='.repeat(60))
-  console.log(`  Track:   ${trackArg}`)
-  console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
-  console.log(`  Workers: ${workersArg}`)
-  console.log(`  Mode:    ${k8sFlag ? 'K8s pod' : vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Track:      ${trackArg}`)
+  console.log(`  Model:      ${MODEL_MAP[modelArg] || modelArg}`)
+  if (agentModeArg) console.log(`  Agent Mode: ${agentModeArg}`)
+  console.log(`  Workers:    ${workersArg}`)
+  console.log(`  Mode:       ${k8sFlag ? 'K8s pod' : vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -1190,7 +1204,7 @@ async function main() {
     const payload = buildProgressPayload()
     try { writeFileSync(partialPath, JSON.stringify(payload.results, null, 2)) } catch {}
     if (useCallback) {
-      await postCallback(`/evals/${runIdArg}/progress`, payload)
+      await postCallbackSafe(`/evals/${runIdArg}/progress`, payload)
     }
   }
 
@@ -1215,7 +1229,7 @@ async function main() {
     } catch {}
     await reportProgress()
     if (useCallback) {
-      await postCallback(`/evals/${runIdArg}/result`, {
+      await postCallbackSafe(`/evals/${runIdArg}/result`, {
         result: {
           eval: { id: result.eval.id, name: result.eval.name, category: result.eval.category, level: result.eval.level, pipeline: result.eval.pipeline, pipelinePhase: result.eval.pipelinePhase },
           passed: result.passed,
@@ -1479,7 +1493,13 @@ async function main() {
   console.log(`Logs:    ${join(runDir, 'logs')}`)
 
   if (useCallback) {
-    await postCallback(`/evals/${runIdArg}/complete`, { suite: exportData, logs: evalLogs }, 60_000)
+    try {
+      await postCallback(`/evals/${runIdArg}/complete`, { suite: exportData, logs: evalLogs }, 60_000)
+    } catch {
+      console.warn(`[callback] /complete with full payload failed, retrying summary-only…`)
+      const lightweight = { ...exportData, results: [] }
+      await postCallbackSafe(`/evals/${runIdArg}/complete`, { suite: lightweight, logs: {} }, 30_000)
+    }
   }
 
   if (saveWorkspacesFlag) {
@@ -1506,7 +1526,7 @@ async function main() {
 main().catch(async err => {
   console.error('Fatal:', err)
   if (useCallback) {
-    await postCallback(`/evals/${runIdArg}/fail`, { error: String(err?.message ?? err) })
+    await postCallbackSafe(`/evals/${runIdArg}/fail`, { error: String(err?.message ?? err) })
   }
   await cleanupWorkers(globalWorkers)
   globalWorkers = []

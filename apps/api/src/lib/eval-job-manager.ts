@@ -56,6 +56,7 @@ export async function createEvalJob(opts: {
   workers: number
   callbackUrl: string
   callbackSecret: string
+  agentMode?: string
 }): Promise<string> {
   const api = getBatchApi()
   const jobName = `eval-${opts.runId.slice(0, 8)}-${Date.now().toString(36)}`
@@ -98,6 +99,7 @@ export async function createEvalJob(opts: {
                 '--workers', String(opts.workers),
                 '--run-id', opts.runId,
                 '--callback-url', opts.callbackUrl,
+                ...(opts.agentMode ? ['--agent-mode', opts.agentMode] : []),
               ],
               env: [
                 { name: 'EVAL_CALLBACK_SECRET', value: opts.callbackSecret },
