@@ -49,6 +49,7 @@ import {
   isAutoModel,
   AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
+import { selectModelForSpawn, buildAutoTierMap, type SpawnClassificationInput } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -1259,14 +1260,33 @@ export class AgentGateway {
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelAlias = session.modelOverride || this.config.model.name
     const autoRouting = isAutoModel(modelAlias)
-    const baseModelForAuto = this.config.model.name
-    const effectiveAlias = autoRouting ? baseModelForAuto : modelAlias
-    const provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
-    const modelId = resolveModelAlias(effectiveAlias)
+
+    let provider: string
+    let modelId: string
 
     if (autoRouting) {
-      console.log(`${this.logPrefix} LLM turn: AUTO mode (main agent uses ${modelId}, sub-agents routed at spawn) provider=${provider}`)
+      const autoTiers = buildAutoTierMap()
+      const estimatedTokens = this.sessionManager.estimateTokens(session)
+      const classInput: SpawnClassificationInput = {
+        prompt,
+        subagentType: 'main-agent',
+        toolNames: [],
+        contextTokens: estimatedTokens,
+      }
+      const routingDecision = selectModelForSpawn(classInput, {
+        ceilingModel: autoTiers.premium,
+        availableModels: autoTiers,
+      })
+      modelId = routingDecision.selectedModel
+      provider = inferProviderFromModel(modelId, this.config.model.provider)
+      console.log(`${this.logPrefix} LLM turn: AUTO mode tier=${routingDecision.classifiedTier} model=${modelId} confidence=${routingDecision.confidence.toFixed(2)} reason=${routingDecision.reason} provider=${provider}`)
+      if (uiWriter) {
+        uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
+      }
     } else {
+      const effectiveAlias = modelAlias
+      provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
+      modelId = resolveModelAlias(effectiveAlias)
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 

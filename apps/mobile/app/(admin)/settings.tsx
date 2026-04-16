@@ -68,6 +68,7 @@ export default function AdminSettingsPage() {
 function CloudModelSettingsPage() {
   const [cloudBasicModel, setCloudBasicModel] = useState('')
   const [cloudAdvancedModel, setCloudAdvancedModel] = useState('')
+  const [defaultMode, setDefaultMode] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const loadedRef = useRef(false)
@@ -77,9 +78,10 @@ function CloudModelSettingsPage() {
 
   useEffect(() => {
     platform.getAgentModelDefaults()
-      .then((data: { basic: string | null; advanced: string | null }) => {
+      .then((data) => {
         setCloudBasicModel(data.basic || '')
         setCloudAdvancedModel(data.advanced || '')
+        setDefaultMode(data.defaultMode || '')
       })
       .finally(() => setIsLoading(false))
   }, [platform])
@@ -93,6 +95,7 @@ function CloudModelSettingsPage() {
         await platform.putAgentModelDefaults({
           basic: cloudBasicModel || null,
           advanced: cloudAdvancedModel || null,
+          defaultMode: defaultMode || null,
         })
         setSaveStatus('saved')
         setTimeout(() => setSaveStatus('idle'), 2000)
@@ -102,7 +105,7 @@ function CloudModelSettingsPage() {
       }
     }, 600)
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [cloudBasicModel, cloudAdvancedModel, platform])
+  }, [cloudBasicModel, cloudAdvancedModel, defaultMode, platform])
 
   // Declared after auto-save effect so it runs second in the same render cycle.
   // The auto-save skips (ref is false), then this enables future saves.
@@ -134,8 +137,10 @@ function CloudModelSettingsPage() {
         <AgentModelDefaultsCard
           basicModel={cloudBasicModel}
           advancedModel={cloudAdvancedModel}
+          defaultMode={defaultMode}
           onBasicChange={setCloudBasicModel}
           onAdvancedChange={setCloudAdvancedModel}
+          onDefaultModeChange={setDefaultMode}
         />
       </View>
     </ScrollView>
@@ -190,6 +195,7 @@ function LocalSettingsPage() {
 
   const [cloudBasicModel, setCloudBasicModel] = useState('')
   const [cloudAdvancedModel, setCloudAdvancedModel] = useState('')
+  const [cloudDefaultMode, setCloudDefaultMode] = useState('')
 
   const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
 
@@ -222,11 +228,12 @@ function LocalSettingsPage() {
         platform.getLlmConfig(),
         platform.getProviderKeyMasks(),
         platform.getShogoKeyStatus(),
-        platform.getAgentModelDefaults().catch(() => ({ basic: null, advanced: null })),
+        platform.getAgentModelDefaults().catch(() => ({ basic: null, advanced: null, defaultMode: null })),
       ])
 
       setCloudBasicModel(agentModels.basic || '')
       setCloudAdvancedModel(agentModels.advanced || '')
+      setCloudDefaultMode(agentModels.defaultMode || '')
 
       setBaseUrl(llmCfg.LOCAL_LLM_BASE_URL || '')
       setBasicModel(llmCfg.LOCAL_LLM_BASIC_MODEL || '')
@@ -336,6 +343,7 @@ function LocalSettingsPage() {
         await platform.putAgentModelDefaults({
           basic: cloudBasicModel || null,
           advanced: cloudAdvancedModel || null,
+          defaultMode: cloudDefaultMode || null,
         })
         setSaveStatus('saved')
         setTimeout(() => setSaveStatus('idle'), 2000)
@@ -345,7 +353,7 @@ function LocalSettingsPage() {
       }
     }, 600)
     return () => { if (modelDefaultsTimerRef.current) clearTimeout(modelDefaultsTimerRef.current) }
-  }, [activeMode, cloudBasicModel, cloudAdvancedModel, platform])
+  }, [activeMode, cloudBasicModel, cloudAdvancedModel, cloudDefaultMode, platform])
 
   // Declared after auto-save effects so it runs second in the same render cycle.
   // The auto-save effects skip (ref is false), then this enables future saves.
@@ -506,8 +514,10 @@ function LocalSettingsPage() {
             <AgentModelDefaultsCard
               basicModel={cloudBasicModel}
               advancedModel={cloudAdvancedModel}
+              defaultMode={cloudDefaultMode}
               onBasicChange={setCloudBasicModel}
               onAdvancedChange={setCloudAdvancedModel}
+              onDefaultModeChange={setCloudDefaultMode}
             />
           </>
         )}
@@ -582,8 +592,10 @@ function LocalSettingsPage() {
             <AgentModelDefaultsCard
               basicModel={cloudBasicModel}
               advancedModel={cloudAdvancedModel}
+              defaultMode={cloudDefaultMode}
               onBasicChange={setCloudBasicModel}
               onAdvancedChange={setCloudAdvancedModel}
+              onDefaultModeChange={setCloudDefaultMode}
             />
           </>
         )}
@@ -843,16 +855,27 @@ function ModelSelector({
 // Agent Model Defaults Card (cloud / api-keys modes)
 // =============================================================================
 
+const DEFAULT_MODE_OPTIONS = [
+  { value: '', label: 'Basic (default)' },
+  { value: 'basic', label: 'Basic' },
+  { value: 'advanced', label: 'Advanced' },
+  { value: 'auto', label: 'Auto' },
+] as const
+
 function AgentModelDefaultsCard({
   basicModel,
   advancedModel,
+  defaultMode,
   onBasicChange,
   onAdvancedChange,
+  onDefaultModeChange,
 }: {
   basicModel: string
   advancedModel: string
+  defaultMode: string
   onBasicChange: (v: string) => void
   onAdvancedChange: (v: string) => void
+  onDefaultModeChange: (v: string) => void
 }) {
   const modelGroups = useMemo(() => getModelsByProvider(), [])
 
@@ -868,6 +891,30 @@ function AgentModelDefaultsCard({
         </Text>
       </View>
       <View className="px-5 py-4 gap-4" style={{ zIndex: 10 }}>
+        <View style={{ zIndex: 30 }}>
+          <FieldGroup label="Default Mode" hint="Which agent mode new chats start in. Auto routes to the cheapest capable model per turn.">
+            <View className="flex-row gap-2">
+              {DEFAULT_MODE_OPTIONS.map((opt) => (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => onDefaultModeChange(opt.value)}
+                  className={`px-3 py-1.5 rounded-lg border ${
+                    defaultMode === opt.value
+                      ? 'border-primary bg-primary/10'
+                      : 'border-border bg-background'
+                  }`}
+                >
+                  <Text className={`text-sm ${
+                    defaultMode === opt.value ? 'text-primary font-medium' : 'text-foreground'
+                  }`}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </FieldGroup>
+        </View>
+
         <View style={{ zIndex: 20 }}>
           <FieldGroup label="Basic Mode" hint="Economy-tier model for quick, lightweight tasks">
             <CatalogModelSelector

@@ -399,11 +399,12 @@ import { CONCURRENT_SAFE_TOOLS } from './tool-orchestration'
 import {
   selectModelForSpawn,
   escalateModel,
-  buildModelTierMap,
+  buildAutoTierMap,
   type RoutingDecision,
   type ModelRouterOptions,
   type SpawnClassificationInput,
 } from './model-router'
+import { inferProviderFromModel } from '@shogo/model-catalog'
 
 const MODEL_TIER_MAP: Record<ModelTierName, string> = {
   fast: 'claude-haiku-4-5',
@@ -580,7 +581,8 @@ export async function runSubagent(
 
   const useAutoRouting = parentCtx.autoRouting && !config.modelTier && !config.model
   if (useAutoRouting) {
-    routerOptions = { ceilingModel: parentModel, availableModels: buildModelTierMap(parentModel) }
+    const autoTiers = buildAutoTierMap()
+    routerOptions = { ceilingModel: autoTiers.premium, availableModels: autoTiers }
     const classInput: SpawnClassificationInput = {
       prompt,
       subagentType: config.name,
@@ -598,8 +600,9 @@ export async function runSubagent(
   }
 
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
+    const runProvider = useAutoRouting ? inferProviderFromModel(runModel, provider) : provider
     const result = await runAgentLoop({
-      provider,
+      provider: runProvider,
       model: runModel,
       system: systemPrompt,
       history,

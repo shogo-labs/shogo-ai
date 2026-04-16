@@ -71,6 +71,9 @@ export async function sendTurn(
       if (config.interactionMode) {
         body.interactionMode = config.interactionMode
       }
+      if (config.agentMode) {
+        body.agentMode = config.agentMode
+      }
 
       const res = await fetch(config.agentEndpoint, {
         method: 'POST',

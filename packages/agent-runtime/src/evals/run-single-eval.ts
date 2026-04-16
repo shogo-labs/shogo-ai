@@ -32,11 +32,11 @@ function getArg(name: string, defaultValue?: string): string | undefined {
 const endpoint = getArg('endpoint', 'http://localhost:6500/agent/chat')!
 const message = getArg('message')
 const timeoutMs = parseInt(getArg('timeout', '120000')!)
-const agentMode = getArg('agent-mode') as 'basic' | 'advanced' | undefined
+const agentMode = getArg('agent-mode') as 'basic' | 'advanced' | 'auto' | undefined
 const verbose = args.includes('--verbose') || args.includes('-v')
 
 if (!message) {
-  console.error('Usage: run-single-eval.ts --endpoint URL --message TEXT [--timeout MS] [--agent-mode basic|advanced]')
+  console.error('Usage: run-single-eval.ts --endpoint URL --message TEXT [--timeout MS] [--agent-mode basic|advanced|auto]')
   process.exit(1)
 }
 
