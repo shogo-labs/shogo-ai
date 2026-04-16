@@ -1647,31 +1647,8 @@ export class AgentGateway {
         }
       }
 
-      // ── Auto-continuation loop ──
-      // When the agent exhausts maxIterations but hasn't naturally finished
-      // (the model's last stop_reason was 'tool_use' or 'max_tokens', not
-      // 'end_turn'), we persist messages, compact if needed, rebuild history,
-      // and fire another runAgentLoop pass. This mirrors how Cursor and Claude
-      // Code handle long-running agent sessions — they never silently stop.
-      const MAX_CONTINUATIONS = parseInt(process.env.AGENT_MAX_CONTINUATIONS || '10', 10)
-      const iterationsPerPass = parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10)
-      let continuationCount = 0
-      let result: Awaited<ReturnType<typeof runAgentLoop>>
-
-      continuation_loop:
-      while (true) {
-        // Rebuild history from session on continuation passes (it was compacted/updated)
-        if (continuationCount > 0) {
-          history = this.sessionManager.buildHistory(sessionId)
-          history = applyToolResultBudget(history, contextBudgetChars)
-          history = microcompact(history).messages
-          history = snipConsumedResults(history)
-          // On continuation, the "prompt" is a nudge to keep going
-          prompt = 'Continue — you ran out of steps on the previous pass. Pick up exactly where you left off and complete the remaining work. Do NOT repeat steps already completed.'
-          images = undefined
-        }
-
-      result = await runAgentLoop({
+      const maxIterations = parseInt(process.env.AGENT_MAX_ITERATIONS || '200', 10)
+      const result = await runAgentLoop({
         provider,
         model: modelId,
         system: systemPrompt,
@@ -1679,7 +1656,7 @@ export class AgentGateway {
         prompt,
         images,
         tools,
-        maxIterations: iterationsPerPass,
+        maxIterations,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(session.modelOverride),
@@ -1858,48 +1835,6 @@ export class AgentGateway {
 
       this.sessionManager.touch(sessionId)
 
-      // ── Auto-continuation check ──
-      // If maxIterations was exhausted and the model was still actively working
-      // (last stop reason was tool_use or max_tokens), automatically continue.
-      if (
-        result.maxIterationsExhausted &&
-        !result.loopBreak &&
-        !result.error &&
-        !turnAbort.signal.aborted &&
-        continuationCount < MAX_CONTINUATIONS
-      ) {
-        const lastStop = result.lastStopReason || ''
-        const wasStillWorking = lastStop !== 'end_turn' && lastStop !== 'stop'
-        const hadToolCalls = result.toolCalls.length > 0
-        if (wasStillWorking || (hadToolCalls && lastStop === 'end_turn')) {
-          continuationCount++
-          console.log(
-            `${this.logPrefix} Auto-continuing agent (pass ${continuationCount}/${MAX_CONTINUATIONS}) — ` +
-            `maxIterations exhausted after ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ` +
-            `lastStopReason=${lastStop}`
-          )
-          if (uiWriter) {
-            if (uiTextId) {
-              uiWriter.write({ type: 'text-end', id: uiTextId })
-              uiTextId = null
-            }
-            uiWriter.write({
-              type: 'data-continuation',
-              data: {
-                pass: continuationCount,
-                maxPasses: MAX_CONTINUATIONS,
-                reason: 'max_iterations_exhausted',
-                previousIterations: result.iterations,
-                previousToolCalls: result.toolCalls.length,
-              },
-            } as any)
-          }
-          continue continuation_loop
-        }
-      }
-      break continuation_loop
-      } // end continuation_loop
-
       // Emit final context usage so the client always gets the most up-to-date value
       // even if the throttle timer hasn't fired recently.
       if (uiWriter) {
@@ -1938,24 +1873,6 @@ export class AgentGateway {
           console.warn(
             `${this.logPrefix} Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
           )
-        }
-
-        if (result.maxIterationsExhausted && continuationCount >= MAX_CONTINUATIONS) {
-          console.warn(
-            `${this.logPrefix} Agent exhausted all ${MAX_CONTINUATIONS} continuation passes ` +
-            `(${continuationCount * iterationsPerPass} total iterations) for session ${sessionId}. ` +
-            `Task may be incomplete.`
-          )
-          if (uiWriter) {
-            uiWriter.write({
-              type: 'data-continuation-exhausted',
-              data: {
-                totalPasses: continuationCount,
-                totalIterations: continuationCount * iterationsPerPass,
-                message: 'The agent used all available continuation passes. If the task is not complete, send a follow-up message to continue.',
-              },
-            } as any)
-          }
         }
 
         const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
