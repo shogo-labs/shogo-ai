@@ -1113,7 +1113,13 @@ export class WarmPoolController {
             headers: { 'x-runtime-token': deriveRuntimeToken(pod.projectId) },
           })
           if (resp.ok) {
-            const activity = await resp.json() as { idleSeconds: number }
+            const activity = await resp.json() as { idleSeconds: number; activeStreams?: number }
+            if ((activity.activeStreams ?? 0) > 0) {
+              console.log(
+                `[WarmPool GC] Skipping pod ${pod.serviceName} for project ${pod.projectId} — ${activity.activeStreams} active stream(s)`
+              )
+              continue
+            }
             if (activity.idleSeconds * 1000 < this._idleTimeoutMs) continue
             console.log(
               `[WarmPool GC] Evicting idle promoted pod ${pod.serviceName} for project ${pod.projectId} (idle ${activity.idleSeconds}s, timeout ${this._idleTimeoutMs / 1000}s)`
