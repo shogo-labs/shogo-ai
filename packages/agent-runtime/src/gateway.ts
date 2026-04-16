@@ -1237,8 +1237,9 @@ export class AgentGateway {
         '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
         '4. If there are multiple valid approaches, ask the user which they prefer',
         '5. When you have enough context, call create_plan with a structured plan',
-        '6. The plan should be concise, specific, and actionable — cite file paths and code snippets',
-        '7. Do NOT make any changes until the user confirms the plan',
+        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
+        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
+        '8. Do NOT make any changes until the user confirms the plan',
       ].join('\n')
       systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
     } else if (interactionMode === 'ask') {
@@ -1392,7 +1393,7 @@ export class AgentGateway {
         'read_file', 'search',
         'web',
         'memory_read', 'memory_search',
-        'ask_user', 'todo_write', 'create_plan',
+        'ask_user', 'todo_write', 'create_plan', 'update_plan',
         'skill',
       ])
       assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))

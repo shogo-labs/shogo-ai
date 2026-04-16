@@ -26,6 +26,7 @@ export interface EvalRunnerConfig {
   verbose: boolean
   workspaceDir: string
   agentMode?: string
+  interactionMode?: 'agent' | 'plan' | 'ask'
 }
 
 const DEFAULT_CONFIG: EvalRunnerConfig = {
@@ -67,6 +68,9 @@ export async function sendTurn(
 
     try {
       const body: Record<string, unknown> = { messages }
+      if (config.interactionMode) {
+        body.interactionMode = config.interactionMode
+      }
 
       const res = await fetch(config.agentEndpoint, {
         method: 'POST',
@@ -338,6 +342,9 @@ export async function runEval(
   config: Partial<EvalRunnerConfig> = {},
 ): Promise<EvalResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config }
+  if (eval_.interactionMode && !cfg.interactionMode) {
+    cfg.interactionMode = eval_.interactionMode
+  }
   const startTime = Date.now()
   const errors: string[] = []
 

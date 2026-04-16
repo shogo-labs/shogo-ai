@@ -3427,6 +3427,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
     createCreatePlanTool(ctx),
+    createUpdatePlanTool(ctx),
     createQuickActionTool(ctx),
     createReadGuideTool(ctx),
   ]
@@ -4900,6 +4901,102 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
       }
 
       return textResult(`Plan "${params.name}" created and saved to .shogo/plans/${filename}`)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plan Mode: update_plan tool
+// ---------------------------------------------------------------------------
+
+function createUpdatePlanTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'update_plan',
+    description: 'Update an existing plan file in .shogo/plans/. Provide only the fields you want to change — omitted fields are preserved. Use this instead of create_plan when the user asks to modify, refine, or extend an existing plan.',
+    label: 'Update Plan',
+    parameters: Type.Object({
+      filepath: Type.String({ description: 'Relative path to the plan file (e.g. .shogo/plans/my-plan_abc123.plan.md)' }),
+      name: Type.Optional(Type.String({ description: 'Updated short name for the plan' })),
+      overview: Type.Optional(Type.String({ description: 'Updated 1-2 sentence summary' })),
+      plan: Type.Optional(Type.String({ description: 'Updated detailed plan in markdown format' })),
+      todos: Type.Optional(Type.Array(
+        Type.Object({
+          id: Type.String({ description: 'Unique task identifier (kebab-case)' }),
+          content: Type.String({ description: 'Task description' }),
+        }),
+        { description: 'Full replacement todo list in execution order' }
+      )),
+    }),
+    execute: async (_id: string, params: {
+      filepath: string
+      name?: string
+      overview?: string
+      plan?: string
+      todos?: Array<{ id: string; content: string }>
+    }) => {
+      const resolved = join(ctx.workspaceDir, params.filepath)
+      if (!existsSync(resolved)) {
+        return textResult(`Error: Plan file not found at ${params.filepath}`)
+      }
+
+      const existing = readFileSync(resolved, 'utf-8')
+      const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/)
+      if (!fmMatch) {
+        return textResult(`Error: Could not parse frontmatter in ${params.filepath}`)
+      }
+
+      const fm = fmMatch[1]
+      const existingName = fm.match(/name:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+      const existingOverview = fm.match(/overview:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+      const existingBody = existing.substring(existing.indexOf('---', 4) + 3).trim()
+      const existingCreatedAt = fm.match(/createdAt:\s*"?([^"\n]*)"?/)?.[1] ?? new Date().toISOString()
+      const existingStatus = fm.match(/status:\s*(\S+)/)?.[1] ?? 'pending'
+
+      const updatedName = params.name ?? existingName
+      const updatedOverview = params.overview ?? existingOverview
+      const updatedBody = params.plan ?? existingBody.replace(/^#[^\n]*\n*/, '')
+
+      let todosYaml: string
+      if (params.todos) {
+        todosYaml = params.todos.map(t =>
+          `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: pending`
+        ).join('\n')
+      } else {
+        const todosMatch = fm.match(/todos:\n([\s\S]*)$/)
+        todosYaml = todosMatch?.[1]?.trimEnd() ?? ''
+      }
+
+      const content = [
+        '---',
+        `name: ${JSON.stringify(updatedName)}`,
+        `overview: ${JSON.stringify(updatedOverview)}`,
+        `createdAt: ${JSON.stringify(existingCreatedAt)}`,
+        `status: ${existingStatus}`,
+        'todos:',
+        todosYaml,
+        '---',
+        '',
+        `# ${updatedName}`,
+        '',
+        updatedBody,
+      ].join('\n')
+
+      writeFileSync(resolved, content, 'utf-8')
+
+      if (ctx.uiWriter) {
+        ctx.uiWriter.write({
+          type: 'data-plan-update',
+          data: {
+            filepath: params.filepath,
+            name: updatedName,
+            overview: updatedOverview,
+            plan: updatedBody,
+            todos: params.todos,
+          },
+        })
+      }
+
+      return textResult(`Plan "${updatedName}" updated at ${params.filepath}`)
     },
   }
 }
