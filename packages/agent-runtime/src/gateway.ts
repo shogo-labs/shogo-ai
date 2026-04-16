@@ -1593,7 +1593,25 @@ export class AgentGateway {
       let runningContextEstimate = this.sessionManager.estimateTokens(session)
       const contextWindowTokens = this.sessionManager.contextWindowTokens
 
+      // Throttle data-context-usage emissions — at most once per 5s during
+      // long-running agent turns with many tool calls. Without this, every
+      // tool execution emits an update, flooding the client SSE stream.
+      let lastContextUsageEmitMs = 0
+      const CONTEXT_USAGE_THROTTLE_MS = 5_000
+      const emitContextUsage = () => {
+        const now = Date.now()
+        if (uiWriter && now - lastContextUsageEmitMs >= CONTEXT_USAGE_THROTTLE_MS) {
+          lastContextUsageEmitMs = now
+          uiWriter.write({
+            type: 'data-context-usage',
+            data: { inputTokens: runningContextEstimate, contextWindowTokens },
+          } as any)
+        }
+      }
+
+      // Always emit the initial estimate immediately
       if (uiWriter) {
+        lastContextUsageEmitMs = Date.now()
         uiWriter.write({
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
@@ -1640,6 +1658,7 @@ export class AgentGateway {
         }
       }
 
+      const maxIterations = parseInt(process.env.AGENT_MAX_ITERATIONS || '200', 10)
       const result = await runAgentLoop({
         provider,
         model: modelId,
@@ -1648,7 +1667,7 @@ export class AgentGateway {
         prompt,
         images,
         tools,
-        maxIterations: parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10),
+        maxIterations,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
@@ -1786,12 +1805,7 @@ export class AgentGateway {
           const argsStr = typeof args === 'string' ? args : JSON.stringify(args ?? '')
           const resultStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
           runningContextEstimate += Math.ceil((argsStr.length + resultStr.length) / 4)
-          if (uiWriter) {
-            uiWriter.write({
-              type: 'data-context-usage',
-              data: { inputTokens: runningContextEstimate, contextWindowTokens },
-            } as any)
-          }
+          emitContextUsage()
 
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {
@@ -1831,6 +1845,15 @@ export class AgentGateway {
       }
 
       this.sessionManager.touch(sessionId)
+
+      // Emit final context usage so the client always gets the most up-to-date value
+      // even if the throttle timer hasn't fired recently.
+      if (uiWriter) {
+        uiWriter.write({
+          type: 'data-context-usage',
+          data: { inputTokens: runningContextEstimate, contextWindowTokens },
+        } as any)
+      }
 
       // Store usage for callers (server.ts includes it in the `finish` event)
       const estimatedContextTokens = this.sessionManager.estimateTokens(session)
@@ -1873,6 +1896,7 @@ export class AgentGateway {
 
         if (result.error) {
           const msg = result.error.message || 'An unexpected error occurred'
+          const isIterationLimit = /maximum iteration limit/i.test(msg)
           const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits/i.test(msg)
           const isBillingError = /billing|insufficient.credits|upgrade your plan/i.test(msg)
           console.error(
@@ -1880,11 +1904,13 @@ export class AgentGateway {
           )
           chunker?.dispose()
           if (uiWriter) {
-            const errorText = isBillingError
-              ? 'Insufficient credits. Please check your plan or AI provider settings.'
-              : isProviderError
-                ? `AI provider error: ${msg}`
-                : `I encountered an issue processing your message: ${msg}`
+            const errorText = isIterationLimit
+              ? 'I reached my iteration limit before finishing the task. Send a follow-up message like "continue" to pick up where I left off.'
+              : isBillingError
+                ? 'Insufficient credits. Please check your plan or AI provider settings.'
+                : isProviderError
+                  ? `AI provider error: ${msg}`
+                  : `I encountered an issue processing your message: ${msg}`
             uiWriter.write({ type: 'error', errorText } as any)
           }
         } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
