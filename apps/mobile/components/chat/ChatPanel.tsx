@@ -903,10 +903,6 @@ export const ChatPanel = observer(function ChatPanel({
       )
     },
     onData: async (dataPart) => {
-      if ((dataPart as any).type !== "data-context-usage") {
-        console.log("[ChatPanel:onData] Received data part:", dataPart.type, dataPart)
-      }
-
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
         const event = (dataPart as any).data as VirtualToolEvent
@@ -1441,52 +1437,6 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       fetchQuickActions()
-
-      // Persist assistant message to the database.
-      // This is the primary persistence path — the server-side
-      // trackUsageFromStream acts as a backup but is unreliable during
-      // server restarts or stream interruptions.
-      if (currentSessionId && message.role === "assistant") {
-        const textContent =
-          message.parts
-            ?.filter((p: any) => p.type === "text")
-            .map((p: any) => p.text)
-            .join("") ||
-          (message as any).content ||
-          ""
-
-        const partsForDb = message.parts?.map((p: any) => {
-          if (p.type === "tool-invocation") {
-            return {
-              type: "dynamic-tool",
-              toolCallId: p.toolInvocationId || p.toolCallId,
-              toolName: p.toolName,
-              input: p.args,
-              output: p.result ?? null,
-              state:
-                p.state === "result" ? "output-available" : p.state,
-            }
-          }
-          return p
-        }) || []
-
-        actions
-          .addMessage({
-            sessionId: currentSessionId,
-            role: "assistant",
-            content: textContent,
-            parts:
-              partsForDb.length > 0
-                ? JSON.stringify(partsForDb)
-                : undefined,
-          })
-          .catch((err: any) =>
-            console.warn(
-              "[ChatPanel] Failed to persist assistant message:",
-              err,
-            ),
-          )
-      }
 
       // Auto-name "Untitled" sessions after the first assistant response
       if (currentSessionId && !hasTriggeredNamingRef.current) {
