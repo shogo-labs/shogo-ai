@@ -148,8 +148,14 @@ function DocumentThumbnail({
     setLoading(true)
     try {
       const res = await fetch(url)
+      const contentLength = parseInt(res.headers.get("content-length") || "0", 10)
+      const MAX_FILE_BYTES = 1 * 1024 * 1024 // 1 MB
+      if (contentLength > MAX_FILE_BYTES) {
+        Linking.openURL(url)
+        return
+      }
       const text = await res.text()
-      setFileContent(text)
+      setFileContent(text.length > MAX_FILE_BYTES ? text.slice(0, MAX_FILE_BYTES) + "\n\n…[truncated]" : text)
       setShowModal(true)
     } catch {
       Linking.openURL(url)
