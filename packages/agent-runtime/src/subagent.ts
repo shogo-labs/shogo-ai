@@ -569,7 +569,7 @@ export async function runSubagent(
 
   const parentModel = config.model || parentCtx.effectiveModel || parentCtx.config.model.name
   const provider = config.provider || parentCtx.config.model.provider
-  const maxIterations = config.maxTurns || (isFork ? 200 : 10)
+  const maxIterations = config.maxTurns || (isFork ? 200 : 50)
 
   // Spawn-time model routing: when Auto mode is active and no explicit
   // model_tier was set by the main agent, use the router to pick the
