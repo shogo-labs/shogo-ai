@@ -46,7 +46,11 @@ import { sendPushToInstance } from '../lib/push-notifications'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const POLL_INTERVAL_IDLE_S = 60
+// Idle poll was 60s which made the heartbeat/click race fatal: a click
+// seconds after a heartbeat had to wait ~58s before the desktop polled
+// again and saw wsRequestedAt. 15s keeps desktop awareness tight even
+// if `viewer-active` never fires (ancient web build open in a tab).
+const POLL_INTERVAL_IDLE_S = 15
 const POLL_INTERVAL_VIEWER_S = 5
 const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
@@ -1233,9 +1237,13 @@ export function instanceRoutes() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// ~2.5x the idle poll, floored so lowering POLL_INTERVAL_IDLE_S does
+// not make a single missed poll flip a live desktop to offline.
+const HEARTBEAT_RECENCY_MS = Math.max(POLL_INTERVAL_IDLE_S * 1000 * 2 + 15_000, 45_000)
+
 function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false
-  return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+  return Date.now() - lastSeenAt.getTime() < HEARTBEAT_RECENCY_MS
 }
 
 // ─── Heartbeat ping for all connected tunnels ───────────────────────────────

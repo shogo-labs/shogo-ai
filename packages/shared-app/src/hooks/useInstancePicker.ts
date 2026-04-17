@@ -33,7 +33,7 @@ export interface UseInstancePickerOptions {
   fetchFn?: typeof fetch
   /** Extra options merged into every fetch (e.g. credentials). */
   fetchOptions?: RequestInit
-  /** Max number of polls when waiting for a connect. Default 35 (70s — survives a full desktop idle poll cycle). */
+  /** Max number of polls when waiting for a connect. Default 45 (90s — covers desktop idle-poll + WS-open through Knative/edge). */
   connectPollCount?: number
   /** Milliseconds between connect polls. Default 2000. */
   connectPollIntervalMs?: number
@@ -63,7 +63,7 @@ export function useInstancePicker({
   clearInstance,
   fetchFn = fetch,
   fetchOptions,
-  connectPollCount = 35,
+  connectPollCount = 45,
   connectPollIntervalMs = 2000,
 }: UseInstancePickerOptions): UseInstancePickerResult {
   const [isOpen, setIsOpen] = useState(false)
