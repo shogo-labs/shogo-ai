@@ -23,10 +23,23 @@ const VIEWER_TTL = 120 // 2 min
 const CONTROLLER_TTL = 60 // 1 min
 const RELAY_TIMEOUT_MS = 30_000
 const STREAM_RELAY_TIMEOUT_MS = 600_000 // 10 min max for streaming
+// One bounded re-read in getTunnelOwner to absorb the cold-start gap on
+// sibling pods. Keep it small — this delays 503s, not real traffic.
+const GET_TUNNEL_OWNER_RETRY_MS = 100
 
 let pub: Redis | null = null
 let sub: Redis | null = null
 let initialized = false
+// `degraded` is true when init completed but the Redis client could not
+// be established (non-local mode only). /health uses this to fail the
+// readiness probe so misrouted pods drain out of the LB rotation.
+let degraded = false
+// Memoized init promise. Callers that need Redis to be ready (e.g.
+// registerTunnelOwnership when a WS auths) can `await whenReady()` to
+// avoid the classic race where ownership is written into a null publisher
+// and silently dropped — which made other pods return 503 until the next
+// WS reconnect.
+let initPromise: Promise<void> | null = null
 
 // ─── Initialization ─────────────────────────────────────────────────────────
 
@@ -34,9 +47,89 @@ export function getPodId(): string {
   return POD_ID
 }
 
+export function whenReady(): Promise<void> {
+  if (initialized) return Promise.resolve()
+  return initPromise ?? initTunnelRedis()
+}
+
 export async function initTunnelRedis(): Promise<void> {
   if (initialized) return
+  if (initPromise) return initPromise
+  initPromise = _doInit()
+  try {
+    await initPromise
+  } catch (err) {
+    // Only clear the memo on failure so a later call can retry. On success
+    // the `initialized` flag takes over and initPromise can stay in place
+    // (cheap, and avoids a retry race if someone calls init twice in
+    // quick succession).
+    initPromise = null
+    throw err
+  }
+}
 
+/**
+ * True when init ran but we have no Redis client (non-local mode),
+ * OR we had a client but it has since disconnected and failed to
+ * recover. Used by /health to mark the pod not-ready so the LB drains
+ * it instead of letting it serve silent 503s on cross-pod relays.
+ */
+export function isTunnelRedisDegraded(): boolean {
+  if (isLocalMode) return false
+  if (degraded) return true
+  // Post-init disconnect detection. ioredis's `.status` is the authoritative
+  // view of whether the connection is usable — a non-ready publisher or
+  // subscriber means cross-pod routing is broken on this pod.
+  if (initialized) {
+    if (!pub || !sub) return true
+    if (pub.status !== 'ready' || sub.status !== 'ready') return true
+  }
+  return false
+}
+
+// ─── Connection lifecycle ───────────────────────────────────────────────────
+//
+// ioredis will reconnect automatically up to the `retryStrategy` ceiling,
+// but once it gives up (or mid-retry) every command is rejected while
+// `initialized` stays true. Without these listeners the pod would happily
+// report /health=200 and serve silent 503s on every relay. The handlers
+// flip `degraded` so /health fails readiness until the client reports
+// 'ready' again.
+
+function attachLifecycleListeners(client: Redis, label: 'publisher' | 'subscriber'): void {
+  client.on('error', (err) => {
+    console.error(`[TunnelRedis] ${label} error:`, err.message)
+  })
+  client.on('end', () => {
+    // 'end' fires when the client has given up reconnecting. This is the
+    // state we most care about — cross-pod tunnel routing is dead on this
+    // pod until we restart or the client manages to reconnect.
+    degraded = true
+    console.error(
+      `[TunnelRedis] ❌ ${label} connection ended — marking pod degraded. ` +
+      `/health will return 503 to drain this pod from the LB rotation.`,
+    )
+  })
+  client.on('close', () => {
+    degraded = true
+    console.warn(`[TunnelRedis] ${label} connection closed — pod degraded until reconnect`)
+  })
+  client.on('reconnecting', (delay: number) => {
+    degraded = true
+    console.warn(`[TunnelRedis] ${label} reconnecting in ${delay}ms`)
+  })
+  client.on('ready', () => {
+    // Only clear `degraded` when both clients are actually ready.
+    if (pub?.status === 'ready' && sub?.status === 'ready') {
+      if (degraded) {
+        console.log('[TunnelRedis] ✅ Both pub/sub ready — clearing degraded flag')
+      }
+      degraded = false
+    }
+  })
+}
+
+async function _doInit(): Promise<void> {
   if (isLocalMode) {
     initialized = true
     console.log('[TunnelRedis] Skipped — local mode (single process, no cross-pod relay needed)')
@@ -53,9 +146,7 @@ export async function initTunnelRedis(): Promise<void> {
         return Math.min(times * 500, 3000)
       },
     })
-    pub.on('error', (err) => {
-      console.error('[TunnelRedis] Publisher error:', err.message)
-    })
+    attachLifecycleListeners(pub, 'publisher')
 
     sub = new Redis(REDIS_URL, {
       maxRetriesPerRequest: 3,
@@ -66,9 +157,7 @@ export async function initTunnelRedis(): Promise<void> {
         return Math.min(times * 500, 3000)
       },
     })
-    sub.on('error', (err) => {
-      console.error('[TunnelRedis] Subscriber error:', err.message)
-    })
+    attachLifecycleListeners(sub, 'subscriber')
 
     await Promise.all([pub.connect(), sub.connect()])
 
@@ -79,11 +168,24 @@ export async function initTunnelRedis(): Promise<void> {
 
     console.log(`[TunnelRedis] Initialized (pod=${POD_ID})`)
   } catch (err) {
-    console.error('[TunnelRedis] Failed to connect — falling back to in-memory only:', (err as Error).message)
+    // In multi-pod deployments this is a correctness bug, not a warning:
+    // cross-pod tunnel routing is silently disabled. Log loudly so it
+    // surfaces in dashboards, and flip `degraded` so /health fails the
+    // readiness probe and Knative/K8s drains the pod instead of quietly
+    // serving 503s.
+    console.error(
+      `[TunnelRedis] ❌ CRITICAL: Redis unreachable at ${REDIS_URL} — ` +
+      `cross-pod tunnel routing is DISABLED. Remote control will return ` +
+      `503 on pods that do not own the desktop WS. ` +
+      `Fix: ensure Redis is deployed in this namespace or set ` +
+      `SHOGO_LOCAL_MODE=true for single-pod deployments. ` +
+      `Underlying error: ${(err as Error).message}`,
+    )
     try { pub?.disconnect() } catch {}
     try { sub?.disconnect() } catch {}
     pub = null
     sub = null
+    degraded = true
   }
 
   initialized = true
@@ -110,8 +212,16 @@ function getPublisher(): Redis | null {
 // ─── Health Check ────────────────────────────────────────────────────────────
 
 export async function checkRedisHealth(): Promise<{ healthy: boolean; latencyMs?: number; error?: string }> {
+  if (isLocalMode) return { healthy: true, latencyMs: 0 }
   const r = getPublisher()
-  if (!r) return { healthy: false, error: 'Redis not initialized' }
+  if (!r) return { healthy: false, error: 'Redis publisher not initialized' }
+  // The subscriber connection is what receives cross-pod relay requests,
+  // so we must verify it too — a dead subscriber with a live publisher
+  // would still silently drop every sibling-pod request while /health
+  // reported green.
+  if (!sub || sub.status !== 'ready') {
+    return { healthy: false, error: `Redis subscriber not ready (status=${sub?.status ?? 'null'})` }
+  }
   const start = Date.now()
   try {
     const pong = await r.ping()
@@ -124,12 +234,18 @@ export async function checkRedisHealth(): Promise<{ healthy: boolean; latencyMs?
 // ─── Tunnel Ownership ───────────────────────────────────────────────────────
 
 export async function registerTunnelOwnership(instanceId: string): Promise<void> {
+  // Wait for Redis init to complete before writing ownership. Without this,
+  // a desktop WS that auths during the first ~500ms of pod startup would
+  // silently skip registration (pub=null) and other pods would 503 on
+  // remote-control requests until the desktop reconnected.
+  await whenReady()
   const r = getPublisher()
   if (!r) return
   await r.set(`tunnel:${instanceId}:pod`, POD_ID, 'EX', TUNNEL_OWNERSHIP_TTL)
 }
 
 export async function unregisterTunnelOwnership(instanceId: string): Promise<void> {
+  await whenReady()
   const r = getPublisher()
   if (!r) return
   const owner = await r.get(`tunnel:${instanceId}:pod`)
@@ -143,26 +259,47 @@ export async function unregisterTunnelOwnership(instanceId: string): Promise<voi
  * Used when a relay to the owning pod times out, indicating the owner is dead.
  */
 export async function evictTunnelOwnership(instanceId: string): Promise<void> {
+  await whenReady()
   const r = getPublisher()
   if (!r) return
   await r.del(`tunnel:${instanceId}:pod`)
 }
 
 export async function refreshTunnelOwnership(instanceId: string): Promise<void> {
+  await whenReady()
   const r = getPublisher()
   if (!r) return
   await r.expire(`tunnel:${instanceId}:pod`, TUNNEL_OWNERSHIP_TTL)
 }
 
+/**
+ * Look up the pod currently owning a tunnel, with a single bounded retry.
+ *
+ * The retry absorbs the narrow window where a desktop has just connected
+ * on another pod and its `registerTunnelOwnership` write hasn't yet landed
+ * in Redis. Without it, a sibling pod hitting that 5–50ms gap would see
+ * null and return 503 even though the tunnel is healthy.
+ */
 export async function getTunnelOwner(instanceId: string): Promise<string | null> {
+  await whenReady()
   const r = getPublisher()
   if (!r) return null
-  try {
-    return await r.get(`tunnel:${instanceId}:pod`)
-  } catch (err) {
-    console.warn(`[TunnelRedis] getTunnelOwner failed for ${instanceId}:`, (err as Error).message)
-    return null
+
+  const read = async (): Promise<string | null> => {
+    try {
+      return await r.get(`tunnel:${instanceId}:pod`)
+    } catch (err) {
+      console.warn(`[TunnelRedis] getTunnelOwner failed for ${instanceId}:`, (err as Error).message)
+      return null
+    }
   }
+
+  const first = await read()
+  if (first) return first
+  // Bounded retry: one re-read after GET_TUNNEL_OWNER_RETRY_MS to absorb
+  // the sub-100ms cold-start gap on a sibling pod.
+  await new Promise((r) => setTimeout(r, GET_TUNNEL_OWNER_RETRY_MS))
+  return read()
 }
 
 /**
@@ -392,6 +529,7 @@ export async function relayTunnelRequest(
   instanceId: string,
   request: RelayRequest['request'],
 ): Promise<RelayResponse['response']> {
+  await whenReady()
   const r = getPublisher()
   if (!r) throw new Error('Redis not initialized')
 
@@ -420,32 +558,38 @@ export function relayTunnelStreamRequest(
   request: StreamRelayRequest['request'],
   onChunk: (chunk: StreamRelayChunk['chunk']) => void,
 ): { cancel: () => void } {
-  const r = getPublisher()
-  if (!r) {
-    onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Redis not initialized' })
-    return { cancel: () => {} }
-  }
-
-  const relayId = `relay_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
-
-  const timeout = setTimeout(() => {
-    pendingStreamRelays.delete(relayId)
-    onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Cross-pod stream relay timed out' })
-  }, STREAM_RELAY_TIMEOUT_MS)
-
-  pendingStreamRelays.set(relayId, { onChunk, timeout })
-
-  const msg: StreamRelayRequest = { relayId, instanceId, replyPod: POD_ID, request }
-  r.publish(`tunnel:pod:${ownerPod}:stream-request`, JSON.stringify(msg)).catch(() => {
-    clearTimeout(timeout)
-    pendingStreamRelays.delete(relayId)
-    onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Failed to publish relay request' })
+  // Signature is sync for back-compat with callers — but we need init to
+  // be done before publishing. Fire the whenReady gate and let the publish
+  // happen inside its .then to keep the race closed without changing the
+  // return type.
+  let cancelled = false
+  let activeTimeout: ReturnType<typeof setTimeout> | null = null
+  let activeRelayId: string | null = null
+  whenReady().then(() => {
+    if (cancelled) return
+    const r = getPublisher()
+    if (!r) {
+      onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Redis not initialized' })
+      return
+    }
+    activeRelayId = `relay_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+    activeTimeout = setTimeout(() => {
+      pendingStreamRelays.delete(activeRelayId!)
+      onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Cross-pod stream relay timed out' })
+    }, STREAM_RELAY_TIMEOUT_MS)
+    pendingStreamRelays.set(activeRelayId, { onChunk, timeout: activeTimeout })
+    const msg: StreamRelayRequest = { relayId: activeRelayId, instanceId, replyPod: POD_ID, request }
+    r.publish(`tunnel:pod:${ownerPod}:stream-request`, JSON.stringify(msg)).catch(() => {
+      if (activeTimeout) clearTimeout(activeTimeout)
+      if (activeRelayId) pendingStreamRelays.delete(activeRelayId)
+      onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Failed to publish relay request' })
+    })
   })
-
   return {
     cancel: () => {
-      clearTimeout(timeout)
-      pendingStreamRelays.delete(relayId)
+      cancelled = true
+      if (activeTimeout) clearTimeout(activeTimeout)
+      if (activeRelayId) pendingStreamRelays.delete(activeRelayId)
     },
   }
 }
