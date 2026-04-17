@@ -56,7 +56,7 @@ import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
-import { checkRedisHealth } from './lib/tunnel-redis'
+import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
@@ -503,21 +503,25 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
-// Health check — includes Redis status for multi-pod deployments
-app.get('/api/health', async (c) => {
+// Health check — includes Redis status for multi-pod deployments.
+// When tunnel-redis is in a degraded state (init completed but publisher
+// is null in non-local mode) we return 503 so Knative/K8s drain this pod
+// out of the LB rotation instead of serving 503s on remote-control.
+const healthHandler = async (c: any) => {
   const redis = await checkRedisHealth()
+  const degraded = isTunnelRedisDegraded()
   if (!redis.healthy) {
     console.warn('[Health] Redis unhealthy:', redis.error)
   }
-  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
-})
-app.get('/health', async (c) => {
-  const redis = await checkRedisHealth()
-  if (!redis.healthy) {
-    console.warn('[Health] Redis unhealthy:', redis.error)
+  const ok = !degraded && redis.healthy
+  const body = {
+    ok,
+    redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
   }
-  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
-})
+  return c.json(body, ok ? 200 : 503)
+}
+app.get('/api/health', healthHandler)
+app.get('/health', healthHandler)
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
