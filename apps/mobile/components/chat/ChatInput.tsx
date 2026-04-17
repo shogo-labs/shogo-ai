@@ -1019,7 +1019,6 @@ export function ChatInput({
                       handleModelChange(AUTO_MODEL_ID)
                       setModelPickerOpen(false)
                     }}
-                    compact
                   />
                   <View className="h-px bg-border/50 mx-2" />
                   {MODEL_GROUPS.map((group) => (
