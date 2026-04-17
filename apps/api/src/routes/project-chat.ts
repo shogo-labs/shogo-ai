@@ -808,14 +808,39 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // This ensures billing/persistence always sees the full
           // stream even if the browser drops the connection early.
           //
-          // NOTE: Uses push-based (start + captured controller) instead of
-          // pull-based tracking stream — Bun's ReadableStream doesn't
-          // re-trigger pull() after a returned Promise resolves, causing
-          // the tracking consumer to hang forever.
+          // Tracking side uses a consumer-pull queue (plain JS array,
+          // no backpressure against the shared upstream bgReader) to
+          // avoid cross-stream coupling that can cause the client SSE
+          // stream to terminate prematurely on long agent turns.
+          //
+          // Bun quirk defense: the tracking stream's pull() loops
+          // internally on a notification Promise instead of relying on
+          // the runtime to re-invoke pull() after a returned Promise
+          // resolves (Bun has historically mis-handled that path and
+          // left the tracking consumer hung). A cancel() handler also
+          // unblocks pull() if the consumer goes away.
           const bgReader = response.body!.getReader()
-          let trackingController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const trackingChunks: Uint8Array[] = []
+          let trackingDone = false
+          let trackingNotify: (() => void) | null = null
+          const trackingWait = () =>
+            new Promise<void>((resolve) => { trackingNotify = resolve })
           const trackingStream = new ReadableStream<Uint8Array>({
-            start(controller) { trackingController = controller },
+            async pull(controller) {
+              while (trackingChunks.length === 0 && !trackingDone) {
+                await trackingWait()
+              }
+              if (trackingChunks.length > 0) {
+                controller.enqueue(trackingChunks.shift()!)
+                return
+              }
+              controller.close()
+            },
+            cancel() {
+              trackingDone = true
+              trackingNotify?.()
+              trackingNotify = null
+            },
           })
 
           let clientEnqueueErrors = 0
@@ -828,7 +853,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                     const { done, value } = await bgReader.read()
                     if (done) break
                     chunkCount++
-                    try { trackingController!.enqueue(value) } catch { /* tracking consumer done */ }
+                    trackingChunks.push(value)
+                    trackingNotify?.()
+                    trackingNotify = null
                     try { controller.enqueue(value) } catch {
                       if (clientEnqueueErrors === 0) {
                         console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)
@@ -841,7 +868,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
-                  try { trackingController!.close() } catch { /* already closed */ }
+                  trackingDone = true
+                  trackingNotify?.()
+                  trackingNotify = null
                   try { controller.close() } catch { /* already closed */ }
                 }
               })()
