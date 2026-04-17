@@ -1343,6 +1343,37 @@ model PushSubscription {
   @@map("push_subscriptions")
 }
 
+// ─── Cross-pod coordination (Redis-less fallback) ────────────────────────────
+// These tables let the Remote Control tunnel layer coordinate across multiple
+// API pods without requiring Redis. They are used whenever the Redis publisher
+// is unavailable (see apps/api/src/lib/tunnel-redis.ts + tunnel-db.ts).
+
+/// Records "a user is viewing Remote Control for this workspace right now"
+/// so that desktop heartbeats can switch to the fast (5 s) poll cadence
+/// regardless of which API pod receives the heartbeat.
+model ActiveViewer {
+  workspaceId String   @id
+  lastSeenAt  DateTime @default(now())
+
+  @@index([lastSeenAt])
+  @@map("active_viewers")
+}
+
+/// Records which API pod currently owns the on-demand WebSocket tunnel for
+/// a given instance. Other pods use `podIp` to HTTP-relay proxy requests to
+/// the owning pod when Redis pub/sub is unavailable.
+model TunnelOwnership {
+  instanceId  String   @id
+  podId       String
+  podIp       String
+  acquiredAt  DateTime @default(now())
+  refreshedAt DateTime @default(now()) @updatedAt
+
+  @@index([podId])
+  @@index([refreshedAt])
+  @@map("tunnel_ownership")
+}
+
 // =============================================================================
 // EVAL RUNS (Agent eval tracking — local + K8s Job support)
 // =============================================================================

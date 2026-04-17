@@ -63,7 +63,10 @@ export function useInstancePicker({
   clearInstance,
   fetchFn = fetch,
   fetchOptions,
-  connectPollCount = 35,
+  // 45 × 2s = 90s. Needs to comfortably exceed the worst-case path:
+  //   desktop idle-poll (15s) + heartbeat→WS hop through Knative (~5s) +
+  //   owner detection across pods (~1s) + safety margin.
+  connectPollCount = 45,
   connectPollIntervalMs = 2000,
 }: UseInstancePickerOptions): UseInstancePickerResult {
   const [isOpen, setIsOpen] = useState(false)

@@ -13,10 +13,33 @@
  */
 
 import Redis from 'ioredis'
+import {
+  markViewerActiveDb,
+  isViewerActiveDb,
+  registerTunnelOwnershipDb,
+  unregisterTunnelOwnershipDb,
+  evictTunnelOwnershipDb,
+  refreshTunnelOwnershipDb,
+  getTunnelOwnerDb,
+  verifyPodAliveDb,
+  relayTunnelRequestDb,
+  relayTunnelStreamRequestDb,
+  type TunnelOwnerRef,
+} from './tunnel-db'
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-master:6379'
 const POD_ID = process.env.HOSTNAME || crypto.randomUUID()
+
+/**
+ * When Redis is available we use it for low-latency pub/sub relays and
+ * TTL-backed tracking. When it's not (e.g. staging deployment with no
+ * Redis), we transparently fall back to the Postgres + HTTP implementation
+ * in `tunnel-db.ts`. Routers call the same helpers either way.
+ */
+function redisAvailable(): boolean {
+  return pub !== null
+}
 
 const TUNNEL_OWNERSHIP_TTL = 600 // 10 min, refreshed by heartbeat
 const VIEWER_TTL = 120 // 2 min
@@ -124,12 +147,18 @@ export async function checkRedisHealth(): Promise<{ healthy: boolean; latencyMs?
 // ─── Tunnel Ownership ───────────────────────────────────────────────────────
 
 export async function registerTunnelOwnership(instanceId: string): Promise<void> {
+  // Always write to Postgres — it's the durable/cross-pod source of truth
+  // used for HTTP relay (it carries the pod IP) and survives a Redis outage.
+  await registerTunnelOwnershipDb(instanceId)
+
   const r = getPublisher()
   if (!r) return
   await r.set(`tunnel:${instanceId}:pod`, POD_ID, 'EX', TUNNEL_OWNERSHIP_TTL)
 }
 
 export async function unregisterTunnelOwnership(instanceId: string): Promise<void> {
+  await unregisterTunnelOwnershipDb(instanceId)
+
   const r = getPublisher()
   if (!r) return
   const owner = await r.get(`tunnel:${instanceId}:pod`)
@@ -143,37 +172,51 @@ export async function unregisterTunnelOwnership(instanceId: string): Promise<voi
  * Used when a relay to the owning pod times out, indicating the owner is dead.
  */
 export async function evictTunnelOwnership(instanceId: string): Promise<void> {
+  await evictTunnelOwnershipDb(instanceId)
+
   const r = getPublisher()
   if (!r) return
   await r.del(`tunnel:${instanceId}:pod`)
 }
 
 export async function refreshTunnelOwnership(instanceId: string): Promise<void> {
+  await refreshTunnelOwnershipDb(instanceId)
+
   const r = getPublisher()
   if (!r) return
   await r.expire(`tunnel:${instanceId}:pod`, TUNNEL_OWNERSHIP_TTL)
 }
 
-export async function getTunnelOwner(instanceId: string): Promise<string | null> {
-  const r = getPublisher()
-  if (!r) return null
-  try {
-    return await r.get(`tunnel:${instanceId}:pod`)
-  } catch (err) {
-    console.warn(`[TunnelRedis] getTunnelOwner failed for ${instanceId}:`, (err as Error).message)
-    return null
-  }
+export interface TunnelOwnerInfo {
+  podId: string
+  podIp: string
 }
 
 /**
- * Verify that a tunnel-owning pod is actually alive by publishing a ping
- * and waiting for a pong response within a short timeout. Returns true if
- * the pod responds, false otherwise.
+ * Returns the pod currently owning the tunnel for `instanceId`, or null.
+ * We always read from Postgres because that's what carries the pod IP we
+ * need for HTTP relay. The Redis `tunnel:*:pod` key is kept only as a
+ * warm cache / cross-check when Redis is available.
  */
-export async function verifyPodAlive(podId: string, timeoutMs = 3000): Promise<boolean> {
+export async function getTunnelOwner(instanceId: string): Promise<TunnelOwnerInfo | null> {
+  return await getTunnelOwnerDb(instanceId)
+}
+
+/**
+ * Verify that a tunnel-owning pod is actually alive.
+ *
+ * Redis mode → pub/sub ping/pong (same pod used for relay).
+ * DB mode   → HTTP GET to the pod's `/api/internal/tunnel-alive` endpoint.
+ */
+export async function verifyPodAlive(owner: TunnelOwnerInfo, timeoutMs = 3000): Promise<boolean> {
+  if (owner.podId === POD_ID) return true
+
+  if (!redisAvailable()) {
+    return await verifyPodAliveDb(owner.podIp)
+  }
+
   const r = getPublisher()
   if (!r) return false
-  if (podId === POD_ID) return true
 
   const probeId = `probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
@@ -203,7 +246,7 @@ export async function verifyPodAlive(podId: string, timeoutMs = 3000): Promise<b
       replyPod: POD_ID,
       request: { type: 'request', requestId: probeId, method: 'GET', path: '/__probe__' },
     }
-    r.publish(`tunnel:pod:${podId}:request`, JSON.stringify(msg)).catch(() => {
+    r.publish(`tunnel:pod:${owner.podId}:request`, JSON.stringify(msg)).catch(() => {
       clearTimeout(timer)
       pendingRelayResponses.delete(probeId)
       resolve(false)
@@ -283,6 +326,17 @@ export function setLocalTunnelHandlers(
 ): void {
   localSendFn = send
   localStreamFn = stream
+}
+
+/**
+ * Expose the local (this-pod) tunnel handlers to the internal HTTP relay
+ * route so another pod can forward proxy traffic to us.
+ */
+export function getLocalTunnelHandlers(): {
+  send: LocalTunnelSendFn | null
+  stream: LocalTunnelStreamFn | null
+} {
+  return { send: localSendFn, stream: localStreamFn }
 }
 
 const pendingRelayResponses = new Map<string, {
@@ -388,10 +442,14 @@ function handleIncomingStreamRelayChunk(msg: StreamRelayChunk) {
 }
 
 export async function relayTunnelRequest(
-  ownerPod: string,
+  owner: TunnelOwnerInfo,
   instanceId: string,
   request: RelayRequest['request'],
 ): Promise<RelayResponse['response']> {
+  if (!redisAvailable()) {
+    return await relayTunnelRequestDb(owner as TunnelOwnerRef, instanceId, request)
+  }
+
   const r = getPublisher()
   if (!r) throw new Error('Redis not initialized')
 
@@ -406,7 +464,7 @@ export async function relayTunnelRequest(
     pendingRelayResponses.set(relayId, { resolve, reject, timeout })
 
     const msg: RelayRequest = { relayId, instanceId, replyPod: POD_ID, request }
-    r.publish(`tunnel:pod:${ownerPod}:request`, JSON.stringify(msg)).catch((err) => {
+    r.publish(`tunnel:pod:${owner.podId}:request`, JSON.stringify(msg)).catch((err) => {
       clearTimeout(timeout)
       pendingRelayResponses.delete(relayId)
       reject(err)
@@ -415,11 +473,15 @@ export async function relayTunnelRequest(
 }
 
 export function relayTunnelStreamRequest(
-  ownerPod: string,
+  owner: TunnelOwnerInfo,
   instanceId: string,
   request: StreamRelayRequest['request'],
   onChunk: (chunk: StreamRelayChunk['chunk']) => void,
 ): { cancel: () => void } {
+  if (!redisAvailable()) {
+    return relayTunnelStreamRequestDb(owner as TunnelOwnerRef, instanceId, request, onChunk)
+  }
+
   const r = getPublisher()
   if (!r) {
     onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Redis not initialized' })
@@ -436,7 +498,7 @@ export function relayTunnelStreamRequest(
   pendingStreamRelays.set(relayId, { onChunk, timeout })
 
   const msg: StreamRelayRequest = { relayId, instanceId, replyPod: POD_ID, request }
-  r.publish(`tunnel:pod:${ownerPod}:stream-request`, JSON.stringify(msg)).catch(() => {
+  r.publish(`tunnel:pod:${owner.podId}:stream-request`, JSON.stringify(msg)).catch(() => {
     clearTimeout(timeout)
     pendingStreamRelays.delete(relayId)
     onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Failed to publish relay request' })
@@ -450,23 +512,32 @@ export function relayTunnelStreamRequest(
   }
 }
 
-// ─── Viewer Tracking (Redis-backed) ─────────────────────────────────────────
+// ─── Viewer Tracking (Redis-preferred, DB fallback) ─────────────────────────
 
 export async function markViewerActiveRedis(workspaceId: string): Promise<void> {
   const r = getPublisher()
-  if (!r) return
+  if (!r) {
+    await markViewerActiveDb(workspaceId)
+    return
+  }
   await r.set(`viewer:${workspaceId}`, Date.now().toString(), 'EX', VIEWER_TTL)
+  // Also mirror to Postgres so an out-of-order heartbeat hitting a pod that
+  // briefly lost Redis still sees the viewer as active.
+  markViewerActiveDb(workspaceId).catch(() => {})
 }
 
 export async function isViewerActiveRedis(workspaceId: string): Promise<boolean> {
   const r = getPublisher()
-  if (!r) return false
+  if (!r) return await isViewerActiveDb(workspaceId)
   try {
     const ts = await r.get(`viewer:${workspaceId}`)
-    return ts !== null
+    if (ts !== null) return true
+    // Redis may have expired but DB still has a fresh viewer (e.g. keepalive
+    // landed on a different pod that wrote Postgres only).
+    return await isViewerActiveDb(workspaceId)
   } catch (err) {
     console.warn('[TunnelRedis] isViewerActiveRedis failed:', (err as Error).message)
-    return false
+    return await isViewerActiveDb(workspaceId)
   }
 }
 

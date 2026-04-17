@@ -126,6 +126,24 @@ spec:
               value: "https://studio.staging.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-staging-system:6379"
+            # Downward API — pod IP is needed for the cross-pod HTTP relay
+            # used by Remote Control tunnels when Redis is unavailable.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Shared secret validated by /api/internal/tunnel-* endpoints.
+            # Pods use this header when relaying proxy traffic to each other.
+            - name: INTERNAL_RELAY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: INTERNAL_RELAY_SECRET
+                  optional: true
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

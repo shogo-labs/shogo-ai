@@ -46,7 +46,11 @@ import { sendPushToInstance } from '../lib/push-notifications'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const POLL_INTERVAL_IDLE_S = 60
+// Idle poll was 60s which made the heartbeat-click race (see RCA) fatal on
+// staging — a click at t=+2s had to wait up to 58s for the desktop to learn
+// wsRequestedAt. 15s keeps desktop awareness tight even if `viewer-active`
+// never fires (e.g. ancient web build open in a tab).
+const POLL_INTERVAL_IDLE_S = 15
 const POLL_INTERVAL_VIEWER_S = 5
 const POLL_INTERVAL_WS_REQUESTED_S = 3
 const WS_REQUEST_TTL_MS = 2 * 60 * 1000
@@ -411,29 +415,30 @@ async function sendTunnelRequest(instanceId: string, req: TunnelRequest): Promis
   const conn = tunnels.get(instanceId)
   if (conn) return sendLocalTunnelRequest(instanceId, req)
 
-  const ownerPod = await getTunnelOwner(instanceId)
-  if (!ownerPod) throw new Error('Instance is offline')
+  const owner = await getTunnelOwner(instanceId)
+  if (!owner) throw new Error('Instance is offline')
 
-  if (ownerPod === getPodId()) {
+  if (owner.podId === getPodId()) {
     await evictTunnelOwnership(instanceId).catch(() => {})
     throw new Error('Instance is offline')
   }
 
-  const alive = await verifyPodAlive(ownerPod)
+  const alive = await verifyPodAlive(owner)
   if (!alive) {
     await evictTunnelOwnership(instanceId).catch(() => {})
-    console.warn(`[RemoteControl] Proactively evicted dead pod ${ownerPod} for instance ${instanceId} (sendTunnelRequest)`)
+    console.warn(`[RemoteControl] Proactively evicted dead pod ${owner.podId} for instance ${instanceId} (sendTunnelRequest)`)
     throw new Error('Instance is offline')
   }
 
   try {
-    const response = await relayTunnelRequest(ownerPod, instanceId, req)
+    const response = await relayTunnelRequest(owner, instanceId, req)
     if (!response) throw new Error('Empty relay response')
     return response as TunnelResponse
   } catch (err: any) {
-    if (err.message === 'Cross-pod relay timed out') {
+    const msg = err?.message ?? ''
+    if (msg === 'Cross-pod relay timed out' || msg === 'Instance is offline') {
       await evictTunnelOwnership(instanceId).catch(() => {})
-      console.warn(`[RemoteControl] Evicted stale tunnel owner ${ownerPod} for instance ${instanceId} after relay timeout`)
+      console.warn(`[RemoteControl] Evicted stale tunnel owner ${owner.podId} for instance ${instanceId} after relay failure: ${msg}`)
     }
     throw err
   }
@@ -503,25 +508,25 @@ function sendTunnelStreamRequest(
   let cancelled = false
   const cancelRef = { cancel: () => { cancelled = true } }
 
-  getTunnelOwner(instanceId).then(async (ownerPod) => {
+  getTunnelOwner(instanceId).then(async (owner) => {
     if (cancelled) return
-    if (!ownerPod) {
+    if (!owner) {
       onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
       return
     }
-    if (ownerPod === getPodId()) {
+    if (owner.podId === getPodId()) {
       evictTunnelOwnership(instanceId).catch(() => {})
       onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
       return
     }
-    const alive = await verifyPodAlive(ownerPod)
+    const alive = await verifyPodAlive(owner)
     if (!alive) {
       await evictTunnelOwnership(instanceId).catch(() => {})
-      console.warn(`[RemoteControl] Proactively evicted dead pod ${ownerPod} for instance ${instanceId} (sendTunnelStreamRequest)`)
+      console.warn(`[RemoteControl] Proactively evicted dead pod ${owner.podId} for instance ${instanceId} (sendTunnelStreamRequest)`)
       onChunk({ type: 'stream-error', requestId: req.requestId, error: 'Instance is offline' })
       return
     }
-    const relay = relayTunnelStreamRequest(ownerPod, instanceId, req, onChunk)
+    const relay = relayTunnelStreamRequest(owner, instanceId, req, onChunk)
     cancelRef.cancel = relay.cancel
   }).catch((err) => {
     onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
@@ -1005,28 +1010,28 @@ export function instanceRoutes() {
     }
 
     const localTunnel = tunnels.has(instanceId)
-    let remoteTunnelPod = localTunnel ? null : await getTunnelOwner(instanceId)
+    let remoteTunnelOwner = localTunnel ? null : await getTunnelOwner(instanceId)
 
-    // If Redis says a remote pod owns this tunnel but that pod is actually us
+    // If the registry says a remote pod owns this tunnel but that pod is actually us
     // and we don't have a local connection, the ownership is stale. Evict it.
-    if (!localTunnel && remoteTunnelPod === getPodId()) {
+    if (!localTunnel && remoteTunnelOwner && remoteTunnelOwner.podId === getPodId()) {
       await evictTunnelOwnership(instanceId).catch(() => {})
-      remoteTunnelPod = null
+      remoteTunnelOwner = null
     }
 
-    // If Redis points to a different pod, verify it's actually alive before
+    // If the registry points to a different pod, verify it's actually alive before
     // committing to a 30s relay timeout. Dead pods (e.g. from a dev server
     // restart) will never respond. Evict and fall through to the wake-up path.
-    if (!localTunnel && remoteTunnelPod && remoteTunnelPod !== getPodId()) {
-      const alive = await verifyPodAlive(remoteTunnelPod)
+    if (!localTunnel && remoteTunnelOwner && remoteTunnelOwner.podId !== getPodId()) {
+      const alive = await verifyPodAlive(remoteTunnelOwner)
       if (!alive) {
-        console.warn(`[RemoteControl] Proactively evicting dead pod ${remoteTunnelPod} for instance ${instanceId}`)
+        console.warn(`[RemoteControl] Proactively evicting dead pod ${remoteTunnelOwner.podId} for instance ${instanceId}`)
         await evictTunnelOwnership(instanceId).catch(() => {})
-        remoteTunnelPod = null
+        remoteTunnelOwner = null
       }
     }
 
-    if (!localTunnel && !remoteTunnelPod) {
+    if (!localTunnel && !remoteTunnelOwner) {
       await prisma.instance.update({
         where: { id: instanceId },
         data: { wsRequestedAt: new Date() },
@@ -1037,11 +1042,11 @@ export function instanceRoutes() {
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, TUNNEL_WAIT_POLL_MS))
         if (tunnels.has(instanceId)) break
-        remoteTunnelPod = await getTunnelOwner(instanceId)
-        if (remoteTunnelPod) break
+        remoteTunnelOwner = await getTunnelOwner(instanceId)
+        if (remoteTunnelOwner) break
       }
 
-      if (!tunnels.has(instanceId) && !remoteTunnelPod) {
+      if (!tunnels.has(instanceId) && !remoteTunnelOwner) {
         return c.json({ error: { code: 'offline', message: 'Instance is offline' } }, 503)
       }
     }
@@ -1233,9 +1238,15 @@ export function instanceRoutes() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// An instance is considered "recently seen" if we got a heartbeat within
+// ~2.5× the idle poll interval. Using a fixed floor so that lowering
+// POLL_INTERVAL_IDLE_S doesn't accidentally make us mark live desktops as
+// offline during transient network hiccups.
+const HEARTBEAT_RECENCY_MS = Math.max(POLL_INTERVAL_IDLE_S * 1000 * 2 + 15_000, 45_000)
+
 function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
   if (!lastSeenAt) return false
-  return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+  return Date.now() - lastSeenAt.getTime() < HEARTBEAT_RECENCY_MS
 }
 
 // ─── Heartbeat ping for all connected tunnels ───────────────────────────────
@@ -1244,6 +1255,8 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
 export function startTunnelHeartbeat() {
   if (heartbeatTimer) return
+
+  let cleanupTickCounter = 0
   heartbeatTimer = setInterval(() => {
     for (const [instanceId, conn] of tunnels) {
       try {
@@ -1257,6 +1270,17 @@ export function startTunnelHeartbeat() {
           console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
         })
       }
+    }
+
+    // Every ~5 ticks (~2 min at 25s interval) sweep DB-backed ownership rows
+    // whose owning pod died without running unregisterTunnelOwnership. This
+    // is the Postgres equivalent of Redis TTL expiry.
+    cleanupTickCounter++
+    if (cleanupTickCounter >= 5) {
+      cleanupTickCounter = 0
+      import('../lib/tunnel-db').then(({ cleanupStaleTunnelOwnershipsDb }) =>
+        cleanupStaleTunnelOwnershipsDb(),
+      ).catch(() => {})
     }
   }, HEARTBEAT_INTERVAL_MS)
 }

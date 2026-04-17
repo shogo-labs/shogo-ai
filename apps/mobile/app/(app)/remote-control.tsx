@@ -90,6 +90,34 @@ export default observer(function RemoteControlPage() {
     refresh()
   }, [workspace?.id, refresh])
 
+  // Keepalive: tell the API a user is viewing Remote Control so desktop
+  // heartbeats switch from the idle cadence (15 s) to the viewer cadence
+  // (5 s). This makes the heartbeat → wsRequested pickup near-instant,
+  // which is the primary fix for the "silent no-connect" on staging.
+  useEffect(() => {
+    if (!workspace?.id || !API_URL) return
+    let cancelled = false
+
+    const ping = () => {
+      if (cancelled) return
+      fetch(`${API_URL}/api/instances/viewer-active`, {
+        method: 'POST',
+        credentials: Platform.OS === 'web' ? 'include' : 'omit',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ workspaceId: workspace.id }),
+      }).catch(() => {}) // best-effort — failures just revert to idle cadence
+    }
+
+    ping()
+    // Viewer TTL is 2 min on the server; refresh every 45 s so we stay live
+    // through brief network blips without spamming.
+    const interval = setInterval(ping, 45_000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [workspace?.id])
+
   const connectedCount = instances.filter(i => i.status === 'online').length
   const standbyCount = instances.filter(i => i.status === 'heartbeat').length
   const totalCount = instances.length

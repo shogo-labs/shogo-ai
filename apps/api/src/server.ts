@@ -60,6 +60,7 @@ import { checkRedisHealth } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
+import { internalTunnelRelayRoutes } from './routes/internal-tunnel-relay'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -5011,6 +5012,11 @@ app.route('/api', integrationRoutes())
 
 // Internal routes for cluster-internal pod communication (not exposed externally)
 app.route('/api/internal', internalRoutes)
+
+// Cross-pod HTTP relay for Remote Control tunnels (Redis-less fallback).
+// Mounted here so peer pods can reach it directly via pod IP without the
+// external ingress or session auth layer — secured by x-internal-relay-secret.
+app.route('/api/internal', internalTunnelRelayRoutes())
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role
