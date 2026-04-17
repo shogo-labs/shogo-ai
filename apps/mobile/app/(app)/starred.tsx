@@ -24,15 +24,23 @@ import {
   ChevronDown,
   StarOff,
   FolderOpen,
-  Settings,
   X,
+  Pencil,
+  Trash2,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { useAuth } from '../../contexts/auth'
 import {
   useWorkspaceCollection,
   useProjectCollection,
   useStarredProjectCollection,
+  useDomainActions,
 } from '../../contexts/domain'
 
 type SortBy = 'starredAt' | 'lastEdited' | 'alphabetical'
@@ -77,6 +85,11 @@ export default observer(function StarredProjectsPage() {
   const [sortModalVisible, setSortModalVisible] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null)
+  const [renameProject, setRenameProject] = useState<any>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [deleteProject, setDeleteProject] = useState<any>(null)
+
+  const actions = useDomainActions()
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) return
@@ -97,53 +110,51 @@ export default observer(function StarredProjectsPage() {
     load()
   }, [isAuthenticated, user?.id])
 
-  const starredProjects = useMemo(() => {
+  const starredEntries = useMemo(() => {
     if (!user?.id) return []
-    const starredEntries = starredColl.all.filter((s: any) => s.userId === user.id)
-    return starredEntries
-      .map((entry: any) => {
-        const project = projects.all.find((p: any) => p.id === entry.projectId)
-        if (!project) return null
-        return {
-          ...project,
-          _starredAt: entry.createdAt,
-          _workspaceId: entry.workspaceId,
-          _starredEntryId: entry.id,
-        }
-      })
-      .filter(Boolean)
+    return starredColl.all
+      .filter((s: any) => s.userId === user.id)
+      .filter((entry: any) => projects.all.some((p: any) => p.id === entry.projectId))
   }, [user?.id, starredColl.all, projects.all])
 
-  const filteredProjects = useMemo(() => {
-    let result = [...starredProjects]
+  const getProject = useCallback(
+    (projectId: string) => projects.all.find((p: any) => p.id === projectId),
+    [projects.all],
+  )
+
+  const filteredEntries = useMemo(() => {
+    let result = [...starredEntries]
 
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
-      result = result.filter(
-        (p: any) =>
-          p.name?.toLowerCase().includes(query) ||
-          p.description?.toLowerCase().includes(query)
-      )
+      result = result.filter((entry: any) => {
+        const p = getProject(entry.projectId)
+        return (
+          p?.name?.toLowerCase().includes(query) ||
+          p?.description?.toLowerCase().includes(query)
+        )
+      })
     }
 
     result.sort((a: any, b: any) => {
+      const pa = getProject(a.projectId)
+      const pb = getProject(b.projectId)
       switch (sortBy) {
         case 'starredAt':
-          return (b._starredAt || 0) - (a._starredAt || 0)
+          return (b.createdAt || 0) - (a.createdAt || 0)
         case 'lastEdited':
-          return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt)
+          return ((pb?.updatedAt || pb?.createdAt) || 0) - ((pa?.updatedAt || pa?.createdAt) || 0)
         case 'alphabetical':
-          return (a.name || '').localeCompare(b.name || '')
+          return (pa?.name || '').localeCompare(pb?.name || '')
         default:
           return 0
       }
     })
     return result
-  }, [starredProjects, searchQuery, sortBy])
+  }, [starredEntries, searchQuery, sortBy, getProject])
 
   const getWorkspaceName = useCallback(
-    (project: any) => {
-      const wsId = project._workspaceId || project.workspaceId
+    (wsId: string) => {
       const ws = workspaces.all.find((w: any) => w.id === wsId)
       return ws?.name || 'Unknown workspace'
     },
@@ -158,11 +169,9 @@ export default observer(function StarredProjectsPage() {
   )
 
   const handleUnstar = useCallback(
-    async (project: any) => {
+    async (entry: any) => {
       try {
-        if (project._starredEntryId) {
-          await starredColl.delete(project._starredEntryId)
-        }
+        await starredColl.delete(entry.id)
         if (user?.id) {
           await starredColl.loadAll({ userId: user.id })
         }
@@ -173,80 +182,230 @@ export default observer(function StarredProjectsPage() {
     [starredColl, user?.id]
   )
 
+  const handleRename = useCallback(
+    (project: any) => {
+      setMenuProjectId(null)
+      setRenameValue(project.name || '')
+      setRenameProject(project)
+    },
+    [],
+  )
+
+  const confirmRename = useCallback(async () => {
+    if (!renameProject || !renameValue.trim()) return
+    const projectId = renameProject.id
+    const newName = renameValue.trim()
+    setRenameProject(null)
+    try {
+      await actions.updateProject(projectId, { name: newName })
+      await Promise.all([
+        projects.loadAll(),
+        user?.id ? starredColl.loadAll({ userId: user.id }) : Promise.resolve(),
+      ])
+    } catch {
+      Alert.alert('Error', 'Failed to rename project')
+    }
+  }, [renameProject, renameValue, actions, projects, starredColl, user?.id])
+
+  const handleDelete = useCallback(
+    (project: any) => {
+      setMenuProjectId(null)
+      setDeleteProject(project)
+    },
+    [],
+  )
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteProject) return
+    const projectId = deleteProject.id
+    setDeleteProject(null)
+    try {
+      await actions.deleteProject(projectId)
+      await projects.loadAll()
+      if (user?.id) {
+        await starredColl.loadAll({ userId: user.id })
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to delete project')
+    }
+  }, [deleteProject, actions, projects, starredColl, user?.id])
+
   const sortLabel = SORT_OPTIONS.find((o) => o.value === sortBy)?.label || 'Sort'
 
   const renderGridItem = useCallback(
-    ({ item: project }: { item: any }) => (
-      <Pressable
-        onPress={() => handleProjectPress(project)}
-        className="flex-1 mx-1.5 mb-3 rounded-xl bg-card overflow-hidden border border-border"
-      >
-        <View className={cn('aspect-video items-center justify-center', getPlaceholderColor(project.name || ''))}>
-          <FolderOpen size={28} className="text-white/30" />
-          <Pressable
-            onPress={() => handleUnstar(project)}
-            className="absolute top-2 right-2 p-1.5 rounded-md bg-yellow-500/90"
-          >
-            <Star size={14} className="text-white" fill="white" />
-          </Pressable>
-        </View>
-        <View className="p-3">
-          <View className="flex-row items-center gap-2">
-            <View className="w-6 h-6 rounded-full bg-primary/10 items-center justify-center">
-              <Text className="text-[10px] font-medium text-foreground">
-                {user?.name?.charAt(0) || 'U'}
-              </Text>
-            </View>
-            <View className="flex-1">
-              <Text className="text-foreground text-sm font-medium" numberOfLines={1}>
-                {project.name}
-              </Text>
-              <Text className="text-muted-foreground text-xs" numberOfLines={1}>
-                {getWorkspaceName(project)}
-              </Text>
+    ({ item: entry }: { item: any }) => {
+      const project = getProject(entry.projectId)
+      if (!project) return null
+      return (
+        <Pressable
+          onPress={() => handleProjectPress(project)}
+          className="flex-1 mx-1.5 mb-3 rounded-xl bg-card overflow-hidden border border-border"
+        >
+          <View className={cn('aspect-video items-center justify-center', getPlaceholderColor(project.name || ''))}>
+            <FolderOpen size={28} className="text-white/30" />
+            <Pressable
+              onPress={() => handleUnstar(entry)}
+              className="absolute top-2 right-2 p-1.5 rounded-md bg-yellow-500/90"
+            >
+              <Star size={14} className="text-white" fill="white" />
+            </Pressable>
+            <View className="absolute top-2 left-2">
+              <Popover
+                placement="bottom left"
+                isOpen={menuProjectId === project.id}
+                onOpen={() => setMenuProjectId(project.id)}
+                onClose={() => setMenuProjectId(null)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    onPress={(e) => {
+                      e.stopPropagation()
+                      setMenuProjectId((prev) => (prev === project.id ? null : project.id))
+                    }}
+                    className="p-1.5 rounded-md bg-black/30"
+                    accessibilityLabel="Project actions"
+                  >
+                    <MoreHorizontal size={14} className="text-white" />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="p-0 min-w-[150px]">
+                  <PopoverBody>
+                    <Pressable
+                      onPress={() => {
+                        setMenuProjectId(null)
+                        handleUnstar(entry)
+                      }}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <StarOff size={14} className="text-muted-foreground" />
+                      <Text className="text-sm text-foreground">Unstar</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => handleRename(project)}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <Pencil size={14} className="text-muted-foreground" />
+                      <Text className="text-sm text-foreground">Rename</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => handleDelete(project)}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <Trash2 size={14} className="text-destructive" />
+                      <Text className="text-sm text-destructive">Delete</Text>
+                    </Pressable>
+                  </PopoverBody>
+                </PopoverContent>
+              </Popover>
             </View>
           </View>
-        </View>
-      </Pressable>
-    ),
-    [handleProjectPress, handleUnstar, getWorkspaceName, user?.name]
+          <View className="p-3">
+            <View className="flex-row items-center gap-2">
+              <View className="w-6 h-6 rounded-full bg-primary/10 items-center justify-center">
+                <Text className="text-[10px] font-medium text-foreground">
+                  {user?.name?.charAt(0) || 'U'}
+                </Text>
+              </View>
+              <View className="flex-1">
+                <Text className="text-foreground text-sm font-medium" numberOfLines={1}>
+                  {project.name}
+                </Text>
+                <Text className="text-muted-foreground text-xs" numberOfLines={1}>
+                  {getWorkspaceName(entry.workspaceId)}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </Pressable>
+      )
+    },
+    [handleProjectPress, handleUnstar, handleRename, handleDelete, getProject, getWorkspaceName, user?.name, menuProjectId]
   )
 
   const renderListItem = useCallback(
-    ({ item: project }: { item: any }) => (
-      <Pressable
-        onPress={() => handleProjectPress(project)}
-        className="flex-row items-center px-4 py-3 border-b border-border"
-      >
-        <View
-          className={cn(
-            'w-12 h-8 rounded-md items-center justify-center mr-3',
-            getPlaceholderColor(project.name || '')
-          )}
-        >
-          <FolderOpen size={16} className="text-white/50" />
-        </View>
-        <View className="flex-1 mr-3">
-          <Text className="text-foreground text-sm font-medium" numberOfLines={1}>
-            {project.name}
-          </Text>
-          <Text className="text-muted-foreground text-xs" numberOfLines={1}>
-            {getWorkspaceName(project)} · Edited{' '}
-            {getTimeAgo(project.updatedAt || project.createdAt)}
-          </Text>
-        </View>
-        <Pressable onPress={() => handleUnstar(project)} className="p-2 mr-1">
-          <Star size={16} className="text-yellow-500" fill="#eab308" />
-        </Pressable>
+    ({ item: entry }: { item: any }) => {
+      const project = getProject(entry.projectId)
+      if (!project) return null
+      return (
         <Pressable
-          onPress={() => setMenuProjectId(project.id === menuProjectId ? null : project.id)}
-          className="p-2"
+          onPress={() => handleProjectPress(project)}
+          className="flex-row items-center px-4 py-3 border-b border-border"
         >
-          <MoreHorizontal size={16} className="text-muted-foreground" />
+          <View
+            className={cn(
+              'w-12 h-8 rounded-md items-center justify-center mr-3',
+              getPlaceholderColor(project.name || '')
+            )}
+          >
+            <FolderOpen size={16} className="text-white/50" />
+          </View>
+          <View className="flex-1 mr-3">
+            <Text className="text-foreground text-sm font-medium" numberOfLines={1}>
+              {project.name}
+            </Text>
+            <Text className="text-muted-foreground text-xs" numberOfLines={1}>
+              {getWorkspaceName(entry.workspaceId)} · Edited{' '}
+              {getTimeAgo(project.updatedAt || project.createdAt)}
+            </Text>
+          </View>
+          <Pressable onPress={() => handleUnstar(entry)} className="p-2 mr-1">
+            <Star size={16} className="text-yellow-500" fill="#eab308" />
+          </Pressable>
+          <Popover
+            placement="bottom right"
+            isOpen={menuProjectId === project.id}
+            onOpen={() => setMenuProjectId(project.id)}
+            onClose={() => setMenuProjectId(null)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                onPress={(e) => {
+                  e.stopPropagation()
+                  setMenuProjectId((prev) => (prev === project.id ? null : project.id))
+                }}
+                className="p-2"
+                accessibilityLabel="Project actions"
+              >
+                <MoreHorizontal size={16} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="p-0 min-w-[150px]">
+              <PopoverBody>
+                <Pressable
+                  onPress={() => {
+                    setMenuProjectId(null)
+                    handleUnstar(entry)
+                  }}
+                  className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                >
+                  <StarOff size={14} className="text-muted-foreground" />
+                  <Text className="text-sm text-foreground">Unstar</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handleRename(project)}
+                  className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                >
+                  <Pencil size={14} className="text-muted-foreground" />
+                  <Text className="text-sm text-foreground">Rename</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handleDelete(project)}
+                  className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                >
+                  <Trash2 size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">Delete</Text>
+                </Pressable>
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
         </Pressable>
-      </Pressable>
-    ),
-    [handleProjectPress, handleUnstar, getWorkspaceName, menuProjectId]
+      )
+    },
+    [handleProjectPress, handleUnstar, handleRename, handleDelete, getProject, getWorkspaceName, menuProjectId]
   )
 
   return (
@@ -302,7 +461,7 @@ export default observer(function StarredProjectsPage() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" />
         </View>
-      ) : filteredProjects.length === 0 ? (
+      ) : filteredEntries.length === 0 ? (
         <View className="flex-1 items-center justify-center px-6">
           <View className="w-16 h-16 rounded-full bg-muted items-center justify-center mb-4">
             <Star size={32} className="text-muted-foreground/50" />
@@ -319,7 +478,7 @@ export default observer(function StarredProjectsPage() {
       ) : viewMode === 'grid' ? (
         <FlatList
           key="grid-2"
-          data={filteredProjects}
+          data={filteredEntries}
           keyExtractor={(item: any) => item.id}
           numColumns={2}
           contentContainerClassName="p-2.5 pt-4"
@@ -328,7 +487,7 @@ export default observer(function StarredProjectsPage() {
       ) : (
         <FlatList
           key="list-1"
-          data={filteredProjects}
+          data={filteredEntries}
           keyExtractor={(item: any) => item.id}
           renderItem={renderListItem}
         />
@@ -369,6 +528,109 @@ export default observer(function StarredProjectsPage() {
               </Pressable>
             ))}
           </View>
+        </Pressable>
+      </Modal>
+
+      {/* Rename Modal */}
+      <Modal
+        visible={!!renameProject}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenameProject(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setRenameProject(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-semibold text-foreground">Rename project</Text>
+              <Pressable onPress={() => setRenameProject(null)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-4">
+              Enter a new name for this project
+            </Text>
+            <TextInput
+              value={renameValue}
+              onChangeText={setRenameValue}
+              placeholder="Project name"
+              placeholderTextColor="#9ca3af"
+              className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+              autoFocus
+              onSubmitEditing={confirmRename}
+              selectTextOnFocus
+            />
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setRenameProject(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmRename}
+                className={cn(
+                  'px-4 py-2 rounded-md',
+                  renameValue.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+                )}
+                disabled={!renameValue.trim()}
+              >
+                <Text className={cn(
+                  'text-sm',
+                  renameValue.trim() ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                  Rename
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        visible={!!deleteProject}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteProject(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setDeleteProject(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center gap-3 mb-3">
+              <View className="w-10 h-10 rounded-full bg-destructive/10 items-center justify-center">
+                <Trash2 size={20} className="text-destructive" />
+              </View>
+              <Text className="text-base font-semibold text-foreground">Delete project</Text>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-5">
+              Are you sure you want to delete &quot;{deleteProject?.name}&quot;? This action cannot be undone.
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setDeleteProject(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmDelete}
+                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
+              >
+                <Text className="text-sm text-white font-medium">Delete</Text>
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
       </Modal>
     </SafeAreaView>
