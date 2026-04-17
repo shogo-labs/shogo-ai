@@ -1803,7 +1803,7 @@ export function aiProxyRoutes() {
       const isStream = !!parsed.stream
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
-      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
+      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
 
       // Enforce model tier: free/basic users can only use economy-tier models
       if (!isLocal && !isLocalDev) {
