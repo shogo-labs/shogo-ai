@@ -46,7 +46,10 @@ import {
   resolveModelId,
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
+  isAutoModel,
+  AUTO_MODEL_ID,
 } from '@shogo/model-catalog'
+import { selectModelForSpawn, buildAutoTierMap, formatRoutingLog, type SpawnClassificationInput } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -56,19 +59,13 @@ import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
 import {
-  OPTIMIZED_MEMORY_GUIDE,
-  OPTIMIZED_PERSONALITY_GUIDE,
-  OPTIMIZED_TOOL_PLANNING_GUIDE,
-  OPTIMIZED_SESSION_SUMMARY_GUIDE,
-  OPTIMIZED_SKILL_MATCHING_GUIDE,
-  OPTIMIZED_MCP_DISCOVERY_GUIDE,
-  OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
   SELF_EVOLUTION_GUIDE,
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
+import { buildGuideRegistry, CAPABILITIES_INDEX } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
@@ -206,56 +203,6 @@ export interface GatewayConfig {
   coordinatorMode?: boolean
 }
 
-const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update (MUST use read_file + edit_file)
-
-When the user changes your personality, tone, role, name, or boundaries, you MUST:
-1. \`read_file\` the target file first
-2. \`edit_file\` to make a **targeted** change to the relevant section
-
-**NEVER** use \`write_file\` to overwrite the entire file — always use \`edit_file\` to change only the relevant section.
-**NEVER** write personality/role/boundary changes to MEMORY.md — memory is for facts and conversation logs only.
-
-### Which File to Edit
-- **SOUL.md** — Tone, communication style, and boundaries (e.g. "be more formal", "never run shell commands")
-- **AGENTS.md** — Role definition, operating instructions, and capabilities (e.g. "you're my DevOps guy", safety rules)
-- **IDENTITY.md** — Name, avatar, emoji, and tagline (e.g. "call me Atlas")
-
-### Example
-
-User: "Be more formal and professional from now on"
-
-\`\`\`
-read_file({ path: "SOUL.md" })
-edit_file({
-  path: "SOUL.md",
-  old_string: "## Tone\\n- Direct and helpful, not verbose",
-  new_string: "## Tone\\n- Formal and professional at all times"
-})
-\`\`\`
-
-User: "Call me Atlas and focus on climate science"
-
-\`\`\`
-read_file({ path: "IDENTITY.md" })
-edit_file({
-  path: "IDENTITY.md",
-  old_string: "- **Name:** Shogo",
-  new_string: "- **Name:** Atlas"
-})
-\`\`\`
-
-### When to Update
-- User explicitly corrects your tone, style, or boundaries (e.g. "be more formal")
-- User establishes a new, lasting boundary (e.g. "don't suggest code changes")
-- User assigns a new name, role, or domain focus
-
-### When NOT to Update
-- One-off requests or trivial conversation
-- Information already present in the file
-- Temporary context that doesn't reflect a lasting change
-
-`
-
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -278,6 +225,10 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /** Current guide registry built during loadBootstrapContext, consumed by tool context */
+  private currentGuideRegistry?: Map<string, string>
+  /** Per-section prompt breakdown from the last loadBootstrapContext() call */
+  lastPromptBreakdown?: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
@@ -302,6 +253,7 @@ export class AgentGateway {
     toolCallCount: number
     contextWindowTokens: number
     estimatedContextTokens: number
+    model: string
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -321,6 +273,10 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  /** Tracks the current high-level task description for remote status */
+  private _currentTask: string | null = null
+  /** Tracks the last tool name invoked for remote status */
+  private _lastTool: string | null = null
   /** Dynamic sub-agent registry and lifecycle manager */
   public agentManager = new AgentManager()
   private teamManager?: TeamManager
@@ -723,7 +679,7 @@ export class AgentGateway {
     try {
       const thisDir = dirname(fileURLToPath(import.meta.url))
       const pkgDir = join(thisDir, '..')
-      const searchDirs = [pkgDir]
+      const searchDirs = [pkgDir, thisDir, this.workspaceDir]
 
       const tsResult = resolveBin('typescript-language-server', searchDirs, 'lib/cli.mjs')
       const pyResult = resolveBin('pyright', searchDirs)
@@ -1032,7 +988,7 @@ export class AgentGateway {
   }
 
   private buildSetupPrompt(userText: string): string {
-    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write IDENTITY.md with a fitting name, emoji, and tagline\n2. Write SOUL.md with personality, tone, and boundaries appropriate for this use case\n3. Write AGENTS.md with specific operating instructions and priorities (IMPORTANT: replace the default content)\n4. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n5. Create any relevant skills in the skills/ directory\n6. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
+    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write AGENTS.md with all sections: # Identity (name, emoji, tagline), # Personality (tone, boundaries), # User (preferences), and # Operating Instructions (specific to this use case — IMPORTANT: replace the default content)\n2. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n3. Create any relevant skills in the skills/ directory\n4. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
   }
 
   private buildChatPrompt(text: string): { prompt: string; activeSkill?: { name: string } } {
@@ -1218,11 +1174,13 @@ export class AgentGateway {
       await prevTurn.catch(() => {})
     }
 
+    this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
     const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
     } finally {
+      this._currentTask = null
       if (this.turnLocks.get(sessionId) === turnPromise) {
         this.turnLocks.delete(sessionId)
       }
@@ -1280,8 +1238,9 @@ export class AgentGateway {
         '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
         '4. If there are multiple valid approaches, ask the user which they prefer',
         '5. When you have enough context, call create_plan with a structured plan',
-        '6. The plan should be concise, specific, and actionable — cite file paths and code snippets',
-        '7. Do NOT make any changes until the user confirms the plan',
+        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
+        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
+        '8. Do NOT make any changes until the user confirms the plan',
       ].join('\n')
       systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
     } else if (interactionMode === 'ask') {
@@ -1300,9 +1259,36 @@ export class AgentGateway {
 
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelAlias = session.modelOverride || this.config.model.name
-    const provider = inferProviderFromModel(modelAlias, this.config.model.provider)
-    const modelId = resolveModelAlias(modelAlias)
-    console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+    const autoRouting = isAutoModel(modelAlias)
+
+    let provider: string
+    let modelId: string
+
+    if (autoRouting) {
+      const autoTiers = buildAutoTierMap()
+      const estimatedTokens = this.sessionManager.estimateTokens(session)
+      const classInput: SpawnClassificationInput = {
+        prompt,
+        subagentType: 'main-agent',
+        toolNames: [],
+        contextTokens: estimatedTokens,
+      }
+      const routingDecision = selectModelForSpawn(classInput, {
+        ceilingModel: autoTiers.premium,
+        availableModels: autoTiers,
+      })
+      modelId = routingDecision.selectedModel
+      provider = inferProviderFromModel(modelId, this.config.model.provider)
+      console.log(`${this.logPrefix} ${formatRoutingLog(routingDecision, prompt)}`)
+      if (uiWriter) {
+        uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
+      }
+    } else {
+      const effectiveAlias = modelAlias
+      provider = inferProviderFromModel(effectiveAlias, this.config.model.provider)
+      modelId = resolveModelAlias(effectiveAlias)
+      console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
+    }
 
     // Reset per-turn state and wire/clear the SSE writer for permission requests.
     // When there's no uiWriter (heartbeat, channel, webhook turns),
@@ -1349,10 +1335,13 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
+      autoRouting,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
+      guideRegistry: this.currentGuideRegistry,
+      toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1400,19 +1389,31 @@ export class AgentGateway {
     if (this.config.quickActionsEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'quick_action')
     }
-    // Code analysis tools are only available via the code-reviewer subagent
-    const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context'])
+    // Code analysis tools are only available via subagents (code-reviewer, explore)
+    const CODE_REVIEW_ONLY_TOOLS = new Set(['detect_changes', 'review_context', 'impact_radius'])
     assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
+
+    // Tools delegated to dedicated subagents — removed from the main agent to
+    // reduce per-request token cost. Spawn via agent_spawn({ type: "<subagent>" }).
+    const SUBAGENT_ONLY_TOOLS = new Set([
+      'browser',                                                                       // -> browser subagent
+      'tool_search', 'tool_install', 'tool_uninstall',                                // -> integration subagent
+      'mcp_search', 'mcp_install', 'mcp_uninstall',                                   // -> integration subagent
+      'channel_connect', 'channel_disconnect', 'channel_list', 'send_message',        // -> channel subagent
+      'generate_image', 'transcribe_audio',                                            // -> media subagent
+      'heartbeat_configure', 'heartbeat_status', 'skill_server_sync',                 // -> devops subagent
+    ])
+    assembledTools = assembledTools.filter(t => !SUBAGENT_ONLY_TOOLS.has(t.name))
 
     // Interaction mode tool restrictions
     if (interactionMode === 'ask') {
       assembledTools = []
     } else if (interactionMode === 'plan') {
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search', 'impact_radius',
-        'web', 'browser',
+        'read_file', 'search',
+        'web',
         'memory_read', 'memory_search',
-        'ask_user', 'todo_write', 'create_plan',
+        'ask_user', 'todo_write', 'create_plan', 'update_plan',
         'skill',
       ])
       assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
@@ -1613,13 +1614,72 @@ export class AgentGateway {
       let runningContextEstimate = this.sessionManager.estimateTokens(session)
       const contextWindowTokens = this.sessionManager.contextWindowTokens
 
+      // Throttle data-context-usage emissions — at most once per 5s during
+      // long-running agent turns with many tool calls. Without this, every
+      // tool execution emits an update, flooding the client SSE stream.
+      let lastContextUsageEmitMs = 0
+      const CONTEXT_USAGE_THROTTLE_MS = 5_000
+      const emitContextUsage = () => {
+        const now = Date.now()
+        if (uiWriter && now - lastContextUsageEmitMs >= CONTEXT_USAGE_THROTTLE_MS) {
+          lastContextUsageEmitMs = now
+          uiWriter.write({
+            type: 'data-context-usage',
+            data: { inputTokens: runningContextEstimate, contextWindowTokens },
+          } as any)
+        }
+      }
+
+      // Always emit the initial estimate immediately
       if (uiWriter) {
+        lastContextUsageEmitMs = Date.now()
         uiWriter.write({
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
         } as any)
       }
 
+      // Prompt breakdown: compute tool schema size and emit per-section breakdown
+      if (this.lastPromptBreakdown) {
+        const toolSchemaChars = tools.reduce((sum, t) => {
+          const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
+          return sum + schema.length
+        }, 0)
+        const toolSchemaEstTokens = Math.ceil(toolSchemaChars / 4)
+
+        const breakdown = this.lastPromptBreakdown
+        const totalChars = breakdown.reduce((s, sec) => s + sec.chars, 0)
+        const totalEstTokens = breakdown.reduce((s, sec) => s + sec.estTokens, 0)
+        const grandEstTokens = totalEstTokens + toolSchemaEstTokens
+
+        const lines = ['[AgentGateway] Prompt breakdown:']
+        const maxLabel = Math.max(...breakdown.map(s => s.label.length), 'tool-schemas (XX)'.length)
+        for (const sec of breakdown) {
+          const tag = sec.zone === 'stable' ? 'S' : 'D'
+          lines.push(`  ${sec.label.padEnd(maxLabel)} [${tag}]: ${sec.chars.toLocaleString().padStart(7)} chars ~${sec.estTokens.toLocaleString().padStart(6)} tok`)
+        }
+        lines.push(`  ${''.padEnd(maxLabel + 30, '─')}`)
+        lines.push(`  ${'System prompt total'.padEnd(maxLabel)}    : ${totalChars.toLocaleString().padStart(7)} chars ~${totalEstTokens.toLocaleString().padStart(6)} tok`)
+        lines.push(`  ${`Tool schemas (${tools.length})`.padEnd(maxLabel)}    : ${toolSchemaChars.toLocaleString().padStart(7)} chars ~${toolSchemaEstTokens.toLocaleString().padStart(6)} tok`)
+        lines.push(`  ${'Grand total'.padEnd(maxLabel)}    :                ~${grandEstTokens.toLocaleString().padStart(6)} tok`)
+        console.log(lines.join('\n'))
+
+        const breakdownPayload = {
+          sections: breakdown,
+          totalChars,
+          totalEstTokens,
+          toolSchemaChars,
+          toolSchemaEstTokens,
+          toolCount: tools.length,
+          grandEstTokens,
+        }
+
+        if (uiWriter) {
+          uiWriter.write({ type: 'data-prompt-breakdown', data: breakdownPayload } as any)
+        }
+      }
+
+      const maxIterations = parseInt(process.env.AGENT_MAX_ITERATIONS || '200', 10)
       const result = await runAgentLoop({
         provider,
         model: modelId,
@@ -1628,10 +1688,10 @@ export class AgentGateway {
         prompt,
         images,
         tools,
-        maxIterations: parseInt(process.env.AGENT_MAX_ITERATIONS || '50', 10),
+        maxIterations,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
-        thinkingLevel: resolveThinkingLevel(session.modelOverride),
+        thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
         signal: turnAbort.signal,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
@@ -1679,6 +1739,7 @@ export class AgentGateway {
           }
         },
         onToolCallStart: (toolName, toolCallId) => {
+          this._lastTool = toolName
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -1765,12 +1826,7 @@ export class AgentGateway {
           const argsStr = typeof args === 'string' ? args : JSON.stringify(args ?? '')
           const resultStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
           runningContextEstimate += Math.ceil((argsStr.length + resultStr.length) / 4)
-          if (uiWriter) {
-            uiWriter.write({
-              type: 'data-context-usage',
-              data: { inputTokens: runningContextEstimate, contextWindowTokens },
-            } as any)
-          }
+          emitContextUsage()
 
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {
@@ -1811,8 +1867,18 @@ export class AgentGateway {
 
       this.sessionManager.touch(sessionId)
 
+      // Emit final context usage so the client always gets the most up-to-date value
+      // even if the throttle timer hasn't fired recently.
+      if (uiWriter) {
+        uiWriter.write({
+          type: 'data-context-usage',
+          data: { inputTokens: runningContextEstimate, contextWindowTokens },
+        } as any)
+      }
+
       // Store usage for callers (server.ts includes it in the `finish` event)
       const estimatedContextTokens = this.sessionManager.estimateTokens(session)
+      const effectiveModel = result.effectiveModelId || modelId
       this._lastTurnUsage = {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
@@ -1822,6 +1888,7 @@ export class AgentGateway {
         toolCallCount: result.toolCalls.length,
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
+        model: effectiveModel,
       }
 
       // UI notifications below may throw if the client disconnected (stop).
@@ -1850,6 +1917,7 @@ export class AgentGateway {
 
         if (result.error) {
           const msg = result.error.message || 'An unexpected error occurred'
+          const isIterationLimit = /maximum iteration limit/i.test(msg)
           const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits/i.test(msg)
           const isBillingError = /billing|insufficient.credits|upgrade your plan/i.test(msg)
           console.error(
@@ -1857,11 +1925,13 @@ export class AgentGateway {
           )
           chunker?.dispose()
           if (uiWriter) {
-            const errorText = isBillingError
-              ? 'Insufficient credits. Please check your plan or AI provider settings.'
-              : isProviderError
-                ? `AI provider error: ${msg}`
-                : `I encountered an issue processing your message: ${msg}`
+            const errorText = isIterationLimit
+              ? 'I reached my iteration limit before finishing the task. Send a follow-up message like "continue" to pick up where I left off.'
+              : isBillingError
+                ? 'Insufficient credits. Please check your plan or AI provider settings.'
+                : isProviderError
+                  ? `AI provider error: ${msg}`
+                  : `I encountered an issue processing your message: ${msg}`
             uiWriter.write({ type: 'error', errorText } as any)
           }
         } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
@@ -2040,43 +2110,41 @@ export class AgentGateway {
 
     const stableParts: string[] = []
     const dynamicParts: string[] = []
+    const sections: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }> = []
+
+    const pushStable = (label: string, content: string) => {
+      stableParts.push(content)
+      sections.push({ label, zone: 'stable', chars: content.length, estTokens: Math.ceil(content.length / 4) })
+    }
+    const pushDynamic = (label: string, content: string) => {
+      dynamicParts.push(content)
+      sections.push({ label, zone: 'dynamic', chars: content.length, estTokens: Math.ceil(content.length / 4) })
+    }
 
     // ---- STABLE ZONE: rarely changes within a session ----
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
     if (activeMode !== 'canvas') {
-      stableParts.push(CANVAS_FILE_REFERENCE)
+      pushStable('canvas-file-reference', CANVAS_FILE_REFERENCE)
     }
 
     // 2. General coding guide (always the same)
-    stableParts.push(CODE_AGENT_GENERAL_GUIDE)
+    pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
 
-    // 3. Behavioral guides (stable unless user edits personality mid-session)
-    const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
-    const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
-    const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
-    const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
+    // 3. Capabilities Index — compact pointers to on-demand guides served by read_guide tool.
+    // Full guide content lives in guide-registry.ts and is returned by the read_guide tool,
+    // saving ~4,600 tokens per turn compared to inlining all guides.
+    this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
+    pushStable('capabilities-index', CAPABILITIES_INDEX)
 
-    stableParts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
-    stableParts.push(toolPlanningGuide)
-    stableParts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
-    if (this.config.memoryEnabled !== false) {
-      stableParts.push(memoryGuide)
-    }
-    if (this.config.browserEnabled !== false) {
-      stableParts.push(BROWSER_TOOL_GUIDE)
-    }
-    stableParts.push(SELF_EVOLUTION_GUIDE)
     if (this.config.quickActionsEnabled !== false) {
-      stableParts.push(QUICK_ACTION_GUIDE)
+      pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
-    stableParts.push(skillMatchingGuide)
-    stableParts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
     // 4. Security permissions guide (stable once mode is set)
     if (this.permissionEngine) {
-      stableParts.push([
+      pushStable('security-permissions', [
         '## Security Permissions',
         '',
         'This agent runs with a security permission system. Some tool calls may be blocked or require user approval through a UI dialog (not through chat).',
@@ -2087,7 +2155,7 @@ export class AgentGateway {
     }
 
     // 5. Error notification guide (always the same)
-    stableParts.push([
+    pushStable('error-notification-guide', [
       '## CRITICAL: Error Notifications (MUST follow)',
       '',
       'You have a tool called `notify_user_error`. You MUST call it whenever:',
@@ -2104,21 +2172,48 @@ export class AgentGateway {
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
 
-    // 5b. Sub-agent orchestration guide
-    stableParts.push(SUBAGENT_GUIDE)
-
-    // ==== PROMPT_CACHE_STABLE_BOUNDARY ====
+    // Separator tells the AI proxy to split the system prompt into two Anthropic
+    // system blocks: the stable prefix gets cache_control, the dynamic suffix
+    // does not. Without this, the entire prompt is one block whose cache is
+    // invalidated every turn because the dynamic content changes.
+    const CACHE_BOUNDARY = '\n\n<|CACHE_BOUNDARY|>\n\n'
 
     // ---- DYNAMIC ZONE: changes between turns or sessions ----
 
     // 6. Project identity files (change when user edits them)
-    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md', 'STACK.md']
+    // SOUL.md, USER.md, IDENTITY.md were consolidated into AGENTS.md but are
+    // still read here for backwards compatibility with existing workspaces.
+    const files = ['AGENTS.md', 'SOUL.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md']
     for (const filename of files) {
       const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
       if (filepath) {
         const content = readFileSync(filepath, 'utf-8').trim()
         if (content) {
-          dynamicParts.push(content)
+          pushDynamic(filename.toLowerCase().replace('.md', ''), content)
+        }
+      }
+    }
+
+    // 6b. STACK.md — preview-truncated to save tokens. The full file is
+    // available to the agent via read_file when it needs the complete reference.
+    const STACK_PREVIEW_WORDS = 200
+    const stackPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'STACK.md')
+    if (stackPath) {
+      const fullStack = readFileSync(stackPath, 'utf-8').trim()
+      if (fullStack) {
+        const words = fullStack.split(/\s+/)
+        if (words.length <= STACK_PREVIEW_WORDS) {
+          pushDynamic('stack', fullStack)
+        } else {
+          const preview = words.slice(0, STACK_PREVIEW_WORDS).join(' ')
+          const relativePath = stackPath.startsWith(this.workspaceDir)
+            ? stackPath.slice(this.workspaceDir.length + 1)
+            : stackPath
+          pushDynamic('stack', [
+            preview,
+            '',
+            `(Truncated — ${words.length} words total. Full reference: \`read_file({ path: "${relativePath}" })\`)`,
+          ].join('\n'))
         }
       }
     }
@@ -2128,7 +2223,7 @@ export class AgentGateway {
     if (memoryPath) {
       const memory = readFileSync(memoryPath, 'utf-8').trim()
       if (memory) {
-        dynamicParts.push(`## Memory\n${memory}`)
+        pushDynamic('memory', `## Memory\n${memory}`)
       }
     }
 
@@ -2137,7 +2232,7 @@ export class AgentGateway {
     if (existsSync(heartbeatLogPath)) {
       const heartbeatLog = readFileSync(heartbeatLogPath, 'utf-8').trim()
       if (heartbeatLog) {
-        dynamicParts.push(`## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`)
+        pushDynamic('heartbeat-log', `## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`)
       }
     }
 
@@ -2149,11 +2244,11 @@ export class AgentGateway {
       const agentTemplate = readFileSync(agentTemplatePath, 'utf-8').trim()
       if (agentTemplate) {
         const humanName = agentTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        dynamicParts.push([
+        pushDynamic('agent-template', [
           '## Agent Template Context',
           '',
           `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
-          'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
+          'Your configuration files (AGENTS.md, HEARTBEAT.md, skills/) are already',
           'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
           '',
         ].join('\n'))
@@ -2163,7 +2258,7 @@ export class AgentGateway {
     // 9. Current date/time context (changes every turn)
     const now = new Date()
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
-    dynamicParts.push([
+    pushDynamic('current-context', [
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
@@ -2176,29 +2271,29 @@ export class AgentGateway {
     ].join('\n'))
 
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
-    dynamicParts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
+    pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
 
     // 10. Dynamic workspace context (changes as files are added/removed)
     const installedToolsContext = this.buildInstalledToolsContext()
     if (installedToolsContext) {
-      dynamicParts.push(installedToolsContext)
+      pushDynamic('installed-tools', installedToolsContext)
     }
 
     const uploadedFilesContext = this.buildUploadedFilesContext()
     if (uploadedFilesContext) {
-      dynamicParts.push(uploadedFilesContext)
+      pushDynamic('uploaded-files', uploadedFilesContext)
     }
 
     const workspaceTree = this.buildWorkspaceTreeContext()
     if (workspaceTree) {
-      dynamicParts.push(workspaceTree)
+      pushDynamic('workspace-tree', workspaceTree)
     }
 
     // 11. Skills and skill server (can change when skills are installed)
     if (this.skills.length > 0) {
       const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
-        dynamicParts.push(skillsSection)
+        pushDynamic('skills', skillsSection)
       }
     }
 
@@ -2206,22 +2301,26 @@ export class AgentGateway {
     if (this.config.quickActionsEnabled !== false && this.quickActions.length > 0) {
       const qaSection = buildQuickActionsPromptSection(this.quickActions)
       if (qaSection) {
-        dynamicParts.push(qaSection)
+        pushDynamic('quick-actions', qaSection)
       }
     }
 
     const skillServerSection = this.buildSkillServerPromptSection()
     if (skillServerSection) {
-      dynamicParts.push(skillServerSection)
+      pushDynamic('skill-server', skillServerSection)
     }
 
     // 12. Active team context (persisted in SQLite, survives session resets)
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
-      if (teamCtx) dynamicParts.push(teamCtx)
+      if (teamCtx) pushDynamic('team-context', teamCtx)
     }
 
-    return [...stableParts, ...dynamicParts].join('\n\n---\n\n')
+    this.lastPromptBreakdown = sections
+
+    const stableText = stableParts.join('\n\n---\n\n')
+    const dynamicText = dynamicParts.join('\n\n---\n\n')
+    return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
   }
 
   /**
@@ -2469,7 +2568,7 @@ export class AgentGateway {
   /**
    * Build a context section listing files the user has uploaded to files/.
    * Included in the system prompt so the agent knows what data is available
-   * and can proactively use list_files/search/read_file to access it.
+   * and can proactively use search/read_file to access it.
    */
   private buildUploadedFilesContext(): string | null {
     const filesDir = join(this.workspaceDir, 'files')
@@ -2483,7 +2582,7 @@ export class AgentGateway {
         '## Workspace Uploaded Files',
         '',
         'The user has uploaded the following files to the workspace `files/` directory.',
-        'Use `list_files` to browse, `search` to search content, or `read_file` with path `files/<name>` to read them.',
+        'Use `search` to search content, or `read_file` with path `files/<name>` to read them.',
         '',
       ]
 
@@ -2774,8 +2873,53 @@ export class AgentGateway {
         description: s.description || '',
       }))
 
+    // Compute memory/context file stats
+    const memoryFiles = ['AGENTS.md', 'TOOLS.md', 'STACK.md', 'HEARTBEAT.md', 'MEMORY.md']
+    let memoryFileCount = 0
+    let memoryTotalSize = 0
+    let memoryLastModified: Date | null = null
+
+    for (const filename of memoryFiles) {
+      const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
+      if (filepath) {
+        try {
+          const st = statSync(filepath)
+          if (st.size > 0) {
+            memoryFileCount++
+            memoryTotalSize += st.size
+            if (!memoryLastModified || st.mtime > memoryLastModified) {
+              memoryLastModified = st.mtime
+            }
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    const memoryDir = join(this.workspaceDir, 'memory')
+    if (existsSync(memoryDir)) {
+      try {
+        for (const entry of readdirSync(memoryDir)) {
+          if (!entry.endsWith('.md')) continue
+          const fp = join(memoryDir, entry)
+          const st = statSync(fp)
+          if (st.isFile() && st.size > 0) {
+            memoryFileCount++
+            memoryTotalSize += st.size
+            if (!memoryLastModified || st.mtime > memoryLastModified) {
+              memoryLastModified = st.mtime
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    const activeTurnCount = this.turnLocks.size
+
     return {
       running: this.running,
+      status: activeTurnCount > 0 ? 'active' : this.running ? 'idle' : 'stopped',
+      currentTask: this._currentTask,
+      lastTool: this._lastTool,
       heartbeat: {
         enabled: this.config.heartbeatEnabled,
         intervalSeconds: this.config.heartbeatInterval,
@@ -2786,6 +2930,11 @@ export class AgentGateway {
       skills: [...fsSkills, ...configSkills],
       model: this.config.model,
       sessions: this.sessionManager.getAllStats(),
+      memory: {
+        fileCount: memoryFileCount,
+        totalSizeBytes: memoryTotalSize,
+        lastModified: memoryLastModified?.toISOString() ?? null,
+      },
     }
   }
 

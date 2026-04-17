@@ -23,6 +23,7 @@ import type { AgentEval, EvalResult } from './types'
 import { LUXURY_BALI_TRIP_PLANNER_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   responseContains,
   toolCallsJson,
 } from './eval-helpers'
@@ -92,7 +93,7 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
         description: 'Used mcp_search to find the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'search-query-relevant',
@@ -109,7 +110,7 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
         description: 'Used mcp_install to add the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
       },
       // --- Actually used Airbnb search ---
       {

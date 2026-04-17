@@ -460,7 +460,7 @@ export class PermissionEngine {
     if (category === 'file_read') {
       return { action: 'allow', reason: 'File reads allowed in strict mode (within workspace)', category }
     }
-    const AGENT_CONFIG_FILES = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json']
+    const AGENT_CONFIG_FILES = ['AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json']
     const filePath = (_params.path as string) || ''
     if ((category === 'file_write' || category === 'file_delete') && AGENT_CONFIG_FILES.some(f => filePath.endsWith(f))) {
       return { action: 'allow', reason: 'Agent config files are always writable', category }
@@ -770,6 +770,7 @@ export function withPermissionGate(
 
 export function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   const resolved = resolve(workspaceDir, filePath)
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return resolved
   if (!resolved.startsWith(workspaceDir)) {
     throw new Error(`Path outside workspace: ${filePath}`)
   }

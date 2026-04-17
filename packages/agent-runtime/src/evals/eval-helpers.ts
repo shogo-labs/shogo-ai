@@ -19,9 +19,27 @@ export function usedToolInFinalTurn(result: EvalResult, toolName: string): boole
   return result.finalTurnToolCalls.some(t => t.name === toolName)
 }
 
-/** True if `toolName` was NOT called in any turn. */
+/** True if `toolName` was NOT called in any turn (including via subagents). */
 export function neverUsedTool(result: EvalResult, toolName: string): boolean {
   return !result.toolCalls.some(t => t.name === toolName)
+}
+
+/**
+ * True if `toolName` was called anywhere — directly by the main agent OR
+ * inside a subagent (flattened by runner.ts). Equivalent to usedTool() after
+ * subagent tool call flattening, but semantically clearer for delegated tools.
+ */
+export function usedToolAnywhere(result: EvalResult, toolName: string): boolean {
+  return result.toolCalls.some(t => t.name === toolName)
+}
+
+/** True if the agent delegated to a specific subagent type via agent_spawn. */
+export function delegatedTo(result: EvalResult, subagentType: string): boolean {
+  return result.toolCalls.some(t =>
+    t.name === 'agent_spawn' &&
+    typeof t.input === 'object' && t.input !== null &&
+    (t.input as Record<string, unknown>).type === subagentType,
+  )
 }
 
 /** True if `toolName` was NOT called in the final turn. */
@@ -146,6 +164,35 @@ export function lastSkillServerExecSucceeded(result: EvalResult): boolean {
     !last.stdout.includes('ENOENT') &&
     !last.stdout.includes('404 Not Found') &&
     !last.stdout.includes('Cannot connect')
+}
+
+// ---------------------------------------------------------------------------
+// Plan tool validation
+// ---------------------------------------------------------------------------
+
+/** True if any create_plan or update_plan call has `value` in the given `field` (case-insensitive). */
+export function planToolArgsContain(result: EvalResult, field: string, value: string): boolean {
+  return result.toolCalls
+    .filter(t => t.name === 'create_plan' || t.name === 'update_plan')
+    .some(t => {
+      const input = t.input as Record<string, any>
+      const fieldVal = input[field]
+      if (typeof fieldVal === 'string') {
+        return fieldVal.toLowerCase().includes(value.toLowerCase())
+      }
+      if (Array.isArray(fieldVal)) {
+        return JSON.stringify(fieldVal).toLowerCase().includes(value.toLowerCase())
+      }
+      return false
+    })
+}
+
+/** Returns the number of todos in the first create_plan or update_plan call. */
+export function planTodoCount(result: EvalResult): number {
+  const planCall = result.toolCalls.find(t => t.name === 'create_plan' || t.name === 'update_plan')
+  if (!planCall) return 0
+  const input = planCall.input as Record<string, any>
+  return Array.isArray(input.todos) ? input.todos.length : 0
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   didNotUseToolInFinalTurn,
   responseContains,
   toolCallsJson,
@@ -56,7 +57,7 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Used tool_search to discover capabilities',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'searched-github',
@@ -125,7 +126,7 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Used tool_install to install the skill',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'install-with-skill-prefix',
@@ -394,7 +395,7 @@ Facilitate daily standup updates:
         description: 'Installed the skill via tool_install with skill: prefix',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install') && toolCallArgsContain(r, 'tool_install', 'skill:'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install') && toolCallArgsContain(r, 'tool_install', 'skill:'),
       },
       {
         id: 'read-skill-instructions',
@@ -470,14 +471,12 @@ Facilitate daily standup updates.`,
     validationCriteria: [
       {
         id: 'verified-skill-exists',
-        description: 'Used list_files or read_file to confirm the skill exists',
+        description: 'Used exec or read_file to confirm the skill exists',
         points: 20,
         phase: 'intention',
         validate: (r) =>
           toolCallArgsContain(r, 'read_file', 'reminder') ||
-          toolCallArgsContain(r, 'list_files', 'skills') ||
-          toolCallArgsContain(r, 'ls', 'skills') ||
-          toolCallArgsContain(r, 'glob', 'skills'),
+          toolCallArgsContain(r, 'exec', 'skills'),
       },
       {
         id: 'used-delete-file',

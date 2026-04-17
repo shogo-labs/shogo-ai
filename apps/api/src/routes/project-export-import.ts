@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { AgentClient, type WorkspaceBundle } from '@shogo-ai/sdk/agent'
 import { Hono } from 'hono'
 import {
   existsSync,
@@ -16,6 +17,7 @@ import type { AuthContext } from '../middleware/auth'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
 const EXCLUDED_DIRS = new Set([
   'node_modules',
@@ -44,7 +46,7 @@ function collectWorkspaceFiles(
     if (entry.name.startsWith('.install-ok')) continue
 
     const fullPath = join(dir, entry.name)
-    const relPath = relative(baseDir, fullPath)
+    const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
 
     if (entry.isDirectory()) {
       Object.assign(files, collectWorkspaceFiles(fullPath, baseDir))
@@ -136,10 +138,26 @@ export function projectExportImportRoutes() {
 
     zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
 
-    const workspaceDir = join(WORKSPACES_DIR, projectId)
-    const workspaceFiles = collectWorkspaceFiles(workspaceDir, workspaceDir)
-    for (const [relPath, data] of Object.entries(workspaceFiles)) {
-      zipContents[`workspace/${relPath}`] = data
+    if (isKubernetes()) {
+      try {
+        const { getProjectPodUrl } = await import('../lib/knative-project-manager')
+        const podUrl = await getProjectPodUrl(projectId)
+        const agent = new AgentClient({ baseUrl: podUrl })
+        const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
+        for (const [relPath, base64Data] of Object.entries(bundle.files)) {
+          zipContents[`workspace/${relPath}`] = new Uint8Array(
+            Buffer.from(base64Data, 'base64'),
+          )
+        }
+      } catch (err: any) {
+        console.warn(`[Export] Could not reach agent pod for workspace files: ${err.message}`)
+      }
+    } else {
+      const workspaceDir = join(WORKSPACES_DIR, projectId)
+      const workspaceFiles = collectWorkspaceFiles(workspaceDir, workspaceDir)
+      for (const [relPath, data] of Object.entries(workspaceFiles)) {
+        zipContents[`workspace/${relPath}`] = data
+      }
     }
 
     for (const session of chatSessions) {
@@ -341,7 +359,7 @@ export function projectExportImportRoutes() {
 
     for (const [path, data] of Object.entries(unzipped)) {
       if (!path.startsWith('workspace/')) continue
-      const relPath = path.slice('workspace/'.length)
+      const relPath = path.slice('workspace/'.length).replace(/\\/g, '/')
       if (!relPath || relPath.includes('..') || relPath.startsWith('/')) continue
 
       const destPath = join(projectDir, relPath)

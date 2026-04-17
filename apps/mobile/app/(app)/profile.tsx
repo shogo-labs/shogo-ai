@@ -214,7 +214,7 @@ interface UserOverviewData {
 
 function UserUsageSection() {
   const http = useDomainHttp()
-  const { features } = usePlatformConfig()
+  const { features, localMode } = usePlatformConfig()
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
@@ -279,6 +279,7 @@ function UserUsageSection() {
           onLogPageChange={setLogPage}
           logPage={logPage}
           title="Your AI Usage"
+          isLocalMode={localMode}
         />
       </CardContent>
     </Card>

@@ -1,0 +1,781 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * VM Management Routes (local mode only)
+ *
+ * HTTP equivalents of the Electron IPC handlers in apps/desktop/src/main.ts.
+ * These allow the browser-based dev UI to manage VM images, status, and config
+ * without Electron.
+ */
+
+import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
+import { spawn, execSync } from 'child_process'
+import path from 'path'
+import fs from 'fs'
+import os from 'os'
+
+// ---------------------------------------------------------------------------
+// Config persistence (mirrors apps/desktop/src/config.ts without Electron)
+// ---------------------------------------------------------------------------
+
+interface VMIsolationConfig {
+  enabled: boolean | 'auto'
+  memoryMB: number
+  cpus: number
+  mountWorkspace: boolean
+}
+
+interface DesktopConfig {
+  mode: 'local' | 'cloud'
+  cloudUrl: string
+  vmIsolation: VMIsolationConfig
+}
+
+const DEFAULT_VM_CONFIG: VMIsolationConfig = {
+  enabled: 'auto',
+  memoryMB: 1536,
+  cpus: 0,
+  mountWorkspace: true,
+}
+
+const DEFAULT_CONFIG: DesktopConfig = {
+  mode: 'local',
+  cloudUrl: 'https://studio.shogo.ai',
+  vmIsolation: { ...DEFAULT_VM_CONFIG },
+}
+
+function getUserDataDir(): string {
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Shogo')
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Shogo')
+  }
+  return path.join(os.homedir(), '.config', 'shogo')
+}
+
+function getConfigPath(): string {
+  return path.join(getUserDataDir(), 'config.json')
+}
+
+function readConfig(): DesktopConfig {
+  try {
+    const raw = fs.readFileSync(getConfigPath(), 'utf-8')
+    const parsed = JSON.parse(raw)
+    return {
+      mode: parsed.mode === 'cloud' ? 'cloud' : 'local',
+      cloudUrl: typeof parsed.cloudUrl === 'string' && parsed.cloudUrl
+        ? parsed.cloudUrl
+        : DEFAULT_CONFIG.cloudUrl,
+      vmIsolation: {
+        ...DEFAULT_VM_CONFIG,
+        ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null
+          ? parsed.vmIsolation
+          : {}),
+      },
+    }
+  } catch {
+    return { ...DEFAULT_CONFIG }
+  }
+}
+
+function writeConfig(config: Partial<DesktopConfig>): DesktopConfig {
+  const current = readConfig()
+  const merged: DesktopConfig = { ...current, ...config }
+  const dir = path.dirname(getConfigPath())
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(getConfigPath(), JSON.stringify(merged, null, 2))
+  return merged
+}
+
+// ---------------------------------------------------------------------------
+// VM image / availability helpers
+// ---------------------------------------------------------------------------
+
+function getVMImageDir(): string {
+  if (process.env.SHOGO_VM_IMAGE_DIR) return process.env.SHOGO_VM_IMAGE_DIR
+  const dataDir = process.env.SHOGO_DATA_DIR || getUserDataDir()
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+  return path.join(dataDir, 'vm-images', arch)
+}
+
+function isQemuAvailable(): boolean {
+  const imageDir = getVMImageDir()
+  const bundled = path.join(imageDir, 'qemu-system-x86_64.exe')
+  if (fs.existsSync(bundled)) return true
+  const systemPath = 'C:\\Program Files\\qemu\\qemu-system-x86_64.exe'
+  if (fs.existsSync(systemPath)) return true
+  try {
+    const { execSync } = require('child_process')
+    const found = execSync('where qemu-system-x86_64', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+    return !!found
+  } catch { return false }
+}
+
+function isDarwinQemuAvailable(): boolean {
+  if (fs.existsSync('/opt/homebrew/bin/qemu-system-aarch64')) return true
+  if (fs.existsSync('/usr/local/bin/qemu-system-aarch64')) return true
+  try {
+    execSync('which qemu-system-aarch64', {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000,
+    })
+    return true
+  } catch { return false }
+}
+
+function checkVMAvailable(): boolean {
+  const imageDir = getVMImageDir()
+  const hasKernel = fs.existsSync(path.join(imageDir, 'vmlinuz'))
+  const hasRootfs = fs.existsSync(path.join(imageDir, 'rootfs-provisioned.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.qcow2')) || fs.existsSync(path.join(imageDir, 'rootfs.raw'))
+  if (!hasKernel || !hasRootfs) return false
+  if (process.platform === 'darwin') return isDarwinQemuAvailable()
+  if (process.platform === 'win32') return isQemuAvailable()
+  return false
+}
+
+function checkImagesPresent(): boolean {
+  const imageDir = getVMImageDir()
+  return (
+    fs.existsSync(path.join(imageDir, 'vmlinuz')) &&
+    fs.existsSync(path.join(imageDir, 'initrd.img')) &&
+    (fs.existsSync(path.join(imageDir, 'rootfs-provisioned.qcow2')) ||
+      fs.existsSync(path.join(imageDir, 'rootfs.qcow2')))
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Global VM image download state (shared across routes + auto-download)
+// ---------------------------------------------------------------------------
+
+export interface VMDownloadState {
+  status: 'idle' | 'downloading' | 'extracting' | 'complete' | 'error'
+  percent: number
+  bytesDownloaded: number
+  totalBytes: number
+  error?: string
+}
+
+let vmDownloadState: VMDownloadState = {
+  status: 'idle',
+  percent: 0,
+  bytesDownloaded: 0,
+  totalBytes: 0,
+}
+
+export function getVMDownloadState(): VMDownloadState {
+  if (
+    (vmDownloadState.status === 'downloading' || vmDownloadState.status === 'extracting') &&
+    checkImagesPresent()
+  ) {
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+  }
+  return { ...vmDownloadState }
+}
+
+export async function triggerVMImageDownload(): Promise<void> {
+  if (checkImagesPresent()) {
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+    return
+  }
+
+  if (vmDownloadState.status === 'downloading' || vmDownloadState.status === 'extracting') {
+    return
+  }
+
+  vmDownloadState = { status: 'downloading', percent: 0, bytesDownloaded: 0, totalBytes: 0 }
+
+  try {
+    const vmModule = await import('../../../desktop/src/vm/index')
+    const imageDir = getVMImageDir()
+    const mgr = new vmModule.VMImageManager(imageDir)
+
+    await mgr.downloadImage((progress) => {
+      vmDownloadState = {
+        status: progress.stage === 'extracting' ? 'extracting' : 'downloading',
+        percent: progress.percent,
+        bytesDownloaded: progress.bytesDownloaded,
+        totalBytes: progress.totalBytes,
+      }
+    })
+
+    vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+    console.log('[VM] Auto-download complete')
+  } catch (err: any) {
+    vmDownloadState = {
+      status: 'error',
+      percent: 0,
+      bytesDownloaded: 0,
+      totalBytes: 0,
+      error: err?.message || 'Download failed',
+    }
+    console.error('[VM] Auto-download failed:', err?.message)
+  }
+}
+
+function getImageVersion(): string | null {
+  const versionFile = path.join(getVMImageDir(), 'version.txt')
+  if (!fs.existsSync(versionFile)) return null
+  return fs.readFileSync(versionFile, 'utf-8').trim()
+}
+
+// ---------------------------------------------------------------------------
+// Global QEMU install state (shared across routes)
+// ---------------------------------------------------------------------------
+
+export interface QemuInstallState {
+  status: 'idle' | 'installing' | 'complete' | 'error'
+  output: string
+  error?: string
+}
+
+let qemuInstallState: QemuInstallState = { status: 'idle', output: '' }
+
+export function getQemuInstallState(): QemuInstallState {
+  return { ...qemuInstallState }
+}
+
+// ---------------------------------------------------------------------------
+// winget resolution + direct-download fallback (Windows QEMU install)
+// ---------------------------------------------------------------------------
+
+const QEMU_INSTALLER_URL = 'https://qemu.weilnetz.de/w64/2025/qemu-w64-setup-20251224.exe'
+
+function resolveWingetPath(): string | null {
+  const candidates: string[] = []
+
+  const localAppData = process.env.LOCALAPPDATA
+  if (localAppData) {
+    candidates.push(path.join(localAppData, 'Microsoft', 'WindowsApps', 'winget.exe'))
+  }
+
+  try {
+    const found = execSync('where winget', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).trim().split('\n')[0]?.trim()
+    if (found) candidates.unshift(found)
+  } catch { /* not on PATH */ }
+
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
+
+  return null
+}
+
+async function downloadQemuInstaller(
+  onProgress: (text: string) => void,
+): Promise<string> {
+  const tmpDir = path.join(os.tmpdir(), 'shogo-qemu-install')
+  fs.mkdirSync(tmpDir, { recursive: true })
+  const dest = path.join(tmpDir, 'qemu-w64-setup.exe')
+
+  if (fs.existsSync(dest)) {
+    const stat = fs.statSync(dest)
+    if (stat.size > 100_000_000) {
+      onProgress('Using previously downloaded installer...\n')
+      return dest
+    }
+    fs.unlinkSync(dest)
+  }
+
+  onProgress(`Downloading QEMU installer from ${QEMU_INSTALLER_URL}...\n`)
+
+  const https = await import('https')
+  const http = await import('http')
+
+  return new Promise<string>((resolve, reject) => {
+    const get = QEMU_INSTALLER_URL.startsWith('https') ? https.get : http.get
+
+    const request = get(QEMU_INSTALLER_URL, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const redirectGet = res.headers.location.startsWith('https') ? https.get : http.get
+        redirectGet(res.headers.location, (res2) => handleResponse(res2)).on('error', reject)
+        return
+      }
+      handleResponse(res)
+    })
+
+    request.on('error', reject)
+
+    function handleResponse(res: import('http').IncomingMessage) {
+      if (res.statusCode !== 200) {
+        reject(new Error(`Download failed: HTTP ${res.statusCode}`))
+        return
+      }
+
+      const totalBytes = parseInt(res.headers['content-length'] || '0', 10)
+      let downloaded = 0
+      let lastReportedPct = -1
+      const file = fs.createWriteStream(dest)
+
+      res.on('data', (chunk: Buffer) => {
+        downloaded += chunk.length
+        if (totalBytes > 0) {
+          const pct = Math.floor((downloaded / totalBytes) * 100)
+          if (pct !== lastReportedPct && pct % 5 === 0) {
+            lastReportedPct = pct
+            const mb = (downloaded / 1024 / 1024).toFixed(1)
+            const totalMb = (totalBytes / 1024 / 1024).toFixed(1)
+            onProgress(`Download progress: ${mb} MB / ${totalMb} MB (${pct}%)\n`)
+          }
+        }
+      })
+
+      res.pipe(file)
+      file.on('finish', () => { file.close(); resolve(dest) })
+      file.on('error', (err) => { fs.unlink(dest, () => {}); reject(err) })
+    }
+  })
+}
+
+async function installQemuFromExe(
+  installerPath: string,
+  onOutput: (text: string) => void,
+): Promise<void> {
+  onOutput('Running QEMU installer (silent)...\n')
+
+  return new Promise<void>((resolve, reject) => {
+    const proc = spawn(installerPath, ['/S'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+
+    proc.stdout?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+    proc.stderr?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+
+    proc.on('error', (err) => reject(err))
+    proc.on('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`QEMU installer exited with code ${code}`))
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// WHPX detection (Windows only)
+// ---------------------------------------------------------------------------
+
+function checkWhpxEnabled(): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    const result = execSync(
+      'powershell -NoProfile -Command "(Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State"',
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 },
+    ).trim()
+    return result === 'Enabled'
+  } catch {
+    return false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+export function vmRoutes(): Hono {
+  const router = new Hono()
+
+  /**
+   * GET /status - combined VM status
+   */
+  router.get('/status', (c) => {
+    const config = readConfig()
+    return c.json({
+      available: checkVMAvailable(),
+      enabled: config.vmIsolation.enabled,
+      memoryMB: config.vmIsolation.memoryMB,
+      cpus: config.vmIsolation.cpus,
+      mountWorkspace: config.vmIsolation.mountWorkspace,
+    })
+  })
+
+  /**
+   * GET /images - VM image status
+   */
+  router.get('/images', (c) => {
+    const imageDir = getVMImageDir()
+    return c.json({
+      imagesPresent: checkImagesPresent(),
+      vmAvailable: checkVMAvailable(),
+      imageVersion: getImageVersion(),
+      imageDir,
+    })
+  })
+
+  /**
+   * GET /images/update-check - check if a newer VM image is available on GitHub
+   */
+  router.get('/images/update-check', async (c) => {
+    try {
+      const vmModule = await import('../../../desktop/src/vm/index')
+      const imageDir = getVMImageDir()
+      const mgr = new vmModule.VMImageManager(imageDir)
+      if (!checkImagesPresent()) {
+        return c.json({ available: false, currentVersion: null, latestVersion: '' })
+      }
+      const result = await mgr.checkForUpdate()
+      return c.json({
+        available: result.available,
+        currentVersion: getImageVersion(),
+        latestVersion: result.version,
+      })
+    } catch {
+      return c.json({ available: false, currentVersion: getImageVersion(), latestVersion: '' })
+    }
+  })
+
+  /**
+   * POST /config - update VM configuration
+   */
+  router.post('/config', async (c) => {
+    const body = await c.req.json<{ enabled?: boolean | 'auto'; memoryMB?: number; cpus?: number; mountWorkspace?: boolean }>()
+    const current = readConfig()
+    const updated = writeConfig({
+      vmIsolation: { ...current.vmIsolation, ...body },
+    })
+    return c.json(updated.vmIsolation)
+  })
+
+  /**
+   * POST /pool/recycle - stop all running VMs and boot fresh ones from current images
+   */
+  router.post('/pool/recycle', async (c) => {
+    try {
+      const { recycleVMWarmPool } = await import('../lib/vm-warm-pool-controller')
+      await recycleVMWarmPool()
+      return c.json({ success: true })
+    } catch (err: any) {
+      return c.json({ success: false, error: err?.message || 'Recycle failed' }, 500)
+    }
+  })
+
+  /**
+   * GET /images/download-status - poll current download state
+   */
+  router.get('/images/download-status', (c) => {
+    return c.json(getVMDownloadState())
+  })
+
+  /**
+   * POST /images/download - download VM images with SSE progress
+   * Also kicks off the shared download state so the banner can poll.
+   */
+  router.post('/images/download', (c) => {
+    return streamSSE(c, async (stream) => {
+      try {
+        const vmModule = await import('../../../desktop/src/vm/index')
+        const imageDir = getVMImageDir()
+        const mgr = new vmModule.VMImageManager(imageDir)
+
+        vmDownloadState = { status: 'downloading', percent: 0, bytesDownloaded: 0, totalBytes: 0 }
+
+        await mgr.downloadImage((progress) => {
+          vmDownloadState = {
+            status: progress.stage === 'extracting' ? 'extracting' : 'downloading',
+            percent: progress.percent,
+            bytesDownloaded: progress.bytesDownloaded,
+            totalBytes: progress.totalBytes,
+          }
+          stream.writeSSE({
+            event: 'progress',
+            data: JSON.stringify(progress),
+          })
+        })
+
+        vmDownloadState = { status: 'complete', percent: 100, bytesDownloaded: 0, totalBytes: 0 }
+
+        // Recycle the VM warm pool so new VMs boot from the fresh images
+        try {
+          const { recycleVMWarmPool } = await import('../lib/vm-warm-pool-controller')
+          await recycleVMWarmPool()
+        } catch { /* pool may not be running */ }
+
+        await stream.writeSSE({
+          event: 'complete',
+          data: JSON.stringify({ success: true }),
+        })
+      } catch (err: any) {
+        vmDownloadState = {
+          status: 'error',
+          percent: 0,
+          bytesDownloaded: 0,
+          totalBytes: 0,
+          error: err?.message || 'Download failed',
+        }
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify({ success: false, error: err?.message || 'Download failed' }),
+        })
+      }
+    })
+  })
+
+  /**
+   * GET /diagnostics - system information
+   */
+  router.get('/diagnostics', (c) => {
+    const imageDir = getVMImageDir()
+    const isWindows = process.platform === 'win32'
+    const isMac = process.platform === 'darwin'
+    return c.json({
+      platform: process.platform,
+      arch: process.arch,
+      hypervisor: isWindows ? 'QEMU with WHPX' : isMac ? 'QEMU with HVF' : 'Unknown',
+      hypervisorFound: isWindows ? isQemuAvailable() : isMac ? isDarwinQemuAvailable() : false,
+      qemuInstalled: isWindows ? isQemuAvailable() : false,
+      whpxEnabled: isWindows ? checkWhpxEnabled() : false,
+      executionMode: checkVMAvailable() ? 'VM Isolation' : 'Host Execution (fallback)',
+      imageDir,
+      logFile: isWindows
+        ? path.join(process.env.APPDATA || '', 'Shogo', 'logs', 'main.log')
+        : isMac
+          ? path.join(os.homedir(), 'Library', 'Logs', 'Shogo', 'main.log')
+          : '',
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // QEMU install (Windows only — winget or direct download fallback)
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /qemu/install-status - poll current QEMU install state
+   */
+  router.get('/qemu/install-status', (c) => {
+    return c.json(getQemuInstallState())
+  })
+
+  /**
+   * POST /qemu/install - install QEMU with SSE progress.
+   * Tries winget first; falls back to direct-downloading the official installer.
+   */
+  router.post('/qemu/install', (c) => {
+    if (process.platform !== 'win32') {
+      return c.json({ error: 'QEMU install is only available on Windows' }, 400)
+    }
+
+    if (isQemuAvailable()) {
+      qemuInstallState = { status: 'complete', output: 'QEMU is already installed' }
+      return c.json({ status: 'complete', message: 'QEMU is already installed' })
+    }
+
+    if (qemuInstallState.status === 'installing') {
+      return c.json({ status: 'installing', message: 'Installation already in progress' })
+    }
+
+    return streamSSE(c, async (stream) => {
+      qemuInstallState = { status: 'installing', output: '' }
+
+      const appendOutput = (text: string) => {
+        qemuInstallState.output += text
+        stream.writeSSE({ event: 'output', data: JSON.stringify({ text }) })
+      }
+
+      try {
+        const wingetPath = resolveWingetPath()
+
+        if (wingetPath) {
+          appendOutput(`Found winget at ${wingetPath}\n`)
+          await new Promise<void>((resolve, reject) => {
+            const proc = spawn(wingetPath, [
+              'install',
+              'SoftwareFreedomConservancy.QEMU',
+              '--accept-package-agreements',
+              '--accept-source-agreements',
+            ], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true,
+            })
+
+            proc.stdout?.on('data', (chunk: Buffer) => appendOutput(chunk.toString()))
+            proc.stderr?.on('data', (chunk: Buffer) => appendOutput(chunk.toString()))
+
+            proc.on('error', (err) => reject(err))
+            proc.on('exit', (code) => {
+              if (code === 0) resolve()
+              else reject(new Error(`winget exited with code ${code}`))
+            })
+          })
+        } else {
+          appendOutput('winget not found — downloading QEMU installer directly...\n')
+          const installerPath = await downloadQemuInstaller(appendOutput)
+          await installQemuFromExe(installerPath, appendOutput)
+        }
+
+        qemuInstallState = { status: 'complete', output: qemuInstallState.output }
+        await stream.writeSSE({
+          event: 'complete',
+          data: JSON.stringify({ success: true }),
+        })
+      } catch (err: any) {
+        qemuInstallState = {
+          status: 'error',
+          output: qemuInstallState.output,
+          error: err?.message || 'Installation failed',
+        }
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify({ success: false, error: err?.message || 'Installation failed' }),
+        })
+      }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // WHPX status (Windows only)
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /whpx/status - check Windows Hypervisor Platform state
+   */
+  router.get('/whpx/status', (c) => {
+    if (process.platform !== 'win32') {
+      return c.json({ enabled: false, platform: 'unsupported' })
+    }
+    return c.json({ enabled: checkWhpxEnabled(), platform: 'win32' })
+  })
+
+  /**
+   * POST /whpx/enable - enable Windows Hypervisor Platform via UAC-elevated PowerShell.
+   *
+   * Spawns an outer PowerShell that uses Start-Process -Verb RunAs to launch
+   * an elevated inner PowerShell running Enable-WindowsOptionalFeature.
+   * The UAC consent dialog appears on the user's desktop. If they decline,
+   * the outer process exits with a non-zero code.
+   *
+   * A reboot is required after enabling for WHPX to activate.
+   */
+  router.post('/whpx/enable', async (c) => {
+    if (process.platform !== 'win32') {
+      return c.json({ error: 'WHPX enable is only available on Windows' }, 400)
+    }
+
+    if (checkWhpxEnabled()) {
+      return c.json({ success: true, message: 'WHPX is already enabled', needsReboot: false })
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const innerCmd = '-NoProfile -Command "Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -NoRestart; exit $LASTEXITCODE"'
+        const proc = spawn('powershell', [
+          '-NoProfile',
+          '-Command',
+          `Start-Process powershell -Verb RunAs -Wait -ArgumentList '${innerCmd}'`,
+        ], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: false,
+        })
+
+        let stderr = ''
+        proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+        proc.on('error', (err) => reject(err))
+        proc.on('exit', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(stderr.trim() || `UAC elevation failed or was declined (exit code ${code})`))
+        })
+      })
+
+      const nowEnabled = checkWhpxEnabled()
+      return c.json({
+        success: true,
+        enabled: nowEnabled,
+        needsReboot: !nowEnabled,
+        message: nowEnabled
+          ? 'Windows Hypervisor Platform is now enabled'
+          : 'Windows Hypervisor Platform has been enabled. A restart is required for it to activate.',
+      })
+    } catch (err: any) {
+      return c.json({
+        success: false,
+        error: err?.message || 'Failed to enable WHPX',
+      }, 500)
+    }
+  })
+
+  // ==========================================================================
+  // Desktop Logs
+  // ==========================================================================
+
+  /**
+   * GET /logs - Read the desktop main.log (last N lines)
+   * Query params:
+   *   lines - number of lines to return (default 500, max 5000)
+   */
+  router.get('/logs', async (c) => {
+    const logPath = getDesktopLogPath()
+    if (!logPath || !fs.existsSync(logPath)) {
+      return c.json({ lines: [], path: logPath, error: 'Log file not found' })
+    }
+
+    const maxLines = Math.min(
+      parseInt(new URL(c.req.url).searchParams.get('lines') || '500', 10),
+      5000,
+    )
+
+    try {
+      const content = fs.readFileSync(logPath, 'utf-8')
+      const allLines = content.split('\n')
+      const tail = allLines.slice(-maxLines).filter(Boolean)
+      return c.json({ lines: tail, path: logPath, total: allLines.length })
+    } catch (err: any) {
+      return c.json({ lines: [], path: logPath, error: err.message }, 500)
+    }
+  })
+
+  /**
+   * GET /logs/stream - SSE stream that tails main.log in real time
+   */
+  router.get('/logs/stream', async (c) => {
+    const logPath = getDesktopLogPath()
+    if (!logPath || !fs.existsSync(logPath)) {
+      return c.json({ error: 'Log file not found' }, 404)
+    }
+
+    return streamSSE(c, async (stream) => {
+      let lastSize = fs.statSync(logPath).size
+      let alive = true
+
+      stream.onAbort(() => { alive = false })
+
+      while (alive) {
+        try {
+          const stat = fs.statSync(logPath)
+          if (stat.size > lastSize) {
+            const fd = fs.openSync(logPath, 'r')
+            const buf = Buffer.alloc(stat.size - lastSize)
+            fs.readSync(fd, buf, 0, buf.length, lastSize)
+            fs.closeSync(fd)
+            lastSize = stat.size
+
+            const newLines = buf.toString('utf-8').split('\n').filter(Boolean)
+            for (const line of newLines) {
+              await stream.writeSSE({ data: line })
+            }
+          } else if (stat.size < lastSize) {
+            lastSize = 0
+          }
+        } catch {
+          break
+        }
+        await stream.sleep(1000)
+      }
+    })
+  })
+
+  return router
+}
+
+function getDesktopLogPath(): string | null {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Logs', 'Shogo', 'main.log')
+  }
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+    return path.join(appData, 'Shogo', 'logs', 'main.log')
+  }
+  return path.join(os.homedir(), '.config', 'shogo', 'logs', 'main.log')
+}

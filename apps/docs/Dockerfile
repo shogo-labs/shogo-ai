@@ -10,12 +10,12 @@ FROM --platform=$BUILDPLATFORM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files for dependency resolution
-# Docs has no workspace dependencies, so we only need its own package.json
+# Copy package files and lockfile for deterministic dependency resolution
 COPY apps/docs/package.json ./package.json
+COPY apps/docs/bun.lock ./bun.lock
 
 # Install dependencies
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Copy docs source
 COPY apps/docs/ ./

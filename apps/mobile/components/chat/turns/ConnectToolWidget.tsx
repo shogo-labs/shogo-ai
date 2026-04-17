@@ -58,6 +58,10 @@ export function ConnectToolWidget({
 }: ConnectToolWidgetProps) {
   const [status, setStatus] = useState<ConnectStatus>("idle")
   const chatContext = useChatContextSafe()
+  // ChatPanel passes a new context object every render while streaming; depend on
+  // sendMessage only (stable useCallback) — not the whole context — or effects
+  // that list sendConfirmation re-run on every token and spam /integrations/status.
+  const sendMessage = chatContext?.sendMessage
   const http = useDomainHttp()
   const hasSentConfirmation = useRef(false)
   const { id: projectId, fromOAuth } = useLocalSearchParams<{
@@ -68,10 +72,10 @@ export function ConnectToolWidget({
   const sendConfirmation = useCallback(() => {
     if (hasSentConfirmation.current) return
     hasSentConfirmation.current = true
-    chatContext?.sendMessage(
+    sendMessage?.(
       `I have successfully connected ${toolkitName}. You can continue.`
     )
-  }, [chatContext, toolkitName])
+  }, [sendMessage, toolkitName])
 
   const checkConnection = useCallback(async () => {
     if (!projectId) return false

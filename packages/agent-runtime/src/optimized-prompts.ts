@@ -27,7 +27,7 @@ a non-obvious approach to a recurring problem, or a formatting rule you keep get
 write it as a skill in \`.shogo/skills/\`. Skills persist across conversations and make you
 better over time.
 
-Before creating a new skill, check existing skills with \`ls\` or \`read_file\` to avoid duplicates.
+Before creating a new skill, check existing skills with \`read_file\` or \`exec\` to avoid duplicates.
 Update existing skills rather than creating new ones when your understanding improves.
 Keep each skill focused on one pattern. Include a \`trigger\` so it activates automatically.
 
@@ -41,7 +41,7 @@ Keep each skill focused on one pattern. Include a \`trigger\` so it activates au
 **Don't write skills for:**
 - One-off tasks with no reuse value
 - Obvious things that any capable model already knows
-- User-specific preferences (those go in SOUL.md or MEMORY.md)
+- User-specific preferences (those go in AGENTS.md or MEMORY.md)
 
 **Skill format:**
 \`\`\`
@@ -59,12 +59,12 @@ Write to \`.shogo/skills/<name>/SKILL.md\`. Skills reload automatically on the n
 
 export const OPTIMIZED_PERSONALITY_GUIDE = `### Self-Update Decision Examples
 
-ALWAYS use \`read_file\` then \`edit_file\` on the workspace file (SOUL.md, AGENTS.md, or IDENTITY.md). Never write personality changes to MEMORY.md — memory is for facts and logs, not configuration.
+ALWAYS use \`read_file\` then \`edit_file\` on AGENTS.md (which contains Identity, Personality, User, and Operating Instructions sections). Never write personality changes to MEMORY.md — memory is for facts and logs, not configuration.
 
 **Update personality when:**
-- "User said: 'You're being too casual. Please be more formal and professional.'" → \`read_file\` SOUL.md, then \`edit_file\` to update "Communication Style" section
-- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → \`read_file\` SOUL.md, then \`edit_file\` to add to "Boundaries" section
-- "User said: 'Call me Atlas and focus on climate research'" → \`read_file\` IDENTITY.md, then \`edit_file\` to set name and focus
+- "User said: 'You're being too casual. Please be more formal and professional.'" → \`read_file\` AGENTS.md, then \`edit_file\` to update the Tone section under # Personality
+- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → \`read_file\` AGENTS.md, then \`edit_file\` to add to the Boundaries section under # Personality
+- "User said: 'Call me Atlas and focus on climate research'" → \`read_file\` AGENTS.md, then \`edit_file\` to update name in # Identity section
 
 **Don't update when:**
 - "User said: 'What's the weather like?' Agent responded with weather info." → No update (trivial, one-off conversation)`
@@ -80,20 +80,19 @@ Users can upload files via the file browser. Uploaded files are stored in the \`
 When a user asks about uploaded files, references their data, or you need to find information
 they've shared:
 
-- **list_files** — List files in the \`files/\` directory (use first to see what's available)
 - **search** — Semantic search across all workspace content; use \`source: "files"\` to search only uploaded files (supports .txt, .csv, .md)
 - **read_file** — Read a specific file (use path like \`files/myfile.txt\`)
+- **exec** — Run \`ls files/\` to see what's available
 
-Always check \`list_files\` first when users mention uploaded files, then use \`search\` or
-\`read_file\` to access their content.
+Use \`search\` or \`read_file\` to access uploaded file content.
 
 ### Examples
 
 - "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
 - "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
-- "What's in the file I uploaded?" → \`list_files, read_file\` (~1 iteration)
+- "What's in the file I uploaded?" → \`exec({ command: 'ls files/' }), read_file\` (~1 iteration)
 - "Find revenue numbers in my data" → \`search({ source: "files" })\` (~1 iteration)
-- "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
+- "Summarize the CSV I uploaded" → \`read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
@@ -195,7 +194,7 @@ When a user asks for something not covered by installed skills, proactively sear
 Skills are directories under \`.shogo/skills/\`. Use your existing file tools:
 - \`read_file({ path: ".shogo/skills/my-skill/SKILL.md" })\` — view a skill
 - \`write_file({ path: ".shogo/skills/my-skill/SKILL.md", content: "..." })\` — create or edit
-- \`list_files({ path: ".shogo/skills" })\` — list installed skills
+- \`exec({ command: "ls .shogo/skills" })\` — list installed skills
 
 **Skill directory layout:**
 \`\`\`
@@ -355,9 +354,9 @@ installation is complete and the tools are ready. If the install returns ok: tru
 proceed directly to calling the newly available tools.
 
 Similarly: when asked to remember something, ALWAYS use write_file to save to MEMORY.md. When asked to
-update your personality/role, ALWAYS use read_file + edit_file on the relevant workspace
-file (SOUL.md, AGENTS.md, or IDENTITY.md). Do not just acknowledge the request in text —
-execute the corresponding tool call.
+update your personality/role, ALWAYS use read_file + edit_file on AGENTS.md (which contains
+Identity, Personality, User, and Operating Instructions sections). Do not just acknowledge
+the request in text — execute the corresponding tool call.
 
 ### IMPORTANT: Always Save Skills After Successful Integrations
 

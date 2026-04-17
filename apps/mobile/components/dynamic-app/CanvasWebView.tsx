@@ -12,6 +12,10 @@ import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { Platform, View, StyleSheet } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 
+interface CanvasCapabilities {
+  supportsTheme: boolean
+}
+
 interface CanvasWebViewProps {
   agentUrl: string | null
   /** Direct runtime URL for the canvas iframe. When set, the iframe loads from
@@ -19,6 +23,7 @@ interface CanvasWebViewProps {
   canvasBaseUrl?: string | null
   activeSurfaceId?: string | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
+  onCanvasCapabilities?: (caps: CanvasCapabilities) => void
   /** Incremented externally to force the iframe to reload. */
   refreshKey?: number
 }
@@ -117,7 +122,7 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError, refreshKey }: CanvasWebViewProps) {
+export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
   const canvasUrl = iframeBase ? `${iframeBase}/` : null
   const sse = useCanvasSSE(agentUrl)
@@ -144,10 +149,10 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanv
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
+    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} />
+  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
 }
 
 // ---------------------------------------------------------------------------
@@ -167,9 +172,10 @@ interface BridgeProps {
   activeSurfaceId?: string | null
   themeMessage: ThemeMessage | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
+  onCanvasCapabilities?: (caps: CanvasCapabilities) => void
 }
 
-function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
 
@@ -209,6 +215,8 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
         if (init) sendToIframe({ type: 'canvas-event', event: init })
         if (sse.connected) sendToIframe({ type: 'canvas-connected' })
         if (themeMessage) sendToIframe(themeMessage)
+      } else if (msg.type === 'canvas-capabilities') {
+        onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
       } else if (msg.type === 'canvas-action') {
         postCanvasAction(agentUrl, {
           surfaceId: msg.surfaceId,
@@ -223,7 +231,7 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [agentUrl, sse, sendToIframe, themeMessage, onCanvasError])
+  }, [agentUrl, sse, sendToIframe, themeMessage, onCanvasError, onCanvasCapabilities])
 
   return (
     <View style={styles.container}>
@@ -246,7 +254,7 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
-function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError }: BridgeProps) {
+function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
@@ -282,6 +290,8 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
         if (init) sendToWebView({ type: 'canvas-event', event: init })
         if (sse.connected) sendToWebView({ type: 'canvas-connected' })
         if (themeMessage) sendToWebView(themeMessage)
+      } else if (msg.type === 'canvas-capabilities') {
+        onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
       } else if (msg.type === 'canvas-action') {
         postCanvasAction(agentUrl, {
           surfaceId: msg.surfaceId,
@@ -293,7 +303,7 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
         onCanvasError?.(msg.surfaceId as string, msg.phase as 'compile' | 'runtime', msg.error as string)
       }
     } catch {}
-  }, [agentUrl, sse, sendToWebView, themeMessage, onCanvasError])
+  }, [agentUrl, sse, sendToWebView, themeMessage, onCanvasError, onCanvasCapabilities])
 
   return (
     <View style={styles.container}>

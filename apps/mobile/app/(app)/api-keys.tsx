@@ -19,6 +19,7 @@ import {
   Platform,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
   Key,
@@ -32,7 +33,7 @@ import {
 } from 'lucide-react-native'
 import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp } from '../../contexts/domain'
+import { useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import {
   Card,
@@ -43,11 +44,20 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 
-export default function ApiKeysPage() {
+export default observer(function ApiKeysPage() {
   const router = useRouter()
   const { user } = useAuth()
+  const workspaces = useWorkspaceCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()
+
+  useEffect(() => {
+    if (user?.id) {
+      workspaces.loadAll({ userId: user.id }).catch((e: any) =>
+        console.error('[ApiKeys] Failed to load workspaces:', e)
+      )
+    }
+  }, [user?.id, workspaces])
 
   const platform = useMemo(() => new PlatformApi(http), [http])
 
@@ -393,4 +403,4 @@ export default function ApiKeysPage() {
       </Modal>
     </View>
   )
-}
+})

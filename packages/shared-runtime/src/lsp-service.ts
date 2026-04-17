@@ -10,7 +10,7 @@
 
 import { spawn, type Subprocess } from 'bun'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 
 const IS_WINDOWS = process.platform === 'win32'
 const WIN_BIN_EXTENSIONS = ['.exe', '.cmd']
@@ -29,15 +29,26 @@ export function resolveBin(
   searchDirs: string[],
   directEntryPath?: string,
 ): { resolved: string; viaBun: boolean } | undefined {
+  const isBunRuntime = typeof Bun !== 'undefined'
+
+  // On Windows under Bun, .bin shims (.cmd wrappers, extensionless bash scripts)
+  // can't be executed by Bun. Use the direct JS entry point instead.
+  if (IS_WINDOWS && isBunRuntime && directEntryPath) {
+    for (const dir of searchDirs) {
+      const entry = join(dir, 'node_modules', name, directEntryPath)
+      if (existsSync(entry)) return { resolved: entry, viaBun: true }
+    }
+  }
+
   for (const dir of searchDirs) {
     const base = join(dir, 'node_modules', '.bin', name)
-    if (existsSync(base)) return { resolved: base, viaBun: false }
     if (IS_WINDOWS) {
       for (const ext of WIN_BIN_EXTENSIONS) {
         const withExt = base + ext
         if (existsSync(withExt)) return { resolved: withExt, viaBun: false }
       }
     }
+    if (existsSync(base)) return { resolved: base, viaBun: false }
   }
 
   if (directEntryPath) {
@@ -112,7 +123,7 @@ export class TSLanguageServer {
   private extraInitOptions: Record<string, unknown>
 
   constructor(projectDir: string, opts?: TSLanguageServerOptions) {
-    this.projectDir = projectDir
+    this.projectDir = resolve(projectDir)
     this.serverBin = opts?.serverBin
     this.serverArgs = opts?.serverArgs ?? ['--log-level', '1']
     this.fallbackBinNames = opts?.fallbackBinNames ?? ['typescript-language-server']
@@ -163,6 +174,10 @@ export class TSLanguageServer {
         `Searched: ${searchDirs.map(d => join(d, 'node_modules', '.bin')).join(', ')}`,
       )
     }
+
+    // In Bun runtime, always spawn via bun — .bin shims use #!/usr/bin/env node
+    // which may not exist (e.g. packaged Electron apps ship bun, not node)
+    if (typeof Bun !== 'undefined') spawnViaBun = true
 
     console.log(`[${this.label}] Starting ${serverPath}${spawnViaBun ? ' (via bun)' : ''}`)
     console.log(`[${this.label}] Project directory: ${this.projectDir}`)
@@ -571,7 +586,7 @@ export class WorkspaceLSPManager {
   private warmupPromise: Promise<void> | null = null
 
   constructor(opts: WorkspaceLSPManagerOptions) {
-    this.projectDir = opts.projectDir
+    this.projectDir = resolve(opts.projectDir)
     this.tsServerBin = opts.tsServerBin
     this.pyrightBin = opts.pyrightBin
   }
@@ -793,7 +808,10 @@ export class WorkspaceLSPManager {
     this.pyDirtyFiles.clear()
 
     try {
-      const proc = spawn([this.pyrightBin, '--outputjson', ...files], {
+      const cmd = typeof Bun !== 'undefined'
+        ? ['bun', this.pyrightBin, '--outputjson', ...files]
+        : [this.pyrightBin, '--outputjson', ...files]
+      const proc = spawn(cmd, {
         cwd: this.projectDir,
         env: { ...process.env },
         stdout: 'pipe',

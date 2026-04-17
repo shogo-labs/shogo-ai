@@ -11,9 +11,11 @@
 #   - If fingerprint changed → full native build (expo prebuild + Gradle)
 #
 # Manual (workflow_dispatch):
-#   mode=full → fingerprint check, then build or OTA, optional Play Store submit
+#   mode=full → fingerprint check, then build or OTA, with Play Store submit
 #   mode=ota  → fingerprint check, OTA update only (skips build)
 #   environment=staging|production → controls OTA branch + build channel
+#   Production builds always auto-submit to production track on Google Play.
+#   Staging builds submit to internal track (can be toggled off with submit=false).
 #
 # Both build and OTA run on the same GitHub runner environment, so the
 # fingerprint hash is always consistent (no EAS server mismatch).
@@ -62,7 +64,7 @@ on:
           - staging
           - production
       submit:
-        description: 'Submit to Play Store (internal track) — full mode only'
+        description: 'Submit to Play Store — full mode only (staging→internal, production→production track)'
         required: false
         default: true
         type: boolean
@@ -78,6 +80,7 @@ jobs:
       needs_build: ${{ steps.decide.outputs.needs_build }}
       runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
       environment: ${{ steps.resolve-env.outputs.environment }}
+      app_version: ${{ steps.resolve-version.outputs.version }}
 
     steps:
       - name: Resolve environment
@@ -97,6 +100,20 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve app version from tag
+        id: resolve-version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#android-v}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Extracted version from tag: $VERSION"
+          else
+            VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Using app.json version: $VERSION"
+          fi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -180,6 +197,22 @@ jobs:
 
       - name: Install dependencies
         run: bun install
+
+      - name: Sync app version
+        working-directory: apps/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+              fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            } else {
+              console.log('Version already matches: ' + appJson.expo.version);
+            }
+          "
 
       - name: Build workspace packages
         run: bun run build
@@ -295,7 +328,7 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Set versionCode from run number
+      - name: Sync app version and versionCode
         working-directory: apps/mobile
         env:
           VERSION_CODE_OFFSET: 100
@@ -303,10 +336,15 @@ jobs:
           node -e "
             const fs = require('fs');
             const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+            }
             const versionCode = ${{ github.run_number }} + parseInt(process.env.VERSION_CODE_OFFSET);
             appJson.expo.android.versionCode = versionCode;
             fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
-            console.log('Set versionCode to ' + versionCode);
+            console.log('Set version=' + appJson.expo.version + ' versionCode=' + versionCode);
           "
 
       - name: Expo Prebuild
@@ -417,14 +455,34 @@ jobs:
           path: .fingerprint-android
           key: android-fingerprint-${{ needs.check-fingerprint.outputs.environment }}-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
 
+      - name: Resolve submit decision
+        id: submit-decision
+        run: |
+          ENV="${{ needs.check-fingerprint.outputs.environment }}"
+          SUBMIT_INPUT="${{ github.event.inputs.submit }}"
+          if [ "$ENV" = "production" ]; then
+            echo "should_submit=true" >> $GITHUB_OUTPUT
+            echo "track=production" >> $GITHUB_OUTPUT
+            echo "Production build → always submitting to production track"
+          elif [ "$SUBMIT_INPUT" != "false" ]; then
+            echo "should_submit=true" >> $GITHUB_OUTPUT
+            echo "track=internal" >> $GITHUB_OUTPUT
+            echo "Staging build → submitting to internal track"
+          else
+            echo "should_submit=false" >> $GITHUB_OUTPUT
+            echo "track=none" >> $GITHUB_OUTPUT
+            echo "Submit skipped by user"
+          fi
+
       - name: Decode Google service account key
-        if: github.event.inputs.submit != 'false'
+        if: steps.submit-decision.outputs.should_submit == 'true'
         run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > apps/mobile/google-services.json
 
-      - name: Submit to Play Store (internal track)
-        if: github.event.inputs.submit != 'false'
+      - name: Submit to Play Store
+        if: steps.submit-decision.outputs.should_submit == 'true'
         working-directory: apps/mobile
         run: |
+          echo "Submitting to ${{ steps.submit-decision.outputs.track }} track via profile ${{ needs.check-fingerprint.outputs.environment }}"
           eas submit \
             --platform android \
             --profile ${{ needs.check-fingerprint.outputs.environment }} \
@@ -439,7 +497,7 @@ jobs:
           echo "- **Channel:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **versionCode:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Submit:** ${{ github.event.inputs.submit != 'false' && 'Play Store (internal track)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && format('Play Store ({0} track)', steps.submit-decision.outputs.track) || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "AAB is available as a workflow artifact." >> $GITHUB_STEP_SUMMARY
 

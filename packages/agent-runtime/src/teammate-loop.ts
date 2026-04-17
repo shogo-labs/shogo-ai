@@ -195,14 +195,18 @@ export function startTeammateLoop(
           }
         }
 
-        const result = await runAgentLoop({
+        const iterationsPerWake = config.maxTurnsPerWake || 50
+        const MAX_TEAMMATE_CONTINUATIONS = 5
+        let tmContinuations = 0
+
+        let result = await runAgentLoop({
           provider: config.provider || modelConfig?.provider || 'anthropic',
           model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
           system: config.systemPrompt,
           prompt,
           history,
           tools: config.tools,
-          maxIterations: config.maxTurnsPerWake || 50,
+          maxIterations: iterationsPerWake,
           signal: workAbort.signal,
           thinkingLevel: 'low',
           onTextDelta: w ? (delta) => {
@@ -243,6 +247,44 @@ export function startTeammateLoop(
         if (result.newMessages) {
           allMessages.push(...result.newMessages)
         }
+
+        // Auto-continue if maxIterations was exhausted
+        while (
+          result.maxIterationsExhausted &&
+          !result.loopBreak &&
+          !result.error &&
+          !workAbort.signal.aborted &&
+          tmContinuations < MAX_TEAMMATE_CONTINUATIONS
+        ) {
+          tmContinuations++
+          console.log(
+            `[Teammate:${config.name}] Auto-continuing (pass ${tmContinuations}/${MAX_TEAMMATE_CONTINUATIONS})`
+          )
+          // Rebuild history from all messages accumulated so far
+          let contLastUserIdx = -1
+          for (let ci = allMessages.length - 1; ci >= 0; ci--) {
+            if (allMessages[ci].role === 'user') { contLastUserIdx = ci; break }
+          }
+          const contHistory = allMessages
+          const contPrompt = 'Continue — you ran out of steps. Pick up exactly where you left off and complete the remaining work.'
+          allMessages.push({ role: 'user', content: contPrompt } as Message)
+
+          result = await runAgentLoop({
+            provider: config.provider || modelConfig?.provider || 'anthropic',
+            model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
+            system: config.systemPrompt,
+            prompt: contPrompt,
+            history: contHistory,
+            tools: config.tools,
+            maxIterations: iterationsPerWake,
+            signal: workAbort.signal,
+            thinkingLevel: 'low',
+          })
+          if (result.newMessages) {
+            allMessages.push(...result.newMessages)
+          }
+        }
+
         callbacks?.onTurnComplete?.(config.agentId, result.toolCalls.length)
         w?.write({ type: 'data-team-activity', data: { event: 'turn-complete', agentId: aid, teamId: tid, toolCalls: result.toolCalls.length } })
       } catch (err: any) {

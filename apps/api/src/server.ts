@@ -14,11 +14,15 @@ import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync } from 'fs'
 import { auth } from './auth'
-import { getPriceId } from './config/stripe-prices'
+import { getPriceId, getInstancePriceId, type PaidInstanceSize } from './config/stripe-prices'
 import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './config/currencies'
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import * as instanceService from './services/instance.service'
+import * as storageService from './services/storage.service'
+import * as nodeMetricsService from './services/node-metrics.service'
+import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, getInstanceDisplayPrice, type InstanceSizeName } from './config/instance-sizes'
 import {
   sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail,
   sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
@@ -41,6 +45,8 @@ import { aiProxyRoutes } from './routes/ai-proxy'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
+import { adminMarketplaceRoutes } from './routes/admin-marketplace'
+import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
 import { integrationRoutes } from './routes/integrations'
@@ -49,8 +55,13 @@ import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
+import { checkRedisHealth } from './lib/tunnel-redis'
+import { remoteAuditRoutes } from './routes/remote-audit'
+import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
+import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -463,8 +474,12 @@ app.use(
       '/api/ai/',
       '/api/tools/',
       '/api/api-keys/validate',
+      '/api/marketplace',
       '/api/agent-templates',
       '/api/tech-stacks',
+      '/api/instances/heartbeat',
+      '/api/instances/ws',
+      '/api/vm/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
@@ -489,9 +504,21 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
-// Health check
-app.get('/api/health', (c) => c.json({ ok: true }))
-app.get('/health', (c) => c.json({ ok: true }))
+// Health check — includes Redis status for multi-pod deployments
+app.get('/api/health', async (c) => {
+  const redis = await checkRedisHealth()
+  if (!redis.healthy) {
+    console.warn('[Health] Redis unhealthy:', redis.error)
+  }
+  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
+})
+app.get('/health', async (c) => {
+  const redis = await checkRedisHealth()
+  if (!redis.healthy) {
+    console.warn('[Health] Redis unhealthy:', redis.error)
+  }
+  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
+})
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
@@ -599,9 +626,22 @@ app.get('/api/config', async (c) => {
       oauth: !localMode,
       analytics: true,
       publishing: !localMode,
+      marketplace: true,
     },
   })
 })
+
+// ── Local mode: VM management endpoints ──────────────────────────────────────
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  app.route('/api/vm', vmRoutes())
+
+  // Auto-download VM images in the background if not present
+  setTimeout(() => {
+    triggerVMImageDownload().catch((err) =>
+      console.error('[VM] Background VM image download failed (non-fatal):', err.message)
+    )
+  }, 5000)
+}
 
 // ── Local mode: auto-sign-in + API key management ───────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
@@ -1010,7 +1050,13 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
     return c.json({ ok: true, name })
   })
+
+  // ── Local mode: meeting recording & transcription ────────────────────────
+  app.route('/', meetingRoutes)
 }
+
+// Marketplace
+app.route('/api/marketplace', marketplaceRoutes())
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
@@ -1031,8 +1077,11 @@ app.route('/api/internal', evalInternalRoutes())
 // API key management (for Shogo Local → Cloud authentication)
 app.route('/api', apiKeyRoutes())
 
-// Remote Control — Instance registry and tunnel proxy
+// Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+app.route('/api', remoteAuditRoutes())
+// Sync engine — Phase 2 event-driven bidirectional sync
+app.route('/api', syncRoutes())
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
@@ -3853,12 +3902,13 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
 app.get('/api/admin/settings/agent-models', async (c) => {
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced'] } },
+      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
     })
-    const overrides: Record<string, string | null> = { basic: null, advanced: null }
+    const overrides: Record<string, string | null> = { basic: null, advanced: null, defaultMode: null }
     for (const row of rows) {
       if (row.key === 'agent-model.basic') overrides.basic = row.value
       if (row.key === 'agent-model.advanced') overrides.advanced = row.value
+      if (row.key === 'agent-model.default-mode') overrides.defaultMode = row.value
     }
     return c.json(overrides)
   } catch (err: any) {
@@ -3888,6 +3938,20 @@ app.put('/api/admin/settings/agent-models', async (c) => {
           update: { value: String(value), updatedBy: userId },
         })
         overrides[mode] = String(value)
+      }
+    }
+
+    // Handle defaultMode separately (not a model override, just a mode preference)
+    if (body.defaultMode !== undefined) {
+      const modeValue = body.defaultMode
+      if (modeValue === null || modeValue === '') {
+        await prisma.platformSetting.deleteMany({ where: { key: 'agent-model.default-mode' } })
+      } else {
+        await prisma.platformSetting.upsert({
+          where: { key: 'agent-model.default-mode' },
+          create: { key: 'agent-model.default-mode', value: String(modeValue), updatedBy: userId },
+          update: { value: String(modeValue), updatedBy: userId },
+        })
       }
     }
 
@@ -4044,7 +4108,7 @@ Examples:
       const inTok = usage?.inputTokens || usage?.promptTokens || 0
       const outTok = usage?.outputTokens || usage?.completionTokens || 0
       if (inTok + outTok > 0) {
-        const creditCost = calculateCreditCost(inTok, outTok, 'haiku')
+        const { credits: creditCost } = calculateCreditCost(inTok, outTok, 'haiku')
         billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok }).catch(() => {})
       }
     }
@@ -4305,13 +4369,11 @@ app.post('/api/billing/verify-checkout', async (c) => {
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
 
-    const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
-
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
       stripeCustomerId: session.customer as string,
       workspaceId,
-      planId: basePlanId,
+      planId,
       status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
       billingInterval: billingInterval as 'monthly' | 'annual',
       currentPeriodStart: new Date(currentPeriodStart),
@@ -4444,6 +4506,215 @@ app.get('/api/billing/regional-pricing', async (c) => {
   }
 })
 
+// =============================================================================
+// Instance size add-on routes
+// =============================================================================
+
+function resolvePaidInstanceSizeFromCheckoutBody(raw: string): PaidInstanceSize | null {
+  const legacy: Record<string, PaidInstanceSize> = {
+    basic: 'small',
+    pro: 'medium',
+    business: 'large',
+  }
+  if (legacy[raw]) return legacy[raw]
+  const paid: readonly string[] = ['small', 'medium', 'large', 'xlarge']
+  return paid.includes(raw) ? (raw as PaidInstanceSize) : null
+}
+
+function resolveInstanceSizeFromStripeMetadata(raw: string): InstanceSizeName | null {
+  const legacy: Record<string, InstanceSizeName> = {
+    free: 'micro',
+    basic: 'small',
+    pro: 'medium',
+    business: 'large',
+  }
+  if (legacy[raw]) return legacy[raw]
+  const all: readonly string[] = ['micro', 'small', 'medium', 'large', 'xlarge']
+  return all.includes(raw) ? (raw as InstanceSizeName) : null
+}
+
+app.post('/api/billing/instance-checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const rawSize = body.instanceSize ?? body.capacityTier
+    const { workspaceId, billingInterval, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+
+    if (!workspaceId || !rawSize || !billingInterval) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
+    }
+
+    const instanceSize = resolvePaidInstanceSizeFromCheckoutBody(String(rawSize))
+    if (!instanceSize) {
+      return c.json({ error: { code: 'invalid_tier', message: 'Invalid instance size' } }, 400)
+    }
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
+    const priceId = getInstancePriceId(instanceSize, billingInterval as 'monthly' | 'annual')
+    if (!priceId) {
+      return c.json({ error: { code: 'invalid_plan', message: `No instance price found for ${instanceSize} ${billingInterval}` } }, 400)
+    }
+
+    const auth = c.get('auth') as any
+    const userEmail = auth?.email
+
+    const metadata: Record<string, string> = {
+      workspaceId,
+      instanceSize,
+      billingInterval,
+      checkoutType: 'instance',
+    }
+
+    const frontendUrl = getFrontendUrl()
+    const successUrl = clientSuccessUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = clientCancelUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=canceled`
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      ...(userEmail && { customer_email: userEmail }),
+    })
+
+    return c.json({ sessionId: session.id, url: session.url }, 200)
+  } catch (error: any) {
+    console.error('[Instance] Checkout error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/instance-portal', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
+    const capSub = await instanceService.getInstanceSubscription(workspaceId)
+    if (!capSub?.stripeCustomerId) {
+      return c.json({
+        error: { code: 'customer_not_found', message: 'No instance subscription found for this workspace.' },
+      }, 404)
+    }
+
+    let returnUrl = `${getFrontendUrl()}/app/billing`
+    try {
+      const body = await c.req.json<{ returnUrl?: string }>()
+      if (body?.returnUrl) returnUrl = body.returnUrl
+    } catch { /* use default */ }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: capSub.stripeCustomerId,
+      return_url: returnUrl,
+    })
+
+    return c.json({ url: session.url }, 200)
+  } catch (error: any) {
+    console.error('[Instance] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/workspaces/:id/instance', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const instance = await instanceService.getInstanceForWorkspace(workspaceId)
+    if (!instance) {
+      return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    const sub = await instanceService.getInstanceSubscription(workspaceId)
+
+    return c.json({
+      ...instance,
+      subscription: sub
+        ? {
+            status: sub.status,
+            billingInterval: sub.billingInterval,
+            currentPeriodEnd: sub.currentPeriodEnd,
+            cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+          }
+        : null,
+      sizes: INSTANCE_SIZE_ORDER.map((t) => ({
+        name: t,
+        ...INSTANCE_SIZES[t],
+        displayPriceMonthly: getInstanceDisplayPrice(t, 'monthly'),
+        displayPriceAnnual: getInstanceDisplayPrice(t, 'annual'),
+      })),
+    })
+  } catch (error: any) {
+    console.error('[Instance] Get instance error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/workspaces/:id/metrics', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const url = new URL(c.req.url)
+    const period = (url.searchParams.get('period') || '24h') as nodeMetricsService.MetricsPeriod
+
+    const metrics = await nodeMetricsService.getWorkspaceMetrics(workspaceId, period)
+    if (!metrics) {
+      return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    return c.json(metrics)
+  } catch (error: any) {
+    console.error('[Metrics] Get metrics error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/workspaces/:id/storage', async (c) => {
+  try {
+    const workspaceId = c.req.param('id')
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+    }
+
+    const storage = await storageService.getStorageUsage(workspaceId)
+    if (!storage) {
+      return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    return c.json(storage)
+  } catch (error: any) {
+    console.error('[Storage] Get storage error:', error)
+    return c.json({ error: { code: 'internal_error', message: error.message } }, 500)
+  }
+})
+
 // Stripe webhook endpoint
 app.post('/api/webhooks/stripe', async (c) => {
   try {
@@ -4493,6 +4764,49 @@ app.post('/api/webhooks/stripe', async (c) => {
           metadata: session.metadata,
         })
 
+        // Handle instance size add-on checkout
+        if (session.metadata?.checkoutType === 'instance' || session.metadata?.checkoutType === 'capacity') {
+          const rawSize =
+            session.metadata.instanceSize || session.metadata.capacityTier || ''
+          const normalizedSize = rawSize ? resolveInstanceSizeFromStripeMetadata(String(rawSize)) : null
+          const { workspaceId, billingInterval } = session.metadata
+          if (workspaceId && normalizedSize && billingInterval && session.subscription && session.customer) {
+            try {
+              const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+                current_period_start?: number
+                current_period_end?: number
+              }
+              const now = Date.now()
+              const currentPeriodStart = stripeSubscription.current_period_start
+                ? stripeSubscription.current_period_start * 1000
+                : now
+              const currentPeriodEnd = stripeSubscription.current_period_end
+                ? stripeSubscription.current_period_end * 1000
+                : now + (30 * 24 * 60 * 60 * 1000)
+
+              await instanceService.syncInstanceFromStripe(
+                workspaceId,
+                stripeSubscription.id,
+                session.customer as string,
+                normalizedSize,
+                stripeSubscription.status as any,
+                billingInterval as any,
+                new Date(currentPeriodStart),
+                new Date(currentPeriodEnd),
+              )
+
+              instanceService.applyInstanceToRuntime(workspaceId).catch((err) =>
+                console.error('[Webhook] Failed to apply instance size to runtime:', err.message)
+              )
+
+              console.log('[Webhook] Instance subscription created for workspace:', workspaceId, 'size:', normalizedSize)
+            } catch (err: any) {
+              console.error('[Webhook] Failed to create instance subscription:', err.message)
+            }
+          }
+          break
+        }
+
         // Workspace is already created by the checkout endpoint; webhook only provisions the subscription
         const { workspaceId, planId, billingInterval } = session.metadata || {}
         if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
@@ -4510,13 +4824,11 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
-            const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
-
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: basePlanId,
+              planId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
@@ -4686,6 +4998,8 @@ app.route('/api/admin', createAdminRoutes({
 
 // Hand-written admin routes for custom analytics endpoints
 app.route('/api/admin', adminRoutes())
+
+app.route('/api/admin/marketplace', adminMarketplaceRoutes())
 
 // User attribution endpoint (authenticated users, not admin-only)
 app.route('/api', userAttributionRoute())
@@ -5299,7 +5613,7 @@ await (async () => {
   try {
     const { setAgentModeOverrides } = await import('@shogo/model-catalog')
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['agent-model.basic', 'agent-model.advanced'] } },
+      where: { key: { in: ['agent-model.basic', 'agent-model.advanced', 'agent-model.default-mode'] } },
     })
     if (rows.length > 0) {
       const overrides: Record<string, string> = {}
@@ -5308,7 +5622,8 @@ await (async () => {
         if (row.key === 'agent-model.advanced') overrides.advanced = row.value
       }
       setAgentModeOverrides(overrides)
-      console.log('[AgentModels] Loaded admin model overrides:', overrides)
+      const defaultMode = rows.find(r => r.key === 'agent-model.default-mode')?.value
+      console.log('[AgentModels] Loaded admin model overrides:', overrides, defaultMode ? `defaultMode=${defaultMode}` : '')
     }
   } catch (err: any) {
     console.log('[AgentModels] No model overrides loaded (non-fatal):', err.message)
@@ -5388,7 +5703,7 @@ if (isVMIsolation() && !isKubernetes()) {
       const path = await import('path')
       const crypto = await import('crypto')
       const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
-      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(__dirname, '../../../workspaces')
+      const workspacesDir = process.env.WORKSPACES_DIR || path.resolve(import.meta.dir, '../../../workspaces')
       const dataDir = process.env.SHOGO_DATA_DIR || path.join(home, '.shogo')
 
       // VMs can't reach the host at localhost — expose the host IP for the AI proxy.
@@ -5405,7 +5720,7 @@ if (isVMIsolation() && !isKubernetes()) {
         }
       }
       const overlayDir = path.join(dataDir, 'vm-overlays')
-      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(__dirname, '../../desktop/resources/vm')
+      const vmImageDir = process.env.SHOGO_VM_IMAGE_DIR || path.resolve(import.meta.dir, '../../desktop/resources/vm')
       const bundleDir = process.env.SHOGO_VM_BUNDLE_DIR || ''
 
       // Fire-and-forget: create a provisioned base image for instant cloning.
@@ -5426,8 +5741,29 @@ if (isVMIsolation() && !isKubernetes()) {
       // Factory: each pool VM gets its own DarwinVMManager instance
       const managerFactory = () => vmModule.createVMManager()
 
-      const memoryMB = parseInt(process.env.VM_MEMORY_MB || '4096', 10)
-      const cpus = parseInt(process.env.VM_CPUS || String(Math.max(2, Math.floor(os.cpus().length / 2))), 10)
+      // Read persisted config.json (admin UI settings) as fallback for env vars
+      let configMemoryMB = 1536
+      let configCpus = 0
+      let configMountWorkspace = false
+      try {
+        const fs = await import('fs')
+        const configDir = process.platform === 'win32'
+          ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Shogo')
+          : process.platform === 'darwin'
+            ? path.join(home, 'Library', 'Application Support', 'Shogo')
+            : path.join(home, '.config', 'shogo')
+        const raw = fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8')
+        const parsed = JSON.parse(raw)
+        if (parsed?.vmIsolation?.memoryMB > 0) configMemoryMB = parsed.vmIsolation.memoryMB
+        if (parsed?.vmIsolation?.cpus > 0) configCpus = parsed.vmIsolation.cpus
+        if (parsed?.vmIsolation?.mountWorkspace === true) configMountWorkspace = true
+      } catch {}
+
+      const memoryMB = parseInt(process.env.VM_MEMORY_MB || String(configMemoryMB), 10)
+      const autoCpus = Math.max(2, Math.floor(os.cpus().length / 2))
+      const cpus = parseInt(process.env.VM_CPUS || String(configCpus > 0 ? configCpus : autoCpus), 10)
+
+      const mountWorkspace = process.env.VM_MOUNT_WORKSPACE === 'true' || configMountWorkspace
 
       await initVMWarmPool(managerFactory, {
         workspaceDir: workspacesDir,
@@ -5439,9 +5775,11 @@ if (isVMIsolation() && !isKubernetes()) {
         memoryMB,
         cpus,
         networkEnabled: true,
-        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.raw`),
+        overlayPath: path.join(overlayDir, `pool-${crypto.randomUUID()}.qcow2`),
         vmImageDir,
         bundleDir: bundleDir || undefined,
+        mountWorkspace,
+        ...(mountWorkspace ? { workspaceMountPath: '/host-workspaces' } : {}),
       })
       console.log('[VMWarmPool] VM warm pool controller started')
     } catch (err: any) {
@@ -5461,5 +5799,21 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
       console.error('[LocalHeartbeat] Failed to start (non-fatal):', err.message)
     }
   }, 3000)
+}
+
+// Storage usage recalculation (Kubernetes only, every 6 hours)
+if (isKubernetes()) {
+  const STORAGE_RECALC_INTERVAL = 6 * 60 * 60 * 1000
+  setTimeout(() => {
+    storageService.recalculateAllStorageUsage().catch((err) =>
+      console.error('[Storage] Initial recalculation failed:', err.message)
+    )
+    setInterval(() => {
+      storageService.recalculateAllStorageUsage().catch((err) =>
+        console.error('[Storage] Periodic recalculation failed:', err.message)
+      )
+    }, STORAGE_RECALC_INTERVAL)
+    console.log('[Storage] Storage recalculation cron started (every 6h)')
+  }, 10_000)
 }
 

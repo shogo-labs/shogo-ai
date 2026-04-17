@@ -11,7 +11,7 @@
  */
 
 const CLEANUP_INTERVAL_MS = 60_000
-const MAX_BUFFER_AGE_MS = 5 * 60_000
+const MAX_BUFFER_AGE_MS = 30 * 60_000
 const COMPLETED_GRACE_MS = 30_000
 
 interface StreamBuffer {
@@ -168,7 +168,7 @@ export class StreamBufferStore {
     for (const [key, buf] of this.buffers) {
       if (buf.status === 'completed' && buf.completedAt && now - buf.completedAt > COMPLETED_GRACE_MS) {
         this.buffers.delete(key)
-      } else if (now - buf.createdAt > MAX_BUFFER_AGE_MS) {
+      } else if (now - buf.createdAt > MAX_BUFFER_AGE_MS && buf.subscribers.size === 0) {
         this.completeBuffer(buf)
         this.buffers.delete(key)
       }

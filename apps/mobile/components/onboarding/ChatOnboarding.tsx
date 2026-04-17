@@ -6,9 +6,11 @@ import { OnboardingMessage } from './OnboardingMessage'
 
 export type WidgetType =
   | 'vm-progress'
+  | 'vm-setup'
   | 'name-input'
   | 'ai-config'
   | 'security'
+  | 'meeting-setup'
   | 'features'
   | 'templates'
   | 'complete'
@@ -94,7 +96,7 @@ export function ChatOnboarding({
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scrollToBottom()}
       >
-        <View className="w-full max-w-2xl self-center gap-8">
+        <View className="w-full max-w-2xl self-center gap-4">
           {steps.slice(0, visibleCount).map((step, i) => (
             <OnboardingMessage
               key={step.id}

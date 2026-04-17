@@ -43,7 +43,7 @@ export interface ProjectChatRoutesConfig {
   runtimeManager?: IRuntimeManager
 }
 
-const PROJECT_ROOT = resolve(__dirname, '../../../..')
+const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 export const FILE_MODIFYING_TOOLS = new Set([
@@ -342,9 +342,6 @@ async function trackUsageFromStream(
     try {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (session) {
-        // Use orderedParts which preserves the natural interleaving of
-        // text and tool calls as they appeared in the stream.
-        // Filter out empty text/reasoning parts that can accumulate from keepalive pings.
         const parts = orderedParts.filter(
           (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim()))
         )
@@ -475,13 +472,20 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const { getProjectPodUrl } = await import("../lib/knative-project-manager")
       return await getProjectPodUrl(projectId)
     } else if (isVMIsolation()) {
-      // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s)
-      // Falls through to local RuntimeManager if the warm pool isn't ready yet
-      try {
-        const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
-        return await getVMProjectUrl(projectId)
-      } catch {
-        console.warn(`[ProjectChat] VM warm pool not ready, falling back to local RuntimeManager for ${projectId}`)
+      // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s).
+      // Do NOT fall back to local RuntimeManager — that creates a split-brain
+      // where the preview renders from the host but the agent runs in the VM.
+      const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+      const maxRetries = 5
+      const retryDelayMs = 3000
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await getVMProjectUrl(projectId)
+        } catch (err) {
+          if (attempt === maxRetries) throw err
+          console.log(`[ProjectChat] VM not ready (attempt ${attempt}/${maxRetries}), retrying in ${retryDelayMs}ms...`)
+          await new Promise(r => setTimeout(r, retryDelayMs))
+        }
       }
     }
     if (runtimeManager) {
@@ -797,8 +801,52 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           responseHeaders.set("Access-Control-Allow-Methods", "POST, OPTIONS")
           responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id")
 
-          // Tee the stream: one for the client, one for usage tracking
-          const [clientStream, trackingStream] = response.body!.tee()
+          // Instead of tee() (which stops pulling when the client
+          // branch is cancelled on browser disconnect), we read the
+          // fetch body in a background loop and independently push
+          // chunks to both the client stream and usage tracking.
+          // This ensures billing/persistence always sees the full
+          // stream even if the browser drops the connection early.
+          //
+          // NOTE: Uses push-based (start + captured controller) instead of
+          // pull-based tracking stream — Bun's ReadableStream doesn't
+          // re-trigger pull() after a returned Promise resolves, causing
+          // the tracking consumer to hang forever.
+          const bgReader = response.body!.getReader()
+          let trackingController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const trackingStream = new ReadableStream<Uint8Array>({
+            start(controller) { trackingController = controller },
+          })
+
+          let clientEnqueueErrors = 0
+          const clientStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              ;(async () => {
+                try {
+                  let chunkCount = 0
+                  while (true) {
+                    const { done, value } = await bgReader.read()
+                    if (done) break
+                    chunkCount++
+                    try { trackingController!.enqueue(value) } catch { /* tracking consumer done */ }
+                    try { controller.enqueue(value) } catch {
+                      if (clientEnqueueErrors === 0) {
+                        console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)
+                      }
+                      clientEnqueueErrors++
+                    }
+                  }
+                  console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors`)
+                } catch (err: any) {
+                  console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
+                  try { controller.error(err) } catch { /* client gone */ }
+                } finally {
+                  try { trackingController!.close() } catch { /* already closed */ }
+                  try { controller.close() } catch { /* already closed */ }
+                }
+              })()
+            },
+          })
 
           trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)

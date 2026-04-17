@@ -120,6 +120,7 @@ export interface GcStats {
   orphansDeleted: number
   idleEvictions: number
   namespaceServicesDeleted: number
+  orphanedDomainMappingsDeleted: number
   lastGcRun: number | null
   lastNamespaceGcRun: number | null
 }
@@ -224,7 +225,7 @@ export class WarmPoolController {
   private promotedPods: PromotedPodInfo[] = []
 
   /** Cumulative GC statistics for observability */
-  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, namespaceServicesDeleted: 0, lastGcRun: null, lastNamespaceGcRun: null }
+  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, namespaceServicesDeleted: 0, orphanedDomainMappingsDeleted: 0, lastGcRun: null, lastNamespaceGcRun: null }
 
   private started = false
 
@@ -391,6 +392,9 @@ export class WarmPoolController {
     if (this.reconcileCycleCount % NAMESPACE_GC_INTERVAL_CYCLES === 0) {
       await this.gcOrphanedServices().catch((err) => {
         console.error('[WarmPool] Namespace GC failed (non-fatal):', err.message)
+      })
+      await this.gcOrphanedDomainMappings().catch((err) => {
+        console.error('[WarmPool] DomainMapping GC failed (non-fatal):', err.message)
       })
     }
 
@@ -689,12 +693,14 @@ export class WarmPoolController {
     }
 
     // NOTE: We intentionally do NOT patch the Knative spec.template here.
-    // Changing the spec creates a new Revision, which replaces the running pod,
-    // destroying the in-memory agent gateway, local workspace files, and canvas
-    // state. The metadata labels/annotations above are sufficient for the warm
-    // pool controller to identify promoted pods. For cold-start recovery after
-    // scale-to-zero, getProjectPodUrl detects the stale mapping and re-assigns
-    // a fresh warm pod.
+    // Changing the spec creates a new Revision which replaces the running
+    // pod, destroying in-memory state.
+    //
+    // For paid instance sizes, resources and min-scale are applied via
+    // instance.service.applyInstanceToRuntime() after the workspace
+    // upgrades, or by KnativeProjectManager.buildKnativeService() on cold
+    // start. The warm pod serves as a fast bridge; the next scale-to-zero
+    // → scale-up cycle will use the correct spec.
 
     // Step 2: save the DB mapping, clearing any stale mapping from a previous
     // project that may have been assigned to this same service name.
@@ -941,6 +947,7 @@ export class WarmPoolController {
     usedCpuMillis: number
     limitCpuMillis: number
   } | null> {
+    if (process.env.SHOGO_LOCAL_MODE === 'true') return null
     try {
       const coreApi = getCoreApi()
       const nodeResponse = await coreApi.listNode()
@@ -1106,7 +1113,13 @@ export class WarmPoolController {
             headers: { 'x-runtime-token': deriveRuntimeToken(pod.projectId) },
           })
           if (resp.ok) {
-            const activity = await resp.json() as { idleSeconds: number }
+            const activity = await resp.json() as { idleSeconds: number; activeStreams?: number }
+            if ((activity.activeStreams ?? 0) > 0) {
+              console.log(
+                `[WarmPool GC] Skipping pod ${pod.serviceName} for project ${pod.projectId} — ${activity.activeStreams} active stream(s)`
+              )
+              continue
+            }
             if (activity.idleSeconds * 1000 < this._idleTimeoutMs) continue
             console.log(
               `[WarmPool GC] Evicting idle promoted pod ${pod.serviceName} for project ${pod.projectId} (idle ${activity.idleSeconds}s, timeout ${this._idleTimeoutMs / 1000}s)`
@@ -1298,6 +1311,79 @@ export class WarmPoolController {
       }
     } catch (err: any) {
       console.error('[WarmPool GC:namespace] Failed:', err.message)
+    }
+
+    return deleted
+  }
+
+  /**
+   * Sweep all DomainMappings in the workspace namespace and delete any whose
+   * backing Knative Service no longer exists. This catches mappings orphaned by
+   * crashes, transient K8s API errors, or services deleted externally.
+   */
+  async gcOrphanedDomainMappings(): Promise<number> {
+    let deleted = 0
+
+    try {
+      const api = getCustomApi()
+
+      // List all preview DomainMappings managed by Shogo
+      const mappingResponse = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: 'v1beta1',
+        namespace: this.namespace,
+        plural: 'domainmappings',
+        labelSelector: 'shogo.io/component=preview-domain',
+      })
+      const allMappings = (mappingResponse as any).items || []
+      if (allMappings.length === 0) return 0
+
+      // List all existing Knative Services to check references against
+      const svcResponse = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+      })
+      const existingServiceNames = new Set(
+        ((svcResponse as any).items || []).map((s: any) => s.metadata?.name).filter(Boolean)
+      )
+
+      for (const mapping of allMappings) {
+        if (deleted >= NAMESPACE_GC_MAX_DELETIONS_PER_CYCLE) break
+
+        const mappingName: string = mapping.metadata?.name
+        const refServiceName: string = mapping.spec?.ref?.name
+        if (!mappingName || !refServiceName) continue
+
+        if (existingServiceNames.has(refServiceName)) continue
+
+        // Backing service is gone — delete the orphaned mapping
+        try {
+          await api.deleteNamespacedCustomObject({
+            group: KNATIVE_GROUP,
+            version: 'v1beta1',
+            namespace: this.namespace,
+            plural: 'domainmappings',
+            name: mappingName,
+          })
+          deleted++
+          this.gcStats.orphanedDomainMappingsDeleted++
+          console.log(`[WarmPool GC:domainmappings] Deleted orphaned mapping ${mappingName} (service ${refServiceName} no longer exists)`)
+        } catch (err: any) {
+          if (err?.code !== 404 && err?.response?.statusCode !== 404) {
+            console.error(`[WarmPool GC:domainmappings] Failed to delete ${mappingName}:`, err.message)
+          }
+        }
+      }
+
+      if (deleted > 0) {
+        console.log(
+          `[WarmPool GC:domainmappings] Cycle complete: ${deleted} orphaned mappings deleted (total: ${this.gcStats.orphanedDomainMappingsDeleted})`
+        )
+      }
+    } catch (err: any) {
+      console.error('[WarmPool GC:domainmappings] Failed:', err.message)
     }
 
     return deleted
@@ -1701,23 +1787,6 @@ export class WarmPoolController {
             timeoutSeconds: 1800,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
-            affinity: {
-              nodeAffinity: {
-                preferredDuringSchedulingIgnoredDuringExecution: [
-                  {
-                    weight: 100,
-                    preference: {
-                      matchExpressions: [
-                        {
-                          key: 'karpenter.sh/nodepool',
-                          operator: 'DoesNotExist',
-                        },
-                      ],
-                    },
-                  },
-                ],
-              },
-            },
             containers: [
               {
                 name: RUNTIME_CONFIG.containerName,
@@ -1800,12 +1869,32 @@ export class WarmPoolController {
 
   /**
    * Delete a warm pool Knative Service and its associated DomainMapping.
-   * When projectId is provided, also cleans up the preview DomainMapping
-   * to prevent orphaned DomainMappings that continuously fail to reconcile.
+   * If projectId is not provided, reads the service's shogo.io/project label
+   * to resolve it — this prevents orphaned DomainMappings when callers
+   * don't have the project context.
    */
   private async deleteWarmPodService(serviceName: string, projectId?: string): Promise<void> {
+    const api = getCustomApi()
+
+    // If no projectId was supplied, read it from the service labels before deleting
+    if (!projectId) {
+      try {
+        const svc = await api.getNamespacedCustomObject({
+          group: KNATIVE_GROUP,
+          version: KNATIVE_VERSION,
+          namespace: this.namespace,
+          plural: 'services',
+          name: serviceName,
+        }) as any
+        projectId = svc?.metadata?.labels?.['shogo.io/project'] || undefined
+      } catch (err: any) {
+        if (err?.code !== 404 && err?.response?.statusCode !== 404) {
+          console.error(`[WarmPool] Failed to read service ${serviceName} labels (non-fatal):`, err.message)
+        }
+      }
+    }
+
     try {
-      const api = getCustomApi()
       await api.deleteNamespacedCustomObject({
         group: KNATIVE_GROUP,
         version: KNATIVE_VERSION,

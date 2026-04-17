@@ -29,10 +29,6 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
  */
 export const CONCURRENT_SAFE_TOOLS = new Set([
   'read_file',
-  'glob',
-  'grep',
-  'ls',
-  'list_files',
   'search',
   'impact_radius',
   'detect_changes',

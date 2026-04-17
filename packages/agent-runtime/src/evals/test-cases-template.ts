@@ -11,7 +11,7 @@
 
 import type { AgentEval } from './types'
 import { getAgentTemplateById } from '../agent-templates'
-import { usedTool } from './eval-helpers'
+import { usedTool, usedToolAnywhere } from './eval-helpers'
 
 function getTemplateFiles(templateId: string): Record<string, string> {
   const template = getAgentTemplateById(templateId)
@@ -219,7 +219,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
         description: 'Agent searched for integrations (tool_search)',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'tried-install-github',
@@ -227,7 +227,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
         points: 30,
         phase: 'execution',
         validate: (r) => {
-          if (usedTool(r, 'tool_install')) {
+          if (usedToolAnywhere(r, 'tool_install')) {
             const call = r.toolCalls.find(t => t.name === 'tool_install')
             return JSON.stringify(call?.input).toLowerCase().includes('github')
           }
@@ -273,7 +273,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
         description: 'Agent actively investigates (uses web or tool_search)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web') || usedTool(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'web') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'uses-canvas',

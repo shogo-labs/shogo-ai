@@ -81,6 +81,11 @@ export interface AgentStatus {
     compactionCount: number
     idleSeconds: number
   }>
+  memory?: {
+    fileCount: number
+    totalSizeBytes: number
+    lastModified: string | null
+  }
 }
 
 export interface SkillDefinition {

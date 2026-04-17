@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Shogo Technologies, Inc.
 #
-# Build a Ubuntu 22.04 VM image for Shogo desktop VM isolation.
+# Build a Ubuntu 24.04 VM image for Shogo desktop VM isolation.
 #
 # Usage:
 #   ./build.sh [aarch64|x86_64]
@@ -18,29 +18,29 @@ set -euo pipefail
 
 ARCH="${1:-$(uname -m)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output/${ARCH}"
 WORK_DIR="${SCRIPT_DIR}/.work/${ARCH}"
-CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/jammy/current"
+CLOUD_IMAGE_BASE="https://cloud-images.ubuntu.com/noble/current"
 
-QEMU_ACCEL=""
-if [ -w /dev/kvm ]; then
-  QEMU_ACCEL="-accel kvm"
-  echo "KVM acceleration available"
-fi
+HOST_ARCH="$(uname -m)"
+
+mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
 
 case "$ARCH" in
   aarch64|arm64)
     ARCH="aarch64"
-    CLOUD_IMAGE="jammy-server-cloudimg-arm64.img"
+    CLOUD_IMAGE="noble-server-cloudimg-arm64.img"
     QEMU_SYSTEM="qemu-system-aarch64"
-    QEMU_MACHINE="-machine virt -cpu cortex-a72"
-    QEMU_ACCEL=""  # KVM only works for native arch
+    QEMU_MACHINE="-machine virt"
+    QEMU_EFI_ARGS=""
     ;;
   x86_64|amd64)
     ARCH="x86_64"
-    CLOUD_IMAGE="jammy-server-cloudimg-amd64.img"
+    CLOUD_IMAGE="noble-server-cloudimg-amd64.img"
     QEMU_SYSTEM="qemu-system-x86_64"
     QEMU_MACHINE="-machine q35 -cpu max"
+    QEMU_EFI_ARGS=""
     ;;
   *)
     echo "Unsupported architecture: $ARCH"
@@ -48,13 +48,50 @@ case "$ARCH" in
     ;;
 esac
 
-mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
+# Detect KVM availability (only works when host arch matches target arch)
+QEMU_ACCEL=""
+if [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
+  if [ -w /dev/kvm ]; then
+    QEMU_ACCEL="-accel kvm"
+    echo "KVM acceleration available (native arch)"
+  fi
+fi
+
+# aarch64 needs UEFI firmware and a CPU model
+if [ "$ARCH" = "aarch64" ]; then
+  if [ -n "$QEMU_ACCEL" ]; then
+    QEMU_MACHINE="-machine virt -cpu host"
+  else
+    QEMU_MACHINE="-machine virt -cpu cortex-a72"
+  fi
+  # Locate UEFI firmware (required for aarch64 disk boot)
+  EFI_CODE=""
+  for candidate in \
+    /usr/share/AAVMF/AAVMF_CODE.fd \
+    /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+    /usr/share/edk2/aarch64/QEMU_EFI.fd \
+    /opt/homebrew/share/qemu/edk2-aarch64-code.fd; do
+    if [ -f "$candidate" ]; then
+      EFI_CODE="$candidate"
+      break
+    fi
+  done
+  if [ -z "$EFI_CODE" ]; then
+    echo "ERROR: UEFI firmware for aarch64 not found."
+    echo "Install with: sudo apt-get install qemu-efi-aarch64  (Linux) or brew install qemu (macOS)"
+    exit 1
+  fi
+  echo "Using UEFI firmware: $EFI_CODE"
+  EFI_VARS="${WORK_DIR}/efi-vars.fd"
+  dd if=/dev/zero of="$EFI_VARS" bs=1M count=64 2>/dev/null
+  QEMU_EFI_ARGS="-drive if=pflash,format=raw,readonly=on,file=${EFI_CODE} -drive if=pflash,format=raw,file=${EFI_VARS}"
+fi
 
 echo "=== Building Shogo VM image for ${ARCH} ==="
 
 # Step 1: Download cloud image
 if [ ! -f "${WORK_DIR}/${CLOUD_IMAGE}" ]; then
-  echo "Downloading Ubuntu 22.04 cloud image..."
+  echo "Downloading Ubuntu 24.04 cloud image..."
   wget -q -O "${WORK_DIR}/${CLOUD_IMAGE}" "${CLOUD_IMAGE_BASE}/${CLOUD_IMAGE}"
 fi
 
@@ -77,24 +114,33 @@ packages:
   - wget
   - git
   - openssh-client
-  - build-essential
   - python3
   - python3-pip
   - jq
   - ripgrep
-  - ffmpeg
-  - imagemagick
   - bubblewrap
   - unzip
 
 runcmd:
-  # Install Bun
-  - curl -fsSL https://bun.sh/install | bash
-  - ln -sf /root/.bun/bin/bun /usr/local/bin/bun
-  
-  # Install Node.js LTS via NodeSource
-  - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-  - apt-get install -y nodejs
+  # Install Bun as a regular file (not symlink) for the guest architecture
+  - |
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+      BUN_PKG="bun-linux-aarch64"
+    else
+      BUN_PKG="bun-linux-x64-baseline"
+    fi
+    BUN_VER="1.3.11"
+    cd /tmp
+    curl -fsSL -o bun-dl.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VER}/${BUN_PKG}.zip"
+    unzip -o bun-dl.zip -d bun-extract
+    cp bun-extract/${BUN_PKG}/bun /usr/local/bin/bun
+    chmod 755 /usr/local/bin/bun
+    rm -rf bun-dl.zip bun-extract
+    for alias in node npx npm; do
+      ln -sf /usr/local/bin/bun /usr/local/bin/$alias
+    done
+    echo "bun ready: $(/usr/local/bin/bun --version)"
   
   # Install gh CLI
   - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
@@ -105,8 +151,14 @@ runcmd:
   - useradd -m -s /bin/bash shogo
   - echo "shogo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
   
-  # Install global Node packages (matches Docker Dockerfile.base)
-  - npm install -g typescript-language-server typescript pyright
+  # Install LSP + Prisma packages into /opt/shogo/node_modules/ (where shogo.js resolves them)
+  - mkdir -p /opt/shogo
+  - |
+    cd /opt/shogo
+    printf '{"name":"vm-bundle","private":true}' > package.json
+    /usr/local/bin/bun add typescript-language-server typescript pyright
+    /usr/local/bin/bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine
+    echo "shogo.js deps installed at /opt/shogo/node_modules"
   
   # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
   - |
@@ -114,6 +166,27 @@ runcmd:
     printf '{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}' \
       > /app/templates/skill-server/package.json
     cd /app/templates/skill-server && /usr/local/bin/bun install
+  
+  # Extract runtime-template from seed ISO (tarball created at build time from repo)
+  - |
+    mkdir -p /mnt/seed
+    mount /dev/vdb /mnt/seed 2>/dev/null || mount -t iso9660 /dev/sr0 /mnt/seed 2>/dev/null || true
+    if [ -f /mnt/seed/runtime-template.tar.gz ]; then
+      mkdir -p /app/templates
+      tar -xzf /mnt/seed/runtime-template.tar.gz -C /app/templates/
+      echo "runtime-template extracted from seed ISO"
+    else
+      echo "WARNING: runtime-template.tar.gz not found in seed ISO"
+    fi
+    umount /mnt/seed 2>/dev/null || true
+  - |
+    cd /app/templates/runtime-template
+    /usr/local/bin/bun install
+    echo "linux-$(uname -m)" > node_modules/.shogo-platform
+    echo "runtime-template deps installed"
+  - |
+    mkdir -p /opt/shogo/templates
+    ln -sf /app/templates/runtime-template /opt/shogo/templates/runtime-template
   
   # Install agent-runtime bundle (same process as K8s pods)
   - mkdir -p /opt/shogo
@@ -141,6 +214,11 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable shogo-agent-runtime
   
+  # Disable unnecessary services to reduce idle memory
+  - systemctl disable --now snapd snapd.socket snapd.seeded 2>/dev/null || true
+  - systemctl disable --now ModemManager packagekit 2>/dev/null || true
+  - systemctl mask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  
   # Clean up
   - apt-get clean
   - rm -rf /var/lib/apt/lists/*
@@ -150,91 +228,217 @@ runcmd:
   - poweroff
 USERDATA
 
-cat > "${WORK_DIR}/meta-data" << METADATA
+SEED_TMP="${WORK_DIR}/seed-tmp"
+rm -rf "$SEED_TMP"
+mkdir -p "$SEED_TMP"
+
+mv "${WORK_DIR}/user-data" "${SEED_TMP}/user-data"
+
+cat > "${SEED_TMP}/meta-data" << METADATA
 instance-id: shogo-build-$(date +%s)
 local-hostname: shogo-vm
 METADATA
 
-# Create seed ISO
-cloud-localds "${WORK_DIR}/seed.iso" "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data" 2>/dev/null || \
-  genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "${WORK_DIR}/user-data" "${WORK_DIR}/meta-data"
+# Tar the runtime-template from the repo (single source of truth — no hardcoded versions)
+echo "Creating runtime-template tarball from repo..."
+tar -czf "${SEED_TMP}/runtime-template.tar.gz" \
+  --exclude=node_modules --exclude=.DS_Store --exclude=bun.lock --exclude=.git \
+  -C "${REPO_ROOT}/templates" runtime-template
+echo "  $(du -h "${SEED_TMP}/runtime-template.tar.gz" | cut -f1) runtime-template.tar.gz"
 
-# Step 3.5: Bundle agent-runtime.js into the image via a second cloud-init file
-# The agent-runtime bundle is built by the monorepo build system and placed at
-# packages/agent-runtime/dist/agent-runtime.js (or bundle/agent-runtime.js for production).
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
-AGENT_RUNTIME_BUNDLE=""
-for candidate in \
-  "${REPO_ROOT}/bundle/agent-runtime.js" \
-  "${REPO_ROOT}/packages/agent-runtime/dist/agent-runtime.js"; do
-  if [ -f "$candidate" ]; then
-    AGENT_RUNTIME_BUNDLE="$candidate"
-    break
-  fi
-done
+# Create seed ISO from directory (includes user-data, meta-data, and template tarball)
+genisoimage -output "${WORK_DIR}/seed.iso" -volid cidata -joliet -rock "$SEED_TMP"
+rm -rf "$SEED_TMP"
 
-if [ -n "$AGENT_RUNTIME_BUNDLE" ]; then
-  echo "Bundling agent-runtime from: ${AGENT_RUNTIME_BUNDLE}"
-  mkdir -p "${WORK_DIR}/provision"
-  cp "$AGENT_RUNTIME_BUNDLE" "${WORK_DIR}/provision/agent-runtime.js"
-else
-  echo "WARNING: agent-runtime bundle not found. The VM image will need it copied at boot time."
-fi
 
 # Step 4: Boot and provision
-TIMEOUT=${QEMU_TIMEOUT:-1200}
-echo "Booting VM for provisioning (timeout: ${TIMEOUT}s)..."
+if [ -n "$QEMU_ACCEL" ]; then
+  DEFAULT_TIMEOUT=600
+elif [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "aarch64" ] && [ "$HOST_ARCH" = "arm64" ]; }; then
+  DEFAULT_TIMEOUT=1800  # Native arch TCG (no cross-arch penalty)
+else
+  DEFAULT_TIMEOUT=3600  # Cross-arch TCG (very slow)
+fi
+TIMEOUT=${QEMU_TIMEOUT:-$DEFAULT_TIMEOUT}
+echo "Booting VM for provisioning (timeout: ${TIMEOUT}s, accel: ${QEMU_ACCEL:-TCG})..."
 timeout "$TIMEOUT" $QEMU_SYSTEM \
   $QEMU_ACCEL \
   $QEMU_MACHINE \
   -m 4096 -smp 4 \
+  $QEMU_EFI_ARGS \
   -drive file="${WORK_DIR}/disk.qcow2",if=virtio \
   -drive file="${WORK_DIR}/seed.iso",if=virtio,format=raw,readonly=on \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0 \
+  -serial mon:stdio \
   -nographic \
-  -no-reboot || true
+  -no-reboot
+QEMU_EXIT=$?
+if [ "$QEMU_EXIT" -eq 124 ]; then
+  echo "ERROR: Provisioning timed out after ${TIMEOUT}s. Image may be incomplete."
+  exit 1
+elif [ "$QEMU_EXIT" -ne 0 ]; then
+  echo "WARNING: QEMU exited with code $QEMU_EXIT (non-zero is OK if guest powered off via ACPI)"
+fi
 
-echo "Provisioning complete."
+# Verify provisioning completed by checking for the marker file
+echo "Verifying provisioning marker..."
+MARKER_FOUND=false
+if (
+  set +e
+  VERIFY_DIR="${WORK_DIR}/verify_mnt"
+  mkdir -p "$VERIFY_DIR"
+  qemu-img convert -O raw "${WORK_DIR}/disk.qcow2" "${WORK_DIR}/verify.raw" 2>/dev/null || exit 1
+  LOOP_DEV=$(sudo losetup --find --show --partscan "${WORK_DIR}/verify.raw" 2>/dev/null) || exit 1
+  sleep 1
+  for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
+    if [ -b "$part" ] && sudo mount -o ro,noload "$part" "$VERIFY_DIR" 2>/dev/null; then
+      if [ -f "$VERIFY_DIR/var/lib/cloud/instance/shogo-provisioned" ]; then
+        echo "MARKER_OK"
+      fi
+      sudo umount "$VERIFY_DIR" 2>/dev/null || true
+    fi
+  done
+  sudo losetup -d "$LOOP_DEV" 2>/dev/null || true
+  rm -f "${WORK_DIR}/verify.raw"
+) 2>&1 | tee /tmp/verify-marker.log && grep -q "MARKER_OK" /tmp/verify-marker.log; then
+  MARKER_FOUND=true
+fi
+
+if [ "$MARKER_FOUND" = true ]; then
+  echo "Provisioning verified: marker file found."
+else
+  echo "WARNING: Provisioning marker not found. Image may be incomplete (cloud-init may not have finished)."
+  echo "Continuing anyway — the image may still be usable if core packages were installed."
+fi
 
 # Step 5: Extract kernel and initrd from the image
 echo "Extracting kernel and initrd..."
 
 EXTRACTED=false
 
-# Method 1: qemu-nbd (most reliable in CI — no supermin/kernel dependency)
+# Method 1: losetup on raw conversion (reliable on any Linux, no kernel module needed)
+echo "Trying losetup (raw conversion) for extraction..."
+if (
+  set +e
+  MOUNT_DIR="${WORK_DIR}/mnt"
+  mkdir -p "$MOUNT_DIR"
+
+  echo "  Converting qcow2 to raw for loop mount..."
+  qemu-img convert -O raw "${WORK_DIR}/disk.qcow2" "${WORK_DIR}/disk.raw" || exit 1
+
+  LOOP_DEV=$(sudo losetup --find --show --partscan "${WORK_DIR}/disk.raw" 2>/dev/null) || exit 1
+  echo "  Loop device: $LOOP_DEV"
+  sleep 2
+
+  echo "  Partition table:"
+  sudo fdisk -l "${WORK_DIR}/disk.raw" 2>/dev/null || true
+
+  # Scan ALL partitions for vmlinuz.
+  # On Ubuntu 24.04, /boot is a DEDICATED partition. When mounted at $MOUNT_DIR,
+  # kernel files are at $MOUNT_DIR/vmlinuz-* (top of the /boot partition),
+  # NOT at $MOUNT_DIR/boot/vmlinuz-*. Also check the latter for older layouts.
+  FOUND_VMLINUZ=""
+  FOUND_INITRD=""
+  FOUND_PART=""
+  FOUND_PREFIX=""
+  for part in $(sudo ls "${LOOP_DEV}p"* 2>/dev/null | sort -V); do
+    if [ -b "$part" ]; then
+      echo "  Trying $part..."
+      if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+        echo "    Mounted OK. Top-level contents:"
+        sudo ls "$MOUNT_DIR"/ 2>/dev/null || true
+        # Check top-level (for dedicated /boot partition)
+        V=$(sudo ls "$MOUNT_DIR"/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+        I=$(sudo ls "$MOUNT_DIR"/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+        PREFIX=""
+        # Fallback: check $MOUNT_DIR/boot/ (for root partition with embedded /boot)
+        if [ -z "$V" ] || [ -z "$I" ]; then
+          V=$(sudo ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)
+          I=$(sudo ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)
+          PREFIX="boot/"
+        fi
+        sudo umount "$MOUNT_DIR" 2>/dev/null || true
+        if [ -n "$V" ] && [ -n "$I" ]; then
+          FOUND_VMLINUZ="$V"
+          FOUND_INITRD="$I"
+          FOUND_PART="$part"
+          FOUND_PREFIX="$PREFIX"
+          echo "    Found kernel: $(basename "$V") (prefix: '${PREFIX}')"
+          break
+        fi
+      fi
+    fi
+  done
+
+  if [ -n "$FOUND_VMLINUZ" ] && [ -n "$FOUND_INITRD" ]; then
+    if sudo mount -o ro,noload "$FOUND_PART" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$FOUND_PART" "$MOUNT_DIR" 2>/dev/null; then
+      echo "Found: $(basename "$FOUND_VMLINUZ"), $(basename "$FOUND_INITRD") on $FOUND_PART"
+      sudo cp "$MOUNT_DIR/${FOUND_PREFIX}$(basename "$FOUND_VMLINUZ")" "${OUTPUT_DIR}/vmlinuz"
+      sudo cp "$MOUNT_DIR/${FOUND_PREFIX}$(basename "$FOUND_INITRD")" "${OUTPUT_DIR}/initrd.img"
+      sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
+      echo "EXTRACTED_OK"
+    fi
+  else
+    echo "  No vmlinuz found on any partition"
+  fi
+
+  sudo losetup -d "$LOOP_DEV" 2>/dev/null || true
+  rm -f "${WORK_DIR}/disk.raw"
+) 2>&1 | tee /tmp/losetup-extract.log && grep -q "EXTRACTED_OK" /tmp/losetup-extract.log; then
+  EXTRACTED=true
+else
+  echo "losetup extraction failed, trying qemu-nbd..."
+fi
+
+# Method 2: qemu-nbd
 if [ "$EXTRACTED" = false ] && command -v qemu-nbd &>/dev/null; then
   echo "Trying qemu-nbd for extraction..."
-  if sudo modprobe nbd max_part=8 2>/dev/null; then
+  if (
+    set +e
+    sudo modprobe nbd max_part=8 2>/dev/null || exit 1
     MOUNT_DIR="${WORK_DIR}/mnt"
     mkdir -p "$MOUNT_DIR"
 
-    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2"
-    sleep 2
+    sudo qemu-nbd --connect=/dev/nbd0 "${WORK_DIR}/disk.qcow2" || exit 1
+    sleep 3
     sudo partprobe /dev/nbd0 2>/dev/null || true
+    sleep 1
 
-    if sudo mount /dev/nbd0p1 "$MOUNT_DIR" 2>/dev/null || sudo mount /dev/nbd0p2 "$MOUNT_DIR" 2>/dev/null; then
+    MOUNTED=false
+    for part in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p3; do
+      if [ -b "$part" ]; then
+        if sudo mount -o ro,noload "$part" "$MOUNT_DIR" 2>/dev/null || sudo mount -o ro "$part" "$MOUNT_DIR" 2>/dev/null; then
+          MOUNTED=true
+          echo "  Mounted $part"
+          break
+        fi
+      fi
+    done
+
+    if [ "$MOUNTED" = true ]; then
       VMLINUZ=$(ls "$MOUNT_DIR"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
       INITRD=$(ls "$MOUNT_DIR"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
-
       if [ -n "$VMLINUZ" ] && [ -n "$INITRD" ]; then
         echo "Found: $(basename "$VMLINUZ"), $(basename "$INITRD")"
         sudo cp "$VMLINUZ" "${OUTPUT_DIR}/vmlinuz"
         sudo cp "$INITRD" "${OUTPUT_DIR}/initrd.img"
         sudo chown "$(whoami)" "${OUTPUT_DIR}/vmlinuz" "${OUTPUT_DIR}/initrd.img"
-        EXTRACTED=true
+        echo "EXTRACTED_OK"
       fi
-
-      sudo umount "$MOUNT_DIR"
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
     fi
 
-    sudo qemu-nbd --disconnect /dev/nbd0
+    sudo qemu-nbd --disconnect /dev/nbd0 2>/dev/null || true
+  ) 2>&1 | tee /tmp/nbd-extract.log && grep -q "EXTRACTED_OK" /tmp/nbd-extract.log; then
+    EXTRACTED=true
   else
-    echo "nbd kernel module not available, skipping qemu-nbd"
+    echo "qemu-nbd extraction failed, trying libguestfs..."
   fi
 fi
 
-# Method 2: libguestfs (requires supermin appliance with a host kernel in /boot)
+# Method 3: libguestfs
 if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt-copy-out &>/dev/null; then
   export LIBGUESTFS_BACKEND=direct
   echo "Trying libguestfs (virt-copy-out) for extraction..."
@@ -249,7 +453,7 @@ if [ "$EXTRACTED" = false ] && command -v virt-ls &>/dev/null && command -v virt
     mv "${OUTPUT_DIR}/${INITRD}" "${OUTPUT_DIR}/initrd.img"
     EXTRACTED=true
   else
-    echo "libguestfs could not list /boot/ contents (supermin may lack a host kernel)"
+    echo "libguestfs could not list /boot/ contents"
   fi
 fi
 
@@ -267,15 +471,11 @@ if [ "$ARCH" = "aarch64" ] && file "${OUTPUT_DIR}/vmlinuz" | grep -q "gzip"; the
   echo "Kernel decompressed: $(file "${OUTPUT_DIR}/vmlinuz")"
 fi
 
-# Step 7: Shrink and copy rootfs
+# Step 7: Shrink and save as rootfs-provisioned.qcow2
+# This image has bun, deps, and templates pre-installed — it IS the provisioned image.
+# We only ship rootfs-provisioned.qcow2 to stay under GitHub's 2 GB release asset limit.
 echo "Shrinking rootfs..."
-qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs.qcow2"
-
-# Also produce a raw image for Virtualization.framework (macOS)
-if [ "$ARCH" = "aarch64" ]; then
-  echo "Converting rootfs to raw for Virtualization.framework..."
-  qemu-img convert -f qcow2 -O raw "${OUTPUT_DIR}/rootfs.qcow2" "${OUTPUT_DIR}/rootfs.raw"
-fi
+qemu-img convert -O qcow2 -c "${WORK_DIR}/disk.qcow2" "${OUTPUT_DIR}/rootfs-provisioned.qcow2"
 
 echo ""
 echo "=== Build complete ==="
@@ -283,9 +483,6 @@ echo "Output:"
 ls -lh "${OUTPUT_DIR}/"
 echo ""
 echo "Files:"
-echo "  ${OUTPUT_DIR}/vmlinuz      - Linux kernel (decompressed for VZ on arm64)"
-echo "  ${OUTPUT_DIR}/initrd.img   - Initial ramdisk"
-echo "  ${OUTPUT_DIR}/rootfs.qcow2 - Root filesystem (qcow2, for Windows/QEMU)"
-if [ "$ARCH" = "aarch64" ]; then
-  echo "  ${OUTPUT_DIR}/rootfs.raw   - Root filesystem (raw, for macOS/VZ)"
-fi
+echo "  ${OUTPUT_DIR}/vmlinuz                  - Linux kernel (decompressed for VZ on arm64)"
+echo "  ${OUTPUT_DIR}/initrd.img               - Initial ramdisk"
+echo "  ${OUTPUT_DIR}/rootfs-provisioned.qcow2 - Root filesystem (provisioned with bun + deps)"

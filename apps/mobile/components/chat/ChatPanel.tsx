@@ -51,6 +51,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
   formatErrorMessage,
+  isTunnelDisconnectError,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
@@ -59,7 +60,7 @@ import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
-import { agentFetch } from "../../lib/agent-fetch"
+
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
@@ -209,6 +210,8 @@ export interface ChatPanelProps {
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
+  /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
+  isActive?: boolean
 }
 
 // ============================================================
@@ -563,6 +566,7 @@ export const ChatPanel = observer(function ChatPanel({
   buildPlanRequest,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
+  isActive = true,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -597,6 +601,20 @@ export const ChatPanel = observer(function ChatPanel({
     })
   }, [controlledIsCollapsed])
 
+
+  const nativeHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return (): Record<string, string> => {
+      const cookie = authClient.getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
+
+  const expoFetch = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return require('expo/fetch').fetch as typeof globalThis.fetch
+  }, [])
+
   // Quick actions state
   const [quickActions, setQuickActions] = useState<{ label: string; prompt: string }[]>([])
 
@@ -604,7 +622,12 @@ export const ChatPanel = observer(function ChatPanel({
     const url = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
     if (!url) return
     try {
-      const res = await agentFetch(`${url}/agent/quick-actions`)
+      const fetchFn = expoFetch ?? globalThis.fetch
+      const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+      const res = await fetchFn(`${url}/agent/quick-actions`, {
+        headers,
+        credentials: Platform.OS === 'web' ? 'include' : undefined,
+      } as any)
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data?.actions)) {
@@ -614,15 +637,17 @@ export const ChatPanel = observer(function ChatPanel({
     } catch {
       // Silently ignore — quick actions are non-critical
     }
-  }, [localAgentUrl, projectId])
+  }, [localAgentUrl, projectId, nativeHeaders, expoFetch])
 
   useEffect(() => {
+    if (!isActive) return
+
     fetchQuickActions()
 
     // Retry after a delay — the agent runtime may not be ready on first mount
     const retryTimer = setTimeout(() => fetchQuickActions(), 3000)
     return () => clearTimeout(retryTimer)
-  }, [fetchQuickActions, chatSessionId])
+  }, [fetchQuickActions, isActive])
 
   // Track whether we've already triggered AI naming for this session
   const hasTriggeredNamingRef = useRef(false)
@@ -699,6 +724,7 @@ export const ChatPanel = observer(function ChatPanel({
     return () => {
       if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
       if (loadOlderWebDebounceRef.current) clearTimeout(loadOlderWebDebounceRef.current)
+      if (contextUsageTimerRef.current) clearTimeout(contextUsageTimerRef.current)
     }
   }, [])
 
@@ -779,9 +805,11 @@ export const ChatPanel = observer(function ChatPanel({
     : []
 
   const isLoadingMessagesRef = useRef(false)
+  const cachedMessagesRef = useRef<any[] | null>(null)
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{ content: string; files?: FileAttachment[] } | null>(null)
+  const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
 
   type QueuedMessage = {
     id: string
@@ -810,6 +838,8 @@ export const ChatPanel = observer(function ChatPanel({
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
   const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
+  const contextUsageThrottleRef = useRef<{ inputTokens: number; contextWindowTokens: number } | null>(null)
+  const contextUsageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!toolErrorBanner) return
@@ -818,18 +848,7 @@ export const ChatPanel = observer(function ChatPanel({
     return () => clearTimeout(timer)
   }, [toolErrorBanner])
 
-  const nativeHeaders = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
-    return (): Record<string, string> => {
-      const cookie = authClient.getCookie()
-      return cookie ? { Cookie: cookie } : {}
-    }
-  }, [])
 
-  const expoFetch = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
-    return require('expo/fetch').fetch as typeof globalThis.fetch
-  }, [])
 
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
@@ -884,8 +903,6 @@ export const ChatPanel = observer(function ChatPanel({
       )
     },
     onData: async (dataPart) => {
-      console.log("[ChatPanel:onData] Received data part:", dataPart.type, dataPart)
-
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
         const event = (dataPart as any).data as VirtualToolEvent
@@ -1280,8 +1297,15 @@ export const ChatPanel = observer(function ChatPanel({
         const planData = (dataPart as any).data
         if (planData) {
           setPendingPlan(planData)
+          if (planData.filepath) {
+            planStream?.setStreamingPlanFilepath(planData.filepath)
+          }
           planStream?.notifyPlanCreated()
         }
+      }
+
+      if ((dataPart as any).type === "data-plan-update") {
+        planStream?.notifyPlanCreated()
       }
 
       // Handle permission approval requests from the agent runtime
@@ -1302,10 +1326,18 @@ export const ChatPanel = observer(function ChatPanel({
       if ((dataPart as any).type === "data-context-usage") {
         const ctx = (dataPart as any).data
         if (ctx?.inputTokens && ctx?.contextWindowTokens) {
-          setContextUsage({
+          contextUsageThrottleRef.current = {
             inputTokens: ctx.inputTokens,
             contextWindowTokens: ctx.contextWindowTokens,
-          })
+          }
+          if (!contextUsageTimerRef.current) {
+            contextUsageTimerRef.current = setTimeout(() => {
+              contextUsageTimerRef.current = null
+              if (contextUsageThrottleRef.current) {
+                setContextUsage(contextUsageThrottleRef.current)
+              }
+            }, 500)
+          }
         }
       }
 
@@ -1324,6 +1356,7 @@ export const ChatPanel = observer(function ChatPanel({
               .catch((err: any) => console.warn("[ChatPanel] Failed to persist context usage:", err))
           }
         }
+
       }
     },
     onFinish: async ({ message }) => {
@@ -1441,6 +1474,13 @@ export const ChatPanel = observer(function ChatPanel({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
+  if (isActive && messages.length > 0) {
+    cachedMessagesRef.current = messages
+  }
+  if (messages.length > 0) {
+    lastNonEmptyMessagesRef.current = messages
+  }
+
   const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
   const filesChangedFiredRef = useRef(false)
 
@@ -1468,13 +1508,60 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
+  const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
+
+  const isRemoteInstance = !!localAgentUrl
+  const isTunnelError = !!(error && isRemoteInstance && isTunnelDisconnectError(error.message))
+
   const errorBannerText = useMemo(
-    () => (error ? formatErrorMessage(error.message) : emptyResponseError) ?? '',
-    [error?.message, emptyResponseError]
+    () => {
+      if (isTunnelError && tunnelReconnecting) return 'Connection to desktop instance lost. Reconnecting\u2026'
+      if (isTunnelError) return 'Connection to desktop instance lost. Tap Reconnect to retry.'
+      return (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ''
+    },
+    [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting]
   )
   useEffect(() => {
     setErrorBannerExpanded(false)
   }, [errorBannerText])
+
+  useEffect(() => {
+    if (!isTunnelError || !localAgentUrl) {
+      setTunnelReconnecting(false)
+      return
+    }
+    setTunnelReconnecting(true)
+
+    let cancelled = false
+    const RECONNECT_POLL_MS = 3000
+    const MAX_RECONNECT_POLLS = 20
+
+    async function pollForReconnect() {
+      for (let i = 0; i < MAX_RECONNECT_POLLS && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, RECONNECT_POLL_MS))
+        if (cancelled) return
+        try {
+          const fetchFn = expoFetch ?? globalThis.fetch
+          const hdrs: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+          const res = await fetchFn(`${localAgentUrl}/agent/health`, {
+            headers: hdrs,
+            credentials: Platform.OS === 'web' ? 'include' : undefined,
+            signal: AbortSignal.timeout(5000),
+          } as any)
+          if (res.ok) {
+            if (!cancelled) {
+              setTunnelReconnecting(false)
+              handleRetryRef.current?.()
+            }
+            return
+          }
+        } catch {}
+      }
+      if (!cancelled) setTunnelReconnecting(false)
+    }
+    pollForReconnect()
+    return () => { cancelled = true }
+  }, [isTunnelError, localAgentUrl])
 
   const errorBannerNeedsReadMore =
     errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
@@ -1505,6 +1592,32 @@ export const ChatPanel = observer(function ChatPanel({
   const displayMessages = useMemo((): UIMessage[] => {
     const effectiveMessages = stoppedMessages ?? messages
     if (effectiveMessages.length > 0) return effectiveMessages
+
+    // While streaming/sending, show the last known messages (plus an optimistic
+    // user bubble) so the conversation doesn't vanish during the brief gap
+    // before the AI SDK populates its internal state.
+    if (isStreaming || isSendingMessageRef.current) {
+      const fallback = lastNonEmptyMessagesRef.current
+      const lastInput = lastUserInputRef.current
+      const lastFallbackMsg = fallback[fallback.length - 1]
+      const needsOptimisticUser =
+        lastInput?.content && (!lastFallbackMsg || lastFallbackMsg.role !== "user")
+
+      if (fallback.length > 0 || needsOptimisticUser) {
+        if (needsOptimisticUser) {
+          return [
+            ...fallback,
+            {
+              id: "optimistic-user-pending",
+              role: "user",
+              parts: [{ type: "text", text: lastInput!.content }],
+            } as unknown as UIMessage,
+          ]
+        }
+        return fallback
+      }
+    }
+
     const text = (pendingInitialMessage ?? initialMessage ?? initialMessageRef.current ?? "").trim()
     if (text !== "") {
       return [
@@ -1516,7 +1629,7 @@ export const ChatPanel = observer(function ChatPanel({
       ]
     }
     return []
-  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage])
+  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage, isStreaming])
 
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
@@ -1773,60 +1886,74 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages, onActiveToolCall])
 
-  // Effect 1: Trigger data loading for chat messages from API (paginated, newest first)
+  // Effect 1: Load chat messages with stale-while-revalidate.
+  // On tab activate: show cached messages instantly (if available), then fetch
+  // fresh data from the API. Only update the display if the response differs.
   useEffect(() => {
-    if (currentSessionId && !isLoadingMessagesRef.current) {
-      isLoadingMessagesRef.current = true
-      setIsInitialLoadComplete(false)
-      console.log("[ChatPanel] Loading messages for session:", currentSessionId)
-      studioChat.chatMessageCollection
-        .loadPage(
-          { sessionId: currentSessionId },
-          { limit: MESSAGE_PAGE_SIZE, offset: 0 },
-        )
-        .then((result: any) => {
-          const count = Array.isArray(result) ? result.length : 0
-          console.log("[ChatPanel] Loaded", count, "messages for session:", currentSessionId)
+    if (!isActive) return
+    if (!currentSessionId) {
+      setIsInitialLoadComplete(true)
+      return
+    }
+    if (isLoadingMessagesRef.current) return
 
-          if (count > 0 && !isStreamingRef.current && !isSendingMessageRef.current) {
-            const loaded = studioChat.chatMessageCollection.all
-              .filter((msg: any) => msg.sessionId === currentSessionId)
-              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+    const hasCached = cachedMessagesRef.current && cachedMessagesRef.current.length > 0
 
-            if (loaded.length > 0) {
-              const aiMessages = loaded.map((msg: any) => {
-                const baseMessage: any = {
-                  id: msg.id,
-                  role: msg.role as "user" | "assistant",
-                  content: msg.content,
-                }
-                if (msg.parts) {
-                  try {
-                    baseMessage.parts = JSON.parse(msg.parts)
-                  } catch (err) {
-                    console.warn("[ChatPanel] Failed to parse message parts:", err)
-                  }
-                }
-                return baseMessage
-              })
-              console.log(
-                "[ChatPanel] Direct sync: setting",
-                aiMessages.length,
-                "messages to AI SDK"
-              )
-              setMessages(aiMessages)
-            }
-          }
-        })
-        .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
-        .finally(() => {
-          isLoadingMessagesRef.current = false
-          setIsInitialLoadComplete(true)
-        })
-    } else if (!currentSessionId) {
+    if (hasCached) {
+      setMessages(cachedMessagesRef.current!)
       setIsInitialLoadComplete(true)
     }
-  }, [currentSessionId, studioChat, setMessages])
+
+    isLoadingMessagesRef.current = true
+    if (!hasCached) setIsInitialLoadComplete(false)
+
+    studioChat.chatMessageCollection
+      .loadPage(
+        { sessionId: currentSessionId },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      .then((result: any) => {
+        if (isStreamingRef.current || isSendingMessageRef.current) return
+
+        const loaded = studioChat.chatMessageCollection.all
+          .filter((msg: any) => msg.sessionId === currentSessionId)
+          .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+
+        if (loaded.length === 0) return
+
+        const aiMessages = loaded.map((msg: any) => {
+          const baseMessage: any = {
+            id: msg.id,
+            role: msg.role as "user" | "assistant",
+            content: msg.content,
+          }
+          if (msg.parts) {
+            try {
+              baseMessage.parts = JSON.parse(msg.parts)
+            } catch (err) {
+              console.warn("[ChatPanel] Failed to parse message parts:", err)
+            }
+          }
+          return baseMessage
+        })
+
+        const cached = cachedMessagesRef.current
+        const changed =
+          !cached ||
+          cached.length !== aiMessages.length ||
+          cached[cached.length - 1]?.id !== aiMessages[aiMessages.length - 1]?.id
+
+        if (changed) {
+          cachedMessagesRef.current = aiMessages
+          setMessages(aiMessages)
+        }
+      })
+      .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
+      .finally(() => {
+        isLoadingMessagesRef.current = false
+        setIsInitialLoadComplete(true)
+      })
+  }, [isActive, currentSessionId, studioChat, setMessages])
 
   // Load older messages when user scrolls to top.
   // isLoadingOlderRef stays true until onContentSizeChange adjusts scroll position,
@@ -2047,6 +2174,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   useEffect(() => {
     planStream?.setStreamingPlan(derivedStreamingPlan)
+    if (derivedStreamingPlan) {
+      planStream?.setStreamingPlanFilepath(null)
+    }
   }, [derivedStreamingPlan, planStream])
 
   // Auto-scroll to bottom when messages change
@@ -2259,6 +2389,7 @@ export const ChatPanel = observer(function ChatPanel({
       setMessageQueue([])
       isProcessingQueueRef.current = false
     }
+    lastNonEmptyMessagesRef.current = []
   }, [currentSessionId])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
@@ -2419,6 +2550,9 @@ export const ChatPanel = observer(function ChatPanel({
       }
     }
   }, [messages, sendMessageInternal, setMessages])
+
+  const handleRetryRef = useRef<(() => void) | null>(null)
+  handleRetryRef.current = handleRetry
 
   const messageListMessages = messages.map((msg) => ({
     id: msg.id,
@@ -2766,8 +2900,14 @@ export const ChatPanel = observer(function ChatPanel({
           {/* Error Alert — cap long messages so the sidebar layout stays usable */}
           {(error || emptyResponseError) && (
             <View className="px-4 pb-2 max-w-3xl w-full self-center">
-              <View className="flex-row items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-                <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" size={16} />
+              <View className={`flex-row items-start gap-2 rounded-lg border p-3 ${
+                isTunnelError
+                  ? 'border-orange-400/50 bg-orange-50 dark:bg-orange-950/30'
+                  : 'border-destructive/50 bg-destructive/10'
+              }`}>
+                <AlertCircle className={`h-4 w-4 shrink-0 mt-0.5 ${
+                  isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
+                }`} size={16} />
                 <View className="flex-1 min-w-0 flex-row items-start justify-between gap-2">
                   <View className="flex-1 min-w-0 pr-1">
                     {errorBannerExpanded ? (
@@ -2776,13 +2916,13 @@ export const ChatPanel = observer(function ChatPanel({
                         className="max-h-48"
                         showsVerticalScrollIndicator
                       >
-                        <Text className="text-sm text-destructive" selectable>
+                        <Text className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
                           {errorBannerText}
                         </Text>
                       </ScrollView>
                     ) : (
                       <Text
-                        className="text-sm text-destructive"
+                        className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
                         numberOfLines={4}
                         selectable
                       >
@@ -2798,18 +2938,30 @@ export const ChatPanel = observer(function ChatPanel({
                           errorBannerExpanded ? 'Show less error detail' : 'Read full error message'
                         }
                       >
-                        <Text className="text-xs font-semibold text-destructive">
+                        <Text className={`text-xs font-semibold ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}>
                           {errorBannerExpanded ? 'Show less' : 'Read more'}
                         </Text>
                       </Pressable>
                     )}
                   </View>
-                  <Pressable
-                    onPress={handleRetry}
-                    className="shrink-0 rounded-md border border-destructive/30 px-1 py-1.5 self-start"
-                  >
-                    <Text className="text-sm text-destructive font-medium">Retry</Text>
-                  </Pressable>
+                  {tunnelReconnecting ? (
+                    <View className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1.5 self-start">
+                      <Text className="text-sm text-orange-600 dark:text-orange-400 font-medium">Reconnecting…</Text>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={handleRetry}
+                      className={`shrink-0 rounded-md border px-1 py-1.5 self-start ${
+                        isTunnelError
+                          ? 'border-orange-400/30'
+                          : 'border-destructive/30'
+                      }`}
+                    >
+                      <Text className={`text-sm font-medium ${
+                        isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
+                      }`}>{isTunnelError ? 'Reconnect' : 'Retry'}</Text>
+                    </Pressable>
+                  )}
                 </View>
               </View>
             </View>

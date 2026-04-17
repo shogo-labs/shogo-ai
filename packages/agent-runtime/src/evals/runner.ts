@@ -17,6 +17,7 @@ import type {
   CriterionResult,
   ToolCallRecord,
   EvalMetrics,
+  PromptBreakdown,
 } from './types'
 
 export interface EvalRunnerConfig {
@@ -25,6 +26,7 @@ export interface EvalRunnerConfig {
   verbose: boolean
   workspaceDir: string
   agentMode?: string
+  interactionMode?: 'agent' | 'plan' | 'ask'
 }
 
 const DEFAULT_CONFIG: EvalRunnerConfig = {
@@ -46,6 +48,7 @@ export interface ParsedAgentResponse {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  promptBreakdown?: PromptBreakdown
 }
 
 /**
@@ -56,7 +59,7 @@ export async function sendTurn(
   messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }>,
   config: EvalRunnerConfig,
 ): Promise<ParsedAgentResponse> {
-  const MAX_RETRIES = 3
+  const MAX_RETRIES = 8
   const RETRY_DELAY = 3_000
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -65,6 +68,12 @@ export async function sendTurn(
 
     try {
       const body: Record<string, unknown> = { messages }
+      if (config.interactionMode) {
+        body.interactionMode = config.interactionMode
+      }
+      if (config.agentMode) {
+        body.agentMode = config.agentMode
+      }
 
       const res = await fetch(config.agentEndpoint, {
         method: 'POST',
@@ -78,7 +87,8 @@ export async function sendTurn(
         const errBody = await res.text().catch(() => '(no body)')
         if (config.verbose) console.log(`      [sendTurn] HTTP ${res.status}: ${errBody.slice(0, 200)}`)
         if ((res.status >= 500 || res.status === 429) && attempt < MAX_RETRIES) {
-          await Bun.sleep(RETRY_DELAY * attempt)
+          const delay = res.status === 503 ? 5_000 : RETRY_DELAY * attempt
+          await Bun.sleep(delay)
           continue
         }
         throw new Error(`Agent API returned ${res.status}: ${errBody.slice(0, 200)}`)
@@ -124,6 +134,7 @@ async function parseSSEStream(
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
+  let promptBreakdown: PromptBreakdown | undefined
 
   const reader = response.body?.getReader()
   if (!reader) throw new Error('No response body')
@@ -221,6 +232,13 @@ async function parseSSEStream(
               }
               break
             }
+            case 'data-prompt-breakdown': {
+              promptBreakdown = data.data || data
+              if (verbose && promptBreakdown) {
+                console.log(`      [SSE] Prompt breakdown: ${promptBreakdown.sections?.length} sections, ~${promptBreakdown.grandEstTokens?.toLocaleString()} est tokens`)
+              }
+              break
+            }
             case 'error': {
               const errText = data.errorText || data.message || data.error || JSON.stringify(data)
               if (verbose) console.log(`      [SSE] ERROR event: ${errText}`)
@@ -243,7 +261,40 @@ async function parseSSEStream(
     console.log(`      [SSE] Complete: ${toolCalls.length} tools, ${stepCount} steps`)
   }
 
-  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
+  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, promptBreakdown }
+}
+
+// ---------------------------------------------------------------------------
+// Subagent tool call flattening
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract tool calls made by subagents from agent_spawn / agent_result outputs
+ * and append them to the flat toolCalls array with viaSubagent=true.
+ * This lets eval assertions check tools used inside subagents.
+ */
+function flattenSubagentToolCalls(toolCalls: ToolCallRecord[]): ToolCallRecord[] {
+  const nested: ToolCallRecord[] = []
+  for (const tc of toolCalls) {
+    if (tc.name !== 'agent_spawn' && tc.name !== 'agent_result') continue
+    const output = tc.output as any
+    if (!output || typeof output !== 'object') continue
+
+    const parts: any[] = output.parts || output.result?.parts
+    if (!Array.isArray(parts)) continue
+
+    for (const part of parts) {
+      if (part?.type !== 'tool' || !part.tool?.toolName) continue
+      nested.push({
+        name: part.tool.toolName,
+        input: part.tool.args ?? {},
+        output: part.tool.result,
+        error: part.tool.state === 'error',
+        viaSubagent: true,
+      })
+    }
+  }
+  return nested
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +315,7 @@ function checkAntiPattern(
     }
   }
 
-  if (p.includes('unnecessary') || p.includes('clarif')) {
+  if (p === 'unnecessary-clarification' || p === 'unnecessary-questions') {
     const questions = ['what kind', 'which one', 'do you want', 'would you prefer', 'could you clarify']
     return questions.some(q => responseText.toLowerCase().includes(q))
   }
@@ -294,17 +345,67 @@ export async function runEval(
   config: Partial<EvalRunnerConfig> = {},
 ): Promise<EvalResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config }
+  if (eval_.interactionMode && !cfg.interactionMode) {
+    cfg.interactionMode = eval_.interactionMode
+  }
   const startTime = Date.now()
   const errors: string[] = []
 
   let responseText = ''
   let toolCalls: ToolCallRecord[] = []
   let finalTurnToolCalls: ToolCallRecord[] = []
+  const perTurnToolCalls: ToolCallRecord[][] = []
   let stepCount = 0
   let inputTokens = 0
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
+  let promptBreakdown: PromptBreakdown | undefined
+
+  const askUserResponseQueue = [...(eval_.askUserResponses ?? [])]
+
+  function accumulate(resp: ParsedAgentResponse) {
+    stepCount += resp.stepCount
+    inputTokens += resp.inputTokens
+    outputTokens += resp.outputTokens
+    cacheReadTokens += resp.cacheReadTokens
+    cacheWriteTokens += resp.cacheWriteTokens
+    if (!promptBreakdown && resp.promptBreakdown) promptBreakdown = resp.promptBreakdown
+  }
+
+  function responseHasAskUser(resp: ParsedAgentResponse): boolean {
+    return resp.toolCalls.some(tc => tc.name === 'ask_user')
+  }
+
+  /**
+   * After an LLM-generated response, check if the agent called ask_user.
+   * If so and we have queued responses, send the next one as a follow-up
+   * user message and return the execution response. Repeats up to maxFollowUps
+   * times in case the agent asks again.
+   */
+  async function handleAskUserFollowUps(
+    messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }>,
+    resp: ParsedAgentResponse,
+  ): Promise<ParsedAgentResponse | null> {
+    const MAX_FOLLOW_UPS = 3
+    let current = resp
+    let lastExecResp: ParsedAgentResponse | null = null
+
+    for (let f = 0; f < MAX_FOLLOW_UPS; f++) {
+      if (!responseHasAskUser(current) || askUserResponseQueue.length === 0) break
+      const followUp = askUserResponseQueue.shift()!
+      if (cfg.verbose) console.log(`      [ask_user] Auto-responding (${f + 1}): ${followUp.slice(0, 80)}...`)
+      messages.push({ role: 'user', parts: [{ type: 'text', text: followUp }] })
+      const execResp = await sendTurn(messages, cfg)
+      messages.push({ role: 'assistant', parts: [{ type: 'text', text: execResp.text }] })
+      toolCalls.push(...execResp.toolCalls)
+      perTurnToolCalls.push(execResp.toolCalls)
+      accumulate(execResp)
+      lastExecResp = execResp
+      current = execResp
+    }
+    return lastExecResp
+  }
 
   try {
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
@@ -325,22 +426,22 @@ export async function runEval(
           messages.push({ role: 'user', parts: [{ type: 'text', text: turn.content }] })
           const nextTurn = history[i + 1]
           if (nextTurn?.role === 'assistant') {
-            // Use the scripted assistant response directly
             messages.push({ role: 'assistant', parts: [{ type: 'text', text: nextTurn.content }] })
-            i++ // skip the assistant turn in the loop
+            i++
           } else {
-            // No scripted response — generate one via the LLM
             try {
               const resp = await sendTurn(messages, cfg)
               messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
-              // Accumulate history turn tool calls so scoring considers the
-              // full conversation, not just the final turn (Issue 4 fix)
               toolCalls.push(...resp.toolCalls)
-              stepCount += resp.stepCount
-              inputTokens += resp.inputTokens
-              outputTokens += resp.outputTokens
-              cacheReadTokens += resp.cacheReadTokens
-              cacheWriteTokens += resp.cacheWriteTokens
+              perTurnToolCalls.push(resp.toolCalls)
+              accumulate(resp)
+
+              // If the agent asked clarifying questions, send eval-defined responses
+              try {
+                await handleAskUserFollowUps(messages, resp)
+              } catch (e: any) {
+                errors.push(`ask_user follow-up error: ${e.message}`)
+              }
             } catch (e: any) {
               errors.push(`History turn error: ${e.message}`)
             }
@@ -355,13 +456,30 @@ export async function runEval(
     responseText = response.text
     finalTurnToolCalls = response.toolCalls
     toolCalls.push(...response.toolCalls)
-    stepCount += response.stepCount
-    inputTokens += response.inputTokens
-    outputTokens += response.outputTokens
-    cacheReadTokens += response.cacheReadTokens
-    cacheWriteTokens += response.cacheWriteTokens
+    perTurnToolCalls.push(response.toolCalls)
+    accumulate(response)
+
+    // Handle ask_user on the final turn too
+    try {
+      const execResp = await handleAskUserFollowUps(messages, response)
+      if (execResp) {
+        responseText = execResp.text
+        finalTurnToolCalls = execResp.toolCalls
+      }
+    } catch (e: any) {
+      errors.push(`ask_user follow-up error: ${e.message}`)
+    }
   } catch (err: any) {
     errors.push(err.message)
+  }
+
+  // Flatten subagent tool calls so eval assertions can see tools used inside
+  // agent_spawn / agent_result (e.g. usedToolAnywhere checks).
+  const nestedCalls = flattenSubagentToolCalls(toolCalls)
+  if (nestedCalls.length > 0) {
+    toolCalls.push(...nestedCalls)
+    const nestedFinal = flattenSubagentToolCalls(finalTurnToolCalls)
+    if (nestedFinal.length > 0) finalTurnToolCalls.push(...nestedFinal)
   }
 
   const endTime = Date.now()
@@ -390,12 +508,14 @@ export async function runEval(
     responseText,
     toolCalls,
     finalTurnToolCalls,
+    perTurnToolCalls,
     criteriaResults: [],
     triggeredAntiPatterns: [],
     timing: { startTime, endTime, durationMs },
     metrics,
     errors: errors.length > 0 ? errors : undefined,
     workspaceDir: cfg.workspaceDir,
+    promptBreakdown,
   }
 
   let totalScore = 0

@@ -1,0 +1,32 @@
+{
+  "contextFloors": {
+    "claude-haiku-4-5-20251001": { "maxEffectiveContext": 30000 },
+    "claude-3-haiku-20240307": { "maxEffectiveContext": 20000 },
+    "gpt-5.4-mini": { "maxEffectiveContext": 30000 },
+    "gpt-5.4-nano": { "maxEffectiveContext": 20000 },
+    "gpt-4o-mini": { "maxEffectiveContext": 20000 },
+    "o1-mini": { "maxEffectiveContext": 30000 },
+    "o3-mini": { "maxEffectiveContext": 30000 },
+    "claude-sonnet-4-6": { "maxEffectiveContext": 80000 },
+    "gpt-5-mini": { "maxEffectiveContext": 80000 },
+    "o4-mini": { "maxEffectiveContext": 80000 },
+    "default": { "maxEffectiveContext": 30000 }
+  },
+  "highPrecisionTools": [
+    "deleteFile",
+    "moveFile",
+    "exec",
+    "deploy",
+    "publish",
+    "team_create",
+    "team_delete",
+    "prisma_migrate",
+    "sql_execute"
+  ],
+  "confidence": {
+    "highThreshold": 0.8
+  },
+  "escalation": {
+    "maxFallbackRetries": 1
+  }
+}

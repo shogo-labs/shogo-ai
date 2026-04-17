@@ -43,6 +43,8 @@ import {
   MessageSquare,
   Zap,
   CreditCard,
+  Cloud,
+  Server,
   Coins,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
@@ -59,12 +61,10 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import {
-  getTotalCreditsForPlan,
-  formatCredits,
-} from '../../lib/billing-config'
+import { getCreditsCapacityForDisplay, formatCredits } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
+import { ComputeTab } from '../../components/settings/ComputeTab'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -93,9 +93,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'analytics' | 'costs'
+type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'analytics', 'costs']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'compute', 'analytics', 'costs']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -110,6 +110,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
+  { id: 'compute', label: 'Compute', icon: Server },
   { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
   { id: 'costs', label: 'Costs', icon: Coins },
@@ -208,6 +209,7 @@ function SettingsSidebar({
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
     ...(showBilling
       ? [
+          { id: 'compute' as TabId, label: 'Compute' },
           { id: 'billing' as TabId, label: 'Billing' },
           { id: 'analytics' as TabId, label: 'Usage' },
           { id: 'costs' as TabId, label: 'Cost Optimizer' },
@@ -286,6 +288,194 @@ function SettingsSidebar({
         </View>
       ))}
     </View>
+  )
+}
+
+// ============================================================================
+// REMOTE ACCESS SECTION (local mode only)
+// ============================================================================
+
+function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
+  const [status, setStatus] = useState<{
+    connected: boolean
+    keyMask?: string
+    cloudUrl?: string
+    workspace?: { name: string } | null
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [apiKey, setApiKey] = useState('')
+  const [cloudUrl, setCloudUrl] = useState('https://studio.shogo.ai')
+  const [connecting, setConnecting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState(false)
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
+      const data = await res.json()
+      setStatus(data)
+      if (data.cloudUrl) setCloudUrl(data.cloudUrl)
+    } catch {
+      setStatus({ connected: false })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchStatus()
+  }, [fetchStatus])
+
+  const handleConnect = async () => {
+    if (!apiKey.trim()) return
+    setConnecting(true)
+    setConnectError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: apiKey.trim(), cloudUrl: cloudUrl.trim() }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        setConnectError(data.error || 'Failed to connect')
+        return
+      }
+      setApiKey('')
+      await fetchStatus()
+    } catch (err: any) {
+      setConnectError(err.message || 'Network error')
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const handleDisconnect = async () => {
+    setDisconnecting(true)
+    try {
+      await fetch(`${API_URL}/api/local/shogo-key`, { method: 'DELETE', credentials: 'include' })
+      await fetchStatus()
+    } catch {}
+    setDisconnecting(false)
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <Skeleton className="h-6 w-40 mb-2" />
+          <Skeleton className="h-4 w-60" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <View className="px-6 py-5">
+          <View className="flex-row items-center gap-2 mb-1">
+            <Cloud size={18} className="text-primary" />
+            <Text className="text-base font-semibold text-foreground">
+              Remote Access
+            </Text>
+          </View>
+          <Text className="text-sm text-muted-foreground">
+            Connect to Shogo Cloud to control this desktop from your phone or another computer.
+          </Text>
+        </View>
+
+        <Separator />
+
+        {status?.connected ? (
+          <View className="px-6 py-5 gap-4">
+            <View className="flex-row items-center gap-2">
+              <View className="h-2.5 w-2.5 rounded-full bg-green-500" />
+              <Text className="text-sm font-medium text-foreground">Connected to Shogo Cloud</Text>
+            </View>
+
+            <View className="gap-2.5">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">API Key</Text>
+                <Text className="text-sm font-mono text-foreground">{status.keyMask}</Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">Cloud URL</Text>
+                <Text className="text-sm text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
+              </View>
+              {status.workspace?.name && (
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm text-muted-foreground">Workspace</Text>
+                  <Text className="text-sm text-foreground">{status.workspace.name}</Text>
+                </View>
+              )}
+            </View>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleDisconnect}
+              disabled={disconnecting}
+              className="self-start"
+            >
+              <Text className="text-sm font-medium text-foreground">
+                {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              </Text>
+            </Button>
+          </View>
+        ) : (
+          <View className="px-6 py-5 gap-5">
+            <View className="gap-3">
+              <Text className="text-sm font-medium text-foreground">
+                Connect with API Key
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                Create an API key from your Shogo Cloud workspace, then paste it here.
+              </Text>
+              <View className="gap-2">
+                <View>
+                  <Text className="text-xs text-muted-foreground mb-1">Cloud URL</Text>
+                  <Input
+                    value={cloudUrl}
+                    onChangeText={setCloudUrl}
+                    placeholder="https://studio.shogo.ai"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+                <View>
+                  <Text className="text-xs text-muted-foreground mb-1">API Key</Text>
+                  <Input
+                    value={apiKey}
+                    onChangeText={setApiKey}
+                    placeholder="shogo_sk_..."
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry
+                  />
+                </View>
+              </View>
+
+              {connectError && (
+                <Text className="text-xs text-destructive">{connectError}</Text>
+              )}
+
+              <Button
+                onPress={handleConnect}
+                disabled={connecting || !apiKey.trim()}
+                size="sm"
+                className="self-start"
+              >
+                <Text className={cn('text-sm font-medium', apiKey.trim() && !connecting ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                  {connecting ? 'Connecting...' : 'Connect'}
+                </Text>
+              </Button>
+            </View>
+          </View>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -482,6 +672,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
           )}
         </CardContent>
       </Card>
+
+      {localMode && <RemoteAccessSection workspaceId={currentWorkspace?.id} />}
 
       {!localMode && (
         <>
@@ -964,6 +1156,12 @@ const ROLE_COLORS: Record<string, string> = {
 type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
 type SortDir = 'asc' | 'desc'
 
+function formatCreditsLabel(value: number): string {
+  if (value === 0) return '0 credits'
+  if (value < 0.01) return '<0.01 credits'
+  return `${value.toFixed(2)} credits`
+}
+
 const PeopleTab = observer(function PeopleTab() {
   const { width } = useWindowDimensions()
   const isMobilePeopleLayout = width < SETTINGS_WIDE_BREAKPOINT
@@ -991,6 +1189,7 @@ const PeopleTab = observer(function PeopleTab() {
   const [processingInvite, setProcessingInvite] = useState<{ id: string; action: 'accept' | 'decline' } | null>(null)
 
   const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
+  const [memberUsage, setMemberUsage] = useState<{ monthly: Record<string, number>; total: Record<string, number> }>({ monthly: {}, total: {} })
 
   const loadPeopleData = useCallback(async () => {
     if (!currentWorkspace?.id) {
@@ -1022,6 +1221,11 @@ const PeopleTab = observer(function PeopleTab() {
             }
           }
           setUserMap(map)
+        } catch {}
+
+        try {
+          const usage = await api.getMemberUsageStats(http, ws.id)
+          setMemberUsage(usage)
         } catch {}
 
         if (user?.email) {
@@ -1080,10 +1284,12 @@ const PeopleTab = observer(function PeopleTab() {
       if (sortField === 'name') cmp = (a.userId || '').localeCompare(b.userId || '')
       else if (sortField === 'role') cmp = (a.role || '').localeCompare(b.role || '')
       else if (sortField === 'joinedDate') cmp = (a.createdAt || 0) - (b.createdAt || 0)
+      else if (sortField === 'usage') cmp = (memberUsage.monthly[a.userId] ?? 0) - (memberUsage.monthly[b.userId] ?? 0)
+      else if (sortField === 'totalUsage') cmp = (memberUsage.total[a.userId] ?? 0) - (memberUsage.total[b.userId] ?? 0)
       return sortDir === 'desc' ? -cmp : cmp
     })
     return result
-  }, [workspaceMembers, search, roleFilter, sortField, sortDir])
+  }, [workspaceMembers, search, roleFilter, sortField, sortDir, memberUsage])
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -1162,40 +1368,63 @@ const PeopleTab = observer(function PeopleTab() {
     </View>
   )
 
+  /** Keeps header/body aligned: name flexes separately so usage columns stay evenly spaced, not shoved to the edge. */
+  const peopleNameCol = cn(
+    'flex-1 min-w-0',
+    isMobilePeopleLayout && 'min-w-[200px]',
+    !isMobilePeopleLayout && 'max-w-md'
+  )
+  const peopleMetricsRow = 'flex-row items-center gap-x-5 shrink-0'
+  const colRole = 'w-[104px]'
+  const colJoined = 'w-[128px]'
+  const colUsage = 'w-[140px]'
+  const colCredit = 'w-[120px]'
+  const colActions = 'w-11 items-center justify-center pr-1'
+
   const memberListTable = (
     <>
-      <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
+      <View className="flex-row items-center justify-between gap-4 px-4 py-2.5 pr-5 border-b border-border bg-muted/30">
         <Pressable
           onPress={() => handleSort('name')}
-          className={cn('flex-row items-center flex-[2]', isMobilePeopleLayout && 'min-w-[200px] shrink-0')}
+          className={cn('flex-row items-center', peopleNameCol)}
         >
           <Text className="text-xs font-medium text-muted-foreground">Name</Text>
           <SortArrow field="name" />
         </Pressable>
-        <Pressable
-          onPress={() => handleSort('role')}
-          className={cn('flex-row items-center w-24', isMobilePeopleLayout && 'shrink-0')}
-        >
-          <Text className="text-xs font-medium text-muted-foreground">Role</Text>
-          <SortArrow field="role" />
-        </Pressable>
-        <Pressable
-          onPress={() => handleSort('joinedDate')}
-          className={cn('flex-row items-center w-28', isMobilePeopleLayout && 'shrink-0')}
-        >
-          <Text className="text-xs font-medium text-muted-foreground">Joined date</Text>
-          <SortArrow field="joinedDate" />
-        </Pressable>
-        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">{currentMonth} usage</Text>
+        <View className={peopleMetricsRow}>
+          <Pressable
+            onPress={() => handleSort('role')}
+            className={cn('flex-row items-center', colRole)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground">Role</Text>
+            <SortArrow field="role" />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSort('joinedDate')}
+            className={cn('flex-row items-center', colJoined)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground">Joined date</Text>
+            <SortArrow field="joinedDate" />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSort('usage')}
+            className={cn('flex-row items-center justify-end', colUsage)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">{currentMonth} usage</Text>
+            <SortArrow field="usage" />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSort('totalUsage')}
+            className={cn('flex-row items-center justify-end', colUsage)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">Total usage</Text>
+            <SortArrow field="totalUsage" />
+          </Pressable>
+          <View className={cn(colCredit, 'items-end')}>
+            <Text className="text-xs font-medium text-muted-foreground text-right">Credit limit</Text>
+          </View>
+          <View className={colActions} />
         </View>
-        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">Total usage</Text>
-        </View>
-        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">Credit limit</Text>
-        </View>
-        <View className={cn('w-8', isMobilePeopleLayout && 'shrink-0')} />
       </View>
 
       {filteredMembers.map((member: any) => {
@@ -1208,14 +1437,9 @@ const PeopleTab = observer(function PeopleTab() {
         return (
           <View
             key={member.id}
-            className="flex-row items-center px-4 py-3 border-b border-border overflow-visible"
+            className="flex-row items-center justify-between gap-4 px-4 py-3 pr-5 border-b border-border overflow-visible"
           >
-            <View
-              className={cn(
-                'flex-row items-center flex-[2] gap-3',
-                isMobilePeopleLayout && 'min-w-[200px] shrink-0'
-              )}
-            >
+            <View className={cn('flex-row items-center gap-3', peopleNameCol)}>
               <View className={cn('h-8 w-8 rounded-full items-center justify-center shrink-0', avatarColor)}>
                 <Text className="text-xs font-semibold text-white">{initial}</Text>
               </View>
@@ -1234,61 +1458,68 @@ const PeopleTab = observer(function PeopleTab() {
               </View>
             </View>
 
-            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-              {canManageMembers && !isCurrentUser ? (
-                <Pressable
-                  onPress={() => setMenuState(
-                    menuState?.memberId === member.id && menuState?.view === 'roles'
-                      ? null
-                      : { memberId: member.id, view: 'roles' }
-                  )}
-                  className="flex-row items-center gap-1"
-                >
+            <View className={peopleMetricsRow}>
+              <View className={colRole}>
+                {canManageMembers && !isCurrentUser ? (
+                  <Pressable
+                    onPress={() => setMenuState(
+                      menuState?.memberId === member.id && menuState?.view === 'roles'
+                        ? null
+                        : { memberId: member.id, view: 'roles' }
+                    )}
+                    className="flex-row items-center gap-1"
+                  >
+                    <Text className="text-sm text-foreground capitalize">
+                      {ROLE_DISPLAY[member.role] || member.role}
+                    </Text>
+                    <ChevronDown size={12} className="text-muted-foreground" />
+                  </Pressable>
+                ) : (
                   <Text className="text-sm text-foreground capitalize">
                     {ROLE_DISPLAY[member.role] || member.role}
                   </Text>
-                  <ChevronDown size={12} className="text-muted-foreground" />
-                </Pressable>
-              ) : (
-                <Text className="text-sm text-foreground capitalize">
-                  {ROLE_DISPLAY[member.role] || member.role}
+                )}
+              </View>
+
+              <View className={colJoined}>
+                <Text className="text-sm text-foreground">
+                  {member.createdAt
+                    ? new Date(member.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    : '—'}
                 </Text>
-              )}
-            </View>
+              </View>
 
-            <View className={cn('w-28', isMobilePeopleLayout && 'shrink-0')}>
-              <Text className="text-sm text-foreground">
-                {member.createdAt
-                  ? new Date(member.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                  : '—'}
-              </Text>
-            </View>
+              <View className={cn(colUsage, 'items-end')}>
+                <Text className="text-sm text-foreground text-right tabular-nums">
+                  {formatCreditsLabel(memberUsage.monthly[member.userId] ?? 0)}
+                </Text>
+              </View>
 
-            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-              <Text className="text-sm text-foreground">0 credits</Text>
-            </View>
+              <View className={cn(colUsage, 'items-end')}>
+                <Text className="text-sm text-foreground text-right tabular-nums">
+                  {formatCreditsLabel(memberUsage.total[member.userId] ?? 0)}
+                </Text>
+              </View>
 
-            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-              <Text className="text-sm text-foreground">0 credits</Text>
-            </View>
+              <View className={cn(colCredit, 'items-end')}>
+                <Text className="text-sm text-foreground text-right tabular-nums">—</Text>
+              </View>
 
-            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-              <Text className="text-sm text-foreground">—</Text>
-            </View>
-
-            <View className={cn('w-8', isMobilePeopleLayout && 'shrink-0')}>
-              {canManageMembers && !isCurrentUser ? (
-                <Pressable
-                  onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
-                  className="items-center"
-                >
-                  <Text className="text-muted-foreground">···</Text>
-                </Pressable>
-              ) : (
-                <View className="items-center">
-                  <Text className="text-muted-foreground/30">···</Text>
-                </View>
-              )}
+              <View className={colActions}>
+                {canManageMembers && !isCurrentUser ? (
+                  <Pressable
+                    onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
+                    className="items-center justify-center min-w-[44px] min-h-[44px] -mr-1"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text className="text-muted-foreground">···</Text>
+                  </Pressable>
+                ) : (
+                  <View className="items-center justify-center min-w-[44px] min-h-[44px] -mr-1">
+                    <Text className="text-muted-foreground/30">···</Text>
+                  </View>
+                )}
+              </View>
             </View>
           </View>
         )
@@ -2119,8 +2350,22 @@ function InviteMembersModal({
 
 function BillingTab() {
   const router = useRouter()
+  const http = useDomainHttp()
   const workspace = useActiveWorkspace()
   const { subscription, effectiveBalance } = useBillingData(workspace?.id)
+  const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspace?.id) return
+    let cancelled = false
+    api.getWorkspaceInstance(http, workspace.id).then((inst: any) => {
+      if (cancelled || !inst) return
+      const size = inst.size ?? 'micro'
+      const labels: Record<string, string> = { micro: 'Micro (0.5 CPU, 2 GB)', small: 'Small (1 CPU, 4 GB)', medium: 'Medium (2 CPU, 8 GB)', large: 'Large (4 CPU, 16 GB)', xlarge: 'XLarge (8 CPU, 32 GB)' }
+      setInstanceLabel(labels[size] ?? size)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [http, workspace?.id])
 
   const planId = subscription?.planId?.toLowerCase() ?? 'free'
   const planLabel = planId.startsWith('enterprise')
@@ -2133,8 +2378,13 @@ function BillingTab() {
           ? 'Basic'
           : 'Free'
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const totalCredits = getTotalCreditsForPlan(hasActiveSubscription ? subscription?.planId : undefined)
-  const creditsUsed = totalCredits - (effectiveBalance?.total ?? 0)
+  const totalCredits = getCreditsCapacityForDisplay(
+    hasActiveSubscription ? subscription?.planId : undefined,
+    effectiveBalance?.total,
+    effectiveBalance?.monthlyAllocation,
+  )
+  const creditsRemaining = effectiveBalance?.total ?? 0
+  const creditsUsed = Math.max(0, totalCredits - creditsRemaining)
   const usagePct = totalCredits > 0 ? Math.min(100, Math.round((creditsUsed / totalCredits) * 100)) : 0
 
   if (!workspace?.id) {
@@ -2192,6 +2442,16 @@ function BillingTab() {
                 : 'Loading...'}
             </Text>
           </View>
+
+          {instanceLabel && (
+            <>
+              <Separator />
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-muted-foreground">Instance</Text>
+                <Text className="text-sm font-medium text-foreground">{instanceLabel}</Text>
+              </View>
+            </>
+          )}
 
           <Separator />
 
@@ -2309,6 +2569,7 @@ function WorkspaceAnalyticsTab() {
         logLoading={usageLog.loading}
         onLogPageChange={setLogPage}
         logPage={logPage}
+        isLocalMode={localMode}
       />
 
       {isBusinessOrHigher ? (
@@ -2398,6 +2659,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'people' && !isLocal && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
+      {activeTab === 'compute' && !isLocal && <ComputeTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
       {activeTab === 'costs' && <WorkspaceCostTab />}
@@ -2424,6 +2686,7 @@ export default observer(function SettingsPage() {
   useEffect(() => {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'compute' && isLocal) setActiveTab('workspace')
     if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 

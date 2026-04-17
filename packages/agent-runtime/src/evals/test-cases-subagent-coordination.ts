@@ -28,8 +28,10 @@ import {
 // Validation helpers
 // ---------------------------------------------------------------------------
 
+const AGENT_TOOLS = ['agent_create', 'agent_spawn']
+
 function agentCreateCount(r: EvalResult): number {
-  return r.toolCalls.filter(tc => tc.name === 'agent_create').length
+  return r.toolCalls.filter(tc => AGENT_TOOLS.includes(tc.name)).length
 }
 
 function agentSpawnCount(r: EvalResult): number {
@@ -65,7 +67,7 @@ function allTextLower(r: EvalResult): string {
 
 function agentCreatePromptsContain(r: EvalResult, term: string): boolean {
   return r.toolCalls
-    .filter(tc => tc.name === 'agent_create')
+    .filter(tc => AGENT_TOOLS.includes(tc.name))
     .some(tc => {
       const input = JSON.stringify(tc.input).toLowerCase()
       return input.includes(term.toLowerCase())
@@ -74,7 +76,7 @@ function agentCreatePromptsContain(r: EvalResult, term: string): boolean {
 
 function anyAgentUsesModelTier(r: EvalResult, tier: string): boolean {
   return r.toolCalls
-    .filter(tc => tc.name === 'agent_create')
+    .filter(tc => AGENT_TOOLS.includes(tc.name))
     .some(tc => {
       const input = tc.input as Record<string, any>
       return input.model_tier === tier || input.model === tier
@@ -83,7 +85,7 @@ function anyAgentUsesModelTier(r: EvalResult, tier: string): boolean {
 
 function agentCreateIncludesTool(r: EvalResult, tool: string): boolean {
   return r.toolCalls
-    .filter(tc => tc.name === 'agent_create')
+    .filter(tc => AGENT_TOOLS.includes(tc.name))
     .some(tc => JSON.stringify(tc.input).toLowerCase().includes(tool.toLowerCase()))
 }
 
@@ -483,7 +485,7 @@ const PHASE_1: AgentEval = {
         const readIdx = r.toolCalls.findIndex(tc =>
           tc.name === 'read_file' && JSON.stringify(tc.input).includes('data/'),
         )
-        const createIdx = r.toolCalls.findIndex(tc => tc.name === 'agent_create')
+        const createIdx = r.toolCalls.findIndex(tc => AGENT_TOOLS.includes(tc.name))
         return readIdx >= 0 && createIdx >= 0 && readIdx < createIdx
       },
     },
@@ -493,7 +495,7 @@ const PHASE_1: AgentEval = {
       points: 4,
       phase: 'execution',
       validate: (r) => {
-        const createCalls = r.toolCalls.filter(tc => tc.name === 'agent_create')
+        const createCalls = r.toolCalls.filter(tc => AGENT_TOOLS.includes(tc.name))
         const withWrite = createCalls.filter(tc => {
           const json = JSON.stringify(tc.input).toLowerCase()
           return json.includes('write_file') || json.includes('edit_file')

@@ -36,10 +36,7 @@ function setupWorkspace(extras?: Record<string, string>) {
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     })
   )
-  writeFileSync(join(TEST_DIR, 'AGENTS.md'), '# Agent\nYou are a helpful AI agent.')
-  writeFileSync(join(TEST_DIR, 'SOUL.md'), '# Soul\nBe concise and take action.')
-  writeFileSync(join(TEST_DIR, 'IDENTITY.md'), '# Identity\nTest Agent')
-  writeFileSync(join(TEST_DIR, 'USER.md'), '# User\nAlex, timezone: America/Los_Angeles')
+  writeFileSync(join(TEST_DIR, 'AGENTS.md'), '# Identity\nTest Agent\n\n# Personality\nBe concise and take action.\n\n# User\nAlex, timezone: America/Los_Angeles\n\n# Operating Instructions\nYou are a helpful AI agent.')
   writeFileSync(join(TEST_DIR, 'MEMORY.md'), '# Memory\n- User prefers TypeScript\n- Project uses Bun')
 
   for (const [file, content] of Object.entries(extras || {})) {

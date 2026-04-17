@@ -23,6 +23,8 @@ import {
   unlinkSync,
   readdirSync,
   statSync,
+  lstatSync,
+  symlinkSync,
   rmSync,
   renameSync,
   cpSync,
@@ -34,9 +36,8 @@ import {
   configureAIProxy,
   StreamBufferStore,
 } from '@shogo/shared-runtime'
-import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
-import { AgentGateway } from './gateway'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -45,7 +46,6 @@ import { WebhookAdapter } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
-import { CanvasFileWatcher } from './canvas-file-watcher'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -79,8 +79,13 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 // Shared Server Framework (handles OTEL, CORS, auth, health, pool/assign)
 // =============================================================================
 
-let agentGateway: AgentGateway | null = null
+let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
+
+const workspaceStatus = {
+  templateSeeded: false,
+  depsInstalled: false,
+}
 
 const { app, state, logTiming } = await createRuntimeApp({
   name: 'agent-runtime',
@@ -89,12 +94,91 @@ const { app, state, logTiming } = await createRuntimeApp({
   internalPaths: ['/agent/heartbeat/trigger'],
   authPrefixes: ['/agent', '/pool'],
   async onAssign(projectId, envVars) {
-    // Clean workspace to prevent cross-project file leakage
-    for (const subdir of ['files', 'memory', 'skills']) {
-      const dirPath = join(WORKSPACE_DIR, subdir)
-      if (existsSync(dirPath)) {
-        rmSync(dirPath, { recursive: true, force: true })
-        mkdirSync(dirPath, { recursive: true })
+    const hostWorkspacesRoot = '/host-workspaces'
+    const sentinelPath = '/tmp/shogo-current-project'
+
+    // --- Re-assignment cleanup: remove orphaned state from previous project ---
+    try {
+      if (existsSync(sentinelPath)) {
+        const oldProjectId = readFileSync(sentinelPath, 'utf-8').trim()
+        if (oldProjectId && oldProjectId !== projectId) {
+          const oldLocalState = `/tmp/shogo-local/${oldProjectId}`
+          if (existsSync(oldLocalState)) {
+            rmSync(oldLocalState, { recursive: true, force: true })
+          }
+          // If /workspace is a stale symlink, remove it so we can recreate below
+          try {
+            const st = lstatSync(WORKSPACE_DIR)
+            if (st.isSymbolicLink()) unlinkSync(WORKSPACE_DIR)
+          } catch {}
+        }
+      }
+    } catch { /* best-effort cleanup */ }
+
+    // Persist current project so the next re-assignment can clean up
+    writeFileSync(sentinelPath, projectId, 'utf-8')
+
+    // --- Decide mount mode: per-project env > boot-time flag ---
+    // MOUNT_WORKSPACE comes from buildProjectEnv (per-project setting).
+    // VM_WORKSPACE_MOUNTED is the boot-time indicator that 9p is available.
+    const perProjectMount = process.env.MOUNT_WORKSPACE
+    const ninePAvailable = process.env.VM_WORKSPACE_MOUNTED === 'true'
+    let useMount = ninePAvailable && perProjectMount !== 'false'
+
+    // Graceful fallback: if mount requested but 9p device is absent, warn and use overlay
+    if (useMount && !existsSync(hostWorkspacesRoot)) {
+      console.warn(`[onAssign] MOUNT_WORKSPACE requested but ${hostWorkspacesRoot} not found — falling back to overlay mode`)
+      useMount = false
+    }
+
+    if (useMount) {
+      // --- Mounted mode: symlink /workspace -> /host-workspaces/<projectId> ---
+      const projectWorkspace = join(hostWorkspacesRoot, projectId)
+      mkdirSync(projectWorkspace, { recursive: true })
+      try {
+        const st = lstatSync(WORKSPACE_DIR)
+        if (st.isSymbolicLink() || st.isFile()) unlinkSync(WORKSPACE_DIR)
+        else if (st.isDirectory()) rmSync(WORKSPACE_DIR, { recursive: true, force: true })
+      } catch {}
+      symlinkSync(projectWorkspace, WORKSPACE_DIR)
+
+      // Keep .shogo/ on the local overlay disk (SQLite doesn't work on 9p).
+      const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
+      mkdirSync(localShogoDir, { recursive: true })
+      const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+      try { lstatSync(workspaceShogoDir); rmSync(workspaceShogoDir, { recursive: true, force: true }) } catch {}
+      symlinkSync(localShogoDir, workspaceShogoDir)
+
+      // Suppress .virtfs_metadata in git (created by 9p security_model=mapped-file)
+      try {
+        const gitignorePath = join(WORKSPACE_DIR, '.gitignore')
+        if (existsSync(gitignorePath)) {
+          const content = readFileSync(gitignorePath, 'utf-8')
+          if (!content.includes('.virtfs_metadata')) {
+            writeFileSync(gitignorePath, content.trimEnd() + '\n.virtfs_metadata\n', 'utf-8')
+          }
+        }
+      } catch { /* best-effort */ }
+    } else {
+      // --- Isolated mode: /workspace stays on overlay disk ---
+      // Ensure /workspace is a real directory (not a stale symlink)
+      try {
+        const st = lstatSync(WORKSPACE_DIR)
+        if (st.isSymbolicLink()) {
+          unlinkSync(WORKSPACE_DIR)
+          mkdirSync(WORKSPACE_DIR, { recursive: true })
+        }
+      } catch {
+        mkdirSync(WORKSPACE_DIR, { recursive: true })
+      }
+
+      // Clean workspace to prevent cross-project file leakage
+      for (const subdir of ['files', 'memory', 'skills']) {
+        const dirPath = join(WORKSPACE_DIR, subdir)
+        if (existsSync(dirPath)) {
+          rmSync(dirPath, { recursive: true, force: true })
+          mkdirSync(dirPath, { recursive: true })
+        }
       }
     }
 
@@ -111,13 +195,14 @@ const { app, state, logTiming } = await createRuntimeApp({
     const stats = sm?.getAllStats() ?? []
     const now = Date.now()
     const lastSessionActivity = stats.reduce(
-      (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
+      (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity }
+    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams }
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,
+    workspace: workspaceStatus,
   }),
 })
 
@@ -201,7 +286,10 @@ function ensureWorkspaceFiles(): void {
   // For non-JS stacks like python-data, we skip the runtime template.
   const jsStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
   if (!techStackId || jsStacks.has(techStackId)) {
-    seedRuntimeTemplate(WORKSPACE_DIR)
+    const seeded = seedRuntimeTemplate(WORKSPACE_DIR)
+    workspaceStatus.templateSeeded = seeded || existsSync(join(WORKSPACE_DIR, 'package.json'))
+  } else {
+    workspaceStatus.templateSeeded = true
   }
 }
 
@@ -615,7 +703,7 @@ app.post('/agent/chat', async (c) => {
   }
 
   // Save uploaded files to the agent's files/ directory so they're accessible
-  // to the agent via its workspace tools (read_file, list_files, etc.)
+  // to the agent via its workspace tools (read_file, search, etc.)
   if (userFileParts.length > 0) {
     mkdirSync(FILES_DIR, { recursive: true })
     const savedPaths: string[] = []
@@ -735,9 +823,16 @@ app.post('/agent/chat', async (c) => {
 
         const usage = agentGateway!.consumeLastTurnUsage()
         if (usage) {
+          const dollarCost = calculateDollarCost(
+            usage.model,
+            usage.inputTokens,
+            usage.outputTokens,
+            usage.cacheReadTokens,
+            usage.cacheWriteTokens,
+          )
           writer.write({
             type: 'data-usage',
-            data: usage,
+            data: { ...usage, dollarCost },
           } as any)
         }
 
@@ -920,6 +1015,63 @@ app.get('/agent/plans/:filename', async (c) => {
   return c.json({ filename, content })
 })
 
+app.put('/agent/plans/:filename', async (c) => {
+  const filename = c.req.param('filename')
+  if (!filename || !filename.endsWith('.plan.md')) {
+    return c.json({ error: 'Invalid plan filename' }, 400)
+  }
+  const filepath = join(WORKSPACE_DIR, '.shogo', 'plans', filename)
+  if (!existsSync(filepath)) {
+    return c.json({ error: 'Plan not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({} as any))
+  const existing = readFileSync(filepath, 'utf-8')
+  const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/)
+  if (!fmMatch) {
+    return c.json({ error: 'Could not parse plan frontmatter' }, 500)
+  }
+
+  const fm = fmMatch[1]
+  const existingName = fm.match(/name:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+  const existingOverview = fm.match(/overview:\s*"?([^"\n]*)"?/)?.[1] ?? ''
+  const existingBody = existing.substring(existing.indexOf('---', 4) + 3).trim()
+  const existingCreatedAt = fm.match(/createdAt:\s*"?([^"\n]*)"?/)?.[1] ?? new Date().toISOString()
+  const existingStatus = fm.match(/status:\s*(\S+)/)?.[1] ?? 'pending'
+
+  const updatedName = body.name ?? existingName
+  const updatedOverview = body.overview ?? existingOverview
+  const updatedBody = body.plan ?? existingBody.replace(/^#[^\n]*\n*/, '')
+
+  let todosYaml: string
+  if (body.todos && Array.isArray(body.todos)) {
+    todosYaml = body.todos.map((t: any) =>
+      `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: ${t.status ?? 'pending'}`
+    ).join('\n')
+  } else {
+    const todosMatch = fm.match(/todos:\n([\s\S]*)$/)
+    todosYaml = todosMatch?.[1]?.trimEnd() ?? ''
+  }
+
+  const content = [
+    '---',
+    `name: ${JSON.stringify(updatedName)}`,
+    `overview: ${JSON.stringify(updatedOverview)}`,
+    `createdAt: ${JSON.stringify(existingCreatedAt)}`,
+    `status: ${body.status ?? existingStatus}`,
+    'todos:',
+    todosYaml,
+    '---',
+    '',
+    `# ${updatedName}`,
+    '',
+    updatedBody,
+  ].join('\n')
+
+  writeFileSync(filepath, content, 'utf-8')
+  return c.json({ updated: true, filename })
+})
+
 app.delete('/agent/plans/:filename', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || !filename.endsWith('.plan.md')) {
@@ -970,8 +1122,13 @@ function getPreviewManager(): PreviewManager {
 // Canvas File Watcher (canvas v2 mode — lazy init)
 // ---------------------------------------------------------------------------
 
-function getCanvasFileWatcher(): CanvasFileWatcher {
-  return CanvasFileWatcher.getInstance(WORKSPACE_DIR)
+let _canvasFileWatcher: any = null
+function getCanvasFileWatcher(): any {
+  if (!_canvasFileWatcher) {
+    const { CanvasFileWatcher } = require('./canvas-file-watcher')
+    _canvasFileWatcher = CanvasFileWatcher.getInstance(WORKSPACE_DIR)
+  }
+  return _canvasFileWatcher
 }
 
 app.get('/preview/status', (c) => {
@@ -1162,7 +1319,7 @@ app.post('/agent/hooks/agent', async (c) => {
       const response = await agentGateway!.processWebhookMessage(message)
       if (deliver && channel && to) {
         const status = agentGateway!.getStatus()
-        const connected = status.channels.find((ch) => ch.type === channel && ch.connected)
+        const connected = status.channels.find((ch: any) => ch.type === channel && ch.connected)
         if (connected) {
           // Deliver through the gateway's test message path for now
           console.log(`[agent-runtime] Webhook: delivering to ${channel}:${to}`)
@@ -1279,6 +1436,21 @@ app.delete('/agent/tool-mocks', (c) => {
   return c.json({ ok: true })
 })
 
+app.post('/agent/workspace/seed', async (c) => {
+  const body = await c.req.json<{ files: Record<string, string> }>()
+  if (!body?.files || typeof body.files !== 'object') {
+    return c.json({ error: 'Expected { files: { [path]: content } }' }, 400)
+  }
+  let written = 0
+  for (const [relPath, content] of Object.entries(body.files)) {
+    const absPath = join(WORKSPACE_DIR, relPath)
+    mkdirSync(dirname(absPath), { recursive: true })
+    writeFileSync(absPath, content, 'utf-8')
+    written++
+  }
+  return c.json({ ok: true, written })
+})
+
 // Heartbeat trigger (called by external HeartbeatScheduler).
 // ACKs immediately and runs the heartbeat asynchronously so the scheduler
 // doesn't block. Reports completion back to the API when done.
@@ -1334,7 +1506,7 @@ app.post('/agent/permission-response', async (c) => {
 // Workspace file read/write endpoints
 app.get('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')
-  const allowedFiles = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json']
+  const allowedFiles = ['AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json']
 
   if (!allowedFiles.includes(filename)) {
     return c.json({ error: `File not allowed: ${filename}` }, 400)
@@ -1351,7 +1523,7 @@ app.get('/agent/files/:filename', async (c) => {
 
 app.put('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')
-  const allowedFiles = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json']
+  const allowedFiles = ['AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json']
 
   if (!allowedFiles.includes(filename)) {
     return c.json({ error: `File not allowed: ${filename}` }, 400)
@@ -1411,7 +1583,27 @@ function mimeToExtension(mimeType: string): string {
   return MIME_EXTENSIONS[mimeType] || `.${mimeType.split('/').pop() || 'bin'}`
 }
 
-function walkFilesTree(dir: string, rootDir: string): any[] {
+const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
+  'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
+  'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
+  'memory', 'scripts',
+])
+
+const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
+  'bun.lock', '.virtfs_metadata',
+  'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md',
+  'package.json', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts',
+  'postcss.config.js', 'postcss.config.mjs', 'components.json',
+  'pyrightconfig.json', 'LICENSE', 'README.md',
+  '.app-template',
+])
+
+function walkFilesTree(
+  dir: string,
+  rootDir: string,
+  excludeDirs?: Set<string>,
+  excludeFiles?: Set<string>,
+): any[] {
   if (!existsSync(dir)) return []
   const results: any[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1420,14 +1612,16 @@ function walkFilesTree(dir: string, rootDir: string): any[] {
     const relPath = absPath.slice(rootDir.length + 1)
     const stat = statSync(absPath)
     if (entry.isDirectory()) {
+      if (excludeDirs?.has(entry.name)) continue
       results.push({
         name: entry.name,
         path: relPath,
         type: 'directory',
         modified: stat.mtimeMs,
-        children: walkFilesTree(absPath, rootDir),
+        children: walkFilesTree(absPath, rootDir, excludeDirs, excludeFiles),
       })
     } else {
+      if (excludeFiles?.has(entry.name)) continue
       results.push({
         name: entry.name,
         path: relPath,
@@ -1440,33 +1634,84 @@ function walkFilesTree(dir: string, rootDir: string): any[] {
   return results
 }
 
+// Bundle all workspace files for project export (called by the API server in K8s mode)
+const BUNDLE_EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', 'dist', '.cache', '.next', 'build', '.turbo', '.expo',
+])
+const BUNDLE_MAX_FILE_SIZE = 10 * 1024 * 1024
+
+function collectBundleFiles(dir: string, baseDir: string): Record<string, string> {
+  const files: Record<string, string> = {}
+  if (!existsSync(dir)) return files
+
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (BUNDLE_EXCLUDED_DIRS.has(entry.name)) continue
+    if (entry.name.startsWith('.install-ok')) continue
+
+    const fullPath = join(dir, entry.name)
+    const relPath = require('path').relative(baseDir, fullPath).replace(/\\/g, '/')
+
+    if (entry.isDirectory()) {
+      Object.assign(files, collectBundleFiles(fullPath, baseDir))
+    } else if (entry.isFile()) {
+      try {
+        const stat = statSync(fullPath)
+        if (stat.size > BUNDLE_MAX_FILE_SIZE) continue
+        const buf = readFileSync(fullPath)
+        files[relPath] = Buffer.from(buf).toString('base64')
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+  return files
+}
+
+app.get('/agent/workspace/bundle', (c) => {
+  const files = collectBundleFiles(WORKSPACE_DIR, WORKSPACE_DIR)
+  return c.json({ files })
+})
+
+function resolveWorkspacePath(subPath: string): string | null {
+  const resolved = resolve(WORKSPACE_DIR, subPath)
+  if (!resolved.startsWith(resolve(WORKSPACE_DIR))) return null
+  return resolved
+}
+
 // Recursive file tree for the file browser UI
 app.get('/agent/workspace/tree', (c) => {
-  mkdirSync(FILES_DIR, { recursive: true })
-  const tree = walkFilesTree(FILES_DIR, resolve(FILES_DIR))
+  const tree = walkFilesTree(WORKSPACE_DIR, resolve(WORKSPACE_DIR), WORKSPACE_TREE_EXCLUDE_DIRS, WORKSPACE_TREE_EXCLUDE_FILES)
   return c.json({ tree })
 })
 
-// Read a file from files/
+// Read a file from the workspace
 app.get('/agent/workspace/files/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
-  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
+  const resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
+  if (!existsSync(resolved)) {
+    const fallback = resolveFilesPath(subPath)
+    if (fallback && existsSync(fallback)) {
+      const content = readFileSync(fallback, 'utf-8')
+      return c.json({ path: subPath, content, bytes: content.length })
+    }
+    return c.json({ error: 'File not found' }, 404)
+  }
 
   const content = readFileSync(resolved, 'utf-8')
   return c.json({ path: subPath, content, bytes: content.length })
 })
 
-// Write/create a file in files/
+// Write/create a file in the workspace
 app.put('/agent/workspace/files/*', async (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  const resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
 
   const { content } = await c.req.json()
   const dir = dirname(resolved)
@@ -1476,13 +1721,13 @@ app.put('/agent/workspace/files/*', async (c) => {
   return c.json({ ok: true, path: subPath, bytes: content.length })
 })
 
-// Delete a file from files/
+// Delete a file from the workspace
 app.delete('/agent/workspace/files/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/files/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  const resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
   if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
 
   unlinkSync(resolved)
@@ -1553,13 +1798,13 @@ app.get('/agent/workspace/download/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/download/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  let resolved = resolveFilesPath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  let resolved = resolveWorkspacePath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
 
   if (!existsSync(resolved)) {
-    const wsRoot = resolve(WORKSPACE_DIR, subPath)
-    if (wsRoot.startsWith(resolve(WORKSPACE_DIR)) && existsSync(wsRoot) && /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(subPath)) {
-      resolved = wsRoot
+    const fallback = resolveFilesPath(subPath)
+    if (fallback && existsSync(fallback)) {
+      resolved = fallback
     } else {
       return c.json({ error: 'File not found' }, 404)
     }
@@ -1915,7 +2160,7 @@ app.get('/agent/tools/status', (c) => {
   const mcpMgr = agentGateway.getMcpClientManager()
   const serverInfo = mcpMgr.getServerInfo()
 
-  const tools = serverInfo.map((s) => {
+  const tools = serverInfo.map((s: any) => {
     const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
     return {
       id: s.name,
@@ -1950,7 +2195,7 @@ app.get('/agent/tools/schemas', (c) => {
   }
   const mcpMgr = agentGateway.getMcpClientManager()
   const allTools = mcpMgr.getTools()
-  const schemas = allTools.map((t) => ({
+  const schemas = allTools.map((t: any) => ({
     name: t.name,
     description: t.description || '',
     parameters: t.parameters ?? {},
@@ -2108,11 +2353,28 @@ app.delete('/agent/tools/:id', async (c) => {
 })
 
 // Agent export/import — bundle workspace into a shareable .shogo config
+function collectExportDir(dir: string, prefix: string, out: Record<string, string>): void {
+  if (!existsSync(dir)) return
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      collectExportDir(fullPath, relPath, out)
+    } else if (entry.isFile()) {
+      try {
+        const stat = statSync(fullPath)
+        if (stat.size > 5 * 1024 * 1024) continue
+        out[relPath] = readFileSync(fullPath, 'utf-8')
+      } catch { /* skip unreadable */ }
+    }
+  }
+}
+
 app.get('/agent/export', async (c) => {
   const exportFiles: Record<string, string> = {}
   const exportableFiles = [
-    'AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md',
-    'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json',
+    'AGENTS.md', 'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'STACK.md', 'config.json',
   ]
 
   for (const filename of exportableFiles) {
@@ -2122,15 +2384,25 @@ app.get('/agent/export', async (c) => {
     }
   }
 
-  const skillsDir = join(WORKSPACE_DIR, 'skills')
-  if (existsSync(skillsDir)) {
-    const { readdirSync } = require('fs')
-    const skillFiles = readdirSync(skillsDir) as string[]
-    for (const file of skillFiles) {
-      if (file.endsWith('.md')) {
-        exportFiles[`skills/${file}`] = readFileSync(join(skillsDir, file), 'utf-8')
+  // Collect all .md files at workspace root (agent may create custom ones)
+  if (existsSync(WORKSPACE_DIR)) {
+    const rootEntries = readdirSync(WORKSPACE_DIR, { withFileTypes: true })
+    for (const entry of rootEntries) {
+      if (entry.isFile() && entry.name.endsWith('.md') && !exportFiles[entry.name]) {
+        exportFiles[entry.name] = readFileSync(join(WORKSPACE_DIR, entry.name), 'utf-8')
       }
     }
+  }
+
+  collectExportDir(join(WORKSPACE_DIR, 'skills'), 'skills', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, 'files'), 'files', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, 'memory'), 'memory', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, '.shogo', 'skills'), '.shogo/skills', exportFiles)
+  collectExportDir(join(WORKSPACE_DIR, '.shogo', 'plans'), '.shogo/plans', exportFiles)
+
+  const quickActionsPath = join(WORKSPACE_DIR, '.shogo', 'quick-actions.json')
+  if (existsSync(quickActionsPath)) {
+    exportFiles['.shogo/quick-actions.json'] = readFileSync(quickActionsPath, 'utf-8')
   }
 
   const bundle = {
@@ -2170,17 +2442,53 @@ app.post('/agent/import', async (c) => {
 
 // Console log for forwarding (matches runtime pattern)
 const consoleLogs: string[] = []
+const logStreamListeners = new Set<(line: string) => void>()
+
 app.post('/console-log/append', async (c) => {
   const { line } = await c.req.json()
   if (line) {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+    for (const listener of logStreamListeners) {
+      try { listener(line) } catch {}
+    }
   }
   return c.json({ ok: true })
 })
 
 app.get('/console-log', (c) => {
   return c.json({ logs: consoleLogs })
+})
+
+app.get('/agent/logs/stream', (c) => {
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      const send = (text: string) => {
+        try { controller.enqueue(encoder.encode(text + '\n')) } catch {}
+      }
+
+      for (const line of consoleLogs.slice(-100)) {
+        send(line)
+      }
+
+      const listener = (line: string) => send(line)
+      logStreamListeners.add(listener)
+
+      c.req.raw.signal.addEventListener('abort', () => {
+        logStreamListeners.delete(listener)
+        try { controller.close() } catch {}
+      })
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
 })
 
 
@@ -2200,6 +2508,29 @@ app.post('/agent/skill-server/sync', async (c) => {
     return c.json(result)
   } catch (err: any) {
     return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
+  }
+})
+
+// =============================================================================
+// Runtime checks (used by eval harness in K8s mode — runs checks locally where
+// workspace files and skill server are colocated)
+// =============================================================================
+
+app.post('/agent/runtime-checks', async (c) => {
+  const { runRuntimeChecks } = await import('./evals/runtime-checks')
+  const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean }>()
+  const skillServerPort = agentGateway?.getSkillServerPort() ?? 4100
+  try {
+    const results = await runRuntimeChecks({
+      workspaceDir: WORKSPACE_DIR,
+      skillServerPort,
+      canvasExpectedPort: body.canvasExpectedPort ?? skillServerPort,
+      evalId: body.evalId,
+      verbose: body.verbose,
+    })
+    return c.json({ ok: true, results })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message || String(err) }, 500)
   }
 })
 
@@ -2395,9 +2726,38 @@ app.get('*', (c) => {
 async function initializeEssentials(): Promise<void> {
   logTiming('Initializing essentials...')
 
+  // When the workspace is 9p-mounted, keep .shogo/ on the local overlay disk
+  // so SQLite uses a real filesystem with proper locking. For warm pool VMs this
+  // is handled in onAssign; for cold-start VMs (e.g. evals) we do it here.
+  if (process.env.VM_WORKSPACE_MOUNTED === 'true') {
+    const projectId = process.env.PROJECT_ID || 'default'
+    const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
+    mkdirSync(localShogoDir, { recursive: true })
+    const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
+    try {
+      const st = lstatSync(workspaceShogoDir)
+      if (!st.isSymbolicLink()) {
+        rmSync(workspaceShogoDir, { recursive: true, force: true })
+        symlinkSync(localShogoDir, workspaceShogoDir)
+      }
+    } catch {
+      try { symlinkSync(localShogoDir, workspaceShogoDir) } catch {}
+    }
+    logTiming('.shogo symlinked to local overlay (9p mount)')
+  }
+
   // Bootstrap workspace files
   ensureWorkspaceFiles()
   logTiming('Workspace files ready')
+
+  // Seed tech stack if specified (covers warm pool assignment path where
+  // TECH_STACK_ID is injected after module-level code has already run).
+  // seedTechStack is idempotent — only writes files that don't already exist.
+  const tsId = process.env.TECH_STACK_ID
+  if (tsId) {
+    seedTechStack(WORKSPACE_DIR, tsId)
+    logTiming(`Tech stack seeded: ${tsId}`)
+  }
 
   // Initialize S3 sync BEFORE loading canvas state so that downloaded files
   // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
@@ -2426,6 +2786,7 @@ async function initializeEssentials(): Promise<void> {
   } else {
     try {
       await ensureWorkspaceDeps(WORKSPACE_DIR)
+      workspaceStatus.depsInstalled = true
       logTiming('Workspace deps ready')
     } catch (err: any) {
       console.error('[agent-runtime] Workspace deps install failed:', err.message)
@@ -2485,13 +2846,15 @@ async function startGateway(): Promise<void> {
     // Now run ensureWorkspaceDeps in case the S3 deps didn't fully satisfy
     try {
       await ensureWorkspaceDeps(WORKSPACE_DIR)
+      workspaceStatus.depsInstalled = true
     } catch (err: any) {
       console.error('[agent-runtime] Post-deps-restore install failed:', err.message)
     }
   }
 
+  const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
-  agentGateway.setLogCallback((line) => {
+  agentGateway.setLogCallback((line: string) => {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
   })
@@ -2590,6 +2953,7 @@ if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   ensureWorkspaceFiles()
   ensureWorkspaceDeps(WORKSPACE_DIR).then(() => {
+    workspaceStatus.depsInstalled = true
     logTiming('Pool mode: workspace pre-seeded, ready for assignment')
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)

@@ -3,6 +3,7 @@
   "name": "Sales & Revenue",
   "description": "Pipeline management, deal tracking, client onboarding, revenue dashboards, and Stripe integration with multi-surface sales views.",
   "category": "sales",
+  "icon": "PieChart",
   "tags": [
     "sales",
     "pipeline",
@@ -45,5 +46,5 @@
       "description": "Post deal alerts and team updates"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

@@ -20,6 +20,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { NONPROFIT_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -421,17 +422,42 @@ const PHASE_1: AgentEval = {
   input:
     'This is critical — alert me 30 days before any grant deadline. These are life or death for us. ' +
     'I have grants due in May, July, and October.',
+  askUserResponses: [
+    'Just use the email credentials I gave you. My timezone is America/New_York.',
+    'The exact grant deadlines are May 15, July 1, and October 30. Set up alerts 30 days before each.',
+    'Yes, please proceed. Email is the best way to reach me for alerts.',
+  ],
   workspaceFiles: phase1Workspace(),
   toolMocks: NONPROFIT_MOCKS,
-  maxScore: 28,
+  maxScore: 33,
   validationCriteria: [
+    // --- Interaction phase: validate the agent asks good questions ---
+    {
+      id: 'asked-about-deadlines',
+      description: 'Agent asked for specific grant deadline dates',
+      points: 3,
+      phase: 'interaction',
+      validate: (r) => {
+        const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
+        return allText.includes('ask_user') &&
+          (allText.includes('deadline') || allText.includes('date') || allText.includes('when'))
+      },
+    },
+    {
+      id: 'asked-clarification',
+      description: 'Agent used ask_user to clarify at least one detail',
+      points: 2,
+      phase: 'interaction',
+      validate: (r) => toolCallsJson(r).includes('ask_user'),
+    },
+    // --- Execution phase: validate actual tool usage after answers ---
     {
       id: 'email-connected',
       description: 'Connected email channel',
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'email'),
     },
     {
@@ -453,14 +479,14 @@ const PHASE_1: AgentEval = {
       description: 'Installed calendar-related tool or MCP',
       points: 4,
       phase: 'execution',
-      validate: (r) => usedTool(r, 'tool_install') || usedTool(r, 'mcp_install'),
+      validate: (r) => usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
     },
     {
       id: 'heartbeat-configured',
       description: 'Configured heartbeat or recurring reminders for deadlines',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
     },
     {
       id: 'deadline-mention',

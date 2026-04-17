@@ -21,7 +21,7 @@
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { writeFileSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { initInstrumentation, traceOperation } from './instrumentation'
 import { createLogger } from './logger'
@@ -50,7 +50,7 @@ export interface RuntimeAppConfig {
    * Returns activity stats for the /pool/activity endpoint.
    * If not provided, only HTTP request tracking is used.
    */
-  getActivityStats?: () => { activeSessions: number; lastActivityAt: number | null }
+  getActivityStats?: () => { activeSessions: number; lastActivityAt: number | null; activeStreams?: number }
   /**
    * Extra data to include in the /health response.
    */
@@ -241,7 +241,72 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   // ---------------------------------------------------------------------------
   // Auth Middleware
   // ---------------------------------------------------------------------------
-  function checkRuntimeAuth(c: any): Response | null {
+  const previewTokenCache = new Map<string, { valid: boolean; projectId?: string; expiresAt: number }>()
+  const PREVIEW_CACHE_VALID_MS = 5 * 60 * 1000
+  const PREVIEW_CACHE_INVALID_MS = 30 * 1000
+  const K8S_SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
+
+  function deriveApiUrl(): string | null {
+    if (process.env.SHOGO_API_URL) return process.env.SHOGO_API_URL
+    if (process.env.API_URL) return process.env.API_URL
+    const proxyUrl = process.env.AI_PROXY_URL
+    if (proxyUrl) {
+      try {
+        const url = new URL(proxyUrl)
+        return `${url.protocol}//${url.host}`
+      } catch { /* invalid URL */ }
+    }
+    const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
+    return `http://api.${systemNs}.svc.cluster.local`
+  }
+
+  function getInternalAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    try {
+      if (existsSync(K8S_SA_TOKEN_PATH)) {
+        headers['Authorization'] = `Bearer ${readFileSync(K8S_SA_TOKEN_PATH, 'utf-8').trim()}`
+      }
+    } catch { /* not in K8s */ }
+    if (process.env.RUNTIME_AUTH_SECRET) {
+      headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
+    }
+    return headers
+  }
+
+  async function validatePreviewTokenViaApi(token: string): Promise<{ valid: boolean; projectId?: string }> {
+    const now = Date.now()
+    const cached = previewTokenCache.get(token)
+    if (cached && cached.expiresAt > now) {
+      return { valid: cached.valid, projectId: cached.projectId }
+    }
+
+    const apiUrl = deriveApiUrl()
+    if (!apiUrl) return { valid: false }
+
+    try {
+      const res = await fetch(`${apiUrl}/api/internal/validate-preview-token`, {
+        method: 'POST',
+        headers: getInternalAuthHeaders(),
+        body: JSON.stringify({ token }),
+        signal: AbortSignal.timeout(5_000),
+      })
+
+      if (!res.ok) {
+        previewTokenCache.set(token, { valid: false, expiresAt: now + PREVIEW_CACHE_INVALID_MS })
+        return { valid: false }
+      }
+
+      const data = await res.json() as { valid: boolean; projectId?: string }
+      const ttl = data.valid ? PREVIEW_CACHE_VALID_MS : PREVIEW_CACHE_INVALID_MS
+      previewTokenCache.set(token, { valid: data.valid, projectId: data.projectId, expiresAt: now + ttl })
+      return { valid: data.valid, projectId: data.projectId }
+    } catch (err) {
+      console.error(`[${config.name}] Preview token validation failed:`, err)
+      return { valid: false }
+    }
+  }
+
+  async function checkRuntimeAuth(c: any): Promise<Response | null> {
     const runtimeSecret = process.env.RUNTIME_AUTH_SECRET
     if (!runtimeSecret) {
       if (process.env.NODE_ENV !== 'production') return null
@@ -249,8 +314,18 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       return c.json({ error: 'Unauthorized — RUNTIME_AUTH_SECRET not configured' }, 401)
     }
     const auth = c.req.header('authorization') || ''
-    const token = c.req.header('x-runtime-token') || ''
-    if (auth === `Bearer ${runtimeSecret}` || token === runtimeSecret) return null
+    const runtimeToken = c.req.header('x-runtime-token') || ''
+    if (auth === `Bearer ${runtimeSecret}` || runtimeToken === runtimeSecret) return null
+
+    // Fallback: validate preview JWT via API callback
+    const previewToken = new URL(c.req.url).searchParams.get('__preview_token')
+    if (previewToken) {
+      const result = await validatePreviewTokenViaApi(previewToken)
+      if (result.valid && result.projectId === state.currentProjectId) {
+        return null
+      }
+    }
+
     return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
   }
 
@@ -287,7 +362,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
           await next()
           return
         }
-        const denied = checkRuntimeAuth(c)
+        const denied = await checkRuntimeAuth(c)
         if (denied) return denied
         await next()
       })
@@ -297,7 +372,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
           await next()
           return
         }
-        const denied = checkRuntimeAuth(c)
+        const denied = await checkRuntimeAuth(c)
         if (denied) return denied
         await next()
       })
@@ -327,10 +402,12 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     const now = Date.now()
     const lastSessionActivity = activityStats.lastActivityAt ?? (state.poolAssignedAt ?? SERVER_START_TIME)
     const lastActivity = Math.max(state.lastRequestAt, lastSessionActivity)
+    const streams = activityStats.activeStreams ?? 0
     return c.json({
       projectId: state.currentProjectId,
       lastActivityAt: lastActivity,
-      idleSeconds: Math.floor((now - lastActivity) / 1000),
+      idleSeconds: streams > 0 ? 0 : Math.floor((now - lastActivity) / 1000),
+      activeStreams: streams,
       activeSessions: activityStats.activeSessions,
       lastRequestAt: state.lastRequestAt,
       lastSessionActivityAt: lastSessionActivity,

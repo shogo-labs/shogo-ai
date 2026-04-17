@@ -4,6 +4,7 @@
 import {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
+  AUTO_MODEL_ID,
   type ModelEntry,
   type ImageModelEntry,
   type ModelId,
@@ -15,6 +16,11 @@ import {
   type BillingModel,
 } from './models'
 import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
+
+/** Check if a model ID is the special "auto" routing value. */
+export function isAutoModel(id: string): boolean {
+  return id === AUTO_MODEL_ID
+}
 
 // ---------------------------------------------------------------------------
 // Resolution
@@ -61,6 +67,7 @@ export function getImageModelEntry(id: string): ImageModelEntry | undefined {
 /** Full display name, e.g. "Claude Sonnet 4.6". Falls back to the raw ID. */
 export function getModelDisplayName(id: string): string {
   if (!id) return 'Unknown'
+  if (id === AUTO_MODEL_ID) return 'Auto'
   const entry = getModelEntry(id)
   if (entry) return entry.displayName
   return id.length > 20 ? id.slice(0, 20) + '...' : id
@@ -69,6 +76,7 @@ export function getModelDisplayName(id: string): string {
 /** Short display name for compact UIs, e.g. "Sonnet 4.6". Falls back to the raw ID. */
 export function getModelShortDisplayName(id: string): string {
   if (!id) return 'Unknown'
+  if (id === AUTO_MODEL_ID) return 'Auto'
   const entry = getModelEntry(id)
   if (entry) return entry.shortDisplayName
   return id.length > 20 ? id.slice(0, 20) + '...' : id
@@ -89,7 +97,7 @@ export function inferProviderFromModel(modelId: string, fallback: string = 'anth
   const entry = getModelEntry(modelId)
   if (entry) return entry.provider
 
-  if (modelId.startsWith('gpt') || modelId.startsWith('o1') || modelId.startsWith('o3') || modelId.startsWith('o4')) return 'openai'
+  if (modelId.startsWith('gpt')) return 'openai'
   if (modelId.startsWith('claude')) return 'anthropic'
   if (modelId.startsWith('gemini')) return 'google'
   return fallback
@@ -105,6 +113,7 @@ export function inferProviderFromModel(modelId: string, fallback: string = 'anth
  * 'standard' (fail-safe: blocks free users).
  */
 export function getModelTier(id: string): ModelTier {
+  if (id === AUTO_MODEL_ID) return 'economy'
   const entry = getModelEntry(id)
   if (entry) return entry.tier
 
@@ -152,9 +161,48 @@ export function getModelFamily(id: string): ModelFamily {
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
-  if (lower.startsWith('o1') || lower.startsWith('o3') || lower.startsWith('o4')) return 'o-series'
   if (lower.startsWith('gpt')) return 'gpt'
   return 'other'
+}
+
+// ---------------------------------------------------------------------------
+// Dollar cost calculation (per 1M tokens by billing-model bucket)
+// ---------------------------------------------------------------------------
+
+export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
+  inputPerMillion: number
+  cacheWritePerMillion: number
+  cachedInputPerMillion: number
+  outputPerMillion: number
+}> = {
+  'gpt-5.4-nano': { inputPerMillion: 0.20, cacheWritePerMillion: 0.25, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
+  haiku:          { inputPerMillion: 0.80, cacheWritePerMillion: 1.00, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
+  'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
+  sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
+  opus:           { inputPerMillion: 15.00, cacheWritePerMillion: 18.75, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
+}
+
+/**
+ * Calculate raw dollar cost from token counts and a model identifier.
+ * Resolves the model to its billing bucket first.
+ *
+ * `inputTokens` = non-cached input. Pass cached/write counts separately.
+ */
+export function calculateDollarCost(
+  modelOrAgentMode: string | undefined,
+  inputTokens: number,
+  outputTokens: number,
+  cachedInputTokens: number = 0,
+  cacheWriteTokens: number = 0,
+): number {
+  const billing = modelOrAgentMode ? getModelBillingModel(modelOrAgentMode) : 'sonnet'
+  const costs = MODEL_DOLLAR_COSTS[billing] ?? MODEL_DOLLAR_COSTS.sonnet
+  return (
+    (inputTokens * costs.inputPerMillion / 1_000_000) +
+    (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +
+    (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
+    (outputTokens * costs.outputPerMillion / 1_000_000)
+  )
 }
 
 // ---------------------------------------------------------------------------

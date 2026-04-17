@@ -51,15 +51,16 @@ export default function RootIndex() {
     )
   }
 
-  // Local mode: needs setup (no LLM keys etc.) — admin for authenticated, onboarding otherwise
-  if (platformConfig.localMode && platformConfig.needsSetup) {
-    if (isAuthenticated) return <Redirect href="/(admin)" />
+  if (platformConfig.localMode && platformConfig.needsSetup && !isAuthenticated) {
     return <Redirect href="/(onboarding)" />
   }
 
   if (isAuthenticated) {
-    if (onboardingCompleted === false && !platformConfig.localMode) {
+    if (onboardingCompleted === false) {
       return <Redirect href="/(onboarding)" />
+    }
+    if (platformConfig.localMode && platformConfig.needsSetup) {
+      return <Redirect href="/(admin)" />
     }
     return <Redirect href="/(app)" />
   }

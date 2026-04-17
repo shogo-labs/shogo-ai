@@ -34,6 +34,7 @@ import {
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
+import { getAvailableModels, MODEL_ALIASES } from '@shogo/model-catalog'
 import { API_URL } from '../../../lib/api'
 
 const API_BASE = `${API_URL}/api/admin/evals`
@@ -47,7 +48,12 @@ const TRACK_OPTIONS = [
   'startup-cto', 'freelancer', 'content-creator', 'nonprofit', 'event-planner',
 ]
 
-const MODEL_OPTIONS = ['haiku', 'sonnet', 'opus']
+const EVAL_ALIASES = ['haiku', 'sonnet', 'opus', 'gpt54mini']
+const ALIAS_TARGETS = new Set(EVAL_ALIASES.map(a => MODEL_ALIASES[a]).filter(Boolean))
+const CATALOG_IDS = getAvailableModels({ generation: 'current' })
+  .map(m => m.id)
+  .filter(id => !ALIAS_TARGETS.has(id as any))
+const MODEL_OPTIONS = [...EVAL_ALIASES, ...CATALOG_IDS]
 
 interface RunSummary {
   dirName: string
@@ -353,26 +359,28 @@ function FilterBar({
 // Trigger Form
 // ---------------------------------------------------------------------------
 
+const AGENT_MODE_OPTIONS = ['none', 'basic', 'advanced', 'auto'] as const
+
 function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const [track, setTrack] = useState<string>('agentic')
   const [model, setModel] = useState<string>('sonnet')
+  const [agentMode, setAgentMode] = useState<string>('none')
   const [workers, setWorkers] = useState<string>('2')
-  const [localMode, setLocalMode] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const workerOptions = ['1', '2', '3', '4'] as const
 
   const handleSubmit = async () => {
     setSubmitting(true)
     setError(null)
     try {
+      const payload: Record<string, unknown> = { track, model, workers: Number(workers) }
+      if (agentMode !== 'none') payload.agentMode = agentMode
       const res = await fetch(`${API_BASE}/runs/trigger`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track, model, workers: Number(workers), local: localMode }),
+        body: JSON.stringify(payload),
       })
       const json = await res.json()
       if (!json.ok) {
@@ -415,24 +423,27 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
               <Text className="text-xs font-medium text-muted-foreground">Model</Text>
               <Select value={model} options={MODEL_OPTIONS} onChange={setModel} />
             </View>
+            <View className="gap-1 min-w-[100px]">
+              <Text className="text-xs font-medium text-muted-foreground">Agent Mode</Text>
+              <Select
+                value={agentMode}
+                options={AGENT_MODE_OPTIONS}
+                onChange={setAgentMode}
+                renderLabel={(v) => v === 'none' ? 'Default' : v.charAt(0).toUpperCase() + v.slice(1)}
+              />
+            </View>
             <View className="gap-1 min-w-[90px]">
               <Text className="text-xs font-medium text-muted-foreground">Workers</Text>
-              <Select value={workers} options={workerOptions} onChange={setWorkers} />
+              <TextInput
+                value={workers}
+                onChangeText={(t) => setWorkers(t.replace(/[^0-9]/g, ''))}
+                keyboardType="number-pad"
+                className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                placeholder="2"
+                placeholderTextColor="#999"
+              />
             </View>
           </View>
-
-          <Pressable
-            onPress={() => setLocalMode(!localMode)}
-            className="flex-row items-center gap-2"
-          >
-            <View className={cn(
-              'h-5 w-5 rounded border items-center justify-center',
-              localMode ? 'bg-primary border-primary' : 'border-border'
-            )}>
-              {localMode && <CheckCircle2 size={12} className="text-primary-foreground" />}
-            </View>
-            <Text className="text-sm text-foreground">Local mode (no Docker)</Text>
-          </Pressable>
 
           {error && (
             <Text className="text-xs text-destructive">{error}</Text>
@@ -452,7 +463,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
               <Play size={14} className="text-primary-foreground" />
             )}
             <Text className="text-sm font-semibold text-primary-foreground">
-              {submitting ? 'Starting...' : `Run ${track} (${model})`}
+              {submitting ? 'Starting...' : `Run ${track} (${model}${agentMode !== 'none' ? ` / ${agentMode}` : ''})`}
             </Text>
           </Pressable>
         </View>

@@ -21,9 +21,10 @@ function getArg(name: string): string | undefined {
 const dest = getArg('dest')
 const serverJs = getArg('server-js')
 const shogoJs = getArg('shogo-js')
+const lightMode = args.includes('--light')
 
 if (!dest) {
-  console.error('Usage: prepare-vm-bundle-cli.ts --dest <dir> [--server-js <path>] [--shogo-js <path>]')
+  console.error('Usage: prepare-vm-bundle-cli.ts --dest <dir> [--server-js <path>] [--shogo-js <path>] [--light]')
   process.exit(1)
 }
 
@@ -36,4 +37,5 @@ prepareVMBundle({
   repoRoot: REPO_ROOT,
   prebuiltServerJs: serverJs ? resolve(DESKTOP_DIR, serverJs) : undefined,
   prebuiltShogoJs: shogoJs ? resolve(DESKTOP_DIR, shogoJs) : undefined,
+  lightMode,
 })

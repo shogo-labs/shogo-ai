@@ -60,6 +60,7 @@ export type {
   FileNode,
   SearchResult,
   VisualMode,
+  WorkspaceBundle,
 } from './types.js'
 
 // Hook result types

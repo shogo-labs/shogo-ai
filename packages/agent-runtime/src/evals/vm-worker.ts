@@ -10,7 +10,7 @@
  * Usage: pass --vm to run-eval.ts to use VM isolation.
  */
 
-import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, readFileSync, chmodSync } from 'fs'
 import { resolve, join } from 'path'
 import { tmpdir } from 'os'
 import { type DockerWorker, REPO_ROOT } from './docker-worker'
@@ -21,8 +21,6 @@ function getPrepareBundleModule() {
     getTreeSitterWasmBuffer(repoRoot: string): Buffer | null
   }
 }
-
-const isWin = process.platform === 'win32'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +35,10 @@ export interface VMWorkerConfig {
   cpus?: number
   vmImageDir?: string
   envOverrides?: Record<string, string>
+  /** Share the host workspace dir into the VM via 9p mount instead of using
+   *  the isolated overlay disk. Files written to the host dir are visible
+   *  inside the VM immediately. */
+  mount?: boolean
 }
 
 interface VMHandle {
@@ -63,50 +65,33 @@ let _bundleDir: string | null = null
 let _bundleFiles: Record<string, Buffer> | null = null
 
 /**
- * Build the agent-runtime + shogo CLI JS bundles.
+ * Build the agent-runtime + shogo CLI JS bundles for ISO embedding.
  *
- * On macOS (VirtioFS bundle mount): also downloads Linux bun, templates, wasm
- * files into a directory that gets mounted into the VM.
- *
- * On Windows (pre-provisioned image): only builds server.js + shogo.js.
- * These are embedded in the seed ISO; the base image already has bun, node,
- * templates, etc.
+ * Both platforms use pre-provisioned images with bun/templates pre-installed.
+ * Only server.js, shogo.js, and tree-sitter.wasm are injected per boot via
+ * the seed ISO.
  */
-function ensureVMBundle(): { dir: string; bundleFiles: Record<string, Buffer> } {
-  if (_bundleDir && _bundleFiles && existsSync(join(_bundleDir, 'server.js'))) {
-    return { dir: _bundleDir, bundleFiles: _bundleFiles }
-  }
+function ensureVMBundle(): Record<string, Buffer> {
+  if (_bundleFiles) return _bundleFiles
 
   const dir = resolve(tmpdir(), 'shogo-vm-eval-bundle')
+  rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
 
-  const bundleMod = getPrepareBundleModule()
-
-  // macOS: full bundle with bun binary, templates, wasm, etc.
-  // Windows: only JS bundles (built from source) — bun is pre-provisioned.
-  if (!isWin) {
-    bundleMod.prepareVMBundle({ destDir: dir, repoRoot: REPO_ROOT })
-  } else {
-    // Windows-only: build JS and embed in seed ISO
-    const { execSync } = require('child_process')
-    if (!existsSync(join(dir, 'server.js'))) {
-      console.log('  Building agent-runtime bundle for VM...')
-      execSync(
-        `bun build src/server.ts --outdir "${dir}" --target bun --external electron --external playwright-core --external playwright`,
-        { cwd: resolve(REPO_ROOT, 'packages/agent-runtime'), stdio: 'pipe' },
-      )
-    }
-    if (!existsSync(join(dir, 'shogo.js'))) {
-      console.log('  Building shogo CLI bundle for VM...')
-      execSync(
-        `bun build packages/sdk/bin/shogo.ts --outfile "${join(dir, 'shogo.js')}" --target bun ` +
-          `--external electron --external playwright-core --external playwright ` +
-          `--external @prisma/prisma-schema-wasm --external @prisma/engines ` +
-          `--external @prisma/fetch-engine --external @prisma/internals`,
-        { cwd: REPO_ROOT, stdio: 'pipe' },
-      )
-    }
-  }
+  const { execSync } = require('child_process')
+  console.log('  Building agent-runtime bundle for VM...')
+  execSync(
+    `bun build src/server.ts --outdir "${dir}" --target bun --external electron --external playwright-core --external playwright`,
+    { cwd: resolve(REPO_ROOT, 'packages/agent-runtime'), stdio: 'pipe' },
+  )
+  console.log('  Building shogo CLI bundle for VM...')
+  execSync(
+    `bun build packages/sdk/bin/shogo.ts --outfile "${join(dir, 'shogo.js')}" --target bun ` +
+      `--external electron --external playwright-core --external playwright ` +
+      `--external @prisma/prisma-schema-wasm --external @prisma/engines ` +
+      `--external @prisma/fetch-engine --external @prisma/internals`,
+    { cwd: REPO_ROOT, stdio: 'pipe' },
+  )
 
   const readBuf = (f: string) => {
     const p = join(dir, f)
@@ -117,15 +102,14 @@ function ensureVMBundle(): { dir: string; bundleFiles: Record<string, Buffer> } 
     'shogo.js': readBuf('shogo.js'),
   }
 
-  if (isWin) {
-    const wasmBuf = bundleMod.getTreeSitterWasmBuffer(REPO_ROOT)
-    if (wasmBuf) bundleFiles['tree-sitter.wasm'] = wasmBuf
-  }
+  const bundleMod = getPrepareBundleModule()
+  const wasmBuf = bundleMod.getTreeSitterWasmBuffer(REPO_ROOT)
+  if (wasmBuf) bundleFiles['tree-sitter.wasm'] = wasmBuf
 
   _bundleDir = dir
   _bundleFiles = bundleFiles
   console.log(`  VM bundle ready at ${dir}`)
-  return { dir, bundleFiles }
+  return bundleFiles
 }
 
 // ---------------------------------------------------------------------------
@@ -133,14 +117,10 @@ function ensureVMBundle(): { dir: string; bundleFiles: Record<string, Buffer> } 
 // ---------------------------------------------------------------------------
 
 const _vmHandles = new Map<number, { handle: VMHandle; manager: VMManagerLike; overlayPath: string }>()
-let _vmManager: VMManagerLike | null = null
 
-function getVMManager(): VMManagerLike {
-  if (_vmManager) return _vmManager
-
+function createVMManager(): VMManagerLike {
   const vmModule = require(resolve(REPO_ROOT, 'apps/desktop/src/vm/index'))
-  _vmManager = vmModule.createVMManager()
-  return _vmManager!
+  return vmModule.createVMManager()
 }
 
 function getVMImageDir(): string {
@@ -163,18 +143,24 @@ export async function startVMWorker(
   console.log(`  Starting VM worker ${id} (${name}) on port ${port}...`)
 
   mkdirSync(dir, { recursive: true })
+  if (config.mount) {
+    // 9p with security_model=mapped-file: the guest sees host UID/permissions
+    // for files without metadata. Make the workspace world-writable so the
+    // guest shogo user can create files before cloud-init chown takes effect.
+    chmodSync(dir, 0o777)
+  }
 
-  const manager = getVMManager()
+  const manager = createVMManager()
   const vmImageDir = config.vmImageDir || getVMImageDir()
   const overlayDir = resolve(tmpdir(), 'shogo-vm-eval-overlays')
   mkdirSync(overlayDir, { recursive: true })
-  const overlayPath = join(overlayDir, `${name}.${process.platform === 'darwin' ? 'raw' : 'qcow2'}`)
+  const overlayPath = join(overlayDir, `${name}.qcow2`)
 
   if (existsSync(overlayPath)) {
     rmSync(overlayPath, { force: true })
   }
 
-  const { dir: bundleDir, bundleFiles } = ensureVMBundle()
+  const bundleFiles = ensureVMBundle()
 
   const skillHostPort = 4100 + id
 
@@ -186,6 +172,7 @@ export async function startVMWorker(
   }
   if (process.env.ANTHROPIC_API_KEY && !vmEnv.ANTHROPIC_API_KEY) vmEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
   if (process.env.OPENAI_API_KEY && !vmEnv.OPENAI_API_KEY) vmEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY
+  if (process.env.GOOGLE_API_KEY && !vmEnv.GOOGLE_API_KEY) vmEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY
 
   const handle = await manager.startVM({
     workspaceDir: dir,
@@ -195,10 +182,10 @@ export async function startVMWorker(
     networkEnabled: true,
     overlayPath,
     vmImageDir,
-    bundleDir: isWin ? undefined : bundleDir,
     skillServerHostPort: skillHostPort,
     env: vmEnv,
-    bundleFiles: isWin ? bundleFiles : undefined,
+    bundleFiles,
+    mountWorkspace: config.mount === true,
   })
 
   _vmHandles.set(id, { handle, manager, overlayPath })

@@ -27,7 +27,7 @@ import {
   STRIPE_REVENUE_MOCKS,
   PR_REVIEW_MOCKS,
 } from './tool-mocks'
-import { usedTool, neverUsedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
+import { usedTool, usedToolAnywhere, neverUsedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared V2 config — canvasMode: 'code' + activeMode: 'canvas'
@@ -874,7 +874,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
         description: 'Used send_message for stale PR alert',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'send_message'),
+        validate: (r) => usedToolAnywhere(r, 'send_message'),
       },
       {
         id: 'used-verification',

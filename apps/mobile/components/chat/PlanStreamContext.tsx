@@ -8,11 +8,14 @@ export interface PlanStreamContextValue {
   isPlanStreaming: boolean
   /** Partial PlanData extracted from the streaming create_plan tool args. */
   streamingPlan: PlanData | null
-  /** Bumped each time a plan is finalized on disk (triggers PlansPanel re-fetch). */
+  /** Bumped each time a plan is finalized or updated on disk (triggers PlansPanel re-fetch). */
   planRefreshNonce: number
+  /** Set once the plan file is written to disk (from data-plan event). Used to transition the streaming view to the persisted plan. */
+  streamingPlanFilepath: string | null
 
   setIsPlanStreaming: (v: boolean) => void
   setStreamingPlan: (plan: PlanData | null) => void
+  setStreamingPlanFilepath: (v: string | null) => void
   notifyPlanCreated: () => void
 }
 
@@ -26,6 +29,7 @@ export function PlanStreamProvider({ children }: PlanStreamProviderProps) {
   const [isPlanStreaming, setIsPlanStreaming] = useState(false)
   const [streamingPlan, setStreamingPlan] = useState<PlanData | null>(null)
   const [planRefreshNonce, setPlanRefreshNonce] = useState(0)
+  const [streamingPlanFilepath, setStreamingPlanFilepath] = useState<string | null>(null)
 
   const notifyPlanCreated = useCallback(() => {
     setPlanRefreshNonce((n) => n + 1)
@@ -37,8 +41,10 @@ export function PlanStreamProvider({ children }: PlanStreamProviderProps) {
         isPlanStreaming,
         streamingPlan,
         planRefreshNonce,
+        streamingPlanFilepath,
         setIsPlanStreaming,
         setStreamingPlan,
+        setStreamingPlanFilepath,
         notifyPlanCreated,
       }}
     >

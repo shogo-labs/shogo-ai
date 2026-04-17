@@ -210,6 +210,76 @@ export const STRIPE_PRICES_PRODUCTION: StripePriceConfig = {
   },
 }
 
+// =============================================================================
+// INSTANCE SIZE PRICES
+// =============================================================================
+// Create these products/prices in the Stripe dashboard before going live.
+// Each paid instance size (small/medium/large/xlarge) is a separate subscription product.
+
+export type PaidInstanceSize = "small" | "medium" | "large" | "xlarge"
+
+export interface InstancePriceConfig {
+  small: PriceTier
+  medium: PriceTier
+  large: PriceTier
+  xlarge: PriceTier
+}
+
+export const INSTANCE_PRICES_STAGING: InstancePriceConfig = {
+  small: {
+    monthly: "price_1TJqi6Ap5PDuxitpNowm9sqG",
+    annual: "price_1TJqiMAp5PDuxitpa8mylX4g",
+  },
+  medium: {
+    monthly: "price_1TJqiNAp5PDuxitp4rr43sCg",
+    annual: "price_1TJqiNAp5PDuxitpaaDpsSMR",
+  },
+  large: {
+    monthly: "price_1TJqiOAp5PDuxitpN01Dz4qE",
+    annual: "price_1TJqiOAp5PDuxitpFw4IrH9G",
+  },
+  xlarge: {
+    monthly: "price_1TJqiPAp5PDuxitp9JrGz0nt",
+    annual: "price_1TJqiPAp5PDuxitpU1U4pz6J",
+  },
+}
+
+export const INSTANCE_PRICES_PRODUCTION: InstancePriceConfig = {
+  small: {
+    monthly: "price_instance_small_monthly_live",
+    annual: "price_instance_small_annual_live",
+  },
+  medium: {
+    monthly: "price_instance_medium_monthly_live",
+    annual: "price_instance_medium_annual_live",
+  },
+  large: {
+    monthly: "price_instance_large_monthly_live",
+    annual: "price_instance_large_annual_live",
+  },
+  xlarge: {
+    monthly: "price_instance_xlarge_monthly_live",
+    annual: "price_instance_xlarge_annual_live",
+  },
+}
+
+export function getInstancePrices(): InstancePriceConfig {
+  const isProduction = process.env.NODE_ENV === "production"
+  return isProduction ? INSTANCE_PRICES_PRODUCTION : INSTANCE_PRICES_STAGING
+}
+
+export function getInstancePriceId(
+  size: PaidInstanceSize,
+  billingInterval: "monthly" | "annual"
+): string | null {
+  const prices = getInstancePrices()
+  return prices[size]?.[billingInterval] || null
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
 /**
  * Get the appropriate price config based on environment
  */
