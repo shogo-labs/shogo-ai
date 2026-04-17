@@ -23,6 +23,15 @@ import { Switch } from '@/components/ui/switch'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
+import { MarkdownText } from '../../chat/MarkdownText'
+
+const CONTEXT_FILES = [
+  { id: 'AGENTS.md', label: 'Agent' },
+  { id: 'TOOLS.md', label: 'Tools' },
+  { id: 'STACK.md', label: 'Stack' },
+  { id: 'HEARTBEAT.md', label: 'Heartbeat' },
+  { id: 'MEMORY.md', label: 'Memory' },
+]
 
 const POLL_INTERVAL_MS = 5_000
 
@@ -181,6 +190,8 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [hbConfig, setHbConfig] = useState<HeartbeatConfig | null>(null)
   const [hbToggling, setHbToggling] = useState(false)
+  const [contextMarkdown, setContextMarkdown] = useState<string | null>(null)
+  const [isLoadingContext, setIsLoadingContext] = useState(false)
 
   const fetchHeartbeatConfig = useCallback(async () => {
     try {
@@ -225,11 +236,40 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
     }
   }, [agentUrl])
 
+  const fetchContextFiles = useCallback(async () => {
+    if (!agentUrl) return
+    setIsLoadingContext(true)
+    try {
+      const results = await Promise.all(
+        CONTEXT_FILES.map(async (file) => {
+          try {
+            const res = await agentFetch(`${agentUrl}/agent/files/${encodeURIComponent(file.id)}`)
+            if (!res.ok) return null
+            const data = await res.json()
+            const content = (data.content ?? '').trim()
+            return content ? content : null
+          } catch {
+            return null
+          }
+        }),
+      )
+      const parts: string[] = []
+      for (let i = 0; i < CONTEXT_FILES.length; i++) {
+        if (results[i]) parts.push(results[i]!)
+      }
+      setContextMarkdown(parts.length > 0 ? parts.join('\n\n---\n\n') : null)
+    } catch {
+      setContextMarkdown(null)
+    } finally {
+      setIsLoadingContext(false)
+    }
+  }, [agentUrl])
+
   const loadInitial = useCallback(async () => {
     setIsLoading(true)
-    await Promise.all([fetchStatus(), fetchHeartbeatConfig()])
+    await Promise.all([fetchStatus(), fetchHeartbeatConfig(), fetchContextFiles()])
     setIsLoading(false)
-  }, [fetchStatus, fetchHeartbeatConfig])
+  }, [fetchStatus, fetchHeartbeatConfig, fetchContextFiles])
 
   useEffect(() => {
     if (!visible) {
@@ -340,8 +380,8 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
               />
               <StatCard
                 icon={<Brain size={16} className="text-purple-500" />}
-                label="Memory"
-                value={status.memory ? `${status.memory.fileCount} files` : '0 files'}
+                label="Context"
+                value={status.memory ? `${status.memory.fileCount} files` : contextMarkdown ? 'Loaded' : '—'}
               />
             </View>
 
@@ -391,34 +431,22 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
               )}
             </DashboardSection>
 
-            {/* Memory Section */}
+            {/* Context Files Preview */}
             <DashboardSection
-              title="Memory"
+              title="Context Files"
               icon={<HardDrive size={14} className="text-muted-foreground" />}
+              badge={status.memory ? `${status.memory.fileCount} files` : undefined}
             >
-              {!status.memory || status.memory.fileCount === 0 ? (
-                <EmptyRow text="No memory files yet" />
-              ) : (
-                <View className="flex-row gap-6 px-3 py-2">
-                  <View>
-                    <Text className="text-xs text-muted-foreground">Files</Text>
-                    <Text className="text-sm font-semibold text-foreground">
-                      {status.memory.fileCount}
-                    </Text>
-                  </View>
-                  <View>
-                    <Text className="text-xs text-muted-foreground">Total Size</Text>
-                    <Text className="text-sm font-semibold text-foreground">
-                      {formatBytes(status.memory.totalSizeBytes)}
-                    </Text>
-                  </View>
-                  <View>
-                    <Text className="text-xs text-muted-foreground">Last Updated</Text>
-                    <Text className="text-sm font-semibold text-foreground">
-                      {timeAgo(status.memory.lastModified)}
-                    </Text>
-                  </View>
+              {isLoadingContext ? (
+                <View className="px-3 py-4 items-center">
+                  <ActivityIndicator size="small" />
                 </View>
+              ) : contextMarkdown ? (
+                <View className="px-3 py-2">
+                  <MarkdownText>{contextMarkdown}</MarkdownText>
+                </View>
+              ) : (
+                <EmptyRow text="No context files yet" />
               )}
             </DashboardSection>
 

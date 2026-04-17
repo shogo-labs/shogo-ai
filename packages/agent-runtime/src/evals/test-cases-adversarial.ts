@@ -20,6 +20,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { ADVERSARIAL_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -732,7 +733,7 @@ const ADV_IMPLIED_CONTEXT: AgentEval = {
       validate: (r) => {
         const t = r.responseText.toLowerCase()
         return (
-          usedTool(r, 'send_message') ||
+          usedToolAnywhere(r, 'send_message') ||
           t.includes('subject:') ||
           t.includes('dear ') ||
           t.includes('hi ') && t.includes('acme') ||

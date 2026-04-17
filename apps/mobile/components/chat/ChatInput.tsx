@@ -37,6 +37,7 @@ import {
   getModelsByProvider,
   getModelShortDisplayName,
   getModelTier,
+  AUTO_MODEL_ID,
   type ModelTier,
 } from "@shogo/model-catalog"
 import {
@@ -58,8 +59,11 @@ import {
   Check,
   Mic,
 } from "lucide-react-native"
+import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
+import { analyzeContent, kindLabel, LONG_TEXT_CHIP_LAYOUT_CLASS } from "./long-text-utils"
+import { FileViewerModal } from "./FileViewerModal"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -239,6 +243,40 @@ export function ChatInput({
   )
 
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+
+  // Long-text collapse state: when the user types/pastes a large block of text,
+  // we collapse the input into a compact file-like card (ChatGPT style).
+  const [longTextCollapsed, setLongTextCollapsed] = useState(false)
+  const [longTextViewerOpen, setLongTextViewerOpen] = useState(false)
+
+  const longTextInfo = useMemo(() => {
+    if (!inputValue || inputValue.length < 2000) return null
+    const info = analyzeContent(inputValue)
+    return info.isLong ? info : null
+  }, [inputValue])
+
+  // Auto-collapse when text becomes long
+  const prevWasLongRef = useRef(false)
+  useEffect(() => {
+    const isLong = longTextInfo !== null
+    if (isLong && !prevWasLongRef.current) {
+      setLongTextCollapsed(true)
+    } else if (!isLong) {
+      setLongTextCollapsed(false)
+    }
+    prevWasLongRef.current = isLong
+  }, [longTextInfo])
+
+  const handleShowInTextField = useCallback(() => {
+    setLongTextCollapsed(false)
+    setTimeout(() => textInputRef.current?.focus(), 0)
+  }, [])
+
+  const handleRemoveLongText = useCallback(() => {
+    setInputValue("")
+    setLongTextCollapsed(false)
+    setLongTextViewerOpen(false)
+  }, [])
 
   // Skill picker state
   const [showSkillPicker, setShowSkillPicker] = useState(false)
@@ -551,10 +589,10 @@ export function ChatInput({
 
       {/* Queued messages */}
       {queuedMessages.length > 0 && (
-        <View className="mb-2 rounded-lg border border-border/60 bg-muted/30 overflow-hidden">
+        <View className="rounded-t-lg border-x border-t border-border/60 bg-muted/30 overflow-hidden">
           <Pressable
             onPress={() => setQueueExpanded((prev) => !prev)}
-            className="w-full flex-row items-center justify-between px-3 py-2"
+            className="w-full flex-row items-center justify-between px-2 py-1"
           >
             <View className="flex-row items-center gap-2">
               <ChevronDown
@@ -564,7 +602,7 @@ export function ChatInput({
                 )}
                 size={16}
               />
-              <Text className="font-medium text-sm text-foreground">
+              <Text className="text-sm text-foreground">
                 {queuedMessages.length} Queued
               </Text>
             </View>
@@ -574,9 +612,9 @@ export function ChatInput({
               {queuedMessages.map((msg, index) => (
                 <View
                   key={msg.id}
-                  className="flex-row items-center gap-3 px-3 py-2.5 border-b border-border/40 last:border-b-0"
+                  className="flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0"
                 >
-                  <View className="h-4 w-4 rounded-full border-2 border-muted-foreground/30 flex-shrink-0" />
+                  <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
                   <View className="flex-1 min-w-0">
                     <Text className="text-xs text-foreground" numberOfLines={1}>
                       {msg.content ||
@@ -586,38 +624,30 @@ export function ChatInput({
                     </Text>
                   </View>
                   <View className="flex-row items-center gap-0.5">
-                    {onReorderQueuedMessage && (
+                    {onReorderQueuedMessage && queuedMessages.length > 1 && (
                       <>
-                        <Pressable
-                          onPress={() => onReorderQueuedMessage(msg.id, "up")}
-                          disabled={index === 0}
-                          className="h-6 w-6 items-center justify-center"
-                        >
-                          <ChevronUp
-                            className={cn(
-                              "h-3 w-3",
-                              index === 0
-                                ? "text-muted-foreground/30"
-                                : "text-muted-foreground"
-                            )}
-                            size={12}
-                          />
-                        </Pressable>
-                        <Pressable
-                          onPress={() => onReorderQueuedMessage(msg.id, "down")}
-                          disabled={index === queuedMessages.length - 1}
-                          className="h-6 w-6 items-center justify-center"
-                        >
-                          <ChevronDown
-                            className={cn(
-                              "h-3 w-3",
-                              index === queuedMessages.length - 1
-                                ? "text-muted-foreground/30"
-                                : "text-muted-foreground"
-                            )}
-                            size={12}
-                          />
-                        </Pressable>
+                        {index > 0 && (
+                          <Pressable
+                            onPress={() => onReorderQueuedMessage(msg.id, "up")}
+                            className="h-6 w-6 items-center justify-center"
+                          >
+                            <ChevronUp
+                              className="h-3 w-3 text-muted-foreground"
+                              size={12}
+                            />
+                          </Pressable>
+                        )}
+                        {index < queuedMessages.length - 1 && (
+                          <Pressable
+                            onPress={() => onReorderQueuedMessage(msg.id, "down")}
+                            className="h-6 w-6 items-center justify-center"
+                          >
+                            <ChevronDown
+                              className="h-3 w-3 text-muted-foreground"
+                              size={12}
+                            />
+                          </Pressable>
+                        )}
                       </>
                     )}
                     {onRemoveQueuedMessage && (
@@ -643,7 +673,8 @@ export function ChatInput({
       <View
         ref={dropZoneRef as any}
         className={cn(
-          "relative rounded-xl border bg-muted/30 overflow-hidden",
+          "relative border bg-muted/30 overflow-hidden",
+          queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
           isDragOver ? "border-primary border-dashed" : "border-border/60"
         )}
       >
@@ -687,41 +718,78 @@ export function ChatInput({
           />
         )}
 
-        {/* TextInput */}
-        <TextInput
-          ref={textInputRef}
-          value={inputValue}
-          onChangeText={handleChangeText}
-          onSubmitEditing={handleSubmit}
-          onKeyPress={(e: any) => {
-            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
-              e.preventDefault()
-              handleSubmit()
-            }
-          }}
-          placeholder={placeholder}
-          placeholderTextColor="#9ca3af"
-          accessibilityLabel="Chat message input"
-          editable={!disabled}
-          multiline
-          blurOnSubmit={false}
-          className={cn(
-            "min-h-[60px] max-h-[200px] w-full",
-            "bg-transparent",
-            "px-4 pt-4 text-xs text-foreground",
-            disabled && "opacity-50",
-            Platform.OS === "web" && "outline-none"
-          )}
-          textAlignVertical="top"
-        />
-
-        {voiceInput.canRecord && voiceInput.isRecording && voiceInput.liveTranscript ? (
-          <View className="px-4 pb-1">
-            <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
-              {voiceInput.liveTranscript}
-            </Text>
+        {/* TextInput or collapsed long-text card */}
+        {longTextCollapsed && longTextInfo ? (
+          <View className="px-3 pt-3 pb-1 gap-2">
+            <View className={cn("relative", LONG_TEXT_CHIP_LAYOUT_CLASS)}>
+              <Pressable
+                onPress={() => setLongTextViewerOpen(true)}
+                className={cn(
+                  "w-full rounded-lg border border-border bg-muted/50 p-3 pr-10 gap-1.5"
+                )}
+                accessibilityLabel="View pasted text"
+                accessibilityRole="button"
+              >
+                <View className="flex-row items-center gap-2">
+                  <FileText size={16} className="text-primary" />
+                  <Text className="flex-1 text-xs font-medium text-foreground min-w-0" numberOfLines={1}>
+                    {kindLabel(longTextInfo.kind).toUpperCase()}
+                  </Text>
+                  <Text className="text-[10px] text-muted-foreground flex-shrink-0">
+                    {longTextInfo.sizeLabel} · {longTextInfo.lines} lines
+                  </Text>
+                </View>
+                <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
+                  {inputValue.slice(0, 200).replace(/\n/g, " ")}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={handleRemoveLongText}
+                className="absolute top-1.5 right-1.5 z-10 rounded-full bg-background/90 p-1 border border-border/60"
+                accessibilityLabel="Remove pasted text"
+                accessibilityRole="button"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <X size={14} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={handleShowInTextField}
+              className="self-start"
+            >
+              <Text className="text-[11px] text-primary font-medium">
+                Show in text field ›
+              </Text>
+            </Pressable>
           </View>
-        ) : null}
+        ) : (
+          <TextInput
+            ref={textInputRef}
+            value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : inputValue}
+            onChangeText={handleChangeText}
+            onSubmitEditing={handleSubmit}
+            onKeyPress={(e: any) => {
+              if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                e.preventDefault()
+                handleSubmit()
+              }
+            }}
+            placeholder={placeholder}
+            placeholderTextColor="#9ca3af"
+            accessibilityLabel="Chat message input"
+            editable={!disabled && !voiceInput.isRecording}
+            multiline
+            blurOnSubmit={false}
+            className={cn(
+              "min-h-[60px] max-h-[200px] w-full",
+              "bg-transparent",
+              "px-4 pt-4 text-xs text-foreground",
+              disabled && "opacity-50",
+              Platform.OS === "web" && "outline-none"
+            )}
+            textAlignVertical="top"
+          />
+        )}
 
         {/* Bottom toolbar */}
         <View className="flex-row items-center justify-between p-1.5">
@@ -945,6 +1013,15 @@ export function ChatInput({
               <PopoverBackdrop />
               <PopoverContent className="w-[260px] p-0 max-h-[320px]">
                 <ScrollView>
+                  <AutoModelOption
+                    currentModelId={currentModelId}
+                    onSelect={() => {
+                      handleModelChange(AUTO_MODEL_ID)
+                      setModelPickerOpen(false)
+                    }}
+                    compact
+                  />
+                  <View className="h-px bg-border/50 mx-2" />
                   {MODEL_GROUPS.map((group) => (
                     <View key={group.label}>
                       <View className="px-3 pt-2.5 pb-1">
@@ -1105,6 +1182,17 @@ export function ChatInput({
           )}
         </View>
       </View>
+
+      {longTextInfo && (
+        <FileViewerModal
+          visible={longTextViewerOpen}
+          onClose={() => setLongTextViewerOpen(false)}
+          content={inputValue}
+          title={`${kindLabel(longTextInfo.kind)} content`}
+          kind={longTextInfo.kind}
+          sizeLabel={longTextInfo.sizeLabel}
+        />
+      )}
 
       {Platform.OS !== "web" && (
         <AttachSourceSheet

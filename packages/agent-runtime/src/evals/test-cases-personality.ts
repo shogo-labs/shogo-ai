@@ -3,9 +3,9 @@
 /**
  * Personality & Identity Eval Test Cases
  *
- * Tests the agent's ability to self-update its workspace personality files
- * (SOUL.md, IDENTITY.md, AGENTS.md) via read_file + edit_file, following
- * the WORKSPACE_FILES_GUIDE pattern: read defaults first, then edit in place.
+ * Tests the agent's ability to self-update its workspace personality sections
+ * in AGENTS.md via read_file + edit_file, following the WORKSPACE_FILES_GUIDE
+ * pattern: read defaults first, then edit in place.
  */
 
 import type { AgentEval } from './types'
@@ -50,11 +50,11 @@ export const PERSONALITY_EVALS: AgentEval[] = [
         validate: (r) => readBeforeEdit(r),
       },
       {
-        id: 'targeted-soul-md',
-        description: 'Edited SOUL.md (the tone/voice file)',
+        id: 'targeted-agents-md',
+        description: 'Edited AGENTS.md (contains personality/tone sections)',
         points: 20,
         phase: 'execution',
-        validate: (r) => editedFile(r, 'SOUL.md'),
+        validate: (r) => editedFile(r, 'AGENTS.md'),
       },
       {
         id: 'mentions-formal',
@@ -132,10 +132,10 @@ export const PERSONALITY_EVALS: AgentEval[] = [
       },
       {
         id: 'targeted-identity',
-        description: 'Edited IDENTITY.md',
+        description: 'Edited AGENTS.md (identity section)',
         points: 20,
         phase: 'execution',
-        validate: (r) => editedFile(r, 'IDENTITY.md'),
+        validate: (r) => editedFile(r, 'AGENTS.md'),
       },
       {
         id: 'has-name',
@@ -181,11 +181,11 @@ export const PERSONALITY_EVALS: AgentEval[] = [
         validate: (r) => readBeforeEdit(r),
       },
       {
-        id: 'targeted-soul-or-agents',
-        description: 'Edited SOUL.md or AGENTS.md',
+        id: 'targeted-agents-md',
+        description: 'Edited AGENTS.md',
         points: 15,
         phase: 'execution',
-        validate: (r) => editedFile(r, 'SOUL.md') || editedFile(r, 'AGENTS.md'),
+        validate: (r) => editedFile(r, 'AGENTS.md'),
       },
       {
         id: 'has-devops-role',

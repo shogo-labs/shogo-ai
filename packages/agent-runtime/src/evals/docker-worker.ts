@@ -161,7 +161,7 @@ export function loadEnvFromDisk(repoRoot: string): void {
 // ---------------------------------------------------------------------------
 
 const ENV_PREFIXES = [
-  'ANTHROPIC_', 'AI_PROXY_', 'OPENAI_', 'AWS_', 'STRIPE_',
+  'ANTHROPIC_', 'AI_PROXY_', 'OPENAI_', 'GOOGLE_API_KEY', 'AWS_', 'STRIPE_',
   'GITHUB_TOKEN', 'GITLAB_TOKEN', 'COMPOSIO_', 'SERPER_',
   'HUGGINGFACEHUB_', 'WEBARENA_', 'WEB_CACHE_',
 ]
@@ -411,8 +411,9 @@ export async function isWorkerHealthy(worker: DockerWorker): Promise<boolean> {
 export async function configureWorkerForTask(
   worker: DockerWorker,
   opts: WorkerSetupOptions,
+  baseUrlOverride?: string,
 ): Promise<void> {
-  const base = `http://localhost:${worker.port}`
+  const base = baseUrlOverride || `http://localhost:${worker.port}`
 
   if (opts.model) {
     const defaultModel = 'claude-sonnet-4-6'
@@ -442,6 +443,18 @@ export async function configureWorkerForTask(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ evalLabel: opts.evalLabel }),
       })
+      // Wait for the gateway to be ready after reset (it restarts async)
+      const deadline = Date.now() + 45_000
+      while (Date.now() < deadline) {
+        await Bun.sleep(2_000)
+        try {
+          const hres = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3_000) })
+          if (hres.ok) {
+            const hbody = await hres.json().catch(() => null) as any
+            if (hbody?.gateway?.running === true) break
+          }
+        } catch {}
+      }
     } catch (e: any) {
       console.warn(`      [setup] Session reset failed: ${e.message}`)
     }

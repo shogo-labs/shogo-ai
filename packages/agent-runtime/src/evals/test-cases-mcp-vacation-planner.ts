@@ -18,7 +18,7 @@
 
 import type { AgentEval, EvalResult } from './types'
 import { AIRBNB_VACATION_PLANNER_MOCKS } from './tool-mocks'
-import { usedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
+import { usedTool, usedToolAnywhere, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Vacation-planner-specific helpers
@@ -76,7 +76,7 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         description: 'Used mcp_search to find the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'search-mentions-airbnb',
@@ -93,7 +93,7 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         description: 'Used mcp_install to add the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
       },
       {
         id: 'correct-discovery-sequence',
@@ -269,14 +269,14 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         description: 'Proactively searched for an Airbnb MCP without being told',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-airbnb',
         description: 'Installed the Airbnb MCP server',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
       },
       {
         id: 'used-airbnb-search',

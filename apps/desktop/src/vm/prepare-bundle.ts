@@ -38,6 +38,13 @@ export interface PrepareVMBundleOptions {
   prebuiltServerJs?: string
   /** Copy this file as shogo.js instead of building from source. */
   prebuiltShogoJs?: string
+  /**
+   * When true, only produce the files needed for seed ISO embedding
+   * (server.js, shogo.js, wasm files). Skips Linux bun download,
+   * templates, prisma packages, and LSP servers that are
+   * pre-installed in rootfs-provisioned.qcow2 at /opt/shogo/node_modules/.
+   */
+  lightMode?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +218,16 @@ export function copyTemplates(destDir: string, repoRoot: string): void {
       }),
     )
   }
+
+  if (!existsSync(join(ssDir, 'node_modules'))) {
+    console.log('  Preparing skill-server with deps for VM...')
+    try {
+      execSync('bun install', { cwd: ssDir, stdio: 'pipe', timeout: 60_000 })
+    } catch {
+      if (!existsSync(join(ssDir, 'node_modules')))
+        throw new Error('bun install failed for skill-server')
+    }
+  }
 }
 
 /**
@@ -237,10 +254,10 @@ export function getTreeSitterWasmBuffer(repoRoot: string): Buffer | null {
  * For desktop packaging: pass pre-built JS bundle paths.
  */
 export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
-  const { destDir, repoRoot, prebuiltServerJs, prebuiltShogoJs } = opts
+  const { destDir, repoRoot, prebuiltServerJs, prebuiltShogoJs, lightMode } = opts
   mkdirSync(destDir, { recursive: true })
 
-  // --- JS bundles ---
+  // --- JS bundles (always needed) ---
   if (prebuiltServerJs) {
     if (!existsSync(join(destDir, 'server.js'))) {
       console.log('  Copying pre-built server.js for VM...')
@@ -270,31 +287,55 @@ export function prepareVMBundle(opts: PrepareVMBundleOptions): void {
     )
   }
 
-  // --- Prisma packages ---
-  if (!existsSync(join(destDir, 'node_modules', '@prisma', 'internals'))) {
-    console.log('  Installing prisma packages for shogo CLI...')
-    if (!existsSync(join(destDir, 'package.json'))) {
-      writeFileSync(join(destDir, 'package.json'), JSON.stringify({ name: 'vm-bundle', private: true }))
-    }
-    try {
-      execSync(
-        `bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine`,
-        { cwd: destDir, stdio: 'pipe', timeout: 60_000 },
-      )
-    } catch {
-      copyPrismaPackages(destDir, repoRoot)
-    }
-  }
-
-  // --- Linux bun binary + aliases ---
-  if (!existsSync(join(destDir, 'bun'))) downloadLinuxBun(destDir)
-  for (const alias of ['node', 'npx', 'npm']) createBunAlias(destDir, alias)
-
-  // --- Tree-sitter wasm files ---
+  // --- Tree-sitter wasm files (always needed — embedded in seed ISO) ---
   copyWasmFiles(join(destDir, 'wasm'), repoRoot)
 
-  // --- Templates ---
-  copyTemplates(destDir, repoRoot)
+  // With pre-provisioned images the following are baked into rootfs-provisioned.qcow2:
+  //   - /usr/local/bin/bun (+ node/npx/npm aliases)
+  //   - /opt/shogo/node_modules/ (prisma, typescript-language-server, typescript, pyright)
+  //   - /app/templates/runtime-template/ (+ symlink at /opt/shogo/templates/)
+  //   - /app/templates/skill-server/
+  // Only JS bundles + wasm files need to be in the seed ISO.
+  if (!lightMode) {
+    // --- Prisma packages ---
+    if (!existsSync(join(destDir, 'node_modules', '@prisma', 'internals'))) {
+      console.log('  Installing prisma packages for shogo CLI...')
+      if (!existsSync(join(destDir, 'package.json'))) {
+        writeFileSync(join(destDir, 'package.json'), JSON.stringify({ name: 'vm-bundle', private: true }))
+      }
+      try {
+        execSync(
+          `bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine`,
+          { cwd: destDir, stdio: 'pipe', timeout: 60_000 },
+        )
+      } catch {
+        copyPrismaPackages(destDir, repoRoot)
+      }
+    }
+
+    // --- Linux bun binary + aliases ---
+    if (!existsSync(join(destDir, 'bun'))) downloadLinuxBun(destDir)
+    for (const alias of ['node', 'npx', 'npm']) createBunAlias(destDir, alias)
+
+    // --- Templates ---
+    copyTemplates(destDir, repoRoot)
+
+    // --- Tech stacks (react-app, python-data, etc.) ---
+    const techStacksSrc = resolve(repoRoot, 'packages/agent-runtime/tech-stacks')
+    const techStacksDest = join(destDir, 'tech-stacks')
+    if (!existsSync(techStacksDest) && existsSync(techStacksSrc)) {
+      console.log('  Copying tech stacks for VM...')
+      cpSync(techStacksSrc, techStacksDest, { recursive: true })
+    }
+
+    // --- typescript-language-server (used by LSP inside the VM) ---
+    if (!existsSync(join(destDir, 'node_modules', 'typescript-language-server'))) {
+      console.log('  Installing typescript-language-server for VM...')
+      execSync('bun add typescript-language-server typescript', {
+        cwd: destDir, stdio: 'pipe', timeout: 60_000,
+      })
+    }
+  }
 
   console.log(`  VM bundle ready at ${destDir}`)
 }

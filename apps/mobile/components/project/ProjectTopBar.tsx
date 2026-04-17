@@ -62,7 +62,7 @@ import {
   ClipboardList,
   RefreshCw,
   GitCommit,
-  Download,
+  Upload,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -84,7 +84,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
-  // HIDDEN: { id: 'files', label: 'Files', icon: FolderOpen },
+  { id: 'files', label: 'Files', icon: FolderOpen },
   // { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },
@@ -143,11 +143,19 @@ export interface ProjectTopBarProps {
   onChatSessionsToggle?: () => void
   onChatCollapseToggle?: () => void
   onCreateNewSession?: () => void
+  chatPanelWidth?: number
   chatFullscreenSidebarWidth?: number
   /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
   onSearchChats?: () => void
+  // Fullscreen chat actions (replaces ChatTabBar in fullscreen mode)
+  onNewChat?: () => void
+  onRenameChat?: (sessionId: string, newName: string) => void | Promise<void>
+  onDeleteChat?: (sessionId: string) => void | Promise<void>
+  activeChatSessionId?: string | null
+  activeChatSessionName?: string | null
   // Slot for canvas theme picker
   canvasThemePicker?: React.ReactNode
+  canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
 }
 
@@ -167,7 +175,7 @@ function BarIconButton({
   onPress,
   active,
   title,
-  size = 14,
+  size = 12,
 }: {
   icon: React.ElementType
   onPress: () => void
@@ -182,7 +190,7 @@ function BarIconButton({
       ref={tipRef}
       onPress={onPress}
       className={cn(
-        'h-7 w-7 items-center justify-center rounded-md',
+        'h-6 w-6 items-center justify-center rounded-md',
         active ? 'bg-primary' : 'active:bg-muted',
       )}
       accessibilityLabel={title}
@@ -236,9 +244,16 @@ export function ProjectTopBar({
   onChatSessionsToggle,
   onChatCollapseToggle,
   onCreateNewSession,
+  chatPanelWidth: chatPanelWidthProp,
   chatFullscreenSidebarWidth,
   onSearchChats,
+  onNewChat,
+  onRenameChat,
+  onDeleteChat,
+  activeChatSessionId,
+  activeChatSessionName,
   canvasThemePicker,
+  canvasThemeSupported,
   onCanvasRefresh,
 }: ProjectTopBarProps) {
   const router = useRouter()
@@ -249,6 +264,9 @@ export function ProjectTopBar({
   const [dropdownKey, setDropdownKey] = useState(0)
   const [showNarrowMore, setShowNarrowMore] = useState(false)
   const [showSurfaceDropdown, setShowSurfaceDropdown] = useState(false)
+  const [chatMoreOpen, setChatMoreOpen] = useState(false)
+  const [chatRenameOpen, setChatRenameOpen] = useState(false)
+  const [chatRenameValue, setChatRenameValue] = useState('')
 
   const handleBack = useCallback(() => {
     router.push('/(app)' as any)
@@ -263,6 +281,19 @@ export function ProjectTopBar({
       router.push(`/(app)/projects/${selectedId}` as any)
     }
   }, [projectId, onProjectSwitch, router])
+
+  const handleSaveChatRename = useCallback(async () => {
+    const trimmed = chatRenameValue.trim()
+    if (!activeChatSessionId || !trimmed || !onRenameChat) {
+      setChatRenameOpen(false)
+      return
+    }
+    try {
+      await onRenameChat(activeChatSessionId, trimmed)
+    } finally {
+      setChatRenameOpen(false)
+    }
+  }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
   const isCanvasActive = activeTab === 'dynamic-app'
   const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
@@ -298,9 +329,7 @@ export function ProjectTopBar({
     return activeTab === tabId
   }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab])
 
-  // Wide layout: two-zone top bar aligned with the chat (480px) and canvas (flex-1) panels below.
-  // Narrow layout: single flat bar with icon tabs and overflow menu.
-  const chatPanelWidth = 480
+  const chatPanelWidth = chatPanelWidthProp ?? 480
   const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
 
   if (!isWide) {
@@ -380,6 +409,7 @@ export function ProjectTopBar({
                   onToggleStar={onToggleStar}
                   onMoveToFolder={onMoveToFolder}
                   folders={folders}
+                  canvasThemeSupported={canvasThemeSupported}
                 />
               </PopoverBody>
             </PopoverContent>
@@ -480,7 +510,7 @@ export function ProjectTopBar({
         style={{ width: chatFullscreenSidebarWidth ?? (isChatCollapsed ? undefined : chatPanelWidth) }}
       >
         <View className="flex-row items-center gap-0.5 flex-shrink-0">
-          <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />
+          {/* <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" /> */}
 
           <Popover
             placement="bottom"
@@ -536,6 +566,7 @@ export function ProjectTopBar({
                   onToggleStar={onToggleStar}
                   onMoveToFolder={onMoveToFolder}
                   folders={folders}
+                  canvasThemeSupported={canvasThemeSupported}
                 />
               </PopoverBody>
             </PopoverContent>
@@ -544,9 +575,67 @@ export function ProjectTopBar({
 
         <View className="flex-1" />
 
-        {/* Fullscreen: search chats icon in the sidebar header area */}
+        {/* Fullscreen chat: search, new chat, more options */}
         {onSearchChats && (
           <BarIconButton icon={Search} onPress={onSearchChats} title="Search chats" />
+        )}
+        {onNewChat && (
+          <BarIconButton icon={Plus} onPress={onNewChat} title="New chat" />
+        )}
+        {(onRenameChat || onDeleteChat) && (
+          <Popover
+            placement="bottom right"
+            size="sm"
+            isOpen={chatMoreOpen}
+            onOpen={() => setChatMoreOpen(true)}
+            onClose={() => setChatMoreOpen(false)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                onPress={() => setChatMoreOpen((o) => !o)}
+                className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+                accessibilityLabel="More options"
+                accessibilityState={{ expanded: chatMoreOpen }}
+              >
+                <MoreHorizontal size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="w-[200px] p-0">
+              <PopoverBody className="py-1">
+                {onRenameChat && (
+                  <Pressable
+                    onPress={() => {
+                      setChatMoreOpen(false)
+                      setChatRenameValue(activeChatSessionName ?? '')
+                      setChatRenameOpen(true)
+                    }}
+                    disabled={!activeChatSessionId}
+                    className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+                  >
+                    <Pencil size={14} className="text-muted-foreground" />
+                    <Text className="text-sm text-foreground">Rename chat</Text>
+                  </Pressable>
+                )}
+                {onDeleteChat && (
+                  <Pressable
+                    onPress={() => {
+                      setChatMoreOpen(false)
+                      if (activeChatSessionId) {
+                        void onDeleteChat(activeChatSessionId)
+                      }
+                    }}
+                    disabled={!activeChatSessionId}
+                    className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+                  >
+                    <Trash2 size={14} className="text-destructive" />
+                    <Text className="text-sm text-destructive">Delete chat</Text>
+                  </Pressable>
+                )}
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
         )}
 
         {/* Chat collapse/expand — history and new-chat are now in ChatTabBar */}
@@ -681,6 +770,9 @@ export function ProjectTopBar({
 
         {/* Right actions */}
         <View className="flex-row items-center gap-0.5">
+          {isCanvasActive && (
+            <PublishDropdown projectId={projectId} projectName={projectName} />
+          )}
           {!hasActiveSubscription && (
             <Pressable
               onPress={() => router.push('/(app)/billing' as any)}
@@ -693,7 +785,69 @@ export function ProjectTopBar({
           )}
         </View>
       </View>
+
+      {/* Rename chat modal (fullscreen chat mode) */}
+      <RenameChatModal
+        visible={chatRenameOpen}
+        currentName={chatRenameValue}
+        onChangeName={setChatRenameValue}
+        onClose={() => setChatRenameOpen(false)}
+        onSave={() => void handleSaveChatRename()}
+      />
     </View>
+  )
+}
+
+function RenameChatModal({
+  visible,
+  currentName,
+  onChangeName,
+  onClose,
+  onSave,
+}: {
+  visible: boolean
+  currentName: string
+  onChangeName: (v: string) => void
+  onClose: () => void
+  onSave: () => void
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable onPress={onClose} className="flex-1 bg-black/50 items-center justify-center px-6">
+        <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
+          <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
+            <Text className="text-base font-semibold text-foreground">Rename chat</Text>
+            <Pressable onPress={onClose} className="p-1 -mr-1 rounded-md active:bg-muted">
+              <X size={18} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          <View className="px-5 pb-4">
+            <TextInput
+              value={currentName}
+              onChangeText={onChangeName}
+              placeholder="Chat name"
+              placeholderTextColor="#9ca3af"
+              className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none"
+              autoFocus
+              selectTextOnFocus
+            />
+          </View>
+          <View className="px-5 pb-5 flex-row justify-end gap-2">
+            <Pressable onPress={onClose} className="px-4 py-2 rounded-lg border border-border active:bg-muted">
+              <Text className="text-sm font-medium text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onSave}
+              className={cn('px-4 py-2 rounded-lg', currentName.trim() ? 'bg-primary active:opacity-80' : 'bg-muted')}
+            >
+              <Text className={cn('text-sm font-medium', currentName.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                Save
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   )
 }
 
@@ -722,6 +876,7 @@ function ProjectDropdownContent({
   onToggleStar,
   onMoveToFolder,
   folders,
+  canvasThemeSupported,
 }: {
   projects: ProjectSwitcherItem[]
   currentProjectId: string
@@ -741,6 +896,7 @@ function ProjectDropdownContent({
   onToggleStar?: () => void
   onMoveToFolder?: (folderId: string | null) => void
   folders: { id: string; name: string }[]
+  canvasThemeSupported?: boolean | null
 }) {
   const [view, setView] = useState<DropdownView>('menu')
   const router = useRouter()
@@ -777,6 +933,7 @@ function ProjectDropdownContent({
       onToggleStar={onToggleStar}
       onMoveToFolder={onMoveToFolder}
       folders={folders}
+      canvasThemeSupported={canvasThemeSupported}
     />
   )
 }
@@ -804,6 +961,7 @@ function ProjectMenuView({
   onToggleStar,
   onMoveToFolder,
   folders,
+  canvasThemeSupported,
 }: {
   projectId: string
   projectName: string
@@ -823,6 +981,7 @@ function ProjectMenuView({
   onToggleStar?: () => void
   onMoveToFolder?: (folderId: string | null) => void
   folders: { id: string; name: string }[]
+  canvasThemeSupported?: boolean | null
 }) {
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
@@ -914,7 +1073,7 @@ function ProjectMenuView({
       onPress: () => { setShowDetailsModal(true) },
     },
     {
-      icon: Download,
+      icon: Upload,
       label: isExporting ? 'Exporting...' : 'Export project',
       onPress: handleExportProject,
     },
@@ -1040,11 +1199,12 @@ function ProjectMenuView({
           )
         })}
 
-        {/* Divider */}
-        <View className="h-px bg-border mx-3 my-1" />
-
-        {/* Appearance */}
-        <AppearanceMenu />
+        {canvasThemeSupported !== false && (
+          <>
+            <View className="h-px bg-border mx-3 my-1" />
+            <AppearanceMenu />
+          </>
+        )}
       </ScrollView>
 
       {/* Project Details Modal */}

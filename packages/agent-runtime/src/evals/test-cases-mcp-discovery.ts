@@ -37,6 +37,7 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   usedToolInFinalTurn,
   toolCallCount,
   responseContains,
@@ -67,7 +68,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Used mcp_search or tool_search to check available servers',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'mentions-playwright',
@@ -119,7 +120,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Used mcp_search to find postgres servers',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'search-mentions-postgres',
@@ -174,14 +175,14 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Used mcp_search to find a filesystem server',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'used-mcp-install',
         description: 'Used mcp_install to install the server',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
       },
       {
         id: 'used-filesystem-tool',
@@ -242,7 +243,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Used mcp_uninstall to remove the server',
         points: 50,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_uninstall') || usedTool(r, 'tool_uninstall'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_uninstall') || usedToolAnywhere(r, 'tool_uninstall'),
       },
       {
         id: 'uninstalled-slack',
@@ -294,14 +295,14 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Used mcp_search to find a Figma capability',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-mcp-server',
         description: 'Used mcp_install to add the Figma capability',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
       },
       {
         id: 'passed-token',
@@ -358,14 +359,14 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Used mcp_search or mcp_install (discovery flow)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'mcp_install') || usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_search') || usedToolAnywhere(r, 'mcp_install') || usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-mcp-server',
         description: 'Used mcp_install to add the postgres server',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedToolAnywhere(r, 'mcp_install'),
       },
       {
         id: 'passed-connection-config',

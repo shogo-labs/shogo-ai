@@ -22,6 +22,7 @@ export const CreditLedgerModel = types
     workspaceId: types.string,
     monthlyCredits: types.optional(types.number, 0),
     dailyCredits: types.optional(types.number, 0),
+    monthlyAllocation: types.optional(types.number, 0),
     anniversaryDay: types.number,
     lastDailyReset: types.optional(types.number, 0),
     lastMonthlyReset: types.optional(types.number, 0),

@@ -32,16 +32,17 @@ function getSpeechRecognitionCtor(): (new () => any) | null {
 // Native: expo-speech-recognition (lazy-loaded so web builds never pull it in)
 // ---------------------------------------------------------------------------
 
+let _nativeModuleResolved = false
 let _nativeModule: any = null
 function getNativeModule(): any {
-  if (_nativeModule !== undefined && _nativeModule !== null) return _nativeModule
-  if (Platform.OS === 'web') {
-    _nativeModule = null
-    return null
-  }
+  if (_nativeModuleResolved) return _nativeModule
+  _nativeModuleResolved = true
+  if (Platform.OS === 'web') return null
   try {
-    _nativeModule =
-      require('expo-speech-recognition').ExpoSpeechRecognitionModule
+    // requireOptionalNativeModule returns null (instead of throwing) when
+    // the native module isn't linked, e.g. running inside Expo Go.
+    const { requireOptionalNativeModule } = require('expo')
+    _nativeModule = requireOptionalNativeModule('ExpoSpeechRecognition')
   } catch {
     _nativeModule = null
   }

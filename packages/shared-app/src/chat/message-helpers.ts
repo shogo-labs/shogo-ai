@@ -46,6 +46,22 @@ const CONNECTION_ERROR_PATTERNS = [
   /terminated/i, /aborted/i, /socket hang up/i,
 ]
 
+const TUNNEL_DISCONNECT_PATTERNS = [
+  /tunnel disconnected/i, /instance is offline/i, /stream error/i,
+  /stream timed out/i, /cross-pod.*relay.*timed out/i,
+]
+
+export function isTunnelDisconnectError(message: string): boolean {
+  const raw = message
+  try {
+    const parsed = JSON.parse(raw)
+    const inner = parsed?.error?.message || parsed?.message || ''
+    if (TUNNEL_DISCONNECT_PATTERNS.some((p) => p.test(inner))) return true
+  } catch {}
+  return TUNNEL_DISCONNECT_PATTERNS.some((p) => p.test(raw)) ||
+    CONNECTION_ERROR_PATTERNS.some((p) => p.test(raw))
+}
+
 export function formatErrorMessage(rawMessage: string): string {
   try {
     const parsed = JSON.parse(rawMessage)

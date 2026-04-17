@@ -8,24 +8,51 @@ export interface VMIsolationConfig {
   enabled: boolean | 'auto'
   memoryMB: number
   cpus: number
+  /** Share the host workspace directory into the VM via 9p mount.
+   *  When true (default), the VM sees host project files via 9p.
+   *  When false, the VM uses an isolated overlay disk. */
+  mountWorkspace: boolean
+}
+
+export interface MeetingConfig {
+  autoDetect: boolean
+  autoRecord: boolean
+  autoRecordConfirmCount: number
+  gracePeriodSeconds: number
+  autoStopSeconds: number
+  whisperModel: string
+  useCloudTranscription: boolean
 }
 
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
   cloudUrl: string
   vmIsolation: VMIsolationConfig
+  meetings: MeetingConfig
 }
 
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
   enabled: 'auto',
-  memoryMB: 4096,
+  memoryMB: 1536,
   cpus: 0,  // 0 = auto (half physical cores)
+  mountWorkspace: true,
+}
+
+const DEFAULT_MEETING_CONFIG: MeetingConfig = {
+  autoDetect: true,
+  autoRecord: false,
+  autoRecordConfirmCount: 0,
+  gracePeriodSeconds: 10,
+  autoStopSeconds: 60,
+  whisperModel: 'base.en',
+  useCloudTranscription: false,
 }
 
 const DEFAULT_CONFIG: DesktopConfig = {
   mode: 'local',
   cloudUrl: 'https://studio.shogo.ai',
   vmIsolation: { ...DEFAULT_VM_CONFIG },
+  meetings: { ...DEFAULT_MEETING_CONFIG },
 }
 
 function getConfigPath(): string {
@@ -45,6 +72,12 @@ export function readConfig(): DesktopConfig {
         ...DEFAULT_VM_CONFIG,
         ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null
           ? parsed.vmIsolation
+          : {}),
+      },
+      meetings: {
+        ...DEFAULT_MEETING_CONFIG,
+        ...(typeof parsed.meetings === 'object' && parsed.meetings !== null
+          ? parsed.meetings
           : {}),
       },
     }

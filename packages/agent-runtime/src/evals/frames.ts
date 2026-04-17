@@ -746,7 +746,7 @@ async function main() {
     if (nameSet.has('web_search') || nameSet.has('web')) instancesUsingSearch++
     if (nameSet.has('web_fetch') || nameSet.has('browser')) instancesUsingFetch++
     if (nameSet.has('exec')) instancesUsingExec++
-    if (nameSet.has('read_file') || nameSet.has('glob') || nameSet.has('grep')) instancesUsingFileTools++
+    if (nameSet.has('read_file') || nameSet.has('exec')) instancesUsingFileTools++
     for (const n of r.toolNames) globalToolCounts[n] = (globalToolCounts[n] || 0) + 1
   }
   const totalToolCallCount = finalResults.reduce((s, r) => s + r.toolCalls, 0)

@@ -19,6 +19,7 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   neverUsedTool,
   responseContains,
   toolCallArgsContain,
@@ -79,7 +80,7 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         description: 'Installed GitHub via tool_install',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'called-list-issues',
@@ -152,7 +153,7 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         description: 'Installed Google Calendar via tool_install',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'called-calendar-tool',
@@ -222,7 +223,7 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         description: 'Installed GitHub via tool_install',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'called-list-issues',

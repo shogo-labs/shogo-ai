@@ -26,6 +26,7 @@ import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
+import type { InstanceSizeName } from '../config/instance-sizes'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -949,13 +950,6 @@ export class KnativeProjectManager {
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       ...(projectRecord?.workspaceId ? [{ name: "WORKSPACE_ID", value: projectRecord.workspaceId }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
-      // Auth secret for validating preview JWT tokens
-      {
-        name: "BETTER_AUTH_SECRET",
-        valueFrom: {
-          secretKeyRef: { name: "preview-secrets", key: "BETTER_AUTH_SECRET" },
-        },
-      },
     ]
 
     // AI Proxy configuration
@@ -1080,22 +1074,41 @@ export class KnativeProjectManager {
       })
     }
 
+    // Resolve instance size for this workspace to determine resource allocation
+    const { buildProjectResourceOverrides } = await import('../services/instance.service')
+    const workspaceId = projectRecord?.workspaceId
+    let sizeOverrides: ReturnType<typeof buildProjectResourceOverrides> | null = null
+    if (workspaceId) {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { instanceSize: true },
+      })
+      if (workspace) {
+        sizeOverrides = buildProjectResourceOverrides(
+          workspaceId,
+          workspace.instanceSize as InstanceSizeName,
+        )
+      }
+    }
+
+    const resourceSpec = {
+      requests: sizeOverrides?.requests ?? { memory: "768Mi", cpu: "100m" },
+      limits: sizeOverrides?.limits ?? { memory: this.memoryLimit, cpu: this.cpuLimit },
+    }
+
+    const diskSizeLimit = sizeOverrides?.diskSizeLimit ?? "2Gi"
+    const minScale = sizeOverrides?.minScale ?? 0
+
     // Build containers array
     const containers: any[] = [
       {
         name: RUNTIME_CONFIG.containerName,
         image: runtimeImage,
-        imagePullPolicy: "Always", // Always pull to get latest staging-latest tag
+        imagePullPolicy: "Always",
         ports: [{ containerPort: 8080, name: "http1" }],
         env,
-        resources: {
-          requests: { memory: "768Mi", cpu: "100m" },
-          limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
-        },
+        resources: resourceSpec,
         volumeMounts: [{ name: "project-data", mountPath: workDir }],
-        // Readiness probe - optimized for fast start mode
-        // With fast start, /health passes in ~2s, /ready passes after build (~5-10s)
-        // Lower initialDelay + higher failureThreshold allows for background build time
         readinessProbe: {
           httpGet: {
             path: "/ready",
@@ -1105,7 +1118,7 @@ export class KnativeProjectManager {
           periodSeconds: 3,
           timeoutSeconds: 3,
           successThreshold: 1,
-          failureThreshold: 60, // Allow up to 180s for S3 restore + build on large projects
+          failureThreshold: 60,
         },
         livenessProbe: {
           httpGet: {
@@ -1122,18 +1135,21 @@ export class KnativeProjectManager {
     ]
 
     // NOTE: PostgreSQL sidecar removed. Projects now use shared CloudNativePG cluster.
-    // Database is provisioned per-project via databaseService.provisionDatabase()
-    // and the DATABASE_URL env var points to the shared cluster.
 
-    // Build volumes array
-    // Project data uses emptyDir for faster cold starts (~6s faster than EBS)
-    // Files are synced to/from S3 for persistence across restarts
     const volumes: any[] = [
       {
         name: "project-data",
-        emptyDir: { sizeLimit: "2Gi" },
+        emptyDir: { sizeLimit: diskSizeLimit },
       },
     ]
+
+    const podSpec: any = {
+      timeoutSeconds: 1800,
+      responseStartTimeoutSeconds: 600,
+      securityContext: { fsGroup: 999 },
+      containers,
+      volumes,
+    }
 
     return {
       apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
@@ -1151,21 +1167,86 @@ export class KnativeProjectManager {
         template: {
           metadata: {
             annotations: {
-              "autoscaling.knative.dev/min-scale": "0",
+              "autoscaling.knative.dev/min-scale": String(minScale),
               "autoscaling.knative.dev/max-scale": "1",
               "autoscaling.knative.dev/scale-to-zero-pod-retention-period": `${this.idleTimeoutSeconds}s`,
               "autoscaling.knative.dev/target": "10",
             },
           },
-          spec: {
-            timeoutSeconds: 1800,
-            responseStartTimeoutSeconds: 600,
-            securityContext: { fsGroup: 999 },
-            containers,
-            volumes,
-          },
+          spec: podSpec,
         },
       },
+    }
+  }
+
+  /**
+   * Patch resource requests/limits, disk size, and min-scale on a running
+   * project's Knative service. Used when a workspace upgrades/downgrades
+   * instance size. Creating a new revision causes Knative to roll out a new pod.
+   */
+  async patchProjectResources(projectId: string, overrides: {
+    requests?: Record<string, string>
+    limits?: Record<string, string>
+    diskSizeLimit?: string
+    minScale?: number
+  }): Promise<void> {
+    const api = getCustomApi()
+    const serviceName = `project-${projectId}`
+
+    let existing: any
+    try {
+      existing = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: serviceName,
+      })
+    } catch (err: any) {
+      if (err?.response?.statusCode === 404 || err?.body?.code === 404) {
+        return
+      }
+      throw err
+    }
+
+    const template = (existing as any)?.spec?.template
+    const spec = template?.spec
+    if (!spec?.containers?.[0]) return
+
+    const container = spec.containers[0]
+    container.resources = {
+      requests: overrides.requests || { memory: '768Mi', cpu: '100m' },
+      limits: overrides.limits || { memory: this.memoryLimit, cpu: this.cpuLimit },
+    }
+
+    if (overrides.diskSizeLimit && spec.volumes) {
+      const projectVol = spec.volumes.find((v: any) => v.name === 'project-data')
+      if (projectVol?.emptyDir) {
+        projectVol.emptyDir.sizeLimit = overrides.diskSizeLimit
+      }
+    }
+
+    if (overrides.minScale !== undefined && template?.metadata?.annotations) {
+      template.metadata.annotations['autoscaling.knative.dev/min-scale'] = String(overrides.minScale)
+    }
+
+    // Clean up any legacy dedicated-node scheduling from previous architecture
+    delete spec.nodeSelector
+    delete spec.tolerations
+
+    try {
+      await api.replaceNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: serviceName,
+        body: existing,
+      })
+      console.log(`[KnativeProjectManager] Patched resources for ${serviceName} (minScale=${overrides.minScale})`)
+    } catch (err: any) {
+      console.error(`[KnativeProjectManager] Failed to patch ${serviceName}:`, err.message)
+      throw err
     }
   }
 

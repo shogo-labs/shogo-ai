@@ -29,7 +29,6 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://studio.staging.shogo.ai",
-        "EXPO_PUBLIC_POSTHOG_API_KEY": "",
         "EXPO_PUBLIC_APP_ENV": "staging_app"
       }
     },
@@ -41,7 +40,6 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://studio.shogo.ai",
-        "EXPO_PUBLIC_POSTHOG_API_KEY": "",
         "EXPO_PUBLIC_APP_ENV": "production_app"
       }
     }
@@ -56,7 +54,7 @@
     "production": {
       "android": {
         "serviceAccountKeyPath": "./google-services.json",
-        "track": "internal"
+        "track": "production"
       }
     }
   }

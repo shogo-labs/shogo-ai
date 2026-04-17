@@ -4,6 +4,7 @@
 export {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
+  AUTO_MODEL_ID,
   type ModelEntry,
   type ImageModelEntry,
   type ModelId,
@@ -38,5 +39,8 @@ export {
   getMaxOutputTokens,
   getAvailableModels,
   getModelsByProvider,
+  isAutoModel,
+  MODEL_DOLLAR_COSTS,
+  calculateDollarCost,
   type AvailableModelFilter,
 } from './helpers'

@@ -46,7 +46,7 @@ model User {
   starredProjects     StarredProject[]
   signupAttribution   SignupAttribution?
   apiKeys             ApiKey[]
-
+  creatorProfile      CreatorProfile?
   @@map("users")
 }
 
@@ -107,32 +107,43 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id          String   @id @default(uuid())
-  name        String
-  slug        String   @unique
-  description String?
-  ssoSettings Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String       @id @default(uuid())
+  name            String
+  slug            String       @unique
+  description     String?
+  ssoSettings     Json?
+  instanceSize    InstanceSize @default(micro)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   // Relations
-  projects        Project[]
-  members         Member[]
-  billingAccounts BillingAccount[]
-  invitations     Invitation[]
-  inviteLinks     InviteLink[]
-  folders         Folder[]
-  subscriptions   Subscription[]
-  creditLedgers   CreditLedger[]
-  usageEvents     UsageEvent[]
-  starredProjects StarredProject[]
-  apiKeys         ApiKey[]
-  instances       Instance[]
-  agentCostMetrics  AgentCostMetric[]
+  projects             Project[]
+  members              Member[]
+  billingAccounts      BillingAccount[]
+  invitations          Invitation[]
+  inviteLinks          InviteLink[]
+  folders              Folder[]
+  subscriptions        Subscription[]
+  instanceSubscription InstanceSubscription?
+  creditLedgers        CreditLedger[]
+  usageEvents          UsageEvent[]
+  storageUsage         StorageUsage?
+  starredProjects      StarredProject[]
+  apiKeys              ApiKey[]
+  instances            Instance[]
+  meetings             Meeting[]  agentCostMetrics  AgentCostMetric[]
   budgetAlerts      BudgetAlert[]
   modelExperiments  ModelExperiment[]
 
   @@map("workspaces")
+}
+
+enum InstanceSize {
+  micro
+  small
+  medium
+  large
+  xlarge
 }
 
 model Project {
@@ -171,6 +182,8 @@ model Project {
   githubConnection GitHubConnection?
   starredBy        StarredProject[]
   agentConfig      AgentConfig?
+  meetings         Meeting[]
+  marketplaceListing  MarketplaceListing?
   agentCostMetrics   AgentCostMetric[]
   modelExperiments   ModelExperiment[]
 
@@ -457,7 +470,7 @@ model Subscription {
   workspaceId         String
   stripeSubscriptionId String            @unique
   stripeCustomerId    String
-  planId              PlanId
+  planId              String
   status              SubscriptionStatus
   billingInterval     BillingInterval
   currentPeriodStart  DateTime
@@ -471,13 +484,6 @@ model Subscription {
 
   @@unique([workspaceId])
   @@map("subscriptions")
-}
-
-enum PlanId {
-  basic
-  pro
-  business
-  enterprise
 }
 
 enum SubscriptionStatus {
@@ -498,6 +504,7 @@ model CreditLedger {
   workspaceId      String   @unique
   monthlyCredits   Float    @default(0)
   dailyCredits     Float    @default(0)
+  monthlyAllocation Float   @default(0)
   dailyCreditsDispensedThisMonth Float @default(0)
   anniversaryDay   Int
   lastDailyReset   DateTime
@@ -538,6 +545,43 @@ model UsageEvent {
 enum CreditSource {
   daily
   monthly
+}
+
+// =============================================================================
+// INSTANCE SIZES (Workspace Resource Tiers & Storage)
+// =============================================================================
+
+model InstanceSubscription {
+  id                   String             @id @default(uuid())
+  workspaceId          String             @unique
+  stripeSubscriptionId String             @unique
+  stripeCustomerId     String
+  instanceSize         InstanceSize
+  status               SubscriptionStatus
+  billingInterval      BillingInterval
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("instance_subscriptions")
+}
+
+model StorageUsage {
+  id               String   @id @default(uuid())
+  workspaceId      String   @unique
+  totalBytes       BigInt   @default(0)
+  projectCount     Int      @default(0)
+  lastCalculatedAt DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("storage_usage")
 }
 
 // =============================================================================
@@ -1256,7 +1300,9 @@ model Instance {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  remoteActions     RemoteAction[]
+  pushSubscriptions PushSubscription[]
 
   @@unique([workspaceId, hostname])
   @@index([workspaceId])
@@ -1266,6 +1312,40 @@ model Instance {
 enum InstanceStatus {
   online
   offline
+}
+
+model RemoteAction {
+  id         String   @id @default(cuid())
+  instanceId String
+  userId     String
+  action     String
+  path       String?
+  method     String?
+  summary    String?
+  result     String?
+  createdAt  DateTime @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([instanceId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("remote_actions")
+}
+
+model PushSubscription {
+  id         String   @id @default(cuid())
+  instanceId String
+  userId     String
+  pushToken  String
+  platform   String
+  createdAt  DateTime @default(now())
+
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@unique([instanceId, pushToken])
+  @@index([instanceId])
+  @@map("push_subscriptions")
 }
 
 // =============================================================================
@@ -1301,6 +1381,265 @@ model EvalRun {
   @@map("eval_runs")
 }
 
+// =============================================================================
+// MARKETPLACE (Agent Marketplace & Creator Economy)
+// =============================================================================
+
+enum PayoutStatus {
+  not_setup
+  pending_verification
+  verified
+  requires_update
+  disabled
+}
+
+enum CreatorTier {
+  newcomer
+  builder
+  craftsman
+  expert
+  master
+}
+
+enum BadgeType {
+  first_agent
+  popular_10
+  popular_100
+  popular_1000
+  top_rated
+  five_star
+  prolific_builder
+  master_builder
+  active_maintainer
+  streak_3
+  streak_6
+  streak_12
+  multi_category
+  early_adopter
+  verified_creator
+}
+
+enum PricingModel {
+  free
+  one_time
+  subscription
+}
+
+enum InstallModel {
+  fork
+  linked
+}
+
+enum ListingStatus {
+  draft
+  in_review
+  published
+  suspended
+  archived
+}
+
+enum InstallStatus {
+  active
+  cancelled
+  expired
+}
+
+enum TransactionType {
+  purchase
+  subscription_payment
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  refunded
+}
+
+model CreatorProfile {
+  id                      String       @id @default(cuid())
+  userId                  String       @unique
+  displayName             String
+  bio                     String?
+  avatarUrl               String?
+  websiteUrl              String?
+  stripeCustomAccountId   String?
+  payoutStatus            PayoutStatus @default(not_setup)
+  payoutDetailsSubmittedAt DateTime?
+  verified                Boolean      @default(false)
+  totalEarningsInCents    Int          @default(0)
+  pendingPayoutInCents    Int          @default(0)
+  totalPaidOutInCents     Int          @default(0)
+  creatorTier             CreatorTier  @default(newcomer)
+  reputationScore         Int          @default(0)
+  totalAgentsPublished    Int          @default(0)
+  totalInstalls           Int          @default(0)
+  averageAgentRating      Float        @default(0)
+  totalVersionsShipped    Int          @default(0)
+  activeMaintenanceStreak Int          @default(0)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badges       CreatorBadge[]
+  listings     MarketplaceListing[]
+  transactions MarketplaceTransaction[] @relation("CreatorTransactions")
+
+  @@index([creatorTier])
+  @@index([reputationScore(sort: Desc)])
+  @@map("creator_profiles")
+}
+
+model CreatorBadge {
+  id        String    @id @default(cuid())
+  creatorId String
+  badgeType BadgeType
+  earnedAt  DateTime  @default(now())
+  metadata  Json?
+
+  creator CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@unique([creatorId, badgeType])
+  @@index([creatorId])
+  @@map("creator_badges")
+}
+
+model MarketplaceListing {
+  id                   String        @id @default(cuid())
+  projectId            String        @unique
+  creatorId            String
+  slug                 String        @unique
+  title                String
+  shortDescription     String
+  longDescription      String?       @db.Text
+  category             String?
+  tags                 String[]      @default([])
+  iconUrl              String?
+  screenshotUrls       String[]      @default([])
+  pricingModel         PricingModel  @default(free)
+  priceInCents         Int?
+  monthlyPriceInCents  Int?
+  annualPriceInCents   Int?
+  installModel         InstallModel  @default(fork)
+  status               ListingStatus @default(draft)
+  currentVersion       String        @default("1.0.0")
+  stripePriceId        String?
+  stripeMonthlyPriceId String?
+  stripeAnnualPriceId  String?
+  installCount         Int           @default(0)
+  averageRating        Float         @default(0)
+  reviewCount          Int           @default(0)
+  publishedAt          DateTime?
+  featuredAt           DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator      CreatorProfile           @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  versions     MarketplaceListingVersion[]
+  installs     MarketplaceInstall[]
+  reviews      MarketplaceReview[]
+  transactions MarketplaceTransaction[]
+
+  @@index([creatorId])
+  @@index([status])
+  @@index([category])
+  @@index([pricingModel])
+  @@index([installCount(sort: Desc)])
+  @@index([averageRating(sort: Desc)])
+  @@index([publishedAt(sort: Desc)])
+  @@map("marketplace_listings")
+}
+
+model MarketplaceListingVersion {
+  id                String   @id @default(cuid())
+  listingId         String
+  version           String
+  changelog         String?  @db.Text
+  workspaceSnapshot Json?
+
+  createdAt DateTime @default(now())
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([listingId, version])
+  @@index([listingId])
+  @@map("marketplace_listing_versions")
+}
+
+model MarketplaceInstall {
+  id                   String        @id @default(cuid())
+  listingId            String
+  projectId            String
+  workspaceId          String
+  userId               String
+  installModel         InstallModel
+  installedVersion     String
+  stripeSubscriptionId String?
+  status               InstallStatus @default(active)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  listing      MarketplaceListing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  reviews      MarketplaceReview[]
+  transactions MarketplaceTransaction[]
+
+  @@index([listingId])
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("marketplace_installs")
+}
+
+model MarketplaceReview {
+  id        String   @id @default(cuid())
+  listingId String
+  userId    String
+  installId String
+  rating    Int
+  title     String?
+  body      String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  install MarketplaceInstall @relation(fields: [installId], references: [id], onDelete: Cascade)
+
+  @@unique([listingId, userId])
+  @@index([listingId])
+  @@index([userId])
+  @@map("marketplace_reviews")
+}
+
+model MarketplaceTransaction {
+  id                   String            @id @default(cuid())
+  listingId            String
+  installId            String?
+  buyerUserId          String
+  creatorId            String
+  type                 TransactionType
+  amountInCents        Int
+  platformFeeInCents   Int
+  creatorAmountInCents Int
+  stripePaymentIntentId String?
+  stripeTransferId     String?
+  currency             String            @default("usd")
+  status               TransactionStatus @default(pending)
+  createdAt            DateTime          @default(now())
+
+  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  install MarketplaceInstall? @relation(fields: [installId], references: [id], onDelete: SetNull)
+  creator CreatorProfile     @relation("CreatorTransactions", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+  @@index([creatorId])
+  @@index([buyerUserId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("marketplace_transactions")
+}
+
 model EvalRunResult {
   id            String   @id @default(cuid())
   runId         String
@@ -1332,6 +1671,31 @@ model EvalRunResult {
   @@index([runId])
   @@index([evalId])
   @@map("eval_run_results")
+}
+
+// =============================================================================
+// MEETINGS (Recording & Transcription)
+// =============================================================================
+
+model Meeting {
+  id            String   @id @default(cuid())
+  title         String?
+  audioPath     String
+  transcript    String?  @db.Text
+  summary       String?  @db.Text
+  duration      Int?
+  status        String   @default("recording")
+  projectId     String?
+  workspaceId   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("meetings")
 }
 
 // =============================================================================

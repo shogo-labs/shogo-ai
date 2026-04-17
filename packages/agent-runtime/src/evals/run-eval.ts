@@ -18,7 +18,7 @@
  *   bun run src/evals/run-eval.ts --track canvas --model haiku --build
  */
 
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, statSync } from 'fs'
 import { resolve, join, dirname } from 'path'
 import { tmpdir } from 'os'
 
@@ -43,10 +43,12 @@ import {
 } from './docker-worker'
 import { type LocalWorkerConfig, startLocalWorker, stopLocalWorker } from './local-worker'
 import { type VMWorkerConfig, startVMWorker, stopVMWorker } from './vm-worker'
+import { type K8sWorkerConfig, startK8sWorker, stopK8sWorkerSync, stopK8sWorker, getK8sWorkerUrl } from './k8s-worker'
 
 loadEnvFromDisk(REPO_ROOT)
 
 import { runEval } from './runner'
+import { calculateDollarCost } from '@shogo/model-catalog'
 import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
@@ -72,6 +74,7 @@ import { SKILL_SERVER_TEMPLATE_EVALS } from './test-cases-skill-server-templates
 import { EDIT_FILE_EVALS } from './test-cases-edit-file'
 import { CHANNEL_CONNECT_EVALS } from './test-cases-channel-connect'
 import { CANVAS_V2_LINT_EVALS } from './test-cases-canvas-v2-lint'
+import { WORKSPACE_PARITY_EVALS } from './test-cases-workspace-parity'
 import { BUG_FIX_EVALS } from './test-cases-bug-fix'
 import { CODING_DISCIPLINE_EVALS } from './test-cases-coding-discipline'
 import { SKILL_SERVER_ADVANCED_EVALS } from './test-cases-skill-server-advanced'
@@ -89,8 +92,10 @@ import { CROSS_CUTTING_EVALS } from './test-cases-cross-cutting'
 import { SUBAGENT_COORDINATION_EVALS } from './test-cases-subagent-coordination'
 import { TEAMMATE_COORDINATION_EVALS } from './test-cases-teammate-coordination'
 import { KNOWLEDGE_GRAPH_EVALS } from './test-cases-knowledge-graph'
+import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
+import { PLAN_EVALS } from './test-cases-plans'
 import { buildMockPayload } from './tool-mocks'
-import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary } from './types'
+import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary, ResourceSummary, RuntimeCheckResults } from './types'
 import { runRuntimeChecks } from './runtime-checks'
 import { DockerStatsCollector, formatMillicores } from './docker-stats-collector'
 
@@ -105,11 +110,14 @@ const modelArg = getArg(args, 'model', 'haiku')!
 const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const filterArg = getArg(args, 'filter')
 const tagsArg = getArg(args, 'tags')
+const agentModeArg = getArg(args, 'agent-mode') as 'basic' | 'advanced' | 'auto' | undefined
 const promptProfileArg = getArg(args, 'prompt-profile') as 'full' | 'swe' | 'general' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 const buildFlag = args.includes('--build')
 const localFlag = args.includes('--local')
 const vmFlag = args.includes('--vm')
+const k8sFlag = args.includes('--k8s') || (!localFlag && !vmFlag && !args.includes('--docker') && !!process.env.KUBERNETES_SERVICE_HOST)
+const mountFlag = args.includes('--mount')
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
 const runIdArg = getArg(args, 'run-id')
@@ -120,10 +128,10 @@ const useCallback = !!(runIdArg && callbackUrlArg)
 
 async function postCallback(path: string, body: any, timeoutMs = 30_000): Promise<void> {
   if (!useCallback) return
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
-    await fetch(`${callbackUrlArg}/api/internal${path}`, {
+    const resp = await fetch(`${callbackUrlArg}/api/internal${path}`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -132,7 +140,17 @@ async function postCallback(path: string, body: any, timeoutMs = 30_000): Promis
       },
       body: JSON.stringify(body),
     })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`)
+    }
+  } finally {
     clearTimeout(timer)
+  }
+}
+
+async function postCallbackSafe(path: string, body: any, timeoutMs = 30_000): Promise<void> {
+  try {
+    await postCallback(path, body, timeoutMs)
   } catch (err: any) {
     console.warn(`[callback] Failed to POST ${path}: ${err.message}`)
   }
@@ -141,6 +159,11 @@ async function postCallback(path: string, body: any, timeoutMs = 30_000): Promis
 const BASE_PORT = 6400
 const SKILL_SERVER_BASE_PORT = 4100
 const CONTAINER_SKILL_PORT = 4100
+
+function getWorkerBaseUrl(worker: DockerWorker): string {
+  if (k8sFlag) return getK8sWorkerUrl(worker)
+  return `http://localhost:${worker.port}`
+}
 
 function getEvals(track: string): AgentEval[] {
   switch (track) {
@@ -163,6 +186,7 @@ function getEvals(track: string): AgentEval[] {
     case 'code-agent-v2': return CODE_AGENT_V2_EVALS
     case 'canvas-v2': return CANVAS_V2_EVALS
     case 'canvas-v2-lint': return CANVAS_V2_LINT_EVALS
+    case 'workspace-parity': return WORKSPACE_PARITY_EVALS
     case 'cli-routing': return CLI_ROUTING_EVALS
     case 'skill-system': return SKILL_SYSTEM_EVALS
     case 'skill-server': return SKILL_SERVER_EVALS
@@ -186,11 +210,13 @@ function getEvals(track: string): AgentEval[] {
     case 'subagent-coordination': return SUBAGENT_COORDINATION_EVALS
     case 'teammate-coordination': return TEAMMATE_COORDINATION_EVALS
     case 'knowledge-graph': return KNOWLEDGE_GRAPH_EVALS
+    case 'token-budget': return TOKEN_BUDGET_EVALS
+    case 'plan': return PLAN_EVALS
     case 'persona': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     case 'agentic': return [...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS]
-    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
+    case 'all': return [...CANVAS_V2_EVALS, ...CANVAS_V2_LINT_EVALS, ...WORKSPACE_PARITY_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...DATA_PROCESSING_EVALS, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS, ...SKILL_SERVER_ADVANCED_EVALS, ...EDIT_FILE_EVALS, ...CHANNEL_CONNECT_EVALS, ...BUG_FIX_EVALS, ...CODING_DISCIPLINE_EVALS, ...SUBAGENT_EVALS, ...SUBAGENT_CODE_EVALS, ...SUBAGENT_AB_EVALS, ...SUBAGENT_COORDINATION_EVALS, ...TEAMMATE_COORDINATION_EVALS, ...KNOWLEDGE_GRAPH_EVALS, ...TOKEN_BUDGET_EVALS, ...PLAN_EVALS, ...BUSINESS_USER_EVALS, ...STARTUP_CTO_EVALS, ...FREELANCER_EVALS, ...CONTENT_CREATOR_EVALS, ...NONPROFIT_EVALS, ...EVENT_PLANNER_EVALS, ...ADVERSARIAL_EVALS, ...CROSS_CUTTING_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, canvas-v2, canvas-v2-lint, workspace-parity, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, data-processing, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, skill-server-advanced, edit-file, channel-connect, bug-fix, coding-discipline, subagent, subagent-code, subagent-ab, subagent-coordination, teammate-coordination, knowledge-graph, token-budget, plan, business-user, startup-cto, freelancer, content-creator, event-planner, nonprofit, adversarial, cross-cutting, persona, agentic, all`)
       process.exit(1)
   }
 }
@@ -572,9 +598,67 @@ async function runEvalOnWorker(
         writeFileSync(absPath, content, 'utf-8')
       }
     }
+  } else if (vmFlag && mountFlag) {
+    // 9p mount: the VM manages its own workspace defaults and .shogo is
+    // symlinked to a VM-internal path. Only clean non-essential files and
+    // write the eval's workspace files from the host; they're visible
+    // inside the VM immediately via 9p.
+    if (verboseFlag) console.log(`      [setup] Cleaning workspace (9p mount)...`)
+    if (existsSync(worker.dir)) {
+      const keepEntries = new Set([
+        'node_modules', '.shogo', '.virtfs_metadata',
+        'tsconfig.json', 'react-shim.d.ts', 'canvas-globals.d.ts', 'pyrightconfig.json',
+        'AGENTS.md', 'config.json', 'memory',
+      ])
+      try {
+        for (const entry of readdirSync(worker.dir, { withFileTypes: true })) {
+          if (keepEntries.has(entry.name)) continue
+          const fullPath = join(worker.dir, entry.name)
+          try { rmSync(fullPath, { recursive: true, force: true }) } catch {}
+        }
+      } catch {}
+    }
+
+    if (verboseFlag) console.log(`      [setup] Writing workspace files via 9p...`)
+    if (ev.workspaceFiles) {
+      for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
+        const absPath = join(worker.dir, relPath)
+        mkdirSync(dirname(absPath), { recursive: true })
+        writeFileSync(absPath, content, 'utf-8')
+      }
+      if (verboseFlag) {
+        console.log(`      [setup] Workspace files visible via 9p mount (${Object.keys(ev.workspaceFiles).length} file(s))`)
+      }
+    }
+  } else if (k8sFlag) {
+    // K8s mode — no shared filesystem; seed workspace via HTTP
+    if (verboseFlag) console.log(`      [setup] Seeding workspace via K8s pod HTTP...`)
+    const base = getWorkerBaseUrl(worker)
+
+    if (ev.workspaceFiles) {
+      const seedRes = await fetch(`${base}/agent/workspace/seed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: ev.workspaceFiles }),
+      })
+      if (!seedRes.ok) {
+        console.warn(`[setup] Failed to seed workspace files into K8s pod: ${seedRes.status}`)
+      } else if (verboseFlag) {
+        console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into K8s pod workspace`)
+      }
+    }
   } else {
     // Full setup — clean workspace, seed defaults, write workspaceFiles
     if (verboseFlag) console.log(`      [setup] Cleaning workspace...`)
+
+    // Remove stale .shogo symlinks left by previous 9p mount runs
+    const shogoPath = join(worker.dir, '.shogo')
+    try {
+      const st = lstatSync(shogoPath)
+      if (st.isSymbolicLink()) {
+        try { statSync(shogoPath) } catch { rmSync(shogoPath, { force: true }) }
+      }
+    } catch {}
 
     if (existsSync(worker.dir)) {
       const keepEntries = new Set([
@@ -610,6 +694,20 @@ async function runEvalOnWorker(
         mkdirSync(dirname(absPath), { recursive: true })
         writeFileSync(absPath, content, 'utf-8')
       }
+
+      if (vmFlag) {
+        const base = getWorkerBaseUrl(worker)
+        const seedRes = await fetch(`${base}/agent/workspace/seed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: ev.workspaceFiles }),
+        })
+        if (!seedRes.ok) {
+          console.warn(`[setup] Failed to seed workspace files into VM: ${seedRes.status}`)
+        } else if (verboseFlag) {
+          console.log(`      [setup] Seeded ${Object.keys(ev.workspaceFiles).length} file(s) into VM workspace`)
+        }
+      }
     }
   }
 
@@ -624,22 +722,23 @@ async function runEvalOnWorker(
     evalLabel,
     mocks: buildMockPayload(ev.toolMocks),
     verbose: verboseFlag,
-  })
+  }, k8sFlag ? getWorkerBaseUrl(worker) : undefined)
 
   if (verboseFlag) console.log(`      [setup] Sending eval prompt...`)
 
   const startTime = Date.now()
   console.log(`[${evalLabel}] Worker ${worker.id}: ${ev.name}`)
 
-  const statsCollector = (!localFlag && !vmFlag) ? new DockerStatsCollector(worker.containerName) : null
+  const statsCollector = (!localFlag && !vmFlag && !k8sFlag) ? new DockerStatsCollector(worker.containerName) : null
   statsCollector?.start()
 
   try {
     const result = await runEval(ev, {
-      agentEndpoint: `http://localhost:${worker.port}/agent/chat`,
+      agentEndpoint: `${getWorkerBaseUrl(worker)}/agent/chat`,
       timeoutMs: 300_000,
       verbose: verboseFlag,
       workspaceDir: worker.dir,
+      agentMode: agentModeArg,
     })
 
     const resourceMetrics = statsCollector?.stop() ?? null
@@ -657,13 +756,26 @@ async function runEvalOnWorker(
       : ''
     console.log(`[${evalLabel}] ${status} ${ev.name}: ${result.score}/${ev.maxScore} (${duration}s)${tokInfo}`)
 
+    if (result.promptBreakdown && verboseFlag) {
+      const bd = result.promptBreakdown
+      const maxLabel = Math.max(...bd.sections.map(s => s.label.length), 'tool-schemas (XX)'.length)
+      for (const sec of bd.sections) {
+        const tag = sec.zone === 'stable' ? 'S' : 'D'
+        console.log(`      ${sec.label.padEnd(maxLabel)} [${tag}]: ${sec.chars.toLocaleString().padStart(7)} chars ~${sec.estTokens.toLocaleString().padStart(6)} tok`)
+      }
+      console.log(`      ${''.padEnd(maxLabel + 30, '─')}`)
+      console.log(`      ${'System prompt total'.padEnd(maxLabel)}    : ${bd.totalChars.toLocaleString().padStart(7)} chars ~${bd.totalEstTokens.toLocaleString().padStart(6)} tok`)
+      console.log(`      ${`Tool schemas (${bd.toolCount})`.padEnd(maxLabel)}    : ${bd.toolSchemaChars.toLocaleString().padStart(7)} chars ~${bd.toolSchemaEstTokens.toLocaleString().padStart(6)} tok`)
+      console.log(`      ${'Grand total'.padEnd(maxLabel)}    :                ~${bd.grandEstTokens.toLocaleString().padStart(6)} tok`)
+    }
+
     if (result.score > 0) {
       // Force the skill server to regenerate + restart with the latest schema
       // before probing routes. This eliminates file-watcher timing races.
       if (ev.useSkillServer) {
         try {
           if (verboseFlag) console.log(`      [runtime] Syncing skill server...`)
-          const syncRes = await fetch(`http://localhost:${worker.port}/agent/skill-server/sync`, {
+          const syncRes = await fetch(`${getWorkerBaseUrl(worker)}/agent/skill-server/sync`, {
             method: 'POST',
             signal: AbortSignal.timeout(180_000),
           })
@@ -679,15 +791,32 @@ async function runEvalOnWorker(
         }
       }
 
-      const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
-      const canvasExpected = (localFlag || vmFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
-      const runtimeResults = await runRuntimeChecks({
-        workspaceDir: worker.dir,
-        skillServerPort: hostSkillPort,
-        canvasExpectedPort: canvasExpected,
-        evalId: ev.id,
-        verbose: verboseFlag,
-      })
+      let runtimeResults: RuntimeCheckResults | null = null
+      if (k8sFlag) {
+        try {
+          const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ canvasExpectedPort: CONTAINER_SKILL_PORT, evalId: ev.id, verbose: verboseFlag }),
+            signal: AbortSignal.timeout(120_000),
+          })
+          const body = await res.json() as { ok: boolean; results: RuntimeCheckResults | null; error?: string }
+          if (body.ok) runtimeResults = body.results
+          else if (verboseFlag) console.log(`      [runtime] Remote runtime checks failed: ${body.error}`)
+        } catch (err: any) {
+          console.warn(`      [runtime] Remote runtime checks error: ${err.message}`)
+        }
+      } else {
+        const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
+        const canvasExpected = (localFlag || vmFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
+        runtimeResults = await runRuntimeChecks({
+          workspaceDir: worker.dir,
+          skillServerPort: hostSkillPort,
+          canvasExpectedPort: canvasExpected,
+          evalId: ev.id,
+          verbose: verboseFlag,
+        })
+      }
       if (runtimeResults) {
         result.runtimeChecks = runtimeResults
         result.runtimeWarnings = result.runtimeWarnings || []
@@ -813,6 +942,7 @@ async function runEvalOnWorker(
       responseText: '',
       toolCalls: [],
       finalTurnToolCalls: [],
+      perTurnToolCalls: [],
       criteriaResults: [],
       triggeredAntiPatterns: [],
       timing: { startTime, endTime: Date.now(), durationMs: Date.now() - startTime },
@@ -835,7 +965,15 @@ async function runEvalOnWorker(
 // ---------------------------------------------------------------------------
 
 let globalWorkers: DockerWorker[] = []
-const stopWorker = vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
+const stopWorker = k8sFlag ? stopK8sWorkerSync : vmFlag ? stopVMWorker : localFlag ? stopLocalWorker : stopDockerWorker
+
+async function cleanupWorkers(workers: DockerWorker[]): Promise<void> {
+  if (k8sFlag) {
+    await Promise.allSettled(workers.map(w => stopK8sWorker(w)))
+  } else {
+    workers.forEach(stopWorker)
+  }
+}
 
 registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorker })
 
@@ -846,12 +984,13 @@ registerCleanupHandlers(() => globalWorkers, 'agent-eval-crash.log', { stopWorke
 async function main() {
   console.log('')
   console.log('='.repeat(60))
-  console.log(`AGENT RUNTIME EVAL (${vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
+  console.log(`AGENT RUNTIME EVAL (${k8sFlag ? 'K8s' : vmFlag ? 'VM' : localFlag ? 'Local' : 'Docker'})`)
   console.log('='.repeat(60))
-  console.log(`  Track:   ${trackArg}`)
-  console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
-  console.log(`  Workers: ${workersArg}`)
-  console.log(`  Mode:    ${vmFlag ? 'VM instance' : localFlag ? 'local process' : 'docker container'}`)
+  console.log(`  Track:      ${trackArg}`)
+  console.log(`  Model:      ${MODEL_MAP[modelArg] || modelArg}`)
+  if (agentModeArg) console.log(`  Agent Mode: ${agentModeArg}`)
+  console.log(`  Workers:    ${workersArg}`)
+  console.log(`  Mode:       ${k8sFlag ? 'K8s pod' : vmFlag ? (mountFlag ? 'VM instance (9p mount)' : 'VM instance') : localFlag ? 'local process' : 'docker container'}`)
   if (saveWorkspacesFlag) console.log(`  Save:    ON (template format)`)
   console.log('')
 
@@ -879,17 +1018,35 @@ async function main() {
     process.exit(1)
   }
 
-  // Worker config setup — one of three backends
+  // Worker config setup — one of four backends
   let dockerWorkerConfig: DockerWorkerConfig | undefined
   let localWorkerConfig: LocalWorkerConfig | undefined
   let vmWorkerConfig: VMWorkerConfig | undefined
+  let k8sWorkerConfig: K8sWorkerConfig | undefined
 
-  if (vmFlag) {
+  if (k8sFlag) {
+    const image = process.env.RUNTIME_IMAGE || DEFAULT_RUNTIME_IMAGE
+    const namespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    k8sWorkerConfig = {
+      containerPrefix: 'eval-worker',
+      baseHostPort: BASE_PORT,
+      model: modelArg,
+      verbose: verboseFlag,
+      image,
+      namespace,
+      runId: runIdArg,
+      envOverrides: {
+        AGENT_MAX_ITERATIONS: '100',
+        WEB_CACHE_REDIS_URL: `redis://redis-master.${namespace}:6379`,
+      },
+    }
+  } else if (vmFlag) {
     vmWorkerConfig = {
       containerPrefix: 'eval-vm',
       baseHostPort: BASE_PORT,
       model: modelArg,
       verbose: verboseFlag,
+      mount: mountFlag,
     }
   } else if (localFlag) {
     localWorkerConfig = {
@@ -918,21 +1075,55 @@ async function main() {
   const workers: DockerWorker[] = []
   try {
     for (let i = 0; i < workersArg; i++) {
-      const w = vmFlag
-        ? await startVMWorker(i, vmWorkerConfig!)
-        : localFlag
-          ? await startLocalWorker(i, localWorkerConfig!)
-          : await startDockerWorker(i, dockerWorkerConfig!)
+      const w = k8sFlag
+        ? await startK8sWorker(i, k8sWorkerConfig!)
+        : vmFlag
+          ? await startVMWorker(i, vmWorkerConfig!)
+          : localFlag
+            ? await startLocalWorker(i, localWorkerConfig!)
+            : await startDockerWorker(i, dockerWorkerConfig!)
       workers.push(w)
       globalWorkers.push(w)
       if (i < workersArg - 1) await Bun.sleep(1_000)
     }
   } catch (err: any) {
     console.error(`Failed to start workers: ${err.message}`)
-    globalWorkers.forEach(stopWorker)
+    await cleanupWorkers(globalWorkers)
     globalWorkers = []
-    if (!localFlag) cleanupDockerEnvFile()
+    if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
     process.exit(1)
+  }
+
+  // VM preflight: verify workspace provisioning inside the VM
+  if (vmFlag) {
+    console.log('Running VM preflight checks...')
+    let preflightOk = true
+    for (const w of workers) {
+      try {
+        const res = await fetch(`${getWorkerBaseUrl(w)}/health`, { signal: AbortSignal.timeout(5_000) })
+        const body = await res.json() as any
+        const ws = body?.workspace
+        const tpl = ws?.templateSeeded
+        const deps = ws?.depsInstalled
+        const status = `templateSeeded=${tpl ?? 'n/a'}, depsInstalled=${deps ?? 'n/a'}`
+        if (tpl && deps) {
+          console.log(`  Worker ${w.id}: ${status} ✓`)
+        } else {
+          console.warn(`  Worker ${w.id}: ${status} ✗`)
+          preflightOk = false
+        }
+      } catch (err: any) {
+        console.warn(`  Worker ${w.id}: preflight failed — ${err.message}`)
+        preflightOk = false
+      }
+    }
+    if (!preflightOk) {
+      console.warn('\n⚠  VM preflight: workspace not fully provisioned. Template or deps may be missing.')
+      console.warn('   Evals with useRuntimeTemplate will likely fail. Rebuild the VM image.')
+      console.warn('')
+    } else {
+      console.log('  VM preflight passed.\n')
+    }
   }
 
   console.log('')
@@ -980,13 +1171,18 @@ async function main() {
   }
 
   async function ensureWorkerHealthy(worker: DockerWorker) {
-    if (!(await isWorkerHealthy(worker))) {
+    const healthy = k8sFlag
+      ? await (await import('./k8s-worker')).isK8sWorkerHealthy(worker)
+      : await isWorkerHealthy(worker)
+    if (!healthy) {
       if (verboseFlag) console.log(`      [lifecycle] Worker ${worker.id} unhealthy, restarting...`)
       stopWorker(worker)
       await Bun.sleep(500)
-      const fresh = localFlag
-        ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
-        : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
+      const fresh = k8sFlag
+        ? await startK8sWorker(worker.id, k8sWorkerConfig!)
+        : localFlag
+          ? await startLocalWorker(worker.id, localWorkerConfig!, { workspaceDir: worker.dir })
+          : await startDockerWorker(worker.id, dockerWorkerConfig!, { workspaceDir: worker.dir })
       Object.assign(worker, fresh)
     }
   }
@@ -1008,7 +1204,7 @@ async function main() {
     const payload = buildProgressPayload()
     try { writeFileSync(partialPath, JSON.stringify(payload.results, null, 2)) } catch {}
     if (useCallback) {
-      await postCallback(`/evals/${runIdArg}/progress`, payload)
+      await postCallbackSafe(`/evals/${runIdArg}/progress`, payload)
     }
   }
 
@@ -1033,7 +1229,7 @@ async function main() {
     } catch {}
     await reportProgress()
     if (useCallback) {
-      await postCallback(`/evals/${runIdArg}/result`, {
+      await postCallbackSafe(`/evals/${runIdArg}/result`, {
         result: {
           eval: { id: result.eval.id, name: result.eval.name, category: result.eval.category, level: result.eval.level, pipeline: result.eval.pipeline, pipelinePhase: result.eval.pipelinePhase },
           passed: result.passed,
@@ -1094,9 +1290,9 @@ async function main() {
   // Stop workers
   console.log('')
   console.log('Stopping workers...')
-  workers.forEach(stopWorker)
+  await cleanupWorkers(workers)
   globalWorkers = []
-  if (!localFlag) cleanupDockerEnvFile()
+  if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
 
   // Summary
   const passed = results.filter(r => r.passed).length
@@ -1108,12 +1304,13 @@ async function main() {
   const totalOutput = results.reduce((s, r) => s + r.metrics.tokens.output, 0)
   const totalCacheRead = results.reduce((s, r) => s + r.metrics.tokens.cacheRead, 0)
   const totalCacheWrite = results.reduce((s, r) => s + r.metrics.tokens.cacheWrite, 0)
-  const pricing = PRICING[modelArg] || PRICING.haiku
-  const totalCost =
-    totalInput * pricing.input +
-    totalOutput * pricing.output +
-    totalCacheRead * pricing.cacheRead +
-    totalCacheWrite * pricing.cacheWrite
+  const pricing = PRICING[modelArg]
+  const totalCost = pricing
+    ? totalInput * pricing.input +
+      totalOutput * pricing.output +
+      totalCacheRead * pricing.cacheRead +
+      totalCacheWrite * pricing.cacheWrite
+    : calculateDollarCost(modelArg, totalInput, totalOutput, totalCacheRead, totalCacheWrite)
   const totalToolCalls = results.reduce((s, r) => s + r.metrics.toolCallCount, 0)
   const totalFailed = results.reduce((s, r) => s + r.metrics.failedToolCalls, 0)
 
@@ -1296,7 +1493,13 @@ async function main() {
   console.log(`Logs:    ${join(runDir, 'logs')}`)
 
   if (useCallback) {
-    await postCallback(`/evals/${runIdArg}/complete`, { suite: exportData, logs: evalLogs }, 60_000)
+    try {
+      await postCallback(`/evals/${runIdArg}/complete`, { suite: exportData, logs: evalLogs }, 60_000)
+    } catch {
+      console.warn(`[callback] /complete with full payload failed, retrying summary-only…`)
+      const lightweight = { ...exportData, results: [] }
+      await postCallbackSafe(`/evals/${runIdArg}/complete`, { suite: lightweight, logs: {} }, 30_000)
+    }
   }
 
   if (saveWorkspacesFlag) {
@@ -1323,10 +1526,10 @@ async function main() {
 main().catch(async err => {
   console.error('Fatal:', err)
   if (useCallback) {
-    await postCallback(`/evals/${runIdArg}/fail`, { error: String(err?.message ?? err) })
+    await postCallbackSafe(`/evals/${runIdArg}/fail`, { error: String(err?.message ?? err) })
   }
-  globalWorkers.forEach(stopWorker)
+  await cleanupWorkers(globalWorkers)
   globalWorkers = []
-  if (!localFlag) cleanupDockerEnvFile()
+  if (!localFlag && !k8sFlag) cleanupDockerEnvFile()
   process.exit(1)
 })

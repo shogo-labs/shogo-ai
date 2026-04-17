@@ -5,7 +5,7 @@
  * Replaces billingDomain.createStore() for subscriptions, credits, usage
  */
 
-import { prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
+import { prisma, CreditSource, SubscriptionStatus, BillingInterval } from '../lib/prisma';
 import { DAILY_CREDITS, MONTHLY_DAILY_CAP, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -82,6 +82,7 @@ export async function allocateMonthlyCredits(
     create: {
       workspaceId,
       monthlyCredits,
+      monthlyAllocation: monthlyCredits,
       dailyCredits: DAILY_CREDITS,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
@@ -89,6 +90,7 @@ export async function allocateMonthlyCredits(
     },
     update: {
       monthlyCredits,
+      monthlyAllocation: monthlyCredits,
       lastMonthlyReset: now,
     },
   });
@@ -213,7 +215,7 @@ export async function consumeCredits(
           creditSource: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: actionMetadata ? JSON.stringify(actionMetadata) : null,
+          actionMetadata: actionMetadata ?? null,
         },
       })
     } catch (e) {
@@ -325,7 +327,7 @@ async function _consumeCreditsTransaction(
         projectId,
         memberId,
         actionType,
-        actionMetadata: actionMetadata ? JSON.stringify(actionMetadata) : null,
+        actionMetadata: actionMetadata ?? null,
         creditCost,
         creditSource,
         balanceBefore,
@@ -348,7 +350,7 @@ export async function syncFromStripe(data: {
   stripeSubscriptionId: string;
   stripeCustomerId: string;
   workspaceId: string;
-  planId: PlanId;
+  planId: string;
   status: SubscriptionStatus;
   billingInterval: BillingInterval;
   currentPeriodStart: Date;

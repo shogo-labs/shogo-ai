@@ -68,6 +68,9 @@ const EXTERNAL_PACKAGES = [
   'prisma',
   'prisma-adapter-bun-sqlite',
   'sqlite-vec',
+  'typescript-language-server',
+  'typescript',
+  'pyright',
 ]
 
 /**
@@ -126,7 +129,7 @@ function main() {
   logStep('Generating Prisma client...')
   try {
     execSync(
-      `bunx prisma generate --schema=prisma/schema.local.prisma`,
+      `bun x prisma generate --schema=prisma/schema.local.prisma`,
       {
         cwd: REPO_ROOT,
         stdio: 'inherit',
@@ -189,7 +192,7 @@ function main() {
   if (fs.existsSync(seedDbPath)) fs.rmSync(seedDbPath)
   try {
     execSync(
-      `bunx prisma db push --schema=prisma/schema.local.prisma --accept-data-loss`,
+      `bun x prisma db push --schema=prisma/schema.local.prisma --accept-data-loss`,
       {
         cwd: REPO_ROOT,
         stdio: 'inherit',
@@ -338,11 +341,13 @@ function main() {
     console.warn('  ⚠ tree-sitter-wasms package not found')
   }
 
-  // --- Prepare VM bundle (Linux bun, templates, wasm for VirtioFS mount) ---
+  // --- Prepare VM bundle (server.js, shogo.js, tree-sitter.wasm for seed ISO) ---
+  // With pre-provisioned images, only JS bundles and wasm need to be in
+  // vm-bundle. Bun, templates, and deps are baked into rootfs-provisioned.qcow2.
   logStep('Preparing VM bundle...')
   try {
     execSync(
-      `bun run "${path.join(DESKTOP_DIR, 'scripts', 'prepare-vm-bundle-cli.ts')}" --dest resources/vm-bundle --server-js resources/bundle/agent-runtime.js`,
+      `bun run "${path.join(DESKTOP_DIR, 'scripts', 'prepare-vm-bundle-cli.ts')}" --dest resources/vm-bundle --server-js resources/bundle/agent-runtime.js --light`,
       { cwd: DESKTOP_DIR, stdio: 'inherit', timeout: 120_000 },
     )
     console.log('  ✓ VM bundle ready')

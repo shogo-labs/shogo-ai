@@ -24,7 +24,9 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   neverUsedTool,
+  delegatedTo,
   responseContains,
 } from './eval-helpers'
 
@@ -52,14 +54,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Used tool_search to find a GitHub integration',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-integration',
         description: 'Used tool_install to connect the integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-real-issues',
@@ -104,7 +106,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 2: User uploaded expenses CSV — must read the file, NOT invent data
-  // Level 2 | Agent should use list_files + read_file to get real expense data
+  // Level 2 | Agent should use exec/read_file to get real expense data
   // =========================================================================
   {
     id: 'real-data-uploaded-csv-expenses',
@@ -120,10 +122,10 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'listed-files',
-        description: 'Used list_files to discover uploaded files',
+        description: 'Used exec or read_file to discover uploaded files',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files'),
+        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file'),
       },
       {
         id: 'read-csv-file',
@@ -195,14 +197,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Used tool_search to find Google Sheets integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Used tool_install to connect Composio',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-sheet-data',
@@ -348,7 +350,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Did NOT search for MCP integrations (user explicitly asked for fake data)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_search'),
+        validate: (r) => neverUsedTool(r, 'tool_search') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'built-ui',
@@ -400,14 +402,14 @@ export const REAL_DATA_EVALS: AgentEval[] = [
         description: 'Used tool_search to find GitHub integration (triggered by "my GitHub issues")',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-integration',
         description: 'Used tool_install to connect the integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-real-data',
@@ -460,16 +462,6 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     input: 'I uploaded my sales data. Build me a dashboard with revenue metrics and a chart.',
     maxScore: 100,
     toolMocks: {
-      list_files: {
-        type: 'static',
-        description: 'List files in a directory.',
-        paramKeys: ['directory'],
-        response: {
-          files: [
-            { name: 'sales-q1.csv', path: 'files/sales-q1.csv', size: 2048, type: 'file' },
-          ],
-        },
-      },
       read_file: {
         type: 'pattern',
         description: 'Read the contents of a file.',
@@ -502,10 +494,10 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'accessed-files',
-        description: 'Used list_files or read_file or search to access uploaded data',
+        description: 'Used exec, read_file, or search to access uploaded data',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'list_files') || usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => usedTool(r, 'exec') || usedTool(r, 'read_file') || usedTool(r, 'search'),
       },
       {
         id: 'read-the-file',

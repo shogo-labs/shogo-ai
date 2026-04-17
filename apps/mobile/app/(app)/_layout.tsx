@@ -17,7 +17,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import { View, useWindowDimensions } from 'react-native'
+import { Platform, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
@@ -27,6 +27,8 @@ import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
 import { DomainProvider } from '../../contexts/domain'
 import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
+import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
+import { VMDownloadBanner } from '../../components/VMDownloadBanner'
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading, user } = useAuth()
@@ -84,6 +86,16 @@ export default function AppLayout() {
     if (isWide) setDrawerOpen(false)
   }, [isWide])
 
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const d = (window as any).shogoDesktop
+    if (!d?.onNavigate) return
+    d.onNavigate((path: string) => {
+      router.push(path as any)
+    })
+    return () => d.removeNavigateListener?.()
+  }, [router])
+
   if (isLoading) return null
   if (!isAuthenticated) return null
 
@@ -98,6 +110,8 @@ export default function AppLayout() {
           <View className="flex-1">
             {!isWide && !isProjectDetail && !isBillingPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
+              <VMDownloadBanner />
+              {localMode && <RecordingIndicator />}
               <Slot />
             </View>
           </View>

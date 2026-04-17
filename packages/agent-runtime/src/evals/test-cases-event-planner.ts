@@ -21,6 +21,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { EVENT_PLANNER_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -207,17 +208,42 @@ const PHASE_1: AgentEval = {
   input:
     'Set up daily event countdowns. Every morning, tell me how many days until each of my upcoming events. ' +
     'I have the Morrison wedding on May 15, the TechCorp gala on May 16, and the BrightPath fundraiser on June 20.',
+  askUserResponses: [
+    'Just use the credentials I gave you. My timezone is America/New_York.',
+    'Morning means around 8am Eastern. Just set up the daily countdowns.',
+    'Yes that works. Proceed with the setup!',
+  ],
   workspaceFiles: phase1Workspace(),
   toolMocks: EVENT_PLANNER_MOCKS,
-  maxScore: 28,
+  maxScore: 35,
   validationCriteria: [
+    // --- Interaction phase: validate the agent asks good questions ---
+    {
+      id: 'asked-about-timezone',
+      description: 'Agent asked about timezone or morning time for countdowns',
+      points: 4,
+      phase: 'interaction',
+      validate: (r) => {
+        const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
+        return allText.includes('ask_user') &&
+          (allText.includes('timezone') || allText.includes('time zone') || allText.includes('morning') || allText.includes('what time'))
+      },
+    },
+    {
+      id: 'asked-clarification',
+      description: 'Agent used ask_user to clarify at least one detail',
+      points: 3,
+      phase: 'interaction',
+      validate: (r) => toolCallsJson(r).includes('ask_user'),
+    },
+    // --- Execution phase: validate actual tool usage after answers ---
     {
       id: 'email-connected',
       description: 'Connected email channel',
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'email'),
     },
     {
@@ -239,14 +265,14 @@ const PHASE_1: AgentEval = {
       description: 'Installed calendar integration (tool_install or mcp_install)',
       points: 4,
       phase: 'execution',
-      validate: (r) => usedTool(r, 'tool_install') || usedTool(r, 'mcp_install'),
+      validate: (r) => usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
     },
     {
       id: 'heartbeat-configured',
       description: 'Configured heartbeat for daily countdowns',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
     },
     {
       id: 'events-mentioned',

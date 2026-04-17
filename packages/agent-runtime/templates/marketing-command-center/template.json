@@ -3,6 +3,7 @@
   "name": "Marketing Command Center",
   "description": "Full-stack marketing agent with SEO audits, CRO optimization, content writing, social scheduling, competitor monitoring, and growth strategy — all in multi-surface dashboards.",
   "category": "marketing",
+  "icon": "Megaphone",
   "tags": [
     "marketing",
     "seo",
@@ -51,5 +52,5 @@
       "description": "Monitor outreach and email campaigns"
     }
   ],
-  "techStack": "none"
+  "techStack": "react-app"
 }

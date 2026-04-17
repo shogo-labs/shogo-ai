@@ -25,8 +25,8 @@ import type { ToolContext } from './gateway-tools'
 // ---------------------------------------------------------------------------
 
 const CORE_GATEWAY_TOOLS = new Set([
-  'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
-  'list_files', 'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
+  'exec', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
+  'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',
   'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
@@ -80,6 +80,8 @@ export interface SubagentResult {
   newMessages?: Message[]
   /** Unique agent ID for transcript persistence and resume. */
   agentId?: string
+  /** The actual model used for the final iteration (may differ from config if router active). */
+  effectiveModelId?: string
 }
 
 export interface SubagentStreamCallbacks {
@@ -107,14 +109,14 @@ export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search an
 Read-only codebase exploration. Find files, search for patterns, read code, and return specific findings with file references.
 
 ## Available Tools
-read_file, glob, grep, ls, web — read-only exploration tools.
+read_file, exec, search, web, impact_radius — exploration and analysis tools.
 
 ## Guidelines
-- Use glob to find files by pattern first.
-- Use grep to search for specific patterns, symbols, or strings.
-- Use ls to understand directory structure.
+- Use exec to run shell commands (e.g. find, rg, ls) for file discovery and searching.
+- Use search for semantic code search.
 - Read files to understand implementation details.
 - Use web to look up documentation or external references when needed.
+- Use impact_radius to check blast radius for specific files when assessing change scope.
 - Be thorough but concise in your findings.
 - Always include specific file paths and line references.
 - Return a structured summary of what you found.`
@@ -135,7 +137,7 @@ export const CODE_REVIEWER_SYSTEM_PROMPT = `You are a code review subagent. Anal
 2. Use \`review_context()\` for a full review bundle: structural subgraph, source hunks, affected flows, and auto-generated guidance.
 3. Use \`impact_radius({ files: [...] })\` to check blast radius for specific files if needed.
 4. Read specific files with \`read_file\` for deeper inspection of risky areas.
-5. Use \`grep\` or \`search\` to trace references or find related code.
+5. Use \`search\` or \`exec\` to trace references or find related code.
 
 ## Review Priorities
 - Untested functions with high risk scores — recommend adding tests.
@@ -152,6 +154,85 @@ Return a structured review with:
 - Review guidance and action items
 - Affected execution flows and their criticality`
 
+export const INTEGRATION_SUBAGENT_PROMPT = `You are a tool and MCP integration subagent. Discover, search, install, and uninstall tools and MCP servers.
+
+## Available Tools
+tool_search, tool_install, tool_uninstall — managed integrations (Composio, bundled tools)
+mcp_search, mcp_install, mcp_uninstall — MCP server discovery and lifecycle
+read_file, write_file — save config or results to the workspace
+
+## Guidelines
+- Search before installing — confirm the right tool/server exists first
+- For Composio tools: search by keyword, install with the toolkit name
+- For MCP servers: search the catalog, install by ID
+- After installation, verify the tool is available
+- Return a clear summary of what was installed and how to use it`
+
+export const CHANNEL_SUBAGENT_PROMPT = `You are a channel management subagent. Connect, configure, and manage messaging channels.
+
+## Available Tools
+channel_connect — connect a new channel (Telegram, Discord, webchat, etc.)
+channel_disconnect — disconnect an existing channel
+channel_list — list connected channels
+send_message — send a message through a connected channel
+read_file, write_file — save config or results to the workspace
+
+## Guidelines
+- Check channel_list before connecting to avoid duplicates
+- For channel_connect: guide the user through required config (tokens, webhook URLs, etc.)
+- For send_message: confirm the target channel is connected first
+- Return clear status updates about what was configured`
+
+export const DEVOPS_SUBAGENT_PROMPT = `You are a DevOps subagent. Manage heartbeat schedules, monitoring, and skill server synchronization.
+
+## Available Tools
+heartbeat_configure — set up or modify heartbeat scheduling (interval, quiet hours)
+heartbeat_status — check current heartbeat configuration
+skill_server_sync — synchronize skills with the skill server
+read_file, write_file — save config or results to the workspace
+
+## Guidelines
+- Check heartbeat_status before modifying configuration
+- When setting quiet hours, confirm the user's timezone
+- For skill_server_sync: run after skill changes to keep the server in sync
+- Return a clear summary of the current configuration state`
+
+export const BROWSER_SUBAGENT_PROMPT = `You are a browser automation subagent. Navigate web pages, interact with elements, and extract information.
+
+## Available Tools
+browser — full browser automation (navigate, snapshot, click, fill, screenshot, etc.)
+web — HTTP fetch for APIs, documentation, or page content
+read_file, write_file — save results to the workspace
+
+## Core Workflow
+1. \`navigate\` to a URL
+2. \`snapshot\` to get the accessibility tree with numbered element refs
+3. Read the snapshot to find the elements you need
+4. Use \`click\`, \`fill\`, or \`select\` with the \`ref\` parameter to interact
+5. After actions that change the page, \`snapshot\` again
+6. Use \`screenshot\` for visual verification of non-text content
+
+## Key Rules
+- Always snapshot before interacting — mandatory, not optional
+- Prefer \`ref\` over \`selector\` — ref numbers from snapshot are reliable
+- Snapshot after every page change
+- Use \`fill\` to clear and replace input content
+- Use short incremental waits with snapshot checks between them
+- Save important findings to workspace files for the parent agent`
+
+export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate images and transcribe audio.
+
+## Available Tools
+generate_image — create images from text descriptions
+transcribe_audio — convert audio files to text
+read_file, write_file — read inputs and save results to the workspace
+
+## Guidelines
+- For image generation: provide detailed, specific descriptions for best results
+- For transcription: read the audio file path from the prompt, transcribe, and save the text output
+- Always save results to the workspace so the parent agent can access them
+- Return a clear summary of what was produced and where files were saved`
+
 export function getBuiltinSubagentConfig(
   name: string,
   ctx: ToolContext,
@@ -163,7 +244,7 @@ export function getBuiltinSubagentConfig(
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
         systemPrompt: EXPLORE_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'glob', 'grep', 'ls', 'web'],
+        toolNames: ['read_file', 'exec', 'search', 'web', 'impact_radius'],
         disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
         maxTurns: 5,
@@ -180,9 +261,57 @@ export function getBuiltinSubagentConfig(
         name: 'code-reviewer',
         description: 'Code review agent — analyzes changes, risk scores, test gaps, and execution flows',
         systemPrompt: CODE_REVIEWER_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'glob', 'grep', 'ls', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
+        toolNames: ['read_file', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
         disallowedTools: ['task', 'skill'],
         maxTurns: 10,
+      }
+    case 'browser':
+      return {
+        name: 'browser',
+        description: 'Browser automation and web research agent',
+        systemPrompt: BROWSER_SUBAGENT_PROMPT,
+        toolNames: ['browser', 'web', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        model: 'claude-haiku-4-5',
+        maxTurns: 15,
+      }
+    case 'integration':
+      return {
+        name: 'integration',
+        description: 'Tool and MCP server discovery, installation, and management',
+        systemPrompt: INTEGRATION_SUBAGENT_PROMPT,
+        toolNames: ['tool_search', 'tool_install', 'tool_uninstall', 'mcp_search', 'mcp_install', 'mcp_uninstall', 'read_file', 'write_file'],
+        includeInstalledTools: true,
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 10,
+      }
+    case 'channel':
+      return {
+        name: 'channel',
+        description: 'Channel connection and messaging agent',
+        systemPrompt: CHANNEL_SUBAGENT_PROMPT,
+        toolNames: ['channel_connect', 'channel_disconnect', 'channel_list', 'send_message', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 5,
+      }
+    case 'media':
+      return {
+        name: 'media',
+        description: 'Image generation and audio transcription agent',
+        systemPrompt: MEDIA_SUBAGENT_PROMPT,
+        toolNames: ['generate_image', 'transcribe_audio', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        model: 'claude-haiku-4-5',
+        maxTurns: 5,
+      }
+    case 'devops':
+      return {
+        name: 'devops',
+        description: 'Heartbeat scheduling, monitoring, and skill server management',
+        systemPrompt: DEVOPS_SUBAGENT_PROMPT,
+        toolNames: ['heartbeat_configure', 'heartbeat_status', 'skill_server_sync', 'read_file', 'write_file'],
+        disallowedTools: ['task', 'skill'],
+        maxTurns: 5,
       }
     default:
       return null
@@ -267,6 +396,16 @@ function parseAgentFrontmatter(raw: string): CustomAgentDef {
 // ---------------------------------------------------------------------------
 
 import { CONCURRENT_SAFE_TOOLS } from './tool-orchestration'
+import {
+  selectModelForSpawn,
+  escalateModel,
+  buildAutoTierMap,
+  formatRoutingLog,
+  type RoutingDecision,
+  type ModelRouterOptions,
+  type SpawnClassificationInput,
+} from './model-router'
+import { inferProviderFromModel } from '@shogo/model-catalog'
 
 const MODEL_TIER_MAP: Record<ModelTierName, string> = {
   fast: 'claude-haiku-4-5',
@@ -412,14 +551,60 @@ export async function runSubagent(
     }
   }
 
-  const model = resolveModelTier(config.modelTier, config.model || parentCtx.effectiveModel || parentCtx.config.model.name)
-  const provider = config.provider || parentCtx.config.model.provider
-  const maxIterations = config.maxTurns || (isFork ? 200 : 10)
+  // Apply eval mock interceptors so subagent tool calls hit the same mocks
+  // as the main agent (prevents real network calls during evals).
+  if (parentCtx.toolMockFns && parentCtx.toolMockFns.size > 0) {
+    tools = tools.map(tool => {
+      const mockFn = parentCtx.toolMockFns!.get(tool.name)
+      if (!mockFn) return tool
+      const realExecute = tool.execute
+      return {
+        ...tool,
+        execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
+          const result = mockFn(params)
+          if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
+          return { type: 'text' as const, value: typeof result === 'string' ? result : JSON.stringify(result) }
+        },
+      }
+    })
+  }
 
-  try {
+  const parentModel = config.model || parentCtx.effectiveModel || parentCtx.config.model.name
+  const provider = config.provider || parentCtx.config.model.provider
+  const maxIterations = config.maxTurns || (isFork ? 200 : 50)
+
+  // Spawn-time model routing: when Auto mode is active and no explicit
+  // model_tier was set by the main agent, use the router to pick the
+  // cheapest model capable of handling this sub-agent's task.
+  let model: string
+  let routingDecision: RoutingDecision | undefined
+  let routerOptions: ModelRouterOptions | undefined
+
+  const useAutoRouting = parentCtx.autoRouting && !config.modelTier && !config.model
+  if (useAutoRouting) {
+    const autoTiers = buildAutoTierMap()
+    routerOptions = { ceilingModel: autoTiers.premium, availableModels: autoTiers }
+    const classInput: SpawnClassificationInput = {
+      prompt,
+      subagentType: config.name,
+      toolNames: tools.map(t => t.name),
+      contextTokens: estimateContextTokens(history, prompt, systemPrompt),
+    }
+    routingDecision = selectModelForSpawn(classInput, routerOptions)
+    model = routingDecision.selectedModel
+    console.log(`[Subagent:${config.name}] ${formatRoutingLog(routingDecision, prompt)}`)
+    if (parentCtx.uiWriter) {
+      parentCtx.uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
+    }
+  } else {
+    model = resolveModelTier(config.modelTier, parentModel)
+  }
+
+  const runOnce = async (runModel: string): Promise<SubagentResult> => {
+    const runProvider = useAutoRouting ? inferProviderFromModel(runModel, provider) : provider
     const result = await runAgentLoop({
-      provider,
-      model,
+      provider: runProvider,
+      model: runModel,
       system: systemPrompt,
       history,
       prompt,
@@ -440,8 +625,6 @@ export async function runSubagent(
       onToolCallDelta: callbacks?.onToolCallDelta,
       onToolCallEnd: callbacks?.onToolCallEnd,
     })
-
-    callbacks?.onEnd?.(config.name)
 
     // Persist transcript if session persistence is available
     if (parentCtx.sessionPersistence && parentCtx.sessionId && result.newMessages) {
@@ -468,8 +651,48 @@ export async function runSubagent(
       responseText: result.text,
       newMessages: result.newMessages,
       agentId,
+      effectiveModelId: result.effectiveModelId,
     }
+  }
+
+  try {
+    let result = await runOnce(model)
+    callbacks?.onEnd?.(config.name)
+
+    // Spawn-time fallback: if auto-routed sub-agent produced a bad result
+    // (empty response, error text), escalate and retry with a higher tier.
+    if (useAutoRouting && routingDecision && routerOptions && isSubagentFailure(result)) {
+      const escalated = escalateModel(routingDecision, routerOptions, `subagent_failure:${config.name}`)
+      if (escalated) {
+        console.log(`[Subagent:${config.name}] [Router] Escalating: ${routingDecision.selectedModel} → ${escalated.selectedModel} (reason: ${escalated.fallbackReason})`)
+        if (parentCtx.uiWriter) {
+          parentCtx.uiWriter.write({ type: 'data-routing-decision', data: escalated })
+        }
+        callbacks?.onStart?.(config.name, config.description, agentId)
+        result = await runOnce(escalated.selectedModel)
+        result.effectiveModelId = escalated.selectedModel
+        callbacks?.onEnd?.(config.name)
+      }
+    }
+
+    return result
   } catch (err: any) {
+    // If auto-routed and the cheap model threw, try escalation
+    if (useAutoRouting && routingDecision && routerOptions) {
+      const escalated = escalateModel(routingDecision, routerOptions, `subagent_error:${err.message?.slice(0, 80)}`)
+      if (escalated) {
+        console.log(`[Subagent:${config.name}] [Router] Error escalation: ${routingDecision.selectedModel} → ${escalated.selectedModel}`)
+        try {
+          const retryResult = await runOnce(escalated.selectedModel)
+          retryResult.effectiveModelId = escalated.selectedModel
+          callbacks?.onEnd?.(config.name)
+          return retryResult
+        } catch (retryErr: any) {
+          console.error(`[Subagent:${config.name}] Escalated retry also failed: ${retryErr.message}`)
+        }
+      }
+    }
+
     console.error(`Subagent ${config.name} failed: ${err.message}`)
     callbacks?.onEnd?.(config.name)
     return {
@@ -484,6 +707,33 @@ export async function runSubagent(
       agentId,
     }
   }
+}
+
+/**
+ * Checks if a sub-agent result looks like a failure (empty or error output).
+ */
+function isSubagentFailure(result: SubagentResult): boolean {
+  if (!result.responseText || result.responseText.trim().length === 0) return true
+  if (result.responseText.startsWith('Subagent failed:')) return true
+  if (result.iterations === 0 && result.toolCalls === 0) return true
+  return false
+}
+
+/**
+ * Rough token estimate for spawn-time routing decisions.
+ */
+function estimateContextTokens(history: Message[], prompt: string, systemPrompt: string): number {
+  let chars = systemPrompt.length + prompt.length
+  for (const m of history) {
+    if (typeof m.content === 'string') {
+      chars += m.content.length
+    } else if (Array.isArray(m.content)) {
+      for (const block of m.content) {
+        if ('text' in block) chars += (block as any).text.length
+      }
+    }
+  }
+  return Math.ceil(chars / 4)
 }
 
 /**

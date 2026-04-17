@@ -4,6 +4,7 @@ import type { ForgeConfig } from '@electron-forge/cli'
 import fs from 'fs'
 
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
+const hasInstallGif = fs.existsSync('./resources/install-splash.gif')
 
 const extraResourceCandidates = [
   './resources/bun',
@@ -17,13 +18,20 @@ const extraResourceCandidates = [
   './resources/tree-sitter-wasm',
   './resources/vm',
   './resources/vm-helper',
+  './resources/sherpa-onnx',
+  './resources/shogo-audio',
   './resources/seed.db',
   './resources/package.json',
   './prisma',
   './prisma.config.js',
 ]
 
-const extraResource = extraResourceCandidates.filter((p) => fs.existsSync(p))
+// VM disk images (./resources/vm) are Linux-only and not usable on Windows.
+// Exclude them on win32 to keep the Squirrel installer under NuGet's size limits.
+const isWin32 = process.platform === 'win32'
+const extraResource = extraResourceCandidates
+  .filter((p) => !(isWin32 && p === './resources/vm'))
+  .filter((p) => fs.existsSync(p))
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -51,13 +59,39 @@ const config: ForgeConfig = {
   },
   makers: [
     {
+      name: '@electron-forge/maker-squirrel',
+      config: {
+        name: 'Shogo',
+        setupExe: 'Shogo-Setup.exe',
+        ...(hasIcon ? { setupIcon: './resources/icon.ico', iconUrl: 'https://raw.githubusercontent.com/shogo-labs/shogo-ai/main/apps/desktop/resources/icon.ico' } : {}),
+        ...(hasInstallGif ? { loadingGif: './resources/install-splash.gif' } : {}),
+        ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
+          certificateFile: process.env.WINDOWS_CERT_PATH,
+          certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
+        } : {}),
+      },
+    },
+    {
       name: '@electron-forge/maker-zip',
-      platforms: ['darwin', 'win32'],
+      platforms: ['darwin'],
     },
     {
       name: '@electron-forge/maker-dmg',
       config: {
         format: 'ULFO',
+      },
+    },
+  ],
+  publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: {
+          owner: 'shogo-labs',
+          name: 'shogo-ai',
+        },
+        prerelease: false,
+        draft: true,
       },
     },
   ],

@@ -21,6 +21,7 @@ import type { ToolMockMap } from './tool-mocks'
 import { BUSINESS_USER_MOCKS } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   toolCallArgsContain,
   toolCallCount,
   responseContains,
@@ -318,17 +319,46 @@ const PHASE_1: AgentEval = {
   input:
     "One more thing — check in with me every morning. Quick summary of what's happening. " +
     "But don't bug me after 7pm.",
+  askUserResponses: [
+    'Sounds great! Let\'s start with channels and automations. Use the tokens I gave you directly.',
+    'Just use the credentials I provided. My timezone is America/New_York.',
+    'Morning means 8am. Use America/New_York timezone. Just set it up.',
+  ],
   workspaceFiles: phase1Workspace(),
   toolMocks: BUSINESS_USER_MOCKS,
-  maxScore: 30,
+  maxScore: 37,
   validationCriteria: [
+    // --- Interaction phase: validate the agent asks good questions ---
+    {
+      id: 'asked-about-timezone',
+      description: 'Agent asked about timezone before configuring heartbeat',
+      points: 4,
+      phase: 'interaction',
+      validate: (r) => {
+        const json = toolCallsJson(r)
+        const text = r.responseText.toLowerCase()
+        const allText = (json + ' ' + text).toLowerCase()
+        return json.includes('ask_user') && (allText.includes('timezone') || allText.includes('time zone'))
+      },
+    },
+    {
+      id: 'asked-about-schedule',
+      description: 'Agent clarified morning time or quiet hours details',
+      points: 3,
+      phase: 'interaction',
+      validate: (r) => {
+        const allText = (toolCallsJson(r) + ' ' + r.responseText).toLowerCase()
+        return allText.includes('morning') || allText.includes('what time') || allText.includes('quiet')
+      },
+    },
+    // --- Execution phase: validate actual tool usage after answers ---
     {
       id: 'slack-connected',
       description: 'Connected Slack channel with provided tokens',
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'slack'),
     },
     {
@@ -347,7 +377,7 @@ const PHASE_1: AgentEval = {
       points: 6,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'channel_connect') &&
+        usedToolAnywhere(r, 'channel_connect') &&
         toolCallArgsContain(r, 'channel_connect', 'email'),
     },
     {
@@ -365,7 +395,7 @@ const PHASE_1: AgentEval = {
       description: 'Configured heartbeat for daily check-ins',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedTool(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
     },
     {
       id: 'quiet-hours',
@@ -768,7 +798,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'intention',
       validate: (r) => {
-        const searched = usedTool(r, 'tool_search') || usedTool(r, 'mcp_search')
+        const searched = usedToolAnywhere(r, 'tool_search') || usedToolAnywhere(r, 'mcp_search')
         const mentioned = toolCallsJson(r).includes('github')
         return searched && mentioned
       },
@@ -779,7 +809,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'execution',
       validate: (r) =>
-        usedTool(r, 'tool_install') || usedTool(r, 'mcp_install'),
+        usedToolAnywhere(r, 'tool_install') || usedToolAnywhere(r, 'mcp_install'),
     },
     // Turn 2: Calendar
     {
@@ -845,7 +875,7 @@ const PHASE_4: AgentEval = {
       points: 5,
       phase: 'intention',
       validate: (r) => {
-        const usedScheduling = usedTool(r, 'heartbeat_configure') || usedTool(r, 'write_file')
+        const usedScheduling = usedToolAnywhere(r, 'heartbeat_configure') || usedTool(r, 'write_file')
         const text = r.responseText.toLowerCase()
         const mentionsSchedule = text.includes('friday') || text.includes('weekly') ||
                                   text.includes('automat') || text.includes('schedule')

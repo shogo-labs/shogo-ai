@@ -511,7 +511,8 @@ export class SkillServerManager {
 
     try {
       const { PORT: _p, RUNTIME_PORT: _rp, ...cleanEnv } = process.env
-      const output = execSync(`bun run ${cliPath} generate`, {
+      const cmd = cliPath.startsWith('/') ? `bun run ${cliPath} generate` : `${pkg.bunBinary} x ${cliPath} generate`
+      const output = execSync(cmd, {
         cwd: this.serverDir,
         timeout: 120_000,
         stdio: 'pipe',
@@ -549,7 +550,7 @@ export class SkillServerManager {
       return localBin
     }
 
-    return 'npx shogo'
+    return 'shogo'
   }
 
   private async spawnServer(): Promise<void> {
@@ -558,6 +559,19 @@ export class SkillServerManager {
       console.error(`[${LOG_PREFIX}] No server.ts or server.tsx found after generation`)
       this._phase = 'crashed'
       return
+    }
+
+    // Ensure node_modules exist before spawning — without them Bun cannot
+    // resolve imports and the process immediately crashes in a loop.
+    const nodeModules = join(this.serverDir, 'node_modules')
+    if (!existsSync(nodeModules)) {
+      try {
+        this.installDeps()
+      } catch (err: any) {
+        console.error(`[${LOG_PREFIX}] Dependency install failed, cannot start: ${err.message}`)
+        this._phase = 'crashed'
+        return
+      }
     }
 
     this._phase = 'starting'

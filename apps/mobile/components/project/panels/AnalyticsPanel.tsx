@@ -184,7 +184,6 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
   const overview = useProjectAnalytics<OverviewData>(http, projectId, 'overview', period, visible)
   const usage = useProjectAnalytics<UsageData>(http, projectId, 'usage', period, visible)
   const chat = useProjectAnalytics<ChatData>(http, projectId, 'chat', period, visible)
-
   const dailyActivity = useMemo(
     () => buildDailyActivitySeries(period, usage.data?.dailyUsage, chat.data?.dailySessions),
     [period, usage.data?.dailyUsage, chat.data?.dailySessions],

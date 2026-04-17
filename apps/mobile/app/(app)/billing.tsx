@@ -26,7 +26,6 @@ import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
   Building2,
-  CheckCircle2,
   Info,
   Sparkles,
   Zap,
@@ -51,8 +50,10 @@ import {
   ENTERPRISE_FEATURES,
   BASE_TIER_CREDITS,
   getTotalCreditsForPlan,
+  getCreditsCapacityForDisplay,
   formatCredits,
   formatCurrencyPrice,
+  getPlanDisplayName,
 } from '../../lib/billing-config'
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
@@ -61,9 +62,6 @@ import {
   CardContent,
   Button,
   Badge,
-  Alert,
-  AlertTitle,
-  AlertDescription,
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
@@ -110,11 +108,16 @@ export default observer(function BillingPage() {
     return () => { cancelled = true }
   }, [http])
 
-  const creditsTotal = getTotalCreditsForPlan(subscription?.planId)
-  const creditsRemaining = effectiveBalance?.total ?? creditsTotal
+  const creditsRemaining =
+    effectiveBalance?.total ?? getTotalCreditsForPlan(subscription?.planId)
+  const creditsTotal = getCreditsCapacityForDisplay(
+    subscription?.planId,
+    effectiveBalance?.total,
+    effectiveBalance?.monthlyAllocation,
+  )
 
   const planName = subscription
-    ? `${subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)} Plan`
+    ? `${getPlanDisplayName(subscription.planId)} Plan`
     : 'Free Plan'
 
   const proTier = PRO_TIERS[selectedProTier]
@@ -329,7 +332,7 @@ export default observer(function BillingPage() {
               Credits remaining
             </Text>
             <Text className="text-2xl font-bold text-foreground">
-              {formatCredits(creditsRemaining)} of {creditsTotal}
+              {formatCredits(creditsRemaining)} of {formatCredits(creditsTotal)}
             </Text>
           </View>
           <View className="gap-2">
@@ -613,6 +616,8 @@ export default observer(function BillingPage() {
           </Card>
         </View>
       </View>
+
     </ScrollView>
   )
 })
+

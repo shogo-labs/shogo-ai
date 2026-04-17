@@ -194,3 +194,8 @@ apps/desktop/native/shogo-vm/shogo-vm-arm64
 apps/desktop/resources/bin/shogo-vm-arm64
 
 dev.db
+
+apps/desktop/prisma/local.db
+
+apps/desktop/resources/whisper/
+apps/desktop/resources/sherpa-onnx/

@@ -4,7 +4,7 @@
  * Template Generation Pass
  *
  * One Claude call per template group. Produces the actual workspace files
- * (IDENTITY.md, SOUL.md, AGENTS.md, etc.) and template.json metadata,
+ * (AGENTS.md, HEARTBEAT.md, etc.) and template.json metadata,
  * then writes the template directory to disk.
  */
 
@@ -29,17 +29,24 @@ const SYSTEM_PROMPT = `You are an expert at creating AI agent workspace configur
 
 Given a template group (name, description, category, skills with their full content), generate all workspace files. Follow these patterns:
 
-## IDENTITY.md
+## AGENTS.md
+A single file with all agent configuration sections:
+
+### # Identity
 - Name: {{AGENT_NAME}} (literal placeholder, gets replaced at creation time)
 - Emoji: matching the template icon
 - Tagline: concise value prop
 
-## SOUL.md
+### # Personality
 - Who the agent is and what it does (2-3 paragraphs)
 - Tone section with 4-5 bullet points
 - Boundaries section (what it won't do, disclaimers)
 
-## AGENTS.md
+### # User
+- Template with placeholder fields relevant to this use case
+- Name, timezone, plus 3-5 domain-specific fields
+
+### # Operating Instructions
 - Multi-surface canvas strategy: list 3-5 canvas surfaces the agent manages
 - Core workflow: numbered steps for the agent's main loop
 - Skill workflow: how the bundled skills should be used
@@ -49,10 +56,6 @@ Given a template group (name, description, category, skills with their full cont
 ## HEARTBEAT.md
 - 3-5 periodic tasks grouped by frequency
 - Each task is a concrete action the agent performs on its heartbeat
-
-## USER.md
-- Template with placeholder fields relevant to this use case
-- Name, timezone, plus 3-5 domain-specific fields
 
 ## config
 - heartbeatInterval: 1800-7200 depending on use case
@@ -116,21 +119,12 @@ ${skillContents}`
 
 // Map from possible LLM response keys to workspace filenames
 const WORKSPACE_KEY_MAP: Record<string, string> = {
-  'identity': 'IDENTITY.md',
-  'IDENTITY.md': 'IDENTITY.md',
-  'IDENTITY': 'IDENTITY.md',
-  'soul': 'SOUL.md',
-  'SOUL.md': 'SOUL.md',
-  'SOUL': 'SOUL.md',
   'agents': 'AGENTS.md',
   'AGENTS.md': 'AGENTS.md',
   'AGENTS': 'AGENTS.md',
   'heartbeat': 'HEARTBEAT.md',
   'HEARTBEAT.md': 'HEARTBEAT.md',
   'HEARTBEAT': 'HEARTBEAT.md',
-  'user': 'USER.md',
-  'USER.md': 'USER.md',
-  'USER': 'USER.md',
 }
 
 function resolveWorkspaceFile(key: string): string | null {

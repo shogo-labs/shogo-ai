@@ -48,40 +48,6 @@ describe('gateway-tools', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  describe('grep', () => {
-    test('finds a pattern in workspace files', async () => {
-      writeFileSync(join(TEST_DIR, 'sample.ts'), 'const foo = 42\nconst bar = 99\n')
-      const result = await exec(createCtx(), 'grep', { pattern: 'foo' })
-      expect(result.count).toBeGreaterThanOrEqual(1)
-      expect(result.matches.some((m: any) => m.text.includes('foo'))).toBe(true)
-    })
-
-    test('returns zero matches for absent pattern', async () => {
-      writeFileSync(join(TEST_DIR, 'sample.ts'), 'const bar = 99\n')
-      const result = await exec(createCtx(), 'grep', { pattern: 'zzz_never_exists_zzz' })
-      expect(result.count).toBe(0)
-      expect(result.matches).toHaveLength(0)
-    })
-
-    test('does not error with "command not found"', async () => {
-      writeFileSync(join(TEST_DIR, 'sample.ts'), 'hello world\n')
-      const result = await exec(createCtx(), 'grep', { pattern: 'hello' })
-      // Should succeed — either via rg or the JS fallback
-      expect(result.error).toBeUndefined()
-      expect(result.count).toBeGreaterThanOrEqual(1)
-    })
-
-    test('reports matches with file and line number', async () => {
-      writeFileSync(join(TEST_DIR, 'multi.ts'), 'line_one\nfind_me_here\nline_three\n')
-      const result = await exec(createCtx(), 'grep', { pattern: 'find_me_here' })
-      expect(result.count).toBe(1)
-      const match = result.matches[0]
-      expect(match.text).toContain('find_me_here')
-      expect(match.line).toBe(2)
-      expect(match.file).toContain('multi.ts')
-    })
-  })
-
   describe('exec', () => {
     test('runs a simple command', async () => {
       const result = await exec(createCtx(), 'exec', { command: 'echo hello' })
@@ -306,18 +272,6 @@ describe('gateway-tools', () => {
     })
   })
 
-  describe('ls truncation', () => {
-    test('truncates results when exceeding max entries', async () => {
-      for (let i = 0; i < 250; i++) {
-        writeFileSync(join(TEST_DIR, `file_${String(i).padStart(3, '0')}.txt`), `content ${i}`)
-      }
-      const result = await exec(createCtx(), 'ls', { path: '.', recursive: false })
-      expect(result.count).toBe(200)
-      expect(result.truncated).toBe(true)
-      expect(result.totalEntries).toBe(250)
-    })
-  })
-
   describe('memory_read', () => {
     test('reads MEMORY.md', async () => {
       writeFileSync(join(TEST_DIR, 'MEMORY.md'), '# Memory\nSome facts')
@@ -365,7 +319,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(52)
+      expect(createTools(createCtx())).toHaveLength(49)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
@@ -461,9 +415,9 @@ describe('gateway-tools', () => {
       expect(tool.description).toContain('tool_search')
     })
 
-    test('tool_install has Composio-only description without env/url/headers params', () => {
+    test('tool_install has managed-integration description without env/url/headers params', () => {
       const tool = getTool(createCtx(), 'tool_install')
-      expect(tool.description).toContain('mcp_install')
+      expect(tool.description).toContain('managed OAuth')
       const schema = JSON.stringify(tool.parameters)
       expect(schema).not.toContain('"url"')
       expect(schema).not.toContain('"headers"')
@@ -471,10 +425,9 @@ describe('gateway-tools', () => {
       expect(schema).toContain('"name"')
     })
 
-    test('mcp_install has MCP-only description with env/url/headers params', () => {
+    test('mcp_install has MCP description with env/url/headers params', () => {
       const tool = getTool(createCtx(), 'mcp_install')
       expect(tool.description).toContain('MCP')
-      expect(tool.description).toContain('tool_install')
       const schema = JSON.stringify(tool.parameters)
       expect(schema).toContain('"url"')
       expect(schema).toContain('"headers"')

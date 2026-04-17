@@ -21,7 +21,9 @@ import {
 } from './tool-mocks'
 import {
   usedTool,
+  usedToolAnywhere,
   neverUsedTool,
+  delegatedTo,
   responseContains,
   toolCallsJson,
   toolCallArgsContain,
@@ -123,7 +125,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Did NOT install anything (user said just show options)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'tool_install'),
+        validate: (r) => neverUsedTool(r, 'tool_install') && !delegatedTo(r, 'integration'),
       },
       {
         id: 'response-mentions-both',
@@ -166,14 +168,14 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Used tool_search to find integrations',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-integrations',
         description: 'Used tool_install to connect at least one integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'fetched-jira-issues',
@@ -321,14 +323,14 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Used tool_search to find GitHub integration',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedToolAnywhere(r, 'tool_search'),
       },
       {
         id: 'installed-github',
         description: 'Used tool_install to connect GitHub',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'install-managed-style',
@@ -563,7 +565,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Used tool_install to connect Google Calendar',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedToolAnywhere(r, 'tool_install'),
       },
       {
         id: 'wrote-code-file',

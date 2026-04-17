@@ -17,6 +17,7 @@
 import { Hono } from 'hono'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
+import { MODEL_CATALOG, MODEL_ALIASES } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import { authMiddleware, requireAuth } from '../middleware/auth'
@@ -36,7 +37,10 @@ const VALID_TRACKS = [
   'nonprofit', 'adversarial', 'cross-cutting',
 ]
 
-const VALID_MODELS = ['haiku', 'sonnet', 'opus', 'gpt-5.4-mini', 'gpt54mini']
+const VALID_MODELS = new Set([
+  ...Object.keys(MODEL_CATALOG),
+  ...Object.keys(MODEL_ALIASES),
+])
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -49,10 +53,57 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+async function isK8sJobDone(jobName: string): Promise<'running' | 'done'> {
+  try {
+    const { getEvalJobStatus } = await import('../lib/eval-job-manager')
+    const status = await getEvalJobStatus(jobName)
+    return (status === 'succeeded' || status === 'failed') ? 'done' : 'running'
+  } catch {
+    return 'running'
+  }
+}
+
+async function synthesizeCompletionFromResults(runId: string): Promise<void> {
+  const results = await prisma.evalRunResult.findMany({ where: { runId } })
+  const summary = results.length > 0 ? {
+    total: results.length,
+    passed: results.filter((r) => r.passed).length,
+    failed: results.filter((r) => !r.passed).length,
+    passRate: (results.filter((r) => r.passed).length / results.length) * 100,
+    avgScore: results.reduce((s, r) => s + (r.maxScore > 0 ? (r.score / r.maxScore) * 100 : 0), 0) / results.length,
+    totalPoints: results.reduce((s, r) => s + r.score, 0),
+    maxPoints: results.reduce((s, r) => s + r.maxScore, 0),
+  } : undefined
+
+  const catMap: Record<string, { total: number; passed: number; failed: number; avgScore: number; scores: number[] }> = {}
+  for (const r of results) {
+    if (!catMap[r.category]) catMap[r.category] = { total: 0, passed: 0, failed: 0, avgScore: 0, scores: [] }
+    catMap[r.category].total++
+    if (r.passed) catMap[r.category].passed++
+    else catMap[r.category].failed++
+    catMap[r.category].scores.push(r.percentage)
+  }
+  const byCategory: Record<string, any> = {}
+  for (const [cat, d] of Object.entries(catMap)) {
+    byCategory[cat] = { total: d.total, passed: d.passed, failed: d.failed, avgScore: d.scores.reduce((a, b) => a + b, 0) / d.scores.length }
+  }
+
+  await prisma.evalRun.update({
+    where: { id: runId },
+    data: {
+      status: results.length > 0 ? 'completed' : 'failed',
+      error: results.length === 0 ? 'Job finished but no results received' : undefined,
+      summary: summary as any,
+      byCategory: byCategory as any,
+      completedAt: new Date(),
+    },
+  })
+}
+
 function getCallbackUrl(): string {
   if (isKubernetes()) {
     const ns = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
-    return `http://api.${ns}.svc.cluster.local:8002`
+    return `http://api.${ns}.svc.cluster.local`
   }
   const port = process.env.API_PORT || '8002'
   return `http://localhost:${port}`
@@ -169,6 +220,11 @@ export function evalAdminRoutes(): Hono {
       return c.json({ ok: true, data: { running: false } })
     }
 
+    if (isKubernetes() && activeRun.jobName && (await isK8sJobDone(activeRun.jobName)) === 'done') {
+      await synthesizeCompletionFromResults(activeRun.id)
+      return c.json({ ok: true, data: { running: false } })
+    }
+
     const progressRaw = activeRun.progress as any
     const progressResults = Array.isArray(progressRaw)
       ? progressRaw as Array<{ id: string; score: number; max: number; passed: boolean }>
@@ -218,7 +274,7 @@ export function evalAdminRoutes(): Hono {
       return raw.results ?? []
     }
 
-    // Detect dead processes (same check as /runs/active)
+    // Detect dead processes (local)
     if (run.status === 'running' && run.pid && !isKubernetes() && !isProcessAlive(run.pid)) {
       const progress = extractProgress(progressRaw)
       const allDone = progress.length > 0
@@ -243,6 +299,18 @@ export function evalAdminRoutes(): Hono {
       run.status = allDone ? 'completed' : 'failed'
       if (synthesized) run.summary = synthesized as any
       run.completedAt = new Date()
+    }
+
+    // Detect finished K8s jobs whose /complete callback never landed
+    if (run.status === 'running' && isKubernetes() && run.jobName && (await isK8sJobDone(run.jobName)) === 'done') {
+      await synthesizeCompletionFromResults(id)
+      const refreshed = await prisma.evalRun.findUnique({ where: { id } })
+      if (refreshed) {
+        run.status = refreshed.status
+        run.summary = refreshed.summary
+        run.completedAt = refreshed.completedAt
+        run.byCategory = refreshed.byCategory
+      }
     }
 
     const progress = extractProgress(progressRaw)
@@ -649,17 +717,21 @@ export function evalAdminRoutes(): Hono {
       model?: string
       workers?: number
       local?: boolean
+      vm?: boolean
+      agentMode?: string
     }
 
     const track = body.track ?? 'agentic'
     const model = body.model ?? 'sonnet'
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
     const local = body.local ?? false
+    const vm = body.vm ?? false
+    const agentMode = body.agentMode as 'basic' | 'advanced' | 'auto' | undefined
 
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    if (!VALID_MODELS.includes(model)) {
+    if (!VALID_MODELS.has(model)) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 
@@ -688,6 +760,7 @@ export function evalAdminRoutes(): Hono {
           workers,
           callbackUrl,
           callbackSecret,
+          agentMode,
         })
         await prisma.evalRun.update({
           where: { id: run.id },
@@ -714,14 +787,34 @@ export function evalAdminRoutes(): Hono {
       '--run-id', run.id,
       '--callback-url', callbackUrl,
     ]
+    if (agentMode) args.push('--agent-mode', agentMode)
     if (local) args.push('--local')
+    if (vm) args.push('--vm')
 
     const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
+    console.log(`[EvalTrigger] Spawning: ${bunBin} ${args.join(' ')}`)
+    console.log(`[EvalTrigger] CWD: ${AGENT_RUNTIME_DIR}`)
     const child = spawn(bunBin, args, {
       cwd: AGENT_RUNTIME_DIR,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, EVAL_CALLBACK_SECRET: callbackSecret },
+    })
+    child.stdout?.on('data', (d: Buffer) => {
+      for (const line of d.toString().split('\n').filter(Boolean))
+        console.log(`[Eval:${run.id.slice(0, 8)}] ${line}`)
+    })
+    child.stderr?.on('data', (d: Buffer) => {
+      for (const line of d.toString().split('\n').filter(Boolean))
+        console.error(`[Eval:${run.id.slice(0, 8)}] ${line}`)
+    })
+    child.on('error', (err) => {
+      console.error(`[EvalTrigger] Failed to spawn eval process:`, err.message)
+    })
+    child.on('exit', (code, signal) => {
+      if (code !== 0) {
+        console.error(`[EvalTrigger] Eval process exited: code=${code}, signal=${signal}`)
+      }
     })
     child.unref()
 
@@ -733,7 +826,7 @@ export function evalAdminRoutes(): Hono {
 
     return c.json({
       ok: true,
-      data: { started: true, id: run.id, pid, track, model, workers, local },
+      data: { started: true, id: run.id, pid, track, model, workers, local, vm },
     })
   })
 

@@ -45,6 +45,7 @@ export type EvalCategory =
   | 'event-planner'
   | 'subagent-coordination'
   | 'teammate-coordination'
+  | 'plan'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -73,7 +74,9 @@ export interface AgentEval {
   /** Seed .shogo/server/ with the canonical skill server scaffold (shogo.config.json, prisma.config.ts, base schema). */
   useSkillServer?: boolean
   /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
-  initialMode?: 'canvas' | 'app' | 'none'
+  initialMode?: 'canvas' | 'app' | 'plan' | 'none'
+  /** Interaction mode sent in the request body (e.g. 'plan' for plan-mode evals). */
+  interactionMode?: 'agent' | 'plan' | 'ask'
   /** Pipeline name — evals sharing a pipeline run sequentially on one worker, each inheriting the prior phase's workspace. */
   pipeline?: string
   /** 1-based ordering within a pipeline. Phase 1 gets full workspace setup; phase 2+ skip cleanup and use pipelineFiles. */
@@ -84,6 +87,10 @@ export interface AgentEval {
   tags?: string[]
   /** Agent mode required for this eval (e.g. 'basic', 'advanced') */
   requiredAgent?: string
+  /** Pre-defined responses for ask_user calls. When the agent calls ask_user,
+   *  the runner sends the next response as a follow-up user message.
+   *  Responses are consumed in order; if exhausted, subsequent ask_user calls get no response. */
+  askUserResponses?: string[]
 }
 
 export interface ConversationTurn {
@@ -109,6 +116,8 @@ export interface ToolCallRecord {
   output: unknown
   durationMs?: number
   error?: boolean
+  /** True when this tool call was made by a subagent, not the main agent directly. */
+  viaSubagent?: boolean
 }
 
 export interface ModelCheckResult {
@@ -125,6 +134,16 @@ export interface WorkspaceIntegrity {
   server: boolean
   db: boolean
   prismaClient: boolean
+}
+
+export interface ViteBuildReadiness {
+  hasPackageJson: boolean
+  hasViteConfig: boolean
+  hasAppTsx: boolean
+  hasTsConfig: boolean
+  hasNodeModules: boolean
+  hasViteBin: boolean
+  ready: boolean
 }
 
 export interface RuntimeCheckResults {
@@ -151,7 +170,26 @@ export interface RuntimeCheckResults {
   canvasCompiles: boolean | null
   /** Individual compile errors (file path + message) when canvasCompiles is false. */
   canvasCompileErrors: string[]
+  /** Vite build readiness — template files + deps present. null = check not run. */
+  viteBuildReadiness: ViteBuildReadiness | null
   errors: string[]
+}
+
+export interface PromptBreakdownSection {
+  label: string
+  zone: 'stable' | 'dynamic'
+  chars: number
+  estTokens: number
+}
+
+export interface PromptBreakdown {
+  sections: PromptBreakdownSection[]
+  totalChars: number
+  totalEstTokens: number
+  toolSchemaChars: number
+  toolSchemaEstTokens: number
+  toolCount: number
+  grandEstTokens: number
 }
 
 export interface EvalResult {
@@ -165,6 +203,8 @@ export interface EvalResult {
   toolCalls: ToolCallRecord[]
   /** Tool calls from only the final evaluated turn. Use for negative execution checks. */
   finalTurnToolCalls: ToolCallRecord[]
+  /** Tool calls grouped by turn index for per-turn inspection. */
+  perTurnToolCalls: ToolCallRecord[][]
   criteriaResults: CriterionResult[]
   triggeredAntiPatterns: string[]
   timing: {
@@ -183,6 +223,8 @@ export interface EvalResult {
   /** Post-eval runtime validation results. Adds bonus criteria to score. */
   runtimeChecks?: RuntimeCheckResults
   runtimeWarnings?: string[]
+  /** Per-section prompt token breakdown from the first turn. */
+  promptBreakdown?: PromptBreakdown
 }
 
 export interface CriterionResult {
