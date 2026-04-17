@@ -78,7 +78,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     console.log(`[E2E] Available models (${modelIds.length}):`, modelIds)
 
     // Verify the new current-gen models are present
-    expect(modelIds).toContain('claude-opus-4-6')
+    expect(modelIds).toContain('claude-opus-4-7')
     expect(modelIds).toContain('claude-sonnet-4-5-20250929')
     expect(modelIds).toContain('claude-haiku-4-5-20251001')
 
@@ -325,7 +325,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     }
   }, 30_000)
 
-  test('short alias claude-opus resolves to Opus 4.6', async () => {
+  test('short alias claude-opus resolves to Opus 4.7', async () => {
     const res = await app.fetch(
       new Request('http://localhost/api/ai/v1/chat/completions', {
         method: 'POST',
@@ -334,7 +334,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
           Authorization: `Bearer ${proxyToken}`,
         },
         body: JSON.stringify({
-          model: 'claude-opus', // Should resolve to claude-opus-4-6
+          model: 'claude-opus', // Should resolve to claude-opus-4-7
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 5,
         }),

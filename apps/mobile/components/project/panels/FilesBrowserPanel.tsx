@@ -749,53 +749,6 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             </View>
           ) : (
             <View className="p-1">
-              {/* Workspace config files */}
-              <Pressable
-                onPress={() => setWorkspaceExpanded((v) => !v)}
-                className="flex-row items-center gap-1 px-2 py-1"
-              >
-                {workspaceExpanded ? (
-                  <ChevronDown size={10} className="text-muted-foreground" />
-                ) : (
-                  <ChevronRight size={10} className="text-muted-foreground" />
-                )}
-                <Settings size={10} className="text-muted-foreground" />
-                <Text className="text-[10px] font-medium text-muted-foreground">
-                  WORKSPACE
-                </Text>
-              </Pressable>
-              {workspaceExpanded && WORKSPACE_FILES.map((file) => (
-                <Pressable
-                  key={file.id}
-                  onPress={() => loadWorkspaceFile(file.id)}
-                  className={cn(
-                    'pl-6 pr-2 py-1 rounded-md',
-                    isWorkspaceFile && selectedPath === file.id ? 'bg-primary/10' : 'active:bg-muted',
-                  )}
-                >
-                  <View className="flex-row items-center gap-1.5">
-                    <FileText
-                      size={12}
-                      className={isWorkspaceFile && selectedPath === file.id ? 'text-primary' : 'text-blue-500'}
-                    />
-                    <Text
-                      className={cn(
-                        'text-xs',
-                        isWorkspaceFile && selectedPath === file.id
-                          ? 'text-primary font-medium'
-                          : 'text-foreground',
-                      )}
-                      numberOfLines={1}
-                    >
-                      {file.label}
-                    </Text>
-                  </View>
-                  <Text className="text-[10px] text-muted-foreground ml-[18px]" numberOfLines={1}>
-                    {file.description}
-                  </Text>
-                </Pressable>
-              ))}
-
               {/* General file tree */}
               <Text className="text-[10px] font-medium text-muted-foreground px-2 py-1 mt-2">
                 PROJECT FILES
