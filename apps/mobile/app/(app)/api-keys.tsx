@@ -72,7 +72,10 @@ export default observer(function ApiKeysPage() {
   const [isRevoking, setIsRevoking] = useState(false)
 
   const loadKeys = useCallback(async () => {
-    if (!workspace?.id) return
+    if (!workspace?.id) {
+      setIsLoading(false)
+      return
+    }
     setIsLoading(true)
     try {
       setKeys(await platform.listApiKeys(workspace.id))
