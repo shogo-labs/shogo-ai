@@ -357,6 +357,133 @@ if (email) {
 }
 ```
 
+## Memory (Server-Side)
+
+Fast, local per-user memory backed by SQLite FTS5 and in-process TF-IDF. No embedding API calls, no vector DB — retrieval runs in single-digit milliseconds next to your webhook server. Works on Bun (`bun:sqlite`) and Node (`better-sqlite3`, optional peer dep).
+
+### Setup
+
+```bash
+# Node
+npm install better-sqlite3
+# Bun — no extra install, uses built-in bun:sqlite
+```
+
+### Quickstart
+
+```typescript
+import { MemoryStore, createLlmSummarizer } from '@shogo-ai/sdk/memory'
+
+const memory = new MemoryStore({
+  dir: './memory-store',
+  userId: 'user_123',
+})
+
+memory.add('User prefers window seats on long-haul flights')
+memory.addDaily('Discussed refund for order #4821')
+
+const hits = memory.search('seat preferences', { limit: 5 })
+// [{ file, chunk, score, lineStart, lineEnd, matchType }]
+```
+
+### Architecture
+
+- Facts live as bullets in `{dir}/{userId}/MEMORY.md` and daily logs in `{dir}/{userId}/memory/YYYY-MM-DD.md`.
+- A SQLite index (`.memory-index.db`) auto-rebuilds on mtime change — you never call reindex manually.
+- Hybrid ranking: keyword (FTS5 + BM25) and semantic (TF-IDF cosine), merged by `file:line`.
+
+### ElevenLabs Integration
+
+ElevenLabs voice agents are stateless. Layer this module under your webhook server to get sub-10ms retrieval for client-tool calls.
+
+```typescript
+import { serve } from 'bun'
+import { MemoryStore } from '@shogo-ai/sdk/memory'
+import { createMemoryHandlers } from '@shogo-ai/sdk/memory/server'
+
+const handlers = createMemoryHandlers(({ userId }) =>
+  new MemoryStore({ dir: './memory-store', userId })
+)
+
+serve({
+  port: 3100,
+  async fetch(req) {
+    const { pathname } = new URL(req.url)
+    if (pathname === '/retrieve') return handlers.retrieve(req)
+    if (pathname === '/add') return handlers.add(req)
+    return new Response('Not Found', { status: 404 })
+  },
+})
+```
+
+Register two client tools in ElevenLabs pointed at these endpoints:
+
+- `retrieve_memory(query, limit?)` → `POST /retrieve { user_id, query, limit }`
+- `add_memory(fact)` → `POST /add { user_id, fact }`
+
+In the agent system prompt:
+
+```md
+# Memory
+- At the START of every conversation, call `retrieve_memory` with the user's
+  opening topic to load relevant context.
+- When the user shares preferences, personal details, decisions, or follow-up
+  items, call `add_memory` to persist them.
+- Never ask the user to repeat information you can retrieve from memory.
+```
+
+### Post-Call Summarization
+
+Ingest the full transcript after the call ends and let an LLM extract canonical facts:
+
+```typescript
+import { MemoryStore, createLlmSummarizer } from '@shogo-ai/sdk/memory'
+
+const memory = new MemoryStore({
+  dir: './memory-store',
+  userId: 'user_123',
+  summarizer: createLlmSummarizer({
+    complete: async (prompt) => myLlmClient.complete(prompt),
+  }),
+})
+
+await memory.ingestTranscript(transcript, { summarize: true })
+// Writes one canonical bullet per fact to MEMORY.md
+```
+
+### Pre-Loading with Dynamic Variables
+
+For the lowest latency, skip the first tool call by injecting known facts before the conversation starts:
+
+```typescript
+const context = memory
+  .search(opening_topic, { limit: 3 })
+  .map((h) => h.chunk)
+  .join('\n')
+
+// Pass to ElevenLabs via their Overrides / Dynamic Variables API
+await startElevenLabsCall({ variables: { user_context: context } })
+```
+
+### API Reference
+
+```typescript
+new MemoryStore({
+  dir: string        // root; per-user subdir created automatically
+  userId: string     // stable id (phone, account id, etc.)
+  summarizer?: Summarizer        // required only if ingestTranscript({ summarize: true })
+  createDriver?: CreateSqliteDriver  // override SQLite driver (Bun/Node auto-detected)
+})
+
+store.add(fact: string): void
+store.addDaily(entry: string, date?: string): void
+store.search(query: string, opts?: { limit?: number }): MemorySearchHit[]
+store.ingestTranscript(text: string, opts?: { summarize?: boolean }): Promise<void>
+store.close(): void
+```
+
+Low-level access is available via `MemorySearchEngine` if you need to bypass the namespaced markdown layer.
+
 ## Examples
 
 See the [examples](./examples) directory for complete working examples:

@@ -75,7 +75,6 @@ import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddC
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
 import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
 import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
-import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
   ChannelsPanel,
@@ -1649,7 +1648,6 @@ function TopBarBridge({
             : undefined
         }
         onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
-        canvasThemePicker={canvasActive && canvasThemeSupported ? <CanvasThemePicker /> : undefined}
         canvasThemeSupported={canvasThemeSupported}
       />
       {showAddDialog && effectiveSurfaceId && (

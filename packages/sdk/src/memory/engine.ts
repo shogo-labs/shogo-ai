@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Memory Search Engine
@@ -10,40 +10,32 @@
  * Memory entries are indexed on write and searchable immediately.
  * The index is persisted in the agent workspace as `.memory-index.db`.
  */
-
-import { Database } from 'bun:sqlite'
-import { existsSync, readFileSync, readdirSync, mkdirSync, statSync } from 'fs'
-import { join } from 'path'
-
-interface SearchResult {
-  file: string
-  chunk: string
-  score: number
-  lineStart: number
-  lineEnd: number
-  matchType: 'keyword' | 'semantic' | 'hybrid'
-}
-
-interface MemoryChunk {
-  file: string
-  chunk: string
-  lineStart: number
-  lineEnd: number
-  timestamp: number
-}
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { createSqliteDriver } from './drivers/index.js'
+import type { CreateSqliteDriver, SqliteDriver } from './drivers/types.js'
+import type { MemoryChunkRecord, MemorySearchHit } from './types.js'
 
 const CHUNK_SIZE = 6
 const CHUNK_OVERLAP = 2
 
 export class MemorySearchEngine {
-  private db: Database
+  private db: SqliteDriver
   private workspaceDir: string
-  private initialized = false
+  private options: { createDriver: CreateSqliteDriver }
 
-  constructor(workspaceDir: string) {
+  /**
+   * @param workspaceDir - Directory containing `MEMORY.md` and optional `memory/*.md`
+   * @param options - Optional `createDriver` to open `.memory-index.db` (default: better-sqlite3 or bun:sqlite)
+   */
+  constructor(
+    workspaceDir: string,
+    options?: { createDriver?: CreateSqliteDriver },
+  ) {
     this.workspaceDir = workspaceDir
+    this.options = { createDriver: options?.createDriver ?? createSqliteDriver }
     const dbPath = join(workspaceDir, '.memory-index.db')
-    this.db = new Database(dbPath)
+    this.db = this.options.createDriver(dbPath)
     this.db.exec('PRAGMA journal_mode = WAL')
     this.init()
   }
@@ -75,7 +67,6 @@ export class MemorySearchEngine {
         vector_json TEXT NOT NULL
       );
     `)
-    this.initialized = true
   }
 
   /**
@@ -87,12 +78,21 @@ export class MemorySearchEngine {
     const staleFiles: string[] = []
 
     const getMeta = this.db.prepare('SELECT last_indexed_mtime FROM memory_meta WHERE file = ?')
+    const onDisk = new Set(files.map(f => f.relativePath))
 
     for (const { relativePath, absolutePath } of files) {
       const mtime = statSync(absolutePath).mtimeMs
       const meta = getMeta.get(relativePath) as { last_indexed_mtime: number } | undefined
       if (!meta || meta.last_indexed_mtime < mtime) {
         staleFiles.push(relativePath)
+      }
+    }
+
+    // Files tracked in meta but no longer on disk need to be purged from the index
+    const tracked = this.db.prepare('SELECT file FROM memory_meta').all() as Array<{ file: string }>
+    for (const row of tracked) {
+      if (!onDisk.has(row.file)) {
+        staleFiles.push(row.file)
       }
     }
 
@@ -114,10 +114,10 @@ export class MemorySearchEngine {
       this.db.prepare('DELETE FROM memory_vectors WHERE file = ?').run(relPath)
 
       const insertFts = this.db.prepare(
-        'INSERT INTO memory_fts (file, chunk, line_start, line_end) VALUES (?, ?, ?, ?)'
+        'INSERT INTO memory_fts (file, chunk, line_start, line_end) VALUES (?, ?, ?, ?)',
       )
       const insertVec = this.db.prepare(
-        'INSERT INTO memory_vectors (file, chunk, line_start, line_end, vector_json) VALUES (?, ?, ?, ?, ?)'
+        'INSERT INTO memory_vectors (file, chunk, line_start, line_end, vector_json) VALUES (?, ?, ?, ?, ?)',
       )
 
       for (const chunk of chunks) {
@@ -128,7 +128,7 @@ export class MemorySearchEngine {
 
       const mtime = statSync(absPath).mtimeMs
       this.db.prepare(
-        'INSERT OR REPLACE INTO memory_meta (file, last_indexed_mtime, chunk_count) VALUES (?, ?, ?)'
+        'INSERT OR REPLACE INTO memory_meta (file, last_indexed_mtime, chunk_count) VALUES (?, ?, ?)',
       ).run(relPath, mtime, chunks.length)
     })
 
@@ -143,13 +143,13 @@ export class MemorySearchEngine {
    * Search memory with hybrid keyword + semantic ranking.
    * Returns top-k results sorted by combined score.
    */
-  search(query: string, limit = 10): SearchResult[] {
+  search(query: string, limit = 10): MemorySearchHit[] {
     this.reindex()
 
     const keywordResults = this.keywordSearch(query, limit * 2)
     const semanticResults = this.semanticSearch(query, limit * 2)
 
-    const merged = new Map<string, SearchResult>()
+    const merged = new Map<string, MemorySearchHit>()
 
     for (const r of keywordResults) {
       const key = `${r.file}:${r.lineStart}`
@@ -177,11 +177,7 @@ export class MemorySearchEngine {
     this.db.close()
   }
 
-  // ---------------------------------------------------------------------------
-  // Keyword Search (FTS5 + BM25)
-  // ---------------------------------------------------------------------------
-
-  private keywordSearch(query: string, limit: number): SearchResult[] {
+  private keywordSearch(query: string, limit: number): MemorySearchHit[] {
     try {
       const escaped = query.replace(/['"]/g, ' ').trim()
       if (!escaped) return []
@@ -219,10 +215,10 @@ export class MemorySearchEngine {
     }
   }
 
-  private fallbackKeywordSearch(query: string, limit: number): SearchResult[] {
+  private fallbackKeywordSearch(query: string, limit: number): MemorySearchHit[] {
     const lower = query.toLowerCase()
     const rows = this.db.prepare(
-      'SELECT file, chunk, line_start, line_end FROM memory_vectors'
+      'SELECT file, chunk, line_start, line_end FROM memory_vectors',
     ).all() as Array<{
       file: string
       chunk: string
@@ -243,16 +239,12 @@ export class MemorySearchEngine {
       }))
   }
 
-  // ---------------------------------------------------------------------------
-  // Semantic Search (TF-IDF cosine similarity)
-  // ---------------------------------------------------------------------------
-
-  private semanticSearch(query: string, limit: number): SearchResult[] {
+  private semanticSearch(query: string, limit: number): MemorySearchHit[] {
     const queryVec = this.computeTfIdf(query)
     if (Object.keys(queryVec).length === 0) return []
 
     const rows = this.db.prepare(
-      'SELECT file, chunk, line_start, line_end, vector_json FROM memory_vectors'
+      'SELECT file, chunk, line_start, line_end, vector_json FROM memory_vectors',
     ).all() as Array<{
       file: string
       chunk: string
@@ -261,7 +253,7 @@ export class MemorySearchEngine {
       vector_json: string
     }>
 
-    const scored: SearchResult[] = []
+    const scored: MemorySearchHit[] = []
     for (const r of rows) {
       let docVec: Record<string, number>
       try {
@@ -284,10 +276,6 @@ export class MemorySearchEngine {
 
     return scored.sort((a, b) => b.score - a.score).slice(0, limit)
   }
-
-  // ---------------------------------------------------------------------------
-  // TF-IDF Computation
-  // ---------------------------------------------------------------------------
 
   private computeTfIdf(text: string): Record<string, number> {
     const tokens = tokenize(text)
@@ -314,7 +302,9 @@ export class MemorySearchEngine {
   }
 
   private getTotalDocCount(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM memory_vectors').get() as { cnt: number }
+    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM memory_vectors').get() as {
+      cnt: number
+    }
     return row.cnt || 1
   }
 
@@ -322,7 +312,7 @@ export class MemorySearchEngine {
     const row = this.db.prepare('SELECT doc_freq FROM memory_terms WHERE term = ?').get(term) as
       | { doc_freq: number }
       | undefined
-    return row?.doc_freq || 0
+    return row?.doc_freq ?? 0
   }
 
   private rebuildTermFrequencies(): void {
@@ -346,11 +336,7 @@ export class MemorySearchEngine {
     insertAll()
   }
 
-  // ---------------------------------------------------------------------------
-  // Text Chunking
-  // ---------------------------------------------------------------------------
-
-  private chunkText(content: string, file: string): MemoryChunk[] {
+  private chunkText(content: string, file: string): MemoryChunkRecord[] {
     const lines = content.split('\n')
     if (lines.length <= CHUNK_SIZE) {
       return [{
@@ -362,7 +348,7 @@ export class MemorySearchEngine {
       }]
     }
 
-    const chunks: MemoryChunk[] = []
+    const chunks: MemoryChunkRecord[] = []
     for (let i = 0; i < lines.length; i += CHUNK_SIZE - CHUNK_OVERLAP) {
       const end = Math.min(i + CHUNK_SIZE, lines.length)
       const chunkLines = lines.slice(i, end)
@@ -381,10 +367,6 @@ export class MemorySearchEngine {
 
     return chunks
   }
-
-  // ---------------------------------------------------------------------------
-  // File Discovery
-  // ---------------------------------------------------------------------------
 
   private getMemoryFiles(): Array<{ relativePath: string; absolutePath: string }> {
     const files: Array<{ relativePath: string; absolutePath: string }> = []
@@ -409,10 +391,6 @@ export class MemorySearchEngine {
     return files
   }
 }
-
-// =============================================================================
-// Utility Functions
-// =============================================================================
 
 const STOP_WORDS = new Set([
   'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
@@ -463,8 +441,8 @@ function cosineSimilarity(a: Record<string, number>, b: Record<string, number>):
 
   const allKeys = new Set([...Object.keys(a), ...Object.keys(b)])
   for (const key of allKeys) {
-    const va = a[key] || 0
-    const vb = b[key] || 0
+    const va = a[key] ?? 0
+    const vb = b[key] ?? 0
     dot += va * vb
     normA += va * va
     normB += vb * vb

@@ -1,0 +1,178 @@
+# =============================================================================
+# Publish @shogo-ai/sdk to npm
+# =============================================================================
+# Triggered when an sdk-v* tag is pushed (e.g. sdk-v0.5.1, sdk-v0.5.1-beta.0).
+# This is decoupled from the main v* production deploy so SDK releases can
+# be cut independently.
+#
+# The tag name is used as the npm version (e.g. sdk-v0.5.1 -> 0.5.1). The
+# package.json version is rewritten in-place before publishing, and any
+# `workspace:*` dependencies are stripped (the published dist/ and
+# bin/cli.mjs do not reference them).
+#
+# Required repo secret:
+#   NPM_TOKEN - an npm automation token with publish access to @shogo-ai.
+#
+# Publish provenance is enabled via OIDC (id-token: write) so the package
+# page on npmjs.com shows the verified build source.
+# =============================================================================
+
+name: Publish SDK
+
+on:
+  push:
+    tags:
+      - 'sdk-v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish (e.g. sdk-v0.5.1). Must already exist.'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run npm publish with --dry-run (no upload)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance
+
+concurrency:
+  group: publish-sdk-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish @shogo-ai/sdk
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Cache bun dependencies
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-publish-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-publish-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^sdk-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid SDK tag (expected sdk-vX.Y.Z or sdk-vX.Y.Z-prerelease)"
+            exit 1
+          fi
+          VERSION="${TAG#sdk-v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $VERSION (from tag $TAG)"
+
+          # Mark prereleases (0.5.1-beta.0 -> beta) so they don't become `latest`.
+          if [[ "$VERSION" == *-* ]]; then
+            PRE_TAG="${VERSION#*-}"
+            PRE_TAG="${PRE_TAG%%.*}"
+            echo "npm_tag=$PRE_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if version already published
+        id: check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@shogo-ai/sdk@$VERSION" version >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::@shogo-ai/sdk@$VERSION is already on npm -- skipping publish"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build SDK
+        if: steps.check.outputs.already_published == 'false'
+        run: bun run build:sdk
+
+      - name: Prepare package.json for publish
+        if: steps.check.outputs.already_published == 'false'
+        working-directory: packages/sdk
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Set version from tag and strip any workspace: deps (not needed at
+          # runtime; tsup bundles everything non-external into dist/).
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = process.env.VERSION;
+            for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
+              if (!pkg[key]) continue;
+              for (const [name, spec] of Object.entries(pkg[key])) {
+                if (typeof spec === "string" && spec.startsWith("workspace:")) {
+                  delete pkg[key][name];
+                  console.log(`Stripped ${key}.${name} (${spec})`);
+                }
+              }
+            }
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          echo "--- Final package.json ---"
+          cat package.json
+
+      - name: Verify publish contents
+        if: steps.check.outputs.already_published == 'false'
+        working-directory: packages/sdk
+        run: npm publish --dry-run --access public
+
+      - name: Publish to npm
+        if: |
+          steps.check.outputs.already_published == 'false' &&
+          github.event.inputs.dry_run != 'true'
+        working-directory: packages/sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+        run: npm publish --access public --tag ${{ steps.version.outputs.npm_tag }}
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NPM_TAG: ${{ steps.version.outputs.npm_tag }}
+          ALREADY: ${{ steps.check.outputs.already_published }}
+          DRY: ${{ github.event.inputs.dry_run }}
+        run: |
+          {
+            echo "## SDK Publish"
+            echo "- Tag: \`$TAG\`"
+            echo "- Version: \`$VERSION\`"
+            echo "- npm dist-tag: \`$NPM_TAG\`"
+            if [ "$ALREADY" = "true" ]; then
+              echo "- Status: skipped (already on npm)"
+            elif [ "$DRY" = "true" ]; then
+              echo "- Status: dry-run (not published)"
+            else
+              echo "- Status: published"
+              echo "- URL: https://www.npmjs.com/package/@shogo-ai/sdk/v/$VERSION"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

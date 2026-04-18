@@ -31,7 +31,7 @@ import {
   applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
   type LineEndingType,
 } from './edit-file-utils'
-import { MemorySearchEngine } from './memory-search'
+import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
