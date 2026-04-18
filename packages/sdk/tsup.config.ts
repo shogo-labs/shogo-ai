@@ -12,6 +12,8 @@ export default defineConfig({
     'src/email/index.ts',
     'src/email/server.ts',
     'src/tools/index.ts',
+    'src/memory/index.ts',
+    'src/memory/server.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,
@@ -30,5 +32,7 @@ export default defineConfig({
     '@prisma/adapter-libsql',
     'nodemailer',
     '@aws-sdk/client-ses',
+    'better-sqlite3',
+    'bun:sqlite',
   ],
 })
