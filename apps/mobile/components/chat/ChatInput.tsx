@@ -67,7 +67,8 @@ import {
   extractLongPaste,
   kindLabel,
   LONG_PASTE_MIN_CHARS,
-  pastedEntryToAttachment,
+  MAX_PASTED_TEXTS,
+  buildPastedAttachments,
   type PastedTextEntry,
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
@@ -198,6 +199,10 @@ export function ChatInput({
   const textInputRef = useRef<TextInput>(null)
   const dropZoneRef = useRef<View>(null)
   const dragCounterRef = useRef(0)
+  const inputValueRef = useRef("")
+  // Guards against the DOM paste listener AND onChangeText both firing for
+  // the same clipboard event, which would create duplicate chips.
+  const pasteHandledRef = useRef(false)
 
   const [inputValue, setInputValue] = useState("")
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
@@ -208,6 +213,10 @@ export function ChatInput({
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
+
+  useEffect(() => {
+    inputValueRef.current = inputValue
+  }, [inputValue])
 
   const [internalModel, setInternalModel] = useState<string>(
     effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
@@ -262,14 +271,17 @@ export function ChatInput({
   const addPastedText = useCallback((content: string) => {
     const info = analyzeContent(content)
     if (!info.isLong) return false
-    setPastedTexts((prev) => [
-      ...prev,
-      {
-        id: `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        content,
-        info,
-      },
-    ])
+    setPastedTexts((prev) => {
+      if (prev.length >= MAX_PASTED_TEXTS) return prev
+      return [
+        ...prev,
+        {
+          id: `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          content,
+          info,
+        },
+      ]
+    })
     return true
   }, [])
 
@@ -440,7 +452,9 @@ export function ChatInput({
         const info = analyzeContent(text)
         if (info.isLong) {
           e.preventDefault()
+          pasteHandledRef.current = true
           addPastedText(text)
+          setTimeout(() => { pasteHandledRef.current = false }, 0)
         }
       }
     }
@@ -491,12 +505,10 @@ export function ChatInput({
       return
     }
 
-    // Each pasted long-text block is shipped as its own file attachment so
-    // the chat renders them as discrete chips (ChatGPT-style) rather than
-    // merging everything into one giant preview card.
-    const pastedAttachments: FileAttachment[] = pastedTexts.map((entry, i) =>
-      pastedEntryToAttachment(entry, i)
-    )
+    // Pasted long-text blocks are shipped as file attachments (ChatGPT-style).
+    // The typed text is sent as the message body; the model receives both the
+    // text part and the file parts so it sees everything.
+    const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
     const combinedFiles: FileAttachment[] = [
       ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
       ...pastedAttachments,
@@ -515,11 +527,18 @@ export function ChatInput({
 
   const handleChangeText = useCallback(
     (text: string) => {
+      // If the DOM paste listener already handled this event, skip the
+      // fallback detection to avoid creating duplicate chips.
+      if (pasteHandledRef.current) {
+        pasteHandledRef.current = false
+        return
+      }
+
       // Fallback paste detection for platforms where we can't intercept
       // the clipboard event (native, and any web path that bypasses the
       // DOM paste listener). If a large chunk was just inserted, pull it
       // out into a chip instead of keeping it in the TextInput.
-      const paste = extractLongPaste(inputValue, text)
+      const paste = extractLongPaste(inputValueRef.current, text)
       if (paste) {
         addPastedText(paste.inserted)
         setInputValue(paste.restored)
@@ -537,7 +556,7 @@ export function ChatInput({
         setShowSkillPicker(false)
       }
     },
-    [inputValue, addPastedText]
+    [addPastedText]
   )
 
   const getFileIcon = useCallback((fileType: string) => {
@@ -1138,7 +1157,7 @@ export function ChatInput({
                     size={10}
                   />
                 </Pressable>
-                {(inputValue.trim() || pendingFiles.length > 0) && (
+                {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
                   <Pressable
                     onPress={handleSubmit}
                     disabled={disabled || isProcessingFiles}
@@ -1150,7 +1169,7 @@ export function ChatInput({
                   </Pressable>
                 )}
               </>
-            ) : (inputValue.trim() || pendingFiles.length > 0) ? (
+            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
                 disabled={disabled || isProcessingFiles}
