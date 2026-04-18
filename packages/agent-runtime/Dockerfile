@@ -3,7 +3,7 @@
 # Unified Runtime Dockerfile
 # =============================================================================
 # Builds on the pre-built base image (Dockerfile.base) which contains system
-# packages, Claude Code CLI, template archives, and MCP servers.
+# packages, template archives, and MCP servers.
 # This layer only adds application source code and bun dependencies.
 #
 # Build: DOCKER_BUILDKIT=1 docker build \

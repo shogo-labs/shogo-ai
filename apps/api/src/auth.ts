@@ -249,6 +249,12 @@ export const auth = betterAuth({
     database: {
       generateId: (options) => crypto.randomUUID(),
     },
+    // Namespace our session cookie so user-built apps (which default to
+    // better-auth's "better-auth.session_token") cannot stomp the platform
+    // session when served on the same origin as the Studio (e.g. path-based
+    // previews under /api/projects/:id/preview/...). See also the Set-Cookie
+    // strip in the preview/agent-runtime proxies in server.ts.
+    cookiePrefix: 'shogo',
   },
 
   // Database hooks for auto-creating personal workspace on user signup
