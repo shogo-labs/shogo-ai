@@ -36,6 +36,17 @@ import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
+import {
+  type ContentReplacementState,
+  createContentReplacementState,
+  stableTransformContext,
+} from './stable-compaction'
+import {
+  fingerprintMessages,
+  fingerprintSystem,
+  fingerprintTools,
+  formatPositions,
+} from './prefix-fingerprint'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
@@ -263,6 +274,31 @@ export class AgentGateway {
   private lspManager: WorkspaceLSPManager | null = null
   /** Tracks files the agent has read across turns for cache-aware compaction */
   private fileStateCache = new FileStateCache()
+  /**
+   * Per-session compaction-decision state for the per-API-call transformContext.
+   *
+   * pi-agent-core's agent loop re-reads `agent.state.messages` before every LLM
+   * request. Without this state, re-running the three cheap compaction layers
+   * (budget / microcompact / snip) produces different bytes for the same
+   * historical tool_result on each call, which invalidates the prompt cache
+   * prefix and forces a full re-write every request (observed ~3.5x cache-write
+   * amplification in a 6-call turn).
+   *
+   * The state is write-once per tool_call_id, guaranteeing byte-identical
+   * output for any id once it's been "decided". See stable-compaction.ts for
+   * the invariant proof. Reset whenever sessionManager.compact() rewrites the
+   * prefix (the surviving tool_use_ids are a subset, but the summary message
+   * changes the wire prefix upstream of them anyway, so keeping stale state
+   * gains nothing and prune on reset is simpler).
+   */
+  private contentReplacementStates = new Map<string, ContentReplacementState>()
+  /**
+   * Per-session user-turn counter used only by prefix-cache debug logging.
+   * Bumped once on entry to `runTurn`. Paired with a per-turn call counter
+   * (closure-scoped inside runTurn) so log lines read `turn=T call=N`.
+   * Not consulted for correctness; safe to clear or leave stale.
+   */
+  private turnCounters = new Map<string, number>()
   /** Shared index engine for workspace-wide search (code + files) */
   private indexEngine: import('./index-engine').IndexEngine | null = null
   /** Workspace knowledge graph for structural analysis */
@@ -1143,6 +1179,10 @@ export class AgentGateway {
       workspaceDir: this.workspaceDir,
       clearHistory: () => {
         this.sessionManager.clearHistory(sessionId)
+        // History wipe = prefix rewrite. Drop per-session compaction state
+        // so fresh decisions are taken against the new (empty) history.
+        this.contentReplacementStates.delete(sessionId)
+        this.turnCounters.delete(sessionId)
       },
       getMessages: () => [...session.messages],
       reloadConfig: () => this.reloadConfig(),
@@ -1531,6 +1571,9 @@ export class AgentGateway {
         console.log(
           `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
         )
+        // Autocompact rewrites the prefix — drop stable-compaction state so
+        // the new transformContext decisions are taken against the new history.
+        this.contentReplacementStates.delete(sessionId)
         history = this.sessionManager.buildHistory(sessionId)
         history = applyToolResultBudget(history, contextBudgetChars)
         history = microcompact(history).messages
@@ -1680,6 +1723,16 @@ export class AgentGateway {
       }
 
       const maxIterations = parseInt(process.env.AGENT_MAX_ITERATIONS || '200', 10)
+
+      // --- Prefix-cache debug: turn-start snapshot ---
+      // Emits short hashes of the three inputs Anthropic keys its prompt
+      // cache on: tools, system (split stable/dynamic), and history prefix.
+      // Compare across turns: anything that changes here is a cache-break
+      // cause. `stable` changing is the smoking gun for wasted cache.
+      const turnNum = (this.turnCounters.get(sessionId) ?? 0) + 1
+      this.turnCounters.set(sessionId, turnNum)
+      let apiCallNum = 0
+
       const result = await runAgentLoop({
         provider,
         model: modelId,
@@ -1701,11 +1754,30 @@ export class AgentGateway {
           const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
           if (!r) return null
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
+          // LLM autocompact rewrites the prefix — drop per-session replacement
+          // decisions so fresh ones are taken against the new history. Keeping
+          // stale entries is correctness-safe (inert) but wastes memory and
+          // can mis-freeze an id that survived into the summary.
+          this.contentReplacementStates.delete(sessionId)
           let h = this.sessionManager.buildHistory(sessionId)
           h = applyToolResultBudget(h, contextBudgetChars)
           h = microcompact(h).messages
           h = snipConsumedResults(h)
           return h
+        },
+        // Per-API-call transform. This runs before EVERY LLM request inside
+        // the agent loop (every tool-use iteration). The stable wrapper makes
+        // compaction decisions monotone and write-once per tool_call_id so
+        // the prompt-cache prefix stays byte-identical across calls for any
+        // id that's already been decided. See stable-compaction.ts.
+        transformContext: (messages) => {
+          let state = this.contentReplacementStates.get(sessionId)
+          if (!state) {
+            state = createContentReplacementState()
+            this.contentReplacementStates.set(sessionId, state)
+          }
+          const result = stableTransformContext(messages, state, contextBudgetChars)
+          return result.messages
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
@@ -1862,6 +1934,9 @@ export class AgentGateway {
           console.log(
             `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
+          // Prefix rewritten — drop stable-compaction state. Next turn's
+          // transformContext takes fresh decisions against the new history.
+          this.contentReplacementStates.delete(sessionId)
         }
       }
 

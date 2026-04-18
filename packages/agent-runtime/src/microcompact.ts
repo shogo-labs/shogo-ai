@@ -18,6 +18,14 @@ export interface MicrocompactConfig {
   tailLines: number
   /** Number of recent assistant turns to protect from compression (default: 3) */
   keepRecentTurns: number
+  /**
+   * Tool_call ids whose compaction decision is frozen from a prior call.
+   * These are skipped unconditionally — whatever content they currently have
+   * is what the model already saw and what prompt cache keys off of.
+   * Changing them would shift the cached prefix and invalidate downstream
+   * blocks on every call. Undefined = no-op (backward compatible).
+   */
+  frozenIds?: ReadonlySet<string>
 }
 
 const DEFAULT_CONFIG: MicrocompactConfig = {
@@ -63,6 +71,7 @@ export function microcompact(
   const result = messages.map((msg, idx) => {
     if (msg.role !== 'toolResult') return msg
     if (idx >= protectedStart) return msg
+    if (cfg.frozenIds?.has((msg as ToolResultMessage).toolCallId)) return msg
 
     const trm = msg as ToolResultMessage
     const textParts = trm.content.filter((c): c is TextContent => c.type === 'text')

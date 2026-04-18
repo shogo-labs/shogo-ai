@@ -539,7 +539,7 @@ function printComparison(suites: { label: string; results: TimingResult[] }[]) {
       if (overhead > 3000) {
         console.log("  \x1b[1;31m⚠️  Claude Code SDK adds significant overhead (>3s)\x1b[0m")
         console.log("  This is likely caused by:")
-        console.log("    1. Claude Code CLI subprocess spawn/initialization")
+        console.log("    1. Agent subprocess spawn/initialization")
         console.log("    2. MCP server startup (shogo subprocess, virtual-tools)")
         console.log("    3. Session file I/O (reading/writing conversation state)")
         console.log("    4. Permission/tool configuration processing")
@@ -631,7 +631,7 @@ async function main() {
   printHeader("TEST 2: Platform Chat /api/chat")
   console.log("  Path: Client → API Server → Claude Code SDK → Anthropic")
   console.log("  \x1b[2m(Waiting for each session to fully complete before the next request)\x1b[0m")
-  // Longer delay between platform chat runs — the Claude Code CLI session
+  // Longer delay between platform chat runs — the agent session
   // needs time to fully close (Stop hook, session file write, usage tracking).
   // If we send the next request before the previous session finishes, it will
   // either queue or conflict with the in-progress session.

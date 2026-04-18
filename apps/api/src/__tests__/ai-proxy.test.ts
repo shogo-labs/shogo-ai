@@ -5,7 +5,7 @@
  *
  * Tests the AI model proxy endpoints:
  * - Token generation and validation
- * - Anthropic-native pass-through (for Claude Code CLI)
+ * - Anthropic-native pass-through
  * - OpenAI-compatible proxy
  * - Authentication enforcement
  *

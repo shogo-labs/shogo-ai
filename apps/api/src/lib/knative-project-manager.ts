@@ -954,7 +954,7 @@ export class KnativeProjectManager {
 
     // AI Proxy configuration
     // When the proxy is configured, the runtime routes ALL AI calls
-    // (including Claude Code CLI) through the proxy. No raw API keys are exposed.
+    // through the proxy. No raw API keys are exposed.
     //
     // How it works:
     // - AI_PROXY_URL + AI_PROXY_TOKEN are injected into the pod

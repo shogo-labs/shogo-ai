@@ -50,7 +50,7 @@ describe("session roaming via API", () => {
 
     const cookies = signupRes.headers.getSetCookie()
     const sessionCookie = cookies.find((c) =>
-      c.startsWith("better-auth.session_token=")
+      c.startsWith("shogo.session_token=")
     )
     expect(sessionCookie).toBeDefined()
 

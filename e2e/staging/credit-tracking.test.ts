@@ -105,7 +105,7 @@ test.describe("Credit Tracking", () => {
   test("backend credits match billing page (via API)", async () => {
     const cookies = await page.context().cookies()
     const sessionCookie = cookies.find(
-      (c) => c.name === "better-auth.session_token" || c.name.includes("session")
+      (c) => c.name === "shogo.session_token" || c.name.includes("session")
     )
 
     if (!sessionCookie) {

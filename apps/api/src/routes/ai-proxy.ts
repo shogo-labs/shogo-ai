@@ -953,6 +953,11 @@ async function recordUsage(
   // If a billing session is open, accumulate — the session closer will charge
   if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
+    // Per-request cache breakdown — same gate as the agent-runtime cache-debug
+    // logs so a single env flag turns the whole picture on. This is the
+    // authoritative signal for cache health; the agent-runtime fingerprint
+    // tells us WHAT the prefix looked like, this tells us whether Anthropic
+    // actually read the cache for that prefix.
     console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId})`)
     return
   }

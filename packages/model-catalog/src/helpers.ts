@@ -176,10 +176,10 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   outputPerMillion: number
 }> = {
   'gpt-5.4-nano': { inputPerMillion: 0.20, cacheWritePerMillion: 0.25, cachedInputPerMillion: 0.02, outputPerMillion: 1.25 },
-  haiku:          { inputPerMillion: 0.80, cacheWritePerMillion: 1.00, cachedInputPerMillion: 0.08, outputPerMillion: 4.00 },
+  haiku:          { inputPerMillion: 1.00, cacheWritePerMillion: 1.25, cachedInputPerMillion: 0.10, outputPerMillion: 5.00 },
   'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
-  opus:           { inputPerMillion: 15.00, cacheWritePerMillion: 18.75, cachedInputPerMillion: 1.50, outputPerMillion: 75.00 },
+  opus:           { inputPerMillion: 5.00, cacheWritePerMillion: 6.25, cachedInputPerMillion: 0.50, outputPerMillion: 25.00 },
 }
 
 /**

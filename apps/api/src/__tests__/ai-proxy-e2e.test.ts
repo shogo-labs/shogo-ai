@@ -7,7 +7,7 @@
  * 1. Generate a proxy token (like knative-project-manager does)
  * 2. List available models (like the UI model picker)
  * 3. Make an OpenAI-compatible chat completion (like ai-chat's getAIModel + streamText)
- * 4. Make an Anthropic-native request (like Claude Code CLI)
+ * 4. Make an Anthropic-native request
  *
  * Requires ANTHROPIC_API_KEY in environment for real API calls.
  * Run: ANTHROPIC_API_KEY=sk-... bun test apps/api/src/__tests__/ai-proxy-e2e.test.ts
@@ -235,7 +235,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
   )
 
   // ===========================================================================
-  // Step 4: Anthropic-native pass-through (like Claude Code CLI uses)
+  // Step 4: Anthropic-native pass-through
   // This mirrors ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY (proxy token) flow
   // ===========================================================================
 
@@ -252,7 +252,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': proxyToken, // Claude Code CLI sends the proxy token here
+            'x-api-key': proxyToken, // Anthropic-compatible clients send the proxy token here
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({

@@ -100,6 +100,22 @@ export interface AgentLoopOptions {
    * Returns the new compacted history to retry with. Capped at 1 retry.
    */
   onContextOverflow?: () => Promise<Message[] | null>
+  /**
+   * Per-LLM-call context transform. pi-agent-core invokes its
+   * `transformContext` hook inside `streamAssistantResponse`, which runs once
+   * per assistant response — i.e. before every API call in the tool-use loop,
+   * not just once per user turn. This is the hook for applying cheap,
+   * prefix-stable compaction (e.g. `stableTransformContext`).
+   *
+   * The callback MUST be cache-stable: for any given tool_call_id, the emitted
+   * bytes should not change between calls. See `stable-compaction.ts` for the
+   * pattern. A stateless/naive transform that re-decides on each call will
+   * invalidate the prompt cache and make multi-step turns dramatically more
+   * expensive — observed at ~3.5x cache-write vs cache-read amplification.
+   *
+   * Contract (per pi-agent-core): must not throw.
+   */
+  transformContext?: (messages: Message[], signal?: AbortSignal) => Promise<Message[]> | Message[]
 }
 
 export interface ToolCallRecord {
@@ -191,6 +207,24 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     abortTriggered = true
   }
 
+  // Per-API-call compaction hook. pi-agent-core's transformContext signature
+  // is `(AgentMessage[]) => Promise<AgentMessage[]>`, where AgentMessage is
+  // `Message | CustomAgentMessages[...]`. Shogo's compaction operates on
+  // Message[]; the functions pass through any non-toolResult message
+  // unchanged, so custom messages flow through safely. We cast at the
+  // boundary. Wrapped with a try/catch per pi-agent-core's "must not throw"
+  // contract.
+  const wrappedTransformContext = options.transformContext
+    ? async (msgs: Message[], signal?: AbortSignal): Promise<Message[]> => {
+        try {
+          return await options.transformContext!(msgs, signal)
+        } catch (err: any) {
+          console.warn(`[AgentLoop] transformContext threw — falling back to raw messages: ${err?.message}`)
+          return msgs
+        }
+      }
+    : undefined
+
   const agent = new Agent({
     initialState: {
       systemPrompt: system,
@@ -201,6 +235,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     },
     toolExecution: 'parallel',
     convertToLlm: defaultConvertToLlm,
+    transformContext: wrappedTransformContext as any,
     streamFn: options.streamFn,
     getApiKey: (prov) => {
       if (apiKey && prov === provider) return apiKey

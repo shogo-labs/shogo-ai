@@ -107,7 +107,7 @@ async function getAuthUserId(c: any): Promise<string | null> {
     try {
       const session = await auth.api.getSession({ headers: c.req.raw.headers })
       if (!session?.user?.id) {
-        const hasCookie = c.req.header('cookie')?.includes('better-auth.session_token')
+        const hasCookie = c.req.header('cookie')?.includes('shogo.session_token')
         if (hasCookie) {
           console.warn('[Auth] Session cookie present but session invalid/expired')
         }
@@ -1805,14 +1805,21 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     const response = await fetch(targetUrl, requestInit)
     
     // Copy response headers
+    //
+    // We deliberately strip `set-cookie` from the app's responses: the preview
+    // is served on the same origin as Studio, so any cookie the user app sets
+    // would be stored against the Studio origin and would stomp the platform's
+    // session cookie (and vice versa). The SDK uses Bearer tokens in local
+    // storage for auth, so dropping cookies does not break functionality.
+    // See also apps/api/src/auth.ts `advanced.cookiePrefix`.
     const responseHeaders = new Headers()
     response.headers.forEach((value, key) => {
-      // Skip certain headers
-      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-        responseHeaders.set(key, value)
-      }
+      const k = key.toLowerCase()
+      if (k === 'transfer-encoding' || k === 'connection') return
+      if (k === 'set-cookie') return
+      responseHeaders.set(key, value)
     })
-    
+
     // Add CORS headers for preview
     responseHeaders.set('access-control-allow-origin', '*')
     responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -1943,11 +1950,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         continue
       }
 
+      // Strip `set-cookie` for the same reason as the preview proxy above:
+      // responses from the user's runtime must not be able to set cookies on
+      // the Studio origin. Runtime auth uses headers (x-runtime-token /
+      // x-webchat-*), not cookies.
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
+        const k = key.toLowerCase()
+        if (k === 'transfer-encoding' || k === 'connection') return
+        if (k === 'set-cookie') return
+        responseHeaders.set(key, value)
       })
       const reqOrigin = c.req.header('origin')
       responseHeaders.set('access-control-allow-origin', reqOrigin || '*')
