@@ -139,5 +139,14 @@
     "rag"
   ],
   "author": "Shogo Team",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shogo-labs/shogo-ai.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/shogo-labs/shogo-ai/tree/main/packages/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/shogo-labs/shogo-ai/issues"
+  }
 }
