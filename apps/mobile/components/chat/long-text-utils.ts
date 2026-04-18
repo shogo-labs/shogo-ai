@@ -12,6 +12,7 @@
 const CHAR_THRESHOLD = 5_000
 const BYTE_THRESHOLD = 5 * 1024 // 5 KB
 const LINE_THRESHOLD = 150
+export const MAX_PASTED_TEXTS = 10
 
 /**
  * Detected content type used for display hints (icon, label, syntax).
@@ -51,18 +52,22 @@ function detectKind(text: string): ContentKind {
   const sample = text.length > 2048 ? text.slice(0, 2048) : text
   const trimmed = sample.trimStart()
 
-  const startsObj = trimmed.startsWith("{") || trimmed.startsWith("[")
-  if (startsObj) {
-    // Quick heuristic: looks like JSON but don't parse the full string
-    const endChar = text.trimEnd().slice(-1)
-    if ((trimmed[0] === "{" && endChar === "}") || (trimmed[0] === "[" && endChar === "]")) {
-      return "json"
-    }
-  }
-
   const codePatterns =
     /^(import |export |const |let |var |function |class |def |fn |pub |package |#include|<\?php|from .+ import)/m
   if (codePatterns.test(trimmed)) return "code"
+
+  const startsObj = trimmed.startsWith("{") || trimmed.startsWith("[")
+  if (startsObj) {
+    const endChar = text.trimEnd().slice(-1)
+    if ((trimmed[0] === "{" && endChar === "}") || (trimmed[0] === "[" && endChar === "]")) {
+      // Disambiguate: only call it JSON if the first line looks like a JSON
+      // key/value or array element, not a code block (CSS, Go, Rust, etc.)
+      const nlIdx = trimmed.indexOf("\n")
+      const firstLine = trimmed.slice(0, nlIdx >= 0 ? nlIdx : 200)
+      const looksLikeJson = /^\s*[\[{]\s*$/.test(firstLine) || /"[^"]*"\s*:/.test(firstLine)
+      if (looksLikeJson) return "json"
+    }
+  }
 
   const mdPatterns = /^(#{1,6} |\* |- |\d+\. |\[.*\]\(.*\))/m
   if (mdPatterns.test(trimmed)) return "markdown"
@@ -169,7 +174,8 @@ export function extractLongPaste(
   prev: string,
   next: string
 ): { inserted: string; restored: string; info: ContentSizeInfo } | null {
-  if (next.length - prev.length < LONG_PASTE_MIN_CHARS) return null
+  // Quick exit: if next is shorter or barely longer, no large paste happened.
+  if (next.length <= prev.length) return null
 
   let prefixLen = 0
   const minLen = Math.min(prev.length, next.length)
@@ -191,6 +197,9 @@ export function extractLongPaste(
   }
 
   const inserted = next.slice(prefixLen, next.length - suffixLen)
+  // Threshold is on the *inserted* content, not the delta — this ensures
+  // select-all-then-paste of a large block is still detected even when the
+  // replaced selection shrinks the net delta below the threshold.
   if (inserted.length < LONG_PASTE_MIN_CHARS) return null
 
   const info = analyzeContent(inserted)
@@ -199,22 +208,6 @@ export function extractLongPaste(
   const restored =
     prev.slice(0, prefixLen) + prev.slice(prev.length - suffixLen)
   return { inserted, restored, info }
-}
-
-/**
- * Build the final message content by appending pasted text blocks to the
- * user's typed content. Keeps typed text first, then each pasted block
- * separated by a blank line.
- */
-export function composePastedContent(
-  typed: string,
-  pasted: PastedTextEntry[]
-): string {
-  const trimmed = typed.trim()
-  if (pasted.length === 0) return trimmed
-  const blocks = pasted.map((p) => p.content.trim()).filter(Boolean)
-  if (blocks.length === 0) return trimmed
-  return trimmed ? `${trimmed}\n\n${blocks.join("\n\n")}` : blocks.join("\n\n")
 }
 
 /**
@@ -227,11 +220,12 @@ function encodeTextAsDataUrl(content: string, mediaType: string): string {
   try {
     const bytes = new TextEncoder().encode(content)
     let binary = ""
-    const chunkSize = 0x8000
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(
-        ...Array.from(bytes.subarray(i, i + chunkSize))
-      )
+    // Process in chunks to avoid call-stack overflow with Function.apply
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      const chunk = bytes.subarray(i, i + 0x8000)
+      for (let j = 0; j < chunk.length; j++) {
+        binary += String.fromCharCode(chunk[j])
+      }
     }
     // eslint-disable-next-line no-restricted-globals
     const b64 = (globalThis as any).btoa?.(binary)
@@ -263,22 +257,37 @@ const EXT_BY_KIND: Record<ContentKind, string> = {
  * render it as a discrete chip (one chip per paste) instead of merging
  * everything into a single blob.
  *
- * `index` is used to disambiguate names when the user pastes multiple
- * blocks of the same kind in one turn (e.g. "Pasted code.txt",
- * "Pasted code (2).txt").
+ * `kindIndex` is the 0-based occurrence of this kind within the current
+ * batch (e.g. the second JSON paste has kindIndex=1). Use
+ * `buildPastedAttachments` to compute these automatically.
  */
 export function pastedEntryToAttachment(
   entry: PastedTextEntry,
-  index = 0
+  kindIndex = 0
 ): { dataUrl: string; name: string; type: string } {
   const { content, info } = entry
   const mediaType = MEDIA_TYPE_BY_KIND[info.kind]
   const ext = EXT_BY_KIND[info.kind]
   const base = `Pasted ${kindLabel(info.kind).toLowerCase()}`
-  const name = index === 0 ? `${base}.${ext}` : `${base} (${index + 1}).${ext}`
+  const name = kindIndex === 0 ? `${base}.${ext}` : `${base} (${kindIndex + 1}).${ext}`
   return {
     dataUrl: encodeTextAsDataUrl(content, mediaType),
     name,
     type: mediaType,
   }
+}
+
+/**
+ * Convert all pasted entries to file attachments with per-kind numbering.
+ */
+export function buildPastedAttachments(
+  entries: PastedTextEntry[]
+): { dataUrl: string; name: string; type: string }[] {
+  const kindCounts: Record<string, number> = {}
+  return entries.map((entry) => {
+    const k = entry.info.kind
+    const idx = kindCounts[k] ?? 0
+    kindCounts[k] = idx + 1
+    return pastedEntryToAttachment(entry, idx)
+  })
 }

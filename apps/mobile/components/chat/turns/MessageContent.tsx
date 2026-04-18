@@ -175,15 +175,17 @@ function DocumentThumbnail({
     }
     setLoading(true)
     try {
-      const res = await fetch(url)
-      const contentLength = parseInt(res.headers.get("content-length") || "0", 10)
       const MAX_FILE_BYTES = 1 * 1024 * 1024 // 1 MB
+      const res = await fetch(url)
+      // content-length may be absent for data: URLs — fall through to text check
+      const contentLength = parseInt(res.headers.get("content-length") || "0", 10)
       if (contentLength > MAX_FILE_BYTES) {
         Linking.openURL(url)
         return
       }
       const text = await res.text()
-      setFileContent(text.length > MAX_FILE_BYTES ? text.slice(0, MAX_FILE_BYTES) + "\n\n…[truncated]" : text)
+      const byteSize = new Blob([text]).size
+      setFileContent(byteSize > MAX_FILE_BYTES ? text.slice(0, MAX_FILE_BYTES) + "\n\n…[truncated]" : text)
       setShowModal(true)
     } catch {
       Linking.openURL(url)
@@ -196,12 +198,12 @@ function DocumentThumbnail({
     <>
       <Pressable
         onPress={handlePress}
-        className="flex-row items-center gap-2 rounded-lg border border-border bg-muted/50 px-2.5 py-2 w-[220px] max-w-full"
+        className="flex-row items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2.5 min-w-[200px] max-w-full"
         accessibilityLabel={`File attachment ${index + 1}: ${title}`}
         accessibilityRole="button"
       >
-        <View className="h-8 w-8 items-center justify-center rounded-md bg-primary/15 flex-shrink-0">
-          <FileText size={16} className="text-primary" />
+        <View className="h-9 w-9 items-center justify-center rounded-lg bg-primary/15 flex-shrink-0">
+          <FileText size={18} className="text-primary" />
         </View>
         <View className="flex-1 min-w-0">
           <Text
@@ -210,7 +212,7 @@ function DocumentThumbnail({
           >
             {title}
           </Text>
-          <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+          <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
             {loading ? "Loading…" : typeLabel}
           </Text>
         </View>
@@ -237,7 +239,13 @@ export function MessageContent({
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"
-  const isLongText = isUser && content ? analyzeContent(content).isLong : false
+  // Only show the preview card when there's genuinely long typed text and no
+  // file attachments. When file chips are present the text body is just the
+  // typed portion (short) so we always render it inline — matching ChatGPT.
+  const hasAttachments = files.length > 0 || images.length > 0
+  const isLongText = isUser && content && !hasAttachments
+    ? analyzeContent(content).isLong
+    : false
 
   const baseClasses = cn(
     "rounded-md px-3 py-1.5",

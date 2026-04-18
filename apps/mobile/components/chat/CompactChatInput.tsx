@@ -58,7 +58,8 @@ import {
   extractLongPaste,
   kindLabel,
   LONG_PASTE_MIN_CHARS,
-  pastedEntryToAttachment,
+  MAX_PASTED_TEXTS,
+  buildPastedAttachments,
   type PastedTextEntry,
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
@@ -131,6 +132,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const [internalValue, setInternalValue] = useState("")
     const textInputRef = useRef<TextInput>(null)
+    const pasteHandledRef = useRef(false)
 
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
@@ -267,14 +269,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const addPastedText = useCallback((content: string) => {
       const info = analyzeContent(content)
       if (!info.isLong) return false
-      setPastedTexts((prev) => [
-        ...prev,
-        {
-          id: `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          content,
-          info,
-        },
-      ])
+      setPastedTexts((prev) => {
+        if (prev.length >= MAX_PASTED_TEXTS) return prev
+        return [
+          ...prev,
+          {
+            id: `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            content,
+            info,
+          },
+        ]
+      })
       return true
     }, [])
 
@@ -327,7 +332,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           const info = analyzeContent(text)
           if (info.isLong) {
             e.preventDefault()
+            pasteHandledRef.current = true
             addPastedText(text)
+            setTimeout(() => { pasteHandledRef.current = false }, 0)
           }
         }
       }
@@ -374,12 +381,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         return
       }
 
-      // Each pasted long-text block is shipped as its own file attachment
-      // so the chat renders them as discrete chips (ChatGPT-style) instead
-      // of merging everything into one giant preview card.
-      const pastedAttachments: FileAttachment[] = pastedTexts.map((entry, i) =>
-        pastedEntryToAttachment(entry, i)
-      )
+      // Pasted long-text blocks are shipped as file attachments (ChatGPT-style).
+      // The typed text is sent as the message body; the model receives both the
+      // text part and the file parts so it sees everything.
+      const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
       const combinedFiles: FileAttachment[] = [
         ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
         ...pastedAttachments,
@@ -400,6 +405,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     // out into a chip instead of keeping it in the TextInput.
     const handleChangeText = useCallback(
       (next: string) => {
+        if (pasteHandledRef.current) {
+          pasteHandledRef.current = false
+          return
+        }
+
         const paste = extractLongPaste(valueRef.current, next)
         if (paste) {
           addPastedText(paste.inserted)
@@ -793,7 +803,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <View className="h-5 w-5 rounded-full items-center justify-center bg-primary opacity-50">
                     <Loader2 className="h-3 w-3 text-primary-foreground" size={12} />
                   </View>
-                ) : (value.trim() || pendingFiles.length > 0) ? (
+                ) : (value.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
                   <Pressable
                     onPress={handleSubmit}
                     disabled={disabled}
