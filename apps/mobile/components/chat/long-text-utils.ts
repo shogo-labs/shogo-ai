@@ -138,3 +138,147 @@ export function kindLabel(kind: ContentKind): string {
  */
 export const LONG_TEXT_CHIP_LAYOUT_CLASS =
   "w-full max-w-[min(100%,20rem)] self-start"
+
+/**
+ * Minimum size (in characters) for a newly-inserted chunk to be treated
+ * as a "paste large block" action. Below this, we leave the text in the
+ * TextInput so short pastes (URLs, sentences) behave normally.
+ */
+export const LONG_PASTE_MIN_CHARS = 2_000
+
+/**
+ * A single pasted-text block that has been extracted from the TextInput
+ * and is now rendered as a compact file-like chip.
+ */
+export interface PastedTextEntry {
+  id: string
+  content: string
+  info: ContentSizeInfo
+}
+
+/**
+ * Compare a previous and next value from an onChangeText event and, if a
+ * single large chunk was inserted, return the inserted chunk along with
+ * the text that should be restored to the input (i.e. prev minus any
+ * selection that was replaced by the paste).
+ *
+ * Returns null if the insertion isn't large enough to qualify as a long
+ * paste — in that case the caller should let the change through normally.
+ */
+export function extractLongPaste(
+  prev: string,
+  next: string
+): { inserted: string; restored: string; info: ContentSizeInfo } | null {
+  if (next.length - prev.length < LONG_PASTE_MIN_CHARS) return null
+
+  let prefixLen = 0
+  const minLen = Math.min(prev.length, next.length)
+  while (
+    prefixLen < minLen &&
+    prev.charCodeAt(prefixLen) === next.charCodeAt(prefixLen)
+  ) {
+    prefixLen++
+  }
+
+  let suffixLen = 0
+  const maxSuffix = minLen - prefixLen
+  while (
+    suffixLen < maxSuffix &&
+    prev.charCodeAt(prev.length - 1 - suffixLen) ===
+      next.charCodeAt(next.length - 1 - suffixLen)
+  ) {
+    suffixLen++
+  }
+
+  const inserted = next.slice(prefixLen, next.length - suffixLen)
+  if (inserted.length < LONG_PASTE_MIN_CHARS) return null
+
+  const info = analyzeContent(inserted)
+  if (!info.isLong) return null
+
+  const restored =
+    prev.slice(0, prefixLen) + prev.slice(prev.length - suffixLen)
+  return { inserted, restored, info }
+}
+
+/**
+ * Build the final message content by appending pasted text blocks to the
+ * user's typed content. Keeps typed text first, then each pasted block
+ * separated by a blank line.
+ */
+export function composePastedContent(
+  typed: string,
+  pasted: PastedTextEntry[]
+): string {
+  const trimmed = typed.trim()
+  if (pasted.length === 0) return trimmed
+  const blocks = pasted.map((p) => p.content.trim()).filter(Boolean)
+  if (blocks.length === 0) return trimmed
+  return trimmed ? `${trimmed}\n\n${blocks.join("\n\n")}` : blocks.join("\n\n")
+}
+
+/**
+ * Encode a text blob as a base64 data URL. Used to ship pasted long-text
+ * blocks as file attachments so they render as separate file chips in the
+ * chat transcript (ChatGPT-style) instead of being inlined as a single
+ * long-text preview card.
+ */
+function encodeTextAsDataUrl(content: string, mediaType: string): string {
+  try {
+    const bytes = new TextEncoder().encode(content)
+    let binary = ""
+    const chunkSize = 0x8000
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(
+        ...Array.from(bytes.subarray(i, i + chunkSize))
+      )
+    }
+    // eslint-disable-next-line no-restricted-globals
+    const b64 = (globalThis as any).btoa?.(binary)
+    if (typeof b64 === "string") {
+      return `data:${mediaType};base64,${b64}`
+    }
+  } catch {
+    // fall through to the percent-encoded form
+  }
+  return `data:${mediaType};charset=utf-8,${encodeURIComponent(content)}`
+}
+
+const MEDIA_TYPE_BY_KIND: Record<ContentKind, string> = {
+  json: "application/json",
+  code: "text/plain",
+  markdown: "text/markdown",
+  plain: "text/plain",
+}
+
+const EXT_BY_KIND: Record<ContentKind, string> = {
+  json: "json",
+  code: "txt",
+  markdown: "md",
+  plain: "txt",
+}
+
+/**
+ * Convert a pasted long-text entry to a file attachment so the chat can
+ * render it as a discrete chip (one chip per paste) instead of merging
+ * everything into a single blob.
+ *
+ * `index` is used to disambiguate names when the user pastes multiple
+ * blocks of the same kind in one turn (e.g. "Pasted code.txt",
+ * "Pasted code (2).txt").
+ */
+export function pastedEntryToAttachment(
+  entry: PastedTextEntry,
+  index = 0
+): { dataUrl: string; name: string; type: string } {
+  const { content, info } = entry
+  const mediaType = MEDIA_TYPE_BY_KIND[info.kind]
+  const ext = EXT_BY_KIND[info.kind]
+  const base = `Pasted ${kindLabel(info.kind).toLowerCase()}`
+  const name = index === 0 ? `${base}.${ext}` : `${base} (${index + 1}).${ext}`
+  return {
+    dataUrl: encodeTextAsDataUrl(content, mediaType),
+    name,
+    type: mediaType,
+  }
+}

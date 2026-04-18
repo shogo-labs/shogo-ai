@@ -53,8 +53,16 @@ import {
 import { usePlatformConfig } from "../../lib/platform-config"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
-import { analyzeContent, kindLabel, LONG_TEXT_CHIP_LAYOUT_CLASS } from "./long-text-utils"
+import {
+  analyzeContent,
+  extractLongPaste,
+  kindLabel,
+  LONG_PASTE_MIN_CHARS,
+  pastedEntryToAttachment,
+  type PastedTextEntry,
+} from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
+import { PastedTextChip } from "./PastedTextChip"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -250,6 +258,36 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       [processFiles]
     )
 
+    // Long-text pastes get extracted out of the TextInput and rendered as
+    // compact file-style chips. The input remains editable so users can
+    // keep typing and paste multiple long blocks (each becomes a chip).
+    const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
+    const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
+
+    const addPastedText = useCallback((content: string) => {
+      const info = analyzeContent(content)
+      if (!info.isLong) return false
+      setPastedTexts((prev) => [
+        ...prev,
+        {
+          id: `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          content,
+          info,
+        },
+      ])
+      return true
+    }, [])
+
+    const handleRemovePastedText = useCallback((id: string) => {
+      setPastedTexts((prev) => prev.filter((p) => p.id !== id))
+      setViewingPastedId((curr) => (curr === id ? null : curr))
+    }, [])
+
+    const viewingPasted = useMemo(
+      () => pastedTexts.find((p) => p.id === viewingPastedId) ?? null,
+      [pastedTexts, viewingPastedId]
+    )
+
     useEffect(() => {
       if (Platform.OS !== "web") return
       const node = dropZoneRef.current as unknown as HTMLElement | null
@@ -266,14 +304,43 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           processFiles(Array.from(e.dataTransfer.files) as any)
         }
       }
+      const handlePaste = (e: ClipboardEvent) => {
+        const cd = e.clipboardData
+        if (!cd) return
+        const items = cd.items
+        const imageFiles: File[] = []
+        if (items) {
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].type.startsWith("image/")) {
+              const file = items[i].getAsFile()
+              if (file) imageFiles.push(file)
+            }
+          }
+        }
+        if (imageFiles.length > 0) {
+          e.preventDefault()
+          processFiles(imageFiles as any)
+          return
+        }
+        const text = cd.getData("text")
+        if (text && text.length >= LONG_PASTE_MIN_CHARS) {
+          const info = analyzeContent(text)
+          if (info.isLong) {
+            e.preventDefault()
+            addPastedText(text)
+          }
+        }
+      }
 
       node.addEventListener("dragover", handleDragOver)
       node.addEventListener("drop", handleDrop)
+      node.addEventListener("paste", handlePaste as EventListener)
       return () => {
         node.removeEventListener("dragover", handleDragOver)
         node.removeEventListener("drop", handleDrop)
+        node.removeEventListener("paste", handlePaste as EventListener)
       }
-    }, [processFiles])
+    }, [processFiles, addPastedText])
 
     const appendTranscriptToInput = useCallback(
       (transcript: string) => {
@@ -296,41 +363,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onTranscript: appendTranscriptToInput,
     })
 
-    const [longTextCollapsed, setLongTextCollapsed] = useState(false)
-    const [longTextViewerOpen, setLongTextViewerOpen] = useState(false)
-
-    const longTextInfo = useMemo(() => {
-      if (!value || value.length < 2000) return null
-      const info = analyzeContent(value)
-      return info.isLong ? info : null
-    }, [value])
-
-    const prevWasLongRef = useRef(false)
-    useEffect(() => {
-      const isLong = longTextInfo !== null
-      if (isLong && !prevWasLongRef.current) {
-        setLongTextCollapsed(true)
-      } else if (!isLong) {
-        setLongTextCollapsed(false)
-      }
-      prevWasLongRef.current = isLong
-    }, [longTextInfo])
-
-    const handleShowInTextField = useCallback(() => {
-      setLongTextCollapsed(false)
-      setTimeout(() => textInputRef.current?.focus(), 0)
-    }, [])
-
-    const handleRemoveLongText = useCallback(() => {
-      setValue("")
-      setLongTextCollapsed(false)
-      setLongTextViewerOpen(false)
-    }, [setValue])
-
     const handleSubmit = useCallback(() => {
       const trimmedContent = value.trim()
       if (
-        (!trimmedContent && pendingFiles.length === 0) ||
+        (!trimmedContent && pendingFiles.length === 0 && pastedTexts.length === 0) ||
         disabled ||
         isLoading ||
         voiceInput.isBusy
@@ -338,19 +374,42 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         return
       }
 
-      const fileData: FileAttachment[] | undefined =
-        pendingFiles.length > 0
-          ? pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type }))
-          : undefined
+      // Each pasted long-text block is shipped as its own file attachment
+      // so the chat renders them as discrete chips (ChatGPT-style) instead
+      // of merging everything into one giant preview card.
+      const pastedAttachments: FileAttachment[] = pastedTexts.map((entry, i) =>
+        pastedEntryToAttachment(entry, i)
+      )
+      const combinedFiles: FileAttachment[] = [
+        ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
+        ...pastedAttachments,
+      ]
+      const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
 
       onSubmit(trimmedContent, fileData)
       setValue("")
       setPendingFiles([])
       setFileError(null)
-      setLongTextCollapsed(false)
-      setLongTextViewerOpen(false)
+      setPastedTexts([])
+      setViewingPastedId(null)
       textInputRef.current?.focus()
-    }, [value, disabled, isLoading, onSubmit, pendingFiles, voiceInput.isBusy, setValue])
+    }, [value, disabled, isLoading, onSubmit, pendingFiles, pastedTexts, voiceInput.isBusy, setValue])
+
+    // Fallback paste detection for platforms where the DOM paste listener
+    // doesn't fire (native). If a large chunk was just inserted, pull it
+    // out into a chip instead of keeping it in the TextInput.
+    const handleChangeText = useCallback(
+      (next: string) => {
+        const paste = extractLongPaste(valueRef.current, next)
+        if (paste) {
+          addPastedText(paste.inserted)
+          setValue(paste.restored)
+          return
+        }
+        setValue(next)
+      },
+      [setValue, addPastedText]
+    )
 
     const getFileIcon = useCallback((fileType: string) => {
       if (fileType.startsWith("image/")) {
@@ -447,77 +506,45 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <Text className="text-sm text-destructive px-4 pb-2">{voiceInput.error}</Text>
           )}
 
-          {/* TextInput or collapsed long-text card */}
-          {longTextCollapsed && longTextInfo ? (
-            <View className="px-3 pt-3 pb-1 gap-2">
-              <View className={cn("relative", LONG_TEXT_CHIP_LAYOUT_CLASS)}>
-                <Pressable
-                  onPress={() => setLongTextViewerOpen(true)}
-                  className={cn(
-                    "w-full rounded-lg border border-border bg-muted/50 p-3 pr-10 gap-1.5"
-                  )}
-                  accessibilityLabel="View pasted text"
-                  accessibilityRole="button"
-                >
-                  <View className="flex-row items-center gap-2">
-                    <FileText size={16} className="text-primary" />
-                    <Text className="flex-1 text-xs font-medium text-foreground min-w-0" numberOfLines={1}>
-                      {kindLabel(longTextInfo.kind).toUpperCase()}
-                    </Text>
-                    <Text className="text-[10px] text-muted-foreground flex-shrink-0">
-                      {longTextInfo.sizeLabel} · {longTextInfo.lines} lines
-                    </Text>
-                  </View>
-                  <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
-                    {value.slice(0, 200).replace(/\n/g, " ")}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={handleRemoveLongText}
-                  className="absolute top-1.5 right-1.5 z-10 rounded-full bg-background/90 p-1 border border-border/60"
-                  accessibilityLabel="Remove pasted text"
-                  accessibilityRole="button"
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <X size={14} className="text-muted-foreground" />
-                </Pressable>
-              </View>
-              <Pressable
-                onPress={handleShowInTextField}
-                className="self-start"
-              >
-                <Text className="text-[11px] text-primary font-medium">
-                  Show in text field ›
-                </Text>
-              </Pressable>
+          {/* Pasted long-text chips (ChatGPT-style). Multiple allowed. */}
+          {pastedTexts.length > 0 && (
+            <View className="flex-row flex-wrap gap-2 px-4 pt-3">
+              {pastedTexts.map((entry) => (
+                <PastedTextChip
+                  key={entry.id}
+                  entry={entry}
+                  onOpen={() => setViewingPastedId(entry.id)}
+                  onRemove={() => handleRemovePastedText(entry.id)}
+                />
+              ))}
             </View>
-          ) : (
-            <TextInput
-              ref={textInputRef}
-              placeholder={placeholderText}
-              placeholderTextColor="#9ca3af"
-              accessibilityLabel="Describe the agent you want to build"
-              value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
-              onChangeText={setValue}
-              onSubmitEditing={handleSubmit}
-              onKeyPress={(e: any) => {
-                if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
-                  e.preventDefault()
-                  handleSubmit()
-                }
-              }}
-              editable={!disabled && !isLoading && !voiceInput.isRecording}
-              multiline
-              blurOnSubmit={false}
-              className={cn(
-                "min-h-[80px] max-h-[200px] w-full",
-                "px-4 pt-4 text-xs text-foreground",
-                disabled && "opacity-50",
-                Platform.OS === "web" && "outline-none"
-              )}
-              textAlignVertical="top"
-            />
           )}
+
+          <TextInput
+            ref={textInputRef}
+            placeholder={placeholderText}
+            placeholderTextColor="#9ca3af"
+            accessibilityLabel="Describe the agent you want to build"
+            value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
+            onChangeText={handleChangeText}
+            onSubmitEditing={handleSubmit}
+            onKeyPress={(e: any) => {
+              if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                e.preventDefault()
+                handleSubmit()
+              }
+            }}
+            editable={!disabled && !isLoading && !voiceInput.isRecording}
+            multiline
+            blurOnSubmit={false}
+            className={cn(
+              "min-h-[80px] max-h-[200px] w-full",
+              "px-4 pt-4 text-xs text-foreground",
+              disabled && "opacity-50",
+              Platform.OS === "web" && "outline-none no-focus-ring"
+            )}
+            textAlignVertical="top"
+          />
 
           {/* Bottom toolbar */}
           <View className="flex-row items-center justify-between p-1.5">
@@ -806,14 +833,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           </View>
         </View>
 
-        {longTextInfo && (
+        {viewingPasted && (
           <FileViewerModal
-            visible={longTextViewerOpen}
-            onClose={() => setLongTextViewerOpen(false)}
-            content={value}
-            title={`${kindLabel(longTextInfo.kind)} content`}
-            kind={longTextInfo.kind}
-            sizeLabel={longTextInfo.sizeLabel}
+            visible={viewingPastedId !== null}
+            onClose={() => setViewingPastedId(null)}
+            content={viewingPasted.content}
+            title={`${kindLabel(viewingPasted.info.kind)} content`}
+            kind={viewingPasted.info.kind}
+            sizeLabel={viewingPasted.info.sizeLabel}
           />
         )}
 

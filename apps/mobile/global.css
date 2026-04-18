@@ -205,6 +205,16 @@ textarea:focus {
   outline-color: rgb(var(--color-ring)) !important;
 }
 
+/* Chat-style inputs opt out of the orange focus ring. The textarea sits
+   inside an `overflow-hidden` rounded container with sibling chips above
+   it; a 2px outline bleeds upward through the clip and shows as a stray
+   orange horizontal line between the chip row and the text field. */
+input.no-focus-ring:focus,
+textarea.no-focus-ring:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* Expo web: full-height chain so auth hero (flex + CSS background) fills the viewport */
 html,
 body {
