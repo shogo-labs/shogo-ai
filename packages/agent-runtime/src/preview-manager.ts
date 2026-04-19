@@ -18,16 +18,18 @@ import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'fs'
 import { pkg } from '@shogo/shared-runtime'
+import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
 
 const LOG_PREFIX = 'preview-manager'
 const PREVIEW_PORT = 5173
-const BUILD_LOG = '.build.log'
 
 export interface PreviewManagerConfig {
   /** Path to the project/ subdirectory (where package.json lives) */
   projectDir: string
   /** Port for the Hono API process (used by Vite proxy config) */
   runtimePort: number
+  /** Clear agent `consoleLogs` buffer when `.console.log` is reset (preview start). */
+  onConsoleLogReset?: () => void
 }
 
 const API_SERVER_PORT = 3001
@@ -44,6 +46,7 @@ export type PreviewPhase =
 export class PreviewManager {
   private projectDir: string
   private runtimePort: number
+  private onConsoleLogReset?: () => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
   private started = false
@@ -52,6 +55,7 @@ export class PreviewManager {
   constructor(config: PreviewManagerConfig) {
     this.projectDir = config.projectDir
     this.runtimePort = config.runtimePort
+    this.onConsoleLogReset = config.onConsoleLogReset
   }
 
   get isStarted(): boolean {
@@ -81,6 +85,9 @@ export class PreviewManager {
     if (this.started) {
       return { mode: 'already-running', port: PREVIEW_PORT, timings: {} }
     }
+
+    // Fresh preview session — align console buffer with an empty on-disk log (matches build refresh UX).
+    this.clearRuntimeConsoleLog()
 
     const timings: Record<string, number> = {}
     const projectDir = this.projectDir
@@ -246,9 +253,20 @@ export class PreviewManager {
     }
   }
 
+  /** Truncate project `.console.log` and clear the server's in-memory buffer (if wired). */
+  private clearRuntimeConsoleLog(): void {
+    const consolePath = join(this.projectDir, CONSOLE_LOG_FILE)
+    try {
+      writeFileSync(consolePath, '', 'utf-8')
+    } catch (err: any) {
+      console.warn(`[${LOG_PREFIX}] Could not truncate ${CONSOLE_LOG_FILE}:`, err.message)
+    }
+    this.onConsoleLogReset?.()
+  }
+
   private async startBuildWatch(): Promise<void> {
     const projectDir = this.projectDir
-    const buildLogPath = join(projectDir, BUILD_LOG)
+    const buildLogPath = join(projectDir, BUILD_LOG_FILE)
 
     if (!existsSync(join(projectDir, 'node_modules', '.bin', 'vite'))) {
       console.log(`[${LOG_PREFIX}] Vite not found in node_modules — skipping watch`)
@@ -299,7 +317,7 @@ export class PreviewManager {
     const serverFile = join(this.projectDir, 'server.tsx')
     if (!existsSync(serverFile)) return
 
-    const buildLogPath = join(this.projectDir, BUILD_LOG)
+    const buildLogPath = join(this.projectDir, BUILD_LOG_FILE)
     console.log(`[${LOG_PREFIX}] Starting template API server on port ${API_SERVER_PORT}...`)
 
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {

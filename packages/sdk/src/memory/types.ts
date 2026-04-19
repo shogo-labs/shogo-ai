@@ -33,7 +33,24 @@ export interface MemoryStoreConfig {
   summarizer?: Summarizer
 }
 
-/** Turns raw text (e.g. transcript) into bullet lines for MEMORY.md */
+/** Input passed to {@link Summarizer.consolidate}. */
+export interface ConsolidateInput {
+  /** Current durable bullets from MEMORY.md, with any `(ISO)` timestamp prefix stripped. */
+  existingBullets: string[]
+  /** Raw transcript of the new conversation to merge in. */
+  transcript: string
+}
+
+/**
+ * Turns raw text (e.g. transcript) into bullet lines for MEMORY.md.
+ *
+ * `summarize` is extractive-only: one transcript → bullets. Implement the optional
+ * `consolidate` method if the summarizer should also merge, dedupe, and resolve
+ * conflicts against the existing long-term memory. {@link MemoryStore.ingestTranscript}
+ * with `{ consolidate: true }` will prefer `consolidate` when present and fall back
+ * to a string-concatenated `summarize` call otherwise.
+ */
 export interface Summarizer {
   summarize(text: string): Promise<string>
+  consolidate?(input: ConsolidateInput): Promise<string>
 }

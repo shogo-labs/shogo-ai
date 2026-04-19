@@ -161,4 +161,4 @@ window.addEventListener('resize', () => {
 
 ## Validation
 
-After writing or editing `.ts` files, run `read_lints` to check for TypeScript errors and fix immediately.
+After writing or editing `.ts` files, run `read_lints` with no arguments to check for TypeScript errors and fix immediately. It auto-scopes to the files you just touched.

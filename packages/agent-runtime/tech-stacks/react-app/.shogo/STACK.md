@@ -146,7 +146,7 @@ export default function App() {
 **For a single-feature project**, you can write a simpler App.tsx without tabs. Once the user asks for a second feature, refactor into the tabbed shell and move the first feature into its own component file.
 
 ### Validation Workflow
-After writing or editing files under `src/`, **always** call `read_lints` to check for TypeScript errors:
+After writing or editing files under `src/`, **always** call `read_lints` with no arguments to check for TypeScript errors. It auto-scopes to the files you just touched — you do not need to pass a path:
 - If `read_lints` returns `ok: true` — the code is clean, proceed normally.
 - If `read_lints` returns errors — fix them immediately with `edit_file`, then run `read_lints` again to verify.
 

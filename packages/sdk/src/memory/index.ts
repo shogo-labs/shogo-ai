@@ -24,7 +24,11 @@
 
 export { MemorySearchEngine } from './engine.js'
 export { MemoryStore, sanitizeUserId } from './store.js'
-export type { SearchOptions, IngestTranscriptOptions } from './store.js'
+export type {
+  SearchOptions,
+  IngestTranscriptOptions,
+  IngestTranscriptResult,
+} from './store.js'
 
 export {
   identitySummarizer,
@@ -45,4 +49,5 @@ export type {
   MemoryChunkRecord,
   MemoryStoreConfig,
   Summarizer,
+  ConsolidateInput,
 } from './types.js'

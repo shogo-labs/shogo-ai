@@ -20,9 +20,19 @@ export interface AddBody {
   fact: string
 }
 
+export interface IngestBody {
+  user_id: string
+  transcript: string
+  /** Default `true`: merge + dedupe + resolve conflicts via the summarizer's `consolidate`. */
+  consolidate?: boolean
+  /** If `consolidate` is false, whether to route the transcript through `summarize`. */
+  summarize?: boolean
+}
+
 export interface MemoryHandlers {
   retrieve: (req: Request) => Promise<Response>
   add: (req: Request) => Promise<Response>
+  ingest: (req: Request) => Promise<Response>
 }
 
 function json(data: unknown, status = 200): Response {
@@ -110,6 +120,44 @@ export function createMemoryHandlers(getStore: GetMemoryStore): MemoryHandlers {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e)
         return json({ error: message }, 500)
+      }
+    },
+
+    async ingest(req: Request): Promise<Response> {
+      if (req.method !== 'POST') {
+        return json({ error: 'Method Not Allowed' }, 405)
+      }
+      const raw = await readJson(req)
+      if (raw === null || typeof raw !== 'object' || raw === null) {
+        return json({ error: 'Invalid JSON body' }, 400)
+      }
+      const body = raw as Partial<IngestBody>
+      const user_id = typeof body.user_id === 'string' ? body.user_id : ''
+      const transcript = typeof body.transcript === 'string' ? body.transcript : ''
+      const consolidate = typeof body.consolidate === 'boolean' ? body.consolidate : true
+      const summarize = typeof body.summarize === 'boolean' ? body.summarize : false
+
+      if (!user_id.trim()) {
+        return json({ error: 'Missing user_id' }, 400)
+      }
+      if (!transcript.trim()) {
+        return json({ error: 'Missing transcript' }, 400)
+      }
+
+      let store: ReturnType<GetMemoryStore>
+      try {
+        store = getStore({ userId: user_id })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        return json({ error: message }, 500)
+      }
+
+      try {
+        const result = await store.ingestTranscript(transcript, { consolidate, summarize })
+        return json({ ok: true, ...result })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        return json({ ok: false, error: 'consolidation_failed', detail: message }, 502)
       }
     },
   }

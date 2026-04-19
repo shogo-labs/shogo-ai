@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryStore, sanitizeUserId } from '../store'
-import type { Summarizer } from '../types'
+import type { ConsolidateInput, Summarizer } from '../types'
 
 describe('sanitizeUserId', () => {
   test('strips unsafe path characters', () => {
@@ -117,8 +117,168 @@ describe('MemoryStore', () => {
 
   test('ingestTranscript ignores empty input', async () => {
     const store = new MemoryStore({ dir, userId: 'alice' })
-    await store.ingestTranscript('   ')
+    const result = await store.ingestTranscript('   ')
+    expect(result.unchanged).toBe(true)
+    expect(result.bullets).toBe(0)
     expect(existsSync(join(store.workspaceDir, 'MEMORY.md'))).toBe(false)
     store.close()
+  })
+
+  test('readMemoryBullets strips ISO timestamps and ignores non-bullet lines', () => {
+    const store = new MemoryStore({ dir, userId: 'alice' })
+    store.add('favorite color: cerulean')
+    store.add('lives in Honolulu')
+    const bullets = store.readMemoryBullets()
+    expect(bullets).toEqual(['favorite color: cerulean', 'lives in Honolulu'])
+    store.close()
+  })
+
+  test('readMemoryBullets returns [] when MEMORY.md is absent', () => {
+    const store = new MemoryStore({ dir, userId: 'ghost' })
+    expect(store.readMemoryBullets()).toEqual([])
+    store.close()
+  })
+
+  describe('ingestTranscript({ consolidate: true })', () => {
+    let seen: ConsolidateInput | null
+    let consolidator: Summarizer
+
+    beforeEach(() => {
+      seen = null
+      consolidator = {
+        summarize: async () => '',
+        consolidate: async input => {
+          seen = input
+          return '- favorite color: turquoise\n- lives in Honolulu'
+        },
+      }
+    })
+
+    test('rewrites MEMORY.md (does not append) and returns counts', async () => {
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: consolidator })
+      store.add('favorite color: cerulean')
+      store.add('old_fact: to be dropped')
+
+      const result = await store.ingestTranscript('User: actually turquoise now', {
+        consolidate: true,
+      })
+
+      expect(result.previous).toBe(2)
+      expect(result.bullets).toBe(2)
+      expect(result.unchanged).toBe(false)
+
+      const contents = readFileSync(join(store.workspaceDir, 'MEMORY.md'), 'utf-8')
+      expect(contents).toContain('turquoise')
+      expect(contents).not.toContain('cerulean')
+      expect(contents).not.toContain('to be dropped')
+      expect(contents.split('\n').filter(l => l.startsWith('-')).length).toBe(2)
+      store.close()
+    })
+
+    test('passes existing bullets (timestamp-stripped) to the consolidator', async () => {
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: consolidator })
+      store.add('favorite color: cerulean')
+      store.add('lives in Honolulu')
+
+      await store.ingestTranscript('new transcript', { consolidate: true })
+
+      expect(seen).not.toBeNull()
+      expect(seen!.existingBullets).toEqual(['favorite color: cerulean', 'lives in Honolulu'])
+      expect(seen!.transcript).toBe('new transcript')
+      store.close()
+    })
+
+    test('empty consolidator output leaves MEMORY.md untouched', async () => {
+      const emptyConsolidator: Summarizer = {
+        summarize: async () => '',
+        consolidate: async () => '',
+      }
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: emptyConsolidator })
+      store.add('keep_me: yes')
+      const before = readFileSync(join(store.workspaceDir, 'MEMORY.md'), 'utf-8')
+
+      const result = await store.ingestTranscript('small talk', { consolidate: true })
+
+      expect(result.unchanged).toBe(true)
+      expect(result.bullets).toBe(0)
+      expect(result.previous).toBe(1)
+      expect(readFileSync(join(store.workspaceDir, 'MEMORY.md'), 'utf-8')).toBe(before)
+      store.close()
+    })
+
+    test('reindexes so dropped bullets no longer match searches', async () => {
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: consolidator })
+      store.add('favorite color: cerulean')
+      expect(store.search('cerulean').length).toBeGreaterThan(0)
+
+      await store.ingestTranscript('turquoise now', { consolidate: true })
+      expect(store.search('cerulean').length).toBe(0)
+      expect(store.search('turquoise').length).toBeGreaterThan(0)
+      store.close()
+    })
+
+    test('falls back to summarize() when the summarizer has no consolidate method', async () => {
+      let seenPrompt = ''
+      const summarizeOnly: Summarizer = {
+        summarize: async text => {
+          seenPrompt = text
+          return '- merged_fact: foo'
+        },
+      }
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: summarizeOnly })
+      store.add('prior_fact: bar')
+
+      const result = await store.ingestTranscript('new transcript text', { consolidate: true })
+
+      expect(result.bullets).toBe(1)
+      expect(seenPrompt).toContain('prior_fact: bar')
+      expect(seenPrompt).toContain('new transcript text')
+      expect(seenPrompt).toContain('Existing memory')
+      const contents = readFileSync(join(store.workspaceDir, 'MEMORY.md'), 'utf-8')
+      expect(contents).toContain('merged_fact: foo')
+      expect(contents).not.toContain('prior_fact: bar')
+      store.close()
+    })
+
+    test('consolidates onto empty MEMORY.md (first run)', async () => {
+      const store = new MemoryStore({ dir, userId: 'fresh', summarizer: consolidator })
+      const result = await store.ingestTranscript('hello there', { consolidate: true })
+      expect(result.previous).toBe(0)
+      expect(result.bullets).toBe(2)
+      expect(result.unchanged).toBe(false)
+      store.close()
+    })
+
+    test('does not clobber MEMORY.md on partial/garbage consolidator output', async () => {
+      const noisy: Summarizer = {
+        summarize: async () => '',
+        consolidate: async () => 'Sure, here are the bullets:\n(no bullets parsed)\n',
+      }
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: noisy })
+      store.add('keep_me: yes')
+      const before = readFileSync(join(store.workspaceDir, 'MEMORY.md'), 'utf-8')
+
+      const result = await store.ingestTranscript('transcript', { consolidate: true })
+
+      expect(result.unchanged).toBe(true)
+      expect(readFileSync(join(store.workspaceDir, 'MEMORY.md'), 'utf-8')).toBe(before)
+      store.close()
+    })
+
+    test('tolerates manually-edited MEMORY.md without timestamps', async () => {
+      const store = new MemoryStore({ dir, userId: 'alice', summarizer: consolidator })
+      store.add('placeholder')
+      writeFileSync(
+        join(store.workspaceDir, 'MEMORY.md'),
+        '# Memory\n\n- raw bullet without timestamp\n- another one\n',
+      )
+
+      const bullets = store.readMemoryBullets()
+      expect(bullets).toEqual(['raw bullet without timestamp', 'another one'])
+
+      await store.ingestTranscript('hi', { consolidate: true })
+      expect(seen!.existingBullets).toEqual(['raw bullet without timestamp', 'another one'])
+      store.close()
+    })
   })
 })

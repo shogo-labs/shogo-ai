@@ -28,6 +28,7 @@ import {
   rmSync,
   renameSync,
   cpSync,
+  appendFileSync,
 } from 'fs'
 import {
   createRuntimeApp, traceOperation,
@@ -794,6 +795,7 @@ app.post('/agent/chat', async (c) => {
   const modelOverride = (body.agentMode as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
+  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -1104,8 +1106,36 @@ app.post('/agent/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager } from './preview-manager'
+import { previewConsoleLogPath } from './runtime-log-paths'
 
 let previewManager: PreviewManager | null = null
+
+/** In-memory mirror of `project/.console.log` for `/console-log` + SSE (same lines as on disk). */
+let consoleLogsRuntimeBuffer: string[] | null = null
+
+function appendRuntimeConsoleLogLine(line: string): void {
+  let buf = consoleLogsRuntimeBuffer
+  if (!buf) {
+    buf = []
+    consoleLogsRuntimeBuffer = buf
+  }
+  buf.push(line)
+  if (buf.length > 1000) buf.splice(0, 500)
+  try {
+    appendFileSync(previewConsoleLogPath(WORKSPACE_DIR), `${line}\n`, 'utf-8')
+  } catch {
+    // `project/` may not exist yet; buffer still holds the line for the UI.
+  }
+}
+
+function clearRuntimeConsoleLogBuffer(): void {
+  if (consoleLogsRuntimeBuffer) consoleLogsRuntimeBuffer.length = 0
+}
+
+function getConsoleLogsBuffer(): string[] {
+  if (!consoleLogsRuntimeBuffer) consoleLogsRuntimeBuffer = []
+  return consoleLogsRuntimeBuffer
+}
 
 function getPreviewManager(): PreviewManager {
   if (!previewManager) {
@@ -1113,6 +1143,7 @@ function getPreviewManager(): PreviewManager {
     previewManager = new PreviewManager({
       projectDir,
       runtimePort: parseInt(process.env.PORT || '8080', 10),
+      onConsoleLogReset: clearRuntimeConsoleLogBuffer,
     })
   }
   return previewManager
@@ -2440,15 +2471,13 @@ app.post('/agent/import', async (c) => {
   return c.json({ ok: true, imported: written.length, files: written })
 })
 
-// Console log for forwarding (matches runtime pattern)
-const consoleLogs: string[] = []
+// Console log for forwarding — mirrored to project/.console.log on disk (see runtime-log-paths.ts).
 const logStreamListeners = new Set<(line: string) => void>()
 
 app.post('/console-log/append', async (c) => {
   const { line } = await c.req.json()
   if (line) {
-    consoleLogs.push(line)
-    if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+    appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {
       try { listener(line) } catch {}
     }
@@ -2457,7 +2486,7 @@ app.post('/console-log/append', async (c) => {
 })
 
 app.get('/console-log', (c) => {
-  return c.json({ logs: consoleLogs })
+  return c.json({ logs: getConsoleLogsBuffer() })
 })
 
 app.get('/agent/logs/stream', (c) => {
@@ -2468,7 +2497,7 @@ app.get('/agent/logs/stream', (c) => {
         try { controller.enqueue(encoder.encode(text + '\n')) } catch {}
       }
 
-      for (const line of consoleLogs.slice(-100)) {
+      for (const line of getConsoleLogsBuffer().slice(-100)) {
         send(line)
       }
 
@@ -2855,8 +2884,10 @@ async function startGateway(): Promise<void> {
   const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
   agentGateway.setLogCallback((line: string) => {
-    consoleLogs.push(line)
-    if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+    appendRuntimeConsoleLogLine(line)
+    for (const listener of logStreamListeners) {
+      try { listener(line) } catch {}
+    }
   })
 
   if (s3SyncInstance) {

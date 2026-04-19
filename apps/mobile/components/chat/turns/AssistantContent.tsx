@@ -7,7 +7,7 @@
  * Preserves the natural ordering from the AI SDK message.parts array.
  */
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react"
+import { memo, useState, useCallback, useMemo, useRef, useEffect } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
@@ -42,6 +42,67 @@ function safeErrorString(error: unknown): string | undefined {
   if (typeof error === "string") return error
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+/**
+ * Throttle a streaming value so heavy downstream work (markdown parsing, part
+ * extraction, JSX reconciliation for tool widgets) only fires at ~`intervalMs`
+ * cadence instead of on every token. When `throttle` flips false (stream
+ * ended), the latest value is flushed synchronously so the final snapshot is
+ * always pixel-correct.
+ *
+ * The component's render function still runs on every parent re-render (cheap),
+ * but any `useMemo`/`memo` keyed on the returned throttled value gets its
+ * cached result back, which is where the per-token 50–260ms cost was
+ * concentrated (Streamdown re-parsing the full message text per character).
+ */
+const STREAMING_THROTTLE_MS = 50
+
+function useThrottledWhileStreaming<T>(value: T, isStreaming: boolean): T {
+  const [throttled, setThrottled] = useState<T>(value)
+  const lastEmitAtRef = useRef(0)
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestValueRef = useRef(value)
+  latestValueRef.current = value
+
+  useEffect(() => {
+    if (!isStreaming) {
+      if (pendingTimerRef.current !== null) {
+        clearTimeout(pendingTimerRef.current)
+        pendingTimerRef.current = null
+      }
+      lastEmitAtRef.current = performance.now()
+      setThrottled(value)
+      return
+    }
+
+    const now = performance.now()
+    const elapsed = now - lastEmitAtRef.current
+    if (elapsed >= STREAMING_THROTTLE_MS) {
+      lastEmitAtRef.current = now
+      setThrottled(value)
+      return
+    }
+
+    if (pendingTimerRef.current === null) {
+      pendingTimerRef.current = setTimeout(() => {
+        pendingTimerRef.current = null
+        lastEmitAtRef.current = performance.now()
+        setThrottled(latestValueRef.current)
+      }, STREAMING_THROTTLE_MS - elapsed)
+    }
+  }, [value, isStreaming])
+
+  useEffect(
+    () => () => {
+      if (pendingTimerRef.current !== null) {
+        clearTimeout(pendingTimerRef.current)
+      }
+    },
+    [],
+  )
+
+  return throttled
 }
 
 export interface AssistantContentProps {
@@ -155,7 +216,29 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "todo_write", "tool_install", "mcp_install", "generate_image", "exec", "Bash", "task", "Task", "agent_spawn", "team_create", "browser", "create_plan"])
+const UNGROUPABLE_TOOLS = new Set([
+  "ask_user",
+  "notify_user_error",
+  "TodoWrite",
+  "todo_write",
+  "tool_install",
+  "mcp_install",
+  "generate_image",
+  "exec",
+  "Bash",
+  "task",
+  "Task",
+  "agent_spawn",
+  "team_create",
+  "browser",
+  "create_plan",
+  // keep styled widgets even when consecutive:
+  "write_file",
+  "Write",
+  "edit_file",
+  "Edit",
+  "StrReplace",
+])
 const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 const MIN_GROUP_SIZE = 2
@@ -320,11 +403,18 @@ function FileThumbnail({
   )
 }
 
-export function AssistantContent({
-  message,
-  isStreaming = false,
-  className,
-}: AssistantContentProps) {
+/**
+ * Memoized: markdown + tool-widget rendering is the single most expensive
+ * part of a chat turn. Re-rendering prior turns on every streaming-token
+ * delta, MobX reaction, or parent tab-switch was the primary source of the
+ * 700ms+ click-handler blocks.
+ */
+export const AssistantContent = memo(
+  function AssistantContent({
+    message,
+    isStreaming = false,
+    className,
+  }: AssistantContentProps) {
   const chatContext = useChatContextSafe()
 
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
@@ -351,7 +441,15 @@ export function AssistantContent({
     return fn
   }, [toggleTool])
 
-  const orderedParts = useMemo(() => extractOrderedParts(message), [message])
+  // Throttle the streaming message to ~30fps so markdown re-parsing and part
+  // extraction don't run per-token. When streaming ends, the final value is
+  // flushed immediately so the committed UI is always exact.
+  const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
+
+  const orderedParts = useMemo(
+    () => extractOrderedParts(throttledMessage),
+    [throttledMessage],
+  )
 
   // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
   useEffect(() => {
@@ -612,6 +710,11 @@ export function AssistantContent({
       })}
     </View>
   )
-}
+  },
+  (prev, next) =>
+    prev.message === next.message &&
+    prev.isStreaming === next.isStreaming &&
+    prev.className === next.className,
+)
 
 export default AssistantContent
