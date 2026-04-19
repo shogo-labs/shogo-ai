@@ -12,29 +12,50 @@ const LEGACY_MIGRATION: Record<string, string> = {
   advanced: "claude-sonnet-4-6",
 }
 
-export async function loadModelPreference(): Promise<string | null> {
+// SecureStore keys must match /^[A-Za-z0-9._-]+$/ on native; use '_' as the
+// separator so the same key format works on both web and native.
+function projectKey(projectId: string): string {
+  return `${AGENT_MODE_KEY}_${projectId}`
+}
+
+async function readKey(key: string): Promise<string | null> {
   try {
-    let stored: string | null = null
     if (Platform.OS === "web") {
-      stored = safeGetItem(AGENT_MODE_KEY)
-    } else {
-      stored = await SecureStore.getItemAsync(AGENT_MODE_KEY)
+      return safeGetItem(key)
     }
-    if (!stored) return null
-    return LEGACY_MIGRATION[stored] ?? stored
+    return await SecureStore.getItemAsync(key)
   } catch {
     return null
   }
 }
 
-export async function saveModelPreference(modelId: string): Promise<void> {
+async function writeKey(key: string, value: string): Promise<void> {
   try {
     if (Platform.OS === "web") {
-      safeSetItem(AGENT_MODE_KEY, modelId)
+      safeSetItem(key, value)
       return
     }
-    await SecureStore.setItemAsync(AGENT_MODE_KEY, modelId)
+    await SecureStore.setItemAsync(key, value)
   } catch {
     // Silently fail
   }
+}
+
+export async function loadModelPreference(projectId?: string): Promise<string | null> {
+  let stored: string | null = null
+  if (projectId) {
+    stored = await readKey(projectKey(projectId))
+  }
+  if (!stored) {
+    stored = await readKey(AGENT_MODE_KEY)
+  }
+  if (!stored) return null
+  return LEGACY_MIGRATION[stored] ?? stored
+}
+
+export async function saveModelPreference(modelId: string, projectId?: string): Promise<void> {
+  if (projectId) {
+    await writeKey(projectKey(projectId), modelId)
+  }
+  await writeKey(AGENT_MODE_KEY, modelId)
 }

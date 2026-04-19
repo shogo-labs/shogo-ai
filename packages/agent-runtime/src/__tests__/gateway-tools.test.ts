@@ -4,6 +4,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { createTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
+import { FileStateCache } from '../file-state-cache'
 import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
 
@@ -93,6 +94,65 @@ describe('gateway-tools', () => {
       } catch (err: any) {
         expect(err.message).toContain('outside workspace')
       }
+    })
+
+    test('returns image content for PNG files instead of UTF-8 garbage', async () => {
+      const pngBytes = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      ])
+      writeFileSync(join(TEST_DIR, 'pic.png'), pngBytes)
+      const fileStateCache = new FileStateCache()
+      const ctx = createCtx({ fileStateCache })
+      const tool = getTool(ctx, 'read_file')
+      const result = await tool.execute('test-call', { path: 'pic.png' })
+
+      expect(Array.isArray(result.content)).toBe(true)
+      const imagePart = (result.content as any[]).find((p) => p.type === 'image')
+      expect(imagePart).toBeDefined()
+      expect(imagePart.mimeType).toBe('image/png')
+      expect(imagePart.data).toBe(pngBytes.toString('base64'))
+
+      expect(result.details.path).toBe('pic.png')
+      expect(result.details.bytes).toBe(pngBytes.length)
+      expect(result.details.mimeType).toBe('image/png')
+
+      expect(fileStateCache.hasBeenRead('pic.png')).toBe(false)
+    })
+
+    test('maps common image extensions to the correct mime type', async () => {
+      const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
+      writeFileSync(join(TEST_DIR, 'photo.jpeg'), jpegBytes)
+      const tool = getTool(createCtx(), 'read_file')
+      const result = await tool.execute('test-call', { path: 'photo.jpeg' })
+      const imagePart = (result.content as any[]).find((p) => p.type === 'image')
+      expect(imagePart.mimeType).toBe('image/jpeg')
+    })
+
+    test('rejects oversized images with a clear error', async () => {
+      const { writeFileSync: write, truncateSync } = require('fs')
+      const bigPath = join(TEST_DIR, 'huge.png')
+      write(bigPath, Buffer.alloc(0))
+      truncateSync(bigPath, 21 * 1024 * 1024)
+      const result = await exec(createCtx(), 'read_file', { path: 'huge.png' })
+      expect(result.error).toContain('Image too large')
+      expect(result.error).toContain('huge.png')
+    })
+
+    test('ignores offset/limit for image files and notes it in details', async () => {
+      writeFileSync(join(TEST_DIR, 'tiny.gif'), Buffer.from([0x47, 0x49, 0x46, 0x38]))
+      const tool = getTool(createCtx(), 'read_file')
+      const result = await tool.execute('test-call', { path: 'tiny.gif', offset: 1, limit: 10 })
+      const imagePart = (result.content as any[]).find((p) => p.type === 'image')
+      expect(imagePart.mimeType).toBe('image/gif')
+      expect(result.details.note).toContain('offset/limit are ignored')
+    })
+
+    test('still reads .svg as text (SVG is XML)', async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect /></svg>'
+      writeFileSync(join(TEST_DIR, 'icon.svg'), svg)
+      const result = await exec(createCtx(), 'read_file', { path: 'icon.svg' })
+      expect(result.content).toBe(svg)
     })
   })
 

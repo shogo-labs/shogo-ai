@@ -333,15 +333,15 @@ export default observer(function ProjectLayout() {
   )
 
   useEffect(() => {
-    loadModelPreference().then((stored) => {
+    loadModelPreference(projectId).then((stored) => {
       if (stored) setSelectedModel(stored)
       else if (hasAdvancedModelAccess) setSelectedModel(DEFAULT_MODEL_PRO)
     })
-  }, [hasAdvancedModelAccess])
+  }, [hasAdvancedModelAccess, projectId])
 
   const handleModelChange = useCallback(async (modelId: string) => {
     setSelectedModel(modelId)
-    saveModelPreference(modelId)
+    saveModelPreference(modelId, projectId)
     if (agentUrl) {
       const entry = MODEL_CATALOG[modelId as keyof typeof MODEL_CATALOG]
       if (entry) {
@@ -356,7 +356,7 @@ export default observer(function ProjectLayout() {
         }
       }
     }
-  }, [agentUrl])
+  }, [agentUrl, projectId])
 
   // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
   const dynamicAppStreamUrl = agentUrl

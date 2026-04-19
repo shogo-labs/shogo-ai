@@ -277,6 +277,19 @@ function createExecTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const IMAGE_READ_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+  '.heic': 'image/heic',
+  '.ico': 'image/x-icon',
+}
+const MAX_IMAGE_READ_BYTES = 20 * 1024 * 1024
+
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
@@ -284,7 +297,10 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       'Read a file from the agent workspace. Supports partial reads via offset and limit ' +
       'to handle large files without consuming the full context window. ' +
       'When using offset/limit, output includes line numbers in N|content format. ' +
-      'For large files (500+ lines), prefer offset/limit or use grep to find specific sections.',
+      'For large files (500+ lines), prefer offset/limit or use grep to find specific sections. ' +
+      'When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), ' +
+      'the image is returned as multimodal image content for vision-capable models to view or describe; ' +
+      'offset/limit are ignored for images, and images larger than 20 MB are rejected.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -328,6 +344,36 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           })
         }
       } catch { /* proceed to read */ }
+
+      const imageExt = extname(resolved).toLowerCase()
+      const imageMime = IMAGE_READ_MIME[imageExt]
+      if (imageMime) {
+        const imgStat = statSync(resolved)
+        if (imgStat.size > MAX_IMAGE_READ_BYTES) {
+          return textResult({
+            error: `Image too large to read: ${filePath} (${imgStat.size} bytes, max ${MAX_IMAGE_READ_BYTES}). ` +
+              'Downscale the image before reading.',
+          })
+        }
+        const buf = readFileSync(resolved)
+        const base64 = buf.toString('base64')
+        const details = {
+          path: filePath,
+          bytes: buf.length,
+          mimeType: imageMime,
+          ...(offset !== undefined || limit !== undefined
+            ? { note: 'offset/limit are ignored for image files.' }
+            : {}),
+        }
+        return {
+          content: [
+            { type: 'image' as const, data: base64, mimeType: imageMime },
+            { type: 'text' as const, text: JSON.stringify(details) },
+          ],
+          details,
+        }
+      }
+
       const fullContent = readFileSync(resolved, 'utf-8')
 
       const totalLineCount = fullContent.split('\n').length
