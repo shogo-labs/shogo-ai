@@ -756,14 +756,14 @@ export const ChatPanel = observer(function ChatPanel({
 
   useEffect(() => {
     if (isModelControlled) return
-    loadModelPreference().then((stored) => {
+    loadModelPreference(projectId).then((stored) => {
       if (stored) {
         setInternalSelectedModel(stored)
       } else if (hasAdvancedModelAccess) {
         setInternalSelectedModel(DEFAULT_MODEL_PRO)
       }
     })
-  }, [hasAdvancedModelAccess, isModelControlled])
+  }, [hasAdvancedModelAccess, isModelControlled, projectId])
 
   const selectedModel = isModelControlled ? controlledSelectedModel : internalSelectedModel
 
@@ -772,9 +772,9 @@ export const ChatPanel = observer(function ChatPanel({
       controlledOnModelChange(modelId)
     } else {
       setInternalSelectedModel(modelId)
-      saveModelPreference(modelId)
+      saveModelPreference(modelId, projectId)
     }
-  }, [controlledOnModelChange])
+  }, [controlledOnModelChange, projectId])
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
     () => initialInteractionMode ?? "agent"
