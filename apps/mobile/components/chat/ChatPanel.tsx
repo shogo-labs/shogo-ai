@@ -57,7 +57,8 @@ import {
   ERROR_CODE_MESSAGES,
 } from "@shogo/shared-app/chat"
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
-import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
+import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
+import { decideMessagesPropagation } from "./messages-propagation"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 
@@ -521,6 +522,24 @@ const chatMessagesScrollStyles = StyleSheet.create({
 })
 
 // ============================================================
+// Per-session UIMessage cache
+// ============================================================
+//
+// Survives session switches and panel remounts so revisiting a session renders
+// its messages instantly instead of showing a loading UI while Effect 1
+// refetches from the API. The stale-while-revalidate fetch still runs in the
+// background and reconciles via `setMessages` if the server differs.
+//
+// Keyed by sessionId. Evicted on explicit `clearChatPanelMessageCache()` (e.g.
+// user logout). Memory cost is small: a few UIMessage arrays per session.
+const sessionMessageCache = new Map<string, UIMessage[]>()
+
+/** Clear the in-memory per-session UIMessage cache (e.g. on logout). */
+export function clearChatPanelMessageCache(): void {
+  sessionMessageCache.clear()
+}
+
+// ============================================================
 // Component
 // ============================================================
 
@@ -774,7 +793,16 @@ export const ChatPanel = observer(function ChatPanel({
     })
   }, [initialInteractionMode])
 
+  // Mirror interactionMode in a ref so callbacks (sendMessageInternal, queue
+  // processor) always observe the latest value even when fired in the same
+  // tick as a mode change (e.g. plan confirm → switch to agent → send).
+  const interactionModeRef = useRef<InteractionMode>(interactionMode)
+  useEffect(() => {
+    interactionModeRef.current = interactionMode
+  }, [interactionMode])
+
   const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
+    interactionModeRef.current = mode
     setInteractionMode(mode)
     void saveInteractionModePreference(mode)
   }, [])
@@ -799,13 +827,39 @@ export const ChatPanel = observer(function ChatPanel({
     ? studioChat.chatSessionCollection.get(currentSessionId)
     : null
 
-  const persistedMessagesFromMobX = currentSessionId
-    ? studioChat.chatMessageCollection.all
-        .filter((msg: any) => msg.sessionId === currentSessionId)
-        .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
-    : []
+  // Per-session MST collection: isolated from sibling ChatPanels. Reads never
+  // flip to 0 because another session's `loadPage` clobbered the singleton.
+  const sessionMessages = useChatMessageCollectionForSession(currentSessionId)
 
+  // Fix D small win: memoize the sorted persisted messages so we don't create
+  // a new array on every ChatPanel render. Without this, any consumer that
+  // depends on the array identity (Effect 2 etc.) would see a fresh ref every
+  // render even when the underlying MobX collection didn't change.
+  // Keyed on length since MobX's observable array triggers re-read on mutation.
+  const persistedMessagesFromMobX = useMemo(
+    () =>
+      sessionMessages
+        ? [...sessionMessages.all].sort(
+            (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+          )
+        : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionMessages, sessionMessages?.all.length],
+  )
+
+  // Loading state for Effect 1. Kept as *both* a ref (for synchronous reads
+  // elsewhere) AND state (so changes to it can retrigger Effect 1 via deps,
+  // which is what unsticks the "skip: already loading" wedge when a prior
+  // fetch was stalled behind a streaming SSE request).
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const isLoadingMessagesRef = useRef(false)
+  // Per-session timestamp of the last successful (or attempted) refetch.
+  // Used to skip redundant fetches on rapid Effect 1 re-runs — otherwise the
+  // promote-ref-to-state change would drive an infinite refetch loop.
+  const cacheRefreshedAtRef = useRef<Map<string, number>>(new Map())
+  // Tracks previous streaming state so the post-stream revalidate effect only
+  // fires on the true→false transition (not every idle render).
+  const wasStreamingRef = useRef(false)
   const cachedMessagesRef = useRef<any[] | null>(null)
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
@@ -815,12 +869,25 @@ export const ChatPanel = observer(function ChatPanel({
   // Reset stale state synchronously when the session changes so we never
   // render one frame of the previous session's messages before showing
   // the loading indicator for the new session.
+  //
+  // Hydrate from the module-level `sessionMessageCache` if we've seen this
+  // session before — this is what makes re-visits render instantly instead
+  // of briefly showing a loader while the stale-while-revalidate fetch runs.
   if (prevSessionIdRef.current !== currentSessionId) {
+    const cachedForSession =
+      currentSessionId ? sessionMessageCache.get(currentSessionId) ?? null : null
     prevSessionIdRef.current = currentSessionId
-    cachedMessagesRef.current = null
-    lastNonEmptyMessagesRef.current = []
+    cachedMessagesRef.current = cachedForSession
+    lastNonEmptyMessagesRef.current = cachedForSession ?? []
     isLoadingMessagesRef.current = false
-    setIsInitialLoadComplete(!currentSessionId)
+    // State-mirror reset is deferred to an effect (can't call setState in
+    // render); Effect 1 reads the ref for its in-flight dedup so behaviour
+    // is correct immediately regardless.
+    // No session → complete. With session → only "complete" if we have a
+    // cache hit; otherwise Effect 1 will flip it true after first fetch.
+    setIsInitialLoadComplete(
+      !currentSessionId || (cachedForSession != null && cachedForSession.length > 0),
+    )
   }
 
   type QueuedMessage = {
@@ -1488,6 +1555,12 @@ export const ChatPanel = observer(function ChatPanel({
 
   if (isActive && messages.length > 0) {
     cachedMessagesRef.current = messages
+    if (currentSessionId) {
+      // Keep the module cache in sync with the latest UI state so a subsequent
+      // session switch (or panel remount) can hydrate instantly. This runs on
+      // every render while streaming, which is cheap (Map.set by reference).
+      sessionMessageCache.set(currentSessionId, messages)
+    }
   }
   if (messages.length > 0) {
     lastNonEmptyMessagesRef.current = messages
@@ -1510,9 +1583,35 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [status, stoppedMessages, setMessages])
 
+  // Propagate messages to parent (for pendingToolInstalls, TerminalPanel, etc.)
+  // but skip the flood of per-token updates during streaming. Firing this on
+  // every chunk causes `setChatMessages` in the parent to re-render the entire
+  // ProjectLayout subtree — which cascades into ALL open ChatPanel tabs and
+  // the full TurnList/TurnGroup/AssistantContent chain per character.
+  //
+  // Parent consumers only care about:
+  //   1. message count changes (new user/assistant turn)
+  //   2. terminal tool-state transitions (streaming → result/error)
+  //   3. the final state when streaming ends
+  // so we propagate on those events only.
+  const lastPropagatedRef = useRef<readonly UIMessage[] | null>(null)
+  const lastPropagatedToolSigRef = useRef<string>("")
+  const lastPropagatedIsStreamingRef = useRef<boolean>(false)
   useEffect(() => {
-    onMessagesChange?.(messages)
-  }, [messages, onMessagesChange])
+    if (!onMessagesChange) return
+    const decision = decideMessagesPropagation({
+      prev: lastPropagatedRef.current,
+      next: messages,
+      isStreaming,
+      prevIsStreaming: lastPropagatedIsStreamingRef.current,
+      prevToolSig: lastPropagatedToolSigRef.current,
+    })
+    lastPropagatedIsStreamingRef.current = isStreaming
+    if (!decision.shouldPropagate) return
+    lastPropagatedRef.current = messages
+    lastPropagatedToolSigRef.current = decision.toolSig
+    onMessagesChange(messages)
+  }, [messages, onMessagesChange, isStreaming])
 
   useEffect(() => {
     onChatError?.(error ?? null)
@@ -1603,31 +1702,31 @@ export const ChatPanel = observer(function ChatPanel({
 
   const displayMessages = useMemo((): UIMessage[] => {
     const effectiveMessages = stoppedMessages ?? messages
-    if (effectiveMessages.length > 0) return effectiveMessages
+    if (effectiveMessages.length > 0) {
+      return effectiveMessages
+    }
 
-    // While streaming/sending, show the last known messages (plus an optimistic
-    // user bubble) so the conversation doesn't vanish during the brief gap
-    // before the AI SDK populates its internal state.
     if (isStreaming || isSendingMessageRef.current) {
+      // While streaming/sending, show the last known messages (plus an optimistic
+      // user bubble) so the conversation doesn't vanish during the brief gap
+      // before the AI SDK populates its internal state.
       const fallback = lastNonEmptyMessagesRef.current
       const lastInput = lastUserInputRef.current
       const lastFallbackMsg = fallback[fallback.length - 1]
       const needsOptimisticUser =
         lastInput?.content && (!lastFallbackMsg || lastFallbackMsg.role !== "user")
 
-      if (fallback.length > 0 || needsOptimisticUser) {
-        if (needsOptimisticUser) {
-          return [
-            ...fallback,
-            {
-              id: "optimistic-user-pending",
-              role: "user",
-              parts: [{ type: "text", text: lastInput!.content }],
-            } as unknown as UIMessage,
-          ]
-        }
-        return fallback
+      if (needsOptimisticUser) {
+        return [
+          ...fallback,
+          {
+            id: "optimistic-user-pending",
+            role: "user",
+            parts: [{ type: "text", text: lastInput!.content }],
+          } as unknown as UIMessage,
+        ]
       }
+      return fallback
     }
 
     const text = (pendingInitialMessage ?? initialMessage ?? initialMessageRef.current ?? "").trim()
@@ -1642,6 +1741,19 @@ export const ChatPanel = observer(function ChatPanel({
     }
     return []
   }, [messages, stoppedMessages, pendingInitialMessage, initialMessage, isStreaming])
+
+  // Stable references for memo'd downstream components (TurnList / SubagentPanel).
+  // Previously these were `Array.from(Map.values())` inline, which allocated on
+  // every render and defeated React.memo on TurnList — a primary cause of the
+  // 700ms tab-switch re-render cascade.
+  const activeSubagentsList = useMemo(
+    () => Array.from(activeSubagents.values()) as SubagentProgressType[],
+    [activeSubagents],
+  )
+  const recentToolsList = useMemo(
+    () => recentTools as RecentToolType[],
+    [recentTools],
+  )
 
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
@@ -1901,35 +2013,83 @@ export const ChatPanel = observer(function ChatPanel({
   // Effect 1: Load chat messages with stale-while-revalidate.
   // On tab activate: show cached messages instantly (if available), then fetch
   // fresh data from the API. Only update the display if the response differs.
+  //
+  // Fix E (from plan): skip the refetch entirely while streaming/sending so a
+  // GET /messages request never gets queued behind the active streaming SSE.
+  // That was causing the "stuck on skip: already loading" wedge.
   useEffect(() => {
     if (!isActive) return
     if (!currentSessionId) {
       setIsInitialLoadComplete(true)
       return
     }
-    if (isLoadingMessagesRef.current) return
 
     const hasCached = cachedMessagesRef.current && cachedMessagesRef.current.length > 0
 
+    // Fix E.1: never kick off a /messages fetch while streaming — the streaming
+    // response IS the authoritative source, and a queued GET stalls behind the
+    // SSE, wedging isLoadingMessagesRef forever. Hydrate cache only; the
+    // post-stream revalidate effect below will refetch once streaming ends.
+    if (isStreamingRef.current || isSendingMessageRef.current) {
+      if (hasCached && messagesRef.current !== cachedMessagesRef.current) {
+        setMessages(cachedMessagesRef.current!)
+      }
+      if (hasCached) setIsInitialLoadComplete(true)
+      // Clear any zombie flag from a prior non-streaming attempt so we don't
+      // stay stuck after streaming completes.
+      if (isLoadingMessagesRef.current) {
+        isLoadingMessagesRef.current = false
+        if (isLoadingMessages) setIsLoadingMessages(false)
+      }
+      return
+    }
+
+    if (isLoadingMessagesRef.current) return
+
+    // Fix E.2: skip redundant refetch if cache was refreshed <5s ago. Without
+    // this, promoting the loading flag to state (so it can retrigger the
+    // effect) would cause finally() → setIsLoadingMessages(false) → effect
+    // re-runs → refetch loop. 5s is short enough to still revalidate on tab
+    // switches after a delay, long enough to absorb the state round-trip.
+    const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId) ?? 0
+    const cacheAgeMs = performance.now() - refreshedAt
+    if (hasCached && cacheAgeMs < 5000) {
+      if (messagesRef.current !== cachedMessagesRef.current) {
+        setMessages(cachedMessagesRef.current!)
+      }
+      setIsInitialLoadComplete(true)
+      return
+    }
+
     if (hasCached) {
-      setMessages(cachedMessagesRef.current!)
+      if (messagesRef.current !== cachedMessagesRef.current) {
+        setMessages(cachedMessagesRef.current!)
+      }
       setIsInitialLoadComplete(true)
     }
 
     isLoadingMessagesRef.current = true
+    setIsLoadingMessages(true)
     if (!hasCached) setIsInitialLoadComplete(false)
 
-    studioChat.chatMessageCollection
+    if (!sessionMessages) {
+      isLoadingMessagesRef.current = false
+      setIsLoadingMessages(false)
+      setIsInitialLoadComplete(true)
+      return
+    }
+
+    sessionMessages
       .loadPage(
         { sessionId: currentSessionId },
         { limit: MESSAGE_PAGE_SIZE, offset: 0 },
       )
-      .then((result: any) => {
+      .then((_result: any) => {
         if (isStreamingRef.current || isSendingMessageRef.current) return
 
-        const loaded = studioChat.chatMessageCollection.all
-          .filter((msg: any) => msg.sessionId === currentSessionId)
-          .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+        const loaded = [...sessionMessages.all].sort(
+          (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+        )
 
         if (loaded.length === 0) return
 
@@ -1957,15 +2117,48 @@ export const ChatPanel = observer(function ChatPanel({
 
         if (changed) {
           cachedMessagesRef.current = aiMessages
+          sessionMessageCache.set(currentSessionId, aiMessages)
           setMessages(aiMessages)
+        } else {
+          // Same shape as cache — still refresh the module cache entry so any
+          // later in-flight mutations (status flips, etc.) don't drift.
+          sessionMessageCache.set(currentSessionId, aiMessages)
         }
+        cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
       })
       .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
       .finally(() => {
         isLoadingMessagesRef.current = false
+        setIsLoadingMessages(false)
         setIsInitialLoadComplete(true)
       })
-  }, [isActive, currentSessionId, studioChat, setMessages])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, currentSessionId, sessionMessages, setMessages, isLoadingMessages, isStreaming])
+
+  // Post-stream settle: when streaming ends, the AI SDK messages ARE the
+  // authoritative fresh state — `cachedMessagesRef.current` is already kept in
+  // lockstep with `messages` on every active-panel render (see the block near
+  // line 1593), and `sessionMessageCache` is updated there too. The only thing
+  // we need to do here is mark the cache fresh so Effect 1 (which re-runs
+  // because `isStreaming` is in its deps) takes the fast bail-out path and
+  // skips the network refetch + setMessages cycle that used to cascade a
+  // second re-render across every open tab. Zombie loading flags are also
+  // cleared defensively.
+  useEffect(() => {
+    if (!isActive || !currentSessionId) {
+      wasStreamingRef.current = isStreaming
+      return
+    }
+    if (wasStreamingRef.current && !isStreaming) {
+      cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
+      if (isLoadingMessagesRef.current) {
+        isLoadingMessagesRef.current = false
+        setIsLoadingMessages(false)
+      }
+    }
+    wasStreamingRef.current = isStreaming
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, isStreaming, currentSessionId])
 
   // Load older messages when user scrolls to top.
   // isLoadingOlderRef stays true until onContentSizeChange adjusts scroll position,
@@ -1973,27 +2166,26 @@ export const ChatPanel = observer(function ChatPanel({
   const handleLoadOlderMessages = useCallback(async () => {
     if (
       !currentSessionId ||
+      !sessionMessages ||
       isLoadingOlderRef.current ||
-      !studioChat.chatMessageCollection.hasMore ||
-      studioChat.chatMessageCollection.isLoadingMore ||
+      !sessionMessages.hasMore ||
+      sessionMessages.isLoadingMore ||
       isStreamingRef.current
     ) return
 
     isLoadingOlderRef.current = true
 
-    const currentMsgs = studioChat.chatMessageCollection.all
-      .filter((msg: any) => msg.sessionId === currentSessionId)
-    const currentCount = currentMsgs.length
+    const currentCount = sessionMessages.all.length
 
     try {
-      await studioChat.chatMessageCollection.loadPage(
+      await sessionMessages.loadPage(
         { sessionId: currentSessionId },
         { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
       )
 
-      const allLoaded = studioChat.chatMessageCollection.all
-        .filter((msg: any) => msg.sessionId === currentSessionId)
-        .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+      const allLoaded = [...sessionMessages.all].sort(
+        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+      )
 
       const aiMessages = allLoaded.map((msg: any) => {
         const baseMessage: any = {
@@ -2019,7 +2211,7 @@ export const ChatPanel = observer(function ChatPanel({
       console.error("[ChatPanel] Failed to load older messages:", err)
       isLoadingOlderRef.current = false
     }
-  }, [currentSessionId, studioChat, setMessages])
+  }, [currentSessionId, sessionMessages, setMessages])
 
   /** Native: load older only when scroll settles near the top — not on every onScroll frame. */
   const tryLoadOlderNearTopOnScrollEnd = useCallback(
@@ -2102,22 +2294,12 @@ export const ChatPanel = observer(function ChatPanel({
   // e.g. from a real-time sync. It must NOT race with Effect 1's load cycle.
   useEffect(() => {
     if (persistedMessagesFromMobX.length > 0) {
-      if (isStreamingRef.current) {
-        return
-      }
-
-      if (isSendingMessageRef.current) {
-        return
-      }
-
-      if (messages.length > 0) {
-        return
-      }
+      if (isStreamingRef.current) return
+      if (isSendingMessageRef.current) return
+      if (messages.length > 0) return
 
       const persistedHaveParts = persistedMessagesFromMobX.some((msg: any) => msg.parts)
-      if (hasReceivedPartsRef.current && !persistedHaveParts) {
-        return
-      }
+      if (hasReceivedPartsRef.current && !persistedHaveParts) return
       if (persistedHaveParts) {
         hasReceivedPartsRef.current = false
       }
@@ -2139,16 +2321,20 @@ export const ChatPanel = observer(function ChatPanel({
 
         return baseMessage
       })
+      if (currentSessionId) {
+        sessionMessageCache.set(currentSessionId, aiMessages as UIMessage[])
+      }
       setMessages(aiMessages)
     } else if (currentSessionId) {
-      if (initialMessageRef.current?.trim()) {
-        return
-      }
+      if (initialMessageRef.current?.trim()) return
       // Don't clear messages while Effect 1 is still loading — that would
       // cause a flicker (messages → empty → loading → messages).
-      if (isLoadingMessagesRef.current) {
-        return
-      }
+      if (isLoadingMessagesRef.current) return
+      // The MobX collection is shared across ChatPanel instances and only holds
+      // one session's messages at a time. When a sibling panel loads its session,
+      // our filtered view drops to 0 even though our AI SDK state is still valid.
+      // Never clobber non-empty AI SDK state from the MobX-empty signal.
+      if (messages.length > 0) return
       setMessages([])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2332,7 +2518,7 @@ export const ChatPanel = observer(function ChatPanel({
           userId,
           projectId,
           agentMode: perMsgModel || selectedModel,
-          interactionMode,
+          interactionMode: interactionModeRef.current,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }
         const planToSend = confirmedPlanRef.current
@@ -2341,6 +2527,7 @@ export const ChatPanel = observer(function ChatPanel({
           confirmedPlanRef.current = null
           setConfirmedPlan(null)
         }
+        console.log("[ChatPanel][send] bodyExtra — interactionMode:", bodyExtra.interactionMode, "agentMode:", bodyExtra.agentMode, "hasConfirmedPlan:", !!bodyExtra.confirmedPlan, "text:", trimmedContent.slice(0, 80))
         await sendMessage(messagePayload, { body: bodyExtra })
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
@@ -2360,7 +2547,6 @@ export const ChatPanel = observer(function ChatPanel({
       userId,
       projectId,
       selectedModel,
-      interactionMode,
       actions,
     ]
   )
@@ -2481,7 +2667,9 @@ export const ChatPanel = observer(function ChatPanel({
     confirmedPlanRef.current = pendingPlan
     setConfirmedPlan(pendingPlan)
     setPendingPlan(null)
+    console.log("[ChatPanel][confirm-plan] BEFORE mode change — stateMode:", interactionMode, "refMode:", interactionModeRef.current, "selectedModel:", selectedModel)
     handleInteractionModeChange("agent")
+    console.log("[ChatPanel][confirm-plan] AFTER mode change — refMode:", interactionModeRef.current, "(state will update on next render)")
     handleSendMessage("Execute the confirmed plan.")
     if (confirmDismissTimerRef.current) clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
@@ -2608,10 +2796,8 @@ export const ChatPanel = observer(function ChatPanel({
         })
       )
 
-      const dbMsg = studioChat.chatMessageCollection.all.find(
-        (m: any) => m.id === messageId
-      )
-      if (dbMsg?.parts) {
+      const dbMsg = sessionMessages?.all.find((m: any) => m.id === messageId)
+      if (dbMsg?.parts && sessionMessages) {
         try {
           const parsed = JSON.parse(dbMsg.parts)
           const updated = parsed.map((p: any) => {
@@ -2623,7 +2809,7 @@ export const ChatPanel = observer(function ChatPanel({
             }
             return p
           })
-          studioChat.chatMessageCollection
+          sessionMessages
             .update(messageId, { parts: JSON.stringify(updated) })
             .catch((err: any) =>
               console.error("[ChatPanel] Failed to persist ask_user output:", err)
@@ -2633,7 +2819,7 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
     },
-    [setMessages, studioChat]
+    [setMessages, sessionMessages]
   )
 
   const contextValue: ChatContextValue = {
@@ -2746,13 +2932,13 @@ export const ChatPanel = observer(function ChatPanel({
             }}
             scrollEventThrottle={32}
           >
-            {studioChat.chatMessageCollection.hasMore && (
+            {sessionMessages?.hasMore && (
               <Pressable
                 onPress={handleLoadOlderMessages}
-                disabled={studioChat.chatMessageCollection.isLoadingMore}
+                disabled={sessionMessages.isLoadingMore}
                 className="py-2 items-center"
               >
-                {studioChat.chatMessageCollection.isLoadingMore ? (
+                {sessionMessages.isLoadingMore ? (
                   <ActivityIndicator size="small" />
                 ) : (
                   <Text className="text-sm text-primary">Load earlier messages</Text>
@@ -2764,10 +2950,8 @@ export const ChatPanel = observer(function ChatPanel({
                 messages={displayMessages}
                 isStreaming={isStreaming}
                 phase={phase}
-                activeSubagents={
-                  Array.from(activeSubagents.values()) as SubagentProgressType[]
-                }
-                recentTools={recentTools as RecentToolType[]}
+                activeSubagents={activeSubagentsList}
+                recentTools={recentToolsList}
                 subagentToolCalls={accumulatedSubagentTools}
               />
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
@@ -2785,10 +2969,8 @@ export const ChatPanel = observer(function ChatPanel({
               <View className="gap-3">
                 {activeSubagents.size > 0 && (
                   <SubagentPanel
-                    subagents={
-                      Array.from(activeSubagents.values()) as SubagentProgressType[]
-                    }
-                    recentTools={recentTools as RecentToolType[]}
+                    subagents={activeSubagentsList}
+                    recentTools={recentToolsList}
                     defaultExpanded
                   />
                 )}

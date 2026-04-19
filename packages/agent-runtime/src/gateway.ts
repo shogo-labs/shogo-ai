@@ -80,6 +80,13 @@ import { buildGuideRegistry, CAPABILITIES_INDEX } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
+import {
+  PREVIEW_SUBDIR,
+  BUILD_LOG_FILE,
+  CONSOLE_LOG_FILE,
+  previewBuildLogPath,
+  previewConsoleLogPath,
+} from './runtime-log-paths'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -1149,6 +1156,7 @@ export class AgentGateway {
     }
 
     const interactionMode = options?.interactionMode || 'agent'
+    console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
     const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
@@ -1265,6 +1273,7 @@ export class AgentGateway {
       this.promptOverrides.delete('mcp_discovery_guide')
     }
 
+    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
     // Interaction mode system prompt injection
     if (interactionMode === 'plan') {
       const planModePrompt = [
@@ -1732,6 +1741,9 @@ export class AgentGateway {
       const turnNum = (this.turnCounters.get(sessionId) ?? 0) + 1
       this.turnCounters.set(sessionId, turnNum)
       let apiCallNum = 0
+
+      // Reset per-turn edit tracking so read_lints auto-scope starts clean.
+      this.fileStateCache.resetTurn()
 
       const result = await runAgentLoop({
         provider,
@@ -2313,6 +2325,14 @@ export class AgentGateway {
 
     // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
+    // 7c. Runtime build + console log tails (canvas mode only — Vite preview pipeline)
+    if (activeMode === 'canvas') {
+      const runtimeLogs = this.buildRuntimeLogsContext()
+      if (runtimeLogs) {
+        pushDynamic('runtime-logs', runtimeLogs)
+      }
+    }
+
     // 8. Agent template context (stable per-project, but read from disk)
     const agentTemplatePath = join(this.workspaceDir, '.template')
     if (existsSync(agentTemplatePath)) {
@@ -2396,6 +2416,81 @@ export class AgentGateway {
     const stableText = stableParts.join('\n\n---\n\n')
     const dynamicText = dynamicParts.join('\n\n---\n\n')
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
+  }
+
+  /**
+   * Last lines of `project/.build.log` and `project/.console.log` (Vite/API preview + runtime console).
+   * Used only when canvas mode is active; returns null if both files are missing or empty.
+   */
+  private buildRuntimeLogsContext(): string | null {
+    const LINE_LIMIT = 30
+    const MAX_BLOCK_CHARS = 3000
+    const buildPath = previewBuildLogPath(this.workspaceDir)
+    const consolePath = previewConsoleLogPath(this.workspaceDir)
+
+    let buildTail = ''
+    if (existsSync(buildPath)) {
+      try {
+        const raw = readFileSync(buildPath, 'utf-8')
+        const joined = raw.split(/\r?\n/).slice(-LINE_LIMIT).join('\n').trimEnd()
+        buildTail =
+          joined.length > MAX_BLOCK_CHARS ? joined.slice(-MAX_BLOCK_CHARS) : joined
+      } catch {
+        buildTail = ''
+      }
+    }
+
+    let consoleTail = ''
+    if (existsSync(consolePath)) {
+      try {
+        const raw = readFileSync(consolePath, 'utf-8')
+        const joined = raw.split(/\r?\n/).slice(-LINE_LIMIT).join('\n').trimEnd()
+        consoleTail =
+          joined.length > MAX_BLOCK_CHARS ? joined.slice(-MAX_BLOCK_CHARS) : joined
+      } catch {
+        consoleTail = ''
+      }
+    }
+
+    if (!buildTail && !consoleTail) {
+      return null
+    }
+
+    const buildLogRelative = `${PREVIEW_SUBDIR}/${BUILD_LOG_FILE}`
+    const consoleLogRelative = `${PREVIEW_SUBDIR}/${CONSOLE_LOG_FILE}`
+    const buildLogAbsolute = buildPath
+    const consoleLogAbsolute = consolePath
+
+    const lines: string[] = [
+      '## Runtime Logs (auto-injected, last ~30 lines each)',
+      '',
+      [
+        'These tails are refreshed every turn. Both logs live under the **`project/`** app template directory (same folder as `package.json` for the preview).',
+        `**Build:** \`${buildLogRelative}\` — full path \`${buildLogAbsolute}\`.`,
+        `**Console:** \`${consoleLogRelative}\` — full path \`${consoleLogAbsolute}\`.`,
+        'Use `read_file` with paths relative to the workspace root (e.g. `read_file({ path: \'project/.build.log\' })` and `read_file({ path: \'project/.console.log\' })`).',
+        'Shell `exec` depends on cwd — prefer absolute paths or `cd` into the workspace first.',
+        'The console file is cleared when the preview **starts** or **restarts** (fresh build session).',
+      ].join(' '),
+      '',
+      `### Build log (\`${buildLogRelative}\`)`,
+      `On disk: \`${buildLogAbsolute}\`. Written by the preview pipeline (Vite dev server + template API stdout/stderr). Lines use prefixes such as \`[stdout]\`, \`[stderr]\`, \`[api-stdout]\`. If the last lines show an error, fix it before claiming work is done.`,
+      '',
+      '```',
+      buildTail || '(empty)',
+      '```',
+      '',
+      `### Console log (\`${consoleLogRelative}\`)`,
+      [
+        `On disk: \`${consoleLogAbsolute}\`. Lines include forwarded preview/Vite output and gateway lifecycle events (\`emitLog\`) — same lines the user sees in the mobile app "Logs" tab.`,
+      ].join(' '),
+      '',
+      '```',
+      consoleTail || '(empty)',
+      '```',
+    ]
+
+    return lines.join('\n')
   }
 
   /**

@@ -37,6 +37,7 @@ import {
   useSDKReady,
   useDomainActions,
   useProjectCollection,
+  getChatMessageCollectionForSession,
 } from '@shogo/shared-app/domain'
 import {
   useDynamicAppStream,
@@ -903,9 +904,12 @@ export default observer(function ProjectLayout() {
           }
 
           try {
-            await store.chatMessageCollection.loadAll({ sessionId: s.id })
-            const msgs = store.chatMessageCollection.all
-              .filter((m: any) => m.sessionId === s.id && m.role === 'user')
+            // Per-session collection so concurrent loadAll calls don't clobber
+            // each other (and don't clobber an active ChatPanel's messages).
+            const sessionMessages = getChatMessageCollectionForSession(s.id)
+            await sessionMessages.loadAll({ sessionId: s.id })
+            const msgs = sessionMessages.all
+              .filter((m: any) => m.role === 'user')
               .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
             const preview = msgs[0]?.content?.trim()
             names[s.id] = preview
@@ -1124,6 +1128,28 @@ export default observer(function ProjectLayout() {
     }
   }, [showNativeNarrowChatFab])
 
+  // Memoized billingData fallback — must be declared before any conditional
+  // return so hook order stays stable across the loading → loaded transition.
+  //
+  // IMPORTANT: `useBillingData()` returns a fresh object on every render, so
+  // memoizing on the whole `billingData` reference would still produce a new
+  // `billingDataResolved` every render and break observer()/memo equality in
+  // every mounted ChatPanel (the root cause of tab-switch + streaming jank).
+  // Depend on the primitive fields ChatPanel actually consumes instead. The
+  // `refetchCreditLedger` callback is wrapped in useCallback([]) inside the
+  // hook, so its identity is already stable across renders.
+  const billingHasActive = features.billing ? billingData.hasActiveSubscription : true
+  const billingHasAdvanced = features.billing ? billingData.hasAdvancedModelAccess : true
+  const billingRefetch = billingData.refetchCreditLedger
+  const billingDataResolved = useMemo(
+    () => ({
+      hasActiveSubscription: billingHasActive,
+      hasAdvancedModelAccess: billingHasAdvanced,
+      refetchCreditLedger: billingRefetch,
+    }),
+    [billingHasActive, billingHasAdvanced, billingRefetch],
+  )
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -1136,8 +1162,6 @@ export default observer(function ProjectLayout() {
       </>
     )
   }
-
-  const billingDataResolved = features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }
 
   const chatPanels = (
     <>

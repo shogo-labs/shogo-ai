@@ -136,6 +136,18 @@ function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   return assertWithinWorkspaceSecure(workspaceDir, filePath)
 }
 
+const LINTABLE_EXTENSION_RE = /\.(ts|tsx|js|jsx|py)$/
+
+/**
+ * Mark a file as edited in the current turn if it has a lintable extension.
+ * Used by write_file/edit_file so read_lints can auto-scope diagnostics.
+ */
+function markEditedIfLintable(ctx: ToolContext, filePath: string): void {
+  if (!ctx.fileStateCache) return
+  if (!LINTABLE_EXTENSION_RE.test(filePath)) return
+  ctx.fileStateCache.markEditedThisTurn(filePath)
+}
+
 function applyPermissionGate(
   tool: AgentTool,
   category: import('./types').PermissionCategory,
@@ -398,9 +410,10 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         writeFileSync(resolved, content, 'utf-8')
       }
       ctx.fileStateCache?.invalidate(filePath)
+      markEditedIfLintable(ctx, filePath)
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
-      if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+      if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
         const finalContent = append
           ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
           : content
@@ -732,8 +745,9 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
           writeFileSync(resolved, new_string, 'utf-8')
           const newMtime = Math.floor(statSync(resolved).mtimeMs)
           ctx.fileStateCache?.recordEdit(filePath, new_string, newMtime)
+          markEditedIfLintable(ctx, filePath)
           ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+          if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
             ctx.lspManager.notifyFileChanged(resolved, new_string)
             ctx.lspManager.notifyFileSaved?.(resolved)
           }
@@ -858,9 +872,10 @@ async function commitEdit(
   if (ctx.fileStateCache) {
     ctx.fileStateCache.recordEdit(filePath, updated, newMtime)
   }
+  markEditedIfLintable(ctx, filePath)
 
   ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-  if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+  if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
     ctx.lspManager.notifyFileChanged(resolved, updated)
     ctx.lspManager.notifyFileSaved?.(resolved)
   }
@@ -5014,10 +5029,10 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       'Returns diagnostics from language servers plus any recent canvas runtime errors. ' +
       'Supports .ts, .tsx, .js, .jsx, and .py files. ' +
       'Use after writing or editing code files to catch mistakes. ' +
-      'Omit path to check all open files.',
+      'Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
     label: 'Read Lints',
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Omit to check all tracked files.' })),
+      path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),
     }),
     execute: async (_toolCallId, params) => {
       const lsp = ctx.lspManager
@@ -5033,12 +5048,37 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
 
       const { path: filePath } = params as { path?: string }
 
+      // Determine auto-scope: if no explicit path, and the agent has edited
+      // lintable files this turn, focus diagnostics on those files only.
+      const editedThisTurn = filePath ? [] : (ctx.fileStateCache?.getEditedThisTurn() ?? [])
+      const autoScopedPaths = editedThisTurn.length > 0 ? editedThisTurn : null
+
+      const workspacePrefix = `file://${ctx.workspaceDir}/`
       const targetUri = filePath
         ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}`
         : undefined
 
       await new Promise(resolve => setTimeout(resolve, 1500))
-      const allDiags = await lsp.getDiagnosticsAsync(targetUri)
+
+      let allDiags: Map<string, import('@shogo/shared-runtime').LSPDiagnostic[]>
+      if (autoScopedPaths) {
+        // Query each edited file individually so we don't pay for unrelated open files.
+        allDiags = new Map()
+        for (const rel of autoScopedPaths) {
+          const uri = `file://${assertWithinWorkspace(ctx.workspaceDir, rel)}`
+          const perFile = await lsp.getDiagnosticsAsync(uri)
+          for (const [u, diags] of perFile) {
+            allDiags.set(u, diags)
+          }
+          if (!allDiags.has(uri)) {
+            // Ensure the file shows up even when it has zero diagnostics,
+            // so the agent sees an explicit "ok" for files it just edited.
+            allDiags.set(uri, [])
+          }
+        }
+      } else {
+        allDiags = await lsp.getDiagnosticsAsync(targetUri)
+      }
 
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()
@@ -5047,15 +5087,26 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         : undefined
       if (runtimeErrorEntries.length > 0) clearCanvasRuntimeErrors()
 
+      const scopeMeta = autoScopedPaths
+        ? { auto_scoped: true as const, scoped_to: autoScopedPaths }
+        : {}
+
       if (allDiags.size === 0) {
         if (runtimeErrors) {
-          return textResult({ ok: false, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+          return textResult({ ok: false, ...scopeMeta, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
         }
-        return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
+        return textResult({
+          ok: true,
+          ...scopeMeta,
+          message: filePath
+            ? `No errors in ${filePath}`
+            : autoScopedPaths
+              ? `No errors in files you edited this turn (${autoScopedPaths.join(', ')}).`
+              : 'No errors found.',
+        })
       }
 
       const TS_RETURN_OUTSIDE_FN = 1108
-      const workspacePrefix = `file://${ctx.workspaceDir}/`
       let totalErrors = 0
       const files: Array<{ path: string; ok: boolean; errors: string[] }> = []
 
@@ -5078,14 +5129,23 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
 
       if (files.length === 0) {
         if (runtimeErrors) {
-          return textResult({ ok: false, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+          return textResult({ ok: false, ...scopeMeta, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
         }
-        return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
+        return textResult({
+          ok: true,
+          ...scopeMeta,
+          message: filePath
+            ? `No errors in ${filePath}`
+            : autoScopedPaths
+              ? `No errors in files you edited this turn (${autoScopedPaths.join(', ')}).`
+              : 'No errors found.',
+        })
       }
 
       const allOk = totalErrors === 0 && !runtimeErrors
       return textResult({
         ok: allOk,
+        ...scopeMeta,
         files,
         ...(runtimeErrors ? { runtimeErrors } : {}),
         ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run read_lints again to verify.' }),

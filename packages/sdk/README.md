@@ -411,15 +411,17 @@ serve({
     const { pathname } = new URL(req.url)
     if (pathname === '/retrieve') return handlers.retrieve(req)
     if (pathname === '/add') return handlers.add(req)
+    if (pathname === '/ingest') return handlers.ingest(req)
     return new Response('Not Found', { status: 404 })
   },
 })
 ```
 
-Register two client tools in ElevenLabs pointed at these endpoints:
+Register client tools in ElevenLabs pointed at these endpoints:
 
 - `retrieve_memory(query, limit?)` → `POST /retrieve { user_id, query, limit }`
 - `add_memory(fact)` → `POST /add { user_id, fact }`
+- (post-call webhook) → `POST /ingest { user_id, transcript, consolidate? }`
 
 In the agent system prompt:
 
@@ -448,7 +450,48 @@ const memory = new MemoryStore({
 })
 
 await memory.ingestTranscript(transcript, { summarize: true })
-// Writes one canonical bullet per fact to MEMORY.md
+// Appends one canonical bullet per extracted fact to MEMORY.md
+```
+
+### Post-Call Consolidation (merge + dedupe + resolve conflicts)
+
+`{ summarize: true }` is extractive and append-only — it doesn't know about bullets
+already in `MEMORY.md`, so duplicates and conflicting facts accumulate. Use
+`{ consolidate: true }` to have the summarizer reconcile the new transcript
+against the current memory and rewrite the file atomically:
+
+```typescript
+const result = await memory.ingestTranscript(transcript, { consolidate: true })
+// { bullets: 7, previous: 5, unchanged: false }
+
+// If the transcript changes "favorite color: cerulean" to turquoise, the
+// stale bullet is dropped and the new one takes its place — MEMORY.md ends up
+// with exactly the updated canonical set, and the search index is rebuilt.
+```
+
+How it works:
+
+1. Existing `MEMORY.md` bullets are parsed (ISO timestamps stripped).
+2. They're passed alongside the transcript to `summarizer.consolidate(...)`.
+   `createLlmSummarizer` implements this automatically with a default prompt
+   that merges duplicates, keeps the most recent value on conflict, and drops
+   transient small talk. Override via `buildConsolidationPrompt` if needed.
+3. If the summarizer returns zero parseable bullets, `MEMORY.md` is left
+   untouched (`unchanged: true`) — safe to retry.
+4. Otherwise the file is atomically rewritten (tmp + rename) and reindexed.
+
+Expose this as an HTTP endpoint with the built-in handler:
+
+```typescript
+import { createMemoryHandlers } from '@shogo-ai/sdk/memory/server'
+
+const handlers = createMemoryHandlers(({ userId }) =>
+  new MemoryStore({ dir: './memory-store', userId, summarizer }),
+)
+
+// POST /ingest  { user_id, transcript, consolidate?: boolean }
+// → { ok: true, bullets, previous, unchanged }
+app.post('/memory/ingest', handlers.ingest)
 ```
 
 ### Pre-Loading with Dynamic Variables
@@ -478,7 +521,11 @@ new MemoryStore({
 store.add(fact: string): void
 store.addDaily(entry: string, date?: string): void
 store.search(query: string, opts?: { limit?: number }): MemorySearchHit[]
-store.ingestTranscript(text: string, opts?: { summarize?: boolean }): Promise<void>
+store.readMemoryBullets(): string[]
+store.ingestTranscript(
+  text: string,
+  opts?: { summarize?: boolean; consolidate?: boolean },
+): Promise<{ bullets: number; previous: number; unchanged: boolean }>
 store.close(): void
 ```
 

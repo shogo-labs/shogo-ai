@@ -7,7 +7,7 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { useState, useCallback } from "react"
+import { memo, useState, useCallback } from "react"
 import { View, Text, Pressable } from "react-native"
 import { Motion } from "@legendapp/motion"
 import * as Clipboard from "expo-clipboard"
@@ -92,15 +92,21 @@ function LoadingDots() {
   )
 }
 
-export function TurnGroup({
-  turn,
-  phase,
-  activeSubagents = [],
-  recentTools = [],
-  showToolTimeline = false,
-  className,
-}: TurnGroupProps) {
-  const colors = usePhaseColor(phase || "")
+/**
+ * Memoized so ChatPanel re-renders (MobX reactions, tab switches, streaming
+ * token deltas for the *last* turn) don't re-render every prior turn.
+ * Only the streaming turn changes per token, so memoized prior turns short-circuit.
+ */
+export const TurnGroup = memo(
+  function TurnGroup({
+    turn,
+    phase,
+    activeSubagents = [],
+    recentTools = [],
+    showToolTimeline = false,
+    className,
+  }: TurnGroupProps) {
+    const colors = usePhaseColor(phase || "")
 
   return (
     <Motion.View
@@ -166,6 +172,14 @@ export function TurnGroup({
       )}
     </Motion.View>
   )
-}
+  },
+  (prev, next) =>
+    prev.turn === next.turn &&
+    prev.phase === next.phase &&
+    prev.activeSubagents === next.activeSubagents &&
+    prev.recentTools === next.recentTools &&
+    prev.showToolTimeline === next.showToolTimeline &&
+    prev.className === next.className,
+)
 
 export default TurnGroup
