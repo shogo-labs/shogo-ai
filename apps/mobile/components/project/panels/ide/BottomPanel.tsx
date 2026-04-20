@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { X } from "lucide-react-native";
-import { Terminal } from "./Terminal";
 
-const TABS = ["Terminal", "Problems", "Output"] as const;
+const TABS = ["Problems", "Output"] as const;
 type TabId = (typeof TABS)[number];
 
 export function BottomPanel({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<TabId>("Terminal");
+  const [tab, setTab] = useState<TabId>("Problems");
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e]">
@@ -35,9 +34,6 @@ export function BottomPanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       <div className="flex-1 overflow-hidden">
-        <div className={`h-full ${tab === "Terminal" ? "" : "hidden"}`}>
-          <Terminal visible={tab === "Terminal"} />
-        </div>
         {tab === "Problems" && (
           <div className="h-full p-3 font-mono text-[12px] text-[#858585]">
             No problems detected in workspace.

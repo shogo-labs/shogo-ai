@@ -1,10 +1,9 @@
-import { Files, Search, GitBranch, Settings } from "lucide-react-native";
+import { Files, Search, Settings } from "lucide-react-native";
 import type { ActivityId } from "./types";
 
 const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string }[] = [
   { id: "files", icon: Files, label: "Explorer" },
   { id: "search", icon: Search, label: "Search" },
-  { id: "git", icon: GitBranch, label: "Source Control" },
 ];
 
 export function ActivityBar({
