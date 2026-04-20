@@ -21,6 +21,7 @@ import { SettingsPane } from "./SettingsPane";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
+import { FIX_IN_AGENT_EVENT, type FixInAgentPayload } from "./agentFixProvider";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { api } from "./workspace/apiBase";
@@ -231,6 +232,22 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     void loadRoot("agent");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── Fix-in-agent toast ─────────────────────────────────────────────
+  // When the user clicks "✨ Fix with Shogo" in a Monaco hover or quick-fix,
+  // agentFixProvider dispatches a window event carrying the diagnostic.
+  // ChatPanel handles sending it to the agent; the IDE just flashes a toast
+  // as immediate visual confirmation.
+  useEffect(() => {
+    const onFix = (e: Event) => {
+      const detail = (e as CustomEvent<FixInAgentPayload>).detail;
+      if (!detail) return;
+      const file = detail.path.split("/").pop() || detail.path;
+      showToast(`Sent to Shogo — fixing ${file}:${detail.line}`, 2200);
+    };
+    window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener);
+    return () => window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener);
+  }, [showToast]);
 
   // ─── Local folder open/close ────────────────────────────────────────
   const mountLocalRoot = useCallback(
@@ -893,8 +910,9 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         e.preventDefault(); setActivity("search"); return;
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture phase so shortcuts work while Monaco has focus (bubble listeners never run).
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     gotoLine, openLocalFolder,

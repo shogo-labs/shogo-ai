@@ -133,7 +133,7 @@ export class AgentClient {
    * Returns an EventSource — listen to `message` events for JSON payloads.
    */
   subscribeToCanvas(): EventSource {
-    return new EventSource(this.url('/agent/canvas/stream'))
+    return new EventSource(this.url('/agent/canvas/stream'), { withCredentials: true })
   }
 
   /**
@@ -157,7 +157,10 @@ export class AgentClient {
 
     const open = () => {
       if (closed) return
-      es = new EventSource(this.url('/agent/canvas/stream'))
+      const url = this.url('/agent/canvas/stream')
+      console.log('[LIVE] AgentClient.subscribeToWorkspace opening EventSource to', url)
+      es = new EventSource(url, { withCredentials: true })
+      es.onopen = () => console.log('[LIVE] EventSource OPEN', url)
       es.onmessage = (ev) => {
         let parsed: unknown
         try { parsed = JSON.parse(ev.data) } catch { return }

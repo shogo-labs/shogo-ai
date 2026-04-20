@@ -862,8 +862,9 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         e.preventDefault(); setActivity("search"); return;
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture phase so shortcuts work while Monaco has focus (bubble listeners never run).
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     gotoLine, openLocalFolder,

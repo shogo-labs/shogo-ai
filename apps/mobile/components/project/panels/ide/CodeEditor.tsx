@@ -2,6 +2,7 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import { useRef } from "react";
 import type { editor } from "monaco-editor";
 import type { EditorSettings } from "./types";
+import { setupAgentFix } from "./agentFixProvider";
 
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
@@ -61,6 +62,10 @@ function configureMonaco(monaco: MonacoNs) {
   ts.javascriptDefaults.setDiagnosticsOptions(diagOpts);
 
   ts.typescriptDefaults.setEagerModelSync(true);
+
+  // Register the "Fix with Shogo" hover button + quick-fix code action for
+  // every language Monaco knows about. Idempotent across split editors.
+  setupAgentFix(monaco);
 }
 
 export function CodeEditor({
