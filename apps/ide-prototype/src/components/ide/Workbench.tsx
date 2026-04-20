@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { useResizable, VerticalSplit, HorizontalSplit } from "./Splitter";
 import { ActivityBar } from "./ActivityBar";
-import { FileTree } from "./FileTree";
+import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { StatusBar } from "./StatusBar";
@@ -9,7 +9,16 @@ import { BottomPanel } from "./BottomPanel";
 import { CodeEditor } from "./CodeEditor";
 import type { ActivityId, OpenFile, TreeNode } from "./types";
 import { agentFs } from "./workspace/agentFs";
-import { Search, GitBranch, Bot, Settings, RefreshCw, AlertTriangle } from "lucide-react";
+import {
+  Search,
+  GitBranch,
+  Bot,
+  Settings,
+  RefreshCw,
+  AlertTriangle,
+  FilePlus,
+  FolderPlus,
+} from "lucide-react";
 
 export function Workbench() {
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -20,12 +29,22 @@ export function Workbench() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
+  const sidebarSplit = useResizable({ initial: 260, min: 180, max: 520, direction: "horizontal" });
+  const bottomSplit = useResizable({ initial: 220, min: 80, max: 500, direction: "vertical" });
   const [toast, setToast] = useState<string | null>(null);
+  const [newRequest, setNewRequest] = useState<{ kind: "file" | "dir"; nonce: number } | null>(
+    null,
+  );
 
   const active = useMemo(
     () => open.find((f) => f.id === activeId) ?? null,
     [open, activeId],
   );
+
+  const showToast = useCallback((msg: string, ms = 1400) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), ms);
+  }, []);
 
   const loadTree = useCallback(async () => {
     setTreeLoading(true);
@@ -111,6 +130,129 @@ export function Workbench() {
     });
   };
 
+  const handleCreate = useCallback(
+    async (parentPath: string, name: string, kind: "file" | "dir") => {
+      const full = parentPath ? `${parentPath}/${name}` : name;
+      try {
+        if (kind === "dir") {
+          await agentFs.mkdir(full);
+          showToast(`Created folder ${name}`);
+        } else {
+          await agentFs.writeFile(full, "");
+          showToast(`Created ${name}`);
+        }
+        await loadTree();
+      } catch (err) {
+        showToast(
+          `Create failed: ${err instanceof Error ? err.message : String(err)}`,
+          3000,
+        );
+      }
+    },
+    [loadTree, showToast],
+  );
+
+  const handleRenameNode = useCallback(
+    async (node: TreeNode, newName: string) => {
+      const parent = node.path.includes("/")
+        ? node.path.slice(0, node.path.lastIndexOf("/"))
+        : "";
+      const to = parent ? `${parent}/${newName}` : newName;
+      try {
+        await agentFs.rename(node.path, to);
+        showToast(`Renamed to ${newName}`);
+        setOpen((prev) =>
+          prev.map((f) =>
+            f.path === node.path
+              ? { ...f, id: to, path: to, name: newName }
+              : f.path.startsWith(node.path + "/")
+              ? {
+                  ...f,
+                  id: to + f.path.slice(node.path.length),
+                  path: to + f.path.slice(node.path.length),
+                }
+              : f,
+          ),
+        );
+        setActiveId((id) =>
+          id === node.path
+            ? to
+            : id && id.startsWith(node.path + "/")
+            ? to + id.slice(node.path.length)
+            : id,
+        );
+        await loadTree();
+      } catch (err) {
+        showToast(
+          `Rename failed: ${err instanceof Error ? err.message : String(err)}`,
+          3000,
+        );
+      }
+    },
+    [loadTree, showToast],
+  );
+
+  const handleDeleteNode = useCallback(
+    async (node: TreeNode) => {
+      try {
+        await agentFs.remove(node.path);
+        showToast(`Deleted ${node.name}`);
+        setOpen((prev) =>
+          prev.filter(
+            (f) => f.path !== node.path && !f.path.startsWith(node.path + "/"),
+          ),
+        );
+        setActiveId((id) =>
+          id && (id === node.path || id.startsWith(node.path + "/")) ? null : id,
+        );
+        await loadTree();
+      } catch (err) {
+        showToast(
+          `Delete failed: ${err instanceof Error ? err.message : String(err)}`,
+          3000,
+        );
+      }
+    },
+    [loadTree, showToast],
+  );
+
+  const handleMove = useCallback(
+    async (from: TreeNode, toDir: TreeNode | null) => {
+      const targetDir = toDir?.path ?? "";
+      const currentParent = from.path.includes("/")
+        ? from.path.slice(0, from.path.lastIndexOf("/"))
+        : "";
+      if (targetDir === currentParent) return;
+      if (targetDir === from.path || targetDir.startsWith(from.path + "/")) {
+        showToast("Can't move folder into itself", 2500);
+        return;
+      }
+      const to = targetDir ? `${targetDir}/${from.name}` : from.name;
+      try {
+        await agentFs.rename(from.path, to);
+        showToast(`Moved ${from.name}`);
+        await loadTree();
+      } catch (err) {
+        showToast(
+          `Move failed: ${err instanceof Error ? err.message : String(err)}`,
+          3000,
+        );
+      }
+    },
+    [loadTree, showToast],
+  );
+
+  const treeHandlers: FileTreeHandlers = useMemo(
+    () => ({
+      onOpen: (n) => void handleOpenFile(n),
+      onCreate: handleCreate,
+      onRename: handleRenameNode,
+      onDelete: handleDeleteNode,
+      onMove: handleMove,
+    }),
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove],
+  );
+
   const handleSave = useCallback(async () => {
     if (!active || !active.dirty) return;
     try {
@@ -122,14 +264,12 @@ export function Workbench() {
             : f,
         ),
       );
-      setToast(`Saved ${active.name}`);
-      window.setTimeout(() => setToast(null), 1400);
+      showToast(`Saved ${active.name}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setToast(`Save failed: ${msg}`);
-      window.setTimeout(() => setToast(null), 3000);
+      showToast(`Save failed: ${msg}`, 3000);
     }
-  }, [active]);
+  }, [active, showToast]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -162,7 +302,7 @@ export function Workbench() {
           <span className="text-[#858585]">—</span>
           <span className="text-[#858585]">feat/shogo-IDE</span>
           <span className="ml-3 rounded bg-[#0078d4]/30 px-1.5 py-[1px] text-[10px] text-[#75beff]">
-            Phase 2 · live FS
+            Phase 3 · CRUD
           </span>
         </div>
         <div className="flex items-center gap-3 text-[#858585]">
@@ -175,84 +315,83 @@ export function Workbench() {
       <div className="flex flex-1 min-h-0">
         <ActivityBar active={activity} onSelect={setActivity} />
 
-        <Group orientation="horizontal" className="flex-1 flex">
-          <Panel id="sidebar" defaultSize={18} minSize={12} maxSize={40}>
-            <div className="h-full bg-[#252526] border-r border-[#2a2a2a]">
-              {activity === "files" && (
-                <FilesPane
-                  tree={tree}
-                  loading={treeLoading}
-                  error={treeError}
-                  activePath={active?.path ?? null}
-                  onOpen={handleOpenFile}
-                  onRefresh={loadTree}
-                />
-              )}
-              {activity === "search" && (
-                <Placeholder icon={<Search size={18} />} title="Search" hint="Coming in Phase 6" />
-              )}
-              {activity === "git" && (
-                <Placeholder icon={<GitBranch size={18} />} title="Source Control" hint="Coming soon" />
-              )}
-              {activity === "agent" && (
-                <Placeholder icon={<Bot size={18} />} title="Shogo Agent" hint="Live edits arrive in Phase 7" />
-              )}
-              {activity === "settings" && (
-                <Placeholder icon={<Settings size={18} />} title="Settings" hint="JSON + GUI in Phase 6" />
-              )}
-            </div>
-          </Panel>
+        <div className="flex flex-1 min-w-0">
+          <div
+            style={{ width: sidebarSplit.size, flexShrink: 0 }}
+            className="h-full bg-[#252526]"
+          >
+            {activity === "files" && (
+              <FilesPane
+                tree={tree}
+                loading={treeLoading}
+                error={treeError}
+                activePath={active?.path ?? null}
+                handlers={treeHandlers}
+                newRequest={newRequest}
+                onRefresh={loadTree}
+                onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
+              />
+            )}
+            {activity === "search" && (
+              <Placeholder icon={<Search size={18} />} title="Search" hint="Coming in Phase 6" />
+            )}
+            {activity === "git" && (
+              <Placeholder icon={<GitBranch size={18} />} title="Source Control" hint="Coming soon" />
+            )}
+            {activity === "agent" && (
+              <Placeholder icon={<Bot size={18} />} title="Shogo Agent" hint="Live edits arrive in Phase 7" />
+            )}
+            {activity === "settings" && (
+              <Placeholder icon={<Settings size={18} />} title="Settings" hint="JSON + GUI in Phase 6" />
+            )}
+          </div>
 
-          <Separator className="w-px bg-[#2a2a2a] hover:bg-[#0078d4] transition-colors cursor-col-resize" />
+          <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
 
-          <Panel id="main" minSize={30}>
-            <Group orientation="vertical" className="h-full flex flex-col">
-              <Panel id="editor" defaultSize={panelOpen ? 70 : 100} minSize={30}>
-                <div className="flex h-full flex-col bg-[#1e1e1e]">
-                  <EditorTabs
-                    files={open}
-                    activeId={activeId}
-                    onSelect={setActiveId}
-                    onClose={handleClose}
-                  />
-                  {active && <Breadcrumbs path={active.path} />}
-                  <div className="flex-1 min-h-0 relative">
-                    {active ? (
-                      active.loading ? (
-                        <LoadingState name={active.name} />
-                      ) : active.error ? (
-                        <ErrorState name={active.name} message={active.error} />
-                      ) : (
-                        <CodeEditor
-                          value={active.content}
-                          language={active.language}
-                          onChange={handleChange}
-                          onCursor={(line, col) => setCursor({ line, col })}
-                        />
-                      )
-                    ) : (
-                      <EmptyState />
-                    )}
-                    {toast && (
-                      <div className="absolute bottom-3 right-4 rounded bg-[#0078d4] px-3 py-1.5 text-[12px] text-white shadow-lg">
-                        {toast}
-                      </div>
-                    )}
+          <div className="flex flex-1 min-w-0 flex-col">
+            <div className="flex flex-1 min-h-0 flex-col bg-[#1e1e1e]">
+              <EditorTabs
+                files={open}
+                activeId={activeId}
+                onSelect={setActiveId}
+                onClose={handleClose}
+              />
+              {active && <Breadcrumbs path={active.path} />}
+              <div className="flex-1 min-h-0 relative">
+                {active ? (
+                  active.loading ? (
+                    <LoadingState name={active.name} />
+                  ) : active.error ? (
+                    <ErrorState name={active.name} message={active.error} />
+                  ) : (
+                    <CodeEditor
+                      value={active.content}
+                      language={active.language}
+                      onChange={handleChange}
+                      onCursor={(line, col) => setCursor({ line, col })}
+                    />
+                  )
+                ) : (
+                  <EmptyState />
+                )}
+                {toast && (
+                  <div className="absolute bottom-3 right-4 rounded bg-[#0078d4] px-3 py-1.5 text-[12px] text-white shadow-lg">
+                    {toast}
                   </div>
-                </div>
-              </Panel>
+                )}
+              </div>
+            </div>
 
-              {panelOpen && (
-                <>
-                  <Separator className="h-px bg-[#2a2a2a] hover:bg-[#0078d4] transition-colors cursor-row-resize" />
-                  <Panel id="bottom" defaultSize={30} minSize={10}>
-                    <BottomPanel onClose={() => setPanelOpen(false)} />
-                  </Panel>
-                </>
-              )}
-            </Group>
-          </Panel>
-        </Group>
+            {panelOpen && (
+              <>
+                <HorizontalSplit onMouseDown={bottomSplit.onMouseDown} />
+                <div style={{ height: bottomSplit.size, flexShrink: 0 }}>
+                  <BottomPanel onClose={() => setPanelOpen(false)} />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       <StatusBar
@@ -273,15 +412,19 @@ function FilesPane({
   loading,
   error,
   activePath,
-  onOpen,
+  handlers,
+  newRequest,
   onRefresh,
+  onNew,
 }: {
   tree: TreeNode[];
   loading: boolean;
   error: string | null;
   activePath: string | null;
-  onOpen: (n: TreeNode) => void;
+  handlers: FileTreeHandlers;
+  newRequest: { kind: "file" | "dir"; nonce: number } | null;
   onRefresh: () => void;
+  onNew: (kind: "file" | "dir") => void;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -289,13 +432,29 @@ function FilesPane({
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[#858585]">
           Explorer
         </span>
-        <button
-          onClick={onRefresh}
-          title="Refresh"
-          className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
-        >
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onNew("file")}
+            title="New File"
+            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            <FilePlus size={13} />
+          </button>
+          <button
+            onClick={() => onNew("dir")}
+            title="New Folder"
+            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            <FolderPlus size={13} />
+          </button>
+          <button
+            onClick={onRefresh}
+            title="Refresh"
+            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          >
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+          </button>
+        </div>
       </div>
       {error ? (
         <div className="px-4 py-3 text-[12px] text-[#f48771]">
@@ -315,7 +474,12 @@ function FilesPane({
           ))}
         </div>
       ) : (
-        <FileTree tree={tree} activePath={activePath} onOpen={onOpen} />
+        <FileTree
+          tree={tree}
+          activePath={activePath}
+          handlers={handlers}
+          newRequest={newRequest}
+        />
       )}
     </div>
   );
@@ -365,19 +529,24 @@ function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 text-[#858585]">
       <div className="text-5xl">⚡</div>
-      <div className="text-[14px]">Shogo IDE — Phase 2 · connected to agent workspace</div>
+      <div className="text-[14px]">Shogo IDE — Phase 3 · full file CRUD</div>
       <div className="flex gap-6 text-[12px]">
         <span>
-          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">⌘S</kbd> Save to disk
+          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">⌘S</kbd> Save
         </span>
         <span>
-          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">⌘W</kbd> Close
+          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">F2</kbd> Rename
         </span>
         <span>
-          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">⌘J</kbd> Toggle panel
+          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">Delete</kbd> Remove
+        </span>
+        <span>
+          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">Right-click</kbd> Menu
         </span>
       </div>
-      <div className="text-[11px] text-[#555]">Click a file in the tree →</div>
+      <div className="text-[11px] text-[#555]">
+        Drag files between folders · click a file in the tree →
+      </div>
     </div>
   );
 }
