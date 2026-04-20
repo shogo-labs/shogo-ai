@@ -14,7 +14,7 @@ import { ContextMenu, type MenuEntry } from "./ContextMenu";
 
 export interface FileTreeHandlers {
   onOpen: (node: TreeNode) => void;
-  onCreate: (parentPath: string, name: string, kind: "file" | "dir") => Promise<void>;
+  onCreate: (rootId: string, parentPath: string, name: string, kind: "file" | "dir") => Promise<void>;
   onRename: (node: TreeNode, newName: string) => Promise<void>;
   onDelete: (node: TreeNode) => Promise<void>;
   onMove: (from: TreeNode, toDir: TreeNode | null) => Promise<void>;
@@ -66,7 +66,7 @@ export function FileTree({
   tree: TreeNode[];
   activePath: string | null;
   handlers: FileTreeHandlers;
-  newRequest?: { kind: "file" | "dir"; nonce: number } | null;
+  newRequest?: { kind: "file" | "dir"; nonce: number; rootId?: string } | null;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     const s = new Set<string>();
@@ -76,6 +76,7 @@ export function FileTree({
   const [selected, setSelected] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ path: string; draft: string } | null>(null);
   const [creating, setCreating] = useState<{
+    rootId: string;
     parentPath: string;
     kind: "file" | "dir";
     draft: string;
@@ -138,9 +139,9 @@ export function FileTree({
   };
 
   const beginCreate = useCallback(
-    (parentPath: string, kind: "file" | "dir") => {
+    (rootId: string, parentPath: string, kind: "file" | "dir") => {
       if (parentPath) expand(parentPath);
-      setCreating({ parentPath, kind, draft: "" });
+      setCreating({ rootId, parentPath, kind, draft: "" });
     },
     [expand],
   );
@@ -148,18 +149,19 @@ export function FileTree({
   useEffect(() => {
     if (!newRequest) return;
     const n = selected ? findNode(tree, selected) : null;
+    const rootId = n?.rootId ?? newRequest.rootId ?? tree[0]?.rootId ?? "agent";
     const parent = n ? (n.kind === "dir" ? n.path : parentOf(n.path)) : "";
-    beginCreate(parent, newRequest.kind);
+    beginCreate(rootId, parent, newRequest.kind);
   }, [newRequest, beginCreate, selected, tree]);
 
   const commitCreate = async () => {
     if (!creating) return;
     const name = creating.draft.trim();
-    const { parentPath, kind } = creating;
+    const { rootId, parentPath, kind } = creating;
     setCreating(null);
     if (!name) return;
     try {
-      await handlers.onCreate(parentPath, name, kind);
+      await handlers.onCreate(rootId, parentPath, name, kind);
     } catch {
       /* toast handled by parent */
     }
@@ -252,17 +254,18 @@ export function FileTree({
   const selectedNode = selected ? findNode(tree, selected) : null;
 
   const menuItems = (node: TreeNode | null): MenuEntry[] => {
+    const defaultRootId = tree[0]?.rootId ?? "agent";
     if (!node) {
       return [
         {
           label: "New File",
           icon: <FilePlus size={14} />,
-          onClick: () => beginCreate("", "file"),
+          onClick: () => beginCreate(defaultRootId, "", "file"),
         },
         {
           label: "New Folder",
           icon: <FolderPlus size={14} />,
-          onClick: () => beginCreate("", "dir"),
+          onClick: () => beginCreate(defaultRootId, "", "dir"),
         },
       ];
     }
@@ -271,12 +274,12 @@ export function FileTree({
       {
         label: "New File",
         icon: <FilePlus size={14} />,
-        onClick: () => beginCreate(parent, "file"),
+        onClick: () => beginCreate(node.rootId, parent, "file"),
       },
       {
         label: "New Folder",
         icon: <FolderPlus size={14} />,
-        onClick: () => beginCreate(parent, "dir"),
+        onClick: () => beginCreate(node.rootId, parent, "dir"),
       },
       { separator: true },
       {
@@ -362,12 +365,15 @@ export function FileTree({
           );
         }
 
+        const isWorkspaceRoot = (node as TreeNode).isRoot === true;
+
         return (
           <div
-            key={node.path}
-            draggable
+            key={`${node.rootId}::${node.path}`}
+            draggable={!isWorkspaceRoot}
             onDragStart={(e) => {
               e.dataTransfer.setData("application/x-ide-path", node.path);
+              e.dataTransfer.setData("application/x-ide-root", node.rootId);
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
@@ -382,7 +388,9 @@ export function FileTree({
               setDropTarget(null);
               if (node.kind !== "dir") return;
               const src = e.dataTransfer.getData("application/x-ide-path");
+              const srcRoot = e.dataTransfer.getData("application/x-ide-root");
               if (!src || src === node.path) return;
+              if (srcRoot && srcRoot !== node.rootId) return;
               const srcNode = findNode(tree, src);
               if (srcNode) void handlers.onMove(srcNode, node);
             }}
@@ -393,15 +401,23 @@ export function FileTree({
               else handlers.onOpen(node);
             }}
             onContextMenu={(e) => openContextMenu(e, node)}
-            className={`group flex cursor-pointer items-center gap-1 px-2 py-[3px] text-[13px] ${
-              isDropInto
-                ? "bg-[#094771] ring-1 ring-inset ring-[#0078d4]"
-                : isActive
-                ? "bg-[#37373d] text-white"
-                : isSelected
-                ? "bg-[#2a2d2e] text-white"
-                : "text-[#cccccc] hover:bg-[#2a2d2e]"
-            }`}
+            className={
+              isWorkspaceRoot
+                ? `group flex cursor-pointer items-center gap-1 px-2 py-[4px] text-[11px] font-semibold uppercase tracking-wider ${
+                    isDropInto
+                      ? "bg-[#094771] text-white"
+                      : "text-[#858585] hover:text-white hover:bg-[#2a2d2e]"
+                  }`
+                : `group flex cursor-pointer items-center gap-1 px-2 py-[3px] text-[13px] ${
+                    isDropInto
+                      ? "bg-[#094771] ring-1 ring-inset ring-[#0078d4]"
+                      : isActive
+                      ? "bg-[#37373d] text-white"
+                      : isSelected
+                      ? "bg-[#2a2d2e] text-white"
+                      : "text-[#cccccc] hover:bg-[#2a2d2e]"
+                  }`
+            }
             style={{ paddingLeft: 8 + depth * 12 }}
           >
             {node.kind === "dir" ? (
@@ -412,11 +428,12 @@ export function FileTree({
                     isExpanded ? "rotate-90" : ""
                   }`}
                 />
-                {isExpanded ? (
-                  <FolderOpen size={15} className="text-[#dcb67a]" />
-                ) : (
-                  <Folder size={15} className="text-[#dcb67a]" />
-                )}
+                {!isWorkspaceRoot &&
+                  (isExpanded ? (
+                    <FolderOpen size={15} className="text-[#dcb67a]" />
+                  ) : (
+                    <Folder size={15} className="text-[#dcb67a]" />
+                  ))}
               </>
             ) : (
               <>

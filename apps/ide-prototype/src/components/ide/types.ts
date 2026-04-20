@@ -2,12 +2,21 @@ import type { WsNode } from "./workspace/types";
 
 export type ActivityId = "files" | "search" | "git" | "agent" | "settings";
 
-export type TreeNode = WsNode;
+/** A tree node annotated with the root it belongs to. */
+export interface TreeNode extends WsNode {
+  rootId: string;
+  isRoot?: boolean;
+  children?: TreeNode[];
+}
+
+/** Raw service node helper — we decorate this with rootId when ingesting. */
+export type RawNode = WsNode;
 
 export interface OpenFile {
-  id: string;
+  id: string;           // `${rootId}::${path}` — globally unique
+  rootId: string;
   name: string;
-  path: string;
+  path: string;         // relative to root
   language: string;
   content: string;
   savedContent: string;
@@ -21,4 +30,13 @@ export interface EditorGroup {
   id: string;
   files: OpenFile[];
   activeId: string | null;
+}
+
+export interface Root {
+  id: string;                             // "agent" | `local:${uuid}`
+  label: string;
+  kind: "agent" | "local";
+  tree: TreeNode[];
+  loading: boolean;
+  error: string | null;
 }
