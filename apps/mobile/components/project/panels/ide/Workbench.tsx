@@ -21,6 +21,7 @@ import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
 import { GitPane } from "./GitPane";
 import type { WorkspaceService } from "./workspace/types";
+// Workspace services are injected by the parent (WorkspaceService impls per root).
 import { api } from "./workspace/apiBase";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
