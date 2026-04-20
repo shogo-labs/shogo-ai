@@ -10,6 +10,10 @@ FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch.
+RUN apk add --no-cache python3 make g++
+
 # Copy workspace root files
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
@@ -66,6 +70,10 @@ RUN rm -rf packages/*/node_modules
 FROM oven/bun:1.3-alpine AS deps
 
 WORKDIR /app
+
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch.
+RUN apk add --no-cache python3 make g++
 
 RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
 

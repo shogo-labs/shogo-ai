@@ -21,6 +21,12 @@ FROM oven/bun:1.3-debian AS builder
 
 WORKDIR /app
 
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
@@ -74,6 +80,12 @@ RUN rm -rf packages/*/node_modules apps/*/node_modules
 FROM oven/bun:1.3-debian AS deps
 
 WORKDIR /app
+
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create user matching production uid so node_modules is pre-owned by uid 1001.
 # COPY --from=deps preserves ownership, so no --chown or chown -R needed later.
