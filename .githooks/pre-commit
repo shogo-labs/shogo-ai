@@ -1,58 +1,81 @@
 #!/usr/bin/env bash
 #
-# pre-commit: ensure Prisma migrations are up-to-date when schema changes.
+# pre-commit: ensure Prisma migrations accompany any schema change.
 #
-# If prisma/schema.prisma is staged, runs `prisma migrate diff` to detect
-# whether the schema has drifted from the migration history. If it has,
-# the commit is blocked until the developer runs `npx prisma migrate dev`.
+# Intent: if you edit prisma/schema.prisma or prisma/schema.local.prisma, you
+# must also stage a new migration file in the corresponding migrations dir.
+# This catches the common "forgot to generate a migration" mistake before it
+# hits main.
+#
+# Previous versions of this hook ran `prisma migrate diff --from-migrations
+# --to-schema-datamodel ...` to catch partial migrations too, but Prisma v7
+# removed --to-schema-datamodel and now requires a shadow database URL for
+# --from-migrations, which is too heavy for a pre-commit hook. The file-
+# presence check covers the vast majority of real-world mistakes without any
+# DB dependency.
+#
+# To skip this check (e.g. comment-only reformatting of the schema), use
+# `git commit --no-verify`.
 #
 
-SCHEMA_FILE="prisma/schema.prisma"
-MIGRATIONS_DIR="prisma/migrations"
+set -euo pipefail
 
-# Only run if prisma/schema.prisma is among the staged files
-if ! git diff --cached --name-only | grep -q "^${SCHEMA_FILE}$"; then
-  exit 0
-fi
+CLOUD_SCHEMA="prisma/schema.prisma"
+CLOUD_MIGRATIONS="prisma/migrations"
+LOCAL_SCHEMA="prisma/schema.local.prisma"
+LOCAL_MIGRATIONS="apps/desktop/prisma/migrations"
 
-echo "[pre-commit] Prisma schema change detected — checking migration status..."
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
 
-# Use prisma migrate diff to compare migrations against the schema.
-# --exit-code makes it exit 2 if there are differences, 0 if in sync.
-diff_output=$(npx prisma migrate diff \
-  --from-migrations "./${MIGRATIONS_DIR}" \
-  --to-schema-datamodel "./${SCHEMA_FILE}" \
-  --exit-code 2>&1)
-diff_exit=$?
+check_schema() {
+  local schema_path="$1"
+  local migrations_path="$2"
+  local label="$3"
 
-if [ "$diff_exit" -eq 2 ]; then
+  # Schema not staged? Nothing to check.
+  if ! printf '%s\n' "$staged_files" | grep -qx "$schema_path"; then
+    return 0
+  fi
+
+  echo "[pre-commit] ${label} schema change detected — verifying migration is staged..."
+
+  # Look for a staged migration.sql under the matching migrations directory.
+  if printf '%s\n' "$staged_files" | grep -qE "^${migrations_path}/[^/]+/migration\.sql$"; then
+    echo "[pre-commit] ${label}: migration file staged alongside schema change — OK."
+    return 0
+  fi
+
   echo ""
   echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║  ERROR: Prisma schema has changes without a migration!      ║"
+  echo "║  ERROR: ${label} schema changed without a migration!"
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo ""
-  echo "The schema at ${SCHEMA_FILE} has drifted from the migration"
-  echo "history in ${MIGRATIONS_DIR}/."
+  echo "  Schema:     ${schema_path}"
+  echo "  Migrations: ${migrations_path}/"
   echo ""
-  echo "Pending changes:"
-  echo "$diff_output"
+  echo "You have staged changes to ${schema_path} but no new migration"
+  echo "file under ${migrations_path}/."
   echo ""
-  echo "To fix this, run:"
-  echo ""
-  echo "    npx prisma migrate dev --name <descriptive_name>"
-  echo ""
-  echo "Then stage the new migration files and commit again."
+  if [ "$schema_path" = "$CLOUD_SCHEMA" ]; then
+    echo "To generate one, run:"
+    echo ""
+    echo "    npx prisma migrate dev --name <descriptive_name>"
+    echo ""
+    echo "Then stage the new migration directory and commit again."
+  else
+    echo "Add a matching migration under ${migrations_path}/<timestamp>_<name>/"
+    echo "(the desktop app applies these at startup in packaged builds)."
+  fi
   echo ""
   echo "To skip this check (e.g. comment-only changes), use:"
+  echo ""
   echo "    git commit --no-verify"
   echo ""
-  exit 1
-elif [ "$diff_exit" -ne 0 ]; then
-  echo "[pre-commit] WARNING: prisma migrate diff failed (exit code $diff_exit)."
-  echo "[pre-commit] Output: $diff_output"
-  echo "[pre-commit] Skipping migration check — could not verify schema state."
-  exit 0
-fi
+  return 1
+}
 
-echo "[pre-commit] Prisma migrations are up to date."
-exit 0
+rc=0
+check_schema "$CLOUD_SCHEMA" "$CLOUD_MIGRATIONS" "Cloud" || rc=1
+check_schema "$LOCAL_SCHEMA" "$LOCAL_MIGRATIONS" "Local" || rc=1
+
+exit $rc
