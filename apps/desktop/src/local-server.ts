@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { spawn, execSync, type ChildProcess } from 'child_process'
+import { spawn, execSync, execFileSync, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
 import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
@@ -310,7 +310,7 @@ export async function startLocalServer(): Promise<void> {
     } : {}),
   }
 
-  ensureDatabase()
+  ensureDatabase(bunPath)
   runMigrations(bunPath, env)
 
   console.log(`[Desktop] Starting local API server: ${bunPath} ${serverEntry}`)
@@ -421,7 +421,7 @@ export async function stopLocalServer(): Promise<void> {
   removePidFile()
 }
 
-function ensureDatabase(): void {
+function ensureDatabase(bunPath: string): void {
   const fs = require('fs') as typeof import('fs')
   const dbPath = getDbPath()
 
@@ -434,7 +434,7 @@ function ensureDatabase(): void {
   if (fs.existsSync(seedPath)) {
     console.log('[Desktop] Initializing database from seed...')
     fs.copyFileSync(seedPath, dbPath)
-    baselineMigrations(dbPath)
+    baselineMigrations(bunPath, dbPath)
     console.log('[Desktop] Database initialized from seed')
     return
   }
@@ -452,49 +452,90 @@ function ensureDatabase(): void {
   throw new Error(`Seed database not found at ${seedPath}`)
 }
 
-function baselineMigrations(dbPath: string): void {
+function listBundledMigrationNames(): string[] {
   const fs = require('fs') as typeof import('fs')
   const migrationsDir = path.join(getProjectRoot(), 'prisma', 'migrations')
-  if (!fs.existsSync(migrationsDir)) return
+  if (!fs.existsSync(migrationsDir)) return []
 
-  const dirs = fs.readdirSync(migrationsDir).filter((d: string) => {
+  return fs.readdirSync(migrationsDir).filter((d: string) => {
     const full = path.join(migrationsDir, d)
     return fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'migration.sql'))
   }).sort()
+}
 
+/**
+ * Records every bundled Prisma migration as already-applied in the target
+ * SQLite database. Used after copying seed.db (whose schema is already at
+ * the latest migration) so that `prisma migrate deploy` reports
+ * "No pending migrations" instead of failing with P3005.
+ *
+ * Historically this shelled out to the `sqlite3` CLI, which is not present
+ * on a stock Windows install — the previous implementation silently warned
+ * and skipped, leaving the database in a half-baselined state that crashed
+ * on the next launch with P3005. The bundled `bun` binary is already a hard
+ * dependency (it runs the API server) and ships with `bun:sqlite`, so we
+ * reuse it here for a portable, dependency-free baseline.
+ */
+function baselineMigrations(bunPath: string, dbPath: string): void {
+  const dirs = listBundledMigrationNames()
   if (dirs.length === 0) return
 
-  const crypto = require('crypto') as typeof import('crypto')
-  const stmts = [
-    `CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
-      "id" TEXT PRIMARY KEY NOT NULL,
-      "checksum" TEXT NOT NULL,
-      "finished_at" DATETIME,
-      "migration_name" TEXT NOT NULL,
-      "logs" TEXT,
-      "rolled_back_at" DATETIME,
-      "started_at" DATETIME NOT NULL DEFAULT current_timestamp,
-      "applied_steps_count" INTEGER NOT NULL DEFAULT 0
-    );`,
-    ...dirs.map((name: string) => {
-      const id = crypto.randomUUID()
-      const now = new Date().toISOString()
-      return `INSERT OR IGNORE INTO "_prisma_migrations" ("id","checksum","finished_at","migration_name","applied_steps_count","started_at") VALUES ('${id}','baseline-seed','${now}','${name}',1,'${now}');`
-    }),
-  ]
-
-  const isWindows = process.platform === 'win32'
-  const sqliteCmd = isWindows ? 'sqlite3' : '/usr/bin/sqlite3'
+  // Under `bun -e`, process.argv is [bunExecutable, ...positionalArgs] with
+  // no script-path placeholder (unlike Node). So argv[1] is the first arg we
+  // pass, not argv[2]. A leading "--" is stripped by bun, hence omitted below.
+  const script = `
+    const { Database } = require("bun:sqlite");
+    const { randomUUID } = require("node:crypto");
+    const db = new Database(process.argv[1]);
+    const names = process.argv.slice(2);
+    db.exec(\`
+      CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
+        "id" TEXT PRIMARY KEY NOT NULL,
+        "checksum" TEXT NOT NULL,
+        "finished_at" DATETIME,
+        "migration_name" TEXT NOT NULL,
+        "logs" TEXT,
+        "rolled_back_at" DATETIME,
+        "started_at" DATETIME NOT NULL DEFAULT current_timestamp,
+        "applied_steps_count" INTEGER NOT NULL DEFAULT 0
+      );
+    \`);
+    // Idempotent: skip names that already have a row. We can't rely on
+    // PRIMARY KEY conflict because the PK is a random UUID per row.
+    const existing = new Set(
+      db.query('SELECT migration_name FROM "_prisma_migrations"').all()
+        .map((r) => r.migration_name)
+    );
+    const stmt = db.prepare(
+      'INSERT INTO "_prisma_migrations" ("id","checksum","finished_at","migration_name","applied_steps_count","started_at") VALUES (?, ?, ?, ?, 1, ?)'
+    );
+    const now = new Date().toISOString();
+    let inserted = 0;
+    for (const name of names) {
+      if (existing.has(name)) continue;
+      stmt.run(randomUUID(), "baseline-seed", now, name, now);
+      inserted++;
+    }
+    db.close();
+    console.log(JSON.stringify({ inserted, total: names.length, skipped: names.length - inserted }));
+  `
 
   try {
-    execSync(`${sqliteCmd} "${dbPath}"`, {
-      input: stmts.join('\n'),
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5000,
-    })
-    console.log(`[Desktop] Baselined ${dirs.length} migration(s) for seed database`)
-  } catch (err) {
-    console.warn('[Desktop] sqlite3 CLI not available, skipping baseline (migrations will handle schema)')
+    const out = execFileSync(bunPath, ['-e', script, dbPath, ...dirs], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10_000,
+      encoding: 'utf-8',
+    }).trim()
+    console.log(`[Desktop] Baselined ${dirs.length} migration(s) for seed database: ${out}`)
+  } catch (err: any) {
+    const stderr = err?.stderr?.toString?.() || ''
+    const stdout = err?.stdout?.toString?.() || ''
+    console.error('[Desktop] Failed to baseline seed database:', stderr || stdout || err)
+    // Do not swallow this error — leaving the DB half-baselined causes
+    // `prisma migrate deploy` to fail with P3005 on the next launch (issue
+    // seen on Windows where the old implementation's sqlite3 CLI fallback
+    // silently no-oped).
+    throw new Error(`Failed to baseline seed database: ${stderr || stdout || err?.message || err}`)
   }
 }
 
@@ -559,33 +600,67 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     }
   }
 
-  console.log('[Desktop] Running database migrations...')
-  try {
-    const result = execSync(
-      `"${bunPath}" x prisma migrate deploy --config=prisma.config.js`,
-      {
-        cwd: projectRoot,
-        env: {
-          ...env,
-          PRISMA_SCHEMA_ENGINE_BINARY: path.join(writableEngineDir, getSchemaEngineName()),
-        },
-        stdio: 'pipe',
-        timeout: 30000,
-        encoding: 'utf-8',
+  const runDeploy = (): { stdout: string; stderr: string; ok: boolean; error?: any } => {
+    try {
+      const result = execSync(
+        `"${bunPath}" x prisma migrate deploy --config=prisma.config.js`,
+        {
+          cwd: projectRoot,
+          env: {
+            ...env,
+            PRISMA_SCHEMA_ENGINE_BINARY: path.join(writableEngineDir, getSchemaEngineName()),
+          },
+          stdio: 'pipe',
+          timeout: 30000,
+          encoding: 'utf-8',
+        }
+      )
+      return { stdout: result, stderr: '', ok: true }
+    } catch (err: any) {
+      return {
+        stdout: err.stdout?.toString() || '',
+        stderr: err.stderr?.toString() || '',
+        ok: false,
+        error: err,
       }
-    )
-    console.log('[Desktop] Migrations complete:', result.trim())
-  } catch (err: any) {
-    const stderr = err.stderr?.toString() || ''
-    const stdout = err.stdout?.toString() || ''
-    if (stdout.includes('No pending migrations') || stderr.includes('No pending migrations')) {
-      console.log('[Desktop] Database schema is up to date')
-      return
     }
-    console.error('[Desktop] [ERROR] Migration failed:', stderr || err.message)
-    console.error('[Desktop] [ERROR] Migration stdout:', stdout)
-    throw new Error('Failed to run database migrations')
   }
+
+  console.log('[Desktop] Running database migrations...')
+  let attempt = runDeploy()
+
+  // Self-heal for users whose install pre-dates the baseline fix: the seed DB
+  // was copied but `_prisma_migrations` never populated (the old sqlite3 CLI
+  // path silently no-oped on systems without sqlite3). Prisma then reports
+  // P3005 "database schema is not empty". Baseline the existing DB and retry
+  // once so the app can boot instead of being permanently broken.
+  if (!attempt.ok && (attempt.stdout + attempt.stderr).includes('P3005')) {
+    console.warn('[Desktop] Detected P3005 — baselining existing database and retrying migrations')
+    try {
+      baselineMigrations(bunPath, getDbPath())
+    } catch (err) {
+      console.error('[Desktop] P3005 self-heal failed during baseline:', err)
+      throw new Error('Failed to run database migrations (P3005 self-heal could not baseline)')
+    }
+    attempt = runDeploy()
+  }
+
+  if (attempt.ok) {
+    console.log('[Desktop] Migrations complete:', attempt.stdout.trim())
+    return
+  }
+
+  if (
+    attempt.stdout.includes('No pending migrations') ||
+    attempt.stderr.includes('No pending migrations')
+  ) {
+    console.log('[Desktop] Database schema is up to date')
+    return
+  }
+
+  console.error('[Desktop] [ERROR] Migration failed:', attempt.stderr || attempt.error?.message)
+  console.error('[Desktop] [ERROR] Migration stdout:', attempt.stdout)
+  throw new Error('Failed to run database migrations')
 }
 
 async function waitForHealth(): Promise<void> {
