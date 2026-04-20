@@ -196,8 +196,8 @@ describe('SUBAGENT_GUIDE', () => {
   test('includes default agent types', () => {
     expect(SUBAGENT_GUIDE).toContain('explore')
     expect(SUBAGENT_GUIDE).toContain('general-purpose')
-    expect(SUBAGENT_GUIDE).toContain('code_agent')
-    expect(SUBAGENT_GUIDE).toContain('canvas_agent')
+    expect(SUBAGENT_GUIDE).toContain('code-reviewer')
+    expect(SUBAGENT_GUIDE).toContain('browser_qa')
   })
 
   test('includes agent_create guidance', () => {

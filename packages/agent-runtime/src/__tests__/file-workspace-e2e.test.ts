@@ -263,7 +263,10 @@ describe('File Management Agent Tools', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('list_files tool returns directory contents', async () => {
+  // NOTE: the standalone `list_files` tool was removed in favor of the unified
+  // `exec` shell tool. These tests now exercise the agent's directory listing
+  // through `exec` (scoped to the workspace's files/ directory).
+  test('exec ls lists workspace files directory', async () => {
     writeTestFile('doc.md', '# Hello')
     writeTestFile('data.csv', 'a,b\n1,2')
     writeTestFile('sub/nested.txt', 'nested content')
@@ -276,17 +279,20 @@ describe('File Management Agent Tools', () => {
     }
 
     const tools = createTools(ctx)
-    const listTool = tools.find(t => t.name === 'list_files')
-    expect(listTool).toBeDefined()
+    const execTool = tools.find(t => t.name === 'exec')
+    expect(execTool).toBeDefined()
 
-    const result = await listTool!.execute('test-call', {})
+    const result = await execTool!.execute('test-call', {
+      command: `ls "${FILES_DIR}"`,
+    })
     const data = JSON.parse((result.content[0] as any).text)
-    expect(data.entries.length).toBeGreaterThanOrEqual(3)
-    expect(data.entries.some((e: any) => e.name === 'doc.md')).toBe(true)
-    expect(data.entries.some((e: any) => e.type === 'directory')).toBe(true)
+    const output: string = data.stdout ?? data.output ?? ''
+    expect(output).toContain('doc.md')
+    expect(output).toContain('data.csv')
+    expect(output).toContain('sub')
   })
 
-  test('list_files with recursive shows nested files', async () => {
+  test('exec ls -R lists nested files', async () => {
     const ctx: any = {
       workspaceDir: TEST_DIR,
       channels: new Map(),
@@ -295,12 +301,14 @@ describe('File Management Agent Tools', () => {
     }
 
     const tools = createTools(ctx)
-    const listTool = tools.find(t => t.name === 'list_files')!
+    const execTool = tools.find(t => t.name === 'exec')!
 
-    const result = await listTool.execute('test-call', { recursive: true })
+    const result = await execTool.execute('test-call', {
+      command: `ls -R "${FILES_DIR}"`,
+    })
     const data = JSON.parse((result.content[0] as any).text)
-    const paths = data.entries.map((e: any) => e.path)
-    expect(paths.some((p: string) => p.includes('sub/'))).toBe(true)
+    const output: string = data.stdout ?? data.output ?? ''
+    expect(output).toContain('nested.txt')
   })
 
   test('delete_file removes a file', async () => {
@@ -511,16 +519,23 @@ describe('Workspace HTTP API Integration', () => {
       body: JSON.stringify({ content: 'The quick brown fox jumps over the lazy dog. SQLite database engine.' }),
     })
 
-    // Small delay for indexing
-    await new Promise(r => setTimeout(r, 100))
-
-    const res = await fetch(`${BASE}/agent/workspace/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: 'SQLite database', limit: 5 }),
-    })
-    expect(res.ok).toBe(true)
-    const data = await res.json() as any
+    // Poll the reindex endpoint until the keyword shows up in the search index.
+    // Indexing is async and the old 100ms sleep was racey under load.
+    let data: any = { results: [] }
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline) {
+      // Force a reindex on each iteration so new files are picked up deterministically.
+      await fetch(`${BASE}/agent/workspace/reindex`, { method: 'POST' })
+      const res = await fetch(`${BASE}/agent/workspace/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'SQLite database', limit: 5 }),
+      })
+      expect(res.ok).toBe(true)
+      data = await res.json() as any
+      if (data.results.length > 0) break
+      await new Promise(r => setTimeout(r, 250))
+    }
     expect(data.results.length).toBeGreaterThan(0)
     expect(data.stats).toBeDefined()
   })

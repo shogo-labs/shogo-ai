@@ -42,12 +42,20 @@ const mockPrisma = {
   },
 }
 
+// Run in local mode so the Redis-backed tunnel module short-circuits instead of
+// blocking the test on a live Redis connection. Must be set before importing
+// instances.ts (which transitively imports tunnel-redis).
+process.env.SHOGO_LOCAL_MODE = 'true'
+
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: mock(async (key: string) => {
     if (key === 'shogo_valid_key') return { workspaceId: 'ws-1', userId: 'user-1' }
     return null
   }),
+}))
+mock.module('../lib/push-notifications', () => ({
+  sendPushToInstance: mock(async () => {}),
 }))
 
 const adminUser = { id: 'user-1', userId: 'user-1', email: 'admin@test.com', role: 'super_admin' }
@@ -208,7 +216,7 @@ describe('POST /api/instances/viewer-active', () => {
       body: JSON.stringify({ workspaceId: 'ws-1' }),
     })
     expect(res.status).toBe(200)
-    expect(_testing.isViewerActive('ws-1')).toBe(true)
+    expect(await _testing.isViewerActive('ws-1')).toBe(true)
   })
 
   test('returns 403 for non-member', async () => {
@@ -249,7 +257,7 @@ describe('POST /api/instances/:id/request-connect', () => {
     const data = await res.json()
     expect(data.status).toBe('requested')
     expect(mockPrisma.instance.update).toHaveBeenCalled()
-    expect(_testing.isViewerActive('ws-1')).toBe(true)
+    expect(await _testing.isViewerActive('ws-1')).toBe(true)
   })
 
   test('returns already_connected if tunnel exists', async () => {
@@ -284,27 +292,27 @@ describe('Adaptive poll interval computation', () => {
     _testing.activeViewers.clear()
   })
 
-  test('returns idle interval by default', () => {
-    expect(_testing.computeNextPollIn('inst-1', 'ws-1', null)).toBe(_testing.POLL_INTERVAL_IDLE_S)
+  test('returns idle interval by default', async () => {
+    expect(await _testing.computeNextPollIn('inst-1', 'ws-1', null)).toBe(_testing.POLL_INTERVAL_IDLE_S)
   })
 
-  test('returns viewer interval when viewer is active', () => {
-    _testing.markViewerActive('ws-1')
-    expect(_testing.computeNextPollIn('inst-1', 'ws-1', null)).toBe(_testing.POLL_INTERVAL_VIEWER_S)
+  test('returns viewer interval when viewer is active', async () => {
+    await _testing.markViewerActive('ws-1')
+    expect(await _testing.computeNextPollIn('inst-1', 'ws-1', null)).toBe(_testing.POLL_INTERVAL_VIEWER_S)
   })
 
-  test('returns ws-requested interval when wsRequested and takes priority over viewer', () => {
-    _testing.markViewerActive('ws-1')
+  test('returns ws-requested interval when wsRequested and takes priority over viewer', async () => {
+    await _testing.markViewerActive('ws-1')
     const recent = new Date()
-    expect(_testing.computeNextPollIn('inst-1', 'ws-1', recent)).toBe(_testing.POLL_INTERVAL_WS_REQUESTED_S)
+    expect(await _testing.computeNextPollIn('inst-1', 'ws-1', recent)).toBe(_testing.POLL_INTERVAL_WS_REQUESTED_S)
   })
 
-  test('expired wsRequestedAt falls back to viewer or idle', () => {
+  test('expired wsRequestedAt falls back to viewer or idle', async () => {
     const expired = new Date(Date.now() - _testing.WS_REQUEST_TTL_MS - 1000)
-    expect(_testing.computeNextPollIn('inst-1', 'ws-1', expired)).toBe(_testing.POLL_INTERVAL_IDLE_S)
+    expect(await _testing.computeNextPollIn('inst-1', 'ws-1', expired)).toBe(_testing.POLL_INTERVAL_IDLE_S)
 
-    _testing.markViewerActive('ws-1')
-    expect(_testing.computeNextPollIn('inst-1', 'ws-1', expired)).toBe(_testing.POLL_INTERVAL_VIEWER_S)
+    await _testing.markViewerActive('ws-1')
+    expect(await _testing.computeNextPollIn('inst-1', 'ws-1', expired)).toBe(_testing.POLL_INTERVAL_VIEWER_S)
   })
 })
 
