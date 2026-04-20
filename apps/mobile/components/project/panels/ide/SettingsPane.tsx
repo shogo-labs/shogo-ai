@@ -149,15 +149,27 @@ function ToggleRow({
         {hint && <div className="truncate text-[10px] text-[#858585]">{hint}</div>}
       </div>
       <button
+        type="button"
+        role="switch"
+        aria-checked={value}
         onClick={() => onChange(!value)}
-        className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
+        className={`relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
           value ? "bg-[#0078d4]" : "bg-[#3a3a3a]"
         }`}
       >
         <span
-          className={`absolute top-[2px] h-3 w-3 rounded-full bg-white transition-transform ${
-            value ? "translate-x-[14px]" : "translate-x-[2px]"
-          }`}
+          aria-hidden
+          style={{
+            position: "absolute",
+            top: 2,
+            left: 2,
+            width: 12,
+            height: 12,
+            borderRadius: 9999,
+            background: "#ffffff",
+            transform: `translateX(${value ? 12 : 0}px)`,
+            transition: "transform 150ms",
+          }}
         />
       </button>
     </label>

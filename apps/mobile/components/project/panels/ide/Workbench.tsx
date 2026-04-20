@@ -37,6 +37,15 @@ import {
 
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;
+const BINARY_EXTENSIONS = new Set([
+  "png","jpg","jpeg","gif","webp","bmp","ico","avif","heic","tiff","tif",
+  "pdf","zip","gz","tar","tgz","bz2","xz","7z","rar",
+  "mp3","mp4","m4a","m4v","mov","avi","mkv","webm","wav","flac","ogg","aac",
+  "woff","woff2","ttf","otf","eot",
+  "exe","dll","so","dylib","bin","class","jar","wasm",
+  "sqlite","db","pack","idx","psd","ai","sketch","fig",
+]);
+
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
 
 function annotateRoot(nodes: RawNode[], rootId: string): TreeNode[] {
@@ -261,6 +270,11 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   const openFileInGroup = useCallback(
     async (node: TreeNode, groupIdx: number) => {
       if (node.kind !== "file") return;
+      const ext = node.name.toLowerCase().split(".").pop() ?? "";
+      if (BINARY_EXTENSIONS.has(ext)) {
+        showToast(`Cannot open binary file: ${node.name}`, 2500);
+        return;
+      }
       const id = fileId(node.rootId, node.path);
       const hit = findOpenLocation(id);
       if (hit) {
@@ -852,24 +866,24 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     <div className="flex h-screen w-screen flex-col bg-[#1e1e1e] text-white overflow-hidden">
       {/* Title bar */}
       <div className="flex h-9 items-center justify-between border-b border-[#2a2a2a] bg-[#1a1a1a] px-3 text-[12px]">
-        <div className="flex items-center gap-3">
-          <span className="inline-block h-3 w-3 rounded-full bg-[#ff5f57]" />
-          <span className="inline-block h-3 w-3 rounded-full bg-[#febc2e]" />
-          <span className="inline-block h-3 w-3 rounded-full bg-[#28c840]" />
-          <span className="ml-3 text-[#cccccc]">shogo-ai</span>
-          <span className="text-[#858585]">—</span>
-          <span className="text-[#858585]">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="inline-block h-3 w-3 rounded-full bg-[#ff5f57] shrink-0" />
+          <span className="inline-block h-3 w-3 rounded-full bg-[#febc2e] shrink-0" />
+          <span className="inline-block h-3 w-3 rounded-full bg-[#28c840] shrink-0" />
+          <span className="ml-3 text-[#cccccc] shrink-0">shogo-ai</span>
+          <span className="text-[#858585] shrink-0 hidden sm:inline">—</span>
+          <span className="text-[#858585] truncate max-w-[40vw]">
             {roots.length === 1 ? roots[0].label : `${roots.length} workspaces`}
           </span>
-          <span className="ml-3 rounded bg-[#0078d4]/30 px-1.5 py-[1px] text-[10px] text-[#75beff]">
+          <span className="ml-3 hidden md:inline-block rounded bg-[#0078d4]/30 px-1.5 py-[1px] text-[10px] text-[#75beff] whitespace-nowrap">
             Phase 7 · terminal + source control
           </span>
         </div>
-        <div className="flex items-center gap-3 text-[#858585]">
+        <div className="hidden lg:flex items-center gap-3 text-[#858585]">
           <span>⌘P files</span>
           <span>⌘⇧P commands</span>
           <span>⌘⇧F search</span>
-          <span>⌘⇧O open folder</span>
+          <span className="hidden xl:inline">⌘⇧O open folder</span>
         </div>
       </div>
 

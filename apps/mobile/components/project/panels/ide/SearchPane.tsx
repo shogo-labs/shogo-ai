@@ -123,7 +123,7 @@ export function SearchPane({
       {/* Query input */}
       <div className="px-3 pb-1">
         <div className="relative flex items-center rounded border border-[#3a3a3a] bg-[#1a1a1a] focus-within:border-[#0078d4]">
-          <Search size={12} className="ml-2 text-[#858585]" />
+          <Search size={14} className="ml-2.5 mr-1 shrink-0 text-[#858585]" />
           <input
             ref={inputRef}
             value={query}
@@ -133,7 +133,7 @@ export function SearchPane({
               if (e.key === "Escape") setQuery("");
             }}
             placeholder="Search across all workspaces"
-            className="flex-1 bg-transparent px-2 py-1.5 text-[12px] text-white placeholder:text-[#666] outline-none"
+            className="min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-white placeholder:text-[#666] outline-none"
           />
           {query && (
             <button
