@@ -162,6 +162,21 @@ Launch from terminal to see output:
 ```
 Logs are also written to `~/Library/Logs/Shogo/main.log`.
 
+**Windows: "trouble starting your project environment" / `'npm.cmd' is not recognized`**
+Shogo Desktop on Windows requires **Node.js 20+** to be installed at the
+standard location (`C:\Program Files\nodejs\`). Bun 1.x has a hardlink bug on
+Windows that produces empty `node_modules` stubs, so `RuntimeManager` (see
+`packages/shared-runtime/src/platform-pkg.ts`) shells out to `npm.cmd` for
+project dependency installs. Without Node.js the install step fails and the
+UI shows the generic "We're having trouble starting your project environment"
+error.
+
+Install the latest Node.js LTS from https://nodejs.org/ (or
+`winget install OpenJS.NodeJS.LTS`) and restart Shogo. The app logs a clear
+warning at startup when this prerequisite is missing — check
+`%APPDATA%\Shogo\logs\main.log` for
+`[Desktop] WARNING: Node.js is not installed` to confirm.
+
 **`Error: P3005 — The database schema is not empty` on startup (legacy installs)**
 Affects installs from versions ≤1.3.3 that first-ran on a machine without
 `sqlite3` on PATH (notably stock Windows). The seed database was copied but
