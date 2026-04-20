@@ -1,33 +1,55 @@
-# Shogo IDE — Phase 1 Prototype
+# Shogo IDE — Prototype
 
-A VS Code / Cursor–style code editor shell built on Monaco, living inside the `apps/` tree so it can grow into our canonical editing surface.
+A VS Code / Cursor–style code editor surface built on Monaco, designed to grow into our canonical editing experience across web and desktop.
 
-## What's in this phase
+## Current status: Phase 2 — live filesystem ✅
 
-- Full VS Code–shaped layout: title bar, activity bar, resizable sidebar, editor tabs, breadcrumbs, bottom panel, status bar
-- Monaco editor with custom `shogo-dark` theme and TypeScript syntax
-- File tree with expandable folders and active-file highlighting
-- Tab bar with dirty indicators, middle-click close, ⌘W close
-- Resizable panes (`react-resizable-panels`) — drag any separator
-- Keyboard: ⌘S save (in-memory), ⌘W close tab, ⌘J toggle bottom panel
-- Zero console errors; QA-verified in browser
-
-## Not yet in this phase (see the phased plan)
-
-- Real filesystem backend (Phase 2 — skill server routes)
-- File tree CRUD + virtualization for large repos (Phase 3)
-- Command Palette + Quick Open + splits (Phase 4)
-- Local folder picker via File System Access API (Phase 5)
-- IntelliSense / project-wide search / find & replace (Phase 6)
-- Agent live-edit diffs with accept/reject (Phase 7) ← the differentiator
-- Mobile gating + lazy-load (Phase 8)
+- Full VS Code–shaped layout (activity bar, resizable sidebar, tabs, breadcrumbs, bottom panel, status bar)
+- Monaco editor with custom `shogo-dark` theme and language auto-detection
+- **Live filesystem**: click files → Monaco loads them → edit → ⌘S writes to disk
+- Path-jailed server (`.git`, `node_modules`, `.env*` blocked), 2 MB text cap, binary guard
+- Keyboard: ⌘S save, ⌘W close tab, ⌘J toggle bottom panel
 
 ## Run it
 
 ```bash
 cd apps/ide-prototype
 bun install
-bun run dev
+bun run dev          # runs the FS server + Vite together
 ```
 
-Then open the Vite URL it prints. Everything lives under `src/components/ide/`.
+Open the Vite URL (http://localhost:5173). The FS server listens on port 38325 and serves files from **two levels up** (the monorepo root).
+
+## Architecture
+
+```
+WorkspaceService (interface)
+ ├─ AgentFs          ← Phase 2 — talks to server.ts over HTTP
+ └─ LocalFs (future) ← Phase 5 — File System Access API
+```
+
+`Workbench.tsx` is UI-only. Swapping the backend is a one-line change.
+
+### FS API (Bun server, `server.ts`)
+
+| Route | Purpose |
+|---|---|
+| `GET /api/fs/tree?path=&depth=` | Recursive tree listing |
+| `GET /api/fs/file?path=` | Read file |
+| `PUT /api/fs/file` | Write file |
+| `POST /api/fs/mkdir` | Create directory |
+| `DELETE /api/fs/entry?path=` | Remove |
+| `POST /api/fs/rename` | Move / rename |
+
+## Roadmap
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Monaco + layout shell | ✅ |
+| 2 | Live filesystem | ✅ |
+| 3 | File tree CRUD + virtualization | next |
+| 4 | Command Palette, Quick Open, splits | |
+| 5 | Local folder picker (FS Access API) | |
+| 6 | IntelliSense, global search, find & replace | |
+| 7 | Agent live-edit diffs (accept/reject) | |
+| 8 | Mobile gating, a11y, lazy-load | |

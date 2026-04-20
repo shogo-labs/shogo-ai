@@ -1,4 +1,8 @@
+import type { WsNode } from "./workspace/types";
+
 export type ActivityId = "files" | "search" | "git" | "agent" | "settings";
+
+export type TreeNode = WsNode;
 
 export interface OpenFile {
   id: string;
@@ -6,13 +10,8 @@ export interface OpenFile {
   path: string;
   language: string;
   content: string;
+  savedContent: string;
   dirty: boolean;
-}
-
-export interface TreeNode {
-  name: string;
-  path: string;
-  kind: "file" | "dir";
-  children?: TreeNode[];
-  language?: string;
+  loading?: boolean;
+  error?: string;
 }
