@@ -1,0 +1,13 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Node / Python / OS noise
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+dist/
+build/
