@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { spawn, execSync, execFileSync, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
+import { existsSync } from 'fs'
 import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
 import { isVMAvailable } from './vm'
@@ -313,6 +314,21 @@ export async function startLocalServer(): Promise<void> {
   ensureDatabase(bunPath)
   runMigrations(bunPath, env)
 
+  // Preflight: on Windows, the RuntimeManager shells out to `npm.cmd` for
+  // project dependency installs (Bun 1.x has a hardlink bug on Windows that
+  // produces empty node_modules stubs). Without Node.js installed, project
+  // runs fail with a cryptic "'npm.cmd' is not recognized" deep inside the
+  // API logs, surfaced to users only as "trouble starting your project
+  // environment". Detect here and log a single, obvious warning so the
+  // prerequisite is visible immediately on startup.
+  if (process.platform === 'win32' && !isNpmAvailable(env.PATH)) {
+    console.warn(
+      '[Desktop] WARNING: Node.js is not installed. Shogo Desktop on Windows ' +
+        'requires Node.js 20+ (LTS) for project sandboxes. Running projects ' +
+        'will fail until Node.js is installed from https://nodejs.org/.',
+    )
+  }
+
   console.log(`[Desktop] Starting local API server: ${bunPath} ${serverEntry}`)
   console.log(`[Desktop] Database: ${getDbPath()}`)
   console.log(`[Desktop] Workspaces: ${getWorkspacesDir()}`)
@@ -450,6 +466,22 @@ function ensureDatabase(bunPath: string): void {
   }
 
   throw new Error(`Seed database not found at ${seedPath}`)
+}
+
+/**
+ * Cheap check for Node.js on Windows — looks for `npm.cmd` in the standard
+ * install dir and on PATH. Kept self-contained here (rather than importing
+ * from @shogo/shared-runtime) so the desktop bundle doesn't pull in the
+ * whole shared-runtime graph just for a startup preflight.
+ */
+function isNpmAvailable(pathEnv: string | undefined): boolean {
+  if (process.platform !== 'win32') return true
+  if (existsSync(path.join('C:\\Program Files\\nodejs', 'npm.cmd'))) return true
+  if (!pathEnv) return false
+  for (const dir of pathEnv.split(';')) {
+    if (dir && existsSync(path.join(dir, 'npm.cmd'))) return true
+  }
+  return false
 }
 
 function listBundledMigrationNames(): string[] {
