@@ -960,11 +960,19 @@ model ApiKey {
   createdAt   DateTime  @default(now())
   revokedAt   DateTime?
 
+  kind             String    @default("user")
+  deviceId         String?
+  deviceName       String?
+  devicePlatform   String?
+  deviceAppVersion String?
+  lastSeenAt       DateTime?
+
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([userId])
+  @@index([workspaceId, deviceId])
   @@map("api_keys")
 }
 

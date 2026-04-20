@@ -70,12 +70,16 @@ export {
   PlatformApi,
   type PlatformConfig,
   type ApiKeyInfo,
+  type ApiKeyKind,
   type ApiKeyCreateResult,
   type ApiKeyValidation,
   type ShogoKeyStatus,
   type ShogoKeyConnectResult,
   type LlmConfig,
   type InstanceInfo,
+  type DeviceInfo,
+  type CloudLoginStart,
+  type CloudLoginStatus,
 } from './platform/index.js'
 
 // Errors

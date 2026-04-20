@@ -15,7 +15,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
-import { readConfig, writeConfig } from './config'
+import { readConfig, writeConfig, getDeviceInfo } from './config'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import { registerRecordingIpcHandlers, startMeetingMonitor, cleanupRecording } from './recording'
 import { createTray, destroyTray } from './tray'
@@ -64,10 +64,166 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
+// Enforce single-instance so the OS-dispatched auth callback always reaches
+// the app that initiated the login rather than spawning a duplicate.
+if (!ensureSingleInstanceLock()) {
+  // Parent instance will handle this launch; the spawned duplicate exits.
+  // (The second-instance listener below fires on the existing instance with
+  // the new argv, including any shogo://auth-callback URL.)
+  process.exit(0)
+}
+
+// Register shogo:// as our OS protocol handler so redirects from the system
+// browser find their way back to Electron. Note: shogo://app/* is still served
+// by our in-process protocol.handle (see registerProtocol).
+registerDefaultProtocolClient()
+
+// macOS dispatches protocol URLs via open-url.
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  if (url.startsWith('shogo://auth-callback')) {
+    void handleAuthCallback(url)
+  }
+})
+
+// Windows & Linux pass the URL as the newest argv to a second-instance launch.
+app.on('second-instance', (_event, argv) => {
+  const callback = extractAuthCallback(argv)
+  if (callback) {
+    void handleAuthCallback(callback)
+    return
+  }
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+
 const IS_DEV = !app.isPackaged
 
 let mainWindow: BrowserWindow | null = null
 let isCloudMode = false
+
+// --- OAuth deep-link support (shogo://auth-callback?state=...&key=...&...) ---
+//
+// The local "Sign in to Shogo Cloud" flow opens the system browser, which
+// eventually redirects to shogo://auth-callback?... — the OS then dispatches
+// that URL back to us (via open-url on macOS, or second-instance argv on
+// Windows/Linux). We enforce a single-instance lock so the callback always
+// wakes the original running app instead of spawning a duplicate.
+
+function ensureSingleInstanceLock(): boolean {
+  const gotLock = app.requestSingleInstanceLock()
+  if (!gotLock) {
+    app.quit()
+    return false
+  }
+  return true
+}
+
+function registerDefaultProtocolClient(): void {
+  // In dev on Windows/Linux, setAsDefaultProtocolClient needs the electron
+  // executable + the path to main.js so the OS can relaunch us correctly.
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('shogo', process.execPath, [path.resolve(process.argv[1])])
+  } else {
+    app.setAsDefaultProtocolClient('shogo')
+  }
+}
+
+function extractAuthCallback(urls: string[]): string | null {
+  for (const u of urls) {
+    if (typeof u === 'string' && u.startsWith('shogo://auth-callback')) {
+      return u
+    }
+  }
+  return null
+}
+
+async function handleAuthCallback(callbackUrl: string): Promise<void> {
+  try {
+    const parsed = new URL(callbackUrl)
+    const state = parsed.searchParams.get('state') || ''
+    const key = parsed.searchParams.get('key') || ''
+    const cloudUrl = parsed.searchParams.get('cloudUrl') || ''
+    const email = parsed.searchParams.get('email') || ''
+    const workspace = parsed.searchParams.get('workspace') || ''
+    const error = parsed.searchParams.get('error') || ''
+
+    if (error) {
+      console.warn('[Desktop] Cloud login returned error:', error)
+      notifyRendererLoginResult({ ok: false, error })
+      return
+    }
+
+    if (!key || !state) {
+      notifyRendererLoginResult({ ok: false, error: 'Malformed callback (missing key or state)' })
+      return
+    }
+
+    const res = await fetch(`${getApiUrl()}/api/local/cloud-login/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state, key, cloudUrl, email, workspace }),
+    })
+    const body = await res.json().catch(() => ({} as any))
+    if (!res.ok || body?.ok === false) {
+      notifyRendererLoginResult({ ok: false, error: body?.error || `HTTP ${res.status}` })
+      return
+    }
+    notifyRendererLoginResult({ ok: true, email: body?.email || email, workspace: body?.workspace || workspace })
+
+    // Bring the main window to the front so the user sees the result.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  } catch (err) {
+    console.error('[Desktop] Auth callback handling failed:', err)
+    notifyRendererLoginResult({ ok: false, error: (err as Error)?.message || 'Callback failed' })
+  }
+}
+
+function notifyRendererLoginResult(payload: { ok: boolean; error?: string; email?: string; workspace?: string }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('cloud-login-result', payload)
+  }
+}
+
+// Keep the cloud-minted device key fresh by pinging the local heartbeat
+// endpoint periodically. The local API forwards this to the cloud
+// `/api/api-keys/heartbeat`, which updates `lastSeenAt` / `deviceAppVersion`
+// for the Devices UI, and tells us to sign out if the key was revoked
+// remotely. The AI proxy also updates `lastSeenAt` on every authenticated
+// call, so this only matters when the device is idle.
+const HEARTBEAT_INTERVAL_MS = 5 * 60_000
+let heartbeatTimer: NodeJS.Timeout | null = null
+
+function startCloudLoginHeartbeat(): void {
+  if (heartbeatTimer) return
+  const tick = async (): Promise<void> => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/local/cloud-login/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceAppVersion: app.getVersion() }),
+      })
+      if (!res.ok) return
+      const body = await res.json().catch(() => ({} as any))
+      if (body?.revoked) {
+        console.warn('[Desktop] Cloud key was revoked remotely, signing out')
+        notifyRendererLoginResult({
+          ok: false,
+          error: 'Signed out from Shogo Cloud (key revoked)',
+        })
+      }
+    } catch {
+      // Transient network / local server hiccups are fine — next tick retries.
+    }
+  }
+  heartbeatTimer = setInterval(() => { void tick() }, HEARTBEAT_INTERVAL_MS)
+  setTimeout(() => { void tick() }, 30_000)
+}
 
 function buildAppMenu(): void {
   const config = readConfig()
@@ -154,6 +310,44 @@ function registerIpcHandlers(): void {
     writeConfig({ mode })
     app.relaunch()
     app.exit(0)
+  })
+
+  ipcMain.handle('get-device-info', () => getDeviceInfo())
+
+  // Cloud login: ask the local API for a one-shot authUrl (includes state
+  // nonce + device metadata), then open it in the user's default browser.
+  ipcMain.handle('start-cloud-login', async () => {
+    try {
+      const device = getDeviceInfo()
+      const res = await fetch(`${getApiUrl()}/api/local/cloud-login/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: device.id,
+          deviceName: device.name,
+          devicePlatform: device.platform,
+          deviceAppVersion: device.appVersion,
+        }),
+      })
+      const body = await res.json().catch(() => ({} as any))
+      if (!res.ok || !body?.authUrl) {
+        return { ok: false, error: body?.error || `HTTP ${res.status}` }
+      }
+      await shell.openExternal(body.authUrl)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Failed to start cloud login' }
+    }
+  })
+
+  ipcMain.handle('sign-out-cloud', async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/local/cloud-login/signout`, { method: 'POST' })
+      const body = await res.json().catch(() => ({} as any))
+      return { ok: res.ok && body?.ok !== false, error: body?.error }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Sign-out failed' }
+    }
   })
 
   ipcMain.handle('get-vm-status', () => {
@@ -447,9 +641,20 @@ app.whenReady().then(async () => {
 
   createWindow()
 
+  // If we were launched with a shogo://auth-callback in argv (Win/Linux cold
+  // boot via the default protocol client), dispatch it now that the local
+  // API is up. Give the window a beat to be ready to receive the IPC event.
+  if (!isCloudMode) {
+    const cold = extractAuthCallback(process.argv)
+    if (cold) {
+      setTimeout(() => void handleAuthCallback(cold), 1000)
+    }
+  }
+
   if (!isCloudMode) {
     createTray()
     startMeetingMonitor()
+    startCloudLoginHeartbeat()
   }
 
   if (app.isPackaged) {

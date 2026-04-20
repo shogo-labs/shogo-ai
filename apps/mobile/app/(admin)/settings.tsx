@@ -435,7 +435,7 @@ function LocalSettingsPage() {
             <View className="flex-1">
               <Text className="text-sm font-semibold text-foreground">Shogo Cloud</Text>
               <Text className="text-xs text-muted-foreground mt-0.5">
-                Use cloud LLMs via your Shogo account — no API keys needed
+                Sign in with your Shogo account to use cloud LLMs — no API keys needed
               </Text>
             </View>
             {activeMode === 'shogo-cloud' && <Check size={18} className="text-primary" />}
@@ -492,20 +492,20 @@ function LocalSettingsPage() {
             <SectionCard
               icon={Cloud}
               title="Shogo Cloud"
-              description="Uses cloud LLMs via your Shogo account"
+              description="Uses cloud LLMs via your signed-in Shogo account"
             >
               {shogoKeyConnected ? (
                 <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
                   <CheckCircle size={16} className="text-green-500" />
                   <Text className="text-sm font-medium text-foreground">
-                    Cloud LLMs active. Manage your API key in General settings.
+                    Cloud LLMs active. Manage this device's sign-in from General settings.
                   </Text>
                 </View>
               ) : (
                 <View className="flex-row items-center gap-2 bg-amber-500/10 rounded-lg p-3">
                   <AlertTriangle size={16} className="text-amber-500" />
                   <Text className="text-sm text-foreground">
-                    No Shogo API key connected. Add one in General settings first.
+                    Not signed in to Shogo Cloud. Sign in from General settings first.
                   </Text>
                 </View>
               )}
