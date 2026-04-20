@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, X, CaseSensitive, Regex, Loader2, ChevronRight, ChevronDown } from "lucide-react";
+import { Search, X, CaseSensitive, Regex, Loader2, ChevronRight, ChevronDown } from "lucide-react-native";
 import type { Root } from "./types";
 import type { SearchFileResult, WorkspaceService } from "./workspace/types";
 

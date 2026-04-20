@@ -8,7 +8,7 @@ import {
   FolderPlus,
   Pencil,
   Trash2,
-} from "lucide-react";
+} from "lucide-react-native";
 import type { TreeNode } from "./types";
 import { ContextMenu, type MenuEntry } from "./ContextMenu";
 

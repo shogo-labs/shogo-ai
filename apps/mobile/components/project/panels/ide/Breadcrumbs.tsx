@@ -1,4 +1,4 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react-native";
 
 export function Breadcrumbs({ path }: { path: string }) {
   const parts = path.split("/").filter(Boolean);

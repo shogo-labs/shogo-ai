@@ -33,7 +33,7 @@ import {
   FolderPlus,
   FolderOpen,
   X,
-} from "lucide-react";
+} from "lucide-react-native";
 
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;

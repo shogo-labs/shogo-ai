@@ -1,4 +1,4 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react-native";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { CodeEditor } from "./CodeEditor";

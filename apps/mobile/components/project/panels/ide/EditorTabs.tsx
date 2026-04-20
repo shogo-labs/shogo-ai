@@ -1,4 +1,4 @@
-import { X, Circle, Pin } from "lucide-react";
+import { X, Circle, Pin } from "lucide-react-native";
 import type { OpenFile } from "./types";
 
 export function EditorTabs({

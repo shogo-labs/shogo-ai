@@ -1,4 +1,4 @@
-import { GitBranch, AlertCircle, AlertTriangle, Check } from "lucide-react";
+import { GitBranch, AlertCircle, AlertTriangle, Check } from "lucide-react-native";
 
 export function StatusBar({
   branch,

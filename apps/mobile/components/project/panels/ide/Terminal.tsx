@@ -1,4 +1,4 @@
-import { TerminalIcon } from "lucide-react";
+import { Terminal as TerminalIcon } from "lucide-react-native";
 
 /**
  * Placeholder terminal for the main app.

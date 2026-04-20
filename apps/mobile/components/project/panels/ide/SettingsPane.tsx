@@ -1,4 +1,4 @@
-import { RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react-native";
 import { DEFAULT_SETTINGS, type EditorSettings } from "./types";
 
 export function SettingsPane({

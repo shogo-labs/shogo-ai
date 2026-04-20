@@ -1,34 +1,30 @@
 /**
- * Base URL for the skill server.
+ * Base URL for the legacy skill-server endpoints.
  *
- * In canvas mode the Vite `/api` proxy targets port 3001 (dead), so we hit
- * the skill server directly on localhost. In a production deploy, set
- * `VITE_SKILL_SERVER_URL=""` so fetches become same-origin.
+ * This file was copied from the Vite-based apps/ide-prototype where it read
+ * import.meta.env.VITE_SKILL_SERVER_URL. In the apps/mobile port the bundler
+ * is Metro and the web bundle is a classic script, so import.meta throws
+ * `Uncaught SyntaxError: Cannot use 'import.meta' outside a module` at load
+ * time — which blanks the page entirely.
  *
- * The skill server port follows a predictable pattern in this runtime:
- *   app    = 37XYZ  (external)       /  38XYZ (internal)
- *   skill  = 38XYZ + 1
+ * In the mobile IDE, real file/tree/read/write/rename/delete/mkdir/search
+ * traffic flows through the SDK (workspace/sdkFs.ts) against the per-project
+ * agent-runtime. The only remaining consumer of `api()` is the git-diff
+ * fetch in Workbench.tsx, and git is a "backend pending" placeholder on
+ * this branch — the route isn't mounted yet. So we just need a shim that
+ * parses cleanly in Metro and resolves to same-origin for the day the git
+ * routes land.
  *
- * We derive it from `window.location.port` so tab rotation across sessions
- * keeps working without code changes.
+ * Override in runtime (e.g. dev tooling) by setting
+ * `window.__SHOGO_SKILL_SERVER_URL` before the IDE tab mounts.
  */
 function inferBase(): string {
-  const env = (import.meta as unknown as { env?: Record<string, string> }).env;
-  const override = env?.VITE_SKILL_SERVER_URL;
-  if (typeof override === "string") return override;
-
-  if (typeof window !== "undefined" && window.location?.port) {
-    const port = parseInt(window.location.port, 10);
-    // External app port (37XXX) → skill port = (port + 1001)
-    // Internal app port (38XXX) → skill port = (port + 1)
-    if (port >= 37000 && port < 38000) {
-      return `http://localhost:${port + 1001}`;
-    }
-    if (port >= 38000 && port < 40000) {
-      return `http://localhost:${port + 1}`;
-    }
+  if (typeof window !== "undefined") {
+    const override = (window as unknown as { __SHOGO_SKILL_SERVER_URL?: string })
+      .__SHOGO_SKILL_SERVER_URL;
+    if (typeof override === "string") return override;
   }
-  return "http://localhost:38601";
+  return "";
 }
 
 export const API_BASE: string = inferBase();

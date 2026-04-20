@@ -1,4 +1,4 @@
-import { Files, Search, GitBranch, Settings } from "lucide-react";
+import { Files, Search, GitBranch, Settings } from "lucide-react-native";
 import type { ActivityId } from "./types";
 
 const ITEMS: { id: ActivityId; icon: React.ComponentType<{ size?: number }>; label: string }[] = [

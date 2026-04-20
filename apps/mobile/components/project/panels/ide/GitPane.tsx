@@ -1,4 +1,4 @@
-import { GitBranch } from "lucide-react";
+import { GitBranch } from "lucide-react-native";
 
 /**
  * Placeholder Source Control pane for the main app.

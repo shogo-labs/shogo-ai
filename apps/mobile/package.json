@@ -70,7 +70,6 @@
     "expo-updates": "~29.0.16",
     "expo-web-browser": "~15.0.10",
     "html2canvas": "^1.4.1",
-    "lucide-react": "^1.8.0",
     "lucide-react-native": "^0.461.0",
     "mobx": "^6.13.5",
     "mobx-react-lite": "^4.1.1",

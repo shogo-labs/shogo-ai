@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X } from "lucide-react";
+import { X } from "lucide-react-native";
 import { Terminal } from "./Terminal";
 
 const TABS = ["Terminal", "Problems", "Output"] as const;
