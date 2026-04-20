@@ -133,7 +133,7 @@ export function SearchPane({
               if (e.key === "Escape") setQuery("");
             }}
             placeholder="Search across all workspaces"
-            className="min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-white placeholder:text-[#666] outline-none"
+            className="no-focus-ring min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-white placeholder:text-[#666] outline-none"
           />
           {query && (
             <button

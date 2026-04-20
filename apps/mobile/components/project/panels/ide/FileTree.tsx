@@ -519,7 +519,7 @@ function InlineInput({
             onCancel();
           }
         }}
-        className="flex-1 min-w-0 bg-[#3c3c3c] px-1 py-[1px] text-[13px] text-white outline outline-1 outline-[#0078d4]"
+        className="no-focus-ring flex-1 min-w-0 bg-[#3c3c3c] px-1 py-[1px] text-[13px] text-white outline outline-1 outline-[#0078d4]"
       />
     </div>
   );

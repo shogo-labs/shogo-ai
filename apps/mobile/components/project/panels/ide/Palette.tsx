@@ -96,7 +96,7 @@ export function Palette({
               onClose();
             }
           }}
-          className="w-full border-b border-[#2a2a2a] bg-transparent px-4 py-3 text-[14px] text-white placeholder:text-[#858585] outline-none"
+          className="no-focus-ring w-full border-b border-[#2a2a2a] bg-transparent px-4 py-3 text-[14px] text-white placeholder:text-[#858585] outline-none"
         />
         <div ref={listRef} className="max-h-[50vh] overflow-auto py-1">
           {results.length === 0 ? (

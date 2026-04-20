@@ -193,7 +193,7 @@ function SelectRow({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded border border-[#3a3a3a] bg-[#1a1a1a] px-1.5 py-0.5 text-[11px] text-[#cccccc] outline-none hover:border-[#0078d4]"
+        className="no-focus-ring rounded border border-[#3a3a3a] bg-[#1a1a1a] px-1.5 py-0.5 text-[11px] text-[#cccccc] outline-none hover:border-[#0078d4]"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
