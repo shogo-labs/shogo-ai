@@ -1,21 +1,24 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { useRef } from "react";
+import type { editor } from "monaco-editor";
 
 export function CodeEditor({
   value,
   language,
   onChange,
   onCursor,
+  onMount,
 }: {
   value: string;
   language: string;
   onChange: (v: string) => void;
   onCursor: (line: number, col: number) => void;
+  onMount?: (ed: editor.IStandaloneCodeEditor) => void;
 }) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
-  const handleMount: OnMount = (editor, monaco) => {
-    editorRef.current = editor;
+  const handleMount: OnMount = (ed, monaco) => {
+    editorRef.current = ed;
     monaco.editor.defineTheme("shogo-dark", {
       base: "vs-dark",
       inherit: true,
@@ -28,13 +31,11 @@ export function CodeEditor({
     });
     monaco.editor.setTheme("shogo-dark");
 
-    editor.onDidChangeCursorPosition((e) => {
+    ed.onDidChangeCursorPosition((e) => {
       onCursor(e.position.lineNumber, e.position.column);
     });
 
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      // save handled at Workbench level via keydown listener
-    });
+    onMount?.(ed);
   };
 
   return (

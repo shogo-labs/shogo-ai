@@ -12,6 +12,13 @@ export interface OpenFile {
   content: string;
   savedContent: string;
   dirty: boolean;
+  pinned?: boolean;
   loading?: boolean;
   error?: string;
+}
+
+export interface EditorGroup {
+  id: string;
+  files: OpenFile[];
+  activeId: string | null;
 }
