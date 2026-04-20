@@ -1,6 +1,6 @@
 import type { WsNode } from "./workspace/types";
 
-export type ActivityId = "files" | "search" | "git" | "agent" | "settings";
+export type ActivityId = "files" | "search" | "git" | "settings";
 
 /** A tree node annotated with the root it belongs to. */
 export interface TreeNode extends WsNode {

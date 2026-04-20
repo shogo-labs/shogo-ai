@@ -19,14 +19,14 @@ import {
 } from "./types";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
+import { GitPane } from "./GitPane";
 import type { WorkspaceService } from "./workspace/types";
 import { agentFs } from "./workspace/agentFs";
+import { api } from "./workspace/apiBase";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
 import { matchesShortcut, type Command } from "./commands";
 import {
-  GitBranch,
-  Bot,
   RefreshCw,
   AlertTriangle,
   FilePlus,
@@ -328,6 +328,71 @@ export function Workbench() {
       void openFileInGroup(node, activeGroupIdx);
     },
     [openFileInGroup, activeGroupIdx],
+  );
+
+  // Open a virtual diff tab for a git-tracked file. Uses a synthetic
+  // OpenFile with language "diff" so Monaco's diff syntax highlighting kicks in.
+  const openDiffFile = useCallback(
+    async (filePath: string, staged: boolean) => {
+      const tag = staged ? "STAGED" : "WORKING";
+      const virtualPath = `__diff__/${tag}/${filePath}`;
+      const id = fileId("agent", virtualPath);
+      const hit = findOpenLocation(id);
+      if (hit) {
+        setActiveGroupIdx(hit.groupIdx);
+        updateGroup(hit.groupIdx, (g) => ({ ...g, activeId: id }));
+      }
+      const placeholder: OpenFile = {
+        id,
+        rootId: "agent",
+        name: `${filePath.split("/").pop()} (${tag.toLowerCase()})`,
+        path: virtualPath,
+        language: "diff",
+        content: "",
+        savedContent: "",
+        dirty: false,
+        loading: true,
+      };
+      if (!hit) {
+        updateGroup(activeGroupIdx, (g) => ({
+          ...g,
+          files: [...g.files, placeholder],
+          activeId: id,
+        }));
+        setActiveGroupIdx(activeGroupIdx);
+      }
+      try {
+        const res = await fetch(
+          api(`/api/git/diff?path=${encodeURIComponent(filePath)}&staged=${staged ? 1 : 0}`),
+        );
+        const data = (await res.json()) as { diff?: string; error?: string };
+        if (!res.ok) throw new Error(data.error ?? `${res.status}`);
+        const body = data.diff?.trim()
+          ? data.diff
+          : `# No diff available for ${filePath}\n# (file may be untracked, binary, or identical)`;
+        setGroups((prev) =>
+          prev.map((g) => ({
+            ...g,
+            files: g.files.map((f) =>
+              f.id === id
+                ? { ...f, content: body, savedContent: body, loading: false }
+                : f,
+            ),
+          })),
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setGroups((prev) =>
+          prev.map((g) => ({
+            ...g,
+            files: g.files.map((f) =>
+              f.id === id ? { ...f, loading: false, error: msg } : f,
+            ),
+          })),
+        );
+      }
+    },
+    [findOpenLocation, activeGroupIdx, updateGroup],
   );
 
   const handleChangeFor = (groupIdx: number) => (val: string) => {
@@ -797,7 +862,7 @@ export function Workbench() {
             {roots.length === 1 ? roots[0].label : `${roots.length} workspaces`}
           </span>
           <span className="ml-3 rounded bg-[#0078d4]/30 px-1.5 py-[1px] text-[10px] text-[#75beff]">
-            Phase 6 · intellisense + search
+            Phase 7 · terminal + source control
           </span>
         </div>
         <div className="flex items-center gap-3 text-[#858585]">
@@ -840,8 +905,11 @@ export function Workbench() {
                 }
               />
             )}
-            {activity === "git" && <Placeholder icon={<GitBranch size={18} />} title="Source Control" hint="Coming soon" />}
-            {activity === "agent" && <Placeholder icon={<Bot size={18} />} title="Shogo Agent" hint="Live edits arrive in Phase 7" />}
+            {activity === "git" && (
+              <GitPane
+                onOpenDiff={(p, staged) => void openDiffFile(p, staged)}
+              />
+            )}
             {activity === "settings" && (
               <SettingsPane settings={settings} onChange={setSettings} />
             )}
