@@ -11,8 +11,11 @@ FROM oven/bun:1.3-alpine AS builder
 WORKDIR /app
 
 # Native-module build toolchain (better-sqlite3 → node-gyp → python3).
-# Required under QEMU where no prebuilt binary matches the emulated arch.
-RUN apk add --no-cache python3 make g++
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
+RUN apk add --no-cache python3 make g++ nodejs npm && \
+    npm install -g node-gyp
 
 # Copy workspace root files
 COPY package.json bun.lock ./
@@ -72,8 +75,11 @@ FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 
 # Native-module build toolchain (better-sqlite3 → node-gyp → python3).
-# Required under QEMU where no prebuilt binary matches the emulated arch.
-RUN apk add --no-cache python3 make g++
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
+RUN apk add --no-cache python3 make g++ nodejs npm && \
+    npm install -g node-gyp
 
 RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
 

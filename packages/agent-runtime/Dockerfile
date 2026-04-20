@@ -22,9 +22,12 @@ FROM oven/bun:1.3-debian AS builder
 WORKDIR /app
 
 # Native-module build toolchain (better-sqlite3 → node-gyp → python3).
-# Required under QEMU where no prebuilt binary matches the emulated arch.
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 make g++ && \
+    apt-get install -y --no-install-recommends python3 make g++ nodejs npm && \
+    npm install -g node-gyp && \
     rm -rf /var/lib/apt/lists/*
 
 COPY package.json bun.lock ./
@@ -82,9 +85,12 @@ FROM oven/bun:1.3-debian AS deps
 WORKDIR /app
 
 # Native-module build toolchain (better-sqlite3 → node-gyp → python3).
-# Required under QEMU where no prebuilt binary matches the emulated arch.
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 make g++ && \
+    apt-get install -y --no-install-recommends python3 make g++ nodejs npm && \
+    npm install -g node-gyp && \
     rm -rf /var/lib/apt/lists/*
 
 # Create user matching production uid so node_modules is pre-owned by uid 1001.
