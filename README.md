@@ -137,3 +137,4 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 - `docs/ARCHITECTURE.md`
 - `docs/SELF_HOSTING.md`
 - `packages/sdk/README.md`
+
