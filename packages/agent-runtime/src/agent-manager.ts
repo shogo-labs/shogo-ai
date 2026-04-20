@@ -274,7 +274,7 @@ export class AgentManager {
       },
     }
 
-    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history, instanceId })
+    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history, instanceId, signal: abortController.signal })
       .then((result) => {
         const inst = this.instances.get(instanceId)
         if (inst) {
@@ -298,14 +298,18 @@ export class AgentManager {
       })
       .catch((err) => {
         const inst = this.instances.get(instanceId)
+        const wasCancelled = inst?.status === 'cancelled' || abortController.signal.aborted
         if (inst) {
-          inst.status = 'failed'
-          inst.completedAt = Date.now()
-          inst.result = { responseText: err.message, toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+          if (!wasCancelled) inst.status = 'failed'
+          inst.completedAt ??= Date.now()
+          inst.result = {
+            responseText: wasCancelled ? 'Subagent cancelled' : err.message,
+            toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+          }
         }
         if (regEntry) {
           regEntry.metrics.totalRuns++
-          regEntry.metrics.failures++
+          if (!wasCancelled) regEntry.metrics.failures++
           regEntry.metrics.totalWallTimeMs += Date.now() - startTime
           this.flushMetrics(type, regEntry.metrics)
         }
