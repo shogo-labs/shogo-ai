@@ -240,6 +240,157 @@ describe('AgentGateway integration', () => {
     expect(systemPromptSeen).not.toContain('Workspace Uploaded Files')
   })
 
+  test('system prompt includes Running App Preview section when project/dist/index.html exists', async () => {
+    // Simulate a running preview by placing a built dist/index.html on disk —
+    // this is the same signal PreviewManager uses to mark the preview as
+    // ready. The gateway reads it to decide whether to inject the URL.
+    const distDir = join(TEST_DIR, 'project', 'dist')
+    mkdirSync(distDir, { recursive: true })
+    writeFileSync(join(distDir, 'index.html'), '<html></html>')
+
+    // Set PUBLIC_PREVIEW_URL to a fake k8s subdomain so we can assert the
+    // external URL is the one the agent gets told about (not localhost).
+    const originalPublicUrl = process.env.PUBLIC_PREVIEW_URL
+    process.env.PUBLIC_PREVIEW_URL = 'https://preview--test-project.dev.shogo.ai'
+
+    try {
+      let systemPromptSeen = ''
+      const mockStream = createMockStreamFn([buildTextResponse('ok')])
+      const wrappedStream: any = (_model: any, context: any, options: any) => {
+        const sp = context.systemPrompt || context.system || ''
+        if (sp) systemPromptSeen = sp
+        return mockStream(_model, context, options)
+      }
+
+      gateway = new AgentGateway(TEST_DIR, 'test-project')
+      gateway.setStreamFn(wrappedStream)
+      await gateway.start()
+
+      await gateway.processChatMessage('hi')
+
+      expect(systemPromptSeen).toContain('## Running App Preview')
+      expect(systemPromptSeen).toContain('https://preview--test-project.dev.shogo.ai')
+      // The section must be the declared source of truth so the agent doesn't
+      // go probe the filesystem / ports for it.
+      expect(systemPromptSeen).toContain('single source of truth')
+      // Must steer away from reading config files — the hallucinated 5173
+      // port came from the template's vite.config.ts, which is never the
+      // actual runtime port.
+      expect(systemPromptSeen).toContain('vite.config.ts')
+      // Defense-in-depth: the block must NOT name hallucinated paths, even as
+      // "don't use this" — mentioning them re-teaches the model they exist.
+      expect(systemPromptSeen).not.toContain('.shogo/preview-url')
+      expect(systemPromptSeen).not.toContain('lsof')
+    } finally {
+      if (originalPublicUrl === undefined) {
+        delete process.env.PUBLIC_PREVIEW_URL
+      } else {
+        process.env.PUBLIC_PREVIEW_URL = originalPublicUrl
+      }
+    }
+  })
+
+  test('system prompt omits Running App Preview section when no dist/ exists and PUBLIC_PREVIEW_URL is unset', async () => {
+    // Neither launcher signal is present: no dist/ on disk AND no env var.
+    // Gateway has no basis to advertise a URL and must stay silent rather
+    // than invent one.
+    const originalPublicUrl = process.env.PUBLIC_PREVIEW_URL
+    delete process.env.PUBLIC_PREVIEW_URL
+
+    try {
+      let systemPromptSeen = ''
+      const mockStream = createMockStreamFn([buildTextResponse('ok')])
+      const wrappedStream: any = (_model: any, context: any, options: any) => {
+        const sp = context.systemPrompt || context.system || ''
+        if (sp) systemPromptSeen = sp
+        return mockStream(_model, context, options)
+      }
+
+      gateway = new AgentGateway(TEST_DIR, 'test-project')
+      gateway.setStreamFn(wrappedStream)
+      await gateway.start()
+
+      await gateway.processChatMessage('hi')
+
+      expect(systemPromptSeen).not.toContain('## Running App Preview')
+    } finally {
+      if (originalPublicUrl !== undefined) {
+        process.env.PUBLIC_PREVIEW_URL = originalPublicUrl
+      }
+    }
+  })
+
+  test('system prompt includes Running App Preview section when PUBLIC_PREVIEW_URL is set even without dist/ (local Vite dev)', async () => {
+    // Local RuntimeManager spawns `vite` (dev mode), which serves from memory
+    // — no project/dist/index.html ever gets written. The launcher signals
+    // the real Vite port via PUBLIC_PREVIEW_URL, and the gateway must trust
+    // it. This is the scenario that caused the original hallucinated-5173 bug.
+    const originalPublicUrl = process.env.PUBLIC_PREVIEW_URL
+    process.env.PUBLIC_PREVIEW_URL = 'http://localhost:37423'
+
+    try {
+      let systemPromptSeen = ''
+      const mockStream = createMockStreamFn([buildTextResponse('ok')])
+      const wrappedStream: any = (_model: any, context: any, options: any) => {
+        const sp = context.systemPrompt || context.system || ''
+        if (sp) systemPromptSeen = sp
+        return mockStream(_model, context, options)
+      }
+
+      gateway = new AgentGateway(TEST_DIR, 'test-project')
+      gateway.setStreamFn(wrappedStream)
+      await gateway.start()
+
+      await gateway.processChatMessage('hi')
+
+      expect(systemPromptSeen).toContain('## Running App Preview')
+      expect(systemPromptSeen).toContain('http://localhost:37423')
+      // The block must explicitly steer the agent away from reading
+      // vite.config.ts, which is where the 5173 hallucination came from.
+      expect(systemPromptSeen).toContain('vite.config.ts')
+      expect(systemPromptSeen).not.toContain('5173')
+    } finally {
+      if (originalPublicUrl === undefined) {
+        delete process.env.PUBLIC_PREVIEW_URL
+      } else {
+        process.env.PUBLIC_PREVIEW_URL = originalPublicUrl
+      }
+    }
+  })
+
+  test('system prompt includes Running App Preview when only workspaceDir/dist exists (local RuntimeManager layout)', async () => {
+    // Local dev layout: WORKSPACE_DIR === projectDir, so dist/ sits directly
+    // under the workspace root, not under workspace/project/dist.
+    const distDir = join(TEST_DIR, 'dist')
+    mkdirSync(distDir, { recursive: true })
+    writeFileSync(join(distDir, 'index.html'), '<html></html>')
+
+    const originalPublicUrl = process.env.PUBLIC_PREVIEW_URL
+    delete process.env.PUBLIC_PREVIEW_URL
+
+    try {
+      let systemPromptSeen = ''
+      const mockStream = createMockStreamFn([buildTextResponse('ok')])
+      const wrappedStream: any = (_model: any, context: any, options: any) => {
+        const sp = context.systemPrompt || context.system || ''
+        if (sp) systemPromptSeen = sp
+        return mockStream(_model, context, options)
+      }
+
+      gateway = new AgentGateway(TEST_DIR, 'test-project')
+      gateway.setStreamFn(wrappedStream)
+      await gateway.start()
+
+      await gateway.processChatMessage('hi')
+
+      expect(systemPromptSeen).toContain('## Running App Preview')
+    } finally {
+      if (originalPublicUrl !== undefined) {
+        process.env.PUBLIC_PREVIEW_URL = originalPublicUrl
+      }
+    }
+  })
+
   test('daily memory is written after message processing', async () => {
     gateway = createGateway([buildTextResponse('Response here.')])
     await gateway.start()

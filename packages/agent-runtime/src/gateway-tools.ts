@@ -110,6 +110,10 @@ export interface ToolContext {
   guideRegistry?: Map<string, string>
   /** Eval mock functions — propagated to subagents so mocked tools work in delegated calls */
   toolMockFns?: Map<string, (params: Record<string, any>) => any>
+  /** When this tool runs inside a spawned subagent, the AgentManager instance id.
+   *  Used e.g. to key the CDP screencast broadcaster so the mobile LiveBrowserView
+   *  can subscribe to the right running subagent's browser viewport. */
+  subagentInstanceId?: string
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -1826,14 +1830,98 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
   })
 }
 
-function createBrowserTool(ctx: ToolContext): AgentTool {
+export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let page: any = null
   let isExtensionMode = false
   let killRelay: (() => void) | null = null
+  let cdpSession: any = null
+  let screencastStarted = false
+  let screencastPageKey: any = null
+  let frameCount = 0
+
+  console.log(
+    `[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`,
+  )
+
+  async function ensureScreencast() {
+    // Only broadcast when this tool is running inside a spawned subagent
+    // (so the mobile LiveBrowserView can subscribe by instance id). Skip
+    // extension mode — we don't own the browser there, and attaching CDP
+    // to a user's real Chrome would be invasive.
+    const instanceId = ctx.subagentInstanceId
+    if (!instanceId) {
+      console.log('[screencast] ensureScreencast bail: no subagentInstanceId on ctx')
+      return
+    }
+    if (isExtensionMode) {
+      console.log(`[screencast] ensureScreencast bail: extension mode instanceId=${instanceId}`)
+      return
+    }
+    if (!page) {
+      console.log(`[screencast] ensureScreencast bail: no page yet instanceId=${instanceId}`)
+      return
+    }
+    // If the page changed (rare — we don't swap pages today), tear down + redo.
+    if (screencastStarted && screencastPageKey === page) return
+    if (screencastStarted && screencastPageKey !== page) {
+      console.log(`[screencast] ensureScreencast page changed; restarting instanceId=${instanceId}`)
+      try { if (cdpSession) await cdpSession.send('Page.stopScreencast') } catch {}
+      try { if (cdpSession) await cdpSession.detach() } catch {}
+      cdpSession = null
+      screencastStarted = false
+    }
+    try {
+      const { publish } = await import('./screencast-broadcaster')
+      cdpSession = await page.context().newCDPSession(page)
+      console.log(`[screencast] CDP session attached instanceId=${instanceId}`)
+      cdpSession.on('Page.screencastFrame', async (e: any) => {
+        frameCount++
+        if (frameCount === 1 || frameCount % 60 === 0) {
+          console.log(
+            `[screencast] CDP frame#${frameCount} instanceId=${instanceId} ` +
+            `size=${e?.metadata?.deviceWidth ?? '?'}x${e?.metadata?.deviceHeight ?? '?'} ` +
+            `dataLen=${(e?.data as string | undefined)?.length ?? 0}`,
+          )
+        }
+        try {
+          publish(instanceId, {
+            jpegBase64: e.data,
+            ts: Date.now(),
+            width: e?.metadata?.deviceWidth ?? 0,
+            height: e?.metadata?.deviceHeight ?? 0,
+          })
+        } catch (err: any) {
+          console.warn(`[screencast] publish threw instanceId=${instanceId}: ${err?.message ?? err}`)
+        }
+        try { await cdpSession.send('Page.screencastFrameAck', { sessionId: e.sessionId }) } catch {}
+      })
+      await cdpSession.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 60,
+        everyNthFrame: 2,
+        maxWidth: 1280,
+        maxHeight: 720,
+      })
+      screencastStarted = true
+      screencastPageKey = page
+      console.log(`[screencast] Page.startScreencast OK instanceId=${instanceId}`)
+    } catch (err: any) {
+      // Screencast is best-effort — if CDP isn't available, the browser tool still works.
+      console.warn(
+        `[screencast] ensureScreencast failed instanceId=${instanceId}: ${err?.message ?? err}`,
+      )
+      try { if (cdpSession) await cdpSession.detach() } catch {}
+      cdpSession = null
+      screencastStarted = false
+    }
+  }
 
   async function ensureBrowser() {
-    if (browser && page) return page
+    if (browser && page) {
+      await ensureScreencast()
+      return page
+    }
     try {
       const pw = await import('playwright-core')
 
@@ -1863,6 +1951,7 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
         })
         page = await browser.newPage()
       }
+      await ensureScreencast()
       return page
     } catch (err: any) {
       cleanupRelay()
@@ -1890,6 +1979,19 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
   }
 
   async function cleanup() {
+    if (screencastStarted && cdpSession) {
+      try { await cdpSession.send('Page.stopScreencast') } catch {}
+      try { await cdpSession.detach() } catch {}
+    }
+    cdpSession = null
+    screencastStarted = false
+    screencastPageKey = null
+    if (ctx.subagentInstanceId) {
+      try {
+        const { dropChannel } = await import('./screencast-broadcaster')
+        dropChannel(ctx.subagentInstanceId)
+      } catch {}
+    }
     if (isExtensionMode) {
       try { if (browser) await browser.close() } catch {}
     } else {
@@ -2843,6 +2945,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       if (!spawnResult.ok) return textResult({ error: spawnResult.error })
 
       const instanceId = spawnResult.instanceId
+      console.log(`[screencast] agent_spawn -> instanceId=${instanceId} type=${type}`)
+      spawn?.setInstanceId(instanceId)
 
       if (background) {
         return textResult({ instance_id: instanceId, status: 'running', hint: 'Use agent_status or agent_result to check progress' })
@@ -2895,11 +2999,12 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
  * text/tool events. Each sub-agent is scoped to its own spawnToolCallId,
  * so multiple concurrent sub-agents work correctly.
  */
-export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[] } } | undefined {
+export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[] }; setInstanceId: (id: string) => void } | undefined {
   if (!w) return undefined
 
   const parts: any[] = []
   let agentId: string | null = null
+  let instanceId: string | null = null
   let lastEmitTime = 0
   let pendingEmit: ReturnType<typeof setTimeout> | null = null
   const THROTTLE_MS = 150
@@ -2920,7 +3025,7 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     w.write({
       type: 'tool-output-available',
       toolCallId: spawnToolCallId,
-      output: { agentId, parts: [...parts] },
+      output: { agentId, instance_id: instanceId, parts: [...parts] },
       dynamic: true,
       preliminary: true,
     })
@@ -2988,6 +3093,16 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
   return {
     callbacks,
     getAccumulatedOutput: () => ({ agentId, parts: [...parts] }),
+    setInstanceId: (id: string) => {
+      instanceId = id
+      console.log(
+        `[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` +
+        `instanceId=${id}`,
+      )
+      // Re-emit so subscribers learn the instance id ASAP (they need it to
+      // open the live screencast stream for the running subagent).
+      emitPreliminary(true)
+    },
   }
 }
 

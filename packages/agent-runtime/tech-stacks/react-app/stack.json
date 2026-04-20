@@ -6,7 +6,7 @@
   "runtime": {
     "devServer": "vite",
     "buildCommand": "vite build --watch",
-    "previewPort": 3001
+    "templateApiPort": 3001
   },
   "capabilities": {
     "webEnabled": true,

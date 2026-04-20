@@ -471,6 +471,16 @@ export const AssistantContent = memo(
       if (resultParts?.length) {
         subagentStreamStore.setParts(tool.id, resultParts)
       }
+      // Capture the AgentManager instance id from the preliminary/final tool output
+      // so the Agents panel can open the live browser screencast for this run.
+      const instanceId = (tool.result as any)?.instance_id as string | undefined
+      if (instanceId) {
+        console.log(
+          `[screencast] AssistantContent capture instance_id toolId=${tool.id} ` +
+          `instanceId=${instanceId}`,
+        )
+        subagentStreamStore.setInstanceId(tool.id, instanceId)
+      }
     }
   }, [orderedParts])
 
