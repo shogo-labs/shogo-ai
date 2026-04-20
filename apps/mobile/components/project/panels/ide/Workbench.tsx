@@ -867,10 +867,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       {/* Title bar */}
       <div className="flex h-9 items-center justify-between border-b border-[#2a2a2a] bg-[#1a1a1a] px-3 text-[12px]">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-[#ff5f57] shrink-0" />
-          <span className="inline-block h-3 w-3 rounded-full bg-[#febc2e] shrink-0" />
-          <span className="inline-block h-3 w-3 rounded-full bg-[#28c840] shrink-0" />
-          <span className="ml-3 text-[#cccccc] shrink-0">shogo-ai</span>
+          <span className="text-[#cccccc] shrink-0 font-medium">shogo-ai</span>
           <span className="text-[#858585] shrink-0 hidden sm:inline">—</span>
           <span className="text-[#858585] truncate max-w-[40vw]">
             {roots.length === 1 ? roots[0].label : `${roots.length} workspaces`}
