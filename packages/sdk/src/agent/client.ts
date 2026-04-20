@@ -5,6 +5,7 @@ import type {
   AgentClientConfig,
   AgentExportBundle,
   AgentImportResult,
+  AgentPlanSummary,
   AgentStatus,
   ChatMessage,
   ChatOptions,
@@ -158,9 +159,7 @@ export class AgentClient {
     const open = () => {
       if (closed) return
       const url = this.url('/agent/canvas/stream')
-      console.log('[LIVE] AgentClient.subscribeToWorkspace opening EventSource to', url)
       es = new EventSource(url, { withCredentials: true })
-      es.onopen = () => console.log('[LIVE] EventSource OPEN', url)
       es.onmessage = (ev) => {
         let parsed: unknown
         try { parsed = JSON.parse(ev.data) } catch { return }
@@ -283,6 +282,23 @@ export class AgentClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: relativePath }),
     })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plans (.shogo/plans/*.plan.md)
+  // ---------------------------------------------------------------------------
+
+  async listPlans(): Promise<AgentPlanSummary[]> {
+    const data = await this.fetchJson<{ plans: AgentPlanSummary[] }>('/agent/plans')
+    return data.plans ?? []
+  }
+
+  async getPlan(filename: string): Promise<{ filename: string; content: string }> {
+    return this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`)
+  }
+
+  async deletePlan(filename: string): Promise<void> {
+    await this.fetchJson(`/agent/plans/${encodeURIComponent(filename)}`, { method: 'DELETE' })
   }
 
   async uploadWorkspaceFiles(formData: FormData): Promise<{ uploaded: string[]; count: number }> {

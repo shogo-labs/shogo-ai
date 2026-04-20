@@ -40,6 +40,8 @@ export interface EditorSettings {
   lineNumbers: "on" | "off" | "relative";
   renderWhitespace: "none" | "boundary" | "all";
   bracketPairs: boolean;
+  /** Persist editor buffers to the workspace after a short pause while typing. */
+  autoSave: boolean;
   formatOnSave: boolean;
 }
 
@@ -51,6 +53,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   lineNumbers: "on",
   renderWhitespace: "none",
   bracketPairs: true,
+  autoSave: true,
   formatOnSave: false,
 };
 

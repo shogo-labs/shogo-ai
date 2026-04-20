@@ -24,7 +24,6 @@ import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
 import { FIX_IN_AGENT_EVENT, type FixInAgentPayload } from "./agentFixProvider";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
-import { api } from "./workspace/apiBase";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
 import { matchesShortcut, type Command } from "./commands";
@@ -50,6 +49,9 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
+
+/** Debounce for auto save while typing (ms). */
+const AUTO_SAVE_DELAY_MS = 1000;
 
 function annotateRoot(nodes: RawNode[], rootId: string): TreeNode[] {
   return nodes.map((n) => ({
@@ -106,6 +108,10 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
   const monacoNsRef = useRef<MonacoNs | null>(null);
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevActiveIdForAutosaveRef = useRef<string | null>(null);
   const fsaSupported = useMemo(() => isFsaSupported(), []);
 
   const activeGroup = groups[activeGroupIdx] ?? groups[0];
@@ -168,21 +174,14 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   const tryAnimateLive = useCallback(
     (fileId: string, newContent: string): boolean => {
       const monaco = monacoNsRef.current;
-      if (!monaco) { console.log("[ShogoLive] tryAnimate: monacoNs not captured"); return false; }
+      if (!monaco) return false;
       const g = groups.find((gg) => gg.activeId === fileId);
-      if (!g) {
-        console.log("[ShogoLive] tryAnimate: no group has fileId active", {
-          fileId,
-          groupActiveIds: groups.map((gg) => gg.activeId),
-        });
-        return false;
-      }
+      if (!g) return false;
       const ed = editorRefs.current[g.id];
-      if (!ed) { console.log("[ShogoLive] tryAnimate: no editor ref for group", g.id); return false; }
+      if (!ed) return false;
       const model = ed.getModel();
-      if (!model) { console.log("[ShogoLive] tryAnimate: editor has no model"); return false; }
-      if (model.getValue() === newContent) { console.log("[ShogoLive] tryAnimate: content already matches"); return false; }
-      console.log("[ShogoLive] tryAnimate: animating!", { fileId, lines: newContent.split("\n").length });
+      if (!model) return false;
+      if (model.getValue() === newContent) return false;
       void applyAgentEdit(ed, monaco, newContent);
       return true;
     },
@@ -192,6 +191,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   useLiveAgentEdits({
     service: services["agent"],
     setGroups,
+    groups,
     activeGroupIdx,
     conflicts,
     setConflicts,
@@ -639,26 +639,41 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
+  const persistOpenFile = useCallback(
+    async (f: OpenFile, silent?: boolean): Promise<boolean> => {
+      const svc = svcOf(f.rootId);
+      if (!svc) return false;
+      const content = f.content;
+      const id = f.id;
+      try {
+        await svc.writeFile(f.path, content);
+        let applied = false;
+        setGroups((prev) =>
+          prev.map((g) => ({
+            ...g,
+            files: g.files.map((x) => {
+              if (x.id !== id) return x;
+              if (x.content !== content) return x;
+              applied = true;
+              return { ...x, dirty: false, savedContent: content };
+            }),
+          })),
+        );
+        if (applied) setConflicts((cs) => cs.filter((c) => c.fileId !== id));
+        if (!silent) showToast(`Saved ${f.name}`);
+        return true;
+      } catch (err) {
+        showToast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
+        return false;
+      }
+    },
+    [svcOf, showToast],
+  );
+
   const handleSave = useCallback(async () => {
     if (!active || !active.dirty) return;
-    const svc = svcOf(active.rootId);
-    if (!svc) return;
-    try {
-      await svc.writeFile(active.path, active.content);
-      setGroups((prev) =>
-        prev.map((g) => ({
-          ...g,
-          files: g.files.map((f) =>
-            f.id === active.id ? { ...f, dirty: false, savedContent: f.content } : f,
-          ),
-        })),
-      );
-      setConflicts((cs) => cs.filter((c) => c.fileId !== active.id));
-      showToast(`Saved ${active.name}`);
-    } catch (err) {
-      showToast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
-    }
-  }, [active, svcOf, showToast]);
+    await persistOpenFile(active);
+  }, [active, persistOpenFile]);
 
   const handleSaveAll = useCallback(async () => {
     const dirty = groups.flatMap((g) => g.files.filter((f) => f.dirty));
@@ -666,29 +681,48 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       showToast("Nothing to save");
       return;
     }
-    try {
-      await Promise.all(
-        dirty.map((f) => {
-          const svc = svcOf(f.rootId);
-          if (!svc) throw new Error(`No service for ${f.rootId}`);
-          return svc.writeFile(f.path, f.content);
-        }),
-      );
-      setGroups((prev) =>
-        prev.map((g) => ({
-          ...g,
-          files: g.files.map((f) =>
-            f.dirty ? { ...f, dirty: false, savedContent: f.content } : f,
-          ),
-        })),
-      );
-      const savedIds = new Set(dirty.map((f) => f.id));
-      setConflicts((cs) => cs.filter((c) => !savedIds.has(c.fileId)));
+    const results = await Promise.all(dirty.map((f) => persistOpenFile(f, true)));
+    if (results.every(Boolean)) {
       showToast(`Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}`);
-    } catch (err) {
-      showToast(`Save all failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
     }
-  }, [groups, svcOf, showToast]);
+  }, [groups, persistOpenFile, showToast]);
+
+  // Auto save: debounce while typing; flush when switching away from a tab.
+  useEffect(() => {
+    const curId = active?.id ?? null;
+    const prevId = prevActiveIdForAutosaveRef.current;
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    if (settings.autoSave && prevId && prevId !== curId) {
+      const prevFile = groupsRef.current.flatMap((g) => g.files).find((x) => x.id === prevId);
+      if (prevFile?.dirty) void persistOpenFile(prevFile, true);
+    }
+    prevActiveIdForAutosaveRef.current = curId;
+  }, [active?.id, settings.autoSave, persistOpenFile]);
+
+  useEffect(() => {
+    if (!settings.autoSave || !active?.dirty) {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      return;
+    }
+    const snapshot = active;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      autosaveTimerRef.current = null;
+      void persistOpenFile(snapshot, true);
+    }, AUTO_SAVE_DELAY_MS);
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [active, active?.content, active?.dirty, settings.autoSave, persistOpenFile]);
 
   // ─── Splits ──────────────────────────────────────────────────────────
   const splitRight = useCallback(() => {

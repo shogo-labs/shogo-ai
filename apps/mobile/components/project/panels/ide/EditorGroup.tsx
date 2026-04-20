@@ -5,6 +5,8 @@ import { CodeEditor } from "./CodeEditor";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
 
+type MonacoNs = typeof import("monaco-editor");
+
 export function EditorGroupView({
   group,
   focused,
@@ -27,7 +29,7 @@ export function EditorGroupView({
   onReorder?: (orderedIds: string[]) => void;
   onChange: (val: string) => void;
   onCursor: (line: number, col: number) => void;
-  onEditorMount?: (ed: editor.IStandaloneCodeEditor) => void;
+  onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
   settings: EditorSettings;
 }) {
   const active: OpenFile | null =

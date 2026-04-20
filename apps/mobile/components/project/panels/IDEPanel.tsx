@@ -23,6 +23,14 @@ interface IDEPanelProps {
  * AgentClient against the project's per-project agentUrl. Terminal and git
  * are rendered as "backend-pending" placeholders until the agent-runtime
  * exposes those routes (follow-up phase).
+ *
+ * The Workbench stays MOUNTED even when the IDE tab is not visible (we just
+ * hide it with `display: none`). This is essential for the live-edit feature:
+ * the Workbench holds an SSE subscription that receives `file.changed` events
+ * whenever the chat agent writes to disk, and unmounting/remounting on every
+ * tab switch would constantly tear that subscription down — so the user would
+ * miss any edits made while they were on another tab and have to refresh the
+ * whole page to see them.
  */
 export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
   const agentService = useMemo(
@@ -30,9 +38,8 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
     [agentUrl, projectId],
   )
 
-  if (!visible) return null
-
   if (Platform.OS !== 'web') {
+    if (!visible) return null
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#1e1e1e' }}>
         <Code2 size={32} color="#0078d4" />
@@ -48,6 +55,7 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
   }
 
   if (!agentService) {
+    if (!visible) return null
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#1e1e1e' }}>
         <Text style={{ color: '#858585', fontSize: 12 }}>Agent not ready yet…</Text>
@@ -55,10 +63,8 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
     )
   }
 
-  // On web, react-native-web renders <View> as a div. Nest a raw HTML
-  // container so Monaco and xterm have a real DOM subtree to mount into.
   return (
-    <View style={{ flex: 1, minHeight: 0 }}>
+    <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
       <div style={{ position: 'absolute', inset: 0 }}>
         <Workbench agentService={agentService} agentLabel={projectName || `project/${projectId}`} />
       </div>

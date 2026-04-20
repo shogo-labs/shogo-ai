@@ -141,10 +141,8 @@ export class SdkFs implements WorkspaceService {
   }
 
   subscribe(onEvent: (event: WorkspaceFsEvent) => void): () => void {
-    console.log('[LIVE] SdkFs.subscribe called — opening stream to', this.client.baseUrl)
     return this.client.subscribeToWorkspace(
       (evt: WorkspaceEvent) => {
-        console.log('[LIVE] SdkFs got stream event:', evt)
         if (evt.type === 'file.changed' || evt.type === 'file.deleted') {
           onEvent(evt)
         }

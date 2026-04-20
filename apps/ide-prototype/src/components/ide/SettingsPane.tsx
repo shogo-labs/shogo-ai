@@ -95,6 +95,12 @@ export function SettingsPane({
 
         <Section title="Save">
           <ToggleRow
+            label="Auto save"
+            hint="Save the active file after you pause typing (~1s), and when switching tabs"
+            value={settings.autoSave}
+            onChange={(v) => set("autoSave", v)}
+          />
+          <ToggleRow
             label="Format on save"
             hint="Coming soon — Prettier integration"
             value={settings.formatOnSave}

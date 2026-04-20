@@ -49,6 +49,7 @@ export type {
   AgentClientConfig,
   AgentExportBundle,
   AgentImportResult,
+  AgentPlanSummary,
   AgentStatus,
   ChatMessage,
   ChatMessagePart,
