@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync } from 'node
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AGENT_TEMPLATES, getAgentTemplateById, getTemplateSummaries, getTemplatesByCategory } from '../agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir } from '../template-loader'
+import { getTemplateShogoDir, getTemplateSrcDir } from '../template-loader'
 import { seedWorkspaceFromTemplate } from '../workspace-defaults'
 
 const ALL_TEMPLATE_IDS = [
@@ -13,9 +13,20 @@ const ALL_TEMPLATE_IDS = [
   // directory-based originals
   'code-quality', 'comms-monitoring', 'engineering-pulse', 'incident-response',
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
+  'self-evolving',
 ]
 
+const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length
 const WORKSPACE_FILES = ['AGENTS.md', 'HEARTBEAT.md', 'config.json']
+
+// Subset of templates that ship with a canvas `src/` directory (generated React surfaces).
+// Canvas state is now represented by the per-surface `.data.json` files inside src/surfaces/
+// (previously it lived in a top-level `.canvas-state.json` and `canvas/` code dir).
+const TEMPLATES_WITH_CANVAS_SRC = [
+  'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
+  'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
+  'operations-monitor',
+]
 
 let tempRoot: string
 
@@ -28,8 +39,8 @@ afterAll(() => {
 })
 
 describe('template loading', () => {
-  test('loads all 17 templates', () => {
-    expect(AGENT_TEMPLATES.length).toBe(17)
+  test(`loads all ${EXPECTED_TEMPLATE_COUNT} templates`, () => {
+    expect(AGENT_TEMPLATES.length).toBe(EXPECTED_TEMPLATE_COUNT)
   })
 
   test('every expected template ID is present', () => {
@@ -53,7 +64,7 @@ describe('template loading', () => {
 
   test('getTemplateSummaries omits files field', () => {
     const summaries = getTemplateSummaries()
-    expect(summaries.length).toBe(17)
+    expect(summaries.length).toBe(EXPECTED_TEMPLATE_COUNT)
     for (const s of summaries) {
       expect(s).not.toHaveProperty('files')
       expect(s.id).toBeTruthy()
@@ -90,7 +101,7 @@ describe('template loading', () => {
     }
   })
 
-  test('each template has all 6 workspace files', () => {
+  test('each template has the required workspace files', () => {
     for (const t of AGENT_TEMPLATES) {
       for (const fname of WORKSPACE_FILES) {
         expect(t.files[fname]).toBeDefined()
@@ -109,45 +120,25 @@ describe('template directory structure', () => {
     }
   })
 
-  test('migrated templates with canvas state have .canvas-state.json', () => {
-    const withCanvas = [
-      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
-      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-      'operations-monitor',
-    ]
-    for (const id of withCanvas) {
-      const path = getTemplateCanvasStatePath(id)
-      expect(path).not.toBeNull()
-      const data = JSON.parse(readFileSync(path!, 'utf-8'))
-      expect(data.surfaces).toBeDefined()
-      expect(typeof data.surfaces).toBe('object')
-      expect(Object.keys(data.surfaces).length).toBeGreaterThan(0)
-    }
-  })
+  test('canvas-enabled templates ship a src/surfaces directory with .tsx + .data.json files', () => {
+    for (const id of TEMPLATES_WITH_CANVAS_SRC) {
+      const srcDir = getTemplateSrcDir(id)
+      expect(srcDir).not.toBeNull()
+      expect(existsSync(srcDir!)).toBe(true)
 
-  test('migrated templates have canvas/ code directory with .tsx files', () => {
-    const withCanvas = [
-      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
-      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-      'operations-monitor',
-    ]
-    for (const id of withCanvas) {
-      const dir = getTemplateCanvasCodeDir(id)
-      expect(dir).not.toBeNull()
-      expect(existsSync(dir!)).toBe(true)
-      const files = readdirSync(dir!)
+      const surfacesDir = join(srcDir!, 'surfaces')
+      expect(existsSync(surfacesDir)).toBe(true)
+
+      const files = readdirSync(surfacesDir)
       const tsxFiles = files.filter(f => f.endsWith('.tsx'))
+      const dataFiles = files.filter(f => f.endsWith('.data.json'))
       expect(tsxFiles.length).toBeGreaterThan(0)
+      expect(dataFiles.length).toBeGreaterThan(0)
     }
   })
 
-  test('migrated templates have canvasMode: code in .shogo/config.json', () => {
-    const withCanvas = [
-      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
-      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-      'operations-monitor',
-    ]
-    for (const id of withCanvas) {
+  test('canvas-enabled templates have canvasMode: code in .shogo/config.json', () => {
+    for (const id of TEMPLATES_WITH_CANVAS_SRC) {
       const shogoDir = getTemplateShogoDir(id)
       expect(shogoDir).not.toBeNull()
       const config = JSON.parse(readFileSync(join(shogoDir!, 'config.json'), 'utf-8'))
@@ -155,18 +146,19 @@ describe('template directory structure', () => {
     }
   })
 
-  test('canvas state surfaces have required fields', () => {
-    for (const id of ALL_TEMPLATE_IDS) {
-      const path = getTemplateCanvasStatePath(id)
-      if (!path) continue
-      const data = JSON.parse(readFileSync(path, 'utf-8'))
-      for (const [surfaceId, surface] of Object.entries(data.surfaces) as [string, any][]) {
-        expect(surface.surfaceId).toBe(surfaceId)
-        expect(surface.title).toBeTruthy()
-        expect(typeof surface.components).toBe('object')
-        expect(typeof surface.dataModel).toBe('object')
-        expect(surface.createdAt).toBeTruthy()
-        expect(surface.updatedAt).toBeTruthy()
+  test('each per-surface .data.json is valid JSON', () => {
+    for (const id of TEMPLATES_WITH_CANVAS_SRC) {
+      const srcDir = getTemplateSrcDir(id)!
+      const surfacesDir = join(srcDir, 'surfaces')
+      const files = readdirSync(surfacesDir).filter(f => f.endsWith('.data.json'))
+      expect(files.length).toBeGreaterThan(0)
+      for (const file of files) {
+        // Data shapes are freeform (driven by the surface's component tree), so
+        // we only assert each payload is valid JSON and non-empty.
+        const raw = readFileSync(join(surfacesDir, file), 'utf-8')
+        expect(raw.length).toBeGreaterThan(0)
+        const data = JSON.parse(raw)
+        expect(data).toBeDefined()
       }
     }
   })
@@ -203,35 +195,23 @@ describe('workspace seeding', () => {
     expect(agents).not.toContain('{{AGENT_NAME}}')
   })
 
-  test('copies canvas state when available', () => {
-    const withCanvas = [
-      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
-      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-      'operations-monitor',
-    ]
-    for (const id of withCanvas) {
+  test('copies canvas src/ directory when available', () => {
+    // The legacy `.canvas-state.json` + `canvas/` pair was replaced by a single
+    // `src/` directory that contains both React surface components and
+    // per-surface `.data.json` files.
+    for (const id of TEMPLATES_WITH_CANVAS_SRC) {
       const dir = join(tempRoot, `seed-${id}`)
-      const canvasPath = join(dir, '.canvas-state.json')
-      expect(existsSync(canvasPath)).toBe(true)
-      const data = JSON.parse(readFileSync(canvasPath, 'utf-8'))
-      expect(data.surfaces).toBeDefined()
-      expect(Object.keys(data.surfaces).length).toBeGreaterThan(0)
-    }
-  })
+      const srcDir = join(dir, 'src')
+      expect(existsSync(srcDir)).toBe(true)
 
-  test('copies canvas code directory when available', () => {
-    const withCanvas = [
-      'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
-      'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-      'operations-monitor',
-    ]
-    for (const id of withCanvas) {
-      const dir = join(tempRoot, `seed-${id}`)
-      const canvasDir = join(dir, 'canvas')
-      expect(existsSync(canvasDir)).toBe(true)
-      const files = readdirSync(canvasDir)
+      const surfacesDir = join(srcDir, 'surfaces')
+      expect(existsSync(surfacesDir)).toBe(true)
+
+      const files = readdirSync(surfacesDir)
       const tsxFiles = files.filter(f => f.endsWith('.tsx'))
+      const dataFiles = files.filter(f => f.endsWith('.data.json'))
       expect(tsxFiles.length).toBeGreaterThan(0)
+      expect(dataFiles.length).toBeGreaterThan(0)
     }
   })
 

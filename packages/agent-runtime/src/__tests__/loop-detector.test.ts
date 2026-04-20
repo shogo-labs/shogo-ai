@@ -43,7 +43,7 @@ describe('LoopDetector', () => {
   })
 
   test('detects identical input+output repeated (caught by identical_calls first)', () => {
-    const detector = new LoopDetector({ maxIdenticalOutputs: 3 })
+    const detector = new LoopDetector({ maxIdenticalCalls: 3, maxIdenticalOutputs: 3 })
 
     detector.recordAndCheck('exec', { command: 'curl api' }, { error: 'timeout' })
     detector.recordAndCheck('exec', { command: 'curl api' }, { error: 'timeout' })

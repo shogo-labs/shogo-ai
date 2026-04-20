@@ -142,8 +142,8 @@ describe('WarmPoolController', () => {
       const status = controller.getStatus()
 
       expect(status.enabled).toBe(true)
-      expect(status.targetSize.project).toBe(2)
-      expect(status.targetSize.agent).toBe(1)
+      // Unified warm pool: single target size, no project/agent split.
+      expect(status.targetSize).toBe(3)
     })
 
     test('should handle disabled state', async () => {
@@ -200,8 +200,8 @@ describe('WarmPoolController', () => {
       await new Promise(resolve => setTimeout(resolve, 100))
 
       const status = controller.getStatus()
-      expect(status.available.project).toBe(1)
-      expect(status.available.agent).toBe(1)
+      // Unified pool: both discovered pods count as available regardless of legacy label.
+      expect(status.available).toBe(2)
     })
 
     test('should skip assigned pods during discovery', async () => {
@@ -230,7 +230,7 @@ describe('WarmPoolController', () => {
       await new Promise(resolve => setTimeout(resolve, 100))
 
       const status = controller.getStatus()
-      expect(status.available.project).toBe(0) // Should not count assigned pods
+      expect(status.available).toBe(0) // Should not count assigned pods
     })
   })
 
@@ -243,31 +243,22 @@ describe('WarmPoolController', () => {
       // createWarmPod is fire-and-forget; give promises time to resolve
       await new Promise(resolve => setTimeout(resolve, 200))
 
-      // Should create 2 project pods + 1 agent pod = 3 total
+      // Unified pool: controller creates exactly `poolSize` pods of one type.
       expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalledTimes(3)
 
-      // Verify pod specs include warm pool config
       const calls = mockK8sCustomApi.createNamespacedCustomObject.mock.calls
       const bodies = calls.map((call: any) => {
         const arg = call[0]
         return arg?.body || arg
       })
 
-      const projectBodies = bodies.filter(
-        (b: any) => b?.metadata?.labels?.['shogo.io/warm-pool-type'] === 'project'
-      )
-      const agentBodies = bodies.filter(
-        (b: any) => b?.metadata?.labels?.['shogo.io/warm-pool-type'] === 'agent'
-      )
-
-      expect(projectBodies.length).toBe(2)
-      expect(agentBodies.length).toBe(1)
-
-      // Check project pod has pool env vars
-      const projectPod = projectBodies[0]
-      const envVars = projectPod.spec.template.spec.containers[0].env
-      expect(envVars).toContainEqual({ name: 'PROJECT_ID', value: '__POOL__' })
-      expect(envVars).toContainEqual({ name: 'WARM_POOL_MODE', value: 'true' })
+      // Every pod must carry the warm-pool label + the POOL_PROJECT_ID env + WARM_POOL_MODE=true.
+      for (const body of bodies) {
+        expect(body?.metadata?.labels?.['shogo.io/warm-pool']).toBe('true')
+        const envVars = body.spec.template.spec.containers[0].env
+        expect(envVars).toContainEqual({ name: 'PROJECT_ID', value: '__POOL__' })
+        expect(envVars).toContainEqual({ name: 'WARM_POOL_MODE', value: 'true' })
+      }
     })
 
     test('should handle concurrent creation attempts without crashing', async () => {
@@ -338,10 +329,16 @@ describe('WarmPoolController', () => {
 
       const pod = controller.claim()
       expect(pod).not.toBeNull()
-      expect(pod?.serviceName).toBe('warm-pool-project-old') // Should claim older pod
+      // claim() now picks at random among ready pods to avoid hot-spotting when
+      // multiple API pods race to claim from the same pool. We only assert the
+      // claimed pod came from the available set.
+      expect([
+        'warm-pool-project-old',
+        'warm-pool-project-new',
+      ]).toContain(pod?.serviceName)
 
       const status = controller.getStatus()
-      expect(status.available.project).toBe(1) // One remaining
+      expect(status.available).toBe(1) // One remaining after claim
     })
 
     test('should return null when no pods available', async () => {
@@ -630,7 +627,7 @@ describe('WarmPoolController', () => {
 
       const status = controller.getStatus()
       // Promoted pod should NOT be counted as available
-      expect(status.available.project).toBe(1)
+      expect(status.available).toBe(1)
     })
 
     test('should not count promoted pods toward pool target', async () => {

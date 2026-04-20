@@ -15,8 +15,12 @@
 
 import { describe, test, expect, beforeAll, mock } from 'bun:test'
 import { Hono } from 'hono'
-import { generateProxyToken } from '../lib/ai-proxy-token'
-import { aiProxyRoutes } from '../routes/ai-proxy'
+
+// Run the billing service in local mode so credit-ledger checks are bypassed
+// without needing to stub every model in the mocked Prisma client. The env
+// var is read at module load, so set it before importing anything that
+// transitively loads billing.service.
+process.env.SHOGO_LOCAL_MODE = 'true'
 
 // Mock prisma to avoid database dependency
 mock.module('../lib/prisma', () => ({
@@ -34,8 +38,27 @@ mock.module('../lib/prisma', () => ({
         return args.data
       },
     },
+    creditLedger: {
+      findUnique: async () => ({
+        workspaceId: 'e2e-workspace',
+        monthlyCredits: 1_000_000,
+        dailyCredits: 1_000_000,
+        dailyCreditsDispensedThisMonth: 0,
+        lastDailyReset: new Date(),
+        lastMonthlyReset: new Date(),
+      }),
+      upsert: async (args: any) => args.create,
+      create: async (args: any) => args.data,
+      update: async (args: any) => args.data,
+    },
+    subscription: {
+      findFirst: async () => null,
+    },
   },
 }))
+
+const { generateProxyToken } = await import('../lib/ai-proxy-token')
+const { aiProxyRoutes } = await import('../routes/ai-proxy')
 
 const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
 

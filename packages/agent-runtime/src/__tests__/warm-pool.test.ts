@@ -94,7 +94,7 @@ describe('Warm Pool Mode', () => {
     expect(data.status).toBe('ok')
     expect(data.poolMode).toBe(true)
     expect(data.projectId).toBe('__POOL__')
-    expect(data.runtimeType).toBe('agent')
+    expect(data.runtimeType).toBe('unified')
   })
 
   test('ready check passes in pool mode', async () => {

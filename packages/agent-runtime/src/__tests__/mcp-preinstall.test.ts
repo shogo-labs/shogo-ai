@@ -230,14 +230,12 @@ describe('MCP whitelist enforcement', () => {
     expect(getPreinstalledEntry('unknown')).toBeUndefined()
   })
 
-  test('Composio-only entries (gmail, google-drive, google-calendar) are not preinstalled', () => {
-    const gmail = MCP_CATALOG.find(e => e.id === 'gmail')
-    expect(gmail).toBeDefined()
-    expect(gmail!.preinstalled).toBeUndefined()
-
-    const drive = MCP_CATALOG.find(e => e.id === 'google-drive')
-    expect(drive).toBeDefined()
-    expect(drive!.preinstalled).toBeUndefined()
+  test('Composio-only entries (gmail, google-drive, google-calendar) are not in the MCP catalog', () => {
+    // These integrations are proxied via Composio and intentionally kept out of
+    // the MCP catalog so they don't appear in MCP-install paths.
+    expect(MCP_CATALOG.find(e => e.id === 'gmail')).toBeUndefined()
+    expect(MCP_CATALOG.find(e => e.id === 'google-drive')).toBeUndefined()
+    expect(MCP_CATALOG.find(e => e.id === 'google-calendar')).toBeUndefined()
   })
 
   test('startServer rejects non-catalog server names', async () => {
