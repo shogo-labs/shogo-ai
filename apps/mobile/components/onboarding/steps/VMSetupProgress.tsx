@@ -32,6 +32,7 @@ export function VMSetupProgress({ onComplete, compact = false }: VMSetupProgress
   const [diagnostics, setDiagnostics] = useState<VMSetupDiagnostics | null>(null)
   const [qemuStatus, setQemuStatus] = useState<QemuInstallStatus>('idle')
   const [qemuError, setQemuError] = useState<string | null>(null)
+  const [qemuErrorCode, setQemuErrorCode] = useState<string | null>(null)
   const [whpxStatus, setWhpxStatus] = useState<WhpxEnableStatus>('idle')
   const [whpxError, setWhpxError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -63,6 +64,7 @@ export function VMSetupProgress({ onComplete, compact = false }: VMSetupProgress
         } else if (data.status === 'error') {
           setQemuStatus('error')
           setQemuError(data.error || 'Installation failed')
+          setQemuErrorCode(typeof data.errorCode === 'string' ? data.errorCode : null)
         }
       } catch { /* polling error, ignore */ }
     }, 2000)
@@ -72,6 +74,7 @@ export function VMSetupProgress({ onComplete, compact = false }: VMSetupProgress
   const installQemu = useCallback(async () => {
     setQemuStatus('installing')
     setQemuError(null)
+    setQemuErrorCode(null)
     try {
       const res = await fetch(`${API_URL}/api/vm/qemu/install`, {
         method: 'POST',
@@ -116,6 +119,7 @@ export function VMSetupProgress({ onComplete, compact = false }: VMSetupProgress
                 if (parsed.success === false) {
                   setQemuStatus('error')
                   setQemuError(parsed.error || 'Installation failed')
+                  setQemuErrorCode(typeof parsed.errorCode === 'string' ? parsed.errorCode : null)
                   return
                 }
               } catch { /* ignore malformed SSE */ }
@@ -211,18 +215,20 @@ export function VMSetupProgress({ onComplete, compact = false }: VMSetupProgress
               {qemuReady
                 ? 'QEMU installed'
                 : qemuStatus === 'installing'
-                  ? 'Installing QEMU...'
+                  ? 'Installing QEMU (check for UAC prompt)...'
                   : qemuStatus === 'error'
-                    ? 'QEMU installation failed'
+                    ? qemuErrorCode === 'UAC_DECLINED'
+                      ? 'Administrator permission required'
+                      : 'QEMU installation failed'
                     : 'QEMU not installed'}
             </Text>
             {!qemuReady && qemuStatus === 'idle' && (
               <Text className="text-xs text-muted-foreground mt-0.5">
-                Required for VM sandboxing (~200 MB)
+                Required for VM sandboxing (~200 MB). A UAC prompt will appear to install.
               </Text>
             )}
             {qemuStatus === 'error' && qemuError && (
-              <Text className="text-xs text-destructive mt-0.5" numberOfLines={2}>
+              <Text className="text-xs text-destructive mt-0.5" numberOfLines={3}>
                 {qemuError}
               </Text>
             )}

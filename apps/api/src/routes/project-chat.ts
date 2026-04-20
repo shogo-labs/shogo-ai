@@ -473,15 +473,31 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       return await getProjectPodUrl(projectId)
     } else if (isVMIsolation()) {
       // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s).
-      // Do NOT fall back to local RuntimeManager — that creates a split-brain
-      // where the preview renders from the host but the agent runs in the VM.
-      const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+      // Normally we do NOT fall back to the local RuntimeManager — that would
+      // create a split-brain where the preview renders from the host but the
+      // agent runs in the VM. The one exception is when the warm pool has
+      // permanently disabled itself (3+ boot failures): in that case no VM is
+      // running at all, so falling back to the host runtime is safe and gives
+      // the user a working runtime instead of a cryptic `pod_unavailable`.
+      const vmPool = await import("../lib/vm-warm-pool-controller")
+      const { getVMProjectUrl, VMPoolPermanentlyDisabledError } = vmPool
       const maxRetries = 5
       const retryDelayMs = 3000
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           return await getVMProjectUrl(projectId)
         } catch (err) {
+          if (err instanceof VMPoolPermanentlyDisabledError) {
+            if (runtimeManager) {
+              console.warn(
+                `[ProjectChat] VM warm pool permanently disabled (${err.consecutiveFailures} boot failures); ` +
+                  `falling back to host RuntimeManager for project ${projectId}. ` +
+                  `To silence this warning, set vmIsolation.enabled=false in the desktop config.`,
+              )
+              break
+            }
+            throw err
+          }
           if (attempt === maxRetries) throw err
           console.log(`[ProjectChat] VM not ready (attempt ${attempt}/${maxRetries}), retrying in ${retryDelayMs}ms...`)
           await new Promise(r => setTimeout(r, retryDelayMs))
