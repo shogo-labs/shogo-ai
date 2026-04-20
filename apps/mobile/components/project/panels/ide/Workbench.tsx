@@ -324,7 +324,11 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           })),
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : String(err);
+        const is429 = /\b429\b/.test(raw) || /rate[_\s-]?limit/i.test(raw);
+        const msg = is429
+          ? "Rate limited — too many requests in a short time. Wait a few seconds and try again."
+          : raw;
         setGroups((prev) =>
           prev.map((g) => ({
             ...g,
@@ -396,7 +400,11 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           })),
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : String(err);
+        const is429 = /\b429\b/.test(raw) || /rate[_\s-]?limit/i.test(raw);
+        const msg = is429
+          ? "Rate limited — too many requests in a short time. Wait a few seconds and try again."
+          : raw;
         setGroups((prev) =>
           prev.map((g) => ({
             ...g,

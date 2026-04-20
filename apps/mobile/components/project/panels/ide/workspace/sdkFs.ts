@@ -71,10 +71,38 @@ function toWsNode(fn: FileNode): WsNode {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+
+function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms)) }
+
+function is429(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /\b429\b/.test(msg) || /rate[_\s-]?limit/i.test(msg)
+}
+
+/**
+ * Retry on 429 with exponential backoff + jitter. Caps at ~2.6s total wait
+ * so a genuinely slow endpoint still fails fast, but a transient rate-limit
+ * (e.g. while bursting reads from the file tree) self-heals without the user
+ * seeing an error.
+ */
+async function retry429<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn() } catch (err) {
+      lastErr = err
+      if (!is429(err) || i === attempts - 1) throw err
+      const base = 250 * Math.pow(2, i) // 250, 500, 1000
+      await sleep(base + Math.random() * 200)
+    }
+  }
+  throw lastErr ?? new Error('retry429: exhausted')
+}
+
 export class SdkFs implements WorkspaceService {
   readonly id = 'agent'
   readonly label: string
   private client: AgentClient
+  private readInFlight = new Map<string, Promise<WsFile>>()
 
   constructor(agentUrl: string, label = 'agent-workspace', fetchImpl?: FetchLike) {
     this.label = label
@@ -85,24 +113,34 @@ export class SdkFs implements WorkspaceService {
   }
 
   async listTree(): Promise<WsNode[]> {
-    const tree = await this.client.getWorkspaceTree()
+    const tree = await retry429(() => this.client.getWorkspaceTree())
     return tree.map(toWsNode)
   }
 
   async readFile(path: string): Promise<WsFile> {
-    const content = await this.client.readFile(path)
-    return {
-      path,
-      name: path.split('/').pop() ?? path,
-      language: languageFor(path),
-      size: new Blob([content]).size,
-      mtime: Date.now(),
-      content,
-    }
+    const existing = this.readInFlight.get(path)
+    if (existing) return existing
+    const p = (async () => {
+      try {
+        const content = await retry429(() => this.client.readFile(path))
+        return {
+          path,
+          name: path.split('/').pop() ?? path,
+          language: languageFor(path),
+          size: new Blob([content]).size,
+          mtime: Date.now(),
+          content,
+        }
+      } finally {
+        this.readInFlight.delete(path)
+      }
+    })()
+    this.readInFlight.set(path, p)
+    return p
   }
 
   async writeFile(path: string, content: string) {
-    await this.client.writeFile(path, content)
+    await retry429(() => this.client.writeFile(path, content))
     return { mtime: Date.now(), size: new Blob([content]).size }
   }
 
@@ -159,7 +197,7 @@ export class SdkFs implements WorkspaceService {
     const results: SearchResponse['results'] = []
     let total = 0
     let idx = 0
-    const CONC = 6
+    const CONC = 3
 
     const workers = Array.from({ length: CONC }, async () => {
       while (true) {
@@ -168,7 +206,7 @@ export class SdkFs implements WorkspaceService {
         if (i >= candidates.length) return
         const path = candidates[i]
         let content: string
-        try { content = await this.client.readFile(path) } catch { continue }
+        try { content = await retry429(() => this.client.readFile(path)) } catch { continue }
         const lines = content.split('\n')
         const matches: SearchResponse['results'][number]['matches'] = []
         for (let ln = 0; ln < lines.length && matches.length < MAX_PER_FILE; ln++) {
