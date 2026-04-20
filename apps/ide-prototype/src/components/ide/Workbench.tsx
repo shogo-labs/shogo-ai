@@ -433,6 +433,28 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     );
   }, []);
 
+  const reorderInGroup = useCallback(
+    (groupIdx: number, orderedIds: string[]) => {
+      setGroups((prev) =>
+        prev.map((g, i) => {
+          if (i !== groupIdx) return g;
+          const byId = new Map(g.files.map((f) => [f.id, f]));
+          const nextFiles: OpenFile[] = [];
+          for (const id of orderedIds) {
+            const f = byId.get(id);
+            if (f) {
+              nextFiles.push(f);
+              byId.delete(id);
+            }
+          }
+          for (const f of byId.values()) nextFiles.push(f);
+          return { ...g, files: nextFiles };
+        }),
+      );
+    },
+    [],
+  );
+
   // ─── CRUD via service routing ───────────────────────────────────────
   const handleCreate = useCallback(
     async (rootId: string, parentPath: string, name: string, kind: "file" | "dir") => {
@@ -940,6 +962,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
                       onTogglePin={(id) => togglePinInGroup(i, id)}
+                      onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
                       onCursor={(line, col) => setCursor({ line, col })}
                       settings={settings}
