@@ -403,12 +403,12 @@ export function FileTree({
             onContextMenu={(e) => openContextMenu(e, node)}
             className={
               isWorkspaceRoot
-                ? `group flex cursor-pointer items-center gap-1 px-2 py-[4px] text-[11px] font-semibold uppercase tracking-wider ${
+                ? `group flex cursor-pointer items-center gap-1 px-2 py-[4px] text-[11px] font-semibold uppercase tracking-wider min-w-0 ${
                     isDropInto
                       ? "bg-[#094771] text-white"
                       : "text-[#858585] hover:text-white hover:bg-[#2a2d2e]"
                   }`
-                : `group flex cursor-pointer items-center gap-1 px-2 py-[3px] text-[13px] ${
+                : `group flex cursor-pointer items-center gap-1 px-2 py-[3px] text-[13px] min-w-0 ${
                     isDropInto
                       ? "bg-[#094771] ring-1 ring-inset ring-[#0078d4]"
                       : isActive
@@ -441,7 +441,7 @@ export function FileTree({
                 <File size={15} className={iconFor(ext)} />
               </>
             )}
-            <span className="truncate">{node.name}</span>
+            <span className="truncate min-w-0 flex-1" title={node.path}>{node.name}</span>
           </div>
         );
       })}

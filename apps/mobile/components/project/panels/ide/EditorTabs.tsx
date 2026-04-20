@@ -49,7 +49,7 @@ export function EditorTabs({
             }}
           >
             {f.pinned && <Pin size={11} className="text-[#858585]" />}
-            <span className="truncate max-w-[180px]">{f.name}</span>
+            <span className="truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px]">{f.name}</span>
             <button
               title={f.pinned ? "Unpin" : f.dirty ? "Close (unsaved)" : "Close"}
               className="flex h-4 w-4 items-center justify-center rounded-sm hover:bg-[#ffffff1a]"

@@ -863,7 +863,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   ]);
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-[#1e1e1e] text-white overflow-hidden">
+    <div className="flex h-full w-full min-w-0 min-h-0 flex-col bg-[#1e1e1e] text-white overflow-hidden">
       {/* Title bar */}
       <div className="flex h-9 items-center justify-between border-b border-[#2a2a2a] bg-[#1a1a1a] px-3 text-[12px]">
         <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -889,8 +889,8 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
 
         <div className="flex flex-1 min-w-0">
           <div
-            style={{ width: sidebarSplit.size, flexShrink: 0 }}
-            className="h-full bg-[#252526]"
+            style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
+            className="h-full bg-[#252526] overflow-hidden"
           >
             {activity === "files" && (
               <FilesPane
