@@ -227,6 +227,12 @@ export interface QemuInstallState {
   status: 'idle' | 'installing' | 'complete' | 'error'
   output: string
   error?: string
+  /**
+   * Machine-readable code for structured handling of specific failure modes.
+   * Currently set to 'UAC_DECLINED' when the user dismisses the Windows
+   * User Account Control consent dialog during the elevated installer launch.
+   */
+  errorCode?: string
 }
 
 let qemuInstallState: QemuInstallState = { status: 'idle', output: '' }
@@ -331,25 +337,124 @@ async function downloadQemuInstaller(
   })
 }
 
+/**
+ * Custom error thrown when the QEMU installer cannot proceed because the
+ * user declined the User Account Control (UAC) elevation prompt.
+ *
+ * The caller (route handler) inspects `code` to tag the install-state error
+ * so the frontend can render a retry-with-clear-instructions affordance
+ * instead of treating it as a generic installer failure.
+ */
+class QemuInstallError extends Error {
+  code: string
+  constructor(message: string, code: string) {
+    super(message)
+    this.name = 'QemuInstallError'
+    this.code = code
+  }
+}
+
+/**
+ * Launches the downloaded QEMU installer with silent-install flag (/S).
+ *
+ * The QEMU installer ships with a `requireAdministrator` manifest, so a
+ * direct spawn() from a non-elevated parent fails at CreateProcess time
+ * with ERROR_ELEVATION_REQUIRED — which libuv surfaces as a useless
+ * "EACCES: permission denied, uv_spawn" error with no way for the user
+ * to recover.
+ *
+ * On Windows we instead hand the launch off to PowerShell's
+ * `Start-Process -Verb RunAs`, which goes through ShellExecute and raises
+ * a normal UAC consent dialog on the user's desktop. If the user accepts,
+ * the installer runs elevated; if they decline, Windows returns
+ * ERROR_CANCELLED (1223), which we translate into a UAC_DECLINED error so
+ * the UI can prompt them to try again.
+ */
 async function installQemuFromExe(
   installerPath: string,
   onOutput: (text: string) => void,
 ): Promise<void> {
-  onOutput('Running QEMU installer (silent)...\n')
+  if (process.platform !== 'win32') {
+    // Defensive fallback for non-Windows callers (the /qemu/install route
+    // is gated to win32, but keep a working path for local testing).
+    onOutput('Running QEMU installer (silent)...\n')
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn(installerPath, ['/S'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      proc.stdout?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+      proc.stderr?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+      proc.on('error', (err) => reject(err))
+      proc.on('exit', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`QEMU installer exited with code ${code}`))
+      })
+    })
+  }
+
+  onOutput('Requesting administrator permission to install QEMU...\n')
+  onOutput('A Windows User Account Control prompt will appear — click "Yes" to continue.\n')
 
   return new Promise<void>((resolve, reject) => {
-    const proc = spawn(installerPath, ['/S'], {
+    // Escape single quotes for PowerShell single-quoted string literals.
+    const psEscape = (s: string) => s.replace(/'/g, "''")
+    const innerCmd =
+      `$p = Start-Process -FilePath '${psEscape(installerPath)}' ` +
+      `-ArgumentList '/S' -Verb RunAs -Wait -PassThru; ` +
+      `exit $p.ExitCode`
+
+    const proc = spawn('powershell', ['-NoProfile', '-Command', innerCmd], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
 
+    let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
-    proc.stderr?.on('data', (chunk: Buffer) => onOutput(chunk.toString()))
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString()
+      stderr += text
+      onOutput(text)
+    })
 
-    proc.on('error', (err) => reject(err))
+    proc.on('error', (err) => {
+      // Surface spawn-time failures (e.g. PowerShell missing) with a clear
+      // message rather than libuv's cryptic default.
+      reject(new QemuInstallError(
+        `Failed to launch elevated installer: ${err.message}`,
+        'SPAWN_FAILED',
+      ))
+    })
+
     proc.on('exit', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`QEMU installer exited with code ${code}`))
+      if (code === 0) {
+        onOutput('QEMU installer completed successfully.\n')
+        resolve()
+        return
+      }
+
+      // Windows ERROR_CANCELLED (1223) — user closed or denied UAC.
+      // Start-Process surfaces this as a non-zero exit code from the outer
+      // PowerShell. We also pattern-match the stderr text because some
+      // Windows SKUs / PS versions return different codes but consistent
+      // wording.
+      const uacDeclined =
+        code === 1223 ||
+        /The operation was canceled by the user|OperationCanceledException|canceled by the user/i
+          .test(stderr)
+
+      if (uacDeclined) {
+        reject(new QemuInstallError(
+          'Administrator permission was not granted. ' +
+          'Click Retry and choose "Yes" on the User Account Control prompt to install QEMU.',
+          'UAC_DECLINED',
+        ))
+        return
+      }
+
+      reject(new QemuInstallError(
+        `QEMU installer exited with code ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}`,
+        'INSTALLER_FAILED',
+      ))
     })
   })
 }
@@ -611,14 +716,21 @@ export function vmRoutes(): Hono {
           data: JSON.stringify({ success: true }),
         })
       } catch (err: any) {
+        const errorMessage = err?.message || 'Installation failed'
+        const errorCode = typeof err?.code === 'string' ? err.code : undefined
         qemuInstallState = {
           status: 'error',
           output: qemuInstallState.output,
-          error: err?.message || 'Installation failed',
+          error: errorMessage,
+          errorCode,
         }
         await stream.writeSSE({
           event: 'error',
-          data: JSON.stringify({ success: false, error: err?.message || 'Installation failed' }),
+          data: JSON.stringify({
+            success: false,
+            error: errorMessage,
+            ...(errorCode ? { errorCode } : {}),
+          }),
         })
       }
     })

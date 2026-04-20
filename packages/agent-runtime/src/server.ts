@@ -215,6 +215,30 @@ app.get('/ready', (c) => c.json({ ready: true }))
 // Agent Workspace Bootstrap
 // =============================================================================
 
+/**
+ * Move a file or directory from `src` to `dest`, working around a Windows-specific
+ * failure mode: `renameSync` returns `EPERM` when the source tree has any file
+ * handle open (e.g. a Vite file-watcher subscribing to `src/`). POSIX lets the
+ * rename succeed in that case; NTFS does not.
+ *
+ * Falls back to a recursive copy plus a retrying `rmSync`. `rmSync` with
+ * `maxRetries > 0` retries on EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM with a linear
+ * backoff, which gives concurrent watchers time to release their handles.
+ */
+function safeMoveSync(src: string, dest: string): void {
+  try {
+    renameSync(src, dest)
+    return
+  } catch (err: any) {
+    const code = err?.code
+    if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY' && code !== 'EXDEV') {
+      throw err
+    }
+  }
+  cpSync(src, dest, { recursive: true, force: true, errorOnExist: false })
+  rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+}
+
 function ensureWorkspaceFiles(): void {
   const templateMarker = join(WORKSPACE_DIR, '.template')
   const templateIdFromEnv = process.env.TEMPLATE_ID
@@ -247,11 +271,11 @@ function ensureWorkspaceFiles(): void {
     const appFiles = ['package.json', 'bun.lock', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts', 'postcss.config.js', 'components.json', '.gitignore']
     for (const f of appFiles) {
       const src = join(WORKSPACE_DIR, f)
-      if (existsSync(src)) renameSync(src, join(projectDir, f))
+      if (existsSync(src)) safeMoveSync(src, join(projectDir, f))
     }
     for (const d of ['src', 'prisma', 'dist', 'public', 'node_modules']) {
       const src = join(WORKSPACE_DIR, d)
-      if (existsSync(src)) renameSync(src, join(projectDir, d))
+      if (existsSync(src)) safeMoveSync(src, join(projectDir, d))
     }
     seedWorkspaceDefaults(WORKSPACE_DIR)
     logTiming('Migrated legacy APP layout into project/ subdirectory')
