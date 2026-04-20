@@ -161,3 +161,22 @@ Launch from terminal to see output:
 /Applications/Shogo.app/Contents/MacOS/Shogo
 ```
 Logs are also written to `~/Library/Logs/Shogo/main.log`.
+
+**`Error: P3005 — The database schema is not empty` on startup (legacy installs)**
+Affects installs from versions ≤1.3.3 that first-ran on a machine without
+`sqlite3` on PATH (notably stock Windows). The seed database was copied but
+`_prisma_migrations` was never populated, so every subsequent launch tried
+to re-apply migrations against tables that already existed.
+
+Modern builds detect this automatically: `runMigrations` in
+`apps/desktop/src/local-server.ts` catches P3005, baselines the existing
+database via `bun:sqlite`, and retries once. No user action required —
+simply re-launch the app.
+
+If for some reason the self-heal doesn't run (e.g. you're pinned to an old
+build), baseline manually with the bundled `bun`:
+
+```bash
+# Windows (adjust paths for your install):
+"%LOCALAPPDATA%\Shogo\app-1.3.3\resources\bun\bun.exe" -e "const {Database}=require('bun:sqlite');const {randomUUID}=require('node:crypto');const db=new Database(process.argv[1]);db.exec('CREATE TABLE IF NOT EXISTS \"_prisma_migrations\" (\"id\" TEXT PRIMARY KEY NOT NULL,\"checksum\" TEXT NOT NULL,\"finished_at\" DATETIME,\"migration_name\" TEXT NOT NULL,\"logs\" TEXT,\"rolled_back_at\" DATETIME,\"started_at\" DATETIME NOT NULL DEFAULT current_timestamp,\"applied_steps_count\" INTEGER NOT NULL DEFAULT 0)');const existing=new Set(db.query('SELECT migration_name FROM _prisma_migrations').all().map(r=>r.migration_name));const stmt=db.prepare('INSERT INTO _prisma_migrations (id,checksum,finished_at,migration_name,applied_steps_count,started_at) VALUES (?,?,?,?,1,?)');const now=new Date().toISOString();for (const n of process.argv.slice(2)) if (!existing.has(n)) stmt.run(randomUUID(),'baseline-seed',now,n,now);" "%APPDATA%\Shogo\data\shogo.db" 0000_baseline 0001_add_project_last_message_at 0002_add_missing_models 0003_add_capacity_tiers_and_storage 0005_add_meetings
+```
