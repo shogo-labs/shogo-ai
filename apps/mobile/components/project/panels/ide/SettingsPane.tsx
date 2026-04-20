@@ -96,7 +96,7 @@ export function SettingsPane({
         <Section title="Save">
           <ToggleRow
             label="Format on save"
-            hint="Coming soon — Prettier integration in Phase 7"
+            hint="Coming soon — Prettier integration"
             value={settings.formatOnSave}
             onChange={(v) => set("formatOnSave", v)}
           />

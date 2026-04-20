@@ -10,6 +10,7 @@ import { agentFetch } from '../../../lib/agent-fetch'
 interface IDEPanelProps {
   visible: boolean
   projectId: string
+  projectName?: string | null
   agentUrl?: string | null
 }
 
@@ -23,7 +24,7 @@ interface IDEPanelProps {
  * are rendered as "backend-pending" placeholders until the agent-runtime
  * exposes those routes (follow-up phase).
  */
-export function IDEPanel({ visible, projectId, agentUrl }: IDEPanelProps) {
+export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanelProps) {
   const agentService = useMemo(
     () => (agentUrl ? sdkFsFor(agentUrl, `project/${projectId}`, agentFetch) : null),
     [agentUrl, projectId],
@@ -59,7 +60,7 @@ export function IDEPanel({ visible, projectId, agentUrl }: IDEPanelProps) {
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
       <div style={{ position: 'absolute', inset: 0 }}>
-        <Workbench agentService={agentService} agentLabel={`project/${projectId}`} />
+        <Workbench agentService={agentService} agentLabel={projectName || `project/${projectId}`} />
       </div>
     </View>
   )

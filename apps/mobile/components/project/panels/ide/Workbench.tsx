@@ -881,9 +881,6 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           <span className="text-[#858585] truncate max-w-[40vw]">
             {roots.length === 1 ? roots[0].label : `${roots.length} workspaces`}
           </span>
-          <span className="ml-3 hidden md:inline-block rounded bg-[#0078d4]/30 px-1.5 py-[1px] text-[10px] text-[#75beff] whitespace-nowrap">
-            Phase 7 · terminal + source control
-          </span>
         </div>
         <div className="hidden lg:flex items-center gap-3 text-[#858585]">
           <span>⌘P files</span>
