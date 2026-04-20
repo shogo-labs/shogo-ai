@@ -324,8 +324,11 @@ app.use('*', secureHeaders({
   crossOriginResourcePolicy: 'cross-origin',
 }))
 
-// Global request body size limit (10 MB default)
-app.use('*', bodyLimit({ maxSize: 10 * 1024 * 1024 }))
+// Global request body size limit.
+// Set to 200 MB to match the largest legitimate upload on any route
+// (project import bundles, see MAX_TOTAL_SIZE in routes/project-export-import.ts).
+// Individual routes are responsible for enforcing their own tighter caps.
+app.use('*', bodyLimit({ maxSize: 200 * 1024 * 1024 }))
 
 // =============================================================================
 // Global Error Handling
