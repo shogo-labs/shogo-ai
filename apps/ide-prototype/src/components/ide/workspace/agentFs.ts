@@ -1,4 +1,10 @@
-import type { WorkspaceService, WsFile, WsNode } from "./types";
+import type {
+  SearchOptions,
+  SearchResponse,
+  WorkspaceService,
+  WsFile,
+  WsNode,
+} from "./types";
 
 const BASE = "";
 
@@ -45,6 +51,15 @@ export class AgentFs implements WorkspaceService {
       method: "POST",
       body: JSON.stringify({ from, to }),
     });
+  }
+  async search(query: string, opts: SearchOptions = {}): Promise<SearchResponse> {
+    const params = new URLSearchParams({
+      q: query,
+      case: opts.caseSensitive ? "1" : "0",
+      regex: opts.regex ? "1" : "0",
+      limit: String(opts.limit ?? 200),
+    });
+    return jfetch<SearchResponse>(`${BASE}/api/fs/search?${params}`);
   }
 }
 

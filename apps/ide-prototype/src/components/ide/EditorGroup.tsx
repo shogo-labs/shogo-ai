@@ -2,7 +2,7 @@ import { AlertTriangle } from "lucide-react";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { CodeEditor } from "./CodeEditor";
-import type { EditorGroup as GroupState, OpenFile } from "./types";
+import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
 
 export function EditorGroupView({
@@ -15,6 +15,7 @@ export function EditorGroupView({
   onChange,
   onCursor,
   onEditorMount,
+  settings,
 }: {
   group: GroupState;
   focused: boolean;
@@ -25,6 +26,7 @@ export function EditorGroupView({
   onChange: (val: string) => void;
   onCursor: (line: number, col: number) => void;
   onEditorMount?: (ed: editor.IStandaloneCodeEditor) => void;
+  settings: EditorSettings;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -62,6 +64,8 @@ export function EditorGroupView({
             <CodeEditor
               value={active.content}
               language={active.language}
+              pathKey={active.id}
+              settings={settings}
               onChange={onChange}
               onCursor={onCursor}
               onMount={onEditorMount}

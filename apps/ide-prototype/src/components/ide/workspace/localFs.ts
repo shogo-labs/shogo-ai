@@ -1,4 +1,10 @@
-import type { WorkspaceService, WsFile, WsNode } from "./types";
+import type {
+  SearchOptions,
+  SearchResponse,
+  WorkspaceService,
+  WsFile,
+  WsNode,
+} from "./types";
 
 const DENY_DIRS = new Set([
   ".git",
@@ -202,6 +208,73 @@ export class LocalFs implements WorkspaceService {
       await this.writeFile(to, file.content);
     }
     await this.remove(from);
+  }
+
+  async search(query: string, opts: SearchOptions = {}): Promise<SearchResponse> {
+    if (!query) return { results: [], truncated: false };
+    const limit = opts.limit ?? 200;
+    const MAX_FILES = 1500;
+    const MAX_PER_FILE = 20;
+
+    let re: RegExp;
+    try {
+      re = opts.regex
+        ? new RegExp(query, opts.caseSensitive ? "g" : "gi")
+        : new RegExp(
+            query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+            opts.caseSensitive ? "g" : "gi",
+          );
+    } catch {
+      throw new Error("Invalid regex");
+    }
+
+    const allFiles: string[] = [];
+    const walk = async (dir: FileSystemDirectoryHandle, rel: string) => {
+      if (allFiles.length >= MAX_FILES) return;
+      // @ts-expect-error async iterator at runtime
+      for await (const [name, entry] of dir.entries()) {
+        if (allFiles.length >= MAX_FILES) return;
+        if (name.startsWith(".") && name !== ".gitignore") continue;
+        const childRel = rel ? `${rel}/${name}` : name;
+        const kind = entry.kind as "file" | "directory";
+        if (kind === "directory") {
+          if (DENY_DIRS.has(name)) continue;
+          await walk(entry as FileSystemDirectoryHandle, childRel);
+        } else if (isTextFile(name)) {
+          allFiles.push(childRel);
+        }
+      }
+    };
+    await walk(this.root, "");
+
+    const results: SearchResponse["results"] = [];
+    let total = 0;
+    let truncated = allFiles.length >= MAX_FILES;
+
+    for (const rel of allFiles) {
+      if (total >= limit) { truncated = true; break; }
+      let file: WsFile;
+      try { file = await this.readFile(rel); } catch { continue; }
+      const lines = file.content.split("\n");
+      const matches: SearchResponse["results"][number]["matches"] = [];
+      for (let i = 0; i < lines.length && matches.length < MAX_PER_FILE; i++) {
+        re.lastIndex = 0;
+        const m = re.exec(lines[i]);
+        if (m) {
+          matches.push({
+            line: i + 1,
+            col: m.index + 1,
+            preview: lines[i].length > 240 ? lines[i].slice(0, 240) : lines[i],
+          });
+          total++;
+          if (total >= limit) break;
+        }
+      }
+      if (matches.length) {
+        results.push({ path: rel, language: file.language, matches });
+      }
+    }
+    return { results, truncated };
   }
 
   private async copyDir(from: string, to: string) {

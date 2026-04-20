@@ -7,17 +7,26 @@ import { StatusBar } from "./StatusBar";
 import { BottomPanel } from "./BottomPanel";
 import { EditorGroupView } from "./EditorGroup";
 import { Palette, type PaletteItem } from "./Palette";
-import type { ActivityId, EditorGroup, OpenFile, RawNode, Root, TreeNode } from "./types";
+import {
+  DEFAULT_SETTINGS,
+  type ActivityId,
+  type EditorGroup,
+  type EditorSettings,
+  type OpenFile,
+  type RawNode,
+  type Root,
+  type TreeNode,
+} from "./types";
+import { SearchPane } from "./SearchPane";
+import { SettingsPane } from "./SettingsPane";
 import type { WorkspaceService } from "./workspace/types";
 import { agentFs } from "./workspace/agentFs";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
 import { matchesShortcut, type Command } from "./commands";
 import {
-  Search,
   GitBranch,
   Bot,
-  Settings,
   RefreshCw,
   AlertTriangle,
   FilePlus,
@@ -65,6 +74,20 @@ export function Workbench() {
     { kind: "file" | "dir"; nonce: number; rootId?: string } | null
   >(null);
   const [palette, setPalette] = useState<"command" | "file" | null>(null);
+
+  // Editor settings — persisted to localStorage
+  const [settings, setSettings] = useState<EditorSettings>(() => {
+    try {
+      const raw = localStorage.getItem("shogo.ide.settings");
+      if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    } catch { /* ignore */ }
+    return DEFAULT_SETTINGS;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("shogo.ide.settings", JSON.stringify(settings));
+    } catch { /* ignore */ }
+  }, [settings]);
 
   const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
   const bottomSplit = useResizable({ initial: 220, min: 80, max: 500, direction: "vertical" });
@@ -565,6 +588,44 @@ export function Workbench() {
     [activeGroup],
   );
 
+  // Reveal a specific location across any root (used by project search)
+  const revealMatch = useCallback(
+    async (rootId: string, path: string, line: number, col: number) => {
+      // Find the file node in the tree to open it through the usual path
+      const findIn = (nodes: TreeNode[]): TreeNode | null => {
+        for (const n of nodes) {
+          if (n.kind === "file" && n.path === path && n.rootId === rootId) return n;
+          if (n.children) {
+            const hit = findIn(n.children);
+            if (hit) return hit;
+          }
+        }
+        return null;
+      };
+      const root = roots.find((r) => r.id === rootId);
+      let node = root ? findIn(root.tree) : null;
+      if (!node) {
+        node = {
+          name: path.split("/").pop() ?? path,
+          path,
+          kind: "file",
+          rootId,
+          language: "plaintext",
+        };
+      }
+      await openFileInGroup(node, activeGroupIdx);
+      // Give Monaco a tick to mount the new model before revealing
+      window.setTimeout(() => {
+        const ed = editorRefs.current[activeGroup?.id ?? ""];
+        if (!ed) return;
+        ed.revealPositionInCenter({ lineNumber: line, column: col });
+        ed.setPosition({ lineNumber: line, column: col });
+        ed.focus();
+      }, 80);
+    },
+    [roots, openFileInGroup, activeGroupIdx, activeGroup],
+  );
+
   // ─── Commands ────────────────────────────────────────────────────────
   const commands: Command[] = useMemo(() => {
     const cmds: Command[] = [
@@ -612,6 +673,30 @@ export function Workbench() {
         },
       },
       { id: "goto.file", label: "Go to File…", shortcut: "⌘P", run: () => setPalette("file") },
+      {
+        id: "search.findInFile",
+        label: "Find in File…",
+        shortcut: "⌘F",
+        run: () => {
+          const ed = editorRefs.current[activeGroup?.id ?? ""];
+          ed?.getAction("actions.find")?.run();
+        },
+      },
+      {
+        id: "search.replaceInFile",
+        label: "Replace in File…",
+        shortcut: "⌘⌥F",
+        run: () => {
+          const ed = editorRefs.current[activeGroup?.id ?? ""];
+          ed?.getAction("editor.action.startFindReplaceAction")?.run();
+        },
+      },
+      {
+        id: "search.findInFiles",
+        label: "Search: Find in Files…",
+        shortcut: "⌘⇧F",
+        run: () => setActivity("search"),
+      },
       {
         id: "goto.line",
         label: "Go to Line…",
@@ -687,6 +772,9 @@ export function Workbench() {
       if (matchesShortcut(e, { meta: true, shift: true, key: "o" })) {
         e.preventDefault(); void openLocalFolder(); return;
       }
+      if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
+        e.preventDefault(); setActivity("search"); return;
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -709,12 +797,13 @@ export function Workbench() {
             {roots.length === 1 ? roots[0].label : `${roots.length} workspaces`}
           </span>
           <span className="ml-3 rounded bg-[#0078d4]/30 px-1.5 py-[1px] text-[10px] text-[#75beff]">
-            Phase 5 · local folders
+            Phase 6 · intellisense + search
           </span>
         </div>
         <div className="flex items-center gap-3 text-[#858585]">
           <span>⌘P files</span>
           <span>⌘⇧P commands</span>
+          <span>⌘⇧F search</span>
           <span>⌘⇧O open folder</span>
         </div>
       </div>
@@ -742,10 +831,20 @@ export function Workbench() {
                 onCloseRoot={(id) => void closeRoot(id)}
               />
             )}
-            {activity === "search" && <Placeholder icon={<Search size={18} />} title="Search" hint="Coming in Phase 6" />}
+            {activity === "search" && (
+              <SearchPane
+                roots={roots}
+                services={services}
+                onReveal={(rootId, path, line, col) =>
+                  void revealMatch(rootId, path, line, col)
+                }
+              />
+            )}
             {activity === "git" && <Placeholder icon={<GitBranch size={18} />} title="Source Control" hint="Coming soon" />}
             {activity === "agent" && <Placeholder icon={<Bot size={18} />} title="Shogo Agent" hint="Live edits arrive in Phase 7" />}
-            {activity === "settings" && <Placeholder icon={<Settings size={18} />} title="Settings" hint="JSON + GUI in Phase 6" />}
+            {activity === "settings" && (
+              <SettingsPane settings={settings} onChange={setSettings} />
+            )}
           </div>
 
           <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
@@ -776,6 +875,7 @@ export function Workbench() {
                       onTogglePin={(id) => togglePinInGroup(i, id)}
                       onChange={handleChangeFor(i)}
                       onCursor={(line, col) => setCursor({ line, col })}
+                      settings={settings}
                       onEditorMount={(ed) => {
                         editorRefs.current[g.id] = ed;
                       }}
