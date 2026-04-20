@@ -17,6 +17,13 @@ import type {
 } from './types.js'
 
 /** Per-request bodies set Content-Type; shared headers must not force a single type (e.g. multipart). */
+/** Live workspace event streamed from /agent/canvas/stream. */
+export type WorkspaceEvent =
+  | { type: 'init' }
+  | { type: 'reload' }
+  | { type: 'file.changed'; path: string; mtime: number }
+  | { type: 'file.deleted'; path: string }
+
 function withoutContentType(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(headers)) {
@@ -127,6 +134,56 @@ export class AgentClient {
    */
   subscribeToCanvas(): EventSource {
     return new EventSource(this.url('/agent/canvas/stream'))
+  }
+
+  /**
+   * Subscribe to live workspace events (file.changed / file.deleted / reload).
+   *
+   * Unlike {@link subscribeToCanvas}, this parses event JSON, filters/types
+   * it, and transparently reconnects with exponential backoff on error. Use
+   * this for IDE-style "agent is editing my file" UX.
+   *
+   * @returns A disposer — call it to close the stream. Idempotent.
+   */
+  subscribeToWorkspace(
+    onEvent: (event: WorkspaceEvent) => void,
+    opts: { onError?: (err: unknown) => void; includeReload?: boolean } = {},
+  ): () => void {
+    let es: EventSource | null = null
+    let closed = false
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let backoffMs = 1000
+    const BACKOFF_CAP = 8000
+
+    const open = () => {
+      if (closed) return
+      es = new EventSource(this.url('/agent/canvas/stream'))
+      es.onmessage = (ev) => {
+        let parsed: unknown
+        try { parsed = JSON.parse(ev.data) } catch { return }
+        if (!parsed || typeof parsed !== 'object') return
+        const evt = parsed as WorkspaceEvent
+        if (evt.type === 'reload' && !opts.includeReload) return
+        backoffMs = 1000 // success = reset backoff
+        try { onEvent(evt) } catch (e) { opts.onError?.(e) }
+      }
+      es.onerror = (e) => {
+        opts.onError?.(e)
+        try { es?.close() } catch {}
+        es = null
+        if (closed) return
+        reconnectTimer = setTimeout(open, backoffMs)
+        backoffMs = Math.min(BACKOFF_CAP, backoffMs * 2)
+      }
+    }
+    open()
+
+    return () => {
+      closed = true
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      try { es?.close() } catch {}
+      es = null
+    }
   }
 
   async getCanvasState(): Promise<CanvasState> {

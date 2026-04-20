@@ -18,6 +18,8 @@ import {
 } from "./types";
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
+import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
+import { AgentEditBanner } from "./AgentEditBanner";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { api } from "./workspace/apiBase";
@@ -74,6 +76,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     { id: newGroupId(), files: [], activeId: null },
   ]);
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
+  const [conflicts, setConflicts] = useState<LiveConflict[]>([]);
 
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [toast, setToast] = useState<string | null>(null);
@@ -150,6 +153,49 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   const refreshAllRoots = useCallback(async () => {
     await Promise.all(Object.keys(services).map((id) => loadRoot(id)));
   }, [services, loadRoot]);
+
+  // Keep open editors in sync with agent filesystem writes (Cursor-style).
+  // Only hooks into the "agent" workspace; local folders never emit events.
+  const refreshAgentTree = useCallback(() => {
+    void loadRoot("agent");
+  }, [loadRoot]);
+  useLiveAgentEdits({
+    service: services["agent"],
+    setGroups,
+    activeGroupIdx,
+    conflicts,
+    setConflicts,
+    refreshTree: refreshAgentTree,
+  });
+
+  const handleReloadConflict = useCallback(
+    (targetId: string) => {
+      const c = conflicts.find((x) => x.fileId === targetId);
+      if (!c) return;
+      setGroups((prev) =>
+        prev.map((g) => ({
+          ...g,
+          files: g.files.map((f) =>
+            f.id === targetId
+              ? {
+                  ...f,
+                  content: c.incomingContent,
+                  savedContent: c.incomingContent,
+                  dirty: false,
+                  error: undefined,
+                }
+              : f,
+          ),
+        })),
+      );
+      setConflicts((cs) => cs.filter((x) => x.fileId !== targetId));
+    },
+    [conflicts],
+  );
+
+  const handleKeepMine = useCallback((targetId: string) => {
+    setConflicts((cs) => cs.filter((x) => x.fileId !== targetId));
+  }, []);
 
   useEffect(() => {
     void loadRoot("agent");
@@ -356,6 +402,8 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   };
 
   const closeInGroup = useCallback((groupIdx: number, id: string) => {
+    // Closing a conflicted tab discards the banner for that file.
+    setConflicts((cs) => cs.filter((c) => c.fileId !== id));
     setGroups((prev) => {
       const g = prev[groupIdx];
       if (!g) return prev;
@@ -534,6 +582,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           ),
         })),
       );
+      setConflicts((cs) => cs.filter((c) => c.fileId !== active.id));
       showToast(`Saved ${active.name}`);
     } catch (err) {
       showToast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
@@ -562,6 +611,8 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           ),
         })),
       );
+      const savedIds = new Set(dirty.map((f) => f.id));
+      setConflicts((cs) => cs.filter((c) => !savedIds.has(c.fileId)));
       showToast(`Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}`);
     } catch (err) {
       showToast(`Save all failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
@@ -854,6 +905,12 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
 
           <div className="flex flex-1 min-w-0 flex-col">
+            <AgentEditBanner
+              conflicts={conflicts}
+              activeFileId={active?.id ?? null}
+              onReload={handleReloadConflict}
+              onKeepMine={handleKeepMine}
+            />
             <div className="flex flex-1 min-h-0 relative">
               {groups
                 .map((g, i) => (

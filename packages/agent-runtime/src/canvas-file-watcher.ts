@@ -19,9 +19,11 @@ function isBuildableFile(relativePath: string): boolean {
   return false
 }
 
-export interface CanvasEvent {
-  type: 'init' | 'reload'
-}
+export type CanvasEvent =
+  | { type: 'init' }
+  | { type: 'reload' }
+  | { type: 'file.changed'; path: string; mtime: number }
+  | { type: 'file.deleted'; path: string }
 
 export class CanvasFileWatcher {
   private static instance: CanvasFileWatcher | null = null
@@ -46,12 +48,14 @@ export class CanvasFileWatcher {
   }
 
   onFileChanged(relativePath: string, _absolutePath: string): void {
+    this.broadcast({ type: 'file.changed', path: relativePath, mtime: Date.now() })
     if (isBuildableFile(relativePath)) {
       this.onRebuildCallback?.()
     }
   }
 
   onFileDeleted(relativePath: string): void {
+    this.broadcast({ type: 'file.deleted', path: relativePath })
     if (isBuildableFile(relativePath)) {
       this.onRebuildCallback?.()
     }

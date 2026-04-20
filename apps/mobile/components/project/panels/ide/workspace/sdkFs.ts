@@ -11,10 +11,11 @@
  *              which doesn't return line:col coordinates the IDE expects)
  */
 
-import { AgentClient, type FileNode } from '@shogo-ai/sdk/agent'
+import { AgentClient, type FileNode, type WorkspaceEvent } from '@shogo-ai/sdk/agent'
 import type {
   SearchOptions,
   SearchResponse,
+  WorkspaceFsEvent,
   WorkspaceService,
   WsFile,
   WsNode,
@@ -137,6 +138,17 @@ export class SdkFs implements WorkspaceService {
     })()
     this.readInFlight.set(path, p)
     return p
+  }
+
+  subscribe(onEvent: (event: WorkspaceFsEvent) => void): () => void {
+    return this.client.subscribeToWorkspace(
+      (evt: WorkspaceEvent) => {
+        if (evt.type === 'file.changed' || evt.type === 'file.deleted') {
+          onEvent(evt)
+        }
+      },
+      {},
+    )
   }
 
   async writeFile(path: string, content: string) {
