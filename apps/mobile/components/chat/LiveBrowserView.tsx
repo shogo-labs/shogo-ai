@@ -10,11 +10,13 @@
  * `instanceId` on its store entry; unmounted when the subagent finishes.
  */
 
-import { useEffect, useRef, useState } from "react"
-import { View, Text, Image } from "react-native"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { View, Text, Image, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useChatContextSafe } from "./ChatContext"
 import { createAuthedEventSource } from "../../lib/authed-event-source"
+
+const MAX_RECONNECT_ATTEMPTS = 5
 
 interface ScreencastFrame {
   jpegBase64: string
@@ -40,7 +42,16 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
   const agentUrl = agentUrlProp ?? chatContext?.agentUrl ?? null
   const [frame, setFrame] = useState<ScreencastFrame | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [exhaustedRetries, setExhaustedRetries] = useState(false)
   const esRef = useRef<EventSource | null>(null)
+  // Bumped to force the effect to re-run when the user taps "Retry".
+  const [connectGeneration, setConnectGeneration] = useState(0)
+
+  const handleManualRetry = useCallback(() => {
+    setExhaustedRetries(false)
+    setError(null)
+    setConnectGeneration((g) => g + 1)
+  }, [])
 
   useEffect(() => {
     if (!active || !agentUrl || !instanceId) {
@@ -53,18 +64,21 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
     let alive = true
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let frameCount = 0
+    let attempts = 0
 
     function connect() {
       if (!alive) return
       try {
         const url = `${agentUrl}/agent/subagents/${encodeURIComponent(instanceId)}/screencast`
-        console.log(`[screencast] LiveBrowserView connect url=${url}`)
+        console.log(`[screencast] LiveBrowserView connect url=${url} attempt=${attempts + 1}/${MAX_RECONNECT_ATTEMPTS}`)
         const es = createAuthedEventSource(url)
         esRef.current = es
         es.onopen = () => {
           if (!alive) return
           console.log(`[screencast] LiveBrowserView onopen instanceId=${instanceId}`)
+          attempts = 0
           setError(null)
+          setExhaustedRetries(false)
         }
         es.onmessage = (ev: any) => {
           if (!alive) return
@@ -91,12 +105,24 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
           )
           try { es.close() } catch {}
           if (!alive) return
-          setError("Reconnecting…")
+
+          attempts++
+          if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.warn(
+              `[screencast] LiveBrowserView exhausted ${MAX_RECONNECT_ATTEMPTS} retries for instanceId=${instanceId}`,
+            )
+            setError("Connection failed")
+            setExhaustedRetries(true)
+            return
+          }
+
+          setError(`Reconnecting… (${attempts}/${MAX_RECONNECT_ATTEMPTS})`)
           reconnectTimer = setTimeout(connect, 2000)
         }
       } catch (err: any) {
         console.warn(`[screencast] LiveBrowserView connect threw: ${err?.message ?? err}`)
         setError(err?.message ?? "Failed to connect")
+        setExhaustedRetries(true)
       }
     }
     connect()
@@ -108,7 +134,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
       try { esRef.current?.close() } catch {}
       esRef.current = null
     }
-  }, [active, agentUrl, instanceId])
+  }, [active, agentUrl, instanceId, connectGeneration])
 
   if (!frame) {
     return (
@@ -116,6 +142,16 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
         <Text className="text-xs text-muted-foreground">
           {error ?? "Waiting for browser…"}
         </Text>
+        {exhaustedRetries && (
+          <Pressable
+            onPress={handleManualRetry}
+            accessibilityRole="button"
+            accessibilityLabel="Retry screencast connection"
+            className="mt-2 px-3 py-1.5 rounded-md bg-muted active:opacity-70"
+          >
+            <Text className="text-xs font-semibold text-destructive">Retry</Text>
+          </Pressable>
+        )}
       </View>
     )
   }
@@ -130,6 +166,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
         source={{ uri: `data:image/jpeg;base64,${frame.jpegBase64}` }}
         style={{ width: "100%", aspectRatio: aspect }}
         resizeMode="contain"
+        accessibilityLabel="Live browser preview"
       />
     </View>
   )
