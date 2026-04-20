@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { editor } from "monaco-editor";
-import { useResizable, VerticalSplit, HorizontalSplit } from "./Splitter";
+import { useResizable, VerticalSplit } from "./Splitter";
 import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
-import { BottomPanel } from "./BottomPanel";
 import { EditorGroupView } from "./EditorGroup";
 import { Palette, type PaletteItem } from "./Palette";
 import {
@@ -76,7 +75,6 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   ]);
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
 
-  const [panelOpen, setPanelOpen] = useState(true);
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [toast, setToast] = useState<string | null>(null);
   const [newRequest, setNewRequest] = useState<
@@ -99,7 +97,6 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   }, [settings]);
 
   const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
-  const bottomSplit = useResizable({ initial: 220, min: 80, max: 500, direction: "vertical" });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
@@ -679,7 +676,6 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       });
     }
     cmds.push(
-      { id: "view.togglePanel", label: "View: Toggle Panel", shortcut: "⌘J", run: () => setPanelOpen((p) => !p) },
       { id: "view.splitRight", label: "View: Split Editor Right", shortcut: "⌘\\", run: splitRight },
       { id: "view.closeOtherGroup", label: "View: Close Other Editor Group", run: closeOtherGroup },
       { id: "view.focusNextGroup", label: "View: Focus Next Editor Group", shortcut: "⌘K ⌘→", run: focusNextGroup },
@@ -774,9 +770,6 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         e.preventDefault();
         if (activeGroup?.activeId) closeInGroup(activeGroupIdx, activeGroup.activeId);
         return;
-      }
-      if (matchesShortcut(e, { meta: true, key: "j" })) {
-        e.preventDefault(); setPanelOpen((p) => !p); return;
       }
       if (matchesShortcut(e, { meta: true, key: "\\" })) {
         e.preventDefault(); splitRight(); return;
@@ -933,25 +926,14 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
               )}
             </div>
 
-            {panelOpen && (
-              <>
-                <HorizontalSplit onMouseDown={bottomSplit.onMouseDown} />
-                <div style={{ height: bottomSplit.size, flexShrink: 0 }}>
-                  <BottomPanel onClose={() => setPanelOpen(false)} />
-                </div>
-              </>
-            )}
           </div>
         </div>
       </div>
 
       <StatusBar
-        branch="feat/shogo-IDE"
         language={active?.language ?? "—"}
         line={cursor.line}
         col={cursor.col}
-        problems={0}
-        warnings={0}
         saved={!active?.dirty}
       />
 
