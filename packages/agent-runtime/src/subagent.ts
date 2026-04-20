@@ -570,6 +570,9 @@ export interface SubagentRunOptions {
   /** AgentManager instance id for this run — plumbed into ToolContext.subagentInstanceId
    *  so tools (e.g. `browser`) can key per-instance resources like the CDP screencast. */
   instanceId?: string
+  /** AbortSignal for external cancellation. When aborted, the underlying
+   *  agent loop stops after the current LLM call / tool execution completes. */
+  signal?: AbortSignal
 }
 
 /**
@@ -753,6 +756,7 @@ export async function runSubagent(
       thinkingLevel,
       loopDetection: config.loopDetection,
       streamFn: options?.streamFn,
+      signal: options?.signal,
       onToolCall: callbacks?.onToolCall,
       onTextDelta: callbacks?.onTextDelta,
       onThinkingStart: callbacks?.onThinkingStart,
