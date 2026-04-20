@@ -352,29 +352,36 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       const imageExt = extname(resolved).toLowerCase()
       const imageMime = IMAGE_READ_MIME[imageExt]
       if (imageMime) {
-        const imgStat = statSync(resolved)
-        if (imgStat.size > MAX_IMAGE_READ_BYTES) {
+        try {
+          const imgStat = statSync(resolved)
+          if (imgStat.size > MAX_IMAGE_READ_BYTES) {
+            return textResult({
+              error: `Image too large to read: ${filePath} (${imgStat.size} bytes, max ${MAX_IMAGE_READ_BYTES}). ` +
+                'Downscale the image before reading.',
+            })
+          }
+          const buf = readFileSync(resolved)
+          const base64 = buf.toString('base64')
+          const details = {
+            path: filePath,
+            bytes: buf.length,
+            mimeType: imageMime,
+            ...(offset !== undefined || limit !== undefined
+              ? { note: 'offset/limit are ignored for image files.' }
+              : {}),
+          }
+          return {
+            content: [
+              { type: 'image' as const, data: base64, mimeType: imageMime },
+              { type: 'text' as const, text: JSON.stringify(details) },
+            ],
+            details,
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
           return textResult({
-            error: `Image too large to read: ${filePath} (${imgStat.size} bytes, max ${MAX_IMAGE_READ_BYTES}). ` +
-              'Downscale the image before reading.',
+            error: `Failed to read image file: ${filePath} — ${msg}`,
           })
-        }
-        const buf = readFileSync(resolved)
-        const base64 = buf.toString('base64')
-        const details = {
-          path: filePath,
-          bytes: buf.length,
-          mimeType: imageMime,
-          ...(offset !== undefined || limit !== undefined
-            ? { note: 'offset/limit are ignored for image files.' }
-            : {}),
-        }
-        return {
-          content: [
-            { type: 'image' as const, data: base64, mimeType: imageMime },
-            { type: 'text' as const, text: JSON.stringify(details) },
-          ],
-          details,
         }
       }
 
