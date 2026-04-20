@@ -69,14 +69,19 @@ function toWsNode(fn: FileNode): WsNode {
     : { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
 }
 
+type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
 export class SdkFs implements WorkspaceService {
   readonly id = 'agent'
   readonly label: string
   private client: AgentClient
 
-  constructor(agentUrl: string, label = 'agent-workspace') {
+  constructor(agentUrl: string, label = 'agent-workspace', fetchImpl?: FetchLike) {
     this.label = label
-    this.client = new AgentClient({ baseUrl: agentUrl })
+    this.client = new AgentClient({
+      baseUrl: agentUrl,
+      ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    })
   }
 
   async listTree(): Promise<WsNode[]> {
@@ -187,10 +192,10 @@ export class SdkFs implements WorkspaceService {
   }
 }
 
-let cached: { url: string; svc: SdkFs } | null = null
+let cached: { url: string; fetchImpl: FetchLike | undefined; svc: SdkFs } | null = null
 
-export function sdkFsFor(agentUrl: string, label?: string): SdkFs {
-  if (cached && cached.url === agentUrl) return cached.svc
-  cached = { url: agentUrl, svc: new SdkFs(agentUrl, label) }
+export function sdkFsFor(agentUrl: string, label?: string, fetchImpl?: FetchLike): SdkFs {
+  if (cached && cached.url === agentUrl && cached.fetchImpl === fetchImpl) return cached.svc
+  cached = { url: agentUrl, fetchImpl, svc: new SdkFs(agentUrl, label, fetchImpl) }
   return cached.svc
 }

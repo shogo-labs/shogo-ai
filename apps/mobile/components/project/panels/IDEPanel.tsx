@@ -5,6 +5,7 @@ import { Platform, View, Text } from 'react-native'
 import { Code2 } from 'lucide-react-native'
 import { Workbench } from './ide/Workbench'
 import { sdkFsFor } from './ide/workspace/sdkFs'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 interface IDEPanelProps {
   visible: boolean
@@ -24,7 +25,7 @@ interface IDEPanelProps {
  */
 export function IDEPanel({ visible, projectId, agentUrl }: IDEPanelProps) {
   const agentService = useMemo(
-    () => (agentUrl ? sdkFsFor(agentUrl, `project/${projectId}`) : null),
+    () => (agentUrl ? sdkFsFor(agentUrl, `project/${projectId}`, agentFetch) : null),
     [agentUrl, projectId],
   )
 
