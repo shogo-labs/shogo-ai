@@ -54,6 +54,7 @@ import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
@@ -1005,6 +1006,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({ ok: false, error: err.message }, 500)
     }
   })
+
+  // Cloud-login routes (replacement UX for PUT /api/local/shogo-key). The
+  // legacy PUT handler above is preserved as a CLI / headless escape hatch.
+  app.route('/api', localAuthRoutes())
 
   // ── Local mode: Instance info (how this machine is registered to cloud) ──
 

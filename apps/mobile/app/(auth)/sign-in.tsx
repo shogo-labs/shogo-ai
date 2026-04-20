@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { useColorScheme, Alert, Platform } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
@@ -27,11 +27,22 @@ export default function SignInScreen() {
     ? (systemColorScheme === 'dark' ? 'dark' : 'light')
     : theme === 'dark' ? 'dark' : 'light'
 
+  // Support `?next=/path` so the desktop cloud-login bridge (and any future
+  // post-auth redirect target) can bounce through sign-in. We only honour
+  // relative paths to avoid open-redirect issues.
+  const { next } = useLocalSearchParams<{ next?: string }>()
+  const resolveNext = (): string => {
+    if (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//')) {
+      return next
+    }
+    return '/'
+  }
+
   const handleSignIn = async (email: string, password: string) => {
     try {
       await signIn(email, password)
       trackLogin('email')
-      router.replace('/')
+      router.replace(resolveNext() as any)
     } catch (e) {
       if (e instanceof EmailNotVerifiedError) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email } })
@@ -56,7 +67,7 @@ export default function SignInScreen() {
       if (result.requiresVerification) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email } })
       } else {
-        router.replace('/')
+        router.replace(resolveNext() as any)
       }
     } catch {}
   }

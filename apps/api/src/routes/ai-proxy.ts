@@ -1221,7 +1221,14 @@ export function aiProxyRoutes() {
     const token = authHeader.slice(7)
 
     if (token.startsWith('shogo_sk_')) {
-      const resolved = await resolveApiKey(token)
+      // Opportunistically refresh the stored device app version from the
+      // caller's header so the cloud Devices UI reflects upgrades without a
+      // dedicated heartbeat round-trip.
+      const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
+      const resolved = await resolveApiKey(
+        token,
+        deviceAppVersion ? { deviceAppVersion } : undefined,
+      )
       if (!resolved) return null
       return {
         projectId: 'api-key',
@@ -1743,7 +1750,11 @@ export function aiProxyRoutes() {
     }
 
     if (apiKey.startsWith('shogo_sk_')) {
-      const resolved = await resolveApiKey(apiKey)
+      const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
+      const resolved = await resolveApiKey(
+        apiKey,
+        deviceAppVersion ? { deviceAppVersion } : undefined,
+      )
       if (!resolved) return null
       return {
         projectId: 'api-key',

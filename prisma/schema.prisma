@@ -1269,11 +1269,24 @@ model ApiKey {
   createdAt   DateTime  @default(now())
   revokedAt   DateTime?
 
+  // Device session metadata. `kind` is "user" for manually-created keys and
+  // "device" for keys minted via the desktop cloud-login flow. Device keys
+  // carry a stable deviceId so re-logging in from the same machine dedupes
+  // instead of accumulating stale credentials. lastSeenAt is updated by
+  // heartbeats and by validateProxyAuth on every authenticated call.
+  kind             String    @default("user")
+  deviceId         String?
+  deviceName       String?
+  devicePlatform   String?
+  deviceAppVersion String?
+  lastSeenAt       DateTime?
+
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([userId])
+  @@index([workspaceId, deviceId])
   @@map("api_keys")
 }
 

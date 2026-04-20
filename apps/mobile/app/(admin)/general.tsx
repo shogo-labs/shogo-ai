@@ -24,6 +24,7 @@ import {
   WifiOff,
   Monitor,
   Info,
+  LogIn,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type InstanceInfo } from '@shogo-ai/sdk'
@@ -31,17 +32,23 @@ import { API_URL, createHttpClient } from '../../lib/api'
 import { useAccentTheme } from '../../contexts/accent-theme'
 import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
 
+/** True when this window is the Electron desktop shell — only then can we
+ * use the native system-browser handshake. Metro dev or a plain browser
+ * pointed at the local API falls through to a popup-window flow. */
+function hasDesktopBridge(): boolean {
+  if (typeof window === 'undefined') return false
+  return !!(window as any).shogoDesktop?.startCloudLogin
+}
+
 const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
 
 export default function AdminGeneralPage() {
-  const [shogoKeyInput, setShogoKeyInput] = useState('')
   const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
   const [shogoKeyMask, setShogoKeyMask] = useState('')
   const [shogoWorkspaceName, setShogoWorkspaceName] = useState('')
-  const [shogoKeyStatus, setShogoKeyStatus] = useState<
-    'idle' | 'connecting' | 'connected' | 'error'
-  >('idle')
-  const [shogoKeyError, setShogoKeyError] = useState('')
+  const [shogoEmail, setShogoEmail] = useState('')
+  const [loginStatus, setLoginStatus] = useState<'idle' | 'connecting' | 'error'>('idle')
+  const [loginError, setLoginError] = useState('')
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [cloudUrl, setCloudUrl] = useState(SHOGO_CLOUD_URL_DEFAULT)
 
@@ -68,28 +75,30 @@ export default function AdminGeneralPage() {
     }
   }, [platform])
 
+  const loadStatus = useCallback(async () => {
+    try {
+      const status = await platform.cloudLoginStatus()
+      setShogoKeyConnected(status.signedIn)
+      setShogoEmail(status.email || '')
+      setShogoWorkspaceName(status.workspace?.name || '')
+      setShogoKeyMask(status.keyPrefix ? `${status.keyPrefix}…` : '')
+      if (status.cloudUrl) {
+        setCloudUrl(status.cloudUrl)
+        setCloudUrlDraft(status.cloudUrl)
+      }
+      if (status.signedIn) {
+        fetchInstanceInfo()
+      }
+    } catch (err) {
+      console.error('[AdminGeneral] Failed to load cloud-login status:', err)
+    }
+  }, [platform, fetchInstanceInfo])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      try {
-        const shogoData = await platform.getShogoKeyStatus()
-        if (cancelled) return
-        setShogoKeyConnected(shogoData.connected)
-        if (shogoData.keyMask) setShogoKeyMask(shogoData.keyMask)
-        if (shogoData.cloudUrl) {
-          setCloudUrl(shogoData.cloudUrl)
-          setCloudUrlDraft(shogoData.cloudUrl)
-        }
-        if (shogoData.workspace?.name) setShogoWorkspaceName(shogoData.workspace.name)
-        if (shogoData.connected) {
-          setShogoKeyStatus('connected')
-          fetchInstanceInfo()
-        }
-      } catch (err) {
-        console.error('[AdminGeneral] Failed to load config:', err)
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
+      await loadStatus()
+      if (!cancelled) setIsLoading(false)
     })()
 
     fetch(`${API_URL}/api/version`, { signal: AbortSignal.timeout(5000) })
@@ -99,49 +108,90 @@ export default function AdminGeneralPage() {
       })
       .catch(() => {})
 
+    // The Electron main process fires this when the shogo://auth-callback
+    // deep link completes. Reload status to pick up the new signed-in state.
+    const desktop = (typeof window !== 'undefined' ? (window as any).shogoDesktop : null) as
+      | {
+          onCloudLoginResult?: (
+            cb: (r: { ok: boolean; error?: string; email?: string; workspace?: string }) => void,
+          ) => void
+          removeCloudLoginListener?: () => void
+        }
+      | null
+    desktop?.onCloudLoginResult?.((result) => {
+      if (cancelled) return
+      if (result.ok) {
+        setLoginStatus('idle')
+        setLoginError('')
+        void loadStatus()
+      } else {
+        setLoginStatus('error')
+        setLoginError(result.error || 'Sign-in was cancelled')
+      }
+    })
+
     return () => {
       cancelled = true
+      desktop?.removeCloudLoginListener?.()
     }
-  }, [platform, fetchInstanceInfo])
+  }, [platform, fetchInstanceInfo, loadStatus])
 
-  const handleConnectShogoKey = async () => {
-    if (!shogoKeyInput.trim()) return
-    setShogoKeyStatus('connecting')
-    setShogoKeyError('')
+  const handleStartLogin = async () => {
+    setLoginStatus('connecting')
+    setLoginError('')
     try {
-      const url = cloudUrl.trim() !== SHOGO_CLOUD_URL_DEFAULT ? cloudUrl.trim() : undefined
-      const data = await platform.connectShogoKey(shogoKeyInput.trim(), url)
-      if (data.ok) {
-        setShogoKeyConnected(true)
-        setShogoKeyMask(
-          shogoKeyInput.trim().slice(0, 17) + '...' + shogoKeyInput.trim().slice(-4),
-        )
-        setShogoWorkspaceName(data.workspace?.name || '')
-        setShogoKeyStatus('connected')
-        setShogoKeyInput('')
-        fetchInstanceInfo()
-      } else {
-        setShogoKeyError(data.error || 'Failed to validate key')
-        setShogoKeyStatus('error')
+      if (hasDesktopBridge()) {
+        // Electron main process does the full handshake: mints a device key
+        // via the cloud bridge page, writes it to local config, then fires
+        // `cloud-login-result`. We just wait for that event.
+        const result = await (window as any).shogoDesktop.startCloudLogin()
+        if (!result?.ok) {
+          setLoginStatus('error')
+          setLoginError(result?.error || 'Could not start sign-in')
+        }
+        return
       }
+      // Dev fallback (Metro/browser): ask the local API to produce an authUrl
+      // and open it in a new tab. The bridge page will still redirect to
+      // shogo://auth-callback, which won't work without the desktop shell —
+      // so we also surface a hint so devs can paste the callback manually.
+      const start = await platform.startCloudLogin({
+        id: 'dev-browser',
+        name: 'Dev Browser',
+        platform: 'web',
+        appVersion: '0.0.0-dev',
+      })
+      if (!start.ok) {
+        setLoginStatus('error')
+        setLoginError('Could not start sign-in')
+        return
+      }
+      if (typeof window !== 'undefined') {
+        window.open(start.authUrl, '_blank', 'noopener,noreferrer')
+      }
+      setLoginStatus('idle')
     } catch (err: any) {
-      setShogoKeyError(err.message || 'Connection failed')
-      setShogoKeyStatus('error')
+      setLoginStatus('error')
+      setLoginError(err?.message || 'Sign-in failed')
     }
   }
 
   const handleDisconnectShogoKey = async () => {
     setIsDisconnecting(true)
     try {
-      await platform.disconnectShogoKey()
+      if (hasDesktopBridge() && (window as any).shogoDesktop?.signOutCloud) {
+        await (window as any).shogoDesktop.signOutCloud()
+      } else {
+        await platform.signOutCloud()
+      }
       setShogoKeyConnected(false)
       setShogoKeyMask('')
       setShogoWorkspaceName('')
-      setShogoKeyStatus('idle')
-      setShogoKeyInput('')
+      setShogoEmail('')
+      setLoginStatus('idle')
       setInstanceInfo(null)
     } catch (err) {
-      console.error('[AdminGeneral] Failed to disconnect Shogo key:', err)
+      console.error('[AdminGeneral] Failed to sign out of Shogo Cloud:', err)
     } finally {
       setIsDisconnecting(false)
     }
@@ -222,7 +272,9 @@ export default function AdminGeneralPage() {
               <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
                 <CheckCircle size={16} className="text-green-500" />
                 <View className="flex-1">
-                  <Text className="text-sm font-medium text-foreground">Connected</Text>
+                  <Text className="text-sm font-medium text-foreground">
+                    Signed in{shogoEmail ? ` as ${shogoEmail}` : ''}
+                  </Text>
                   {shogoWorkspaceName ? (
                     <Text className="text-xs text-muted-foreground">
                       Workspace: {shogoWorkspaceName}
@@ -231,9 +283,13 @@ export default function AdminGeneralPage() {
                 </View>
               </View>
               <View className="flex-row items-center gap-2">
-                <Text className="text-xs text-muted-foreground font-mono flex-1">
-                  {shogoKeyMask}
-                </Text>
+                {shogoKeyMask ? (
+                  <Text className="text-xs text-muted-foreground font-mono flex-1">
+                    {shogoKeyMask}
+                  </Text>
+                ) : (
+                  <View className="flex-1" />
+                )}
                 <Pressable
                   onPress={handleDisconnectShogoKey}
                   disabled={isDisconnecting}
@@ -244,7 +300,7 @@ export default function AdminGeneralPage() {
                 >
                   <Unplug size={14} className="text-destructive" />
                   <Text className="text-sm text-destructive">
-                    {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                    {isDisconnecting ? 'Signing out...' : 'Sign out'}
                   </Text>
                 </Pressable>
               </View>
@@ -282,54 +338,45 @@ export default function AdminGeneralPage() {
           ) : (
             <View className="gap-3">
               <Text className="text-sm text-muted-foreground">
-                Enter your Shogo API key to connect this machine to the cloud. Get your
-                key from the{' '}
-                <Text className="text-primary font-medium">Shogo Cloud dashboard</Text>.
+                Sign in with your Shogo Cloud account to use cloud models, share
+                instances, and manage this machine from your dashboard.
               </Text>
-              <View className="flex-row gap-2">
-                <View className="flex-1">
-                  <TextInput
-                    value={shogoKeyInput}
-                    onChangeText={(t) => {
-                      setShogoKeyInput(t)
-                      setShogoKeyError('')
-                      setShogoKeyStatus('idle')
-                    }}
-                    placeholder="shogo_sk_..."
-                    secureTextEntry
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
-                  />
-                </View>
-                <Pressable
-                  onPress={handleConnectShogoKey}
-                  disabled={!shogoKeyInput.trim() || shogoKeyStatus === 'connecting'}
+              <Pressable
+                onPress={handleStartLogin}
+                disabled={loginStatus === 'connecting'}
+                className={cn(
+                  'flex-row items-center justify-center gap-2 px-4 py-2.5 rounded-lg',
+                  loginStatus === 'connecting' ? 'bg-muted' : 'bg-primary',
+                )}
+              >
+                {loginStatus === 'connecting' ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <LogIn size={16} className="text-primary-foreground" />
+                )}
+                <Text
                   className={cn(
-                    'px-4 py-2.5 rounded-lg items-center justify-center',
-                    shogoKeyInput.trim() && shogoKeyStatus !== 'connecting'
-                      ? 'bg-primary'
-                      : 'bg-muted',
+                    'text-sm font-medium',
+                    loginStatus === 'connecting'
+                      ? 'text-muted-foreground'
+                      : 'text-primary-foreground',
                   )}
                 >
-                  <Text
-                    className={cn(
-                      'text-sm font-medium',
-                      shogoKeyInput.trim() && shogoKeyStatus !== 'connecting'
-                        ? 'text-primary-foreground'
-                        : 'text-muted-foreground',
-                    )}
-                  >
-                    {shogoKeyStatus === 'connecting' ? 'Connecting...' : 'Connect'}
-                  </Text>
-                </Pressable>
-              </View>
-              {shogoKeyError ? (
+                  {loginStatus === 'connecting'
+                    ? 'Waiting for browser…'
+                    : 'Sign in to Shogo Cloud'}
+                </Text>
+              </Pressable>
+              {loginError ? (
                 <View className="flex-row items-center gap-1.5">
                   <AlertTriangle size={14} className="text-destructive" />
-                  <Text className="text-sm text-destructive">{shogoKeyError}</Text>
+                  <Text className="text-sm text-destructive">{loginError}</Text>
                 </View>
               ) : null}
+              <Text className="text-xs text-muted-foreground">
+                Your browser will open to {cloudUrl.replace(/^https?:\/\//, '')}. After
+                you sign in, this app will automatically reconnect.
+              </Text>
               <View className="gap-1">
                 <Text className="text-xs font-medium text-muted-foreground">Cloud URL</Text>
                 <TextInput

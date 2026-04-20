@@ -79,4 +79,20 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   },
   showRemoteActionNotification: (title: string, body: string) =>
     ipcRenderer.invoke('show-remote-action-notification', title, body),
+
+  // Cloud login (replaces the old paste-API-key flow)
+  getDeviceInfo: (): Promise<{ id: string; name: string; platform: string; appVersion: string }> =>
+    ipcRenderer.invoke('get-device-info'),
+  startCloudLogin: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('start-cloud-login'),
+  signOutCloud: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('sign-out-cloud'),
+  onCloudLoginResult: (
+    callback: (result: { ok: boolean; error?: string; email?: string; workspace?: string }) => void,
+  ) => {
+    ipcRenderer.on('cloud-login-result', (_event, result) => callback(result))
+  },
+  removeCloudLoginListener: () => {
+    ipcRenderer.removeAllListeners('cloud-login-result')
+  },
 })
