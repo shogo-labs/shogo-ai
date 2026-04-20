@@ -95,6 +95,7 @@ const NAMESPACE_GC_CREATION_GRACE_MS = 5 * 60 * 1000 // skip services created wi
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
 const POOL_STATUS_LABEL_KEY = 'shogo.io/warm-pool-status'
+const ACTIVE_LABEL_KEY = 'shogo.io/active'
 
 export interface WarmPodInfo {
   id: string
@@ -675,6 +676,7 @@ export class WarmPoolController {
         labels: {
           [POOL_STATUS_LABEL_KEY]: 'promoted',
           'shogo.io/project': projectId,
+          [ACTIVE_LABEL_KEY]: 'true',
         },
       },
     }
@@ -803,10 +805,24 @@ export class WarmPoolController {
       console.error(`[WarmPool] evictProject: DB cleanup failed for ${projectId}:`, err.message)
     }
 
-    // Delete the old Knative Service (best-effort, non-blocking)
+    // Clear the active label so namespace GC can reclaim the service if
+    // it scales to zero before we finish deleting it.
     const serviceToDelete = oldServiceName
     if (serviceToDelete) {
       (async () => {
+        try {
+          const { mergePatchKnativeService } = await import('./knative-project-manager')
+          await mergePatchKnativeService(this.namespace, serviceToDelete, {
+            metadata: { labels: { [ACTIVE_LABEL_KEY]: 'false' } },
+          })
+        } catch (err: any) {
+          if (err?.message?.includes('404') || err?.message?.includes('not found')) {
+            // Service already gone — nothing to clear
+          } else {
+            console.error(`[WarmPool] evictProject: failed to clear active label on ${serviceToDelete} (non-fatal):`, err.message)
+          }
+        }
+
         try {
           const api = getCustomApi()
           await api.deleteNamespacedCustomObject({
@@ -1191,6 +1207,7 @@ export class WarmPoolController {
         replicas: number
         createdAt: number
         isUnschedulable: boolean
+        isActive: boolean
       }[] = []
 
       for (const svc of allServices) {
@@ -1225,8 +1242,9 @@ export class WarmPoolController {
         const conditions = status.conditions || []
         const readyCondition = conditions.find((c: any) => c.type === 'Ready')
         const isUnschedulable = readyCondition?.reason === 'Unschedulable'
+        const isActive = labels[ACTIVE_LABEL_KEY] === 'true'
 
-        candidateServices.push({ name, projectId, replicas, createdAt, isUnschedulable })
+        candidateServices.push({ name, projectId, replicas, createdAt, isUnschedulable, isActive })
       }
 
       if (candidateServices.length === 0) return 0
@@ -1276,6 +1294,12 @@ export class WarmPoolController {
             dbMappingsToClear.push(svc.name)
           }
         } else if (isScaledToZero && !isRecentlyCreated) {
+          if (svc.isActive) {
+            console.log(
+              `[WarmPool GC:namespace] Skipping active scaled-to-zero service ${svc.name} (project ${svc.projectId || 'unknown'} — shogo.io/active=true, deferring to promoted-pod GC)`
+            )
+            continue
+          }
           console.log(
             `[WarmPool GC:namespace] Deleting scaled-to-zero service ${svc.name} (project ${svc.projectId || 'unknown'} — warm pool will handle next visit)`
           )
