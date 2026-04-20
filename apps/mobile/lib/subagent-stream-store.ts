@@ -17,6 +17,8 @@ export type SubagentStreamPart = MessagePart
 
 export interface SubagentStreamData {
   agentId: string
+  /** AgentManager instance id — used to open the live browser screencast SSE stream. */
+  instanceId?: string
   agentType: string
   description: string
   status: "running" | "completed" | "error"
@@ -80,6 +82,17 @@ export const subagentStreamStore = {
     const entry = store.get(toolId)
     if (!entry) return
     store.set(toolId, { ...entry, status })
+    notify()
+  },
+
+  setInstanceId(toolId: string, instanceId: string) {
+    const entry = store.get(toolId)
+    if (!entry || entry.instanceId === instanceId) return
+    console.log(
+      `[screencast] subagentStreamStore.setInstanceId toolId=${toolId} ` +
+      `instanceId=${instanceId}`,
+    )
+    store.set(toolId, { ...entry, instanceId })
     notify()
   },
 

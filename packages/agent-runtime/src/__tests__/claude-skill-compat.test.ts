@@ -797,6 +797,30 @@ Old instructions.
       const config = getBuiltinSubagentConfig('unknown-type', ctx, tools)
       expect(config).toBeNull()
     })
+
+    test('browser_qa agent is canvas-first with browser + web + file tools and gpt-5.4-nano model', () => {
+      const ctx = createCtx()
+      const tools = createTools(ctx)
+      const config = getBuiltinSubagentConfig('browser_qa', ctx, tools)
+      expect(config).not.toBeNull()
+      expect(config!.name).toBe('browser_qa')
+      expect(config!.model).toBe('gpt-5.4-nano')
+      expect(config!.provider).toBe('openai')
+      expect(config!.maxTurns).toBeUndefined()
+      expect(config!.toolNames).toEqual(['browser', 'web', 'read_file', 'write_file', 'edit_file'])
+      expect(config!.disallowedTools).toContain('task')
+      expect(config!.disallowedTools).toContain('skill')
+      expect(config!.systemPrompt).toContain('QA engineer')
+      expect(config!.systemPrompt).toContain('timing and UX')
+      expect(config!.systemPrompt).toContain('NEED_URL')
+      // Canvas-first markers
+      expect(config!.systemPrompt).toContain('canvas/src/surfaces/QaRun.data.json')
+      expect(config!.systemPrompt).toContain('canvas/src/surfaces/QaRun.tsx')
+      expect(config!.systemPrompt).toContain('canvas/src/App.tsx')
+      expect(config!.systemPrompt).toContain('live view')
+      // Markdown fallback still required
+      expect(config!.systemPrompt).toContain('.shogo/reports/qa-')
+    })
   })
 
   // -----------------------------------------------------------------------

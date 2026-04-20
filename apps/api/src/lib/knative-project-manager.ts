@@ -945,6 +945,12 @@ export class KnativeProjectManager {
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: workDir },
+      // PUBLIC_PREVIEW_URL is the externally-reachable URL the runtime advertises
+      // to its agents (for QA subagents, browser-use, etc.). In k8s this is the
+      // preview--{id}.{env}.shogo.ai subdomain served via the DomainMapping
+      // created by createPreviewDomainMapping(). Locally the runtime falls back
+      // to http://localhost:${PORT}/ when this is unset.
+      { name: "PUBLIC_PREVIEW_URL", value: getPreviewUrl(projectId) },
       ...extraEnvEntries,
       ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),

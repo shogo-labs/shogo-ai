@@ -27,6 +27,7 @@ import { teamStore, type TeamData, type MemberData, type TaskData, type MessageD
 import { MarkdownText } from "../../chat/MarkdownText"
 import { ThinkingWidget } from "../../chat/turns/ThinkingWidget"
 import { InlineToolWidget } from "../../chat/turns/InlineToolWidget"
+import { LiveBrowserView } from "../../chat/LiveBrowserView"
 import type { MessagePart } from "../../chat/turns/types"
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,9 @@ import type { MessagePart } from "../../chat/turns/types"
 interface AgentsPanelProps {
   visible: boolean
   selectedToolId?: string | null
+  /** Agent runtime base URL — threaded through to the Live browser screencast
+   *  subscription under each running subagent card. */
+  agentUrl?: string | null
 }
 
 type SubTab = "activity" | "tasks" | "team" | "registry"
@@ -101,11 +105,13 @@ function AgentEntry({
   data,
   isExpanded,
   onToggle,
+  agentUrl,
 }: {
   toolId: string
   data: SubagentStreamData
   isExpanded: boolean
   onToggle: () => void
+  agentUrl?: string | null
 }) {
   const isRunning = data.status === "running"
   const isDone = data.status === "completed"
@@ -134,6 +140,11 @@ function AgentEntry({
 
       {isExpanded && (
         <View className="px-3 pb-3 gap-2 border-t border-border/30">
+          {data.instanceId && isRunning && (
+            <View className="pt-2">
+              <LiveBrowserView instanceId={data.instanceId} active={isRunning} agentUrl={agentUrl} />
+            </View>
+          )}
           {data.parts.length > 0 && (
             <View className="flex-row items-center gap-4 pt-1">
               {(() => {
@@ -169,9 +180,10 @@ function AgentEntry({
   )
 }
 
-function ActivitySubTab({ expandedIds, toggleExpanded }: {
+function ActivitySubTab({ expandedIds, toggleExpanded, agentUrl }: {
   expandedIds: Set<string>
   toggleExpanded: (id: string) => void
+  agentUrl?: string | null
 }) {
   const subagentVersion = useSyncExternalStore(
     subagentStreamStore.subscribe,
@@ -185,17 +197,31 @@ function ActivitySubTab({ expandedIds, toggleExpanded }: {
     () => teamStore.getVersion(),
   )
 
-  const subagentEntries = useMemo(() => {
-    const result: { toolId: string; data: SubagentStreamData }[] = []
+  // Partition subagent entries by status so we can show running runs ("Live")
+  // above finished ones ("History"). Map iteration preserves insertion order,
+  // and we reverse each bucket so the most recent entry is at the top.
+  const { liveEntries, historyEntries } = useMemo(() => {
+    const live: { toolId: string; data: SubagentStreamData }[] = []
+    const history: { toolId: string; data: SubagentStreamData }[] = []
     for (const [toolId, data] of subagentStreamStore.getAll()) {
-      result.push({ toolId, data })
+      if (data.status === "running") live.push({ toolId, data })
+      else history.push({ toolId, data })
     }
-    return result
+    live.reverse()
+    history.reverse()
+    return { liveEntries: live, historyEntries: history }
   }, [subagentVersion])
 
-  const activityEvents = useMemo(() => teamStore.getActivity(), [teamVersion])
+  // Activity log — reversed so newest events are at the top, capped for the UI.
+  const activityEvents = useMemo(
+    () => [...teamStore.getActivity()].reverse().slice(0, 30),
+    [teamVersion],
+  )
 
-  if (subagentEntries.length === 0 && activityEvents.length === 0) {
+  const hasLive = liveEntries.length > 0
+  const hasHistory = historyEntries.length > 0 || activityEvents.length > 0
+
+  if (!hasLive && !hasHistory) {
     return (
       <View className="flex-1 items-center justify-center px-6 gap-3">
         <Bot className="text-muted-foreground/30" size={40} />
@@ -211,21 +237,51 @@ function ActivitySubTab({ expandedIds, toggleExpanded }: {
 
   return (
     <ScrollView className="flex-1" contentContainerClassName="px-4 py-3 gap-3 pb-8">
-      {subagentEntries.map(({ toolId, data }) => (
+      {hasLive && (
+        <View className="flex-row items-center gap-2 pt-1">
+          <View className="w-1.5 h-1.5 rounded-full bg-primary" />
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Live
+          </Text>
+          <View className="flex-1 h-px bg-border/40" />
+        </View>
+      )}
+      {liveEntries.map(({ toolId, data }) => (
         <AgentEntry
           key={toolId}
           toolId={toolId}
           data={data}
           isExpanded={expandedIds.has(toolId)}
           onToggle={() => toggleExpanded(toolId)}
+          agentUrl={agentUrl}
         />
       ))}
 
-      {activityEvents.length > 0 && subagentEntries.length > 0 && (
+      {hasHistory && (
+        <View className="flex-row items-center gap-2 pt-2">
+          <Clock className="text-muted-foreground/60" size={10} />
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            History
+          </Text>
+          <View className="flex-1 h-px bg-border/40" />
+        </View>
+      )}
+      {historyEntries.map(({ toolId, data }) => (
+        <AgentEntry
+          key={toolId}
+          toolId={toolId}
+          data={data}
+          isExpanded={expandedIds.has(toolId)}
+          onToggle={() => toggleExpanded(toolId)}
+          agentUrl={agentUrl}
+        />
+      ))}
+
+      {activityEvents.length > 0 && historyEntries.length > 0 && (
         <View className="border-t border-border/30 my-1" />
       )}
 
-      {activityEvents.slice(-30).map((ev) => (
+      {activityEvents.map((ev) => (
         <View key={ev.id} className="flex-row items-center gap-2 px-1 py-1">
           <Clock className="text-muted-foreground/40" size={10} />
           <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
@@ -674,7 +730,7 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: "registry", label: "Registry" },
 ]
 
-export function AgentsPanel({ visible, selectedToolId }: AgentsPanelProps) {
+export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelProps) {
   const [subTab, setSubTab] = useState<SubTab>("activity")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(new Set())
@@ -738,7 +794,7 @@ export function AgentsPanel({ visible, selectedToolId }: AgentsPanelProps) {
       {/* Sub-tab content */}
       <View className="flex-1 relative">
         {subTab === "activity" && (
-          <ActivitySubTab expandedIds={expandedIds} toggleExpanded={toggleExpanded} />
+          <ActivitySubTab expandedIds={expandedIds} toggleExpanded={toggleExpanded} agentUrl={agentUrl} />
         )}
         {subTab === "tasks" && <TasksSubTab />}
         {subTab === "team" && (

@@ -593,7 +593,7 @@ export interface TechStackSummary {
   runtime?: {
     devServer?: string
     buildCommand?: string
-    previewPort?: number
+    templateApiPort?: number
   }
   capabilities?: {
     webEnabled?: boolean

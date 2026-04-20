@@ -6,7 +6,7 @@
   "runtime": {
     "devServer": "unity",
     "buildCommand": "dotnet build",
-    "previewPort": 3001
+    "templateApiPort": 3001
   },
   "capabilities": {
     "webEnabled": true,

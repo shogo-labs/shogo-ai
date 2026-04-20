@@ -309,7 +309,13 @@ export interface TechStackMeta {
   runtime?: {
     devServer?: string
     buildCommand?: string
-    previewPort?: number
+    /**
+     * Port the stack's template API sidecar (e.g. Hono `server.tsx`) listens on.
+     * Note: this is NOT the URL users hit in a browser — the agent runtime
+     * itself serves the built app at the root of `process.env.PORT`. This
+     * number is only relevant to internal `/api/*` proxying.
+     */
+    templateApiPort?: number
   }
   capabilities?: {
     webEnabled?: boolean

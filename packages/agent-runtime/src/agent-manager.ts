@@ -18,6 +18,7 @@ import {
   type SubagentStreamCallbacks,
 } from './subagent'
 import type { ToolContext } from './gateway-tools'
+import { dropChannel as dropScreencastChannel } from './screencast-broadcaster'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -194,7 +195,7 @@ export class AgentManager {
   }
 
   listTypes(ctx?: ToolContext, allTools?: AgentTool[]): AgentTypeInfo[] {
-    const builtinNames = ['explore', 'general-purpose']
+    const builtinNames = ['explore', 'general-purpose', 'browser_qa']
     const result: AgentTypeInfo[] = []
 
     for (const bn of builtinNames) {
@@ -273,7 +274,7 @@ export class AgentManager {
       },
     }
 
-    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history })
+    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history, instanceId })
       .then((result) => {
         const inst = this.instances.get(instanceId)
         if (inst) {
@@ -291,6 +292,7 @@ export class AgentManager {
           regEntry.metrics.totalWallTimeMs += Date.now() - startTime
           this.flushMetrics(type, regEntry.metrics)
         }
+        try { dropScreencastChannel(instanceId) } catch {}
         this.cleanupStaleInstances()
         return result
       })
@@ -307,6 +309,7 @@ export class AgentManager {
           regEntry.metrics.totalWallTimeMs += Date.now() - startTime
           this.flushMetrics(type, regEntry.metrics)
         }
+        try { dropScreencastChannel(instanceId) } catch {}
         this.cleanupStaleInstances()
         return inst!.result!
       })
@@ -335,6 +338,7 @@ export class AgentManager {
     inst.abort.abort()
     inst.status = 'cancelled'
     inst.completedAt = Date.now()
+    try { dropScreencastChannel(id) } catch {}
     return true
   }
 

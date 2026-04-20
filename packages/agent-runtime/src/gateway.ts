@@ -2327,6 +2327,10 @@ export class AgentGateway {
 
     // 7c. Runtime build + console log tails (canvas mode only — Vite preview pipeline)
     if (activeMode === 'canvas') {
+      const previewUrl = this.buildPreviewUrlContext()
+      if (previewUrl) {
+        pushDynamic('preview-url', previewUrl)
+      }
       const runtimeLogs = this.buildRuntimeLogsContext()
       if (runtimeLogs) {
         pushDynamic('runtime-logs', runtimeLogs)
@@ -2416,6 +2420,63 @@ export class AgentGateway {
     const stableText = stableParts.join('\n\n---\n\n')
     const dynamicText = dynamicParts.join('\n\n---\n\n')
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
+  }
+
+  /**
+   * URL block describing where the running preview app is reachable.
+   *
+   * This exists because the QA subagent contract requires a URL, and the main
+   * agent previously had no reliable way to discover one (it was inventing
+   * paths under .shogo/ and reading `vite.config.ts`, where the template
+   * hardcodes port 5173 — a value that is always overridden at runtime by
+   * whichever launcher spawned the process).
+   *
+   * Two ways this block gets a URL, in priority order:
+   *   1. `PUBLIC_PREVIEW_URL` env var — set by the launcher (knative API or
+   *      local RuntimeManager). This is the authoritative URL the user /
+   *      browser sees. Trust it unconditionally when present.
+   *   2. A built `dist/index.html` under the workspace — indicates the
+   *      standalone agent-runtime is self-serving the app on its own port
+   *      (`process.env.PORT`). Fall back to localhost in that case.
+   *
+   * Intentionally positive-only: do NOT name the hallucinated paths / ports
+   * this replaces. Naming "don't use X" still puts X in the model's working
+   * set.
+   *
+   * Returns null only when neither signal is present — no point telling the
+   * agent about a URL that won't load.
+   */
+  private buildPreviewUrlContext(): string | null {
+    const publicUrl = process.env.PUBLIC_PREVIEW_URL?.trim() || ''
+
+    const runtimePort = parseInt(process.env.PORT || '8080', 10)
+    const internalUrl = `http://localhost:${runtimePort}/`
+
+    // dist/ may live at either workspaceDir/project/dist (k8s layout, where
+    // the project lives in a /project subdir) or workspaceDir/dist (local
+    // RuntimeManager layout, where workspaceDir === projectDir).
+    const hasDist =
+      existsSync(join(this.workspaceDir, 'project', 'dist', 'index.html')) ||
+      existsSync(join(this.workspaceDir, 'dist', 'index.html'))
+
+    if (publicUrl.length === 0 && !hasDist) return null
+
+    const externalUrl = publicUrl.length > 0 ? publicUrl : internalUrl
+    const hasDistinctPublic = publicUrl.length > 0 && publicUrl !== internalUrl
+
+    const lines: string[] = [
+      '## Running App Preview',
+      '',
+      `The user's app is running and reachable at **${externalUrl}**.`,
+    ]
+    if (hasDistinctPublic) {
+      lines.push(`Internal (from inside this runtime): \`${internalUrl}\`.`)
+    }
+    lines.push(
+      '',
+      'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.',
+    )
+    return lines.join('\n')
   }
 
   /**
