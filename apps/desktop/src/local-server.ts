@@ -190,24 +190,35 @@ function ensureRuntimeTemplate(): void {
   const fs = require('fs') as typeof import('fs')
   const workspacesDir = getWorkspacesDir()
   const templateDest = path.join(workspacesDir, '_template')
-
-  if (fs.existsSync(path.join(templateDest, 'package.json'))) {
-    console.log('[Desktop] Runtime template already present at', templateDest)
-    return
-  }
-
   const bundledTemplate = path.join(getProjectRoot(), 'runtime-template')
-  if (!fs.existsSync(bundledTemplate)) {
-    console.warn('[Desktop] Bundled runtime-template not found at', bundledTemplate)
-    return
+
+  const templatePresent = fs.existsSync(path.join(templateDest, 'package.json'))
+
+  if (!templatePresent) {
+    if (!fs.existsSync(bundledTemplate)) {
+      console.warn('[Desktop] Bundled runtime-template not found at', bundledTemplate)
+      return
+    }
+    console.log(`[Desktop] Copying runtime-template to ${templateDest}`)
+    fs.cpSync(bundledTemplate, templateDest, {
+      recursive: true,
+      filter: (src: string) => !src.includes('node_modules') && !src.includes('.git'),
+    })
+    console.log('[Desktop] Runtime template installed')
+  } else {
+    console.log('[Desktop] Runtime template already present at', templateDest)
   }
 
-  console.log(`[Desktop] Copying runtime-template to ${templateDest}`)
-  fs.cpSync(bundledTemplate, templateDest, {
-    recursive: true,
-    filter: (src: string) => !src.includes('node_modules') && !src.includes('.git'),
-  })
-  console.log('[Desktop] Runtime template installed')
+  // Self-heal existing installs: ensure AGENTS.md exists at template root. Its
+  // absence triggers the agent-runtime's legacy-APP-layout migration on every
+  // fresh project, which fails with EPERM on Windows when Vite is watching the
+  // workspace. Having AGENTS.md at root skips the migration entirely.
+  const agentsMdDest = path.join(templateDest, 'AGENTS.md')
+  const agentsMdSrc = path.join(bundledTemplate, 'AGENTS.md')
+  if (!fs.existsSync(agentsMdDest) && fs.existsSync(agentsMdSrc)) {
+    fs.copyFileSync(agentsMdSrc, agentsMdDest)
+    console.log('[Desktop] Added missing AGENTS.md to runtime template')
+  }
 }
 
 // --- VM isolation ---

@@ -162,6 +162,69 @@ Launch from terminal to see output:
 ```
 Logs are also written to `~/Library/Logs/Shogo/main.log`.
 
+**Windows: "trouble starting your project environment" (agent gateway never starts, EPERM rename)**
+Seen in `%APPDATA%\Shogo\logs\main.log` as:
+
+```
+[Agent:<id>] Initialization failed: ... EPERM: operation not permitted, rename
+'...\workspaces\<id>\src' -> '...\workspaces\<id>\project\src'
+```
+
+On first run for a new project, `ensureWorkspaceFiles` in
+`packages/agent-runtime/src/server.ts` migrates the workspace into a nested
+`project/` subdirectory when it detects a "legacy APP layout" (a `package.json`
+at workspace root with no `AGENTS.md` beside it). POSIX `rename(2)` succeeds
+even while another process is watching the source tree; NTFS does not, so the
+migration fails as soon as Vite's file watcher — spawned concurrently by the
+host `RuntimeManager` — has `src/` open. The agent-runtime process then exits
+and every chat request gets `503 Agent gateway not running`.
+
+Modern builds avoid this in two ways: the runtime template now ships an
+`AGENTS.md` at root (see `templates/runtime-template/AGENTS.md`), and
+`ensureRuntimeTemplate` in `apps/desktop/src/local-server.ts` self-heals
+pre-existing `_template/` dirs by copying it in. The migration code in
+`server.ts` also falls back to `cpSync` + retrying `rmSync` on `EPERM`/`EBUSY`
+so the rename still lands eventually.
+
+If you're stuck on an older build and hit this, recover by quitting Shogo
+and creating the marker by hand:
+
+```powershell
+# 1. Stop Shogo from the tray and confirm no stray bun.exe/Shogo.exe are left
+Get-Process | Where-Object { $_.Name -match '^(Shogo|bun)$' } | Stop-Process -Force
+
+# 2. Seed AGENTS.md in the shared template (future projects)
+@"
+# Identity
+
+- **Name:** Shogo
+"@ | Set-Content "$env:APPDATA\Shogo\data\workspaces\_template\AGENTS.md"
+
+# 3. For each half-migrated project workspace, move project\* back to root,
+#    remove project\, and drop in AGENTS.md
+```
+
+**Windows: "trouble starting your project environment" / `VM warm pool disabled after N consecutive boot failures`**
+QEMU + WHPX cannot boot an agent VM on this host (the VM usually dies at
+iPXE after emitting `whpx: injection failed, MSI (0, 0) delivery: 0 …
+(c0350005)` — a known Hyper-V/WHPX interrupt-delivery quirk on some Windows
+installs). After `MAX_CONSECUTIVE_FAILURES` (3) failed VM boots the warm pool
+permanently disables itself for the session.
+
+Modern builds detect this and fall back to the host `RuntimeManager` (see
+`VMPoolPermanentlyDisabledError` in
+`apps/api/src/lib/vm-warm-pool-controller.ts`), so the user gets a working
+runtime instead of a cryptic `pod_unavailable`. To silence the warning and
+skip the wasted VM boot attempts on subsequent launches, write:
+
+```json
+{ "vmIsolation": { "enabled": false } }
+```
+
+into `%APPDATA%\Shogo\config.json`. See `apps/desktop/src/config.ts` for the
+full schema — the `'auto'` default still attempts VM isolation whenever QEMU +
+a provisioned rootfs are present.
+
 **Windows: "trouble starting your project environment" / `'npm.cmd' is not recognized`**
 Shogo Desktop on Windows requires **Node.js 20+** to be installed at the
 standard location (`C:\Program Files\nodejs\`). Bun 1.x has a hardlink bug on
