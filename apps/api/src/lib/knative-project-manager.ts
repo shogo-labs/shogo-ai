@@ -49,6 +49,17 @@ const IS_PRODUCTION = PREVIEW_ENVIRONMENT === "production" || PREVIEW_ENVIRONMEN
 // Log preview configuration on module load
 console.log(`[knative-project-manager] Preview config: PREVIEW_BASE_DOMAIN=${PREVIEW_BASE_DOMAIN}, PREVIEW_ENVIRONMENT=${PREVIEW_ENVIRONMENT}, IS_PRODUCTION=${IS_PRODUCTION}`)
 
+// Hash a project UUID to a stable 32-bit integer for use as a PostgreSQL
+// advisory lock key. Uses a simple FNV-1a hash to distribute evenly.
+function hashProjectIdToLockKey(projectId: string): number {
+  let hash = 0x811c9dc5 // FNV offset basis
+  for (let i = 0; i < projectId.length; i++) {
+    hash ^= projectId.charCodeAt(i)
+    hash = (hash * 0x01000193) | 0 // FNV prime, force 32-bit
+  }
+  return hash
+}
+
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -1764,6 +1775,11 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
  * background creation of the real Knative Service.
  * Returns the warm pod URL on success, null on failure/unavailability.
  * Retries with different pods from the pool if the first claim fails.
+ *
+ * Uses a DB-level row lock (SELECT ... FOR UPDATE) on the project row
+ * to prevent multiple API replicas from claiming different pods for the
+ * same project simultaneously. The second replica will see the
+ * knativeServiceName written by the first and reuse it.
  */
 async function tryClaimWarmPod(
   projectId: string,
@@ -1781,37 +1797,95 @@ async function tryClaimWarmPod(
       return null
     }
 
-    const envVars = await warmPool.buildProjectEnv(projectId)
-    const envTime = Date.now()
-    console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
+    // Acquire a PostgreSQL advisory lock keyed on the project ID to prevent
+    // multiple API replicas from claiming different warm pods for the same
+    // project simultaneously. Advisory locks are session-scoped and don't
+    // require holding a transaction open during the long /pool/assign call.
+    const { prisma } = await import('./prisma')
+    const lockKey = hashProjectIdToLockKey(projectId)
 
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const pod = warmPool.claim()
-      if (!pod) {
-        console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
-        break
+    // pg_try_advisory_lock returns true if we acquired it, false if another
+    // session already holds it. If contended, re-check the DB — the winning
+    // replica may have already written knativeServiceName.
+    const [{ acquired }] = await prisma.$queryRawUnsafe<{ acquired: boolean }[]>(
+      `SELECT pg_try_advisory_lock($1) AS acquired`, lockKey,
+    )
+
+    if (!acquired) {
+      // Another replica is actively claiming for this project. Wait briefly
+      // for it to finish, then check if it wrote a service name.
+      console.log(`[KnativeProjectManager] Warm pool claim lock contended for ${projectId} — waiting for other replica`)
+      await new Promise((r) => setTimeout(r, 5000))
+
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+      if (project?.knativeServiceName) {
+        const url = `http://${project.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
+        console.log(
+          `[KnativeProjectManager] Warm pool claim for ${projectId} resolved by another replica: ${project.knativeServiceName} (elapsed: ${Date.now() - t0}ms)`
+        )
+        return url
       }
 
-      console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
+      // Other replica may have failed — proceed with our own claim.
+      // Try to acquire the lock now (blocking).
+      await prisma.$queryRawUnsafe(`SELECT pg_advisory_lock($1)`, lockKey)
+      console.log(`[KnativeProjectManager] Acquired warm pool claim lock for ${projectId} after contention`)
 
-      try {
-        const assignStart = Date.now()
-        await warmPool.assign(pod, projectId, envVars)
-        const assignEnd = Date.now()
-        console.log(`[KnativeProjectManager] assign for ${projectId}: ${assignEnd - assignStart}ms (total warm pipeline: ${assignEnd - t0}ms)`)
-
-        manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
-          console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
-        })
-
-        return pod.url
-      } catch (assignErr: any) {
-        console.warn(`[KnativeProjectManager] Warm pod ${pod.serviceName} unreachable for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS}): ${assignErr.message}`)
+      // Re-check after acquiring — other replica may have finished between our wait and lock
+      const recheck = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+      if (recheck?.knativeServiceName) {
+        await prisma.$queryRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey)
+        const url = `http://${recheck.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
+        console.log(
+          `[KnativeProjectManager] Warm pool claim for ${projectId} resolved after lock acquisition: ${recheck.knativeServiceName} (elapsed: ${Date.now() - t0}ms)`
+        )
+        return url
       }
     }
 
-    console.log(`[KnativeProjectManager] All warm pool attempts exhausted for ${projectId} after ${Date.now() - t0}ms — falling back to cold start`)
-    return null
+    // We hold the advisory lock — proceed with claim. Release in finally block.
+    try {
+      const envVars = await warmPool.buildProjectEnv(projectId)
+      const envTime = Date.now()
+      console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const pod = warmPool.claim()
+        if (!pod) {
+          console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
+          break
+        }
+
+        console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
+
+        try {
+          const assignStart = Date.now()
+          await warmPool.assign(pod, projectId, envVars)
+          const assignEnd = Date.now()
+          console.log(`[KnativeProjectManager] assign for ${projectId}: ${assignEnd - assignStart}ms (total warm pipeline: ${assignEnd - t0}ms)`)
+
+          manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
+            console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
+          })
+
+          return pod.url
+        } catch (assignErr: any) {
+          console.warn(`[KnativeProjectManager] Warm pod ${pod.serviceName} unreachable for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS}): ${assignErr.message}`)
+        }
+      }
+
+      console.log(`[KnativeProjectManager] All warm pool attempts exhausted for ${projectId} after ${Date.now() - t0}ms — falling back to cold start`)
+      return null
+    } finally {
+      // Always release the advisory lock
+      await prisma.$queryRawUnsafe(`SELECT pg_advisory_unlock($1)`, lockKey).catch(() => {})
+    }
   } catch (err: any) {
     const elapsed = Date.now() - t0
     console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId} after ${elapsed}ms:`, err.message)
