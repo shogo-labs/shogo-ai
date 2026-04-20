@@ -51,6 +51,7 @@ import {
   MessageSquare,
   LayoutDashboard,
   Code2,
+  FolderOpen,
   Sliders,
   Radio,
   Activity,
@@ -84,7 +85,9 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
   // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
-  { id: 'ide', label: 'IDE', icon: Code2 },
+  ...(Platform.OS === 'web'
+    ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
+    : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
   // { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },

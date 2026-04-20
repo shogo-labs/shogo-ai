@@ -79,6 +79,7 @@ import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } fr
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
   ChannelsPanel,
+  FilesBrowserPanel,
   IDEPanel,
   CapabilitiesPanel,
   MonitorPanel,
@@ -107,7 +108,7 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-const STANDALONE_PANELS = ['ide', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
+const STANDALONE_PANELS = ['ide', 'files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
@@ -1460,6 +1461,7 @@ export default observer(function ProjectLayout() {
               }
             >
               <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} agentUrl={agentUrl} />
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
               <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
