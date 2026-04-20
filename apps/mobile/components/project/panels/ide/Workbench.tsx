@@ -28,6 +28,7 @@ import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleSt
 import { matchesShortcut, type Command } from "./commands";
 import {
   RefreshCw,
+  History,
   AlertTriangle,
   FilePlus,
   FolderPlus,
@@ -1105,12 +1106,21 @@ function FilesPane({
         <div className="flex items-center gap-1">
           <button
             onClick={onOpenFolder}
-            title={fsaSupported ? "Open Folder…" : "Open Folder (not supported in this browser)"}
+            title={fsaSupported ? "Add local folder…" : "Local folders require Chrome or Edge"}
             disabled={!fsaSupported}
             className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <FolderOpen size={13} />
           </button>
+          {fsaSupported && (
+            <button
+              onClick={onRestore}
+              title="Reopen recent local folder"
+              className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            >
+              <History size={13} />
+            </button>
+          )}
           <button
             onClick={() => onNew("file")}
             title="New File"
@@ -1135,42 +1145,6 @@ function FilesPane({
         </div>
       </div>
 
-      {/* Local folder CTA */}
-      {roots.length === 1 && (
-        <div className="mx-3 mb-2 rounded border border-dashed border-[#3a3a3a] p-2 text-[11px] text-[#858585]">
-          {fsaSupported ? (
-            <>
-              <div className="mb-1 font-medium text-[#cccccc]">Add a local folder</div>
-              <div>
-                Open any folder on your Mac and edit its files side-by-side with the agent workspace.
-              </div>
-              <div className="mt-2 flex gap-2">
-                <button
-                  onClick={onOpenFolder}
-                  className="rounded bg-[#0078d4] px-2 py-1 text-white hover:bg-[#1286da]"
-                >
-                  Open Folder…
-                </button>
-                <button
-                  onClick={onRestore}
-                  className="rounded border border-[#3a3a3a] px-2 py-1 text-[#cccccc] hover:bg-[#2a2a2a]"
-                  title="Re-open the most recent local folder"
-                >
-                  Reopen Recent
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="mb-1 font-medium text-[#f48771]">Local folders not supported</div>
-              <div>
-                Your browser doesn't support the File System Access API. Open Shogo in Chrome or Edge
-                to pick a local folder.
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       {anyError ? (
         <div className="px-4 py-3 text-[12px] text-[#f48771]">
