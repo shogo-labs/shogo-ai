@@ -267,3 +267,63 @@ body {
 .dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(200, 200, 200, 0.4);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * IDE — live agent edits (Cursor-style flash on lines the agent just wrote)
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes agent-edit-flash-fade {
+  0% {
+    background-color: rgba(110, 231, 183, 0.28); /* emerald-300 @ 28% */
+  }
+  40% {
+    background-color: rgba(110, 231, 183, 0.22);
+  }
+  100% {
+    background-color: rgba(110, 231, 183, 0);
+  }
+}
+
+@keyframes agent-edit-gutter-fade {
+  0% {
+    background-color: #10b981; /* emerald-500 */
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.agent-edit-flash {
+  animation: agent-edit-flash-fade 2.2s ease-out forwards;
+  will-change: background-color;
+}
+
+.agent-edit-gutter-flash {
+  width: 3px !important;
+  margin-left: 2px;
+  animation: agent-edit-gutter-fade 2.2s ease-out forwards;
+}
+
+/* Tab pulse while the agent is actively writing to that file */
+@keyframes agent-tab-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
+.agent-tab-pulse-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background-color: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  margin-right: 6px;
+  animation: agent-tab-pulse 1s ease-in-out infinite;
+}

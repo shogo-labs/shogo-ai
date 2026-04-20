@@ -79,7 +79,7 @@ export function CodeEditor({
   settings: EditorSettings;
   onChange: (v: string) => void;
   onCursor: (line: number, col: number) => void;
-  onMount?: (ed: editor.IStandaloneCodeEditor) => void;
+  onMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
 }) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
@@ -92,7 +92,7 @@ export function CodeEditor({
       onCursor(e.position.lineNumber, e.position.column);
     });
 
-    onMount?.(ed);
+    onMount?.(ed, monaco);
   };
 
   return (

@@ -20,6 +20,7 @@ import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
+import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { api } from "./workspace/apiBase";
@@ -103,6 +104,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
+  const monacoNsRef = useRef<MonacoNs | null>(null);
   const fsaSupported = useMemo(() => isFsaSupported(), []);
 
   const activeGroup = groups[activeGroupIdx] ?? groups[0];
@@ -159,6 +161,33 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   const refreshAgentTree = useCallback(() => {
     void loadRoot("agent");
   }, [loadRoot]);
+  // Try to animate a live-edit in-place for the currently-active editor/file.
+  // Returns true if the animation owned the content update (and React state
+  // only needs savedContent/dirty updated), false otherwise.
+  const tryAnimateLive = useCallback(
+    (fileId: string, newContent: string): boolean => {
+      const monaco = monacoNsRef.current;
+      if (!monaco) { console.log("[ShogoLive] tryAnimate: monacoNs not captured"); return false; }
+      const g = groups.find((gg) => gg.activeId === fileId);
+      if (!g) {
+        console.log("[ShogoLive] tryAnimate: no group has fileId active", {
+          fileId,
+          groupActiveIds: groups.map((gg) => gg.activeId),
+        });
+        return false;
+      }
+      const ed = editorRefs.current[g.id];
+      if (!ed) { console.log("[ShogoLive] tryAnimate: no editor ref for group", g.id); return false; }
+      const model = ed.getModel();
+      if (!model) { console.log("[ShogoLive] tryAnimate: editor has no model"); return false; }
+      if (model.getValue() === newContent) { console.log("[ShogoLive] tryAnimate: content already matches"); return false; }
+      console.log("[ShogoLive] tryAnimate: animating!", { fileId, lines: newContent.split("\n").length });
+      void applyAgentEdit(ed, monaco, newContent);
+      return true;
+    },
+    [groups],
+  );
+
   useLiveAgentEdits({
     service: services["agent"],
     setGroups,
@@ -166,6 +195,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     conflicts,
     setConflicts,
     refreshTree: refreshAgentTree,
+    tryAnimate: tryAnimateLive,
   });
 
   const handleReloadConflict = useCallback(
@@ -422,6 +452,30 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       return prev.map((gg, i) => (i === groupIdx ? { ...gg, files: nextFiles, activeId: nextActive } : gg));
     });
   }, []);
+
+  const reorderInGroup = useCallback(
+    (groupIdx: number, orderedIds: string[]) => {
+      setGroups((prev) =>
+        prev.map((g, i) => {
+          if (i !== groupIdx) return g;
+          const byId = new Map(g.files.map((f) => [f.id, f]));
+          const nextFiles: OpenFile[] = [];
+          for (const id of orderedIds) {
+            const f = byId.get(id);
+            if (f) {
+              nextFiles.push(f);
+              byId.delete(id);
+            }
+          }
+          // Append any files that weren't in the provided order (shouldn't
+          // happen, but keeps state consistent).
+          for (const f of byId.values()) nextFiles.push(f);
+          return { ...g, files: nextFiles };
+        }),
+      );
+    },
+    [],
+  );
 
   const togglePinInGroup = useCallback((groupIdx: number, id: string) => {
     setGroups((prev) =>
@@ -934,11 +988,13 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
                       onTogglePin={(id) => togglePinInGroup(i, id)}
+                      onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
                       onCursor={(line, col) => setCursor({ line, col })}
                       settings={settings}
-                      onEditorMount={(ed) => {
+                      onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
+                        if (monaco) monacoNsRef.current = monaco;
                       }}
                     />
                   </div>

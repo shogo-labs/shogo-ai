@@ -71,6 +71,14 @@ export interface UseLiveAgentEditsArgs {
   setConflicts: Dispatch<SetStateAction<LiveConflict[]>>;
   /** Called after changes so the sidebar tree reflects new/removed files. */
   refreshTree: () => void;
+  /**
+   * Attempt to apply `newContent` to the currently-visible editor with
+   * Cursor-style animation (green flash + auto-scroll + optional typewriter).
+   * Returns `true` if the animation took ownership of the content update, in
+   * which case the hook only needs to update savedContent/dirty in state —
+   * Monaco's onChange will flow the new content back into React.
+   */
+  tryAnimate?: (fileId: string, newContent: string) => boolean;
   /** Master switch (user setting). Default true. */
   enabled?: boolean;
 }
@@ -86,6 +94,7 @@ export function useLiveAgentEdits({
   conflicts,
   setConflicts,
   refreshTree,
+  tryAnimate,
   enabled = true,
 }: UseLiveAgentEditsArgs): void {
   // Keep refs to the latest values so the SSE handler (closed over at
@@ -97,11 +106,21 @@ export function useLiveAgentEdits({
   const activeGroupIdxRef = useRef(activeGroupIdx);
   activeGroupIdxRef.current = activeGroupIdx;
 
+  const tryAnimateRef = useRef(tryAnimate);
+  tryAnimateRef.current = tryAnimate;
+
   useEffect(() => {
     if (!enabled) return;
-    if (!service || typeof service.subscribe !== "function") return;
+    if (!service || typeof service.subscribe !== "function") {
+      console.log('[LIVE] useLiveAgentEdits: skipping subscribe', { enabled, hasService: !!service, hasSubscribe: !!service?.subscribe });
+      return;
+    }
+    console.log('[LIVE] useLiveAgentEdits: installing subscription on service', service.id);
 
+    console.log("[ShogoLive] subscribing to workspace stream");
     const dispose = service.subscribe((evt) => {
+      console.log("[ShogoLive] event:", evt);
+      console.log('[LIVE] hook received event', evt);
       if (evt.type === "file.deleted") {
         const id = fileId(AGENT_ROOT_ID, evt.path);
         setGroups((prev) =>
@@ -127,6 +146,7 @@ export function useLiveAgentEdits({
       if (evt.type !== "file.changed") return;
       const { path, mtime } = evt;
       const id = fileId(AGENT_ROOT_ID, path);
+      console.log("[ShogoLive] file.changed fileId=", id);
 
       void (async () => {
         // Dedupe: if the same mtime is already queued as a conflict, skip
@@ -164,6 +184,22 @@ export function useLiveAgentEdits({
               if (f.dirty) {
                 hadDirtyDiff = true;
                 return f;
+              }
+              // Try to animate the edit in the active editor. If it takes
+              // ownership (returns true), leave `content` alone — Monaco's
+              // onChange will flow the new text back through React. We only
+              // update savedContent so the tab stays non-dirty.
+              const animated =
+                tryAnimateRef.current?.(f.id, content) ?? false;
+              console.log('[LIVE] applying to open tab', { id: f.id, dirty: f.dirty, animated });
+              if (animated) {
+                return {
+                  ...f,
+                  savedContent: content,
+                  dirty: false,
+                  loading: false,
+                  error: undefined,
+                };
               }
               return {
                 ...f,
