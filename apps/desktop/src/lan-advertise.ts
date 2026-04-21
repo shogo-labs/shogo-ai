@@ -95,7 +95,9 @@ async function tryLoadMdns(): Promise<any> {
   // Try mdns / multicast-dns
   try {
     const mdns = await import('multicast-dns')
-    return mdns.default?.() || mdns()
+    const factory = (mdns as { default?: (...args: unknown[]) => unknown }).default
+      ?? (mdns as unknown as (...args: unknown[]) => unknown)
+    return typeof factory === 'function' ? factory() : null
   } catch {}
 
   return null
