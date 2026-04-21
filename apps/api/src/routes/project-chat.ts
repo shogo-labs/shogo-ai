@@ -681,7 +681,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.
+      // Guard: if the handler exits without starting a stream (retry
+      // exhaustion, client disconnect, thrown error), the finally block
+      // ensures closeSession runs so we don't leak an open session.
       openSession(projectId, project.workspaceId, billingUserId || 'system')
+      let billingSessionHandedOff = false
+      try {
 
       // Forward headers
       const headers: Record<string, string> = {
@@ -893,6 +898,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             },
           })
 
+          // trackUsageFromStream takes ownership of billing — it calls
+          // closeSession after the stream finishes. Mark the handoff so
+          // our finally guard doesn't double-close.
+          billingSessionHandedOff = true
           trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           )
@@ -949,6 +958,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         { error: { code: "proxy_error", message: lastError?.message || "Max retries exceeded" } },
         503
       )
+
+      } finally {
+        // Guard: close the billing session if trackUsageFromStream never
+        // took ownership (retry exhaustion, client disconnect, thrown error).
+        // closeSession is idempotent — safe to call even if already closed.
+        if (!billingSessionHandedOff) {
+          closeSession(projectId).catch((err) =>
+            console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
+          )
+        }
+      }
     } catch (error: any) {
       console.error("[ProjectChat] Proxy error:", error)
       chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
