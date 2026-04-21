@@ -267,3 +267,129 @@ body {
 .dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(200, 200, 200, 0.4);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * IDE — live agent edits (Cursor-style per-line diff overlay)
+ *
+ * Three kinds of line decoration applied by agentEditAnimation.ts after a
+ * write from the chat agent lands on disk:
+ *   • .agent-edit-added-line    — brand-new line (green)
+ *   • .agent-edit-modified-line — changed-in-place line (amber)
+ *   • .agent-edit-deleted-zone  — phantom view-zone above the old location
+ *                                 showing the removed text with strikethrough
+ *
+ * Decorations fade softly so they're visible for the ~6s overlay TTL and
+ * then quietly disappear without a hard snap.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes agent-edit-added-fade {
+  0%   { background-color: rgba(16, 185, 129, 0.30); } /* emerald-500 @ 30% */
+  70%  { background-color: rgba(16, 185, 129, 0.18); }
+  100% { background-color: rgba(16, 185, 129, 0); }
+}
+@keyframes agent-edit-added-gutter-fade {
+  0%   { background-color: #10b981; }
+  70%  { background-color: rgba(16, 185, 129, 0.6); }
+  100% { background-color: transparent; }
+}
+
+@keyframes agent-edit-modified-fade {
+  0%   { background-color: rgba(234, 179, 8, 0.28); }  /* amber-500 @ 28% */
+  70%  { background-color: rgba(234, 179, 8, 0.16); }
+  100% { background-color: rgba(234, 179, 8, 0); }
+}
+@keyframes agent-edit-modified-gutter-fade {
+  0%   { background-color: #eab308; }
+  70%  { background-color: rgba(234, 179, 8, 0.6); }
+  100% { background-color: transparent; }
+}
+
+@keyframes agent-edit-deleted-fade {
+  0%   { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.agent-edit-added-line {
+  animation: agent-edit-added-fade 6s ease-out forwards;
+  will-change: background-color;
+}
+.agent-edit-added-gutter {
+  width: 3px !important;
+  margin-left: 2px;
+  animation: agent-edit-added-gutter-fade 6s ease-out forwards;
+}
+.agent-edit-added-gutter::before {
+  content: "+";
+  display: block;
+  position: absolute;
+  left: 4px;
+  top: 0;
+  color: #10b981;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.agent-edit-modified-line {
+  animation: agent-edit-modified-fade 6s ease-out forwards;
+  will-change: background-color;
+}
+.agent-edit-modified-gutter {
+  width: 3px !important;
+  margin-left: 2px;
+  animation: agent-edit-modified-gutter-fade 6s ease-out forwards;
+}
+.agent-edit-modified-gutter::before {
+  content: "~";
+  display: block;
+  position: absolute;
+  left: 4px;
+  top: 0;
+  color: #eab308;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.agent-edit-deleted-zone {
+  background-color: rgba(239, 68, 68, 0.12); /* red-500 @ 12% */
+  border-left: 3px solid #ef4444;
+  animation: agent-edit-deleted-fade 6s ease-out forwards;
+  will-change: opacity;
+  padding: 0 0 0 8px;
+  overflow: hidden;
+}
+.agent-edit-deleted-line {
+  color: rgba(248, 113, 113, 0.85); /* red-400 */
+  text-decoration: line-through;
+  text-decoration-color: rgba(239, 68, 68, 0.7);
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}
+
+/* Tab pulse while the agent is actively writing to that file */
+@keyframes agent-tab-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
+.agent-tab-pulse-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background-color: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  margin-right: 6px;
+  animation: agent-tab-pulse 1s ease-in-out infinite;
+}

@@ -105,6 +105,11 @@ import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
+import {
+  FIX_IN_AGENT_EVENT,
+  buildFixPrompt,
+  type FixInAgentPayload,
+} from "../project/panels/ide/agentFixProvider"
 
 
 // ============================================================
@@ -2730,6 +2735,28 @@ export const ChatPanel = observer(function ChatPanel({
       handleSendMessage(cleanMessage)
     }
   }, [injectMessage, currentSessionId, handleSendMessage])
+
+  // ─── "Fix with Shogo" from the IDE ──────────────────────────────────
+  // agentFixProvider (inside the Monaco editor) dispatches a window-level
+  // CustomEvent whenever the user clicks "✨ Fix with Shogo" inside an error
+  // hover or quick-fix menu. Only the currently-active ChatPanel consumes it
+  // so a single Fix click maps to exactly one message, no matter how many
+  // chat tabs are mounted.
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    if (!isActive) return
+    if (!currentSessionId) return
+
+    const onFix = (e: Event) => {
+      const detail = (e as CustomEvent<FixInAgentPayload>).detail
+      if (!detail || !detail.message) return
+      const prompt = buildFixPrompt(detail)
+      handleSendMessage(prompt)
+    }
+
+    window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
+    return () => window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
+  }, [isActive, currentSessionId, handleSendMessage])
 
   // Collapse toggle — persist to AsyncStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {

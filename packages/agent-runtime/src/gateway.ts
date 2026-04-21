@@ -1372,9 +1372,11 @@ export class AgentGateway {
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
-      canvasFileWatcher: this.config.canvasMode === 'code'
-        ? this.canvasFileWatcher
-        : undefined,
+      // Always provide the watcher so live file events (file.changed /
+      // file.deleted) are broadcast to SSE subscribers (e.g. the IDE tab
+      // for Cursor-style live editing). The watcher is a cheap per-
+      // workspace singleton; no downside to making it always-on.
+      canvasFileWatcher: this.canvasFileWatcher,
       lspManager: this.lspManager ?? undefined,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,

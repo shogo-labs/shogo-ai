@@ -33,6 +33,7 @@
 
 // Client
 export { AgentClient, getAgentClient } from './client.js'
+export type { WorkspaceEvent } from './client.js'
 
 // React hooks
 export {
@@ -48,6 +49,7 @@ export type {
   AgentClientConfig,
   AgentExportBundle,
   AgentImportResult,
+  AgentPlanSummary,
   AgentStatus,
   ChatMessage,
   ChatMessagePart,
