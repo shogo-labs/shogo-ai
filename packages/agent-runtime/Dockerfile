@@ -61,6 +61,10 @@ COPY packages/model-catalog ./packages/model-catalog
 COPY packages/sdk ./packages/sdk
 COPY templates/runtime-template ./templates/runtime-template
 
+# Build @shogo-ai/sdk — its package.json "exports" resolve to ./dist/*,
+# so agent-runtime's `import '@shogo-ai/sdk/memory'` fails at runtime without this.
+RUN cd packages/sdk && bun install && bun run build
+
 # Pre-install runtime-template dependencies so workspaces get node_modules instantly
 RUN cd templates/runtime-template && bun install
 
