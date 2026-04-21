@@ -2790,6 +2790,33 @@ function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
 
+// Publish pipeline: returns all dist/ files base64-encoded so the API server
+// can upload them to S3 without needing direct filesystem access.
+app.get('/api/dist-files', (c) => {
+  const distDir = getDistDir()
+
+  if (!existsSync(distDir)) {
+    return c.json({ error: 'dist directory not found — run a build first' }, 404)
+  }
+
+  const results: { path: string; content: string }[] = []
+
+  function walk(dir: string, base: string) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        walk(full, rel)
+      } else {
+        results.push({ path: rel, content: readFileSync(full).toString('base64') })
+      }
+    }
+  }
+
+  walk(distDir, '')
+  return c.json(results)
+})
+
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
 
