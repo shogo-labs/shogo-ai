@@ -13,7 +13,7 @@
  * Drag-and-drop is omitted (not available on mobile).
  */
 
-import { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
+import { useState, useRef, useCallback, forwardRef, useEffect, useLayoutEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -64,6 +64,12 @@ import {
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
+import {
+  clearChatDraft,
+  loadChatDraft,
+  saveChatDraft,
+} from "../../lib/chat-draft-storage"
+import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -79,21 +85,22 @@ const TIER_LABELS: Record<ModelTier, string> = {
   standard: "Standard",
   economy: "Economy",
 }
-import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 
 interface AttachedFile {
   id: string
-  dataUrl: string
+  dataUrl?: string
   name: string
   type: string
   size: number
+  requiresReattach?: boolean
 }
 
 export interface CompactChatInputProps {
   onSubmit: (prompt: string, files?: FileAttachment[]) => void
+  draftStorageKey?: string | null
   disabled?: boolean
   isLoading?: boolean
   placeholder?: string
@@ -112,6 +119,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
   function CompactChatInput(
     {
       onSubmit,
+      draftStorageKey,
       disabled = false,
       isLoading = false,
       placeholder: placeholderProp,
@@ -139,6 +147,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const [attachSheetOpen, setAttachSheetOpen] = useState(false)
     const [interactionModeOpen, setInteractionModeOpen] = useState(false)
     const [modelPickerOpen, setModelPickerOpen] = useState(false)
+    const [isDraftHydrated, setIsDraftHydrated] = useState(false)
+    const [draftPersistenceWarning, setDraftPersistenceWarning] = useState<string | null>(null)
     const [internalInteractionMode, setInternalInteractionMode] =
       useState<InteractionMode>("agent")
     const interactionMode = controlledInteractionMode ?? internalInteractionMode
@@ -186,11 +196,23 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const value = controlledValue ?? internalValue
     const setValue = controlledOnChange ?? setInternalValue
+    const controlledValueRef = useRef(controlledValue)
+    const setValueRef = useRef(setValue)
+    const skipNextSaveRef = useRef(false)
+    const isFirstDraftKeyRef = useRef(true)
     const valueRef = useRef(value)
 
     useEffect(() => {
       valueRef.current = value
     }, [value])
+
+    useEffect(() => {
+      controlledValueRef.current = controlledValue
+    }, [controlledValue])
+
+    useEffect(() => {
+      setValueRef.current = setValue
+    }, [setValue])
 
     const placeholderText =
       placeholderProp ??
@@ -207,8 +229,21 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     }, [])
 
     const handleRemoveFile = useCallback((fileId: string) => {
-      setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
-      setFileError(null)
+      setPendingFiles((prev) => {
+        const next = prev.filter((f) => f.id !== fileId)
+        const hasPlaceholderFiles = next.some((file) => file.requiresReattach || !file.dataUrl)
+        setFileError(
+          hasPlaceholderFiles
+            ? "Some attachments could not be safely restored. Re-attach them before sending."
+            : null
+        )
+        setDraftPersistenceWarning(
+          hasPlaceholderFiles
+            ? "Large attachments were restored as placeholders and must be re-attached before sending."
+            : null
+        )
+        return next
+      })
     }, [])
 
     const handleAttachClick = useCallback(() => {
@@ -265,6 +300,114 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     // keep typing and paste multiple long blocks (each becomes a chip).
     const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
     const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
+
+    useLayoutEffect(() => {
+      if (isFirstDraftKeyRef.current) {
+        isFirstDraftKeyRef.current = false
+        return
+      }
+      skipNextSaveRef.current = false
+      if (controlledValueRef.current === undefined) {
+        setInternalValue("")
+      }
+      setPendingFiles([])
+      setPastedTexts([])
+      setViewingPastedId(null)
+      setFileError(null)
+      setDraftPersistenceWarning(null)
+    }, [draftStorageKey])
+
+    useEffect(() => {
+      let cancelled = false
+      setIsDraftHydrated(false)
+
+      if (!draftStorageKey) {
+        setIsDraftHydrated(true)
+        return
+      }
+
+      loadChatDraft(draftStorageKey).then((draft) => {
+        if (cancelled) return
+
+        if (draft) {
+          const shouldHydrateText =
+            controlledValueRef.current === undefined ||
+            draft.text.length > 0 ||
+            valueRef.current.length === 0
+          if (shouldHydrateText) {
+            setValueRef.current(draft.text)
+          }
+        }
+        setPendingFiles(draft?.files ?? [])
+        setPastedTexts(
+          draft?.pastedTexts?.map((entry) => ({
+            id: entry.id,
+            content: entry.content,
+            info: analyzeContent(entry.content),
+          })) ?? []
+        )
+        setViewingPastedId(null)
+        const hasPlaceholderFiles = !!draft?.files?.some(
+          (file) => file.requiresReattach || !file.dataUrl
+        )
+        setFileError(
+          hasPlaceholderFiles
+            ? "Some attachments could not be safely restored. Re-attach them before sending."
+            : null
+        )
+        setDraftPersistenceWarning(
+          hasPlaceholderFiles
+            ? "Large attachments were restored as placeholders and must be re-attached before sending."
+            : null
+        )
+        skipNextSaveRef.current = true
+        setIsDraftHydrated(true)
+      })
+
+      return () => {
+        cancelled = true
+      }
+    }, [draftStorageKey])
+
+    useEffect(() => {
+      if (!isDraftHydrated || !draftStorageKey) return
+      if (skipNextSaveRef.current) {
+        skipNextSaveRef.current = false
+        return
+      }
+
+      void saveChatDraft(draftStorageKey, {
+        text: value,
+        files: pendingFiles,
+        pastedTexts: pastedTexts.map((entry) => ({
+          id: entry.id,
+          content: entry.content,
+        })),
+      }).then((result) => {
+        if (result === "metadata-only") {
+          setDraftPersistenceWarning(
+            "Large attachments are saved as placeholders only and must be re-attached after refresh."
+          )
+          return
+        }
+        if (result === "failed") {
+          setDraftPersistenceWarning(
+            "Draft persistence failed for the current attachments. Re-attach them after refresh if needed."
+          )
+          return
+        }
+        if (result === "full" || result === "cleared") {
+          const hasPlaceholderFiles = pendingFiles.some(
+            (file) => file.requiresReattach || !file.dataUrl
+          )
+          setDraftPersistenceWarning(
+            hasPlaceholderFiles
+              ? "Large attachments were restored as placeholders and must be re-attached before sending."
+              : null
+          )
+        }
+      })
+    }, [draftStorageKey, isDraftHydrated, pastedTexts, pendingFiles, value])
 
     const addPastedText = useCallback((content: string) => {
       const info = analyzeContent(content)
@@ -372,6 +515,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const handleSubmit = useCallback(() => {
       const trimmedContent = value.trim()
+      if (pendingFiles.some((file) => file.requiresReattach || !file.dataUrl)) {
+        setFileError("Re-attach the restored placeholder attachments before sending.")
+        return
+      }
       if (
         (!trimmedContent && pendingFiles.length === 0 && pastedTexts.length === 0) ||
         disabled ||
@@ -386,7 +533,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       // text part and the file parts so it sees everything.
       const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
       const combinedFiles: FileAttachment[] = [
-        ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
+        ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl!, name: f.name, type: f.type })),
         ...pastedAttachments,
       ]
       const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
@@ -397,8 +544,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       setFileError(null)
       setPastedTexts([])
       setViewingPastedId(null)
+      setDraftPersistenceWarning(null)
+      void clearChatDraft(draftStorageKey)
       textInputRef.current?.focus()
-    }, [value, disabled, isLoading, onSubmit, pendingFiles, pastedTexts, voiceInput.isBusy, setValue])
+    }, [value, disabled, draftStorageKey, isLoading, onSubmit, pendingFiles, pastedTexts, voiceInput.isBusy, setValue])
 
     // Fallback paste detection for platforms where the DOM paste listener
     // doesn't fire (native). If a large chunk was just inserted, pull it
@@ -464,7 +613,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               contentContainerClassName="gap-2 p-4 pb-2"
             >
               {pendingFiles.map((file) => {
-                const isImage = file.type.startsWith("image/")
+                const isImage = file.type.startsWith("image/") && !!file.dataUrl
+                const needsReattach = file.requiresReattach || !file.dataUrl
                 return (
                   <View
                     key={file.id}
@@ -492,6 +642,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                           <Text className="text-xs text-muted-foreground">
                             {formatFileSize(file.size)}
                           </Text>
+                          {needsReattach && (
+                            <Text className="text-xs text-amber-600">
+                              Re-attach to send
+                            </Text>
+                          )}
                         </View>
                       </View>
                     )}
@@ -510,6 +665,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           {/* Error message */}
           {fileError && (
             <Text className="text-sm text-destructive px-4 pb-2">{fileError}</Text>
+          )}
+
+          {draftPersistenceWarning && !fileError && (
+            <Text className="text-sm text-amber-600 px-4 pb-2">{draftPersistenceWarning}</Text>
           )}
 
           {voiceInput.error && (

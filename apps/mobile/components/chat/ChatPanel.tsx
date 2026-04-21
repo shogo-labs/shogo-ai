@@ -242,6 +242,11 @@ async function setStoredCollapsed(collapsed: boolean): Promise<void> {
   }
 }
 
+function buildDraftStorageKey(projectId?: string, sessionId?: string | null): string | null {
+  if (!projectId || !sessionId) return null
+  return `project:${projectId}:session:${sessionId}`
+}
+
 // ============================================================
 // Tool Call Extraction Helper
 // ============================================================
@@ -749,6 +754,10 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
   const currentSessionId = chatSessionId ?? null
+  const draftStorageKey = useMemo(
+    () => buildDraftStorageKey(projectId, currentSessionId),
+    [projectId, currentSessionId]
+  )
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
@@ -2853,6 +2862,7 @@ export const ChatPanel = observer(function ChatPanel({
         disabled={false}
         value={compactValue}
         onChange={onCompactValueChange}
+        draftStorageKey={draftStorageKey}
         className={className}
       />
     )
@@ -3190,6 +3200,7 @@ export const ChatPanel = observer(function ChatPanel({
           <View className="bg-transparent max-w-3xl w-full self-center mt-1">
             <ChatInput
               onSubmit={handleInputSubmit}
+              draftStorageKey={draftStorageKey}
               disabled={!currentSessionId}
               placeholder={
                 !featureId
