@@ -36,6 +36,8 @@ await client.db.todos.delete(todo.id)
 - **Authentication** - Email/password auth with Better Auth integration
 - **Database** - Zero-config CRUD operations with MongoDB-style filtering
 - **Email** - SMTP and AWS SES support with templates
+- **Memory** - Hybrid SQLite FTS5 + TF-IDF search over per-user markdown
+- **Voice** - Turnkey ElevenLabs convai proxy + React hook (see below)
 - **TypeScript** - Full type safety with generics
 - **Cross-Platform** - Works in browsers, Node.js, and React Native
 
@@ -530,6 +532,133 @@ store.close(): void
 ```
 
 Low-level access is available via `MemorySearchEngine` if you need to bypass the namespaced markdown layer.
+
+## Voice (ElevenLabs convai)
+
+Turn your Shogo app into a live voice agent with two files: one server mount
+and one React component. The SDK proxies to [ElevenLabs Conversational AI](https://elevenlabs.io/docs/conversational-ai/overview)
+so your `ELEVENLABS_API_KEY` never touches the browser.
+
+### What you get
+
+- `@shogo-ai/sdk/voice` — framework-agnostic helpers (`ElevenLabsClient`, `composeAgentPrompt`, `stripAudioTags`, `AUDIO_TAGS`, expressivity block composer).
+- `@shogo-ai/sdk/voice/server` — `createVoiceHandlers(...)` factory returning Web-standard `Request → Response` functions for `signedUrl`, `tts`, `agent.{create,patch,delete}`, and `audioTags`.
+- `@shogo-ai/sdk/voice/react` — `useVoiceConversation()` hook wrapping `@elevenlabs/react` with a built-in `add_memory` client tool, automatic memory context injection, and transcript capture.
+
+### Install peer deps
+
+```bash
+npm install @elevenlabs/react         # browser hook only
+```
+
+### Server mount (Hono)
+
+```typescript
+import { Hono } from 'hono'
+import { createVoiceHandlers } from '@shogo-ai/sdk/voice/server'
+import { MemoryStore } from '@shogo-ai/sdk/memory'
+import { prisma } from './db'
+
+// Implement CompanionStore against your own Prisma schema (one row per user).
+const companionStore = {
+  async findByUserId(userId: string) {
+    return prisma.companion.findUnique({ where: { userId } })
+  },
+  async create(data) {
+    return prisma.companion.create({ data })
+  },
+  async update(userId, patch) {
+    return prisma.companion.update({ where: { userId }, data: patch })
+  },
+  async delete(userId) {
+    await prisma.companion.delete({ where: { userId } })
+  },
+}
+
+const voice = createVoiceHandlers({
+  apiKey: process.env.ELEVENLABS_API_KEY!,
+  getUser: async (req) => await authenticate(req), // your auth layer
+  companionStore,
+  memoryStore: (userId) => new MemoryStore({ dir: './memory', userId }),
+})
+
+const app = new Hono()
+app.get('/api/voice/signed-url',   (c) => voice.signedUrl(c.req.raw))
+app.post('/api/voice/tts-preview', (c) => voice.tts(c.req.raw))
+app.post('/api/voice/agent',       (c) => voice.agent.create(c.req.raw))
+app.patch('/api/voice/agent',      (c) => voice.agent.patch(c.req.raw))
+app.delete('/api/voice/agent',     (c) => voice.agent.delete(c.req.raw))
+app.get('/api/voice/audio-tags',   (c) => voice.audioTags(c.req.raw))
+```
+
+### React hook
+
+```tsx
+import { useVoiceConversation } from '@shogo-ai/sdk/voice/react'
+
+export function VoiceButton({ characterName }: { characterName: string }) {
+  const { start, end, status, isSpeaking, isListening } = useVoiceConversation({
+    characterName,
+  })
+  const connected = status === 'connected'
+  return (
+    <button onClick={connected ? end : start} disabled={status === 'connecting'}>
+      {connected ? (isSpeaking ? 'speaking…' : isListening ? 'listening' : 'connected') : 'start'}
+    </button>
+  )
+}
+```
+
+The hook takes care of:
+
+- Requesting microphone permission.
+- Fetching the signed URL (default: `GET /api/voice/signed-url`).
+- Registering an `add_memory(fact)` client tool that POSTs to `/api/memory/add`.
+- Auto-injecting `/api/memory/retrieve` results as contextual updates on each user message.
+- Accumulating a plain-text transcript and POSTing it to `/api/memory/ingest` on disconnect (with a `pagehide` `sendBeacon` fallback).
+
+Override any path or swap `onTranscript` to take full control:
+
+```tsx
+useVoiceConversation({
+  characterName: 'Zix',
+  signedUrlPath: '/custom/signed-url',
+  autoInjectMemory: false,
+  clientTools: {
+    set_light_color: async ({ color }) => { await fetch(`/api/lights?c=${color}`); return 'ok' },
+  },
+  onTranscript: (transcript) => saveToMyBackend(transcript),
+})
+```
+
+### Pure helpers
+
+The framework-agnostic entry point exposes everything the server handlers use
+internally, so you can build custom workflows (a "God Mode" agent that mutates
+the companion, expressivity previews, etc.):
+
+```typescript
+import {
+  ElevenLabsClient,
+  composeAgentPrompt,
+  stripAudioTags,
+  AUDIO_TAGS,
+  MEMORY_CLIENT_TOOLS,
+} from '@shogo-ai/sdk/voice'
+
+const el = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY! })
+const agentId = await el.createAgent({
+  displayName: 'Russell',
+  characterName: 'Architect',
+  voiceId: 'voice_123',
+  systemPrompt: composeAgentPrompt('You help users configure their companion.', {
+    expressivity: 'off',
+    memoryBlock: null,
+  }),
+  firstMessage: 'What would you like to change?',
+  tools: MEMORY_CLIENT_TOOLS,
+})
+```
 
 ## Examples
 
