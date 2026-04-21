@@ -2745,12 +2745,30 @@ export const ChatPanel = observer(function ChatPanel({
     if (messages.length > 0) {
       const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")
       if (lastUserMsg) {
-        const textPart = (lastUserMsg as any).parts?.find((p: any) => p.type === "text")
+        const parts = ((lastUserMsg as any).parts ?? []) as any[]
+        const textPart = parts.find((p: any) => p.type === "text")
         const content = textPart?.text || ""
-        if (content) {
+
+        // Preserve file attachments on retry — previously dropped, so images/
+        // PDFs/etc. were lost and the model got a text-only prompt.
+        const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
+        const cachedFiles = lastUserInputRef.current?.files
+        const filesFromParts: FileAttachment[] = fileParts.map((p: any) => ({
+          dataUrl: p.url,
+          name: p.name ?? p.filename ?? "file",
+          type: p.mediaType ?? extractMediaType(p.url),
+        }))
+        const files: FileAttachment[] | undefined =
+          cachedFiles && cachedFiles.length > 0
+            ? cachedFiles
+            : filesFromParts.length > 0
+              ? filesFromParts
+              : undefined
+
+        if (content || (files && files.length > 0)) {
           const lastUserIdx = messages.lastIndexOf(lastUserMsg)
           setMessages(messages.slice(0, lastUserIdx))
-          sendMessageInternal(content).catch((err) =>
+          sendMessageInternal(content, files).catch((err) =>
             console.error("[ChatPanel] Retry failed:", err)
           )
         }
