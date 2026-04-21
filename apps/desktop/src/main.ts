@@ -20,6 +20,18 @@ import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import { registerRecordingIpcHandlers, startMeetingMonitor, cleanupRecording } from './recording'
 import { createTray, destroyTray } from './tray'
 
+// Shape of JSON responses from the local API's cloud-login endpoints.
+// Every field is optional because we also parse error bodies / empty 4xx
+// responses through the same path.
+interface CloudLoginBody {
+  ok?: boolean
+  error?: string
+  email?: string
+  workspace?: string
+  authUrl?: string
+  revoked?: boolean
+}
+
 // --- Persistent file logging ---
 const logDir = process.platform === 'win32'
   ? path.join(app.getPath('userData'), 'logs')
@@ -166,7 +178,7 @@ async function handleAuthCallback(callbackUrl: string): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ state, key, cloudUrl, email, workspace }),
     })
-    const body = await res.json().catch(() => ({} as any))
+    const body = (await res.json().catch(() => ({}))) as CloudLoginBody
     if (!res.ok || body?.ok === false) {
       notifyRendererLoginResult({ ok: false, error: body?.error || `HTTP ${res.status}` })
       return
@@ -209,7 +221,7 @@ function startCloudLoginHeartbeat(): void {
         body: JSON.stringify({ deviceAppVersion: app.getVersion() }),
       })
       if (!res.ok) return
-      const body = await res.json().catch(() => ({} as any))
+      const body = (await res.json().catch(() => ({}))) as CloudLoginBody
       if (body?.revoked) {
         console.warn('[Desktop] Cloud key was revoked remotely, signing out')
         notifyRendererLoginResult({
@@ -329,7 +341,7 @@ function registerIpcHandlers(): void {
           deviceAppVersion: device.appVersion,
         }),
       })
-      const body = await res.json().catch(() => ({} as any))
+      const body = (await res.json().catch(() => ({}))) as CloudLoginBody
       if (!res.ok || !body?.authUrl) {
         return { ok: false, error: body?.error || `HTTP ${res.status}` }
       }
@@ -343,7 +355,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('sign-out-cloud', async () => {
     try {
       const res = await fetch(`${getApiUrl()}/api/local/cloud-login/signout`, { method: 'POST' })
-      const body = await res.json().catch(() => ({} as any))
+      const body = (await res.json().catch(() => ({}))) as CloudLoginBody
       return { ok: res.ok && body?.ok !== false, error: body?.error }
     } catch (err) {
       return { ok: false, error: (err as Error)?.message || 'Sign-out failed' }
