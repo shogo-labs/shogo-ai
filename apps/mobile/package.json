@@ -23,6 +23,7 @@
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
     "@better-auth/expo": "^1.4.19",
+    "@elevenlabs/react": "^1.1.1",
     "@expo/html-elements": "^0.10.1",
     "@expo/vector-icons": "^15.0.3",
     "@gluestack-ui/core": "^3.0.10",
@@ -95,7 +96,8 @@
     "shiki": "^4.0.2",
     "streamdown": "^2.3.0",
     "tailwind-merge": "^3.4.0",
-    "tailwind-variants": "^0.1.20"
+    "tailwind-variants": "^0.1.20",
+    "three": "^0.180.0"
   },
   "expo": {
     "autolinking": {

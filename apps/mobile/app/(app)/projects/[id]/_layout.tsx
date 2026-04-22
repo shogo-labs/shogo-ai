@@ -60,6 +60,12 @@ import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
+import {
+  ChatBridgeProvider,
+  useChatBridge,
+} from '../../../../components/voice-mode/ChatBridgeContext'
+import { ShogoChatPanel } from '../../../../components/voice-mode/ShogoChatPanel'
+import { ShogoModeToggle } from '../../../../components/voice-mode/ShogoModeToggle'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
@@ -1282,6 +1288,7 @@ export default observer(function ProjectLayout() {
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <PlanStreamProvider>
+      <ChatBridgeProvider>
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
@@ -1365,25 +1372,34 @@ export default observer(function ProjectLayout() {
                 )}
                 {isChatFullscreen ? (
                   <View className="min-h-0 flex-1 flex-col">
-                    <View className="min-h-0 flex-1">{chatPanels}</View>
+                    <ChatColumnShogoToggleRow />
+                    <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                   </View>
                 ) : (
                   <>
                     {isWide && (
-                      <ChatTabBar
-                        tabs={openChatTabs}
-                        activeTabId={chatSessionId}
-                        onSelectTab={handleSelectTab}
-                        onCloseTab={handleCloseTab}
-                        onNewChat={handleCreateNewSession}
-                        onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
-                        showHistory={showChatSessions}
-                        streamingTabIds={streamingTabIds}
-                        onRenameSession={handleRenameChatSession}
-                        onDeleteSession={handleDeleteChatSession}
-                      />
+                      <View className="flex-row items-center">
+                        <View className="flex-1 min-w-0">
+                          <ChatTabBar
+                            tabs={openChatTabs}
+                            activeTabId={chatSessionId}
+                            onSelectTab={handleSelectTab}
+                            onCloseTab={handleCloseTab}
+                            onNewChat={handleCreateNewSession}
+                            onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
+                            showHistory={showChatSessions}
+                            streamingTabIds={streamingTabIds}
+                            onRenameSession={handleRenameChatSession}
+                            onDeleteSession={handleDeleteChatSession}
+                          />
+                        </View>
+                        {Platform.OS === 'web' && (
+                          <ShogoModeToggle className="shrink-0 pr-2" />
+                        )}
+                      </View>
                     )}
-                    <View className="min-h-0 flex-1">{chatPanels}</View>
+                    {!isWide && <ChatColumnShogoToggleRow />}
+                    <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                   </>
                 )}
               </View>
@@ -1496,9 +1512,11 @@ export default observer(function ProjectLayout() {
             </View>
           )}
           </View>
+
         </View>
       </EditModeProvider>
     </CanvasThemeProvider>
+    </ChatBridgeProvider>
 
       {Platform.OS === 'web' && (
         <AlertDialog
@@ -1537,6 +1555,50 @@ export default observer(function ProjectLayout() {
     </>
   )
 })
+
+// ---------------------------------------------------------------------------
+// ShogoAwareChatPanels — wraps `{chatPanels}` and overlays `ShogoChatPanel`
+// on top (absolute inset-0) when the user has Shogo Mode enabled. The
+// underlying `ChatPanel` stack stays mounted beneath so its `ChatBridge`
+// registration (send / setMode / assistant emit) stays live — the
+// translator drives those imperatively.
+// ---------------------------------------------------------------------------
+
+function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
+  const { shogoModeActive } = useChatBridge()
+  const showShogo = Platform.OS === 'web' && shogoModeActive
+  return (
+    <View className="min-h-0 flex-1 relative">
+      <View
+        className="absolute inset-0"
+        style={showShogo ? { opacity: 0 } : undefined}
+        pointerEvents={showShogo ? 'none' : 'auto'}
+      >
+        {children}
+      </View>
+      {showShogo && (
+        <View className="absolute inset-0 z-10 bg-background">
+          <ShogoChatPanel />
+        </View>
+      )}
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ChatColumnShogoToggleRow — thin top strip hosting the Shogo Mode toggle
+// for layouts that don't render the wide-mode `ChatTabBar` (mobile / phone
+// layout / fullscreen chat). Keeps the toggle reachable in every mode.
+// ---------------------------------------------------------------------------
+
+function ChatColumnShogoToggleRow() {
+  if (Platform.OS !== 'web') return null
+  return (
+    <View className="flex-row justify-end px-2 py-1.5 border-b border-border bg-background">
+      <ShogoModeToggle />
+    </View>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // ChatPanelResizeHandle — web-only drag handle between chat column and canvas

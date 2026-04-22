@@ -105,6 +105,7 @@ import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
+import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
@@ -812,6 +813,14 @@ export const ChatPanel = observer(function ChatPanel({
     void saveInteractionModePreference(mode)
   }, [])
 
+  // Bridge for Shogo Mode overlay (voice + text translator). The overlay
+  // calls `send` / `setMode` to drive this panel, and subscribes to the
+  // finalized assistant messages emitted from `onFinish` below. We capture
+  // `emitAssistant` in a ref so `onFinish` (declared before the registrar
+  // runs) can reach the latest implementation without a closure dance.
+  const emitAssistantRef = useRef<((text: string) => void) | null>(null)
+  const lastEmittedMessageIdRef = useRef<string | null>(null)
+
   const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
   const confirmedPlanRef = useRef<PlanData | null>(null)
   const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
@@ -1445,6 +1454,31 @@ export const ChatPanel = observer(function ChatPanel({
     },
     onFinish: async ({ message }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
+
+      // Push the finalized assistant text to the Shogo Mode bridge so the
+      // translator overlay (voice or text) can paraphrase it for the user.
+      // De-dupe by message id so retries / React strict-mode double-invokes
+      // don't fire twice.
+      const msgId = (message as any)?.id as string | undefined
+      if (
+        msgId &&
+        msgId !== lastEmittedMessageIdRef.current &&
+        emitAssistantRef.current
+      ) {
+        const assistantText = (message.parts ?? [])
+          .filter((p: any) => p.type === "text" && typeof p.text === "string")
+          .map((p: any) => p.text)
+          .join("\n")
+          .trim()
+        if (assistantText) {
+          lastEmittedMessageIdRef.current = msgId
+          try {
+            emitAssistantRef.current(assistantText)
+          } catch (err) {
+            console.warn("[ChatPanel] bridge.emitAssistant threw", err)
+          }
+        }
+      }
 
       const hasTextContent = message.parts?.some(
         (p: any) => p.type === "text" && p.text?.trim()
@@ -2555,6 +2589,35 @@ export const ChatPanel = observer(function ChatPanel({
       actions,
     ]
   )
+
+  // Register bridge endpoints so the Shogo Mode overlay can send messages
+  // and toggle interaction mode on our behalf. The registrar is a no-op
+  // when no <ChatBridgeProvider> is mounted (e.g. tests), so it's safe to
+  // call unconditionally.
+  const bridgeSend = useCallback(
+    (text: string) => {
+      void sendMessageInternal(text)
+    },
+    [sendMessageInternal],
+  )
+  const bridgeSetMode = useCallback(
+    (mode: "agent" | "plan") => {
+      handleInteractionModeChange(mode)
+    },
+    [handleInteractionModeChange],
+  )
+  const { emitAssistant: bridgeEmitAssistant } = useChatBridgeRegistrar({
+    send: bridgeSend,
+    setMode: bridgeSetMode,
+  })
+  useEffect(() => {
+    emitAssistantRef.current = bridgeEmitAssistant
+    return () => {
+      if (emitAssistantRef.current === bridgeEmitAssistant) {
+        emitAssistantRef.current = null
+      }
+    }
+  }, [bridgeEmitAssistant])
 
   // Queue processor: processes messages one at a time
   const processMessageQueue = useCallback(async () => {
