@@ -12,11 +12,17 @@
 
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
-import { join, resolve, extname, dirname } from 'path'
+import { join, resolve, extname, dirname, relative } from 'path'
 import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, shouldSandbox } from './sandbox-exec'
+import {
+  resolveRunDir as resolveScreenshotRunDir,
+  nextScreenshotPath as nextScreenshotFilePath,
+  sweepLooseScreenshots,
+  trimOldRuns as trimOldScreenshotRuns,
+} from './screenshot-manager'
 import {
   runSubagent,
   getBuiltinSubagentConfig,
@@ -1846,6 +1852,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   let screencastStarted = false
   let screencastPageKey: any = null
   let frameCount = 0
+  // Per-tool-instance counter so screenshot files sort chronologically inside
+  // a run folder (`step-01.png`, `step-02.png`, ...). See screenshot-manager.
+  let screenshotCount = 0
+  let screenshotHousekeepingDone = false
 
   console.log(
     `[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`,
@@ -2226,16 +2236,29 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ content: truncated, url: p.url(), title: await p.title() })
           }
           case 'screenshot': {
-            const filename = `screenshot-${Date.now()}.png`
-            const screenshotPath = join(ctx.workspaceDir, filename)
+            // One-time housekeeping per tool instance: sweep any legacy loose
+            // `screenshot-*.png` files at the workspace root into
+            // `.shogo/screenshots/legacy/`, and trim retention so we don't
+            // accumulate unbounded run folders.
+            if (!screenshotHousekeepingDone) {
+              screenshotHousekeepingDone = true
+              try { sweepLooseScreenshots(ctx.workspaceDir) } catch {}
+              try { trimOldScreenshotRuns(ctx.workspaceDir) } catch {}
+            }
+            screenshotCount += 1
+            const runDir = resolveScreenshotRunDir(ctx.workspaceDir, ctx.subagentInstanceId)
+            const screenshotPath = nextScreenshotFilePath(runDir, screenshotCount)
             const buffer = await p.screenshot({ path: screenshotPath, fullPage: false })
+            // Expose the path as workspace-relative so canvas data + markdown
+            // reports can reference it portably.
+            const relPath = relative(ctx.workspaceDir, screenshotPath)
             const base64 = Buffer.from(buffer).toString('base64')
             return {
               content: [
                 { type: 'image' as const, data: base64, mimeType: 'image/png' },
-                { type: 'text' as const, text: JSON.stringify({ ok: true, path: filename, url: p.url() }) },
+                { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
               ],
-              details: { ok: true, path: filename, url: p.url() },
+              details: { ok: true, path: relPath, url: p.url() },
             }
           }
           case 'evaluate': {

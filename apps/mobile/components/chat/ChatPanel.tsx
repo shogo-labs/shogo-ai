@@ -815,11 +815,25 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Bridge for Shogo Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
-  // finalized assistant messages emitted from `onFinish` below. We capture
-  // `emitAssistant` in a ref so `onFinish` (declared before the registrar
-  // runs) can reach the latest implementation without a closure dance.
-  const emitAssistantRef = useRef<((text: string) => void) | null>(null)
+  // typed lifecycle event stream (turn-start / tool-activity / turn-end)
+  // emitted below. We capture the emitters in refs so hooks declared
+  // before the registrar runs can reach the latest implementations
+  // without a closure dance.
+  const emitTurnStartRef = useRef<(() => void) | null>(null)
+  const emitToolActivityRef = useRef<((args: {
+    toolName: string
+    phase: 'start' | 'end'
+    label: string
+    ok?: boolean
+  }) => void) | null>(null)
+  const emitTurnEndRef = useRef<((text: string) => void) | null>(null)
   const lastEmittedMessageIdRef = useRef<string | null>(null)
+  /**
+   * Per-tool-invocation state cache so the messages-watch effect only
+   * emits `tool-activity` events when a part transitions to a new phase.
+   * Keyed by a stable `${messageId}:${toolCallId||index}` string.
+   */
+  const toolActivityStateRef = useRef<Map<string, 'start' | 'end'>>(new Map())
 
   const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
   const confirmedPlanRef = useRef<PlanData | null>(null)
@@ -1455,28 +1469,26 @@ export const ChatPanel = observer(function ChatPanel({
     onFinish: async ({ message }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
 
-      // Push the finalized assistant text to the Shogo Mode bridge so the
-      // translator overlay (voice or text) can paraphrase it for the user.
+      // Push a `turn-end` event to the Shogo Mode bridge so the translator
+      // overlay (voice or text) can summarise the outcome for the user.
       // De-dupe by message id so retries / React strict-mode double-invokes
       // don't fire twice.
       const msgId = (message as any)?.id as string | undefined
       if (
         msgId &&
         msgId !== lastEmittedMessageIdRef.current &&
-        emitAssistantRef.current
+        emitTurnEndRef.current
       ) {
         const assistantText = (message.parts ?? [])
           .filter((p: any) => p.type === "text" && typeof p.text === "string")
           .map((p: any) => p.text)
           .join("\n")
           .trim()
-        if (assistantText) {
-          lastEmittedMessageIdRef.current = msgId
-          try {
-            emitAssistantRef.current(assistantText)
-          } catch (err) {
-            console.warn("[ChatPanel] bridge.emitAssistant threw", err)
-          }
+        lastEmittedMessageIdRef.current = msgId
+        try {
+          emitTurnEndRef.current(assistantText)
+        } catch (err) {
+          console.warn("[ChatPanel] bridge.emitTurnEnd threw", err)
         }
       }
 
@@ -1607,6 +1619,97 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isStreaming = (status === "streaming" || status === "submitted") && stoppedMessages === null
   const filesChangedFiredRef = useRef(false)
+
+  // Watch messages for tool-invocation state transitions during a live
+  // turn and emit `tool-activity` events so the Shogo Mode overlay can
+  // (a) keep a fresh activity buffer for mid-turn summaries, and
+  // (b) surface the activity in its on-screen log.
+  //
+  // We translate raw tool names into short, human-friendly labels rather
+  // than leaking schema names — the voice agent is explicitly told never
+  // to read raw tool / file identifiers, so the bridge enforces that at
+  // the emission boundary.
+  useEffect(() => {
+    const emit = emitToolActivityRef.current
+    if (!emit) return
+    const stateMap = toolActivityStateRef.current
+
+    const labelForTool = (toolName: string, args: unknown): string => {
+      const safeName = (toolName || 'tool').replace(/_/g, ' ')
+      // Extract any obvious file / path hint from the args, but in a
+      // humanised form (strip leading slashes, trim long paths).
+      let target = ''
+      if (args && typeof args === 'object') {
+        const a = args as Record<string, unknown>
+        const candidate =
+          (typeof a.path === 'string' && a.path) ||
+          (typeof a.file === 'string' && a.file) ||
+          (typeof a.filename === 'string' && a.filename) ||
+          (typeof a.target === 'string' && a.target) ||
+          (typeof a.name === 'string' && a.name) ||
+          (typeof a.query === 'string' && a.query) ||
+          ''
+        if (candidate) {
+          const basename = String(candidate).split(/[\\/]/).pop() || String(candidate)
+          target = basename.length > 60 ? basename.slice(0, 60) + '…' : basename
+        }
+      }
+      return target ? `${safeName}: ${target}` : safeName
+    }
+
+    for (const msg of messages) {
+      if ((msg as any).role !== 'assistant') continue
+      const parts = (msg as any).parts as any[] | undefined
+      if (!Array.isArray(parts)) continue
+      parts.forEach((part, idx) => {
+        if (part.type !== 'tool-invocation' && part.type !== 'dynamic-tool') return
+        const inv = part.type === 'tool-invocation' ? part.toolInvocation : part
+        const toolName = (inv?.toolName ?? part.toolName ?? 'tool') as string
+        const toolCallId = (inv?.toolCallId ?? part.toolCallId ?? `${idx}`) as string
+        const rawState = (inv?.state ?? part.state ?? '') as string
+        const isEnd =
+          rawState === 'result' ||
+          rawState === 'output-available' ||
+          rawState === 'success' ||
+          rawState === 'error' ||
+          rawState === 'output-error'
+        const isStart =
+          rawState === 'partial-call' ||
+          rawState === 'call' ||
+          rawState === 'input-streaming' ||
+          rawState === 'input-available'
+        if (!isStart && !isEnd) return
+
+        const key = `${(msg as any).id || 'nomsg'}:${toolCallId}`
+        const last = stateMap.get(key)
+        if (isStart && last === undefined) {
+          stateMap.set(key, 'start')
+          try {
+            emit({
+              toolName,
+              phase: 'start',
+              label: labelForTool(toolName, inv?.args ?? part.input ?? part.args),
+            })
+          } catch (err) {
+            console.warn('[ChatPanel] bridge.emitToolActivity(start) threw', err)
+          }
+        } else if (isEnd && last !== 'end') {
+          stateMap.set(key, 'end')
+          const ok = rawState !== 'error' && rawState !== 'output-error'
+          try {
+            emit({
+              toolName,
+              phase: 'end',
+              label: labelForTool(toolName, inv?.args ?? part.input ?? part.args),
+              ok,
+            })
+          } catch (err) {
+            console.warn('[ChatPanel] bridge.emitToolActivity(end) threw', err)
+          }
+        }
+      })
+    }
+  }, [messages])
 
   // Abort any active stream when this panel unmounts (e.g. tab closed)
   const stopRef = useRef(stop)
@@ -2120,7 +2223,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     sessionMessages
       .loadPage(
-        { sessionId: currentSessionId },
+        { sessionId: currentSessionId, agent: 'technical' },
         { limit: MESSAGE_PAGE_SIZE, offset: 0 },
       )
       .then((_result: any) => {
@@ -2218,7 +2321,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     try {
       await sessionMessages.loadPage(
-        { sessionId: currentSessionId },
+        { sessionId: currentSessionId, agent: 'technical' },
         { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
       )
 
@@ -2522,6 +2625,14 @@ export const ChatPanel = observer(function ChatPanel({
 
       isSendingMessageRef.current = true
 
+      // Let Shogo Mode know a new turn is starting. This is what
+      // triggers the overlay to arm its heartbeat / activity buffer.
+      try {
+        emitTurnStartRef.current?.()
+      } catch (err) {
+        console.warn("[ChatPanel] bridge.emitTurnStart threw", err)
+      }
+
       actions
         .addMessage({
           sessionId: currentSessionId,
@@ -2606,18 +2717,24 @@ export const ChatPanel = observer(function ChatPanel({
     },
     [handleInteractionModeChange],
   )
-  const { emitAssistant: bridgeEmitAssistant } = useChatBridgeRegistrar({
+  const {
+    emitTurnStart: bridgeEmitTurnStart,
+    emitToolActivity: bridgeEmitToolActivity,
+    emitTurnEnd: bridgeEmitTurnEnd,
+  } = useChatBridgeRegistrar({
     send: bridgeSend,
     setMode: bridgeSetMode,
   })
   useEffect(() => {
-    emitAssistantRef.current = bridgeEmitAssistant
+    emitTurnStartRef.current = bridgeEmitTurnStart
+    emitToolActivityRef.current = bridgeEmitToolActivity
+    emitTurnEndRef.current = bridgeEmitTurnEnd
     return () => {
-      if (emitAssistantRef.current === bridgeEmitAssistant) {
-        emitAssistantRef.current = null
-      }
+      if (emitTurnStartRef.current === bridgeEmitTurnStart) emitTurnStartRef.current = null
+      if (emitToolActivityRef.current === bridgeEmitToolActivity) emitToolActivityRef.current = null
+      if (emitTurnEndRef.current === bridgeEmitTurnEnd) emitTurnEndRef.current = null
     }
-  }, [bridgeEmitAssistant])
+  }, [bridgeEmitTurnStart, bridgeEmitToolActivity, bridgeEmitTurnEnd])
 
   // Queue processor: processes messages one at a time
   const processMessageQueue = useCallback(async () => {

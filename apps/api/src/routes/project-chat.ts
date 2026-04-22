@@ -352,6 +352,7 @@ async function trackUsageFromStream(
             role: 'assistant',
             content: accumulatedText,
             parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+            agent: 'technical',
           },
         })
         assistantMessageId = message.id

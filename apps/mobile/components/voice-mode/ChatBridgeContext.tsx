@@ -6,19 +6,20 @@
  * about each other.
  *
  * Shape:
- *   - `send(text)`                — send a user message to the chat agent.
- *   - `setMode(mode)`             — switch between 'agent' / 'plan'.
- *   - `subscribeToAssistant(fn)`  — fire `fn(text)` once per finalized
- *                                   assistant message (de-duped by id).
+ *   - `send(text)`         — send a user message to the chat agent.
+ *   - `setMode(mode)`      — switch between 'agent' / 'plan'.
+ *   - `subscribe(fn)`      — receive a typed stream of agent events
+ *                            (`turn-start`, `tool-activity`, `turn-end`).
  *
- * `ChatPanel` calls `useChatBridgeRegistrar({ send, setMode, emitAssistant })`
- * at mount to wire its real implementations into the bridge. Any sibling
- * component can then `const bridge = useChatBridge()` and call those
- * methods imperatively.
+ * `ChatPanel` calls `useChatBridgeRegistrar({ send, setMode })` at mount
+ * to wire its real implementations into the bridge. The registrar
+ * returns `emitTurnStart`, `emitToolActivity`, and `emitTurnEnd` helpers
+ * the host invokes at the appropriate lifecycle points.
  *
  * The bridge intentionally does not expose message *state* — `ChatPanel`
- * remains the single source of truth. Subscribers only see final assistant
- * texts as they complete, which is enough for the translator to narrate.
+ * remains the single source of truth. Subscribers only see the lifecycle
+ * events as they happen, which is enough for the translator to narrate /
+ * summarise.
  */
 
 import React, {
@@ -33,10 +34,36 @@ import React, {
 
 export type ChatInteractionMode = 'agent' | 'plan'
 
+/**
+ * Agent-side lifecycle events broadcast through the bridge.
+ *
+ *   - `turn-start`     : the user just submitted a message; the technical
+ *                        agent has (or will imminently) start a turn.
+ *   - `tool-activity`  : a tool invocation transitioned state during a
+ *                        streaming turn. `phase: 'start'` when the agent
+ *                        first calls the tool; `phase: 'end'` when a
+ *                        result is available. `label` is a short human
+ *                        summary (e.g. "editing Header.tsx") — never
+ *                        a raw tool name or file path.
+ *   - `turn-end`       : the assistant finished its turn. `finalText` is
+ *                        the final paraphrasable reply (may be empty).
+ */
+export type AgentEvent =
+  | { type: 'turn-start' }
+  | {
+      type: 'tool-activity'
+      toolName: string
+      phase: 'start' | 'end'
+      label: string
+      ok?: boolean
+    }
+  | { type: 'turn-end'; finalText: string }
+
 export interface ChatBridgeApi {
   send: (text: string) => void
   setMode: (mode: ChatInteractionMode) => void
-  subscribeToAssistant: (listener: (text: string) => void) => () => void
+  /** Subscribe to the typed lifecycle event stream. Returns an unsubscribe. */
+  subscribe: (listener: (event: AgentEvent) => void) => () => void
   /**
    * Whether Shogo Mode (the in-panel voice + text translator) is currently
    * replacing the chat panel UI. When `true`, the normal `ChatPanel` stays
@@ -45,12 +72,28 @@ export interface ChatBridgeApi {
   shogoModeActive: boolean
   setShogoModeActive: (active: boolean) => void
   toggleShogoMode: () => void
+  /**
+   * "Peek" state — when Shogo Mode is active and the user has tapped the
+   * peek button, the Shogo overlay is hidden (opacity 0 / no pointer
+   * events) so the underlying `ChatPanel` is visible and interactive.
+   * The voice session + translator thread keep running in the background.
+   * Resets to `false` whenever `shogoModeActive` flips off.
+   */
+  shogoPeekActive: boolean
+  setShogoPeekActive: (active: boolean) => void
+  /**
+   * The id of the chat session the bridge is currently bound to. Shogo
+   * Mode uses this id to scope its thread to the active session —
+   * hydration reads `/api/chat-messages?sessionId=<id>&agent=voice` and
+   * writes are POSTed to `/api/voice/*?chatSessionId=<id>`.
+   */
+  chatSessionId: string | null
 }
 
 interface BridgeInternals {
   sendImpl: ((text: string) => void) | null
   setModeImpl: ((mode: ChatInteractionMode) => void) | null
-  listeners: Set<(text: string) => void>
+  listeners: Set<(event: AgentEvent) => void>
 }
 
 const ChatBridgeContext = createContext<{
@@ -58,14 +101,39 @@ const ChatBridgeContext = createContext<{
   internals: BridgeInternals
 } | null>(null)
 
-export function ChatBridgeProvider({ children }: { children: React.ReactNode }) {
+export interface ChatBridgeProviderProps {
+  /** Currently active chat session id — used for per-session persistence. */
+  chatSessionId?: string | null
+  children: React.ReactNode
+}
+
+export function ChatBridgeProvider({ chatSessionId = null, children }: ChatBridgeProviderProps) {
   const internalsRef = useRef<BridgeInternals>({
     sendImpl: null,
     setModeImpl: null,
     listeners: new Set(),
   })
-  const [shogoModeActive, setShogoModeActive] = useState(false)
-  const toggleShogoMode = useCallback(() => setShogoModeActive((v) => !v), [])
+  const [shogoModeActive, setShogoModeActiveState] = useState(false)
+  const [shogoPeekActive, setShogoPeekActiveState] = useState(false)
+
+  const setShogoModeActive = useCallback((active: boolean) => {
+    setShogoModeActiveState(active)
+    if (!active) {
+      setShogoPeekActiveState(false)
+    }
+  }, [])
+
+  const toggleShogoMode = useCallback(() => {
+    setShogoModeActiveState((v) => {
+      const next = !v
+      if (!next) setShogoPeekActiveState(false)
+      return next
+    })
+  }, [])
+
+  const setShogoPeekActive = useCallback((active: boolean) => {
+    setShogoPeekActiveState(active)
+  }, [])
 
   const api = useMemo<ChatBridgeApi>(
     () => ({
@@ -85,7 +153,7 @@ export function ChatBridgeProvider({ children }: { children: React.ReactNode }) 
         }
         fn(mode)
       },
-      subscribeToAssistant: (listener) => {
+      subscribe: (listener) => {
         internalsRef.current.listeners.add(listener)
         return () => {
           internalsRef.current.listeners.delete(listener)
@@ -94,8 +162,18 @@ export function ChatBridgeProvider({ children }: { children: React.ReactNode }) 
       shogoModeActive,
       setShogoModeActive,
       toggleShogoMode,
+      shogoPeekActive,
+      setShogoPeekActive,
+      chatSessionId,
     }),
-    [shogoModeActive, toggleShogoMode],
+    [
+      shogoModeActive,
+      setShogoModeActive,
+      toggleShogoMode,
+      shogoPeekActive,
+      setShogoPeekActive,
+      chatSessionId,
+    ],
   )
 
   const value = useMemo(
@@ -130,15 +208,30 @@ export interface RegistrarArgs {
   setMode: (mode: ChatInteractionMode) => void
 }
 
+export interface RegistrarEmitters {
+  /** Fire before handing a new user message to the agent runtime. */
+  emitTurnStart: () => void
+  /**
+   * Fire when a tool invocation enters (`phase: 'start'`) or leaves
+   * (`phase: 'end'`) a running state during a streaming turn.
+   */
+  emitToolActivity: (args: {
+    toolName: string
+    phase: 'start' | 'end'
+    label: string
+    ok?: boolean
+  }) => void
+  /** Fire once per finalized assistant message (mirrors the old emitAssistant). */
+  emitTurnEnd: (finalText: string) => void
+}
+
 /**
  * Registrar hook — used inside `ChatPanel` to publish its real
- * implementations. Returns an `emitAssistant(text)` callback the host
- * should invoke once per finalized assistant message so subscribers get
- * the paraphrased text.
+ * implementations. Returns emitter helpers the host should call at the
+ * corresponding lifecycle points so subscribers see the typed event
+ * stream.
  */
-export function useChatBridgeRegistrar({ send, setMode }: RegistrarArgs): {
-  emitAssistant: (text: string) => void
-} {
+export function useChatBridgeRegistrar({ send, setMode }: RegistrarArgs): RegistrarEmitters {
   const ctx = useContext(ChatBridgeContext)
 
   useEffect(() => {
@@ -151,14 +244,12 @@ export function useChatBridgeRegistrar({ send, setMode }: RegistrarArgs): {
     }
   }, [ctx, send, setMode])
 
-  const emitAssistant = useCallback(
-    (text: string) => {
+  const emit = useCallback(
+    (event: AgentEvent) => {
       if (!ctx) return
-      const trimmed = text?.trim?.() ?? ''
-      if (!trimmed) return
       for (const listener of ctx.internals.listeners) {
         try {
-          listener(trimmed)
+          listener(event)
         } catch (err) {
           console.warn('[ChatBridge] listener threw', err)
         }
@@ -167,5 +258,21 @@ export function useChatBridgeRegistrar({ send, setMode }: RegistrarArgs): {
     [ctx],
   )
 
-  return { emitAssistant }
+  const emitTurnStart = useCallback(() => emit({ type: 'turn-start' }), [emit])
+
+  const emitToolActivity = useCallback<RegistrarEmitters['emitToolActivity']>(
+    ({ toolName, phase, label, ok }) =>
+      emit({ type: 'tool-activity', toolName, phase, label, ok }),
+    [emit],
+  )
+
+  const emitTurnEnd = useCallback(
+    (finalText: string) => {
+      const trimmed = finalText?.trim?.() ?? ''
+      emit({ type: 'turn-end', finalText: trimmed })
+    },
+    [emit],
+  )
+
+  return { emitTurnStart, emitToolActivity, emitTurnEnd }
 }

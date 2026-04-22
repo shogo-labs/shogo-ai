@@ -13,7 +13,13 @@ function makeFakeBridge() {
   const api: ChatBridgeApi = {
     send: (t) => sends.push(t),
     setMode: (m) => modes.push(m),
-    subscribeToAssistant: () => () => {},
+    subscribe: () => () => {},
+    shogoModeActive: false,
+    setShogoModeActive: () => {},
+    toggleShogoMode: () => {},
+    shogoPeekActive: false,
+    setShogoPeekActive: () => {},
+    chatSessionId: null,
   }
   return { api, sends, modes }
 }

@@ -45,6 +45,11 @@ function langOf(name: string) {
 }
 
 function isTextFile(name: string) {
+  // Treat common dotfiles as text (.env, .env.local, .gitignore, .prettierrc,
+  // .editorconfig, .nvmrc, etc). The extension detector otherwise misclassifies
+  // them because the leading dot makes "env"/"gitignore"/… look like an
+  // unknown extension.
+  if (name.startsWith(".")) return true;
   const e = extOf(name);
   if (!e) return /^(Dockerfile|Makefile|README|LICENSE|CHANGELOG)/i.test(name);
   return TEXT_EXT.has(e);
@@ -123,8 +128,9 @@ export class LocalFs implements WorkspaceService {
     const nodes: WsNode[] = [];
     // @ts-expect-error async iterator available at runtime
     for await (const [name, entry] of dir.entries()) {
-      if (name.startsWith(".") && name !== ".gitignore") continue;
       const kind = entry.kind as "file" | "directory";
+      // Hide noisy build/VCS dirs (see DENY_DIRS) but show regular dotfiles
+      // like .env, .env.local, .prettierrc, etc — VS Code-style default.
       if (kind === "directory" && DENY_DIRS.has(name)) continue;
       const childRel = rel ? `${rel}/${name}` : name;
       if (kind === "directory") {
@@ -234,7 +240,6 @@ export class LocalFs implements WorkspaceService {
       // @ts-expect-error async iterator at runtime
       for await (const [name, entry] of dir.entries()) {
         if (allFiles.length >= MAX_FILES) return;
-        if (name.startsWith(".") && name !== ".gitignore") continue;
         const childRel = rel ? `${rel}/${name}` : name;
         const kind = entry.kind as "file" | "directory";
         if (kind === "directory") {

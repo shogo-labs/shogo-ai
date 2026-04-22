@@ -82,7 +82,10 @@ export function projectExportImportRoutes() {
     const chatSessions = await prisma.chatSession.findMany({
       where: { contextType: 'project', contextId: projectId },
       include: {
-        messages: { orderBy: { createdAt: 'asc' } },
+        messages: {
+          where: { agent: 'technical' },
+          orderBy: { createdAt: 'asc' },
+        },
       },
     })
 
@@ -414,6 +417,7 @@ export function projectExportImportRoutes() {
               content: m.content,
               parts: m.parts ?? null,
               createdAt: new Date(m.createdAt),
+              agent: 'technical',
             })),
           })
         }

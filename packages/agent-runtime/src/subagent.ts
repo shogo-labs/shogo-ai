@@ -317,7 +317,7 @@ Regardless of whether the canvas exists, always save a final markdown artifact t
 - **Console / Network Errors** — raw error lines grouped by step, or "None observed".
 - **Recommendations** — prioritized, actionable suggestions for the main agent / developer.
 
-Screenshots should be saved under \`.shogo/reports/qa-<ISO-timestamp>-step-N.png\` so they survive after the run. When referencing a screenshot from the canvas \`latestScreenshot\` field, use the same \`.shogo/reports/...\` path.
+The \`browser\` tool saves screenshots automatically under \`.shogo/screenshots/<run>/step-N.png\` (relative to the workspace) — use the \`path\` field it returns verbatim when you reference a screenshot from the canvas \`latestScreenshot\` field or from the markdown report. Do not construct screenshot paths yourself.
 
 Return a short final response (≤ 10 lines): canvas surface path if built, markdown report path, overall verdict.
 

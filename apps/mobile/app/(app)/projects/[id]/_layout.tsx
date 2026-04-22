@@ -94,7 +94,7 @@ import {
   AgentsPanel,
   CheckpointsPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw, MessageSquare } from 'lucide-react-native'
+import { RefreshCw, MessageSquare, Sparkles } from 'lucide-react-native'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
@@ -914,7 +914,7 @@ export default observer(function ProjectLayout() {
             // Per-session collection so concurrent loadAll calls don't clobber
             // each other (and don't clobber an active ChatPanel's messages).
             const sessionMessages = getChatMessageCollectionForSession(s.id)
-            await sessionMessages.loadAll({ sessionId: s.id })
+            await sessionMessages.loadAll({ sessionId: s.id, agent: 'technical' })
             const msgs = sessionMessages.all
               .filter((m: any) => m.role === 'user')
               .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
@@ -1013,6 +1013,9 @@ export default observer(function ProjectLayout() {
       try {
         await actions.deleteChatSession(sessionId)
         handleCloseTab(sessionId)
+        // No client-side Shogo teardown needed: voice rows are stored
+        // in chat_messages with agent="voice" and cascade-delete with
+        // the ChatSession on the server.
       } catch (err) {
         console.error('[ProjectLayout] Failed to delete chat session:', err)
       }
@@ -1288,7 +1291,7 @@ export default observer(function ProjectLayout() {
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <PlanStreamProvider>
-      <ChatBridgeProvider>
+      <ChatBridgeProvider chatSessionId={chatSessionId}>
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
@@ -1371,9 +1374,16 @@ export default observer(function ProjectLayout() {
                   </View>
                 )}
                 {isChatFullscreen ? (
-                  <View className="min-h-0 flex-1 flex-col">
-                    <ChatColumnShogoToggleRow />
+                  <View className="min-h-0 flex-1 flex-col relative">
                     <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                    {Platform.OS === 'web' && (
+                      <View
+                        className="absolute bottom-4 right-4 z-30"
+                        pointerEvents="box-none"
+                      >
+                        <ShogoModeToggle />
+                      </View>
+                    )}
                   </View>
                 ) : (
                   <>
@@ -1565,20 +1575,45 @@ export default observer(function ProjectLayout() {
 // ---------------------------------------------------------------------------
 
 function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
-  const { shogoModeActive } = useChatBridge()
+  const { shogoModeActive, shogoPeekActive, setShogoPeekActive } = useChatBridge()
   const showShogo = Platform.OS === 'web' && shogoModeActive
+  // "Peek" hides the Shogo overlay without tearing it down, so the voice
+  // session + translator thread keep running while the user interacts
+  // with the real ChatPanel underneath.
+  const hideForPeek = showShogo && shogoPeekActive
   return (
     <View className="min-h-0 flex-1 relative">
       <View
         className="absolute inset-0"
-        style={showShogo ? { opacity: 0 } : undefined}
-        pointerEvents={showShogo ? 'none' : 'auto'}
+        style={showShogo && !hideForPeek ? { opacity: 0 } : undefined}
+        pointerEvents={showShogo && !hideForPeek ? 'none' : 'auto'}
       >
         {children}
       </View>
       {showShogo && (
-        <View className="absolute inset-0 z-10 bg-background">
+        <View
+          className="absolute inset-0 z-10 bg-background"
+          style={hideForPeek ? { opacity: 0 } : undefined}
+          pointerEvents={hideForPeek ? 'none' : 'auto'}
+        >
           <ShogoChatPanel />
+        </View>
+      )}
+      {hideForPeek && (
+        <View
+          className="absolute bottom-4 right-4 z-30"
+          pointerEvents="box-none"
+        >
+          <Pressable
+            onPress={() => setShogoPeekActive(false)}
+            className="flex-row items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 shadow-lg"
+            accessibilityLabel="Return to Shogo Mode"
+          >
+            <Sparkles size={12} className="text-primary-foreground" />
+            <Text className="text-[11px] font-semibold text-primary-foreground">
+              Return to Shogo
+            </Text>
+          </Pressable>
         </View>
       )}
     </View>

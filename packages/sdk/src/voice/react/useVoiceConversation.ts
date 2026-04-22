@@ -84,6 +84,20 @@ export interface UseVoiceConversationResult {
   getOutputByteFrequencyData: () => Uint8Array | null
   /** Imperatively send a contextual update (e.g. "user navigated to X"). */
   sendContextualUpdate: (text: string) => void
+  /**
+   * Imperatively inject a user-role message, forcing the agent to take
+   * its next turn immediately (rather than waiting for the human to
+   * speak). Useful for out-of-band prompts like "please summarise what
+   * just happened". The injected text is *not* spoken aloud — the agent
+   * treats it as if the user said it.
+   */
+  sendUserMessage: (text: string) => void
+  /**
+   * Low-level signal that the user is active (typing, clicking) so the
+   * agent doesn't try to fill silence. Used as a fallback nudge when we
+   * want to keep the session "warm" without forcing a full turn.
+   */
+  sendUserActivity: () => void
 }
 
 /**
@@ -113,6 +127,8 @@ export function useVoiceConversation(
   const weStartedSessionRef = useRef(false)
   const conversationRef = useRef<{
     sendContextualUpdate: (text: string) => void
+    sendUserMessage?: (text: string) => void
+    sendUserActivity?: () => void
   } | null>(null)
 
   const postJson = useCallback(
@@ -223,6 +239,8 @@ export function useVoiceConversation(
   const { status, isSpeaking, isListening, startSession, endSession } = conversation
   conversationRef.current = conversation as unknown as {
     sendContextualUpdate: (text: string) => void
+    sendUserMessage?: (text: string) => void
+    sendUserActivity?: () => void
   }
 
   // Flush any pending transcript on `pagehide` using sendBeacon — the regular
@@ -276,6 +294,28 @@ export function useVoiceConversation(
     conversationRef.current?.sendContextualUpdate(text)
   }, [])
 
+  const sendUserMessage = useCallback((text: string) => {
+    const ref = conversationRef.current
+    if (!ref) return
+    if (typeof ref.sendUserMessage === 'function') {
+      ref.sendUserMessage(text)
+      return
+    }
+    // Older @elevenlabs/react versions only expose sendContextualUpdate.
+    // Fall back to injecting the text as context and nudging activity so
+    // the agent is more likely to take its turn.
+    ref.sendContextualUpdate(text)
+    try {
+      ref.sendUserActivity?.()
+    } catch {
+      /* best effort */
+    }
+  }, [])
+
+  const sendUserActivity = useCallback(() => {
+    conversationRef.current?.sendUserActivity?.()
+  }, [])
+
   const getOutputByteFrequencyData = useCallback((): Uint8Array | null => {
     try {
       const fn = (conversation as { getOutputByteFrequencyData?: () => Uint8Array })
@@ -294,5 +334,7 @@ export function useVoiceConversation(
     isListening,
     getOutputByteFrequencyData,
     sendContextualUpdate,
+    sendUserMessage,
+    sendUserActivity,
   }
 }

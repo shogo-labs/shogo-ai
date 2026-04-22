@@ -54,6 +54,7 @@
     "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
     "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
     "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
+    "test:e2e:shogo-persistence": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/shogo-persistence.test.ts",
     "postinstall": "bun scripts/postinstall.ts"
   },
   "devDependencies": {
