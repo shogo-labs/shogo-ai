@@ -24,6 +24,7 @@ const SPINNER_COLOR: Record<string, string> = {
   'research-tracking': '#10b981',
   'revenue-finance': '#22c55e',
   'standup-automation': '#f59e0b',
+  'yc-founder-operating-system': '#f97316',
 }
 
 const POPULAR_IDS = new Set([
@@ -575,6 +576,38 @@ function AgentTemplatePreview({
               <Text className={cn(muted, 'text-amber-600 dark:text-amber-400 font-semibold')}>3</Text>
             </View>
           </PreviewRow>
+        </View>
+      )
+    case 'yc-founder-operating-system':
+      return (
+        <View>
+          <Text className={h}>Today's Plan</Text>
+          {[
+            { n: '1', title: 'Close seed round terms', meta: '90 min · decision owed' },
+            { n: '2', title: 'Ship onboarding v2', meta: 'eng review · 2 PRs' },
+            { n: '3', title: 'Design consult: pricing', meta: '30 min · 2 pm' },
+          ].map((row) => (
+            <PreviewRow key={row.n} className={box}>
+              <View className="flex-row items-center gap-2">
+                <View className="w-4 h-4 rounded-full items-center justify-center bg-orange-100 dark:bg-orange-500/25">
+                  <Text
+                    className={cn(
+                      compact ? 'text-[8px]' : 'text-[9px]',
+                      'font-bold text-orange-700 dark:text-orange-300',
+                    )}
+                  >
+                    {row.n}
+                  </Text>
+                </View>
+                <View className="flex-1">
+                  <Text className={fs} numberOfLines={1}>
+                    {row.title}
+                  </Text>
+                  <Text className={muted}>{row.meta}</Text>
+                </View>
+              </View>
+            </PreviewRow>
+          ))}
         </View>
       )
     case 'standup-automation':
