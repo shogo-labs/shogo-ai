@@ -4,10 +4,12 @@ import { AgentClient, type WorkspaceBundle } from '@shogo-ai/sdk/agent'
 import { Hono } from 'hono'
 import {
   existsSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   writeFileSync,
   mkdirSync,
+  rmSync,
   statSync,
 } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
@@ -32,6 +34,22 @@ const EXCLUDED_DIRS = new Set([
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file
 const MAX_TOTAL_SIZE = 200 * 1024 * 1024 // 200 MB total bundle
+
+/**
+ * Remove a broken .shogo symlink left by a previous VM 9p mount.
+ * The VM creates .shogo -> /tmp/shogo-local/<id>/.shogo which becomes
+ * dangling on the host after the VM exits, causing collectWorkspaceFiles
+ * to silently skip the entire .shogo tree.
+ */
+function cleanBrokenShogoSymlink(workspaceDir: string): void {
+  const shogoDir = join(workspaceDir, '.shogo')
+  try {
+    const st = lstatSync(shogoDir)
+    if (st.isSymbolicLink()) {
+      try { statSync(shogoDir) } catch { rmSync(shogoDir, { force: true }) }
+    }
+  } catch {}
+}
 
 function collectWorkspaceFiles(
   dir: string,
@@ -138,6 +156,7 @@ export function projectExportImportRoutes() {
 
     zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
 
+    let gotWorkspaceFiles = false
     if (isKubernetes()) {
       try {
         const { getProjectPodUrl } = await import('../lib/knative-project-manager')
@@ -149,11 +168,15 @@ export function projectExportImportRoutes() {
             Buffer.from(base64Data, 'base64'),
           )
         }
+        gotWorkspaceFiles = true
       } catch (err: any) {
-        console.warn(`[Export] Could not reach agent pod for workspace files: ${err.message}`)
+        console.warn(`[Export] Could not reach agent pod, falling back to local workspace: ${err.message}`)
       }
-    } else {
+    }
+
+    if (!gotWorkspaceFiles) {
       const workspaceDir = join(WORKSPACES_DIR, projectId)
+      cleanBrokenShogoSymlink(workspaceDir)
       const workspaceFiles = collectWorkspaceFiles(workspaceDir, workspaceDir)
       for (const [relPath, data] of Object.entries(workspaceFiles)) {
         zipContents[`workspace/${relPath}`] = data
