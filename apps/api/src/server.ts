@@ -501,6 +501,12 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   if (path.endsWith('/heartbeat/sync')) {
     return next()
   }
+  // /api/projects/import is a reserved top-level endpoint, not a project path.
+  // Hono's :projectId wildcard would otherwise treat "import" as a project id
+  // and requireProjectAccess would 404 with "Project not found".
+  if (path === '/api/projects/import') {
+    return next()
+  }
   return requireProjectAccess(c, next)
 })
 
