@@ -621,12 +621,21 @@ model ChatMessage {
   imageData String?  @db.Text
   parts     String?  @db.Text
   createdAt DateTime @default(now())
+  /// Which agent authored this row:
+  ///   "technical" — the main technical agent (default; preserves legacy rows).
+  ///   "voice"     — the Shogo Mode translator (voice + text). Rows of this
+  ///                 kind belong to the Shogo overlay thread, not the
+  ///                 main ChatPanel thread. `parts` may carry an
+  ///                 envelope describing the sub-kind
+  ///                 (voice / agent-activity / shogo-text).
+  agent     String   @default("technical")
 
   // Relations
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([sessionId, createdAt])
+  @@index([sessionId, agent, createdAt])
   @@map("chat_messages")
 }
 

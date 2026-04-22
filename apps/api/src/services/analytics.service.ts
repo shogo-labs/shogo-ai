@@ -157,7 +157,11 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
         where: { projectId: scope.projectId },
       }),
       prisma.chatMessage.count({
-        where: { role: 'user', session: { contextId: scope.projectId } },
+        where: {
+          role: 'user',
+          agent: 'technical',
+          session: { contextId: scope.projectId },
+        },
       }),
     ])
     return { chatSessions, usageEvents, messages }
@@ -727,12 +731,16 @@ export async function getChatAnalytics(
       select: {
         id: true,
         createdAt: true,
-        _count: { select: { messages: { where: { role: 'user' } } } },
+        _count: {
+          select: {
+            messages: { where: { role: 'user', agent: 'technical' } },
+          },
+        },
       },
       orderBy: { createdAt: 'asc' },
     }),
     prisma.chatMessage.count({
-      where: { role: 'user', session: sessionWhere },
+      where: { role: 'user', agent: 'technical', session: sessionWhere },
     }),
     prisma.toolCallLog.count({
       where: { chatSession: sessionWhere },
@@ -940,7 +948,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
-      WHERE cm."role" = 'user' AND p."createdBy" IS NOT NULL
+      WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
     user_msg_totals AS (
@@ -979,7 +987,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
-      WHERE cm."role" = 'user' AND p."createdBy" IS NOT NULL
+      WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
     user_msg_totals AS (
@@ -1083,7 +1091,7 @@ export async function getUserActivityTable(
             FROM "chat_messages" cm
             JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
             JOIN "projects" p ON p."id" = cs."contextId"
-            WHERE cm."role" = 'user' AND p."createdBy" IN (${userIds.map(() => '?').join(',')})
+            WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IN (${userIds.map(() => '?').join(',')})
             GROUP BY p."createdBy"
           `, ...userIds)
         : prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
@@ -1091,7 +1099,7 @@ export async function getUserActivityTable(
             FROM "chat_messages" cm
             JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
             JOIN "projects" p ON p."id" = cs."contextId"
-            WHERE cm."role" = 'user' AND p."createdBy" = ANY($1::text[])
+            WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" = ANY($1::text[])
             GROUP BY p."createdBy"
           `, userIds),
       isSqlite
@@ -1194,7 +1202,7 @@ export async function getTemplateEngagement(
              CAST(COUNT(cm."id") AS INTEGER) AS "msgCount"
       FROM template_projects tp
       LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
-      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
       GROUP BY tp."templateId", tp."projectId", tp."createdBy"
     ),
     project_tools AS (
@@ -1228,7 +1236,7 @@ export async function getTemplateEngagement(
              COUNT(cm."id")::int AS "msgCount"
       FROM template_projects tp
       LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
-      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
       GROUP BY tp."templateId", tp."projectId", tp."createdBy"
     ),
     project_tools AS (
@@ -1311,7 +1319,7 @@ export async function getChatConversations(
     JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
     JOIN "projects" p ON p."id" = cs."contextId"
     JOIN "users" u ON u."id" = p."createdBy"
-    WHERE cm."createdAt" >= ? ${filter}
+    WHERE cm."createdAt" >= ? AND cm."agent" = 'technical' ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
   `
       : `
@@ -1331,7 +1339,7 @@ export async function getChatConversations(
     JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
     JOIN "projects" p ON p."id" = cs."contextId"
     JOIN "users" u ON u."id" = p."createdBy"
-    WHERE cm."createdAt" >= $1 ${filter}
+    WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
   `,
     since
@@ -1392,7 +1400,7 @@ export async function getSourceBreakdown(
     LEFT JOIN "signup_attributions" sa ON sa."userId" = u."id"
     LEFT JOIN "projects" p ON p."createdBy" = u."id"
     LEFT JOIN "chat_sessions" cs ON cs."contextId" = p."id"
-    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
     WHERE u."createdAt" >= ? ${filter}
     GROUP BY COALESCE(sa."sourceTag", 'unknown')
     ORDER BY "count" DESC
@@ -1407,7 +1415,7 @@ export async function getSourceBreakdown(
     LEFT JOIN "signup_attributions" sa ON sa."userId" = u."id"
     LEFT JOIN "projects" p ON p."createdBy" = u."id"
     LEFT JOIN "chat_sessions" cs ON cs."contextId" = p."id"
-    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
     WHERE u."createdAt" >= $1 ${filter}
     GROUP BY COALESCE(sa."sourceTag", 'unknown')
     ORDER BY "count" DESC

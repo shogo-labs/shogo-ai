@@ -5131,6 +5131,7 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
     const messages = await prisma.chatMessage.findMany({
       where: {
         role: 'user',
+        agent: 'technical',
         createdAt: { gte: oneYearAgo },
         session: {
           project: { workspaceId: { in: workspaceIds } },

@@ -510,11 +510,15 @@ model ChatMessage {
   imageData String?
   parts     String?
   createdAt DateTime @default(now())
+  /// Which agent authored this row. "technical" (default, legacy rows) or
+  /// "voice" (Shogo Mode translator overlay thread).
+  agent     String   @default("technical")
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([sessionId, createdAt])
+  @@index([sessionId, agent, createdAt])
   @@map("chat_messages")
 }
 
