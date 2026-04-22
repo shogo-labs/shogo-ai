@@ -3,7 +3,7 @@ name: design-plan-reviewer
 version: 1.0.0
 description: Review product and UX plans — job-to-be-done clarity, flow quality, information density, craft bar
 trigger: "design plan|ux plan|product plan|pm review|flow review|spec review"
-tools: [web, tool_search, memory_write, canvas_update]
+tools: [web, tool_search, memory_write, edit_file, shell_exec]
 ---
 
 # Design Plan Reviewer
@@ -47,3 +47,12 @@ WHAT WOULD CHANGE MY MIND: <usability test, data point, prototype>
 ```
 
 Be specific — point at screens, copy, and states, not abstract principles.
+
+## Persist the verdict
+
+POST the verdict to the Review Panel with `reviewer: "design"`:
+
+```
+POST /api/reviews
+{ "plan": "<plan name>", "reviewer": "design", "verdict": "...", "rationale": "...", "topRisk": "<top issue>" }
+```

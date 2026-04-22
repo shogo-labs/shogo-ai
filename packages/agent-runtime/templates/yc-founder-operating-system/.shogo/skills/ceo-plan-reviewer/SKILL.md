@@ -3,7 +3,7 @@ name: ceo-plan-reviewer
 version: 1.0.0
 description: Stress-test CEO-level plans — strategy, market, fundraising, hiring, positioning, org design
 trigger: "ceo review|strategy review|fundraise|market|positioning|hiring plan|org plan|gtm"
-tools: [web, tool_search, memory_write, canvas_update]
+tools: [web, tool_search, memory_write, edit_file, shell_exec]
 ---
 
 # CEO Plan Reviewer
@@ -43,3 +43,22 @@ WHAT WOULD CHANGE MY MIND: <specific data or proof>
 ```
 
 Never hedge. If the plan is weak, say `revise` or `kill` and explain why in one line.
+
+## Persist the verdict
+
+After producing the output, POST it to the Review Panel so it shows up in
+`src/surfaces/ReviewPanel.tsx`:
+
+```
+POST /api/reviews
+{
+  "plan": "<plan name>",
+  "reviewer": "ceo",
+  "verdict": "ship" | "revise" | "kill",
+  "rationale": "<TL;DR>",
+  "topRisk": "<highest-ranked risk>"
+}
+```
+
+If the review produced a `DECISION` (e.g. "kill the enterprise motion"), also
+POST it to `/api/decisions` so the Decision Log captures it.

@@ -3,7 +3,7 @@ name: engineering-plan-reviewer
 version: 1.0.0
 description: Review engineering plans — architecture, scope, delivery risk, staffing, migration strategy, build-vs-buy
 trigger: "eng review|engineering plan|architecture|tech design|rfc|adr|roadmap|scope review|delivery risk"
-tools: [web, tool_search, memory_write, canvas_update]
+tools: [web, tool_search, memory_write, edit_file, shell_exec]
 ---
 
 # Engineering Plan Reviewer
@@ -45,3 +45,15 @@ WHAT WOULD CHANGE MY MIND: <spike, benchmark, or proof>
 ```
 
 Call out hand-waving on performance, reliability, or migration numbers. Demand evidence.
+
+## Persist the verdict
+
+POST the verdict to the Review Panel with `reviewer: "engineering"`:
+
+```
+POST /api/reviews
+{ "plan": "<plan name>", "reviewer": "engineering", "verdict": "...", "rationale": "...", "topRisk": "..." }
+```
+
+Any `ONE-WAY DOORS` you flag should also be written to `/api/decisions` with
+`reversibility: "one-way"` so they're visible in the Decision Log.
