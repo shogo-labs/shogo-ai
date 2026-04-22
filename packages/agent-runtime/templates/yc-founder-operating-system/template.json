@@ -1,0 +1,61 @@
+{
+  "id": "yc-founder-operating-system",
+  "name": "YC Founder Operating System",
+  "description": "Gary Tan–style CEO bundle — a chief-of-staff orchestrator plus a review panel (plan, engineering, design) and an auto-planner that runs your entire day.",
+  "category": "business",
+  "icon": "Crown",
+  "tags": [
+    "founder",
+    "ceo",
+    "exec",
+    "chief-of-staff",
+    "yc",
+    "planning",
+    "review-panel",
+    "daily-priorities",
+    "decision-log",
+    "portfolio",
+    "calendar",
+    "inbox"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "06:30",
+      "timezone": "UTC"
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "calendar",
+      "description": "Plan the day, block deep work, and triage meetings"
+    },
+    {
+      "categoryId": "email",
+      "description": "Triage inbox, summarize threads, and draft replies"
+    },
+    {
+      "categoryId": "notes",
+      "description": "Store briefs, decision log, and review notes"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Broadcast daily priorities and review notes to the team"
+    },
+    {
+      "categoryId": "project-management",
+      "description": "Track initiatives, OKRs, and weekly commitments"
+    }
+  ],
+  "techStack": "react-app"
+}

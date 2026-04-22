@@ -13,7 +13,7 @@ const ALL_TEMPLATE_IDS = [
   // directory-based originals
   'code-quality', 'comms-monitoring', 'engineering-pulse', 'incident-response',
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
-  'self-evolving',
+  'self-evolving', 'yc-founder-operating-system',
 ]
 
 const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length
@@ -25,7 +25,7 @@ const WORKSPACE_FILES = ['AGENTS.md', 'HEARTBEAT.md', 'config.json']
 const TEMPLATES_WITH_CANVAS_SRC = [
   'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
   'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-  'operations-monitor',
+  'operations-monitor', 'yc-founder-operating-system',
 ]
 
 let tempRoot: string
