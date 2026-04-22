@@ -28,9 +28,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, ActivityIndicator, Platform } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button } from '@shogo/shared-ui/primitives'
-import { PlatformApi } from '@shogo-ai/sdk'
+import { HttpClient, PlatformApi } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp } from '../../contexts/domain'
+import { API_URL } from '../../lib/api'
+import { authClient } from '../../lib/auth-client'
 
 interface LocalLinkParams {
   state?: string
@@ -47,7 +48,20 @@ export default function LocalLinkBridge() {
   const router = useRouter()
   const params = useLocalSearchParams<LocalLinkParams>()
   const { user, isLoading: isAuthLoading, isAuthenticated } = useAuth()
-  const http = useDomainHttp()
+  // Standalone HttpClient: this route must not depend on <DomainProvider> /
+  // SDKDomainProvider. Deep links and some web navigations can mount the
+  // screen before nested layouts hydrate, which caused useDomainHttp() to throw.
+  const isNative = Platform.OS !== 'web'
+  const http = useMemo(
+    () =>
+      new HttpClient({
+        baseUrl: API_URL!,
+        getToken: () => null,
+        credentials: isNative ? 'omit' : 'include',
+        getAuthCookie: isNative ? () => authClient.getCookie() || null : undefined,
+      }),
+    [isNative],
+  )
   const platform = useMemo(() => new PlatformApi(http), [http])
 
   const [status, setStatus] = useState<Status>('checking-auth')
