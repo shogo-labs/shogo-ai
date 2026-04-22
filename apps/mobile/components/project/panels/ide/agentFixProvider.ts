@@ -54,7 +54,10 @@ export interface FixInAgentPayload {
  * initial value on every dev hot-reload, but Monaco's internal registry
  * keeps previously-registered hover and code-action providers alive — which
  * would stack up duplicate "Fix with Shogo" entries with every save. Pin
- * the flag to the Monaco singleton so it survives module re-evaluation.
+ * the flag on `globalThis` so it survives module re-evaluation. We avoid
+ * storing it on the Monaco namespace object because some bundlers ship a
+ * non-extensible namespace (`Object.preventExtensions`), which throws when
+ * assigning ad-hoc properties.
  */
 const CONFIGURED_FLAG = "__shogoFixConfigured__";
 const disposables: IDisposable[] = [];
@@ -145,7 +148,7 @@ function buildPayload(
  * to call more than once — subsequent calls are no-ops.
  */
 export function setupAgentFix(monaco: MonacoNs): void {
-  const flagHost = monaco as unknown as Record<string, unknown>;
+  const flagHost = globalThis as unknown as Record<string, unknown>;
   if (flagHost[CONFIGURED_FLAG]) return;
   flagHost[CONFIGURED_FLAG] = true;
 
