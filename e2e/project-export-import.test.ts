@@ -5,6 +5,12 @@
  * bypassing HTTP auth. Creates a test project, exports it, imports it,
  * and verifies the round-trip.
  *
+ * The test Hono app mirrors the production middleware layering from
+ * apps/api/src/server.ts — in particular the `/api/projects/:projectId/*`
+ * requireProjectAccess guard — so that regressions like a reserved
+ * sub-route (e.g. `/api/projects/import`) being hijacked by the
+ * `:projectId` wildcard are caught here.
+ *
  * Run: SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/project-export-import.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
@@ -16,11 +22,15 @@ process.env.DATABASE_URL = 'file:./shogo.db'
 
 const { prisma } = await import('../apps/api/src/lib/prisma')
 const { projectExportImportRoutes } = await import('../apps/api/src/routes/project-export-import')
+const { requireProjectAccess, isProjectReservedTopLevelPath } = await import(
+  '../apps/api/src/middleware/auth'
+)
 import { Hono } from 'hono'
 
 let testProjectId: string
 let testWorkspaceId: string
 let testUserId: string
+let testMemberId: string
 const cleanupProjectIds: string[] = []
 
 const app = new Hono()
@@ -30,18 +40,54 @@ app.use('*', async (c, next) => {
   c.set('auth' as any, { isAuthenticated: true, userId: testUserId })
   await next()
 })
+// Mirror the production middleware layering in apps/api/src/server.ts so
+// that bugs involving reserved sub-routes (e.g. /api/projects/import being
+// matched as projectId="import") surface in tests. Shares the reserved-path
+// bypass helper with the real server so the test exercises the same source
+// of truth.
+app.use('/api/projects/:projectId/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  if (isProjectReservedTopLevelPath(path)) return next()
+  return requireProjectAccess(c, next)
+})
 app.route('/api/projects', projectExportImportRoutes())
+// Register a few dummy sibling `/api/projects/:projectId/...` routes so the
+// Hono router trie matches the shape of the real server, where wildcard
+// middleware matching is sensitive to the set of co-registered routes.
+app.post('/api/projects/:projectId/publish', (c) => c.json({ ok: true }))
+app.get('/api/projects/:projectId/files', (c) => c.json({ ok: true }))
 
 describe('Project Export/Import E2E', () => {
   beforeAll(async () => {
-    // Find or use existing user & workspace
-    const user = await prisma.user.findFirst()
-    if (!user) throw new Error('No user found in local DB — run the app at least once first')
-    testUserId = user.id
-
+    // Pick any existing workspace to attach the test user to.
     const workspace = await prisma.workspace.findFirst()
-    if (!workspace) throw new Error('No workspace found')
+    if (!workspace) {
+      throw new Error(
+        'No workspace found in local DB — run the app at least once to create one',
+      )
+    }
     testWorkspaceId = workspace.id
+
+    // Create a dedicated non-super-admin test user + membership so that
+    // requireProjectAccess runs its real DB project lookup (super_admins
+    // bypass the lookup entirely and would mask bugs that only surface
+    // for regular users).
+    const testUser = await prisma.user.create({
+      data: {
+        email: `e2e-export-import-${Date.now()}@test.local`,
+        name: 'E2E Export/Import Test User',
+        role: 'user',
+      },
+    })
+    testUserId = testUser.id
+    const testMember = await prisma.member.create({
+      data: {
+        userId: testUserId,
+        workspaceId: testWorkspaceId,
+        role: 'member',
+      },
+    })
+    testMemberId = testMember.id
 
     // Create a test project with known data
     const project = await prisma.project.create({
@@ -117,6 +163,14 @@ describe('Project Export/Import E2E', () => {
         if (existsSync(dir)) rmSync(dir, { recursive: true })
       } catch {}
     }
+
+    try {
+      if (testMemberId) await prisma.member.delete({ where: { id: testMemberId } })
+    } catch {}
+    try {
+      if (testUserId) await prisma.user.delete({ where: { id: testUserId } })
+    } catch {}
+
     console.log(`[Cleanup] Removed ${cleanupProjectIds.length} test project(s)`)
   })
 
@@ -287,6 +341,29 @@ describe('Project Export/Import E2E', () => {
     formData.append('workspaceId', testWorkspaceId)
     const res = await app.fetch(new Request('http://localhost/api/projects/import', { method: 'POST', body: formData }))
     expect(res.status).toBe(400)
+  })
+
+  it('should not have /api/projects/import hijacked by the :projectId middleware', async () => {
+    // Regression test: the /api/projects/:projectId/* middleware previously
+    // matched /api/projects/import with projectId="import", and
+    // requireProjectAccess would 404 with { error: { code: "not_found", message: "Project not found" } }
+    // before the real import handler ran.
+    //
+    // We POST an empty form (no file) and expect the import handler's own
+    // 400 "Missing file" response — not the middleware's 404.
+    const formData = new FormData()
+    formData.append('workspaceId', testWorkspaceId)
+    const res = await app.fetch(
+      new Request('http://localhost/api/projects/import', { method: 'POST', body: formData }),
+    )
+    expect(res.status).not.toBe(404)
+    const body = (await res.json()) as {
+      error: string | { code?: string; message?: string }
+    }
+    const code = typeof body.error === 'object' ? body.error?.code : null
+    const message = typeof body.error === 'object' ? body.error?.message : body.error
+    expect(code).not.toBe('not_found')
+    expect(message).not.toBe('Project not found')
   })
 
   it('should reject import with invalid ZIP', async () => {

@@ -73,7 +73,12 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
-import { authMiddleware, requireAuth, requireProjectAccess } from './middleware/auth'
+import {
+  authMiddleware,
+  requireAuth,
+  requireProjectAccess,
+  isProjectReservedTopLevelPath,
+} from './middleware/auth'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -501,10 +506,11 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   if (path.endsWith('/heartbeat/sync')) {
     return next()
   }
-  // /api/projects/import is a reserved top-level endpoint, not a project path.
-  // Hono's :projectId wildcard would otherwise treat "import" as a project id
-  // and requireProjectAccess would 404 with "Project not found".
-  if (path === '/api/projects/import') {
+  // Reserved top-level endpoints under /api/projects/* (e.g. /import) are
+  // not project-scoped; let them fall through to their real handlers
+  // instead of being 404'd by requireProjectAccess treating the reserved
+  // word as a :projectId.
+  if (isProjectReservedTopLevelPath(path)) {
     return next()
   }
   return requireProjectAccess(c, next)

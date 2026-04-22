@@ -269,3 +269,19 @@ export async function requireProjectAccess(c: Context, next: Next) {
 
   await next()
 }
+
+/**
+ * Paths under /api/projects/* that are NOT project-scoped (no :projectId
+ * segment) and therefore must bypass the /api/projects/:projectId/*
+ * middleware that calls requireProjectAccess. Without this bypass Hono's
+ * wildcard matching treats the reserved word as a projectId and
+ * requireProjectAccess 404s with "Project not found" before the real
+ * handler ever runs.
+ */
+export const PROJECT_RESERVED_TOP_LEVEL_PATHS: ReadonlySet<string> = new Set([
+  "/api/projects/import",
+])
+
+export function isProjectReservedTopLevelPath(path: string): boolean {
+  return PROJECT_RESERVED_TOP_LEVEL_PATHS.has(path)
+}
