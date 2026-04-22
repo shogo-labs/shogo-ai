@@ -57,10 +57,11 @@ import {
 import { Text } from '@/components/ui/text'
 import { Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
 import { ConversationProvider } from '@elevenlabs/react'
-import { OrganicSphere, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
+import { OrganicParticles, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
 import { useChatBridge } from './ChatBridgeContext'
 import { createBridgeClientTools } from './bridgeClientTools'
+import { SHOGO_PARTICLES_CONFIG } from './shogoVisualizationConfig'
 import { useTranslatorChat } from './useTranslatorChat'
 
 export interface ShogoChatPanelProps {
@@ -402,10 +403,11 @@ function SphereHero({
       <View
         className="w-full"
         // Fixed height gives the Three.js canvas a stable layout box;
-        // the sphere scales inside via `style`.
+        // the particle cloud scales inside via `style`.
         style={{ height: 400 }}
       >
-        <OrganicSphere
+        <OrganicParticles
+          config={SHOGO_PARTICLES_CONFIG}
           getFrequencyData={getFrequencyData}
           active={voiceActive}
           style={{ width: '100%', height: '100%' }}
