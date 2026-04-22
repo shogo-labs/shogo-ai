@@ -1,7 +1,7 @@
 {
   "id": "yc-founder-operating-system",
   "name": "YC Founder Operating System",
-  "description": "Gary Tan–style CEO bundle — a chief-of-staff orchestrator plus a review panel (plan, engineering, design) and an auto-planner that runs your entire day.",
+  "description": "Gary Tan–style CEO bundle — a chief-of-staff orchestrator plus a review panel (plan, engineering, design) and an auto-planner that runs your entire day. Ships as a Vite + React app backed by an auto-generated Prisma + SQLite CRUD server.",
   "category": "business",
   "icon": "Crown",
   "tags": [

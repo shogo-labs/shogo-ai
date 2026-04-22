@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSyn
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir } from './template-loader'
+import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir } from './template-loader'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -198,6 +198,15 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
   const templateSrcDir = getTemplateSrcDir(templateId)
   if (templateSrcDir) {
     cpSync(templateSrcDir, join(dir, 'src'), { recursive: true, force: true })
+  }
+
+  // Templates that define their own Prisma schema ship a `prisma/` directory
+  // at the template root. It overrides whatever the runtime-template (or a
+  // previous seeding pass) placed at <workspace>/prisma — the auto-generated
+  // CRUD server then picks up the new models on next `bun run generate`.
+  const templatePrismaDir = getTemplatePrismaDir(templateId)
+  if (templatePrismaDir) {
+    cpSync(templatePrismaDir, join(dir, 'prisma'), { recursive: true, force: true })
   }
 
   writeFileSync(join(dir, '.template'), templateId, 'utf-8')

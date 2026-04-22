@@ -105,3 +105,14 @@ export function getTemplateSrcDir(templateId: string): string | null {
   const dir = join(TEMPLATES_BASE, templateId, 'src')
   return existsSync(dir) ? dir : null
 }
+
+/**
+ * Get the path to a template's prisma/ directory for direct copying.
+ * Templates that define their own Prisma schema (models for the auto-
+ * generated CRUD server) ship it in prisma/schema.prisma. When present,
+ * it overrides the default schema from the runtime-template during seeding.
+ */
+export function getTemplatePrismaDir(templateId: string): string | null {
+  const dir = join(TEMPLATES_BASE, templateId, 'prisma')
+  return existsSync(dir) ? dir : null
+}

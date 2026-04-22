@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync } from 'node
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AGENT_TEMPLATES, getAgentTemplateById, getTemplateSummaries, getTemplatesByCategory } from '../agent-templates'
-import { getTemplateShogoDir, getTemplateSrcDir } from '../template-loader'
+import { getTemplateShogoDir, getTemplateSrcDir, getTemplatePrismaDir } from '../template-loader'
 import { seedWorkspaceFromTemplate } from '../workspace-defaults'
 
 const ALL_TEMPLATE_IDS = [
@@ -19,13 +19,20 @@ const ALL_TEMPLATE_IDS = [
 const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length
 const WORKSPACE_FILES = ['AGENTS.md', 'HEARTBEAT.md', 'config.json']
 
-// Subset of templates that ship with a canvas `src/` directory (generated React surfaces).
-// Canvas state is now represented by the per-surface `.data.json` files inside src/surfaces/
-// (previously it lived in a top-level `.canvas-state.json` and `canvas/` code dir).
+// Subset of templates that ship with a canvas `src/` directory (generated React surfaces)
+// whose data is represented by per-surface `.data.json` files inside src/surfaces/.
+// Newer templates (see TEMPLATES_WITH_PRISMA_SCHEMA) instead persist through an
+// auto-generated Prisma/Hono CRUD server and do not ship `.data.json` files.
 const TEMPLATES_WITH_CANVAS_SRC = [
   'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
   'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-  'operations-monitor', 'yc-founder-operating-system',
+  'operations-monitor',
+]
+
+// Templates that ship a real `prisma/schema.prisma` and a `src/` whose surfaces
+// fetch from the auto-generated `/api/*` CRUD routes (no `.data.json` mocks).
+const TEMPLATES_WITH_PRISMA_SCHEMA = [
+  'yc-founder-operating-system',
 ]
 
 let tempRoot: string
@@ -162,6 +169,35 @@ describe('template directory structure', () => {
       }
     }
   })
+
+  test('schema-backed templates ship a prisma/schema.prisma and no .data.json mocks', () => {
+    for (const id of TEMPLATES_WITH_PRISMA_SCHEMA) {
+      const prismaDir = getTemplatePrismaDir(id)
+      expect(prismaDir).not.toBeNull()
+      const schemaPath = join(prismaDir!, 'schema.prisma')
+      expect(existsSync(schemaPath)).toBe(true)
+      const schema = readFileSync(schemaPath, 'utf-8')
+      expect(schema).toContain('generator client')
+      expect(schema).toContain('datasource db')
+      expect(schema).toContain('provider = "sqlite"')
+      // The feedback explicitly says no `.data.json` mocks — enforce it.
+      const surfacesDir = join(getTemplateSrcDir(id)!, 'surfaces')
+      const dataFiles = readdirSync(surfacesDir).filter(f => f.endsWith('.data.json'))
+      expect(dataFiles).toEqual([])
+
+      const migrationsRoot = join(prismaDir!, 'migrations')
+      expect(existsSync(migrationsRoot)).toBe(true)
+      expect(existsSync(join(migrationsRoot, 'migration_lock.toml'))).toBe(true)
+      const migrationDirs = readdirSync(migrationsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+      expect(migrationDirs.length).toBeGreaterThan(0)
+      for (const d of migrationDirs) {
+        const sqlPath = join(migrationsRoot, d.name, 'migration.sql')
+        expect(existsSync(sqlPath)).toBe(true)
+        expect(readFileSync(sqlPath, 'utf-8').length).toBeGreaterThan(0)
+      }
+    }
+  })
 })
 
 describe('workspace seeding', () => {
@@ -212,6 +248,25 @@ describe('workspace seeding', () => {
       const dataFiles = files.filter(f => f.endsWith('.data.json'))
       expect(tsxFiles.length).toBeGreaterThan(0)
       expect(dataFiles.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('copies prisma/ directory for schema-backed templates', () => {
+    for (const id of TEMPLATES_WITH_PRISMA_SCHEMA) {
+      const dir = join(tempRoot, `seed-${id}`)
+      const schemaPath = join(dir, 'prisma', 'schema.prisma')
+      expect(existsSync(schemaPath)).toBe(true)
+      const schema = readFileSync(schemaPath, 'utf-8')
+      // Sanity-check a couple of the expected models are present.
+      expect(schema).toContain('model Decision')
+      expect(schema).toContain('model Review')
+      expect(schema).toContain('model Priority')
+
+      const migRoot = join(dir, 'prisma', 'migrations')
+      expect(existsSync(join(migRoot, 'migration_lock.toml'))).toBe(true)
+      const migDirs = readdirSync(migRoot, { withFileTypes: true }).filter(e => e.isDirectory())
+      expect(migDirs.length).toBeGreaterThan(0)
+      expect(migDirs.some(d => existsSync(join(migRoot, d.name, 'migration.sql')))).toBe(true)
     }
   })
 

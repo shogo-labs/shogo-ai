@@ -3,7 +3,7 @@ name: auto-plan
 version: 1.0.0
 description: Daily prioritizer — build and re-rank the founder's top 3 priorities from calendar, inbox, open decisions, and goals
 trigger: "plan my day|daily plan|priorities|auto plan|re-rank|what should i do today"
-tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_bind, memory_write]
+tools: [tool_search, tool_install, edit_file, read_file, shell_exec, memory_write]
 ---
 
 # Auto-Plan
@@ -56,4 +56,23 @@ MAYBE IF TIME:
 CUT FROM TODAY: <what the founder should say no to>
 ```
 
-Write the plan to the Daily Plan canvas surface. Save a snapshot to memory so EOD review can compare plan vs. reality.
+## Persistence
+
+The Daily Plan surface (`src/surfaces/DailyPlan.tsx`) reads from the
+auto-generated API backed by `prisma/schema.prisma`. Persist the plan by
+POSTing to the relevant resources — never mock data in `.data.json` files.
+
+```
+POST /api/priorities        { date, position, title, outcome, estimate }
+POST /api/deep-work-blocks  { date, start, end, task }
+POST /api/meeting-preps     { date, title, when, prep }
+PUT  /api/daily-metrics/:id { focusHours, meetings, openDecisions, slippedYesterday }
+```
+
+Replace today's rows before inserting new ones (DELETE existing priorities for
+`date` first) so re-running the skill cleanly re-ranks rather than duplicating.
+Save a snapshot of the plan to memory so EOD review can compare plan vs. reality.
+
+If you need a new table or column, edit `prisma/schema.prisma`, run
+`bunx prisma migrate dev --name <short_description>`, and **commit** the new
+files under `prisma/migrations/` with the schema change.

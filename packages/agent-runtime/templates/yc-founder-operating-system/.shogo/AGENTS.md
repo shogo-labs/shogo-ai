@@ -54,14 +54,46 @@ Never do everything yourself. Delegate to the matching sub-agent and synthesize 
 
 ## Multi-Surface Strategy
 
-Build and maintain these canvas surfaces:
-- **Daily Plan** — Top 3 priorities, calendar for today, deep-work blocks, end-of-day checklist
-- **Decision Log** — Every `DECISION` from chat or reviews, with context, date, and reversibility
-- **Review Panel** — Live feed of plans submitted and the multi-reviewer verdicts
-- **Digest** — Portfolio companies, market, and competitor signals worth the founder's attention
-- **Triage** — Calendar + inbox items needing a yes/no/defer from the founder
+The app ships as a normal Vite + React + Tailwind project backed by an
+auto-generated Hono + Prisma + SQLite API. Each surface renders from the API —
+never from a local JSON blob. Persist all founder data with real Prisma writes.
 
-Create surfaces on demand — don't dump everything on one tab.
+Current surfaces (see `src/surfaces/`):
+- **Daily Plan** — Top 3 priorities, deep-work blocks, meeting prep, daily metrics
+- **Review Panel** — Live feed of plans submitted and the multi-reviewer verdicts
+- **Decision Log** — Every `DECISION` from chat or reviews, with context, date, and reversibility
+
+Add new surfaces by creating another `src/surfaces/<Name>.tsx` file, wiring it
+into `src/App.tsx`, and either reusing an existing model or extending the
+Prisma schema. Don't dump everything on one tab.
+
+## Data Model & Server
+
+The workspace ships with a Prisma schema at `prisma/schema.prisma` covering:
+- `Priority`, `DeepWorkBlock`, `MeetingPrep`, `DailyMetric` — for the Daily Plan
+- `Review` — for the Review Panel
+- `Decision` — for the Decision Log
+
+`server.tsx` mounts auto-generated CRUD routes for every model at
+`/api/<kebab-plural>` (e.g. `GET /api/priorities?date=YYYY-MM-DD`,
+`POST /api/decisions`, `PATCH /api/reviews/:id`). The Vite dev server proxies
+`/api` to the Hono server on port 3001.
+
+Workflow when the founder asks for new state:
+1. Edit `prisma/schema.prisma` to add the model/field you need.
+2. **Generate and commit a migration** — from the workspace root (where
+   `prisma.config.ts` lives), run:
+   `bun run db:migrate:dev -- --name <short_description>`
+   (or `bunx prisma migrate dev --name <short_description>`).
+   This writes SQL under `prisma/migrations/`. **Commit those files** with the
+   schema change; do not rely on `db:push` alone for anything that ships.
+   Fresh environments apply history with `bun run db:migrate:deploy`.
+3. Run `bun run generate` to rebuild the Prisma client and the route bundle in
+   `src/generated/`.
+4. Call the new endpoint from the matching surface via `fetch('/api/...')`
+   (see `src/lib/founder-api.ts` for the existing typed helpers).
+
+Never mock data in `.data.json` files — always persist through the API.
 
 ## Core Workflow
 
@@ -106,9 +138,18 @@ Require every reviewer to finish with a clear `VERDICT: ship / revise / kill` pl
 - **Project management:** `tool_search({ query: "linear" })` — track initiatives and OKRs
 - **Web / market:** use `web` and `tool_search({ query: "exa" })` for portfolio and market digests
 
-## Canvas Patterns
-- Daily Plan: Metric grid for "focus hours / meetings / open decisions"; ordered DataList for the top-3 priorities; Checklist for end-of-day
-- Decision Log: Table with columns `date / decision / owner / reversibility`
-- Review Panel: Tabs per reviewer with Cards for `VERDICT`, risks, and counter-arguments
-- Digest: DataList grouped by source (portfolio / market / competitors)
-- Triage: Two-column Grid (calendar / inbox) with action buttons (accept / defer / decline)
+## Surface → API Mapping
+- **Daily Plan** (`src/surfaces/DailyPlan.tsx`)
+  - `GET /api/priorities?date=YYYY-MM-DD` → ordered list (position asc)
+  - `GET /api/deep-work-blocks?date=YYYY-MM-DD`
+  - `GET /api/meeting-preps?date=YYYY-MM-DD`
+  - `GET /api/daily-metrics?date=YYYY-MM-DD` → single row used for the metric cards
+- **Review Panel** (`src/surfaces/ReviewPanel.tsx`)
+  - `GET /api/reviews` → latest first; write with `POST /api/reviews`
+- **Decision Log** (`src/surfaces/DecisionLog.tsx`)
+  - `GET /api/decisions` → latest first; write with `POST /api/decisions`
+  - `reasoning` is a JSON-stringified `string[]` on the wire (SQLite has no
+    native array type); stringify on write, `JSON.parse` on read.
+
+When you add a new surface, follow the same pattern: model → generated route →
+typed helper in `src/lib/founder-api.ts` → React component that fetches on mount.

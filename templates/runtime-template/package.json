@@ -13,6 +13,8 @@
     "start": "bun run server.tsx",
     "generate": "bunx shogo generate",
     "db:generate": "bunx --bun prisma generate",
+    "db:migrate:dev": "bunx --bun prisma migrate dev",
+    "db:migrate:deploy": "bunx --bun prisma migrate deploy",
     "db:push": "bunx --bun prisma db push",
     "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
     "db:studio": "bunx --bun prisma studio"

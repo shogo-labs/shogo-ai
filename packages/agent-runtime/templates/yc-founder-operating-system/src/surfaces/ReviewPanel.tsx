@@ -1,20 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import initialData from './ReviewPanel.data.json'
+import { listReviews, type Review, type Reviewer, type Verdict } from '@/lib/founder-api'
 
-type Verdict = 'ship' | 'revise' | 'kill'
-
-interface Review {
-  plan: string
-  reviewer: 'ceo' | 'engineering' | 'design'
-  verdict: Verdict
-  rationale: string
-  topRisk: string
-  at: string
-}
-
-const REVIEWERS: Record<Review['reviewer'], { label: string; className: string }> = {
+const REVIEWERS: Record<Reviewer, { label: string; className: string }> = {
   ceo: { label: 'CEO Plan Reviewer', className: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' },
   engineering: { label: 'Engineering Plan Reviewer', className: 'bg-blue-500/15 text-blue-700 dark:text-blue-300' },
   design: { label: 'Design Plan Reviewer', className: 'bg-violet-500/15 text-violet-700 dark:text-violet-300' },
@@ -27,20 +16,36 @@ const VERDICTS: Record<Verdict, { label: string; variant: 'default' | 'secondary
 }
 
 export default function ReviewPanel() {
-  const [data] = useState(initialData)
-  const reviews = data.reviews as Review[]
+  const [reviews, setReviews] = useState<Review[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    listReviews().then((rows) => {
+      if (cancelled) return
+      setReviews(rows)
+      setLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold tracking-tight">Review Panel</h2>
-        <Badge variant="outline">{reviews.length} reviews</Badge>
+        <Badge variant="outline">
+          {loading ? 'Loading…' : `${reviews.length} reviews`}
+        </Badge>
       </div>
 
       {reviews.length === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>No plans in review</CardTitle>
+            <CardTitle>
+              {loading ? 'Loading reviews…' : 'No plans in review'}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
@@ -50,11 +55,11 @@ export default function ReviewPanel() {
         </Card>
       ) : (
         <div className="grid grid-cols-1 gap-4">
-          {reviews.map((r, i) => {
-            const reviewer = REVIEWERS[r.reviewer]
-            const verdict = VERDICTS[r.verdict]
+          {reviews.map((r) => {
+            const reviewer = REVIEWERS[r.reviewer] ?? REVIEWERS.ceo
+            const verdict = VERDICTS[r.verdict] ?? VERDICTS.revise
             return (
-              <Card key={i}>
+              <Card key={r.id}>
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">{r.plan}</CardTitle>
@@ -71,7 +76,9 @@ export default function ReviewPanel() {
                   <p className="text-sm text-muted-foreground mt-2">
                     <span className="font-semibold">Top risk:</span> {r.topRisk}
                   </p>
-                  <p className="text-xs text-muted-foreground mt-2">{r.at}</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {new Date(r.at).toLocaleString()}
+                  </p>
                 </CardContent>
               </Card>
             )

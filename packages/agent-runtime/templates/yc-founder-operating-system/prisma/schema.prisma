@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+//
+// YC Founder Operating System — persistence schema
+//
+// All surfaces (Daily Plan, Review Panel, Decision Log) read and write against
+// the auto-generated CRUD routes served from `server.tsx` on top of these
+// models. Run `bun run generate` after editing to regenerate routes/types.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---- Daily Plan ----------------------------------------------------------
+
+/// Top priorities for a given day (usually 3 at most). Ordered by `position`.
+model Priority {
+  id        String   @id @default(cuid())
+  date      String   // ISO date (YYYY-MM-DD) — one plan per day
+  position  Int      @default(0)
+  title     String
+  outcome   String
+  estimate  String   // free text e.g. "2h", "half day"
+  done      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([date, position])
+  @@map("priorities")
+}
+
+/// A focused deep-work block on the founder's calendar.
+model DeepWorkBlock {
+  id        String   @id @default(cuid())
+  date      String   // ISO date (YYYY-MM-DD)
+  start     String   // "HH:mm" local time
+  end       String   // "HH:mm" local time
+  task      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([date, start])
+  @@map("deep_work_blocks")
+}
+
+/// Meeting that needs prep from the founder.
+model MeetingPrep {
+  id        String   @id @default(cuid())
+  date      String   // ISO date (YYYY-MM-DD) the meeting is on
+  title     String
+  when      String   // human-readable time e.g. "10:30 AM"
+  prep      String   // what the founder should read/decide
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@map("meeting_preps")
+}
+
+/// Rolling daily metrics for the header of the Daily Plan surface.
+model DailyMetric {
+  id               String   @id @default(cuid())
+  date             String   @unique // ISO date — one row per day
+  focusHours       String   @default("—") @map("focus_hours")
+  meetings         String   @default("—")
+  openDecisions    String   @default("—") @map("open_decisions")
+  slippedYesterday String   @default("—") @map("slipped_yesterday")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("daily_metrics")
+}
+
+// ---- Review Panel --------------------------------------------------------
+
+/// A verdict from one of the reviewer sub-agents (CEO / engineering / design).
+model Review {
+  id        String   @id @default(cuid())
+  plan      String   // name / summary of the plan being reviewed
+  reviewer  String   // "ceo" | "engineering" | "design"
+  verdict   String   // "ship" | "revise" | "kill"
+  rationale String
+  topRisk   String   @map("top_risk")
+  at        DateTime @default(now())
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([reviewer, at])
+  @@map("reviews")
+}
+
+// ---- Decision Log --------------------------------------------------------
+
+/// A durable decision captured from chat, a review, or a meeting.
+/// `reasoning` is a JSON-encoded string[] (SQLite has no native array type);
+/// parse/stringify at the UI boundary.
+model Decision {
+  id            String   @id @default(cuid())
+  decision      String
+  reasoning     String   @default("[]") // JSON-stringified string[]
+  owner         String
+  reversibility String   // "one-way" | "two-way"
+  at            DateTime @default(now())
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([at])
+  @@map("decisions")
+}
