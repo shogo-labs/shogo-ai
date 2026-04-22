@@ -42,6 +42,7 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { voiceRoutes } from './routes/voice'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
@@ -4972,6 +4973,11 @@ app.route('/api', aiProxy)
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
 const toolsProxy = toolsProxyRoutes()
 app.route('/api', toolsProxy)
+
+// Shogo Mode / voice translator routes (session-auth'd via authMiddleware
+// above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
+// translator persona for both voice (signed URL) and text (streaming chat).
+app.route('/api', voiceRoutes())
 
 // =============================================================================
 // Domain API routes - For APIPersistence layer

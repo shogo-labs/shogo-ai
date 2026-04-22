@@ -37,6 +37,7 @@ await client.db.todos.delete(todo.id)
 - **Database** - Zero-config CRUD operations with MongoDB-style filtering
 - **Email** - SMTP and AWS SES support with templates
 - **Memory** - Hybrid SQLite FTS5 + TF-IDF search over per-user markdown
+- **LLM Gateway** - Drop-in Vercel AI SDK provider; one Shogo API key routes to Anthropic, OpenAI, Google, or a local LLM (see below)
 - **Voice** - Turnkey ElevenLabs convai proxy + React hook (see below)
 - **TypeScript** - Full type safety with generics
 - **Cross-Platform** - Works in browsers, Node.js, and React Native
@@ -533,6 +534,134 @@ store.close(): void
 
 Low-level access is available via `MemorySearchEngine` if you need to bypass the namespaced markdown layer.
 
+## LLM Gateway
+
+Pass your Shogo API key (`shogo_sk_*`) to `createClient()` and the SDK
+exposes a [Vercel AI SDK](https://ai-sdk.dev) provider under `client.llm`.
+Shogo Cloud fronts Anthropic, OpenAI, Google, and (optionally) a local LLM —
+one key, one base URL, no per-provider setup in your app.
+
+### Install
+
+```bash
+npm install @shogo-ai/sdk ai
+# @ai-sdk/openai-compatible is a direct dep of the SDK — no extra install needed
+```
+
+### Setup
+
+```ts
+import { createClient } from '@shogo-ai/sdk'
+
+const shogo = createClient({
+  apiUrl: 'http://localhost:3000',
+  db: prisma,
+  shogoApiKey: process.env.SHOGO_API_KEY!,     // shogo_sk_...
+  // shogoCloudUrl: 'https://studio.shogo.ai', // optional override
+})
+```
+
+Get a key from the **Keys** tab of your workspace in [Shogo Cloud](https://studio.shogo.ai).
+
+### Stream a response
+
+```ts
+import { streamText } from 'ai'
+
+const result = streamText({
+  model: shogo.llm!('claude-sonnet-4-5'),
+  prompt: 'Explain quantum entanglement in one paragraph.',
+})
+
+for await (const chunk of result.textStream) {
+  process.stdout.write(chunk)
+}
+```
+
+The same `shogo.llm` handles **both Anthropic and OpenAI models** — the
+Shogo Cloud proxy routes server-side based on the model id:
+
+```ts
+import { generateText } from 'ai'
+
+const anthropic = await generateText({
+  model: shogo.llm!('claude-sonnet-4-5'),
+  prompt: 'hi',
+})
+
+const openai = await generateText({
+  model: shogo.llm!('gpt-5.4-mini'),
+  prompt: 'hi',
+})
+```
+
+List available model ids with `GET /api/ai/v1/models` on Shogo Cloud (or
+any authenticated Shogo backend).
+
+### Tool calling
+
+Tool calls flow through the proxy unchanged — Anthropic-native `tool_use`
+blocks are converted to OpenAI `tool_calls` on the way out and back.
+
+```ts
+import { streamText, tool } from 'ai'
+import { z } from 'zod'
+
+const result = streamText({
+  model: shogo.llm!('claude-sonnet-4-5'),
+  prompt: 'What is the weather in Tokyo?',
+  tools: {
+    getWeather: tool({
+      description: 'Get current weather for a city',
+      inputSchema: z.object({ city: z.string() }),
+      execute: async ({ city }) => ({ city, tempC: 21 }),
+    }),
+  },
+})
+```
+
+### Using the provider without `createClient()`
+
+If you only need the LLM gateway (no auth, no db), import the factory
+directly:
+
+```ts
+import { createShogoLlmProvider } from '@shogo-ai/sdk'
+import { generateText } from 'ai'
+
+const shogo = createShogoLlmProvider({ apiKey: process.env.SHOGO_API_KEY! })
+
+const { text } = await generateText({
+  model: shogo('claude-haiku-4-5'),
+  prompt: 'Say hi',
+})
+```
+
+### Loading the key asynchronously
+
+Fetch it from secure storage (Electron keychain, React Native SecureStore,
+`platform.getShogoKeyStatus()`), then install it on the client:
+
+```ts
+const shogo = createClient({ apiUrl, db: prisma })
+const key = await loadKeyFromSecureStore()
+shogo.setShogoApiKey(key) // shogo.llm is now non-null
+```
+
+Pass `null` to clear the provider (e.g. on sign-out).
+
+### Notes
+
+- Billing/tier gates live in the cloud proxy. Free/Basic plans can use
+  economy-tier models (e.g. `claude-haiku-4-5`, `gpt-5.4-nano`); Pro+
+  unlocks the rest. Tier-gated calls return `403 model_tier_restricted`
+  which the AI SDK surfaces as an `APICallError`.
+- Insufficient credits return `402 insufficient_credits`.
+- For Anthropic-native features (extended thinking, prompt caching,
+  native `tool_use` blocks), call `POST /api/ai/anthropic/v1/messages`
+  on the cloud directly with your Shogo key as `x-api-key`; the
+  OpenAI-compatible path loses fidelity on conversion.
+
 ## Voice (ElevenLabs convai)
 
 Turn your Shogo app into a live voice agent with two files: one server mount
@@ -631,6 +760,38 @@ useVoiceConversation({
 })
 ```
 
+### Audio-reactive visualization (`<OrganicSphere />`)
+
+Drop in a ready-made visualizer that pulses with the agent's voice. Adapted
+from Bruno Simon's [organic-sphere](https://github.com/brunosimon/organic-sphere)
+demo and wired to the same `Uint8Array` that `useVoiceConversation` exposes:
+
+```tsx
+import { OrganicSphere, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
+
+export function VoiceAvatar({ characterName }: { characterName: string }) {
+  const conversation = useVoiceConversation({ characterName })
+  return (
+    <div style={{ width: 320, height: 320 }}>
+      <OrganicSphere
+        getFrequencyData={conversation.getOutputByteFrequencyData}
+        active={conversation.status === 'connected'}
+        lightAColor="#ff3e00"
+        lightBColor="#0063ff"
+      />
+    </div>
+  )
+}
+```
+
+`getFrequencyData` is just `() => Uint8Array | null`, so the component works
+with any WebAudio graph — pass `analyserNode.getByteFrequencyData` if you are
+not using `useVoiceConversation`. When it returns `null` the sphere idles in
+place, so you can leave the component mounted across connect/disconnect
+cycles.
+
+Requires the host app to have `three` installed (optional peer dep).
+
 ### Pure helpers
 
 The framework-agnostic entry point exposes everything the server handlers use
@@ -659,6 +820,81 @@ const agentId = await el.createAgent({
   tools: MEMORY_CLIENT_TOOLS,
 })
 ```
+
+### Recipe: "Shogo Mode" translator overlay (voice + text)
+
+Build a single overlay that lets a business user drive a *second*, technical
+chat agent through a translator persona — via voice **or** text, sharing the
+same system prompt and tools. The example below is exactly how the Shogo IDE
+mounts its own Shogo Mode on top of the existing chat.
+
+The persona exposes two client-side tools:
+
+- `send_to_chat(text)` — forward a plain-English instruction to the technical
+  chat agent.
+- `set_mode(mode)` — switch the chat between `"agent"` and `"plan"`.
+
+Step 1 — one shared ElevenLabs agent:
+
+```bash
+ELEVENLABS_API_KEY=sk_... \
+  bun run packages/agent-runtime/scripts/create-voice-mode-agent.ts
+# → prints agent_id; save as ELEVENLABS_VOICE_MODE_AGENT_ID
+```
+
+Step 2 — mount the two routes on your API (voice signed URL + text stream):
+
+```ts
+// apps/api/src/server.ts
+import { voiceRoutes } from './routes/voice'
+app.route('/api', voiceRoutes())
+```
+
+Step 3 — on the browser, render the Shogo panel *inside your chat column*
+on top of the existing `ChatPanel` and wrap both under a `ChatBridgeProvider`.
+The bridge lets the Shogo panel drive the real chat without either
+component knowing about the other; the normal `ChatPanel` stays mounted
+underneath so its bridge registration (send / setMode / assistant emit)
+stays live:
+
+```tsx
+import { useChatBridge, ChatBridgeProvider } from './voice-mode/ChatBridgeContext'
+import { ShogoChatPanel } from './voice-mode/ShogoChatPanel'
+import { ShogoModeToggle } from './voice-mode/ShogoModeToggle'
+
+function ChatColumn({ children }: { children: React.ReactNode }) {
+  const { shogoModeActive } = useChatBridge()
+  return (
+    <View className="flex-1 relative">
+      <View style={shogoModeActive ? { opacity: 0 } : undefined}>
+        {children /* regular ChatPanel */}
+      </View>
+      {shogoModeActive && (
+        <View className="absolute inset-0 z-10 bg-background">
+          <ShogoChatPanel />
+        </View>
+      )}
+    </View>
+  )
+}
+
+export function ProjectLayout() {
+  return (
+    <ChatBridgeProvider>
+      {/* Small pill that flips the chat column into Shogo Mode */}
+      {Platform.OS === 'web' && <ShogoModeToggle />}
+      <ChatColumn>
+        <ChatPanel /* calls useChatBridgeRegistrar inside */ />
+      </ChatColumn>
+    </ChatBridgeProvider>
+  )
+}
+```
+
+Inside the panel, the SDK's `useVoiceConversation` handles the voice
+session and `@ai-sdk/react`'s `useChat` (pointed at `/api/voice/translator/chat`)
+handles the text session. Both call the same `createBridgeClientTools(bridge)`
+so their effects on the main chat are identical.
 
 ## Examples
 

@@ -12,3 +12,13 @@ export {
   type UseVoiceConversationOptions,
   type UseVoiceConversationResult,
 } from './useVoiceConversation.js'
+
+export {
+  OrganicSphere,
+  type OrganicSphereProps,
+} from './OrganicSphere.js'
+
+export {
+  ORGANIC_SPHERE_VERTEX_SHADER,
+  ORGANIC_SPHERE_FRAGMENT_SHADER,
+} from './shaders/organicSphereShaders.js'

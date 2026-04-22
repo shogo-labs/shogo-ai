@@ -65,6 +65,14 @@ export {
   isBrowser,
 } from './storage/adapter.js'
 
+// LLM gateway (Vercel AI SDK provider backed by Shogo Cloud)
+export {
+  createShogoLlmProvider,
+  DEFAULT_SHOGO_CLOUD_URL,
+  type CreateShogoLlmProviderOptions,
+  type ShogoLlmProvider,
+} from './llm/index.js'
+
 // Platform API (API keys, local config, feature flags)
 export {
   PlatformApi,

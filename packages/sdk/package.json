@@ -92,6 +92,7 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.41",
     "@shogo/shared-runtime": "workspace:*"
   },
   "devDependencies": {
@@ -103,10 +104,12 @@
     "@types/node": "^25.5.0",
     "@types/nodemailer": "^7.0.11",
     "@types/react": "^19.0.0",
+    "@types/three": "^0.180.0",
     "better-sqlite3": "^11.10.0",
     "mobx": "^6.13.5",
     "mobx-state-tree": "^6.0.1",
     "nodemailer": "^8.0.3",
+    "three": "^0.180.0",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },
@@ -117,7 +120,8 @@
     "@prisma/adapter-libsql": "",
     "@elevenlabs/react": ">=1.0.0",
     "react": ">=18.0.0",
-    "better-sqlite3": ">=11.0.0"
+    "better-sqlite3": ">=11.0.0",
+    "three": ">=0.160.0"
   },
   "peerDependenciesMeta": {
     "nodemailer": {
@@ -139,6 +143,9 @@
       "optional": true
     },
     "better-sqlite3": {
+      "optional": true
+    },
+    "three": {
       "optional": true
     }
   },

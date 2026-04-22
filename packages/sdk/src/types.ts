@@ -20,6 +20,22 @@ export interface ShogoClientConfig<DB = unknown> {
 
   /** Storage adapter for cross-platform token persistence */
   storage?: StorageAdapter
+
+  /**
+   * Shogo API key (starts with `shogo_sk_`) used to authenticate LLM gateway
+   * requests via `client.llm`. When set, the client exposes an AI SDK provider
+   * that routes through the Shogo Cloud LLM proxy. When unset, `client.llm`
+   * is `null` and attempts to call LLMs should configure a key via
+   * `client.setShogoApiKey()` or recreate the client.
+   */
+  shogoApiKey?: string
+
+  /**
+   * Override the Shogo Cloud base URL used by `client.llm` (no trailing slash,
+   * no `/api/ai/v1` suffix). Defaults to `https://studio.shogo.ai`. Useful for
+   * staging / self-hosted Shogo deployments.
+   */
+  shogoCloudUrl?: string
 }
 
 export interface ShogoAuthConfig {

@@ -30,6 +30,7 @@ export default defineConfig({
     'mobx',
     'mobx-react-lite',
     '@elevenlabs/react',
+    'three',
     '@prisma/client',
     '@prisma/internals',
     '@prisma/adapter-pg',
@@ -38,5 +39,8 @@ export default defineConfig({
     '@aws-sdk/client-ses',
     'better-sqlite3',
     'bun:sqlite',
+    '@ai-sdk/openai-compatible',
+    '@ai-sdk/provider',
+    '@ai-sdk/provider-utils',
   ],
 })

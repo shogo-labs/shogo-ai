@@ -14,6 +14,10 @@ import {
   getDefaultStorageAdapter,
   type StorageAdapter,
 } from './storage/adapter.js'
+import {
+  createShogoLlmProvider,
+  type ShogoLlmProvider,
+} from './llm/index.js'
 import type { ShogoClientConfig } from './types.js'
 
 /**
@@ -31,6 +35,28 @@ export interface ShogoClient<DB = unknown> {
   /** Database - direct pass-through to your Prisma client */
   db: DB
 
+  /**
+   * Vercel AI SDK provider routed through the Shogo Cloud LLM gateway.
+   * `null` until a Shogo API key is configured via `shogoApiKey` in
+   * `createClient()` or {@link ShogoClient.setShogoApiKey}.
+   *
+   * ```ts
+   * import { streamText } from 'ai'
+   * const result = streamText({
+   *   model: shogo.llm!('claude-sonnet-4-5'),
+   *   prompt: 'Hello',
+   * })
+   * ```
+   */
+  llm: ShogoLlmProvider | null
+
+  /**
+   * Configure (or replace) the Shogo API key used by {@link ShogoClient.llm}.
+   * Pass `null` to clear the provider (e.g. on sign-out). Useful when the key
+   * is fetched asynchronously from secure storage or `platform.getShogoKeyStatus()`.
+   */
+  setShogoApiKey: (key: string | null) => void
+
   /** Internal HTTP client (for advanced use cases) */
   _http: HttpClient
 }
@@ -42,7 +68,10 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   auth: ShogoAuth
   platform: PlatformApi
   db: DB
+  llm: ShogoLlmProvider | null
   _http: HttpClient
+
+  private shogoCloudUrl: string | undefined
 
   constructor(config: ShogoClientConfig<DB>) {
     // Get or create storage adapter
@@ -66,6 +95,21 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
 
     // Database is a direct pass-through to Prisma
     this.db = config.db
+
+    // LLM gateway: only provisioned when a Shogo API key is present.
+    this.shogoCloudUrl = config.shogoCloudUrl
+    this.llm = config.shogoApiKey
+      ? createShogoLlmProvider({
+          apiKey: config.shogoApiKey,
+          baseUrl: this.shogoCloudUrl,
+        })
+      : null
+  }
+
+  setShogoApiKey(key: string | null): void {
+    this.llm = key
+      ? createShogoLlmProvider({ apiKey: key, baseUrl: this.shogoCloudUrl })
+      : null
   }
 }
 
