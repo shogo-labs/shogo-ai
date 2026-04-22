@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { editor } from "monaco-editor";
-import { useResizable, VerticalSplit } from "./Splitter";
+import { useResizable, VerticalSplit, HorizontalSplit } from "./Splitter";
 import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
 import { EditorGroupView } from "./EditorGroup";
 import { Palette, type PaletteItem } from "./Palette";
+import { BottomPanel } from "./BottomPanel";
 import {
   DEFAULT_SETTINGS,
   type ActivityId,
@@ -34,6 +35,7 @@ import {
   FilePlus,
   FolderPlus,
   FolderOpen,
+  PanelLeftClose,
   X,
 } from "lucide-react-native";
 
@@ -69,8 +71,46 @@ function flattenFiles(tree: TreeNode[], out: TreeNode[] = []): TreeNode[] {
   return out;
 }
 
-export function Workbench({ agentService, agentLabel = "agent-workspace" }: { agentService: WorkspaceService; agentLabel?: string }) {
+export function Workbench({
+  agentService,
+  agentLabel = "agent-workspace",
+  projectId,
+}: {
+  agentService: WorkspaceService;
+  agentLabel?: string;
+  projectId?: string | null;
+}) {
   const [activity, setActivity] = useState<ActivityId>("files");
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem("shogo.ide.sidebarOpen");
+      if (raw === "false") return false;
+    } catch { /* ignore */ }
+    return true;
+  });
+  useEffect(() => {
+    try { localStorage.setItem("shogo.ide.sidebarOpen", String(sidebarOpen)); } catch { /* ignore */ }
+  }, [sidebarOpen]);
+
+  const [bottomPanelOpen, setBottomPanelOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("shogo.ide.bottomPanelOpen") === "true";
+    } catch { /* ignore */ }
+    return false;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("shogo.ide.bottomPanelOpen", String(bottomPanelOpen));
+    } catch { /* ignore */ }
+  }, [bottomPanelOpen]);
+
+  // Nonce incremented on each ⌘⇧` press / "New Terminal" command. Terminal
+  // component subscribes and creates a fresh session whenever it changes.
+  const [newTerminalNonce, setNewTerminalNonce] = useState(0);
+  const requestNewTerminal = useCallback(() => {
+    setBottomPanelOpen(true);
+    setNewTerminalNonce((n) => n + 1);
+  }, []);
   const [services, setServices] = useState<Record<string, WorkspaceService>>({ agent: agentService });
   const [roots, setRoots] = useState<Root[]>([
     { id: "agent", label: agentLabel, kind: "agent", tree: [], loading: true, error: null },
@@ -105,6 +145,23 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
 
   const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
+  // Bottom panel height: dragging the horizontal split grows the panel *upward*,
+  // so we invert the delta direction by using the pane's own height state.
+  const [bottomPanelSize, setBottomPanelSize] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem("shogo.ide.bottomPanelSize");
+      if (raw) {
+        const n = parseInt(raw, 10);
+        if (Number.isFinite(n)) return Math.min(600, Math.max(120, n));
+      }
+    } catch { /* ignore */ }
+    return 260;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("shogo.ide.bottomPanelSize", String(bottomPanelSize));
+    } catch { /* ignore */ }
+  }, [bottomPanelSize]);
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
   const monacoNsRef = useRef<MonacoNs | null>(null);
@@ -843,6 +900,30 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           if (activeGroup?.activeId) togglePinInGroup(activeGroupIdx, activeGroup.activeId);
         },
       },
+      {
+        id: "view.toggleSidebar",
+        label: sidebarOpen ? "View: Hide Sidebar" : "View: Show Sidebar",
+        shortcut: "⌘B",
+        run: () => setSidebarOpen((v) => !v),
+      },
+      {
+        id: "view.toggleBottomPanel",
+        label: bottomPanelOpen ? "View: Hide Panel" : "View: Show Panel",
+        shortcut: "⌘J",
+        run: () => setBottomPanelOpen((v) => !v),
+      },
+      {
+        id: "terminal.new",
+        label: "Terminal: New Terminal",
+        shortcut: "⌘⇧`",
+        run: requestNewTerminal,
+      },
+      {
+        id: "terminal.focus",
+        label: "Terminal: Focus Panel",
+        shortcut: "⌃`",
+        run: () => setBottomPanelOpen(true),
+      },
       { id: "goto.file", label: "Go to File…", shortcut: "⌘P", run: () => setPalette("file") },
       {
         id: "search.findInFile",
@@ -883,7 +964,8 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   }, [
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
-    openLocalFolder, closeRoot, fsaSupported, roots,
+    openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
+    requestNewTerminal,
   ]);
 
   const commandItems: PaletteItem[] = useMemo(
@@ -941,7 +1023,42 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         e.preventDefault(); void openLocalFolder(); return;
       }
       if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
-        e.preventDefault(); setActivity("search"); return;
+        e.preventDefault();
+        setActivity("search");
+        if (!sidebarOpen) setSidebarOpen(true);
+        return;
+      }
+      if (matchesShortcut(e, { meta: true, key: "b" })) {
+        e.preventDefault();
+        setSidebarOpen((v) => !v);
+        return;
+      }
+      // VS Code parity: ⌘J (or Ctrl+J on non-mac) toggles the bottom panel.
+      // This is the primary shortcut — it survives browser interception much
+      // better than the Ctrl+backtick default, which Chrome sometimes eats.
+      if (matchesShortcut(e, { meta: true, key: "j" })) {
+        e.preventDefault();
+        setBottomPanelOpen((v) => !v);
+        return;
+      }
+      // VS Code parity: Ctrl+` as a secondary toggle (power-user muscle memory).
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === "`") {
+        e.preventDefault();
+        setBottomPanelOpen((v) => !v);
+        return;
+      }
+      // VS Code parity: ⌘⇧` creates a new terminal session (and opens the panel).
+      // Match on both the printed key "~" (shift+backtick on US layouts) and the
+      // raw key "`" with Shift held, to be layout-tolerant.
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        !e.altKey &&
+        (e.key === "`" || e.key === "~")
+      ) {
+        e.preventDefault();
+        requestNewTerminal();
+        return;
       }
     };
     // Capture phase so shortcuts work while Monaco has focus (bubble listeners never run).
@@ -949,7 +1066,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
-    gotoLine, openLocalFolder,
+    gotoLine, openLocalFolder, sidebarOpen, requestNewTerminal,
   ]);
 
   return (
@@ -967,48 +1084,65 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
           <span>⌘P files</span>
           <span>⌘⇧P commands</span>
           <span>⌘⇧F search</span>
+          <span>⌘B sidebar</span>
+          <span>⌘J panel</span>
           <span className="hidden xl:inline">⌘⇧O open folder</span>
         </div>
       </div>
 
       <div className="flex flex-1 min-h-0">
-        <ActivityBar active={activity} onSelect={setActivity} />
+        <ActivityBar
+          active={activity}
+          sidebarOpen={sidebarOpen}
+          terminalOpen={bottomPanelOpen}
+          onSelect={(id) => {
+            setActivity(id);
+            if (!sidebarOpen) setSidebarOpen(true);
+          }}
+          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
+        />
 
         <div className="flex flex-1 min-w-0">
-          <div
-            style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
-            className="h-full bg-[#252526] overflow-hidden"
-          >
-            {activity === "files" && (
-              <FilesPane
-                roots={roots}
-                virtualTree={virtualTree}
-                activePath={active?.path ?? null}
-                handlers={treeHandlers}
-                newRequest={newRequest}
-                fsaSupported={fsaSupported}
-                onRefresh={refreshAllRoots}
-                onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
-                onOpenFolder={() => void openLocalFolder()}
-                onRestore={() => void restoreRoots()}
-                onCloseRoot={(id) => void closeRoot(id)}
-              />
-            )}
-            {activity === "search" && (
-              <SearchPane
-                roots={roots}
-                services={services}
-                onReveal={(rootId, path, line, col) =>
-                  void revealMatch(rootId, path, line, col)
-                }
-              />
-            )}
-            {activity === "settings" && (
-              <SettingsPane settings={settings} onChange={setSettings} />
-            )}
-          </div>
+          {sidebarOpen && (
+            <>
+              <div
+                style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
+                className="h-full bg-[#252526] overflow-hidden"
+              >
+                {activity === "files" && (
+                  <FilesPane
+                    roots={roots}
+                    virtualTree={virtualTree}
+                    activePath={active?.path ?? null}
+                    handlers={treeHandlers}
+                    newRequest={newRequest}
+                    fsaSupported={fsaSupported}
+                    onRefresh={refreshAllRoots}
+                    onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
+                    onOpenFolder={() => void openLocalFolder()}
+                    onRestore={() => void restoreRoots()}
+                    onCloseRoot={(id) => void closeRoot(id)}
+                    onCollapse={() => setSidebarOpen(false)}
+                  />
+                )}
+                {activity === "search" && (
+                  <SearchPane
+                    roots={roots}
+                    services={services}
+                    onReveal={(rootId, path, line, col) =>
+                      void revealMatch(rootId, path, line, col)
+                    }
+                  />
+                )}
+                {activity === "settings" && (
+                  <SettingsPane settings={settings} onChange={setSettings} />
+                )}
+              </div>
 
-          <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
+              <VerticalSplit onMouseDown={sidebarSplit.onMouseDown} />
+            </>
+          )}
 
           <div className="flex flex-1 min-w-0 flex-col">
             <AgentEditBanner
@@ -1017,6 +1151,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
               onReload={handleReloadConflict}
               onKeepMine={handleKeepMine}
             />
+            <div className="flex flex-1 min-h-0 flex-col">
             <div className="flex flex-1 min-h-0 relative">
               {groups
                 .map((g, i) => (
@@ -1091,6 +1226,61 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
               )}
             </div>
 
+            {bottomPanelOpen ? (
+              <>
+                <HorizontalSplit
+                  onMouseDown={(e) => {
+                    const startY = e.clientY;
+                    const startSize = bottomPanelSize;
+                    const move = (ev: MouseEvent) => {
+                      const delta = startY - ev.clientY;
+                      const next = Math.min(800, Math.max(120, startSize + delta));
+                      setBottomPanelSize(next);
+                    };
+                    const up = () => {
+                      window.removeEventListener("mousemove", move);
+                      window.removeEventListener("mouseup", up);
+                      document.body.style.cursor = "";
+                      document.body.style.userSelect = "";
+                    };
+                    window.addEventListener("mousemove", move);
+                    window.addEventListener("mouseup", up);
+                    document.body.style.cursor = "row-resize";
+                    document.body.style.userSelect = "none";
+                    e.preventDefault();
+                  }}
+                  onDoubleClick={() => setBottomPanelSize(260)}
+                />
+                <div style={{ height: bottomPanelSize, flexShrink: 0 }} className="min-h-0">
+                  <BottomPanel
+                    projectId={projectId ?? null}
+                    newSessionNonce={newTerminalNonce}
+                    onClose={() => setBottomPanelOpen(false)}
+                  />
+                </div>
+              </>
+            ) : (
+              /*
+               * Closed-state peek handle. Sits just above the status bar as a
+               * thin strip; hover reveals the accent + "grab" cursor so users
+               * can find it without reading docs.
+               *
+               * Behaviour:
+               *   - Click (tiny drag < 6px): open at the remembered size.
+               *   - Drag upward: open with a size that tracks the pointer, so
+               *     the panel follows your mouse like VS Code / IntelliJ do
+               *     when dragging the panel border up from the status bar.
+               */
+              <BottomPeekHandle
+                onOpen={(sizeOrNull) => {
+                  if (sizeOrNull != null) setBottomPanelSize(sizeOrNull);
+                  setBottomPanelOpen(true);
+                }}
+                onPreview={(size) => setBottomPanelSize(size)}
+              />
+            )}
+            </div>
+
           </div>
         </div>
       </div>
@@ -1113,6 +1303,76 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       {palette === "file" && (
         <QuickOpen fileItems={fileItems} onClose={() => setPalette(null)} onLine={gotoLine} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Invisible-until-hovered strip that lives above the status bar when the
+ * bottom panel is closed. Lets users pull the panel up by dragging — the
+ * standard IDE affordance — without adding visual weight to the chrome.
+ *
+ * Callback contract:
+ *   - onPreview(size)  live during drag so the panel can follow the cursor
+ *     before the mouseup. Size is clamped to sane min/max.
+ *   - onOpen(size|null) fires on mouseup / click:
+ *       • null  → treat as a click (drag distance < CLICK_SLOP). Caller
+ *                 should open at whatever size it was already at.
+ *       • number → the final drag size. Caller should set size + open.
+ */
+function BottomPeekHandle({
+  onPreview,
+  onOpen,
+}: {
+  onPreview: (size: number) => void;
+  onOpen: (size: number | null) => void;
+}) {
+  const MIN_SIZE = 120;
+  const MAX_SIZE = 800;
+  const CLICK_SLOP = 6;
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Drag up to open panel"
+      title="Drag up to open panel  (⌘J)"
+      className="group relative h-[3px] shrink-0 cursor-row-resize select-none"
+      onMouseDown={(e) => {
+        // Only react to the primary button — right-click / middle-click have
+        // their own meanings and shouldn't hijack the panel.
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const startY = e.clientY;
+        let lastSize: number | null = null;
+        let moved = false;
+        const move = (ev: MouseEvent) => {
+          const delta = startY - ev.clientY;
+          if (!moved && Math.abs(delta) < CLICK_SLOP) return;
+          moved = true;
+          const size = Math.min(MAX_SIZE, Math.max(MIN_SIZE, delta));
+          lastSize = size;
+          onPreview(size);
+        };
+        const up = () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+          onOpen(moved ? lastSize : null);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
+        document.body.style.cursor = "row-resize";
+        document.body.style.userSelect = "none";
+      }}
+    >
+      {/* Fat invisible hit-zone on top so users can grab it without a pixel
+          perfect aim. Visible 3px strip is the bottom edge of the editor
+          area; pointer enters pick up the accent color for discoverability. */}
+      <div
+        aria-hidden
+        className="absolute inset-x-0 -top-[4px] bottom-0 group-hover:bg-[#0078d4]/60 transition-colors"
+      />
     </div>
   );
 }
@@ -1159,6 +1419,7 @@ function FilesPane({
   onOpenFolder,
   onRestore,
   onCloseRoot,
+  onCollapse,
 }: {
   roots: Root[];
   virtualTree: TreeNode[];
@@ -1171,6 +1432,7 @@ function FilesPane({
   onOpenFolder: () => void;
   onRestore: () => void;
   onCloseRoot: (id: string) => void;
+  onCollapse?: () => void;
 }) {
   const anyLoading = roots.some((r) => r.loading);
   const anyError = roots.find((r) => r.error);
@@ -1220,6 +1482,15 @@ function FilesPane({
           >
             <RefreshCw size={13} className={anyLoading ? "animate-spin" : ""} />
           </button>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              title="Hide Sidebar  (⌘B)"
+              className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            >
+              <PanelLeftClose size={13} />
+            </button>
+          )}
         </div>
       </div>
 
