@@ -867,7 +867,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         runtimeEnv.WORKSPACE_ID = workspaceId
 
-        // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+        // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId).
+        // Gotchas around rotation / leak response / synthetic userId live in
+        // apps/api/src/lib/runtime-token.md.
         const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
         runtimeEnv.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
         runtimeEnv.WEBHOOK_TOKEN = deriveWebhookToken(projectId)

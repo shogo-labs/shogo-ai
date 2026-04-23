@@ -61,7 +61,7 @@ import {
   TRANSLATOR_AI_SDK_TOOLS,
 } from '@shogo/agent-runtime/src/voice-mode/translator-persona'
 import { prisma } from '../lib/prisma'
-import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
+import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import { resolveShogoTwilioClient, verifyTwilioSignature } from '../lib/twilio'
 import {
   getCreditBalance,
@@ -92,6 +92,11 @@ function startOfMonthUtc(d: Date): Date {
  * the most stable key). For session callers we also use user id for
  * consistency. `consumeCredits` doesn't care about the shape of this
  * string beyond it being stable.
+ *
+ * Runtime-token callers carry a real project-owner userId stamped by
+ * `authMiddleware` (see `lib/runtime-token.md` §3), so no special
+ * normalization is needed here — their usage attributes to the
+ * project owner.
  */
 function auditMemberId(c: HonoContext): string {
   const auth = c.get('auth')
@@ -289,11 +294,27 @@ type AuthzResult =
  * Verify the authenticated user has access to the chat session via
  * workspace membership on the owning project. Returns `{ok:true}` or
  * an error response payload.
+ *
+ * Runtime-token callers (`via === 'runtimeToken'`) are rejected
+ * explicitly: the translator overlay is a per-end-user resource, but
+ * runtime tokens are project-scoped capabilities with no end-user
+ * identity. The `via`-based check (not a userId-shape check) is the
+ * canonical pattern — `authMiddleware` now stamps a real project-owner
+ * userId for runtime callers, so string-prefix checks would silently
+ * miss. See `apps/api/src/lib/runtime-token.md §7`.
  */
 async function authorizeChatSession(
   chatSessionId: string,
   userId: string,
+  via: AuthContext['via'] | undefined,
 ): Promise<AuthzResult> {
+  if (via === 'runtimeToken') {
+    return {
+      ok: false,
+      status: 403,
+      message: 'Chat session access requires a user session; runtime tokens are project-scoped',
+    }
+  }
   const session = await prisma.chatSession.findUnique({
     where: { id: chatSessionId },
     select: {
@@ -497,6 +518,17 @@ export function voiceRoutes() {
       return c.json({ error: 'chatSessionId is required' }, 400)
     }
 
+    // Authorize BEFORE touching model/body state: we don't want to leak
+    // "model not configured" (503) or parse errors (400) to callers who
+    // aren't allowed to know this chat session exists. In particular,
+    // runtime-token callers are rejected here with a 403 — runtime
+    // tokens are project-scoped, not user-scoped. See
+    // apps/api/src/lib/runtime-token.md §7.
+    const authz = await authorizeChatSession(chatSessionId, auth.userId, auth.via)
+    if (!authz.ok) {
+      return c.json({ error: authz.message }, authz.status)
+    }
+
     const model = resolveTranslatorModel()
     if (!model) {
       return c.json(
@@ -521,10 +553,6 @@ export function voiceRoutes() {
     }
 
     try {
-      const authz = await authorizeChatSession(chatSessionId, auth.userId)
-      if (!authz.ok) {
-        return c.json({ error: authz.message }, authz.status)
-      }
 
       // Persist the latest user turn up-front. We persist ALL trailing
       // user messages (walking back from the end until we hit an
@@ -668,7 +696,7 @@ export function voiceRoutes() {
         : undefined
 
     try {
-      const authz = await authorizeChatSession(chatSessionId, auth.userId)
+      const authz = await authorizeChatSession(chatSessionId, auth.userId, auth.via)
       if (!authz.ok) {
         return c.json({ error: authz.message }, authz.status)
       }

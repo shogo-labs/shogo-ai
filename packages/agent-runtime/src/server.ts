@@ -1179,10 +1179,23 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
+  // Also cancel every running subagent spawned via AgentManager. The main turn
+  // signal does not reach these instances because each has its own AbortController.
+  const cancelledSubagents = agentGateway.agentManager.cancelAll()
+
   // Remove the buffer entirely so resume after stop returns 204 (not a replay)
   streamBufferStore.abort(stopSessionKey)
 
-  return c.json({ stopped: aborted })
+  return c.json({ stopped: aborted, cancelledSubagents })
+})
+
+// Cancel a single running subagent by AgentManager instance id
+app.post('/agent/subagents/:instanceId/stop', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
+  const instanceId = c.req.param('instanceId')
+  if (!instanceId) return c.json({ error: 'Missing instanceId' }, 400)
+  const cancelled = agentGateway.agentManager.cancel(instanceId)
+  return c.json({ cancelled, instanceId })
 })
 
 // ---------------------------------------------------------------------------

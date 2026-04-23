@@ -20,6 +20,7 @@ import {
 } from './llm/index.js'
 import {
   DirectTelephonyClient,
+  HostedRuntimeTokenClient,
   HostedTelephonyClient,
   type TelephonyClient,
 } from './voice/telephony.js'
@@ -29,8 +30,11 @@ export interface ShogoVoiceModule {
   /**
    * Telephony client for Twilio + ElevenLabs.
    *
-   * `null` when the client was constructed without either a Shogo API key
-   * + projectId (Mode B) or direct elevenlabs + twilio credentials (Mode A).
+   * `null` when the client was constructed without any of:
+   *   - `process.env.RUNTIME_AUTH_SECRET` + `projectId` (pod-native)
+   *   - `shogoApiKey` + `projectId` (Mode B hosted bearer)
+   *   - direct `elevenlabs` + `twilio` credentials (Mode A)
+   *
    * Call {@link ShogoClient.setShogoApiKey} or recreate the client to enable.
    */
   telephony: TelephonyClient | null
@@ -69,9 +73,14 @@ export interface ShogoClient<DB = unknown> {
   /**
    * Voice module — Twilio + ElevenLabs telephony.
    *
-   * `voice.telephony` resolves to `HostedTelephonyClient` when `shogoApiKey`
-   * + `projectId` are configured, `DirectTelephonyClient` when direct
-   * `elevenlabs` + `twilio` credentials are passed, or `null` otherwise.
+   * `voice.telephony` resolves to:
+   *   - `HostedRuntimeTokenClient` when `process.env.RUNTIME_AUTH_SECRET` +
+   *     `projectId` are present (pod-native; default inside generated apps),
+   *   - `HostedTelephonyClient` when `shogoApiKey` + `projectId` are
+   *     configured (external-site Mode B),
+   *   - `DirectTelephonyClient` when direct `elevenlabs` + `twilio`
+   *     credentials are passed (Mode A), or
+   *   - `null` otherwise.
    */
   voice: ShogoVoiceModule
 
@@ -144,13 +153,37 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     shogoApiKey: string | undefined | null,
   ): TelephonyClient | null {
     const { projectId, elevenlabs, twilio, apiUrl } = this.config
+
+    // Runtime-token mode (pod-native). Checked first because every
+    // Shogo-managed pod already has `RUNTIME_AUTH_SECRET` + `PROJECT_ID`
+    // in env — the developer should not have to also mint an API key.
+    // Server-only: we guard `typeof process` so this code never runs in
+    // a browser bundle (where `process.env.RUNTIME_AUTH_SECRET` would
+    // either be undefined or, worse, inlined by a bundler).
+    const runtimeToken =
+      typeof process !== 'undefined'
+        ? process.env?.RUNTIME_AUTH_SECRET
+        : undefined
+    const hasRuntime = Boolean(runtimeToken && projectId)
     const hasHosted = Boolean(shogoApiKey && projectId)
     const hasDirect = Boolean(elevenlabs && twilio)
 
-    if (hasHosted && hasDirect) {
+    if (hasRuntime && hasHosted) {
+      console.warn(
+        '[shogo] createClient received both RUNTIME_AUTH_SECRET env + shogoApiKey; using runtime-token (pod-native). Drop shogoApiKey to silence this warning.',
+      )
+    } else if (hasHosted && hasDirect) {
       console.warn(
         '[shogo] createClient received both shogoApiKey + direct elevenlabs/twilio creds; using hosted (Mode B). Drop shogoApiKey to use direct (Mode A).',
       )
+    }
+
+    if (hasRuntime) {
+      return new HostedRuntimeTokenClient({
+        runtimeToken: runtimeToken as string,
+        projectId: projectId as string,
+        apiUrl,
+      })
     }
     if (hasHosted) {
       return new HostedTelephonyClient({

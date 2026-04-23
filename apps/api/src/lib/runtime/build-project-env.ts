@@ -66,6 +66,12 @@ export async function buildProjectEnv(
   }
   console.log(`[${prefix}] proxy token took ${Date.now() - tokenStart}ms`)
 
+  // RUNTIME_AUTH_SECRET is the pod's project-scoped bearer capability for
+  // calling the Shogo API (see `middleware/auth.ts` runtime-token branch).
+  // Operator gotchas — secret rotation, synthetic userId, leak blast
+  // radius — are documented in apps/api/src/lib/runtime-token.md. Any
+  // change to how this env is derived or injected should be reviewed
+  // against that doc first.
   const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
   env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)

@@ -23,6 +23,8 @@ import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-gene
 import { generateDocs } from './docs-generator'
 import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-generator'
 import { generateAdminRoutes } from './admin-routes-generator'
+import { generateShogoClient } from './shogo-client-generator'
+import { generateVoiceComponents } from './voice-components-generator'
 import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
@@ -32,8 +34,15 @@ import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 export interface OutputConfig {
   /** Output directory */
   dir: string
-  /** What to generate */
-  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes')[]
+  /**
+   * What to generate.
+   *
+   * `shogo-client` emits a zero-config `src/lib/shogo.ts`-shaped file
+   * that reads `PROJECT_ID` / `SHOGO_API_URL` from env and instantiates
+   * the SDK client — used by generated pod apps to get the pod-native
+   * runtime-token voice path without wiring up anything by hand.
+   */
+  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes' | 'shogo-client' | 'voice-components')[]
   /** Generate per-model files (default: true) */
   perModel?: boolean
   /** File extension for generated files: 'ts' or 'tsx' (default: 'tsx') */
@@ -42,6 +51,16 @@ export interface OutputConfig {
   serverConfig?: import('./server-generator').ServerGeneratorConfig
   /** Database provider for db module generation: 'postgresql' (default) or 'sqlite' */
   dbProvider?: 'postgresql' | 'sqlite'
+  /**
+   * Options forwarded to the `shogo-client` generator. Ignored unless
+   * `shogo-client` is included in `generate`.
+   */
+  shogoClient?: import('./shogo-client-generator').ShogoClientGeneratorOptions
+  /**
+   * Options forwarded to the `voice-components` generator. Ignored
+   * unless `voice-components` is included in `generate`.
+   */
+  voiceComponents?: import('./voice-components-generator').VoiceComponentsGeneratorOptions
 }
 
 export interface GenerateOptions {
@@ -426,6 +445,38 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           path: `${dir}/${adminFile.fileName}`,
           content: adminFile.code,
         })
+      }
+
+      // Generate zero-config Shogo SDK client (`shogo.ts`).
+      //
+      // Does NOT require models — a schema-less app can still opt in to
+      // voice / other Shogo features without any Prisma bindings.
+      if (output.generate.includes('shogo-client')) {
+        const shogoFile = generateShogoClient({
+          fileExtension: (ext as 'ts' | 'tsx') === 'tsx' ? 'ts' : (ext as 'ts' | 'tsx'),
+          ...(output.shogoClient ?? {}),
+        })
+        files.push({
+          path: `${dir}/${shogoFile.fileName}`,
+          content: shogoFile.code,
+        })
+      }
+
+      // Generate Shogo voice component scaffolds (VoiceButton /
+      // VoiceSphere / PhoneButton). All written with `skipIfExists`
+      // so user customizations survive future runs.
+      if (output.generate.includes('voice-components')) {
+        const voiceFiles = generateVoiceComponents({
+          fileExtension: ext as 'ts' | 'tsx',
+          ...(output.voiceComponents ?? {}),
+        })
+        for (const f of voiceFiles) {
+          files.push({
+            path: `${dir}/${f.fileName}`,
+            content: f.code,
+            skipIfExists: f.skipIfExists,
+          })
+        }
       }
     }
 

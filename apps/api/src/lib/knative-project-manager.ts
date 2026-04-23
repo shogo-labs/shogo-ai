@@ -1024,7 +1024,12 @@ export class KnativeProjectManager {
       console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
-    // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+    // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId).
+    // RUNTIME_AUTH_SECRET becomes the pod's bearer capability to call the
+    // Shogo API on behalf of its project. Operator gotchas (rotation,
+    // synthetic userId, pod = capability boundary, etc.) are documented
+    // in apps/api/src/lib/runtime-token.md — read before changing how
+    // this env var is constructed or exposed.
     const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
     env.push({ name: "RUNTIME_AUTH_SECRET", value: deriveRuntimeToken(projectId) })
     env.push({ name: "WEBHOOK_TOKEN", value: deriveWebhookToken(projectId) })

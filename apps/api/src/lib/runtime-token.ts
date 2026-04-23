@@ -12,7 +12,10 @@
  * via `env`, it can only authenticate to itself (zero blast radius).
  *
  * Two token types:
- *   - runtime-auth: API server → agent/project runtime (internal RPC)
+ *   - runtime-auth: API server → agent/project runtime (internal RPC),
+ *                   and pod → API via `x-runtime-token` for project-scoped
+ *                   capabilities (see `middleware/auth.ts` runtime-token
+ *                   branch and `runtime-token.md` for operator gotchas).
  *   - webhook: external services → agent runtime webhook endpoints
  */
 

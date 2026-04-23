@@ -14,6 +14,11 @@ export {
 } from './useVoiceConversation.js'
 
 export {
+  useShogoVoice,
+  type UseShogoVoiceOptions,
+} from './useShogoVoice.js'
+
+export {
   OrganicSphere,
   type OrganicSphereProps,
 } from './OrganicSphere.js'

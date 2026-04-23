@@ -14,7 +14,8 @@
  *   - Messages / Calls webhook signature verification (helper below)
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHmac } from 'node:crypto'
+import { safeBufferEqual } from './crypto-util'
 
 export const DEFAULT_TWILIO_BASE_URL = 'https://api.twilio.com'
 
@@ -243,12 +244,5 @@ export function verifyTwilioSignature(params: {
   let data = params.fullUrl
   for (const k of sortedKeys) data += k + params.bodyParams[k]
   const expected = createHmac('sha1', params.authToken).update(data).digest('base64')
-  const a = Buffer.from(expected)
-  const b = Buffer.from(params.signatureHeader)
-  if (a.length !== b.length) return false
-  try {
-    return timingSafeEqual(a, b)
-  } catch {
-    return false
-  }
+  return safeBufferEqual(Buffer.from(expected), Buffer.from(params.signatureHeader))
 }

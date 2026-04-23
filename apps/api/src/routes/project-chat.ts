@@ -1065,6 +1065,37 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   })
 
   /**
+   * POST /projects/:projectId/chat/subagents/:instanceId/stop - Cancel a single subagent
+   * Proxies to the project runtime's /agent/subagents/:instanceId/stop endpoint
+   */
+  router.post("/projects/:projectId/chat/subagents/:instanceId/stop", async (c) => {
+    const projectId = c.req.param("projectId")
+    const instanceId = c.req.param("instanceId")
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/subagents/${encodeURIComponent(instanceId)}/stop`,
+        { method: "POST", body: "{}" }
+      )
+
+      const result = await response.json()
+      return c.json(result)
+    } catch (error: any) {
+      console.error("[ProjectChat] Subagent stop error:", error)
+      return c.json({ success: false, error: error.message }, 500)
+    }
+  })
+
+  /**
    * POST /projects/:projectId/permission-response - Proxy permission approval to agent runtime
    */
   router.post("/projects/:projectId/permission-response", async (c) => {
