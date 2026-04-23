@@ -87,12 +87,14 @@ export {
 
 export {
   DirectTelephonyClient,
+  HostedRuntimeTokenClient,
   HostedTelephonyClient,
   TelephonyApiError,
   TelephonyConfigError,
   createTelephonyClient,
   type CreateTelephonyOptions,
   type DirectTelephonyOptions,
+  type HostedRuntimeTokenOptions,
   type HostedTelephonyOptions,
   type OutboundCallOptions,
   type OutboundCallResult,

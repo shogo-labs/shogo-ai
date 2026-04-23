@@ -261,7 +261,8 @@ export function verifyElevenLabsSignature(params: {
   maxSkewSeconds?: number
 }): boolean {
   if (!params.signatureHeader) return false
-  const { createHmac, timingSafeEqual } = require('node:crypto') as typeof import('node:crypto')
+  const { createHmac } = require('node:crypto') as typeof import('node:crypto')
+  const { safeBufferEqual } = require('./crypto-util') as typeof import('./crypto-util')
   const parts = params.signatureHeader.split(',').map((p) => p.trim())
   let t: string | null = null
   let v0: string | null = null
@@ -280,12 +281,5 @@ export function verifyElevenLabsSignature(params: {
   const expected = createHmac('sha256', params.secret)
     .update(`${t}.${params.rawBody}`)
     .digest('hex')
-  const a = Buffer.from(expected)
-  const b = Buffer.from(v0)
-  if (a.length !== b.length) return false
-  try {
-    return timingSafeEqual(a, b)
-  } catch {
-    return false
-  }
+  return safeBufferEqual(Buffer.from(expected), Buffer.from(v0))
 }

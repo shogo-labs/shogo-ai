@@ -6,6 +6,17 @@
  * Extracts the authenticated user from Better Auth session
  * and makes it available to route handlers via c.get("auth").
  *
+ * Four auth modes, resolved in this order:
+ *   1. `Authorization: Bearer shogo_sk_*` → `via: 'apiKey'`
+ *   2. `x-runtime-token` (+ projectId)    → `via: 'runtimeToken'`
+ *   3. `x-tunnel-auth-user-id`             → `via: 'tunnel'`
+ *   4. Better Auth session cookie          → `via: 'session'`
+ *
+ * Runtime-token callers: see ../lib/runtime-token.md for operator-facing
+ * gotchas (secret rotation, project-owner userId resolution, pod =
+ * capability boundary, timing-safe compare). Any change to the
+ * runtime-token branch below should be cross-checked against that doc.
+ *
  * Usage:
  * ```typescript
  * // Apply to all routes
@@ -20,6 +31,8 @@ import type { Context, Next } from "hono"
 import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
 import { resolveApiKey } from "../routes/api-keys"
+import { deriveRuntimeToken } from "../lib/runtime-token"
+import { safeTokenEqual } from "../lib/crypto-util"
 
 /**
  * Auth context set by middleware
@@ -31,8 +44,15 @@ export interface AuthContext {
   email?: string
   /** User name */
   name?: string
-  /** Workspace ID (set when authenticated via API key) */
+  /** Workspace ID (set when authenticated via API key or runtime token) */
   workspaceId?: string
+  /**
+   * Project ID bound to this request. Currently set only by the
+   * `runtimeToken` auth path — the token is scoped to a single project,
+   * and downstream code (e.g. `authorizeProject`, `requireProjectAccess`)
+   * uses this to verify the requested project matches the token scope.
+   */
+  projectId?: string
   /** Whether the request is authenticated */
   isAuthenticated: boolean
   /** True when the session check failed due to a server-side error (DB, etc.) */
@@ -42,8 +62,19 @@ export interface AuthContext {
    * Used by voice routes and other dual-mode endpoints that need to
    * branch on credential type (e.g. to skip session-cookie-only
    * behaviors for SDK callers).
+   *
+   * `runtimeToken` is set when the caller presented a valid
+   * `x-runtime-token` (or `Authorization: Bearer <token>` that is not a
+   * `shogo_sk_` key) matching `deriveRuntimeToken(projectId)` for a
+   * project supplied via query / route param. For such callers,
+   * `userId` is the resolved project-owner (a real `user` row — see
+   * ../lib/runtime-token.md §3: project-scoped Member role=owner,
+   * falling back to workspace-scoped). This is representation, not an
+   * identity assertion; the capability is still project-scoped.
+   * Code that must refuse runtime callers branches on
+   * `via === 'runtimeToken'`, never on a userId string shape.
    */
-  via?: 'apiKey' | 'session' | 'tunnel'
+  via?: 'apiKey' | 'session' | 'tunnel' | 'runtimeToken'
   /**
    * True when the request was authenticated via tunnel headers
    * (x-tunnel-auth-user-id). The cloud proxy already verified workspace
@@ -84,7 +115,103 @@ export async function authMiddleware(c: Context, next: Next) {
     } catch {}
   }
 
-  // 2. Try tunnel-forwarded auth (from cloud proxy via instance tunnel).
+  // 2. Try runtime-token auth (pod → API, project-scoped capability).
+  //    Every Shogo-managed pod is started with env:
+  //      PROJECT_ID       — the project this pod serves
+  //      RUNTIME_AUTH_SECRET — HMAC(signingSecret, "runtime-auth:"+projectId)
+  //    When user code running inside the pod calls the Shogo API on
+  //    behalf of the project, it forwards `x-runtime-token: $RUNTIME_AUTH_SECRET`
+  //    (or equivalent `Authorization: Bearer <token>`). We validate by
+  //    re-deriving the token for the projectId supplied in the request
+  //    and comparing in constant time. Project-scoped → downstream
+  //    `authorizeProject` still must verify the requested project
+  //    matches `authCtx.projectId`.
+  const runtimeToken =
+    c.req.header("x-runtime-token") ??
+    (authHeader?.startsWith("Bearer ") && !authHeader.startsWith("Bearer shogo_sk_")
+      ? authHeader.slice(7)
+      : undefined)
+  if (runtimeToken) {
+    const scopedProjectId =
+      c.req.query("projectId") ?? c.req.param("projectId") ?? undefined
+    if (scopedProjectId) {
+      try {
+        const expected = deriveRuntimeToken(scopedProjectId)
+        if (safeTokenEqual(runtimeToken, expected)) {
+          // Resolve a real owner userId in the same round-trip as the
+          // project existence check. See ../lib/runtime-token.md §3:
+          // AuthContext.userId for runtime-token callers is the project's
+          // owner Member (project-scoped first, then workspace-scoped).
+          // This is representation, not an identity assertion — the pod
+          // did not authenticate as that user; `via === 'runtimeToken'`
+          // remains the capability signal.
+          const project = await prisma.project.findUnique({
+            where: { id: scopedProjectId },
+            select: {
+              workspaceId: true,
+              members: {
+                where: { role: 'owner' },
+                orderBy: { createdAt: 'asc' },
+                select: { userId: true },
+                take: 1,
+              },
+              workspace: {
+                select: {
+                  members: {
+                    where: { role: 'owner' },
+                    orderBy: { createdAt: 'asc' },
+                    select: { userId: true },
+                    take: 1,
+                  },
+                },
+              },
+            },
+          })
+          const ownerUserId =
+            project?.members[0]?.userId ??
+            project?.workspace.members[0]?.userId
+          if (project && ownerUserId) {
+            c.set("auth", {
+              userId: ownerUserId,
+              workspaceId: project.workspaceId,
+              projectId: scopedProjectId,
+              isAuthenticated: true,
+              via: 'runtimeToken',
+            })
+            await next()
+            return
+          }
+          if (project && !ownerUserId) {
+            // Project exists but has no owner in either scope. This
+            // should not happen given workspace-creation invariants,
+            // but we fall through (→ 401 at requireAuth) rather than
+            // silently attributing to a random user.
+            console.warn(
+              "[authMiddleware] runtime-token: no owner resolvable for project",
+              { path: c.req.path, projectId: scopedProjectId },
+            )
+          }
+        }
+      } catch (err) {
+        // derive may throw in production if signing secret missing;
+        // fall through to next auth path rather than 500.
+        // NOTE: never log the incoming `runtimeToken` — it's a bearer
+        // capability. The err itself should not contain the token, but
+        // if future changes pass more context in, route them through
+        // `redactSensitiveHeaders` first. The path/projectId are safe.
+        console.warn(
+          "[authMiddleware] runtime-token derive failed:",
+          {
+            path: c.req.path,
+            projectId: scopedProjectId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        )
+      }
+    }
+  }
+
+  // 3. Try tunnel-forwarded auth (from cloud proxy via instance tunnel).
   //    The cloud transparent proxy authenticates the user via session cookie,
   //    then injects x-tunnel-auth-user-id into the tunnel request. The
   //    desktop's tunnel handler (instance-tunnel.ts) forwards this header
@@ -106,7 +233,7 @@ export async function authMiddleware(c: Context, next: Next) {
     return
   }
 
-  // 3. Try Better Auth session (cookies)
+  // 4. Try Better Auth session (cookies)
   try {
     const session = await auth.api.getSession({
       headers: c.req.raw.headers,
@@ -246,7 +373,22 @@ export async function requireProjectAccess(c: Context, next: Next) {
     )
   }
 
-  // Super admins bypass project access checks
+  // Runtime-token is project-scoped: only the token's own projectId is trusted.
+  if (auth?.via === 'runtimeToken') {
+    if (auth.projectId === projectId) {
+      await next()
+      return
+    }
+    return c.json(
+      { error: { code: "forbidden", message: "Runtime token scope mismatch" } },
+      403
+    )
+  }
+
+  // Super admins bypass project access checks.
+  // Note: runtime-token callers never reach here — the `via` branch
+  // above short-circuits them; the project-owner userId we stamp is
+  // not expected to carry super_admin role.
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { role: true },
@@ -308,9 +450,10 @@ export function isProjectReservedTopLevelPath(path: string): boolean {
  * from third-party SDK consumers (bearer key).
  *
  * Resolution precedence (inherited from authMiddleware):
- *   1. Authorization: Bearer shogo_sk_* → via: 'apiKey'
- *   2. x-tunnel-auth-user-id            → via: 'tunnel'
- *   3. Better Auth session cookie       → via: 'session'
+ *   1. Authorization: Bearer shogo_sk_*  → via: 'apiKey'
+ *   2. x-runtime-token (+ projectId)     → via: 'runtimeToken'
+ *   3. x-tunnel-auth-user-id             → via: 'tunnel'
+ *   4. Better Auth session cookie        → via: 'session'
  */
 export async function apiKeyOrSession(c: Context, next: Next) {
   const authCtx = c.get('auth')
@@ -341,6 +484,7 @@ export type AuthorizeProjectResult =
  * Verify the authenticated caller has access to `projectId`.
  *
  * - API-key callers: project.workspaceId must match auth.workspaceId.
+ * - Runtime-token callers: authCtx.projectId must match the requested projectId.
  * - Session callers: caller must be a member of project.workspaceId.
  * - Tunnel callers: trusted (cloud proxy already verified membership).
  *
@@ -389,6 +533,22 @@ export async function authorizeProject(
         status: 403,
         code: 'forbidden',
         message: 'Project is not in this API key\'s workspace',
+      }
+    }
+    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
+  }
+
+  if (authCtx.via === 'runtimeToken') {
+    // Runtime tokens are per-project capabilities; only the token's own
+    // projectId is trusted. No workspace/membership check needed because
+    // the token itself is the capability, derived from platform signing
+    // material + the projectId.
+    if (authCtx.projectId !== project.id) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'forbidden',
+        message: 'Runtime token scope mismatch',
       }
     }
     return { ok: true, workspaceId: project.workspaceId, projectId: project.id }

@@ -105,6 +105,7 @@ import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
+import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import {
   FIX_IN_AGENT_EVENT,
@@ -1922,6 +1923,21 @@ export const ChatPanel = observer(function ChatPanel({
       })
     }
   }, [stop, projectId, localAgentUrl, expoFetch, currentSessionId])
+
+  // Keep the shared subagent-stop helper pointed at the current API/runtime
+  // so SubagentCard (chat) and AgentEntry (agents panel) can cancel without
+  // having handlers threaded through the tree.
+  useEffect(() => {
+    configureSubagentStop({
+      localAgentUrl,
+      projectId,
+      apiBaseUrl: API_URL!,
+      platform: Platform.OS,
+      getCookie: () => authClient.getCookie(),
+      fetchFn: expoFetch || undefined,
+    })
+    return () => { configureSubagentStop(null) }
+  }, [localAgentUrl, projectId, expoFetch])
 
   // Idle timeout to force-complete hung streams
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)

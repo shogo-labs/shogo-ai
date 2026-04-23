@@ -19,10 +19,12 @@ import {
   GitFork,
   TrendingUp,
   AlertTriangle,
+  Square,
 } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
+import { stopSubagent } from "../../../lib/subagent-stop"
 import { teamStore, type TeamData, type MemberData, type TaskData, type MessageData, type ActivityEvent, type AgentTypeInfo } from "../../../lib/team-store"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { ThinkingWidget } from "../../chat/turns/ThinkingWidget"
@@ -118,6 +120,13 @@ function AgentEntry({
   const isError = data.status === "error"
   const label = data.description || data.agentType || "Sub-agent"
 
+  const canStop = isRunning && !!data.instanceId
+  const handleStop = (e: any) => {
+    if (e?.stopPropagation) e.stopPropagation()
+    if (!data.instanceId) return
+    stopSubagent(data.instanceId, toolId)
+  }
+
   return (
     <View className="rounded-lg border border-border/40 bg-muted/20 overflow-hidden">
       <Pressable onPress={onToggle} className="px-3 py-3 flex-row items-center gap-2">
@@ -125,10 +134,27 @@ function AgentEntry({
         <Text className="flex-1 text-xs font-semibold text-foreground" numberOfLines={1}>
           {label}
         </Text>
+        {data.model && (
+          <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60" numberOfLines={1}>
+            {data.model}
+          </Text>
+        )}
         <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60">
           {data.agentType}
         </Text>
-        {isRunning && <PulsingDot />}
+        {canStop ? (
+          <Pressable
+            onPress={handleStop}
+            accessibilityLabel="Stop subagent"
+            testID={`stop-subagent-${data.instanceId}`}
+            hitSlop={6}
+            className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
+          >
+            <Square className="text-destructive-foreground m-auto" size={10} />
+          </Pressable>
+        ) : (
+          isRunning && <PulsingDot />
+        )}
         {isDone && <CheckCircle2 className="text-muted-foreground" size={14} />}
         {isError && <XCircle className="text-muted-foreground" size={14} />}
         {isExpanded ? (

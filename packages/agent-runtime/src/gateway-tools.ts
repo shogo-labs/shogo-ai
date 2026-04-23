@@ -2934,8 +2934,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const forkDirective = buildForkDirective(prompt)
         const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
+        const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
-          const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
           w.write({
             type: 'data-usage',
             data: {
@@ -2960,6 +2960,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
           iterations: result.iterations,
           tokens: { input: result.inputTokens, output: result.outputTokens },
           parts: accumulated?.parts,
+          model: accumulated?.model || subModel,
         })
       }
 
@@ -3027,6 +3028,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         iterations: result.iterations,
         tokens: { input: result.inputTokens, output: result.outputTokens },
         parts: accumulated?.parts,
+        model: accumulated?.model || result.effectiveModelId || inst.model,
       })
     },
   }
@@ -3042,12 +3044,13 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
  * text/tool events. Each sub-agent is scoped to its own spawnToolCallId,
  * so multiple concurrent sub-agents work correctly.
  */
-export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[] }; setInstanceId: (id: string) => void } | undefined {
+export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[]; model: string | null }; setInstanceId: (id: string) => void } | undefined {
   if (!w) return undefined
 
   const parts: any[] = []
   let agentId: string | null = null
   let instanceId: string | null = null
+  let model: string | null = null
   let lastEmitTime = 0
   let pendingEmit: ReturnType<typeof setTimeout> | null = null
   const THROTTLE_MS = 150
@@ -3068,7 +3071,7 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     w.write({
       type: 'tool-output-available',
       toolCallId: spawnToolCallId,
-      output: { agentId, instance_id: instanceId, parts: [...parts] },
+      output: { agentId, instance_id: instanceId, model, parts: [...parts] },
       dynamic: true,
       preliminary: true,
     })
@@ -3077,6 +3080,10 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
   const callbacks: SubagentStreamCallbacks = {
     onStart: (_name: string, _desc: string, id: string) => {
       agentId = id
+    },
+    onModelResolved: (m: string) => {
+      model = m
+      emitPreliminary(true)
     },
     onEnd: (_name: string) => {
       // Flush any pending throttled emit so the last snapshot arrives
@@ -3135,7 +3142,7 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
 
   return {
     callbacks,
-    getAccumulatedOutput: () => ({ agentId, parts: [...parts] }),
+    getAccumulatedOutput: () => ({ agentId, parts: [...parts], model }),
     setInstanceId: (id: string) => {
       instanceId = id
       scLog(

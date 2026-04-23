@@ -22,6 +22,8 @@ export interface SubagentStreamData {
   instanceId?: string
   agentType: string
   description: string
+  /** Concrete LLM model id the subagent is running on (displayed as a badge). */
+  model?: string
   status: "running" | "completed" | "error"
   parts: SubagentStreamPart[]
 }
@@ -94,6 +96,13 @@ export const subagentStreamStore = {
       `instanceId=${instanceId}`,
     )
     store.set(toolId, { ...entry, instanceId })
+    notify()
+  },
+
+  setModel(toolId: string, model: string) {
+    const entry = store.get(toolId)
+    if (!entry || entry.model === model) return
+    store.set(toolId, { ...entry, model })
     notify()
   },
 

@@ -87,6 +87,8 @@ export interface SubagentResult {
 
 export interface SubagentStreamCallbacks {
   onStart?: (name: string, description: string, agentId: string) => void
+  /** Fired once the subagent's concrete model id is known (after routing/tier resolution). */
+  onModelResolved?: (model: string) => void
   onEnd?: (name: string) => void
   onTextDelta?: (delta: string) => void
   onThinkingStart?: () => void
@@ -744,6 +746,8 @@ export async function runSubagent(
   } else {
     model = resolveModelTier(config.modelTier, parentModel)
   }
+
+  try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
 
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
     const runProvider = useAutoRouting ? inferProviderFromModel(runModel, provider) : provider

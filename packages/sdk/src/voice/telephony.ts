@@ -339,6 +339,192 @@ export class HostedTelephonyClient implements TelephonyClient {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime-token (Mode B, pod-native)
+// ---------------------------------------------------------------------------
+
+export interface HostedRuntimeTokenOptions {
+  /**
+   * Per-project runtime token — the value of `process.env.RUNTIME_AUTH_SECRET`
+   * injected into every Shogo-managed pod. This is **not** a user API key;
+   * it's a deterministic HMAC-derived capability scoped to exactly one
+   * `projectId`. Never ship this value to the browser bundle.
+   */
+  runtimeToken: string
+  projectId: string
+  apiUrl: string
+  fetch?: typeof fetch
+}
+
+/**
+ * Hosted telephony client that authenticates via `x-runtime-token` instead
+ * of a `shogo_sk_*` bearer. Used by generated pod apps: every pod already
+ * has `RUNTIME_AUTH_SECRET` + `PROJECT_ID` in env, so `createClient()` can
+ * pick this implementation automatically — the developer never mints a key.
+ *
+ * Wire-compat with {@link HostedTelephonyClient}: same endpoints, same
+ * response shapes. The only differences are:
+ *
+ *   1. `Authorization` is replaced with `x-runtime-token`.
+ *   2. Every request URL carries `?projectId=<pid>` so the Shogo API's
+ *      `authMiddleware` can re-derive and validate the token.
+ */
+export class HostedRuntimeTokenClient implements TelephonyClient {
+  readonly mode = 'hosted'
+  private readonly fetchImpl: typeof fetch
+
+  constructor(private readonly opts: HostedRuntimeTokenOptions) {
+    if (!opts.runtimeToken) {
+      throw new TelephonyConfigError(
+        'Runtime-token telephony requires runtimeToken (process.env.RUNTIME_AUTH_SECRET)',
+      )
+    }
+    if (!opts.projectId) {
+      throw new TelephonyConfigError('Runtime-token telephony requires projectId')
+    }
+    if (!opts.apiUrl) {
+      throw new TelephonyConfigError('Runtime-token telephony requires apiUrl')
+    }
+    this.fetchImpl = opts.fetch ?? globalThis.fetch
+    if (typeof this.fetchImpl !== 'function') {
+      throw new TelephonyConfigError('global fetch is unavailable; pass opts.fetch')
+    }
+  }
+
+  private url(path: string): string {
+    const base = this.opts.apiUrl.replace(/\/+$/, '')
+    // Append ?projectId=... so authMiddleware can derive the expected token.
+    // Preserve any existing query component the caller passed in `path`.
+    const sep = path.includes('?') ? '&' : '?'
+    return `${base}${path}${sep}projectId=${encodeURIComponent(this.opts.projectId)}`
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit & { json?: unknown } = {},
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      'x-runtime-token': this.opts.runtimeToken,
+      ...(init.headers as Record<string, string> | undefined),
+    }
+    let body = init.body
+    if (init.json !== undefined) {
+      headers['content-type'] = 'application/json'
+      body = JSON.stringify(init.json)
+    }
+    const res = await this.fetchImpl(this.url(path), {
+      ...init,
+      headers,
+      body,
+      credentials: 'omit',
+    })
+    const text = await res.text()
+    let parsed: unknown = undefined
+    if (text) {
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        parsed = text
+      }
+    }
+    if (!res.ok) {
+      const message =
+        (parsed as { error?: string; message?: string } | undefined)?.error ??
+        (parsed as { error?: string; message?: string } | undefined)?.message ??
+        `Shogo API error: ${res.status}`
+      throw new TelephonyApiError(message, res.status, parsed)
+    }
+    return parsed as T
+  }
+
+  async provisionNumber(
+    opts: ProvisionNumberOptions = {},
+  ): Promise<ProvisionNumberResult> {
+    const data = await this.request<{
+      phoneNumber: string
+      twilioPhoneSid: string
+      elevenlabsPhoneId: string
+      creditsDebited?: { setup: number; monthly: number }
+    }>(
+      `/api/voice/twilio/provision-number/${encodeURIComponent(
+        this.opts.projectId,
+      )}`,
+      {
+        method: 'POST',
+        json: {
+          areaCode: opts.areaCode,
+          country: opts.country,
+          friendlyName: opts.friendlyName,
+        },
+      },
+    )
+    return {
+      phoneNumber: data.phoneNumber,
+      twilioPhoneSid: data.twilioPhoneSid,
+      elevenlabsPhoneId: data.elevenlabsPhoneId,
+      creditsDebited: data.creditsDebited,
+    }
+  }
+
+  async outboundCall(opts: OutboundCallOptions): Promise<OutboundCallResult> {
+    const data = await this.request<{
+      callSid: string
+      conversationId: string
+      estimatedCredits?: number
+    }>(
+      `/api/voice/twilio/outbound/${encodeURIComponent(this.opts.projectId)}`,
+      {
+        method: 'POST',
+        json: { to: opts.to, dynamicVariables: opts.dynamicVariables },
+      },
+    )
+    return {
+      callSid: data.callSid,
+      conversationId: data.conversationId,
+      estimatedCredits: data.estimatedCredits,
+    }
+  }
+
+  async releaseNumber(): Promise<ReleaseNumberResult> {
+    await this.request<unknown>(
+      `/api/voice/twilio/number/${encodeURIComponent(this.opts.projectId)}`,
+      { method: 'DELETE' },
+    )
+    return { released: true }
+  }
+
+  async getUsage(range: VoiceUsageRange = {}): Promise<VoiceUsageSummary> {
+    const q = new URLSearchParams()
+    if (range.from) q.set('from', range.from)
+    if (range.to) q.set('to', range.to)
+    const path = `/api/voice/usage/${encodeURIComponent(this.opts.projectId)}${
+      q.toString() ? `?${q.toString()}` : ''
+    }`
+    return this.request<VoiceUsageSummary>(path, { method: 'GET' })
+  }
+
+  async listCalls(opts: ListCallsOptions = {}): Promise<VoiceCallSummary[]> {
+    const q = new URLSearchParams()
+    if (opts.limit) q.set('limit', String(opts.limit))
+    if (opts.includeTranscript) q.set('includeTranscript', '1')
+    const path = `/api/voice/calls/${encodeURIComponent(this.opts.projectId)}${
+      q.toString() ? `?${q.toString()}` : ''
+    }`
+    const res = await this.request<{ projectId: string; calls: VoiceCallSummary[] }>(
+      path,
+      { method: 'GET' },
+    )
+    return res.calls
+  }
+
+  async getCall(callId: string): Promise<VoiceCallDetail> {
+    const path = `/api/voice/calls/${encodeURIComponent(
+      this.opts.projectId,
+    )}/${encodeURIComponent(callId)}`
+    return this.request<VoiceCallDetail>(path, { method: 'GET' })
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Direct (Mode A)
 // ---------------------------------------------------------------------------
 
@@ -512,11 +698,13 @@ export class DirectTelephonyClient implements TelephonyClient {
 
 export type CreateTelephonyOptions =
   | ({ mode: 'hosted' } & HostedTelephonyOptions)
+  | ({ mode: 'runtime-token' } & HostedRuntimeTokenOptions)
   | ({ mode: 'direct' } & DirectTelephonyOptions)
 
 export function createTelephonyClient(
   opts: CreateTelephonyOptions,
 ): TelephonyClient {
   if (opts.mode === 'hosted') return new HostedTelephonyClient(opts)
+  if (opts.mode === 'runtime-token') return new HostedRuntimeTokenClient(opts)
   return new DirectTelephonyClient(opts)
 }

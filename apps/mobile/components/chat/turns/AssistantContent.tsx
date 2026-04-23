@@ -486,6 +486,10 @@ export const AssistantContent = memo(
         )
         subagentStreamStore.setInstanceId(tool.id, instanceId)
       }
+      const model = (tool.result as any)?.model as string | undefined
+      if (model && existing?.model !== model) {
+        subagentStreamStore.setModel(tool.id, model)
+      }
     }
   }, [orderedParts])
 

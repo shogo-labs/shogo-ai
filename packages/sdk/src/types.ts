@@ -40,8 +40,14 @@ export interface ShogoClientConfig<DB = unknown> {
   shogoCloudUrl?: string
 
   /**
-   * Shogo project id. Required for Mode B voice telephony; also forwarded
-   * to the direct (Mode A) telephony client as a bookkeeping handle.
+   * Shogo project id. Required for Mode B voice telephony, pod-native
+   * runtime-token voice telephony, and also forwarded to the direct
+   * (Mode A) telephony client as a bookkeeping handle.
+   *
+   * When the process has `RUNTIME_AUTH_SECRET` in its env (true for every
+   * Shogo-managed pod), `createClient({ projectId })` automatically
+   * wires `voice.telephony` to a pod-native `HostedRuntimeTokenClient`
+   * — no API key required.
    */
   projectId?: string
 

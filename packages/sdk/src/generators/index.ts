@@ -117,6 +117,28 @@ export {
   type GeneratedAdminRoutesFile,
 } from './admin-routes-generator'
 
+// Shogo SDK client generator (emits `src/lib/shogo.ts` for pod apps)
+export {
+  generateShogoClient,
+  type GeneratedShogoClientFile,
+  type ShogoClientGeneratorOptions,
+} from './shogo-client-generator'
+
+// Shogo voice components generator (emits drop-in React components)
+export {
+  generateVoiceComponents,
+  type GeneratedVoiceComponentFile,
+  type VoiceComponentsGeneratorOptions,
+} from './voice-components-generator'
+
+// deps-doctor: reconcile features → runtime deps in package.json
+export {
+  ensureFeatureDeps,
+  FEATURE_DEPS,
+  type DepsDoctorFeatures,
+  type DepsDoctorReport,
+} from './deps-doctor'
+
 // Legacy exports (for backward compatibility)
 export { generateServerFunctions } from './server-functions'
 export { generateDomainStore } from './domain-store'
