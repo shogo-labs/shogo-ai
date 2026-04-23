@@ -841,15 +841,18 @@ export const ChatPanel = observer(function ChatPanel({
 
   const planStream = usePlanStreamSafe()
 
-  // Load session metadata from API if not already cached
+  // Load session metadata from API if not already cached. Gated on
+  // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
+  // restored chat tab don't each fire their own request on mount. Uses
+  // `loadById` (not `loadAll({ id })`) so the response doesn't
+  // destructively wipe sibling sessions out of the shared MST collection.
   useEffect(() => {
-    if (chatSessionId && !studioChat.chatSessionCollection.get(chatSessionId)) {
-      console.log("[ChatPanel] Loading session from API:", chatSessionId)
-      studioChat.chatSessionCollection
-        .loadAll({ id: chatSessionId })
-        .catch((err: any) => console.warn("[ChatPanel] Failed to load session:", err))
-    }
-  }, [chatSessionId, studioChat])
+    if (!isActive || !chatSessionId) return
+    if (studioChat.chatSessionCollection.get(chatSessionId)) return
+    studioChat.chatSessionCollection
+      .loadById(chatSessionId)
+      .catch((err: any) => console.warn("[ChatPanel] Failed to load session:", err))
+  }, [isActive, chatSessionId, studioChat])
 
   const currentSession = currentSessionId
     ? studioChat.chatSessionCollection.get(currentSessionId)
