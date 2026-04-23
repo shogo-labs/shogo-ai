@@ -2,18 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "shogo-audio",
+    name: "shogo-sysaudio",
     platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
-            name: "shogo-audio",
+            name: "shogo-sysaudio",
             path: "Sources",
             linkerSettings: [
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreAudio"),
-                .linkedFramework("AudioToolbox"),
-                .linkedFramework("EventKit"),
             ]
         )
     ]

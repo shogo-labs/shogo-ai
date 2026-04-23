@@ -1,9 +1,120 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { contextBridge, ipcRenderer } from 'electron'
+import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture-manager'
 
 const portArg = process.argv.find((a) => a.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : '39100'
+
+// --- Recording capture pipeline (runs here, in the renderer) ----------------
+
+interface ActiveSession {
+  id: string
+  audioPath: string
+  manager: AudioCaptureManager
+}
+
+let activeSession: ActiveSession | null = null
+
+function sendPcmChunk(sessionId: string, source: 'mic' | 'system', chunk: PcmChunkMessage): void {
+  // Electron's `ipcRenderer.postMessage` only accepts MessagePort objects in
+  // the transfer list — unlike the web MessagePort API, ArrayBuffers are NOT
+  // transferable across its IPC boundary (the structured-clone copy is done
+  // by the IPC layer regardless). That's fine: 100 ms of 48 kHz mono Int16
+  // is ~9.6 KB per message, well below any meaningful overhead.
+  ipcRenderer.postMessage('recording:pcm', {
+    sessionId,
+    source,
+    sampleRate: chunk.sampleRate,
+    channels: chunk.channels,
+    bitsPerSample: chunk.bitsPerSample,
+    frames: chunk.frames,
+    buffer: chunk.buffer,
+  })
+}
+
+async function stopActive(): Promise<void> {
+  if (!activeSession) return
+  try {
+    await activeSession.manager.stop()
+  } catch (err) {
+    console.warn('[ShogoPreload] capture stop error:', err)
+  }
+  activeSession = null
+}
+
+async function startRecording(): Promise<{ ok: boolean; id?: string; audioPath?: string; error?: string }> {
+  if (activeSession) {
+    return { ok: false, error: 'already recording' }
+  }
+
+  const session = (await ipcRenderer.invoke('recording:start-session')) as
+    | { ok: true; id: string; audioPath: string; captureSystemAudio: boolean; platform: NodeJS.Platform }
+    | { ok: false; error: string }
+
+  if (!session.ok) {
+    return { ok: false, error: session.error }
+  }
+
+  const manager = new AudioCaptureManager({
+    onPcm: (source, chunk) => sendPcmChunk(session.id, source, chunk),
+    onError: (source, err) => {
+      ipcRenderer.send('recording:source-error', {
+        sessionId: session.id,
+        source,
+        message: err.message,
+      })
+    },
+    onInfo: (message, data) => {
+      ipcRenderer.send('recording:source-info', { sessionId: session.id, message, data })
+    },
+  })
+
+  try {
+    const result = await manager.start({
+      sessionId: session.id,
+      captureSystemAudio: session.captureSystemAudio,
+      platform: session.platform,
+    })
+    ipcRenderer.send('recording:capture-ready', {
+      sessionId: session.id,
+      mic: result.mic,
+      system: result.system,
+    })
+    if (!result.mic) {
+      await manager.stop()
+      await ipcRenderer.invoke('recording:abort-session', { sessionId: session.id })
+      return { ok: false, error: 'microphone capture failed (permission denied?)' }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await ipcRenderer.invoke('recording:abort-session', { sessionId: session.id })
+    return { ok: false, error: message }
+  }
+
+  activeSession = { id: session.id, audioPath: session.audioPath, manager }
+  return { ok: true, id: session.id, audioPath: session.audioPath }
+}
+
+async function stopRecording(): Promise<{ ok: boolean; id?: string; audioPath?: string; duration?: number; error?: string }> {
+  const session = activeSession
+  await stopActive()
+  const stopped = (await ipcRenderer.invoke('recording:stop-session')) as
+    | { ok: true; id: string; audioPath: string; duration: number }
+    | { ok: false; error: string }
+  if (!stopped.ok) return { ok: false, error: stopped.error }
+  return {
+    ok: true,
+    id: session?.id ?? stopped.id,
+    audioPath: stopped.audioPath,
+    duration: stopped.duration,
+  }
+}
+
+// Abort any in-flight capture if the window is torn down abruptly.
+window.addEventListener('beforeunload', () => { void stopActive() })
+
+// --- Exposed surface -------------------------------------------------------
 
 contextBridge.exposeInMainWorld('shogoDesktop', {
   platform: process.platform,
@@ -33,9 +144,10 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   },
   recycleVMPool: () => ipcRenderer.invoke('recycle-vm-pool'),
 
-  // Meeting recording
-  startRecording: () => ipcRenderer.invoke('start-recording'),
-  stopRecording: () => ipcRenderer.invoke('stop-recording'),
+  // Meeting recording — renderer owns the Web Audio pipeline, main owns the
+  // file I/O + (on macOS) the shogo-sysaudio child process.
+  startRecording: () => startRecording(),
+  stopRecording: () => stopRecording(),
   getRecordingStatus: () => ipcRenderer.invoke('get-recording-status'),
   getMeetingConfig: () => ipcRenderer.invoke('get-meeting-config'),
   setMeetingConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('set-meeting-config', config),
@@ -54,12 +166,16 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   onUpcomingMeeting: (callback: (data: { title: string; start: number; minutesUntilStart: number }) => void) => {
     ipcRenderer.on('upcoming-meeting', (_event, data) => callback(data))
   },
+  onMeetingDetected: (callback: (data: { source: string; app?: string; title?: string }) => void) => {
+    ipcRenderer.on('meeting-detected', (_event, data) => callback(data))
+  },
   removeRecordingListeners: () => {
     ipcRenderer.removeAllListeners('recording-started')
     ipcRenderer.removeAllListeners('recording-duration')
     ipcRenderer.removeAllListeners('recording-stopped')
     ipcRenderer.removeAllListeners('recording-resumed')
     ipcRenderer.removeAllListeners('upcoming-meeting')
+    ipcRenderer.removeAllListeners('meeting-detected')
   },
   onNavigate: (callback: (path: string) => void) => {
     ipcRenderer.on('navigate', (_event, path) => callback(path))

@@ -17,7 +17,12 @@ import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './loca
 import { getWebDir } from './paths'
 import { readConfig, writeConfig, getDeviceInfo } from './config'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
-import { registerRecordingIpcHandlers, startMeetingMonitor, cleanupRecording } from './recording'
+import {
+  registerRecordingIpcHandlers,
+  startMeetingMonitor,
+  cleanupRecording,
+  startRecordingHttpBridge,
+} from './recording'
 import { createTray, destroyTray } from './tray'
 
 // Shape of JSON responses from the local API's cloud-login endpoints.
@@ -464,7 +469,12 @@ function createWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      // sandbox is disabled so the preload script can require the audio
+      // capture pipeline (pcm-worklet.ts, audio-capture-manager.ts) via
+      // relative paths. contextIsolation=true + nodeIntegration=false still
+      // keep the main world insulated — only the contextBridge-exposed
+      // functions reach the page.
+      sandbox: false,
       additionalArguments: [`--api-port=${getApiPort()}`],
     },
     show: false,
@@ -639,7 +649,8 @@ app.whenReady().then(async () => {
   registerRecordingIpcHandlers()
   buildAppMenu()
 
-  if (!isCloudMode) {
+  const skipLocalServer = !isCloudMode && process.env.SHOGO_SKIP_LOCAL_SERVER === 'true'
+  if (!isCloudMode && !skipLocalServer) {
     console.log('[Desktop] Starting local server...')
     try {
       await startLocalServer()
@@ -649,6 +660,8 @@ app.whenReady().then(async () => {
       return
     }
     setupSessionHandlers()
+  } else if (skipLocalServer) {
+    console.log('[Desktop] SHOGO_SKIP_LOCAL_SERVER=true — skipping local API (e2e mode)')
   }
 
   createWindow()
@@ -667,6 +680,7 @@ app.whenReady().then(async () => {
     createTray()
     startMeetingMonitor()
     startCloudLoginHeartbeat()
+    void startRecordingHttpBridge()
   }
 
   if (app.isPackaged) {
