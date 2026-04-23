@@ -74,7 +74,7 @@ import {
   View,
 } from 'react-native'
 import { Text } from '@/components/ui/text'
-import { Eye, Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
+import { Eye, Keyboard, Mic, MicOff, Send, Square, X } from 'lucide-react-native'
 import { ConversationProvider } from '@elevenlabs/react'
 import { OrganicParticles, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
@@ -741,10 +741,17 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     void sendMessage({ text })
   }, [draft, sendMessage])
 
+  // Mic button behaviour: first press connects; subsequent presses
+  // toggle ElevenLabs' `setMuted` instead of ending the session. Muting
+  // gates input audio off but keeps the WebSocket + MediaStream alive,
+  // so (a) any pending user utterance is naturally committed by the
+  // server's VAD after the silence window, and (b) unmuting never by
+  // itself interrupts the agent — a new user turn only starts if the
+  // VAD picks up actual speech.
   const handleToggleMic = useCallback(async () => {
     setVoiceError(null)
     if (voiceActive) {
-      conversation.end()
+      conversation.setMuted(!conversation.isMuted)
       return
     }
     try {
@@ -757,6 +764,24 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       )
     }
   }, [conversation, voiceActive])
+
+  // ElevenLabs' `useConversation` has no public barge-in API, so "stop
+  // the AI from talking" is implemented as a fast reconnect. The
+  // hook-level `restart({ suppressFirstMessage: true })` passes
+  // `overrides.agent.firstMessage = ''` so the new session comes back
+  // silent instead of replaying an intro, and it preserves the in-
+  // memory transcript across the reconnect gap.
+  const handleStopAI = useCallback(async () => {
+    setVoiceError(null)
+    try {
+      await conversation.restart({ suppressFirstMessage: true })
+    } catch (err: unknown) {
+      console.warn('[ShogoChatPanel] restart after stop-AI failed', err)
+      setVoiceError(
+        (err as Error)?.message || 'Could not restart voice session.',
+      )
+    }
+  }, [conversation])
 
   // When the user flips back to text mode we end any live voice session —
   // we never want the mic hot while the voice composer is hidden.
@@ -859,10 +884,12 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       {isVoiceMode ? (
         <VoiceComposer
           onToggleMic={handleToggleMic}
+          onStopAI={handleStopAI}
           voiceActive={voiceActive}
           voiceConnecting={conversation.status === 'connecting'}
           voiceSpeaking={conversation.isSpeaking}
           voiceListening={conversation.isListening}
+          voiceMuted={voiceActive && conversation.isMuted}
           voiceError={voiceError}
         />
       ) : (
@@ -1145,21 +1172,32 @@ function MessageRow({
  */
 function VoiceComposer({
   onToggleMic,
+  onStopAI,
   voiceActive,
   voiceConnecting,
   voiceSpeaking,
   voiceListening,
+  voiceMuted,
   voiceError,
 }: {
   onToggleMic: () => void
+  onStopAI: () => void
   voiceActive: boolean
   voiceConnecting: boolean
   voiceSpeaking: boolean
   voiceListening: boolean
+  voiceMuted: boolean
   voiceError: string | null
 }) {
+  // Visual states (in precedence order once a session is live):
+  //   muted     → muted-tone background, MicOff icon
+  //   speaking  → emerald (agent is talking)
+  //   listening → primary (VAD says the user is talking)
+  //   idle conn → primary/80
   const micBgClass = voiceActive
-    ? voiceSpeaking
+    ? voiceMuted
+      ? 'bg-muted-foreground/60'
+      : voiceSpeaking
       ? 'bg-emerald-500'
       : voiceListening
       ? 'bg-primary'
@@ -1172,28 +1210,49 @@ function VoiceComposer({
   const caption = voiceError
     ? voiceError
     : voiceActive
-    ? voiceSpeaking
+    ? voiceMuted
+      ? 'Muted — tap to unmute'
+      : voiceSpeaking
       ? 'Shogo is speaking…'
       : voiceListening
-      ? 'Listening — tap to stop'
-      : 'Connected — tap to stop'
+      ? 'Listening — tap to mute'
+      : 'Connected — tap to mute'
     : voiceConnecting
     ? 'Connecting…'
     : 'Tap to start talking'
 
+  const micAccessibilityLabel = voiceActive
+    ? voiceMuted
+      ? 'Unmute microphone'
+      : 'Mute microphone'
+    : 'Start voice session'
+
+  const showStopAI = voiceActive && voiceSpeaking
+
   return (
     <View className="px-3 py-2 items-center gap-2">
-      <Pressable
-        onPress={onToggleMic}
-        className={`rounded-full w-12 h-12 items-center justify-center shadow-lg ${micBgClass}`}
-        accessibilityLabel={voiceActive ? 'Stop voice session' : 'Start voice session'}
-      >
-        {voiceActive ? (
-          <MicOff size={26} className={micIconClass} />
-        ) : (
-          <Mic size={26} className={micIconClass} />
-        )}
-      </Pressable>
+      <View className="flex-row items-center gap-3">
+        <Pressable
+          onPress={onToggleMic}
+          className={`rounded-full w-12 h-12 items-center justify-center shadow-lg ${micBgClass}`}
+          accessibilityLabel={micAccessibilityLabel}
+        >
+          {voiceActive && voiceMuted ? (
+            <MicOff size={26} className={micIconClass} />
+          ) : (
+            <Mic size={26} className={micIconClass} />
+          )}
+        </Pressable>
+        {showStopAI ? (
+          <Pressable
+            onPress={onStopAI}
+            className="rounded-full w-9 h-9 items-center justify-center shadow bg-destructive"
+            accessibilityLabel="Stop Shogo from speaking"
+          >
+            <Square size={16} className="text-destructive-foreground" />
+          </Pressable>
+        ) : null}
+      </View>
       <Text
         className={`text-xs text-center ${
           voiceError ? 'text-destructive' : 'text-muted-foreground'

@@ -100,12 +100,33 @@ export interface UseVoiceConversationResult {
   start: () => Promise<void>
   /** End the current session (if any). */
   end: () => void
+  /**
+   * Tear down the active session and immediately reconnect. Primarily
+   * used as a programmatic barge-in: ElevenLabs doesn't expose a public
+   * `interrupt()` on `useConversation`, so stopping the agent mid-
+   * utterance requires a fast disconnect + reconnect. When
+   * `suppressFirstMessage` is `true` (the default), the new session is
+   * started with `overrides.agent.firstMessage = ''` so the agent does
+   * not replay its intro. The accumulated transcript is preserved
+   * across the reconnect gap.
+   */
+  restart: (options?: { suppressFirstMessage?: boolean }) => Promise<void>
   /** `'disconnected' | 'connecting' | 'connected'`. */
   status: 'disconnected' | 'connecting' | 'connected'
   /** Whether the agent is currently speaking. */
   isSpeaking: boolean
   /** Whether the agent is currently listening. */
   isListening: boolean
+  /** Whether the microphone is currently muted (input audio is gated off). */
+  isMuted: boolean
+  /**
+   * Toggle the microphone mute state without tearing down the session.
+   * Wraps `@elevenlabs/react`'s `setMuted`, which in turn calls
+   * `conversation.setMicMuted()`. Muting does not end the WebSocket or
+   * release the `MediaStream`; it simply stops input audio from being
+   * forwarded to the server.
+   */
+  setMuted: (isMuted: boolean) => void
   /** For consumers who want to drive their own visualisation / lipsync. */
   getOutputByteFrequencyData: () => Uint8Array | null
   /** Imperatively send a contextual update (e.g. "user navigated to X"). */
@@ -163,6 +184,11 @@ export function useVoiceConversation(
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
   const weStartedSessionRef = useRef(false)
+  // Set to `true` between `endSession()` and the subsequent `startSession()`
+  // inside `restart(...)`. While true, the disconnect handler skips the
+  // transcript flush and `onConnect` leaves the transcript buffer intact
+  // so the reconnect gap is transparent to consumers.
+  const isRestartingRef = useRef(false)
   const conversationRef = useRef<{
     sendContextualUpdate: (text: string) => void
     sendUserMessage?: (text: string) => void
@@ -208,6 +234,13 @@ export function useVoiceConversation(
   )
 
   const handleTranscriptOnDisconnect = useCallback(() => {
+    if (isRestartingRef.current) {
+      // Transient disconnect between endSession/startSession inside
+      // restart(). Preserve accumulated transcript and the
+      // "we started the session" marker so the consumer's view is
+      // continuous across the gap.
+      return
+    }
     if (!weStartedSessionRef.current) {
       transcriptRef.current = []
       return
@@ -247,8 +280,10 @@ export function useVoiceConversation(
   const conversation = useConversation({
     clientTools: mergedClientTools as never,
     onConnect: () => {
-      transcriptRef.current = []
-      lastInjectedRef.current = ''
+      if (!isRestartingRef.current) {
+        transcriptRef.current = []
+        lastInjectedRef.current = ''
+      }
     },
     onDisconnect: handleTranscriptOnDisconnect,
     onError: (e: unknown) => {
@@ -274,7 +309,8 @@ export function useVoiceConversation(
     },
   })
 
-  const { status, isSpeaking, isListening, startSession, endSession } = conversation
+  const { status, isSpeaking, isListening, isMuted, setMuted, startSession, endSession } =
+    conversation
   conversationRef.current = conversation as unknown as {
     sendContextualUpdate: (text: string) => void
     sendUserMessage?: (text: string) => void
@@ -300,36 +336,81 @@ export function useVoiceConversation(
     return () => window.removeEventListener('pagehide', onHide)
   }, [transcriptIngestPath])
 
-  const start = useCallback(async () => {
-    if (status === 'connected' || status === 'connecting') {
-      try {
-        endSession()
-        await new Promise((r) => setTimeout(r, 120))
-      } catch {
-        /* fall through */
+  // Shared session-start routine used by both `start()` and `restart()`.
+  // `suppressFirstMessage` passes `overrides.agent.firstMessage = ''` so
+  // the agent skips its opening greeting — used when programmatically
+  // reconnecting mid-conversation (e.g. a barge-in "stop AI" control).
+  const startInternal = useCallback(
+    async (opts?: { suppressFirstMessage?: boolean }) => {
+      if (status === 'connected' || status === 'connecting') {
+        try {
+          endSession()
+          await new Promise((r) => setTimeout(r, 120))
+        } catch {
+          /* fall through */
+        }
       }
-    }
-    await navigator.mediaDevices.getUserMedia({ audio: true })
-    const res = await fetch(resolvedSignedUrlPath, {
-      credentials: fetchCredentials,
-      headers: authHeaders(),
-    })
-    if (!res.ok) throw new Error(`Signed URL request failed: ${res.status}`)
-    const data = (await res.json()) as { signedUrl: string; userContext?: string }
-    const ctx = data.userContext || 'No prior memories yet.'
-    weStartedSessionRef.current = true
-    await startSession({
-      signedUrl: data.signedUrl,
-      dynamicVariables: {
-        character_name: characterName,
-        user_context: ctx,
-      },
-    } as never)
-  }, [status, endSession, resolvedSignedUrlPath, fetchCredentials, startSession, characterName, authHeaders])
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+      const res = await fetch(resolvedSignedUrlPath, {
+        credentials: fetchCredentials,
+        headers: authHeaders(),
+      })
+      if (!res.ok) throw new Error(`Signed URL request failed: ${res.status}`)
+      const data = (await res.json()) as { signedUrl: string; userContext?: string }
+      const ctx = data.userContext || 'No prior memories yet.'
+      weStartedSessionRef.current = true
+      const sessionPayload: Record<string, unknown> = {
+        signedUrl: data.signedUrl,
+        dynamicVariables: {
+          character_name: characterName,
+          user_context: ctx,
+        },
+      }
+      if (opts?.suppressFirstMessage) {
+        sessionPayload.overrides = { agent: { firstMessage: '' } }
+      }
+      await startSession(sessionPayload as never)
+    },
+    [
+      status,
+      endSession,
+      resolvedSignedUrlPath,
+      fetchCredentials,
+      startSession,
+      characterName,
+      authHeaders,
+    ],
+  )
+
+  const start = useCallback(async () => {
+    await startInternal()
+  }, [startInternal])
 
   const end = useCallback(() => {
     endSession()
   }, [endSession])
+
+  const restart = useCallback(
+    async (options?: { suppressFirstMessage?: boolean }) => {
+      const suppress = options?.suppressFirstMessage ?? true
+      isRestartingRef.current = true
+      try {
+        try {
+          endSession()
+        } catch {
+          /* best effort — may already be disconnected */
+        }
+        // Small settle window matches the existing reconnect pattern in
+        // startInternal so the underlying transport is fully torn down
+        // before we open a new session.
+        await new Promise((r) => setTimeout(r, 120))
+        await startInternal({ suppressFirstMessage: suppress })
+      } finally {
+        isRestartingRef.current = false
+      }
+    },
+    [endSession, startInternal],
+  )
 
   const sendContextualUpdate = useCallback((text: string) => {
     conversationRef.current?.sendContextualUpdate(text)
@@ -370,9 +451,12 @@ export function useVoiceConversation(
   return {
     start,
     end,
+    restart,
     status: status as UseVoiceConversationResult['status'],
     isSpeaking,
     isListening,
+    isMuted,
+    setMuted,
     getOutputByteFrequencyData,
     sendContextualUpdate,
     sendUserMessage,
