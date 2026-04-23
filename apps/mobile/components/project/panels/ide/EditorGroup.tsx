@@ -2,6 +2,7 @@ import { AlertTriangle } from "lucide-react-native";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { CodeEditor } from "./CodeEditor";
+import { ImagePreview } from "./ImagePreview";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
 
@@ -19,6 +20,7 @@ export function EditorGroupView({
   onCursor,
   onEditorMount,
   settings,
+  themeMode,
 }: {
   group: GroupState;
   focused: boolean;
@@ -31,6 +33,7 @@ export function EditorGroupView({
   onCursor: (line: number, col: number) => void;
   onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
   settings: EditorSettings;
+  themeMode: "dark" | "light";
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -38,7 +41,7 @@ export function EditorGroupView({
   return (
     <div
       onMouseDown={onFocus}
-      className={`flex h-full flex-col bg-[#1e1e1e] ${
+      className={`flex h-full flex-col bg-[color:var(--ide-bg)] ${
         focused ? "" : "opacity-95"
       }`}
     >
@@ -56,21 +59,24 @@ export function EditorGroupView({
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (
-            <div className="flex h-full items-center justify-center text-[13px] text-[#858585]">
+            <div className="flex h-full items-center justify-center text-[13px] text-[color:var(--ide-muted)]">
               Loading {active.name}…
             </div>
           ) : active.error ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-[#f48771]">
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-[color:var(--ide-error)]">
               <AlertTriangle size={24} />
               <div className="text-[13px]">Could not open {active.name}</div>
-              <div className="text-[12px] text-[#858585]">{active.error}</div>
+              <div className="text-[12px] text-[color:var(--ide-muted)]">{active.error}</div>
             </div>
+          ) : active.language === "image" ? (
+            <ImagePreview url={active.content} name={active.name} path={active.path} />
           ) : (
             <CodeEditor
               value={active.content}
               language={active.language}
               pathKey={active.id}
               settings={settings}
+              themeMode={themeMode}
               onChange={onChange}
               onCursor={onCursor}
               onMount={onEditorMount}
@@ -86,15 +92,15 @@ export function EditorGroupView({
 
 function EmptyGroup() {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 text-[#858585]">
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-[color:var(--ide-muted)]">
       <div className="text-4xl">⚡</div>
       <div className="text-[13px]">No editor</div>
       <div className="flex gap-4 text-[11px]">
         <span>
-          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">⌘P</kbd> Go to file
+          <kbd className="rounded bg-[color:var(--ide-kbd-bg)] px-1.5 py-0.5">⌘P</kbd> Go to file
         </span>
         <span>
-          <kbd className="rounded bg-[#2a2a2a] px-1.5 py-0.5">⌘⇧P</kbd> Commands
+          <kbd className="rounded bg-[color:var(--ide-kbd-bg)] px-1.5 py-0.5">⌘⇧P</kbd> Commands
         </span>
       </div>
     </div>
