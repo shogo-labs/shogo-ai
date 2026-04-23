@@ -1,0 +1,16 @@
+{
+  "heartbeatInterval": 1800,
+  "heartbeatEnabled": true,
+  "quietHours": {
+    "start": "22:00",
+    "end": "06:30",
+    "timezone": "UTC"
+  },
+  "channels": [],
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-sonnet-4-6"
+  },
+  "activeMode": "canvas",
+  "canvasMode": "code"
+}
