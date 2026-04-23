@@ -56,19 +56,39 @@ export function useResizable({
 }
 
 export function VerticalSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+  // Thin visual seam (1px) but a fat invisible hit area (7px) so users can
+  // grab it without precision aim. Hover shows the accent colour.
   return (
     <div
       onMouseDown={onMouseDown}
-      className="w-1 cursor-col-resize bg-[color:var(--ide-border)] hover:bg-[color:var(--ide-active-ring)] transition-colors"
-    />
+      className="group relative w-[1px] shrink-0 cursor-col-resize bg-[color:var(--ide-border)]"
+    >
+      <div
+        aria-hidden
+        className="absolute inset-y-0 -left-[3px] -right-[3px] group-hover:bg-[color:var(--ide-active-ring)]/60 transition-colors"
+      />
+    </div>
   );
 }
 
-export function HorizontalSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+export function HorizontalSplit({
+  onMouseDown,
+  onDoubleClick,
+}: {
+  onMouseDown: (e: React.MouseEvent) => void;
+  onDoubleClick?: () => void;
+}) {
   return (
     <div
       onMouseDown={onMouseDown}
-      className="h-1 cursor-row-resize bg-[color:var(--ide-border)] hover:bg-[color:var(--ide-active-ring)] transition-colors"
-    />
+      onDoubleClick={onDoubleClick}
+      title="Drag to resize · double-click to reset"
+      className="group relative h-[1px] shrink-0 cursor-row-resize bg-[color:var(--ide-border)]"
+    >
+      <div
+        aria-hidden
+        className="absolute inset-x-0 -top-[3px] -bottom-[3px] group-hover:bg-[color:var(--ide-active-ring)]/60 transition-colors"
+      />
+    </div>
   );
 }
