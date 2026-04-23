@@ -72,7 +72,7 @@ import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-
 import { MODEL_CATALOG } from '@shogo/model-catalog'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
-import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
+import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
@@ -1374,23 +1374,6 @@ export default observer(function ProjectLayout() {
                     />
                   </View>
                 )}
-                {!isChatFullscreen && isWide && showChatSessions && (
-                  <View className="shrink-0 border-b border-border bg-background">
-                    <ChatSessionPicker
-                      sessions={chatSessions}
-                      currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => {
-                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                        setChatSessionId(sessionId)
-                        setShowChatSessions(false)
-                      }}
-                      onCreate={handleCreateNewSession}
-                      onLoadMore={handleLoadMoreSessions}
-                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                    />
-                  </View>
-                )}
                 {isChatFullscreen ? (
                   <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                 ) : (
@@ -1409,7 +1392,39 @@ export default observer(function ProjectLayout() {
                         onDeleteSession={handleDeleteChatSession}
                       />
                     )}
-                    <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                    <View className="flex-1 min-h-0 relative">
+                      <View
+                        className="absolute inset-0"
+                        style={isWide && showChatSessions ? { opacity: 0 } : undefined}
+                        pointerEvents={isWide && showChatSessions ? 'none' : 'auto'}
+                      >
+                        <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                      </View>
+                      {isWide && showChatSessions && (
+                        <View className="absolute inset-0 bg-background">
+                          <ChatSessionSidebar
+                            sessions={chatSessions}
+                            currentSessionId={chatSessionId ?? undefined}
+                            onSelect={(sessionId) => {
+                              setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                              setChatSessionId(sessionId)
+                              setShowChatSessions(false)
+                            }}
+                            onCreate={() => {
+                              void handleCreateNewSession()
+                              setShowChatSessions(false)
+                            }}
+                            onRename={handleRenameChatSession}
+                            onLoadMore={handleLoadMoreSessions}
+                            hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                            isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                            hideHeader
+                            searchOpen={sidebarSearchOpen}
+                            onSearchClose={() => setSidebarSearchOpen(false)}
+                          />
+                        </View>
+                      )}
+                    </View>
                   </>
                 )}
               </View>
