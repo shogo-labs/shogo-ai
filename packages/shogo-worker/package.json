@@ -1,0 +1,33 @@
+{
+  "name": "@shogo-ai/worker",
+  "version": "0.1.0",
+  "description": "Shogo Cloud Agent Worker — run Shogo agents on your own machine (laptop, devbox, CI).",
+  "license": "Apache-2.0",
+  "author": "Shogo Technologies, Inc.",
+  "homepage": "https://shogo.ai/docs/cloud-agent/my-machines",
+  "bin": {
+    "shogo": "./bin/shogo.mjs"
+  },
+  "main": "./src/cli.ts",
+  "type": "module",
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

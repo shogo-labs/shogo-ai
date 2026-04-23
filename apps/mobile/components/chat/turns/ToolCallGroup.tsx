@@ -23,6 +23,7 @@ import {
   getToolNamespace,
 } from "../tools/types"
 import { InlineToolWidget } from "./InlineToolWidget"
+import { TransportBadge } from "../TransportBadge"
 
 export interface ToolCallGroupProps {
   toolName: string
@@ -96,6 +97,8 @@ export function ToolCallGroup({
         </View>
 
         <View className="flex-1" />
+
+        <TransportBadge size="xs" className="mr-1" />
 
         {hasStreaming ? (
           <Loader2 className="w-3 h-3 text-primary" />
