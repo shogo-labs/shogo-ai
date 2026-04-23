@@ -18,6 +18,7 @@ import {
 interface Recorded {
   url: string
   method: string
+  body?: string
 }
 
 function scriptedFetch(responses: Array<{ status: number; body: unknown }>) {
@@ -30,7 +31,14 @@ function scriptedFetch(responses: Array<{ status: number; body: unknown }>) {
         : input instanceof URL
           ? input.href
           : (input as Request).url
-    calls.push({ url, method: init?.method ?? 'GET' })
+    const rawBody = init?.body
+    const bodyStr =
+      typeof rawBody === 'string'
+        ? rawBody
+        : rawBody == null
+          ? undefined
+          : undefined
+    calls.push({ url, method: init?.method ?? 'GET', body: bodyStr })
     const next = responses[i++] ?? responses[responses.length - 1]!
     return new Response(JSON.stringify(next.body), {
       status: next.status,
@@ -115,7 +123,7 @@ describe('DirectTelephonyClient', () => {
     expect(calls[3].method).toBe('PATCH')
   })
 
-  test('outboundCall uses existing EL phone id and calls EL /outbound-call', async () => {
+  test('outboundCall hits provider-scoped EL /twilio/outbound-call with phone id in body', async () => {
     const { impl, calls } = scriptedFetch([
       {
         status: 200,
@@ -138,9 +146,17 @@ describe('DirectTelephonyClient', () => {
     const result = await client.outboundCall({ to: '+14155559999' })
     expect(result.callSid).toBe('CA1')
     expect(result.conversationId).toBe('conv_1')
-    expect(calls[0].url).toContain(
-      '/v1/convai/phone-numbers/el_existing/outbound-call',
-    )
+    // EL 2026-Q2 API: provider-scoped route, `agent_phone_number_id`
+    // travels in the JSON body rather than the URL path.
+    expect(calls[0].url).toContain('/v1/convai/twilio/outbound-call')
+    expect(calls[0].url).not.toContain('/phone-numbers/el_existing/outbound-call')
+    expect(calls[0].method).toBe('POST')
+    const body = JSON.parse(calls[0].body ?? '{}') as Record<string, unknown>
+    expect(body).toMatchObject({
+      agent_id: 'agent_1',
+      agent_phone_number_id: 'el_existing',
+      to_number: '+14155559999',
+    })
     assertNoShogoHits(calls)
   })
 
