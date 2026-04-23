@@ -15,8 +15,13 @@
  * (public domain — see https://github.com/stegu/webgl-noise).
  */
 
-/** Classic Perlin 4D noise (Stefan Gustavson). Inlined, used by the vertex shader. */
-const PERLIN_4D = /* glsl */ `
+/**
+ * Classic Perlin 4D noise (Stefan Gustavson). Inlined, used by every
+ * organic-* vertex shader in this module. Exported so sibling shader
+ * files (e.g. `organicParticlesShaders.ts`) can concatenate it without
+ * re-vendoring the implementation.
+ */
+export const PERLIN_4D = /* glsl */ `
 vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
 vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
 vec4 fade(vec4 t) {return t*t*t*(t*(t*6.0-15.0)+10.0);}

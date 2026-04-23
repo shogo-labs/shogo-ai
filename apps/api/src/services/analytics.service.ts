@@ -21,6 +21,21 @@ function parseMeta(raw: unknown): Record<string, any> {
   return {}
 }
 
+function voiceLabel(actionType: string): string {
+  switch (actionType) {
+    case 'voice_minutes_inbound':
+      return 'Voice · inbound'
+    case 'voice_minutes_outbound':
+      return 'Voice · outbound'
+    case 'voice_number_setup':
+      return 'Voice · number setup'
+    case 'voice_number_monthly':
+      return 'Voice · number monthly'
+    default:
+      return 'Voice'
+  }
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -157,7 +172,11 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
         where: { projectId: scope.projectId },
       }),
       prisma.chatMessage.count({
-        where: { role: 'user', session: { contextId: scope.projectId } },
+        where: {
+          role: 'user',
+          agent: 'technical',
+          session: { contextId: scope.projectId },
+        },
       }),
     ])
     return { chatSessions, usageEvents, messages }
@@ -480,6 +499,16 @@ export interface UsageLogEntry {
   durationMs: number
   success: boolean
   createdAt: string
+  /**
+   * Raw action type (e.g. `ai_proxy_completion`, `voice_minutes_inbound`).
+   * UIs can switch on this to render a badge; older entries may omit it.
+   */
+  actionType?: string
+  /**
+   * Metadata snapshot useful for the billing panel (voice call direction,
+   * phone numbers, billed minutes). Opaque record — UIs should feature-detect.
+   */
+  metadata?: Record<string, unknown>
 }
 
 /** Aggregated usage per user+model pair. */
@@ -513,7 +542,16 @@ export async function getUsageLog(
   const limit = Math.min(options.limit ?? 50, 100)
 
   const where: any = {
-    actionType: { in: ['ai_proxy_completion', 'chat_message'] },
+    actionType: {
+      in: [
+        'ai_proxy_completion',
+        'chat_message',
+        'voice_minutes_inbound',
+        'voice_minutes_outbound',
+        'voice_number_setup',
+        'voice_number_monthly',
+      ],
+    },
     createdAt: { gte: since },
   }
   if (scope.workspaceId) where.workspaceId = scope.workspaceId
@@ -545,22 +583,28 @@ export async function getUsageLog(
   const entries: UsageLogEntry[] = events.map((event) => {
     const meta = parseMeta(event.actionMetadata)
     const user = userMap.get(event.memberId)
+    const isVoice = typeof event.actionType === 'string' &&
+      event.actionType.startsWith('voice_')
     return {
       id: event.id,
       userId: event.memberId,
       userName: user?.name ?? null,
       userEmail: user?.email ?? event.memberId,
       userImage: user?.image ?? null,
-      model: meta.model || meta.modelUsed || 'unknown',
-      provider: meta.provider || 'anthropic',
+      model: isVoice
+        ? voiceLabel(event.actionType)
+        : (meta.model || meta.modelUsed || 'unknown'),
+      provider: isVoice ? 'elevenlabs' : (meta.provider || 'anthropic'),
       inputTokens: meta.inputTokens || 0,
       outputTokens: meta.outputTokens || 0,
       totalTokens: meta.totalTokens || 0,
       creditCost: event.creditCost,
       dollarCost: meta.dollarCost || 0,
-      durationMs: meta.durationMs || 0,
+      durationMs: (meta.durationSeconds ?? 0) * 1000 || meta.durationMs || 0,
       success: meta.success !== false,
       createdAt: event.createdAt.toISOString(),
+      actionType: event.actionType,
+      metadata: meta as Record<string, unknown>,
     }
   })
 
@@ -578,7 +622,16 @@ export async function getUsageSummary(
   const since = periodToDate(period)
 
   const where: any = {
-    actionType: { in: ['ai_proxy_completion', 'chat_message'] },
+    actionType: {
+      in: [
+        'ai_proxy_completion',
+        'chat_message',
+        'voice_minutes_inbound',
+        'voice_minutes_outbound',
+        'voice_number_setup',
+        'voice_number_monthly',
+      ],
+    },
     createdAt: { gte: since },
   }
   if (scope.workspaceId) where.workspaceId = scope.workspaceId
@@ -727,12 +780,16 @@ export async function getChatAnalytics(
       select: {
         id: true,
         createdAt: true,
-        _count: { select: { messages: { where: { role: 'user' } } } },
+        _count: {
+          select: {
+            messages: { where: { role: 'user', agent: 'technical' } },
+          },
+        },
       },
       orderBy: { createdAt: 'asc' },
     }),
     prisma.chatMessage.count({
-      where: { role: 'user', session: sessionWhere },
+      where: { role: 'user', agent: 'technical', session: sessionWhere },
     }),
     prisma.toolCallLog.count({
       where: { chatSession: sessionWhere },
@@ -940,7 +997,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
-      WHERE cm."role" = 'user' AND p."createdBy" IS NOT NULL
+      WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
     user_msg_totals AS (
@@ -979,7 +1036,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
-      WHERE cm."role" = 'user' AND p."createdBy" IS NOT NULL
+      WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
     user_msg_totals AS (
@@ -1083,7 +1140,7 @@ export async function getUserActivityTable(
             FROM "chat_messages" cm
             JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
             JOIN "projects" p ON p."id" = cs."contextId"
-            WHERE cm."role" = 'user' AND p."createdBy" IN (${userIds.map(() => '?').join(',')})
+            WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IN (${userIds.map(() => '?').join(',')})
             GROUP BY p."createdBy"
           `, ...userIds)
         : prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
@@ -1091,7 +1148,7 @@ export async function getUserActivityTable(
             FROM "chat_messages" cm
             JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
             JOIN "projects" p ON p."id" = cs."contextId"
-            WHERE cm."role" = 'user' AND p."createdBy" = ANY($1::text[])
+            WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" = ANY($1::text[])
             GROUP BY p."createdBy"
           `, userIds),
       isSqlite
@@ -1194,7 +1251,7 @@ export async function getTemplateEngagement(
              CAST(COUNT(cm."id") AS INTEGER) AS "msgCount"
       FROM template_projects tp
       LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
-      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
       GROUP BY tp."templateId", tp."projectId", tp."createdBy"
     ),
     project_tools AS (
@@ -1228,7 +1285,7 @@ export async function getTemplateEngagement(
              COUNT(cm."id")::int AS "msgCount"
       FROM template_projects tp
       LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
-      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
       GROUP BY tp."templateId", tp."projectId", tp."createdBy"
     ),
     project_tools AS (
@@ -1311,7 +1368,7 @@ export async function getChatConversations(
     JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
     JOIN "projects" p ON p."id" = cs."contextId"
     JOIN "users" u ON u."id" = p."createdBy"
-    WHERE cm."createdAt" >= ? ${filter}
+    WHERE cm."createdAt" >= ? AND cm."agent" = 'technical' ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
   `
       : `
@@ -1331,7 +1388,7 @@ export async function getChatConversations(
     JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
     JOIN "projects" p ON p."id" = cs."contextId"
     JOIN "users" u ON u."id" = p."createdBy"
-    WHERE cm."createdAt" >= $1 ${filter}
+    WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
     ORDER BY cs."id", cm."createdAt" ASC
   `,
     since
@@ -1392,7 +1449,7 @@ export async function getSourceBreakdown(
     LEFT JOIN "signup_attributions" sa ON sa."userId" = u."id"
     LEFT JOIN "projects" p ON p."createdBy" = u."id"
     LEFT JOIN "chat_sessions" cs ON cs."contextId" = p."id"
-    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
     WHERE u."createdAt" >= ? ${filter}
     GROUP BY COALESCE(sa."sourceTag", 'unknown')
     ORDER BY "count" DESC
@@ -1407,7 +1464,7 @@ export async function getSourceBreakdown(
     LEFT JOIN "signup_attributions" sa ON sa."userId" = u."id"
     LEFT JOIN "projects" p ON p."createdBy" = u."id"
     LEFT JOIN "chat_sessions" cs ON cs."contextId" = p."id"
-    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user' AND cm."agent" = 'technical'
     WHERE u."createdAt" >= $1 ${filter}
     GROUP BY COALESCE(sa."sourceTag", 'unknown')
     ORDER BY "count" DESC

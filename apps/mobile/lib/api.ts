@@ -486,17 +486,18 @@ export const api = {
 
   // ─── Project Export/Import ──────────────────────────────────
 
-  getProjectExportUrl(projectId: string): string {
-    return `${API_URL}/api/projects/${projectId}/export`
+  getProjectExportUrl(projectId: string, opts?: { includeChats?: boolean }): string {
+    const qs = opts?.includeChats === false ? '?includeChats=false' : ''
+    return `${API_URL}/api/projects/${projectId}/export${qs}`
   },
 
   async exportProjectBlob(
     projectId: string,
-    authCookie?: string | null,
+    opts?: { includeChats?: boolean; authCookie?: string | null },
   ): Promise<{ blob: Blob; filename: string }> {
-    const url = `${API_URL}/api/projects/${projectId}/export`
+    const url = api.getProjectExportUrl(projectId, opts)
     const headers: Record<string, string> = {}
-    if (authCookie) headers['Cookie'] = authCookie
+    if (opts?.authCookie) headers['Cookie'] = opts.authCookie
 
     const res = await fetch(url, {
       credentials: Platform.OS === 'web' ? 'include' : 'omit',
@@ -516,12 +517,13 @@ export const api = {
   },
 
   async importProject(
-    params: { file: Blob; workspaceId: string; filename?: string },
+    params: { file: Blob; workspaceId: string; filename?: string; includeChats?: boolean },
     authCookie?: string | null,
   ): Promise<{ id: string; name: string; description?: string | null } | null> {
     const formData = new FormData()
     formData.append('file', params.file, params.filename || 'project.shogo-project')
     formData.append('workspaceId', params.workspaceId)
+    formData.append('includeChats', params.includeChats === false ? 'false' : 'true')
 
     const headers: Record<string, string> = {}
     if (authCookie) headers['Cookie'] = authCookie
@@ -540,6 +542,249 @@ export const api = {
     const data = (await res.json()) as { project: { id: string; name: string; description?: string | null } }
     return data.project ?? null
   },
+
+  /**
+   * Streaming import with per-phase progress. Uses SSE (`Accept: text/event-stream`)
+   * so the UI can render upload -> parse -> createProject -> writeFiles -> importChats
+   * -> done, plus a live list of non-fatal per-file / per-chat errors.
+   *
+   * Upload progress (phase `upload`) is emitted only on web via XHR since
+   * `fetch` does not expose upload progress. On native, upload is treated as
+   * an indeterminate phase (no `upload` events are fired), then the SSE body
+   * carries the server-side phases.
+   */
+  async importProjectStream(
+    params: {
+      file: Blob
+      workspaceId: string
+      filename?: string
+      includeChats: boolean
+    },
+    onProgress: (ev: ProjectImportProgress) => void,
+  ): Promise<{ id: string; name: string; description?: string | null }> {
+    const filename = params.filename || 'project.shogo-project'
+
+    if (Platform.OS === 'web' && typeof XMLHttpRequest !== 'undefined') {
+      // Use XHR so we can surface upload progress alongside the streamed SSE body.
+      return await importViaXhr(
+        params.file,
+        params.workspaceId,
+        params.includeChats,
+        filename,
+        onProgress,
+      )
+    }
+
+    // Native / non-web: plain fetch + SSE reader, no upload progress.
+    return await importViaFetchSSE(
+      params.file,
+      params.workspaceId,
+      params.includeChats,
+      filename,
+      onProgress,
+    )
+  },
+}
+
+// ─── Project import — streaming helpers ────────────────────────
+
+export type ProjectImportProgress =
+  | { phase: 'upload'; loaded: number; total: number }
+  | { phase: 'parse' }
+  | { phase: 'createProject' }
+  | { phase: 'writeFiles'; done: number; total: number }
+  | { phase: 'importChats'; done: number; total: number }
+  | {
+      phase: 'done'
+      project: { id: string; name: string; description?: string | null }
+      stats: {
+        filesWritten: number
+        filesSkipped: number
+        chatsImported: number
+        chatsSkipped: number
+      }
+    }
+  | { phase: 'error'; message: string; fatal: boolean }
+
+/**
+ * Parse an SSE text stream into discrete events. Handles multi-chunk events
+ * where a single SSE frame spans multiple `read()` results.
+ */
+function createSSEParser(onEvent: (event: string, data: string) => void) {
+  let buffer = ''
+  return (chunk: string) => {
+    buffer += chunk
+    // SSE frames are separated by a blank line (`\n\n`).
+    let idx: number
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+      if (dataLines.length > 0) onEvent(event, dataLines.join('\n'))
+    }
+  }
+}
+
+function handleSSEEvent(
+  event: string,
+  data: string,
+  onProgress: (ev: ProjectImportProgress) => void,
+  state: {
+    done?: { id: string; name: string; description?: string | null }
+    fatal?: string
+  },
+) {
+  try {
+    const parsed = JSON.parse(data)
+    if (event === 'progress') {
+      onProgress(parsed as ProjectImportProgress)
+    } else if (event === 'error') {
+      onProgress({
+        phase: 'error',
+        message: parsed.message || 'Unknown error',
+        fatal: false,
+      })
+    } else if (event === 'done') {
+      state.done = parsed.project
+      onProgress({
+        phase: 'done',
+        project: parsed.project,
+        stats: parsed.stats,
+      })
+    } else if (event === 'fatal') {
+      state.fatal = parsed.message || 'Import failed'
+      onProgress({
+        phase: 'error',
+        message: state.fatal!,
+        fatal: true,
+      })
+    }
+  } catch {
+    // Drop malformed frames — keep the stream alive.
+  }
+}
+
+async function importViaFetchSSE(
+  file: Blob,
+  workspaceId: string,
+  includeChats: boolean,
+  filename: string,
+  onProgress: (ev: ProjectImportProgress) => void,
+): Promise<{ id: string; name: string; description?: string | null }> {
+  const formData = new FormData()
+  formData.append('file', file, filename)
+  formData.append('workspaceId', workspaceId)
+  formData.append('includeChats', includeChats ? 'true' : 'false')
+
+  const res = await fetch(`${API_URL}/api/projects/import`, {
+    method: 'POST',
+    body: formData,
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    headers: { Accept: 'text/event-stream' },
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(text || `Import failed with status ${res.status}`)
+  }
+
+  const state: {
+    done?: { id: string; name: string; description?: string | null }
+    fatal?: string
+  } = {}
+  const parser = createSSEParser((event, data) =>
+    handleSSEEvent(event, data, onProgress, state),
+  )
+
+  const reader = res.body?.getReader()
+  if (!reader) {
+    // Server didn't stream — fall back to reading the whole body as text.
+    const text = await res.text()
+    parser(text)
+  } else {
+    const decoder = new TextDecoder()
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      if (value) parser(decoder.decode(value, { stream: true }))
+    }
+  }
+
+  if (state.fatal) throw new Error(state.fatal)
+  if (!state.done) throw new Error('Import finished without a `done` event')
+  return state.done
+}
+
+async function importViaXhr(
+  file: Blob,
+  workspaceId: string,
+  includeChats: boolean,
+  filename: string,
+  onProgress: (ev: ProjectImportProgress) => void,
+): Promise<{ id: string; name: string; description?: string | null }> {
+  return await new Promise((resolve, reject) => {
+    const formData = new FormData()
+    formData.append('file', file, filename)
+    formData.append('workspaceId', workspaceId)
+    formData.append('includeChats', includeChats ? 'true' : 'false')
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_URL}/api/projects/import`, true)
+    xhr.setRequestHeader('Accept', 'text/event-stream')
+    xhr.withCredentials = true
+    xhr.responseType = 'text'
+
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) {
+        onProgress({ phase: 'upload', loaded: ev.loaded, total: ev.total })
+      }
+    }
+    xhr.upload.onload = () => {
+      onProgress({ phase: 'upload', loaded: file.size, total: file.size })
+    }
+
+    const state: {
+      done?: { id: string; name: string; description?: string | null }
+      fatal?: string
+    } = {}
+    const parser = createSSEParser((event, data) =>
+      handleSSEEvent(event, data, onProgress, state),
+    )
+
+    let processed = 0
+    xhr.onprogress = () => {
+      // responseText grows as SSE frames arrive.
+      const text = xhr.responseText
+      if (text.length > processed) {
+        parser(text.slice(processed))
+        processed = text.length
+      }
+    }
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(xhr.responseText || `Import failed with status ${xhr.status}`))
+        return
+      }
+      const text = xhr.responseText
+      if (text.length > processed) {
+        parser(text.slice(processed))
+        processed = text.length
+      }
+      if (state.fatal) reject(new Error(state.fatal))
+      else if (!state.done) reject(new Error('Import finished without a `done` event'))
+      else resolve(state.done)
+    }
+    xhr.onerror = () => reject(new Error('Network error during import'))
+    xhr.ontimeout = () => reject(new Error('Import timed out'))
+
+    xhr.send(formData)
+  })
 }
 
 export interface SecurityPrefs {

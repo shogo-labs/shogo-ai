@@ -12,6 +12,7 @@
  */
 
 import type { MessagePart } from "../components/chat/turns/types"
+import { logScreencast } from "./screencast-debug"
 
 export type SubagentStreamPart = MessagePart
 
@@ -21,6 +22,8 @@ export interface SubagentStreamData {
   instanceId?: string
   agentType: string
   description: string
+  /** Concrete LLM model id the subagent is running on (displayed as a badge). */
+  model?: string
   status: "running" | "completed" | "error"
   parts: SubagentStreamPart[]
 }
@@ -88,11 +91,18 @@ export const subagentStreamStore = {
   setInstanceId(toolId: string, instanceId: string) {
     const entry = store.get(toolId)
     if (!entry || entry.instanceId === instanceId) return
-    console.log(
+    logScreencast(
       `[screencast] subagentStreamStore.setInstanceId toolId=${toolId} ` +
       `instanceId=${instanceId}`,
     )
     store.set(toolId, { ...entry, instanceId })
+    notify()
+  },
+
+  setModel(toolId: string, model: string) {
+    const entry = store.get(toolId)
+    if (!entry || entry.model === model) return
+    store.set(toolId, { ...entry, model })
     notify()
   },
 

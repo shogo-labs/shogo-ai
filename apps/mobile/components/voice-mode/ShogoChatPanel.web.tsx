@@ -10,38 +10,56 @@
  *
  * Layout:
  *
- *   ┌─ Shogo Mode ─────────────────── [×] ┐
- *   │          (audio-reactive sphere)    │
- *   ├─────────────────────────────────────┤
- *   │   (translator thread — messages)    │
- *   ├─────────────────────────────────────┤
- *   │ [mic] [text input .............] [▶]│
- *   └─────────────────────────────────────┘
+ *   ┌─ Shogo Mode ─────────────── [peek] [×] ┐
+ *   │           (audio-reactive sphere)      │
+ *   ├─────────────────────────────────────────┤
+ *   │    (translator thread — messages)       │
+ *   ├─────────────────────────────────────────┤
+ *   │ [mic] [text input ...............] [▶] │
+ *   └─────────────────────────────────────────┘
  *
  * Voice lifecycle (when the mic is active):
  *   - `useVoiceConversation({ signedUrlPath: '/api/voice/signed-url', ... })`
  *     fetches a short-lived ElevenLabs signed URL from the API, opens
  *     a convai WebSocket, and streams audio to/from the shared
  *     "Shogo Mode" agent.
- *   - Tool calls from the voice agent (`send_to_chat`, `set_mode`) are
- *     executed client-side via `createBridgeClientTools(bridge)`.
- *   - Technical-agent replies (emitted by `ChatPanel` through
- *     `bridge.subscribeToAssistant`) are fed back to the voice agent
- *     as contextual updates so it can paraphrase them aloud.
+ *   - Tool calls from the voice agent (`send_to_chat`, `set_mode`,
+ *     `get_recent_activity`) are executed client-side.
+ *   - The ChatBridge publishes a typed event stream (turn-start,
+ *     tool-activity, turn-end). Every event is fed into the voice
+ *     session as a silent `sendContextualUpdate` so Shogo always has
+ *     fresh context; *only* turn-end and long-running heartbeats fire
+ *     `sendUserMessage` to force Shogo to speak a high-level summary.
  *
  * Text lifecycle:
- *   - `useTranslatorChat({ clientTools })` runs `@ai-sdk/react`'s
- *     `useChat` against `/api/voice/translator/chat`, with the same
- *     persona server-side. Tool calls are resolved locally via the
- *     same bridge client tools.
- *   - Technical-agent replies are appended to the translator thread
- *     as a user message prefixed `The agent replied: …`, which is
- *     exactly how the persona is instructed to parse them.
+ *   - `useTranslatorChat({ clientTools, chatSessionId })` runs
+ *     `@ai-sdk/react`'s `useChat` against
+ *     `/api/voice/translator/chat/:chatSessionId`. The server persists
+ *     both the incoming user turn and the final assistant turn as
+ *     `ChatMessage` rows tagged `agent="voice"`; the hook hydrates the
+ *     thread from those same rows on mount.
+ *   - When voice is inactive, technical-agent replies are fed into the
+ *     translator thread as a prefixed user turn so the text persona can
+ *     paraphrase them.
+ *
+ * Persistence (server-authoritative)
+ * ----------------------------------
+ *   - The translator thread is persisted by the server inside the
+ *     translator chat route. The client never writes `ChatMessage` rows
+ *     directly — it only hydrates via
+ *     `GET /api/chat-messages?sessionId=...&agent=voice`.
+ *   - The voice transcript is persisted one row at a time via
+ *     `POST /api/voice/transcript/:chatSessionId` as the voice SDK /
+ *     bridge surface events. Hydration reads the same `agent=voice`
+ *     rows on mount, filtered to the `voice` / `agent-activity`
+ *     envelope kinds.
+ *   - Deleting a chat session cascades on the server via
+ *     `ChatMessage.sessionId` foreign key, so both threads clear
+ *     automatically. No client-side storage teardown required.
  *
  * Scope (V1):
  *   - Web only.
- *   - Single shared agent (ELEVENLABS_VOICE_MODE_AGENT_ID); no
- *     per-user companion store.
+ *   - Single shared agent (ELEVENLABS_VOICE_MODE_AGENT_ID).
  *   - The built-in memory tools / auto-injection inside
  *     `useVoiceConversation` are disabled — the translator has no
  *     memory surface of its own.
@@ -49,19 +67,31 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Platform,
   Pressable,
   ScrollView,
   TextInput,
   View,
 } from 'react-native'
 import { Text } from '@/components/ui/text'
-import { Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
+import { Eye, Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
 import { ConversationProvider } from '@elevenlabs/react'
-import { OrganicSphere, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
+import { OrganicParticles, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
 import { useChatBridge } from './ChatBridgeContext'
 import { createBridgeClientTools } from './bridgeClientTools'
+import { SHOGO_PARTICLES_CONFIG } from './shogoVisualizationConfig'
 import { useTranslatorChat } from './useTranslatorChat'
+import {
+  loadShogoMessages,
+  type ShogoMessageRow,
+} from './shogoMessages'
+import {
+  ShogoTranscriptQueue,
+  type TranscriptKind,
+  type TranscriptQueueState,
+  type TranscriptTask,
+} from './shogoTranscriptQueue'
 
 export interface ShogoChatPanelProps {
   /** Optional extra classes for the outer container. */
@@ -70,10 +100,14 @@ export interface ShogoChatPanelProps {
 
 interface TranscriptEntry {
   id: string
-  source: 'user-voice' | 'shogo-voice' | 'agent-reply'
+  source: 'user-voice' | 'shogo-voice' | 'agent-reply' | 'agent-activity'
   text: string
 }
 
+/** Max recent-activity lines kept in memory for summarisation. */
+const RECENT_ACTIVITY_MAX = 40
+/** Heartbeat cadence during long-running technical-agent turns (ms). */
+const HEARTBEAT_INTERVAL_MS = 30_000
 function extractMessageText(message: {
   parts?: Array<{ type?: string; text?: string }>
 }): string {
@@ -82,6 +116,24 @@ function extractMessageText(message: {
     .map((p) => p.text as string)
     .join('')
     .trim()
+}
+
+/**
+ * Translate a persisted voice-agent row into the in-memory
+ * `TranscriptEntry` shape rendered by the overlay. Returns `null` for
+ * rows that shouldn't surface in the voice transcript (e.g. shogo-text
+ * turns, which are owned by the AI-SDK thread).
+ */
+function rowToTranscriptEntry(row: ShogoMessageRow): TranscriptEntry | null {
+  const kind = row.envelope?.kind
+  let source: TranscriptEntry['source'] | null = null
+  if (kind === 'voice') {
+    source = row.role === 'user' ? 'user-voice' : 'shogo-voice'
+  } else if (kind === 'agent-activity') {
+    source = 'agent-activity'
+  }
+  if (!source) return null
+  return { id: row.id, source, text: row.content }
 }
 
 /**
@@ -100,11 +152,7 @@ export function ShogoChatPanel(props: ShogoChatPanelProps) {
 
 function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   const bridge = useChatBridge()
-  const clientTools = useMemo(() => createBridgeClientTools(bridge), [bridge])
-  const handleClose = useCallback(
-    () => bridge.setShogoModeActive(false),
-    [bridge],
-  )
+  const chatSessionId = bridge.chatSessionId
 
   const [draft, setDraft] = useState('')
   const [voiceError, setVoiceError] = useState<string | null>(null)
@@ -115,17 +163,66 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // user opt down into text if they prefer.
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice')
 
-  // Text modality — AI SDK chat against /api/voice/translator/chat.
+  // ---------------------------------------------------------------------
+  // Recent-activity buffer — the authoritative view of what the technical
+  // agent has been doing this turn. Every event emitted through the
+  // ChatBridge appends here; Shogo reads from this buffer (directly via
+  // the `get_recent_activity` tool, and indirectly via the nudges we
+  // inject at turn-end / heartbeat) to produce its outcome summaries.
+  // ---------------------------------------------------------------------
+  const recentActivityRef = useRef<string[]>([])
+  /** Index into `recentActivityRef.current` that marks the last heartbeat/turn-end boundary. */
+  const lastHeartbeatIndexRef = useRef<number>(0)
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const turnActiveRef = useRef<boolean>(false)
+
+  // Voice session imperative handles — captured in a ref so callbacks
+  // declared before `conversation` resolves can still reach the latest
+  // methods (sendContextualUpdate / sendUserMessage / sendUserActivity).
+  const conversationRef = useRef<{
+    sendContextualUpdate: (t: string) => void
+    sendUserMessage: (t: string) => void
+    sendUserActivity: () => void
+    voiceActive: boolean
+  } | null>(null)
+
+  // Client tools exposed to both voice and text modalities. In addition
+  // to the bridge-backed `send_to_chat` + `set_mode`, we expose
+  // `get_recent_activity` so Shogo can pull the raw activity log when it
+  // needs extra material to summarise accurately.
+  const clientTools = useMemo(() => {
+    const base = createBridgeClientTools(bridge)
+    const getRecentActivity = () => {
+      const items = recentActivityRef.current.slice(-RECENT_ACTIVITY_MAX)
+      if (items.length === 0) return 'No recent technical-agent activity recorded.'
+      return items.join('\n')
+    }
+    return {
+      ...base,
+      // Both surfaces ignore extra keys; bridgeClientTools returns
+      // string, and we do the same here so the tool shape matches.
+      get_recent_activity: (_params: Record<string, unknown>) => getRecentActivity(),
+    }
+  }, [bridge])
+
+  // ---------------------------------------------------------------------
+  // Text modality — AI-SDK chat against
+  // /api/voice/translator/chat/:chatSessionId. The server persists both
+  // user and assistant UIMessages as ChatMessage rows tagged
+  // agent="voice", and the hook hydrates from the same rows on mount.
+  // ---------------------------------------------------------------------
   const {
     messages,
     sendMessage,
     status: textStatus,
-  } = useTranslatorChat({ clientTools })
+  } = useTranslatorChat({
+    clientTools,
+    chatSessionId,
+  })
 
+  // ---------------------------------------------------------------------
   // Voice modality — ElevenLabs convai session.
-  const conversationRef = useRef<{
-    sendContextualUpdate: (t: string) => void
-  } | null>(null)
+  // ---------------------------------------------------------------------
   const conversation = useVoiceConversation({
     characterName: 'Shogo',
     signedUrlPath: `${API_URL ?? ''}/api/voice/signed-url`,
@@ -145,65 +242,204 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       )
     },
     onMessage: ({ source, message }) => {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.log('[ShogoChatPanel] SDK onMessage', {
+          source,
+          preview: message?.slice(0, 120),
+        })
+      }
       if (!message?.trim()) return
-      setVoiceTranscript((prev) => [
-        ...prev,
-        {
-          id: `${source}-${Date.now()}-${prev.length}`,
-          source: source === 'user' ? 'user-voice' : 'shogo-voice',
-          text: message,
-        },
-      ])
+      const entrySource: TranscriptEntry['source'] =
+        source === 'user' ? 'user-voice' : 'shogo-voice'
+      appendTranscriptRef.current(entrySource, message)
     },
   })
-  conversationRef.current = { sendContextualUpdate: conversation.sendContextualUpdate }
 
   const voiceActive =
     conversation.status === 'connected' || conversation.status === 'connecting'
 
-  // Track the most recent assistant reply so voice can announce it.
-  const lastEmittedRef = useRef<string>('')
+  conversationRef.current = {
+    sendContextualUpdate: conversation.sendContextualUpdate,
+    sendUserMessage: conversation.sendUserMessage,
+    sendUserActivity: conversation.sendUserActivity,
+    voiceActive,
+  }
 
-  // Bridge → panel: pipe finalized technical-agent replies back into
-  // the translator (both text thread + live voice session).
+  // ---------------------------------------------------------------------
+  // Heartbeat management. Long technical-agent turns are common
+  // (4–5 minutes typical, 10+ minutes happens) so while a turn is
+  // running we fire a recurring nudge every ~30s that asks Shogo to
+  // summarise *what progressed since the last heartbeat*. Shogo never
+  // speaks on its own during mid-turn activity — only when we ping it
+  // like this at a milestone.
+  // ---------------------------------------------------------------------
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current)
+      heartbeatTimerRef.current = null
+    }
+    turnActiveRef.current = false
+  }, [])
+
+  const startHeartbeat = useCallback(() => {
+    stopHeartbeat()
+    turnActiveRef.current = true
+    heartbeatTimerRef.current = setInterval(() => {
+      if (!turnActiveRef.current) return
+      const ref = conversationRef.current
+      if (!ref || !ref.voiceActive) return
+      const activity = recentActivityRef.current
+      const sliceStart = lastHeartbeatIndexRef.current
+      const newItems = activity.slice(sliceStart)
+      lastHeartbeatIndexRef.current = activity.length
+      const activityBlock = newItems.length > 0
+        ? `Activity since your last update:\n${newItems.join('\n')}`
+        : 'No new named activity since your last update, but the agent is still running.'
+      const nudge =
+        'The technical agent is still working. This is a heartbeat from the UI. ' +
+        'Give the user a two- or three-sentence high-level progress update in ' +
+        'business-outcome language — focus on what has been accomplished ' +
+        'since your previous heartbeat, not what is still pending. Do not ' +
+        'repeat what you already said last time. Never recite tool names, ' +
+        'file names, or a blow-by-blow list of operations.\n\n' +
+        activityBlock
+      try {
+        ref.sendUserMessage(nudge)
+      } catch (err) {
+        console.warn('[ShogoChatPanel] heartbeat sendUserMessage failed', err)
+      }
+    }, HEARTBEAT_INTERVAL_MS)
+  }, [stopHeartbeat])
+
+  // ---------------------------------------------------------------------
+  // ChatBridge subscription — the authoritative data source for Shogo's
+  // awareness of the technical agent.
+  // ---------------------------------------------------------------------
+  // Keep the latest `sendMessage` in a ref so the subscribe effect
+  // doesn't need to resubscribe every render.
+  const sendMessageRef = useRef(sendMessage)
+  sendMessageRef.current = sendMessage
+
   useEffect(() => {
-    const unsubscribe = bridge.subscribeToAssistant((assistantText) => {
-      const trimmed = assistantText.trim()
-      if (!trimmed || trimmed === lastEmittedRef.current) return
-      lastEmittedRef.current = trimmed
-      const prefixed = `The agent replied: ${trimmed}`
+    const pushActivity = (line: string) => {
+      recentActivityRef.current.push(line)
+      if (recentActivityRef.current.length > RECENT_ACTIVITY_MAX) {
+        recentActivityRef.current.shift()
+        lastHeartbeatIndexRef.current = Math.max(0, lastHeartbeatIndexRef.current - 1)
+      }
+    }
 
-      if (conversationRef.current && voiceActive) {
-        try {
-          conversationRef.current.sendContextualUpdate(prefixed)
-        } catch (err) {
-          console.warn('[ShogoChatPanel] sendContextualUpdate failed', err)
+    const mirrorTranscript = (source: TranscriptEntry['source'], text: string) => {
+      appendTranscriptRef.current(source, text)
+    }
+
+    const silentContext = (text: string) => {
+      const ref = conversationRef.current
+      if (!ref || !ref.voiceActive) return
+      try {
+        ref.sendContextualUpdate(text)
+      } catch (err) {
+        console.warn('[ShogoChatPanel] sendContextualUpdate failed', err)
+      }
+    }
+
+    const unsubscribe = bridge.subscribe((event) => {
+      if (event.type === 'turn-start') {
+        recentActivityRef.current = ['Turn started.']
+        lastHeartbeatIndexRef.current = recentActivityRef.current.length
+        silentContext(
+          'The technical agent just started a new turn. Stay quiet until the ' +
+            'turn ends or you receive a heartbeat nudge.',
+        )
+        startHeartbeat()
+        return
+      }
+
+      if (event.type === 'tool-activity') {
+        const okSuffix =
+          event.phase === 'end' && event.ok === false ? ' (failed)' : ''
+        const line =
+          event.phase === 'start'
+            ? `Started: ${event.label}${okSuffix}`
+            : `Finished: ${event.label}${okSuffix}`
+        pushActivity(line)
+        // Silent awareness only — Shogo must not speak about mid-turn
+        // tool activity. We still mirror it into the on-screen log so
+        // the user has visibility if they look.
+        silentContext(`[agent activity] ${line}`)
+        mirrorTranscript(
+          'agent-activity',
+          event.label +
+            (event.phase === 'end'
+              ? event.ok === false
+                ? ' — failed'
+                : ' — done'
+              : '…'),
+        )
+        return
+      }
+
+      // turn-end
+      stopHeartbeat()
+      const { finalText } = event
+      pushActivity(
+        finalText ? `Turn ended. Final reply: ${finalText.slice(0, 500)}` : 'Turn ended.',
+      )
+
+      // Mirror the final reply into the on-screen transcript regardless
+      // of modality — the user should always be able to scroll back.
+      if (finalText) {
+        mirrorTranscript('agent-reply', finalText)
+      }
+
+      const ref = conversationRef.current
+      if (ref && ref.voiceActive) {
+        // Feed the final text in as silent context so Shogo has the raw
+        // material, then inject a user-role message that *forces* a
+        // summary turn. The user never hears the nudge — they only hear
+        // Shogo's spoken response.
+        if (finalText) {
+          try {
+            ref.sendContextualUpdate(`The agent replied: ${finalText}`)
+          } catch (err) {
+            console.warn('[ShogoChatPanel] sendContextualUpdate(final) failed', err)
+          }
         }
-        setVoiceTranscript((prev) => [
-          ...prev,
-          {
-            id: `agent-reply-${Date.now()}-${prev.length}`,
-            source: 'agent-reply',
-            text: trimmed,
-          },
-        ])
-      } else {
-        // Text modality: feed the reply in as a user turn so the
-        // translator paraphrases it on its next response.
+        const nudge =
+          'The technical agent just finished this turn. Give the user a ' +
+          'two- or three-sentence high-level summary of what was ' +
+          'accomplished — in business-outcome language (what changed, ' +
+          'what it means for them, whether anything is pending). Never ' +
+          'recite tool names, file names, or a list of operations. Base ' +
+          'it on the final reply and the recent activity.' +
+          (finalText ? `\n\nFinal reply:\n${finalText}` : '')
         try {
-          void sendMessage({ text: prefixed })
+          ref.sendUserMessage(nudge)
         } catch (err) {
-          console.warn('[ShogoChatPanel] sendMessage(agent reply) failed', err)
+          console.warn('[ShogoChatPanel] turn-end sendUserMessage failed', err)
+        }
+      } else {
+        // Text modality: feed the reply into the translator thread as
+        // a user turn so it paraphrases on its next response.
+        if (finalText) {
+          try {
+            void sendMessageRef.current({
+              text: `The agent replied: ${finalText}`,
+            })
+          } catch (err) {
+            console.warn('[ShogoChatPanel] sendMessage(agent reply) failed', err)
+          }
         }
       }
     })
     return unsubscribe
-  }, [bridge, sendMessage, voiceActive])
+  }, [bridge, startHeartbeat, stopHeartbeat])
 
-  // End the voice session when the panel unmounts (user flipped Shogo
+  // Tear down voice session + heartbeat on unmount (user flipped Shogo
   // Mode off, or navigated away).
   useEffect(() => {
     return () => {
+      stopHeartbeat()
       try {
         conversation.end()
       } catch {
@@ -238,6 +474,265 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inputMode, conversation.status])
+
+  // ---------------------------------------------------------------------
+  // Voice transcript persistence — server-authoritative, queue-backed.
+  //
+  // On mount (and whenever the active chat session changes) we hydrate
+  // `voiceTranscript` from `/api/chat-messages?sessionId=...&agent=voice`
+  // filtered to the `voice` / `agent-activity` envelope kinds.
+  //
+  // New entries are enqueued into a `ShogoTranscriptQueue` that posts
+  // serially against `/api/voice/transcript/:chatSessionId`, retries
+  // transient failures with exponential back-off, and surfaces a
+  // "Syncing / Retrying" banner so a network hiccup can never silently
+  // lose a conversation the way the original fire-and-forget path did.
+  //
+  // Belt-and-suspenders safety net: every raw SDK turn is buffered in
+  // `rawTurnsRef`. When the voice session disconnects (or the component
+  // unmounts) we re-enqueue any id that hasn't been confirmed persisted
+  // yet, and on `pagehide` we fire `navigator.sendBeacon` for every
+  // still-pending task so a mid-turn refresh still lands.
+  //
+  // The `agent-reply` mirror rows (a friendly echo of the technical
+  // agent's final reply) are deliberately NOT persisted — the technical
+  // thread already has that row, and Shogo's spoken paraphrase IS the
+  // authoritative record on reload.
+  // ---------------------------------------------------------------------
+  const transcriptHydratedRef = useRef<string | null>(null)
+  /** IDs of transcript entries that have been confirmed persisted (by the
+   * server on a successful POST, or by being loaded during hydration).
+   * Used to skip duplicate re-enqueues from the session-end replay. */
+  const persistedEntryIdsRef = useRef<Set<string>>(new Set())
+  /** Mirror of every transcript task we've *ever* appended this session,
+   * keyed by task id. Lets `onTranscript` / unmount re-enqueue any row
+   * that slipped through a previous POST failure. */
+  const rawTurnsRef = useRef<Map<string, TranscriptTask>>(new Map())
+
+  const [queueState, setQueueState] = useState<TranscriptQueueState>({
+    pendingCount: 0,
+    inFlight: false,
+    backoffActive: false,
+    lastError: null,
+  })
+
+  const debugLog = useCallback((msg: string, data?: unknown) => {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      console.log(msg, data ?? '')
+    }
+  }, [])
+
+  // Single queue instance per panel lifetime. The queue is
+  // chatSession-agnostic (every task carries its own chatSessionId) so
+  // we don't need to recreate it when the session changes.
+  const transcriptQueue = useMemo(
+    () =>
+      new ShogoTranscriptQueue({
+        apiUrl: API_URL ?? '',
+        credentials: Platform.OS === 'web' ? 'include' : 'omit',
+        onStateChange: (state) => setQueueState(state),
+        onTaskPersisted: (task) => {
+          persistedEntryIdsRef.current.add(task.id)
+        },
+        onTaskDropped: (task, reason) => {
+          console.warn(
+            '[ShogoChatPanel] transcript task dropped — row will NOT be persisted:',
+            { id: task.id, kind: task.kind, reason },
+          )
+        },
+        debug: debugLog,
+      }),
+    [debugLog],
+  )
+
+  useEffect(() => {
+    return () => {
+      transcriptQueue.dispose()
+    }
+  }, [transcriptQueue])
+
+  const sourceToKind = (
+    source: TranscriptEntry['source'],
+  ): TranscriptKind | null => {
+    switch (source) {
+      case 'user-voice':
+        return 'voice-user'
+      case 'shogo-voice':
+        return 'voice-agent'
+      case 'agent-activity':
+        return 'agent-activity'
+      case 'agent-reply':
+        // Intentionally NOT persisted — the technical thread already
+        // stores this row and Shogo's spoken paraphrase is the
+        // authoritative record.
+        return null
+    }
+  }
+
+  // Single entrypoint for "add to voiceTranscript AND enqueue persist"
+  // so every push path (voice SDK onMessage, bridge mirror, etc.) goes
+  // through the same idempotent id + queued write.
+  const appendTranscript = useCallback(
+    (source: TranscriptEntry['source'], text: string) => {
+      const entry: TranscriptEntry = {
+        id: `${source}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        source,
+        text,
+      }
+      setVoiceTranscript((prev) => [...prev, entry])
+
+      const kind = sourceToKind(source)
+      if (!kind) return
+      if (!chatSessionId) {
+        debugLog(
+          '[ShogoChatPanel] appendTranscript skipped — no chatSessionId yet',
+          { entryId: entry.id, source },
+        )
+        return
+      }
+      if (persistedEntryIdsRef.current.has(entry.id)) return
+
+      const task: TranscriptTask = {
+        chatSessionId,
+        kind,
+        text,
+        id: entry.id,
+        ts: Date.now(),
+      }
+      rawTurnsRef.current.set(task.id, task)
+      debugLog('[ShogoChatPanel] appendTranscript enqueue', {
+        id: entry.id,
+        kind,
+        textPreview: text.slice(0, 120),
+      })
+      transcriptQueue.enqueue(task)
+    },
+    [chatSessionId, transcriptQueue, debugLog],
+  )
+
+  const appendTranscriptRef = useRef(appendTranscript)
+  appendTranscriptRef.current = appendTranscript
+
+  // Hydrate whenever the active chat session changes.
+  useEffect(() => {
+    if (!chatSessionId) {
+      setVoiceTranscript([])
+      transcriptHydratedRef.current = null
+      persistedEntryIdsRef.current = new Set()
+      rawTurnsRef.current = new Map()
+      return
+    }
+    if (transcriptHydratedRef.current === chatSessionId) return
+    transcriptHydratedRef.current = chatSessionId
+    persistedEntryIdsRef.current = new Set()
+    rawTurnsRef.current = new Map()
+
+    const controller = new AbortController()
+    ;(async () => {
+      try {
+        const rows = await loadShogoMessages(chatSessionId, {
+          signal: controller.signal,
+        })
+        if (controller.signal.aborted) return
+        const hydrated = rows
+          .map<TranscriptEntry | null>((row) => rowToTranscriptEntry(row))
+          .filter((e): e is TranscriptEntry => !!e)
+        for (const e of hydrated) {
+          persistedEntryIdsRef.current.add(e.id)
+        }
+        debugLog('[ShogoChatPanel] hydrate ok', {
+          chatSessionId,
+          totalRows: rows.length,
+          hydratedEntries: hydrated.length,
+          byKind: rows.reduce<Record<string, number>>((acc, r) => {
+            const k = r.envelope?.kind ?? 'unknown'
+            acc[k] = (acc[k] ?? 0) + 1
+            return acc
+          }, {}),
+        })
+        setVoiceTranscript(hydrated)
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return
+        console.warn(
+          '[ShogoChatPanel] hydrate voice transcript failed:',
+          err?.message || err,
+        )
+        setVoiceTranscript([])
+      }
+    })()
+    return () => {
+      controller.abort()
+    }
+  }, [chatSessionId, debugLog])
+
+  // ---------------------------------------------------------------------
+  // Safety net #1 — session-end bulk replay.
+  //
+  // Every raw turn we've seen this session lives in `rawTurnsRef`. When
+  // the voice connection transitions to `disconnected`, walk the map
+  // and re-enqueue anything the queue doesn't yet know about (i.e. that
+  // hasn't been confirmed persisted). This covers the case where a
+  // mid-session POST failed, was dropped (shouldn't happen with the
+  // retry loop, but belt-and-suspenders), or the user toggled voice
+  // off before the last task finished flushing.
+  // ---------------------------------------------------------------------
+  const prevVoiceStatusRef = useRef(conversation.status)
+  useEffect(() => {
+    const prev = prevVoiceStatusRef.current
+    prevVoiceStatusRef.current = conversation.status
+    if (prev !== 'connected' && prev !== 'connecting') return
+    if (conversation.status !== 'disconnected') return
+    // Just transitioned from active → disconnected. Replay any
+    // unconfirmed tasks through the queue.
+    let replayed = 0
+    for (const [id, task] of rawTurnsRef.current) {
+      if (persistedEntryIdsRef.current.has(id)) continue
+      transcriptQueue.enqueue(task)
+      replayed += 1
+    }
+    if (replayed > 0) {
+      debugLog('[ShogoChatPanel] session-end replay', { replayed })
+    }
+  }, [conversation.status, transcriptQueue, debugLog])
+
+  // ---------------------------------------------------------------------
+  // Safety net #2 — `pagehide` beacon flush.
+  //
+  // If the user closes / refreshes the tab while tasks are still
+  // pending in the queue (either actively retrying or waiting on
+  // back-off), fire `navigator.sendBeacon` for each so at least a
+  // best-effort write lands before the browser nukes the context.
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (typeof window === 'undefined') return
+    const onHide = () => {
+      // Replay any un-enqueued raw turns first, then beacon-flush the
+      // full pending queue.
+      for (const [id, task] of rawTurnsRef.current) {
+        if (persistedEntryIdsRef.current.has(id)) continue
+        transcriptQueue.enqueue(task)
+      }
+      const flushed = transcriptQueue.flushBeacon()
+      if (flushed > 0) {
+        debugLog('[ShogoChatPanel] pagehide beacon flush', { flushed })
+      }
+    }
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('pagehide', onHide)
+    }
+  }, [transcriptQueue, debugLog])
+
+  const handleClose = useCallback(
+    () => bridge.setShogoModeActive(false),
+    [bridge],
+  )
+
+  const handlePeek = useCallback(
+    () => bridge.setShogoPeekActive(true),
+    [bridge],
+  )
 
   const handleSendText = useCallback(() => {
     const text = draft.trim()
@@ -294,8 +789,11 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         voiceError={voiceError}
         inputMode={inputMode}
         onInputModeChange={handleSetInputMode}
+        onPeek={handlePeek}
         onClose={handleClose}
       />
+
+      <SyncBanner state={queueState} />
 
       {isVoiceMode && (
         <SphereHero
@@ -330,6 +828,8 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
                     ? 'user'
                     : t.source === 'shogo-voice'
                     ? 'shogo'
+                    : t.source === 'agent-activity'
+                    ? 'agent-activity'
                     : 'agent-reply'
                 }
                 text={t.text}
@@ -338,6 +838,8 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
                     ? 'voice'
                     : t.source === 'agent-reply'
                     ? 'from chat'
+                    : t.source === 'agent-activity'
+                    ? 'agent activity'
                     : undefined
                 }
               />
@@ -402,10 +904,11 @@ function SphereHero({
       <View
         className="w-full"
         // Fixed height gives the Three.js canvas a stable layout box;
-        // the sphere scales inside via `style`.
+        // the particle cloud scales inside via `style`.
         style={{ height: 400 }}
       >
-        <OrganicSphere
+        <OrganicParticles
+          config={SHOGO_PARTICLES_CONFIG}
           getFrequencyData={getFrequencyData}
           active={voiceActive}
           style={{ width: '100%', height: '100%' }}
@@ -421,12 +924,14 @@ function Header({
   voiceError,
   inputMode,
   onInputModeChange,
+  onPeek,
   onClose,
 }: {
   status: 'disconnected' | 'connecting' | 'connected'
   voiceError: string | null
   inputMode: 'voice' | 'text'
   onInputModeChange: (next: 'voice' | 'text') => void
+  onPeek: () => void
   onClose: () => void
 }) {
   const isVoice = inputMode === 'voice'
@@ -453,9 +958,6 @@ function Header({
           <Text className="text-base font-semibold text-foreground">
             Shogo Mode
           </Text>
-          <Text className="text-xs text-muted-foreground truncate">
-            Talk in plain English. Shogo handles the technical side.
-          </Text>
         </View>
       </View>
       <View className="flex-row items-center gap-2">
@@ -468,6 +970,13 @@ function Header({
             </Text>
           </View>
         )}
+        <Pressable
+          onPress={onPeek}
+          className="p-1.5 rounded-md hover:bg-muted"
+          accessibilityLabel="Peek at technical chat"
+        >
+          <Eye size={16} className="text-muted-foreground" />
+        </Pressable>
         <Pressable
           onPress={onClose}
           className="p-1.5 rounded-md hover:bg-muted"
@@ -536,6 +1045,35 @@ function InputModeSwitcher({
   )
 }
 
+/**
+ * Subtle horizontal banner shown when the transcript queue has pending
+ * writes or is backing off after a transient failure. Keeps the user
+ * aware that "your last turn hasn't landed yet" instead of silently
+ * losing it the way the original fire-and-forget path did.
+ */
+function SyncBanner({ state }: { state: TranscriptQueueState }) {
+  if (state.pendingCount === 0 && !state.lastError) return null
+  const label = state.backoffActive
+    ? `Retrying transcript sync (${state.pendingCount} pending)…`
+    : state.inFlight
+    ? state.pendingCount > 1
+      ? `Syncing ${state.pendingCount} messages…`
+      : 'Syncing transcript…'
+    : state.lastError
+    ? `Transcript sync issue: ${state.lastError}`
+    : null
+  if (!label) return null
+  const tone = state.backoffActive || state.lastError ? 'warn' : 'info'
+  const bgClass = tone === 'warn' ? 'bg-amber-500/10' : 'bg-primary/10'
+  const textClass =
+    tone === 'warn' ? 'text-amber-700 dark:text-amber-400' : 'text-primary'
+  return (
+    <View className={`px-4 py-1.5 border-b border-border ${bgClass}`}>
+      <Text className={`text-[11px] ${textClass}`}>{label}</Text>
+    </View>
+  )
+}
+
 function EmptyState({ mode }: { mode: 'voice' | 'text' }) {
   const hint =
     mode === 'voice'
@@ -556,21 +1094,34 @@ function MessageRow({
   text,
   badge,
 }: {
-  role: 'user' | 'shogo' | 'agent-reply'
+  role: 'user' | 'shogo' | 'agent-reply' | 'agent-activity'
   text: string
   badge?: string
 }) {
   if (!text) return null
   const isUser = role === 'user'
   const isAgentReply = role === 'agent-reply'
+  const isAgentActivity = role === 'agent-activity'
 
   const bubbleClass = isUser
     ? 'bg-primary/10 border border-primary/20 self-end'
+    : isAgentActivity
+    ? 'bg-muted/30 border border-border/60 self-start opacity-70'
     : isAgentReply
     ? 'bg-muted/60 border border-border self-start'
     : 'bg-background border border-border self-start'
 
-  const label = isUser ? 'You' : isAgentReply ? 'Shogo Agent' : 'Shogo'
+  const label = isUser
+    ? 'You'
+    : isAgentActivity
+    ? 'Agent'
+    : isAgentReply
+    ? 'Shogo Agent'
+    : 'Shogo'
+
+  const textClass = isAgentActivity
+    ? 'text-xs text-muted-foreground italic'
+    : 'text-sm text-foreground'
 
   return (
     <View className={`rounded-xl px-3 py-2 max-w-[85%] ${bubbleClass}`}>
@@ -582,7 +1133,7 @@ function MessageRow({
           <Text className="text-[10px] text-muted-foreground/70">· {badge}</Text>
         ) : null}
       </View>
-      <Text className="text-sm text-foreground">{text}</Text>
+      <Text className={textClass}>{text}</Text>
     </View>
   )
 }
@@ -631,10 +1182,10 @@ function VoiceComposer({
     : 'Tap to start talking'
 
   return (
-    <View className="border-t border-border px-3 py-4 items-center gap-2">
+    <View className="px-3 py-2 items-center gap-2">
       <Pressable
         onPress={onToggleMic}
-        className={`rounded-full w-16 h-16 items-center justify-center shadow-lg ${micBgClass}`}
+        className={`rounded-full w-12 h-12 items-center justify-center shadow-lg ${micBgClass}`}
         accessibilityLabel={voiceActive ? 'Stop voice session' : 'Start voice session'}
       >
         {voiceActive ? (

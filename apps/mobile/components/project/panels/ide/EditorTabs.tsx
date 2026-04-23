@@ -87,11 +87,11 @@ export function EditorTabs({
       onDragOver={(e) => {
         if (dragId) e.preventDefault();
       }}
-      className="relative flex h-9 items-stretch bg-[#1e1e1e] border-b border-[#2a2a2a] overflow-x-auto"
+      className="relative flex h-9 items-stretch bg-[color:var(--ide-bg)] border-b border-[color:var(--ide-border)] overflow-x-auto"
     >
       {sorted.map((f) => {
         const isActive = f.id === activeId;
-        const accent = isActive && groupFocused !== false ? "#0078d4" : "#555";
+        const isFocusedActive = isActive && groupFocused !== false;
         const isDragging = dragId === f.id;
         const showBefore = dropTarget?.id === f.id && dropTarget.pos === "before";
         const showAfter = dropTarget?.id === f.id && dropTarget.pos === "after";
@@ -126,12 +126,23 @@ export function EditorTabs({
               setDragId(null);
               setDropTarget(null);
             }}
-            className={`group relative flex cursor-pointer items-center gap-2 border-r border-[#2a2a2a] px-3 text-[13px] transition-opacity ${
+            className={`group relative flex cursor-pointer items-center gap-2 border-r border-[color:var(--ide-border)] px-3 text-[13px] transition-opacity ${
               isActive
-                ? "bg-[#1e1e1e] text-white"
-                : "bg-[#2d2d2d] text-[#969696] hover:text-white"
+                ? "bg-[color:var(--ide-bg)] text-[color:var(--ide-text-strong)]"
+                : "bg-[color:var(--ide-tab-inactive)] text-[color:var(--ide-tab-inactive-text)] hover:text-[color:var(--ide-text-strong)]"
             } ${isDragging ? "opacity-40" : ""}`}
-            style={isActive ? { borderTop: `2px solid ${accent}`, marginTop: -1 } : undefined}
+            style={
+              isActive
+                ? {
+                    borderTop: `2px solid ${
+                      isFocusedActive
+                        ? "var(--ide-active-ring)"
+                        : "var(--ide-border-strong)"
+                    }`,
+                    marginTop: -1,
+                  }
+                : undefined
+            }
             onClick={() => onSelect(f.id)}
             onMouseDown={(e) => {
               if (e.button === 1) {
@@ -141,13 +152,13 @@ export function EditorTabs({
             }}
           >
             {showBefore && (
-              <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-[#0078d4]" />
+              <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-[color:var(--ide-active-ring)]" />
             )}
-            {f.pinned && <Pin size={11} className="text-[#858585]" />}
+            {f.pinned && <Pin size={11} className="text-[color:var(--ide-muted)]" />}
             <span className="truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px]">{f.name}</span>
             <button
               title={f.pinned ? "Unpin" : f.dirty ? "Close (unsaved)" : "Close"}
-              className="flex h-4 w-4 items-center justify-center rounded-sm hover:bg-[#ffffff1a]"
+              className="flex h-4 w-4 items-center justify-center rounded-sm hover:bg-[color:var(--ide-hover-subtle)]"
               onClick={(e) => {
                 e.stopPropagation();
                 if (f.pinned && onTogglePin) onTogglePin(f.id);
@@ -165,7 +176,7 @@ export function EditorTabs({
               )}
             </button>
             {showAfter && (
-              <span className="pointer-events-none absolute right-0 top-0 h-full w-[2px] bg-[#0078d4]" />
+              <span className="pointer-events-none absolute right-0 top-0 h-full w-[2px] bg-[color:var(--ide-active-ring)]" />
             )}
           </div>
         );

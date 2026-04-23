@@ -72,6 +72,7 @@ import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
+import { ProjectExportModal } from './ProjectExportModal'
 
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
@@ -989,17 +990,19 @@ function ProjectMenuView({
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
   const [showMoveModal, setShowMoveModal] = useState(false)
+  const [showExportModal, setShowExportModal] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const { features } = usePlatformConfig()
   const showBilling = features.billing
   const creditsPercent = creditsTotal > 0 ? (creditsRemaining / creditsTotal) * 100 : 0
 
-  const handleExportProject = useCallback(async () => {
+  const runExport = useCallback(async (options: { includeChats: boolean }) => {
     if (isExporting) return
     setIsExporting(true)
-    onClose()
     try {
-      const { blob, filename } = await api.exportProjectBlob(projectId)
+      const { blob, filename } = await api.exportProjectBlob(projectId, {
+        includeChats: options.includeChats,
+      })
 
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
         const url = URL.createObjectURL(blob)
@@ -1028,16 +1031,25 @@ function ProjectMenuView({
           dialogTitle: 'Export Project',
         })
       }
+      setShowExportModal(false)
+      onClose()
     } catch (err: any) {
       console.error('[ProjectTopBar] Export failed:', err)
+      setShowExportModal(false)
       if (Platform.OS !== 'web') {
         const { Alert } = await import('react-native')
         Alert.alert('Export Failed', err.message || 'Failed to export project')
+      } else if (typeof window !== 'undefined') {
+        window.alert(`Export Failed: ${err?.message || 'Failed to export project'}`)
       }
     } finally {
       setIsExporting(false)
     }
   }, [projectId, isExporting, onClose])
+
+  const handleExportProject = useCallback(() => {
+    setShowExportModal(true)
+  }, [])
 
   const menuItems: {
     icon: React.ElementType
@@ -1243,6 +1255,14 @@ function ProjectMenuView({
           setShowMoveModal(false)
           onClose()
         }}
+      />
+
+      {/* Export Project Modal */}
+      <ProjectExportModal
+        open={showExportModal}
+        onOpenChange={(o) => { if (!isExporting) setShowExportModal(o) }}
+        isExporting={isExporting}
+        onExport={runExport}
       />
     </>
   )

@@ -66,6 +66,8 @@ export interface ManagedInstance {
   messages?: Message[]
   /** Rolling window of recent tool calls for progress visibility while running. */
   recentActivity: ActivityEntry[]
+  /** Concrete LLM model id the subagent is running on (set once resolved). */
+  model?: string
 }
 
 export interface AgentTypeInfo {
@@ -264,6 +266,11 @@ export class AgentManager {
     const recentActivity: ActivityEntry[] = []
     const trackingCallbacks: SubagentStreamCallbacks = {
       ...callbacks,
+      onModelResolved: (model) => {
+        const inst = this.instances.get(instanceId)
+        if (inst) inst.model = model
+        callbacks?.onModelResolved?.(model)
+      },
       onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
         const summary = isError
           ? 'ERROR'
@@ -344,6 +351,23 @@ export class AgentManager {
     inst.completedAt = Date.now()
     try { dropScreencastChannel(id) } catch {}
     return true
+  }
+
+  /**
+   * Cancel every running instance. Returns the ids that were actively
+   * cancelled (already-finished instances are skipped).
+   */
+  cancelAll(): string[] {
+    const cancelled: string[] = []
+    for (const [id, inst] of this.instances) {
+      if (inst.status !== 'running') continue
+      inst.abort.abort()
+      inst.status = 'cancelled'
+      inst.completedAt = Date.now()
+      try { dropScreencastChannel(id) } catch {}
+      cancelled.push(id)
+    }
+    return cancelled
   }
 
   listInstances(): Array<{ id: string; type: string; status: string; startedAt: number; completedAt?: number }> {
