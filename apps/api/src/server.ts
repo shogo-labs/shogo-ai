@@ -3467,8 +3467,9 @@ app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
   const projectId = c.req.param('projectId')
   const token = c.req.header('x-runtime-token')
 
-  const { deriveRuntimeToken } = await import('./lib/runtime-token')
-  if (!token || token !== deriveRuntimeToken(projectId)) {
+  const { verifyRuntimeToken } = await import('./lib/runtime-token')
+  const verified = verifyRuntimeToken(token, projectId)
+  if (!verified.ok || verified.projectId !== projectId) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 

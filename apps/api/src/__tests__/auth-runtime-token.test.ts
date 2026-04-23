@@ -38,10 +38,30 @@ mock.module('../routes/api-keys', () => ({
 process.env.AI_PROXY_SECRET =
   process.env.AI_PROXY_SECRET ?? 'test-signing-secret-for-runtime-token'
 
-const { deriveRuntimeToken } = await import('../lib/runtime-token')
+const { deriveRuntimeToken, RUNTIME_TOKEN_V1_PREFIX } = await import(
+  '../lib/runtime-token'
+)
 const { authMiddleware, authorizeProject, requireProjectAccess } = await import(
   '../middleware/auth'
 )
+
+/**
+ * Helper: derive a legacy (pre-v1) bare-hex token for the same
+ * projectId. Used to assert that the rollout compatibility path in
+ * `verifyRuntimeToken` still works while long-running pods carry
+ * pre-v1 `RUNTIME_AUTH_SECRET` env vars.
+ */
+async function deriveLegacyHexToken(projectId: string): Promise<string> {
+  const { createHmac } = await import('crypto')
+  const secret =
+    process.env.AI_PROXY_SECRET ||
+    process.env.BETTER_AUTH_SECRET ||
+    process.env.PREVIEW_TOKEN_SECRET ||
+    'shogo-dev-only-runtime-token-secret'
+  return createHmac('sha256', secret)
+    .update(`runtime-auth:${projectId}`)
+    .digest('hex')
+}
 
 type AuthCtx = any
 function makeCtx(opts: {
@@ -110,19 +130,23 @@ function projectWithOwners(opts: {
 }
 
 describe('authMiddleware — runtime-token path', () => {
-  test('valid x-runtime-token + projectId query → sets via: runtimeToken with real owner userId', async () => {
+  test('v1 token sets via: runtimeToken with real owner userId (no query/param projectId needed)', async () => {
     const projectId = 'proj_abc'
     const ownerId = 'user_owner_abc'
     const token = deriveRuntimeToken(projectId)
+    expect(token.startsWith(RUNTIME_TOKEN_V1_PREFIX)).toBe(true)
     mockPrisma.project.findUnique.mockImplementation(() =>
       Promise.resolve(
         projectWithOwners({ workspaceId: 'ws_1', projectOwnerUserId: ownerId }),
       ),
     )
 
+    // Deliberately omit query + param. v1 tokens self-identify, so
+    // auth must succeed against wildcard-middleware routes where
+    // `c.req.param('projectId')` returns undefined. This is the whole
+    // point of the v1 format — see runtime-token.md "What the token is".
     const { c, stored, calledNext } = makeCtx({
       headers: { 'x-runtime-token': token },
-      query: { projectId },
     })
     await authMiddleware(c, async () => {
       calledNext.called = true
@@ -136,6 +160,38 @@ describe('authMiddleware — runtime-token path', () => {
     // Post the owner-resolution change, userId is a real user row, not
     // a synthetic `runtime:<projectId>` string.
     expect(stored.auth?.userId).toBe(ownerId)
+  })
+
+  test('v1 token resolves scope via :projectId route param (wildcard-middleware safe)', async () => {
+    // Regression test for the bug that motivated v1 tokens:
+    // `c.req.param('projectId')` returns undefined from wildcard
+    // middleware, so prior (legacy-hex) callers to
+    // `GET /api/voice/calls/:projectId` got 401 even with a valid
+    // token. v1 tokens fix this at the verifier — the route param
+    // doesn't need to be resolvable in middleware.
+    const projectId = 'proj_path_param'
+    const ownerId = 'user_owner_path'
+    const token = deriveRuntimeToken(projectId)
+    mockPrisma.project.findUnique.mockImplementation(() =>
+      Promise.resolve(
+        projectWithOwners({ workspaceId: 'ws_path', projectOwnerUserId: ownerId }),
+      ),
+    )
+
+    const { c, stored, calledNext } = makeCtx({
+      headers: { 'x-runtime-token': token },
+      // Simulate what real Hono does for wildcard middleware: param()
+      // for the matched downstream route returns undefined. Note we
+      // also omit query — the token alone must carry scope.
+      params: {},
+    })
+    await authMiddleware(c, async () => {
+      calledNext.called = true
+    })
+
+    expect(calledNext.called).toBe(true)
+    expect(stored.auth?.via).toBe('runtimeToken')
+    expect(stored.auth?.projectId).toBe(projectId)
   })
 
   test('valid token via Authorization: Bearer header also works', async () => {
@@ -191,8 +247,13 @@ describe('authMiddleware — runtime-token path', () => {
     expect(stored.auth?.via).toBeUndefined()
   })
 
-  test('token present but no projectId → falls through (no runtime auth)', async () => {
-    const token = deriveRuntimeToken('some-project')
+  test('legacy bare-hex token without query/param projectId → falls through', async () => {
+    // Rollout-compat path: pre-v1 pods still hold bare-hex tokens in
+    // `RUNTIME_AUTH_SECRET`. Those need a `?projectId=` (or resolvable
+    // path param) to scope; without one, we refuse rather than brute-
+    // force the scope. v1 tokens don't need this because the scope is
+    // baked in — see the v1 happy-path test above.
+    const token = await deriveLegacyHexToken('some-project')
     const { c, stored } = makeCtx({
       headers: { 'x-runtime-token': token },
       // no projectId query or param
@@ -200,6 +261,29 @@ describe('authMiddleware — runtime-token path', () => {
     await authMiddleware(c, async () => {})
     expect(stored.auth?.via).toBeUndefined()
     expect(stored.auth?.isAuthenticated).toBe(false)
+  })
+
+  test('legacy bare-hex token + matching ?projectId= → authenticates (rollout compat)', async () => {
+    const projectId = 'proj_legacy_ok'
+    const ownerId = 'user_owner_legacy'
+    const token = await deriveLegacyHexToken(projectId)
+    mockPrisma.project.findUnique.mockImplementation(() =>
+      Promise.resolve(
+        projectWithOwners({
+          workspaceId: 'ws_legacy',
+          projectOwnerUserId: ownerId,
+        }),
+      ),
+    )
+
+    const { c, stored } = makeCtx({
+      headers: { 'x-runtime-token': token },
+      query: { projectId },
+    })
+    await authMiddleware(c, async () => {})
+    expect(stored.auth?.via).toBe('runtimeToken')
+    expect(stored.auth?.projectId).toBe(projectId)
+    expect(stored.auth?.userId).toBe(ownerId)
   })
 
   test('valid token but project row missing → falls through', async () => {
@@ -217,18 +301,21 @@ describe('authMiddleware — runtime-token path', () => {
     expect(stored.auth?.via).toBeUndefined()
   })
 
-  test('token for project X presented with query projectId=Y → does not authenticate', async () => {
+  test('v1 token authenticates as the embedded projectId, ignoring query hint', async () => {
+    // Security-relevant: a v1 token for project X cannot be "redirected"
+    // to authenticate as project Y by passing `?projectId=Y`. The scope
+    // comes from the token, not the caller-supplied hint. Scope
+    // mismatch against the target route is caught by `authorizeProject`
+    // downstream (→ 403), which is tested separately.
     const x = 'proj_x'
     const y = 'proj_y'
-    // tokens differ; attempt validates against Y (the request-scoped id)
-    // and fails equality check.
     const token = deriveRuntimeToken(x)
 
     mockPrisma.project.findUnique.mockImplementation(() =>
       Promise.resolve(
         projectWithOwners({
-          workspaceId: 'ws_y',
-          projectOwnerUserId: 'user_owner_y',
+          workspaceId: 'ws_x',
+          projectOwnerUserId: 'user_owner_x',
         }),
       ),
     )
@@ -238,7 +325,25 @@ describe('authMiddleware — runtime-token path', () => {
       query: { projectId: y },
     })
     await authMiddleware(c, async () => {})
+    expect(stored.auth?.via).toBe('runtimeToken')
+    expect(stored.auth?.projectId).toBe(x)
+    expect(stored.auth?.projectId).not.toBe(y)
+  })
+
+  test('v1 token with tampered HMAC → falls through', async () => {
+    // Swap the last hex char of the HMAC suffix; keep the rest intact.
+    const projectId = 'proj_tamper'
+    const good = deriveRuntimeToken(projectId)
+    const last = good.slice(-1)
+    const swapped = last === '0' ? '1' : '0'
+    const bad = good.slice(0, -1) + swapped
+
+    const { c, stored } = makeCtx({
+      headers: { 'x-runtime-token': bad },
+    })
+    await authMiddleware(c, async () => {})
     expect(stored.auth?.via).toBeUndefined()
+    expect(stored.auth?.isAuthenticated).toBe(false)
   })
 
   test('falls through to session path when no runtime token present', async () => {

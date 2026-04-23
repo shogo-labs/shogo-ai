@@ -466,6 +466,28 @@ export function voiceRoutes() {
       })
     }
 
+    // Shared-agent fallback (no projectId): per runtime-token.md §5,
+    // runtime-token callers are refused here. Pre-v1 this was an
+    // implicit side-effect of the auth middleware requiring a
+    // projectId to mint `via: 'runtimeToken'`; v1 self-identifying
+    // tokens removed that implicit gate, so we reject explicitly.
+    // Pattern matches the translator route (§7). Runtime tokens are
+    // project-scoped capabilities; shared-agent paths are either
+    // user-scoped (overlay) or anonymous.
+    const auth = c.get('auth')
+    if (auth?.via === 'runtimeToken') {
+      return c.json(
+        {
+          error: {
+            code: 'forbidden',
+            message:
+              'runtime-token cannot reach the shared voice agent; pass ?projectId= to use the project-scoped agent',
+          },
+        },
+        403,
+      )
+    }
+
     const resolved = resolveElevenLabsClient()
     if ('error' in resolved) {
       return c.json({ error: resolved.error }, 503)
