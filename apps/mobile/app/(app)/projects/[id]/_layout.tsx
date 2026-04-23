@@ -619,20 +619,38 @@ export default observer(function ProjectLayout() {
 
   const SESSION_PAGE_SIZE = 10
 
-  // Auto-select or create chat session
+  // Tracks which projects we've already seeded via loadPage so we don't
+  // re-fetch the session list on every chatSessionId change. Without this,
+  // each mounted ChatPanel would fall back to its own per-session fetch
+  // (the root cause of the "[ChatPanel] Loading session from API" storm
+  // when a project restores many open tabs).
+  const seededProjectsRef = useRef<Set<string>>(new Set())
+
+  // Seed the chat session collection and, when no session is selected yet,
+  // auto-select or create one. The seed runs once per projectId; the
+  // auto-select/create branch only runs when chatSessionId is still null.
   useEffect(() => {
-    if (!projectId || !store?.chatSessionCollection || chatSessionId) return
+    if (!projectId || !store?.chatSessionCollection) return
 
     let cancelled = false
 
-    const initSession = async () => {
-      try {
-        await store.chatSessionCollection.loadPage(
-          { contextId: projectId },
-          { limit: SESSION_PAGE_SIZE, offset: 0 },
-        )
+    const run = async () => {
+      if (!seededProjectsRef.current.has(projectId)) {
+        try {
+          await store.chatSessionCollection.loadPage(
+            { contextId: projectId },
+            { limit: SESSION_PAGE_SIZE, offset: 0 },
+          )
+          seededProjectsRef.current.add(projectId)
+        } catch (err) {
+          console.error('[ProjectLayout] Failed to seed chat sessions:', err)
+        }
         if (cancelled) return
+      }
 
+      if (chatSessionId) return
+
+      try {
         const existing = store.chatSessionCollection.all.filter(
           (s: any) => s.contextId === projectId,
         )
@@ -661,7 +679,7 @@ export default observer(function ProjectLayout() {
       }
     }
 
-    initSession()
+    run()
     return () => {
       cancelled = true
     }
