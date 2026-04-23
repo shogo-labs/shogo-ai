@@ -66,7 +66,11 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
       <div style={{ position: 'absolute', inset: 0 }}>
-        <Workbench agentService={agentService} agentLabel={projectName || `project/${projectId}`} />
+        <Workbench
+          agentService={agentService}
+          agentLabel={projectName || `project/${projectId}`}
+          projectId={projectId}
+        />
       </div>
     </View>
   )
