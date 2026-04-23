@@ -10,6 +10,7 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
@@ -90,6 +91,9 @@ export default observer(function StarredProjectsPage() {
   const [deleteProject, setDeleteProject] = useState<any>(null)
 
   const actions = useDomainActions()
+
+  const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
+  const gridColumns = isNativeMobile ? 2 : 3
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) return
@@ -241,7 +245,13 @@ export default observer(function StarredProjectsPage() {
           onPress={() => handleProjectPress(project)}
           className="flex-1 mx-1.5 mb-3 rounded-xl bg-card overflow-hidden border border-border"
         >
-          <View className={cn('aspect-video items-center justify-center', getPlaceholderColor(project.name || ''))}>
+          <View
+            className={cn(
+              isNativeMobile ? 'h-[100px]' : 'h-[140px]',
+              'items-center justify-center',
+              getPlaceholderColor(project.name || ''),
+            )}
+          >
             <FolderOpen size={28} className="text-white/30" />
             <Pressable
               onPress={() => handleUnstar(entry)}
@@ -477,10 +487,10 @@ export default observer(function StarredProjectsPage() {
         </View>
       ) : viewMode === 'grid' ? (
         <FlatList
-          key="grid-2"
+          key={`grid-${gridColumns}`}
           data={filteredEntries}
           keyExtractor={(item: any) => item.id}
-          numColumns={2}
+          numColumns={gridColumns}
           contentContainerClassName="p-2.5 pt-4"
           renderItem={renderGridItem}
         />
