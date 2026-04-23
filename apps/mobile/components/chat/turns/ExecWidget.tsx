@@ -3,9 +3,9 @@
 /**
  * ExecWidget — Terminal-style display for exec/Bash tool calls.
  *
- * Shows command with a prompt indicator and output in a dark
- * monospace panel, giving users clear visibility into what the
- * agent is executing.
+ * Shows command with a prompt indicator and output in a
+ * theme-aware monospace panel, giving users clear visibility
+ * into what the agent is executing.
  */
 
 import { useState } from "react"
@@ -92,24 +92,24 @@ export function ExecWidget({
         onPress={handleToggle}
         className={cn(
           "group w-full flex-row items-center gap-1.5 py-1.5 px-2",
-          "bg-gray-900 dark:bg-gray-950",
+          "bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-transparent",
         )}
       >
         <View className="group-hover:hidden">
-          <Terminal className="w-3 h-3 text-emerald-500" size={12} />
+          <Terminal className="w-3 h-3 text-emerald-600 dark:text-emerald-500" size={12} />
         </View>
         <View className="hidden group-hover:flex">
           {isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronDown className="w-3 h-3 text-gray-600 dark:text-gray-500" size={12} />
           ) : (
-            <ChevronRight className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronRight className="w-3 h-3 text-gray-600 dark:text-gray-500" size={12} />
           )}
         </View>
-        <Text className="flex-1 font-mono text-[10px] text-gray-300" numberOfLines={1}>
-          <Text className="text-emerald-400">$</Text> {displayCmd}
+        <Text className="flex-1 font-mono text-[10px] text-gray-800 dark:text-gray-300" numberOfLines={1}>
+          {displayCmd}
         </Text>
         {durationMs != null && tool.state !== "streaming" && (
-          <Text className="font-mono text-[9px] text-gray-600 mr-1">
+          <Text className="font-mono text-[9px] text-gray-500 dark:text-gray-600 mr-1">
             {formatDuration(durationMs)}
           </Text>
         )}
@@ -126,15 +126,15 @@ export function ExecWidget({
 
       {/* Expanded — full command + output */}
       {isExpanded && (
-        <View className="bg-gray-900 dark:bg-gray-950 border-t border-gray-800 px-2 pb-2 gap-1.5">
+        <View className="bg-gray-50 dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800 px-2 pb-2 gap-1.5">
           {/* Full command (if multi-line or long) */}
           {command !== firstLine && (
             <View className="gap-0.5">
-              <Text className="text-[9px] font-medium text-gray-500 uppercase tracking-wide">
+              <Text className="text-[9px] font-medium text-gray-600 dark:text-gray-500 uppercase tracking-wide">
                 Command
               </Text>
-              <ScrollView nestedScrollEnabled className="bg-black/30 rounded p-1.5 max-h-24">
-                <Text className="text-[10px] font-mono text-gray-300" selectable>
+              <ScrollView nestedScrollEnabled className="bg-gray-200/60 dark:bg-black/30 rounded p-1.5 max-h-24">
+                <Text className="text-[10px] font-mono text-gray-800 dark:text-gray-300" selectable>
                   {command}
                 </Text>
               </ScrollView>
@@ -145,20 +145,20 @@ export function ExecWidget({
           {tool.state !== "streaming" && hasOutput && (
             <View className="gap-0.5">
               <View className="flex-row items-center justify-between">
-                <Text className="text-[9px] font-medium text-gray-500 uppercase tracking-wide">
+                <Text className="text-[9px] font-medium text-gray-600 dark:text-gray-500 uppercase tracking-wide">
                   Output
                 </Text>
                 {exitCode !== undefined && exitCode !== 0 && (
-                  <Text className="text-[9px] font-mono text-red-400">
+                  <Text className="text-[9px] font-mono text-red-600 dark:text-red-400">
                     exit {exitCode}
                   </Text>
                 )}
               </View>
-              <ScrollView nestedScrollEnabled className="bg-black/30 rounded p-1.5 max-h-48">
+              <ScrollView nestedScrollEnabled className="bg-gray-200/60 dark:bg-black/30 rounded p-1.5 max-h-48">
                 <Text
                   className={cn(
                     "text-[10px] font-mono",
-                    stderr && !stdout ? "text-red-400" : "text-gray-300"
+                    stderr && !stdout ? "text-red-600 dark:text-red-400" : "text-gray-800 dark:text-gray-300"
                   )}
                   selectable
                 >
@@ -167,7 +167,7 @@ export function ExecWidget({
               </ScrollView>
               {truncated && (
                 <Pressable onPress={() => setShowFull(!showFull)}>
-                  <Text className="text-[9px] text-gray-500">
+                  <Text className="text-[9px] text-gray-600 dark:text-gray-500">
                     {showFull ? "Show less" : "Show full output"}
                   </Text>
                 </Pressable>
@@ -179,14 +179,14 @@ export function ExecWidget({
           {tool.state === "streaming" && (
             <View className="flex-row items-center gap-1.5 py-1">
               <Loader2 className="w-3 h-3 text-primary" size={12} />
-              <Text className="text-[10px] text-gray-500">Running…</Text>
+              <Text className="text-[10px] text-gray-600 dark:text-gray-500">Running…</Text>
             </View>
           )}
 
           {/* Error without output */}
           {tool.state === "error" && !hasOutput && tool.error && (
             <View className="bg-red-500/10 rounded p-1.5">
-              <Text className="text-[10px] font-mono text-red-400" selectable>
+              <Text className="text-[10px] font-mono text-red-600 dark:text-red-400" selectable>
                 {tool.error}
               </Text>
             </View>
