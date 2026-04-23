@@ -937,7 +937,9 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // here to render a running subagent's viewport under its card.
 app.get('/agent/subagents/:instanceId/screencast', (c) => {
   const instanceId = c.req.param('instanceId')
-  console.log(`[screencast] SSE open instanceId=${instanceId}`)
+  const debugScreencast = process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+  const scLog = (msg: string) => { if (debugScreencast) console.log(msg) }
+  scLog(`[screencast] SSE open instanceId=${instanceId}`)
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const enc = new TextEncoder()
@@ -950,16 +952,16 @@ app.get('/agent/subagents/:instanceId/screencast', (c) => {
       // Replay the most recent frame so new subscribers see something immediately.
       const last = getLastScreencastFrame(instanceId)
       if (last) {
-        console.log(`[screencast] SSE replay last frame instanceId=${instanceId}`)
+        scLog(`[screencast] SSE replay last frame instanceId=${instanceId}`)
         send(`data: ${JSON.stringify(last)}\n\n`)
         sentFrames++
       } else {
-        console.log(`[screencast] SSE no last frame yet instanceId=${instanceId}`)
+        scLog(`[screencast] SSE no last frame yet instanceId=${instanceId}`)
       }
       const unsub = subscribeScreencast(instanceId, (frame) => {
         sentFrames++
         if (sentFrames === 1 || sentFrames % 60 === 0) {
-          console.log(`[screencast] SSE send frame#${sentFrames} instanceId=${instanceId}`)
+          scLog(`[screencast] SSE send frame#${sentFrames} instanceId=${instanceId}`)
         }
         send(`data: ${JSON.stringify(frame)}\n\n`)
       })
@@ -970,7 +972,7 @@ app.get('/agent/subagents/:instanceId/screencast', (c) => {
         clearInterval(iv)
         try { unsub() } catch {}
         try { controller.close() } catch {}
-        console.log(
+        scLog(
           `[screencast] SSE close instanceId=${instanceId} sentFrames=${sentFrames}`,
         )
       }
@@ -1177,10 +1179,23 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
+  // Also cancel every running subagent spawned via AgentManager. The main turn
+  // signal does not reach these instances because each has its own AbortController.
+  const cancelledSubagents = agentGateway.agentManager.cancelAll()
+
   // Remove the buffer entirely so resume after stop returns 204 (not a replay)
   streamBufferStore.abort(stopSessionKey)
 
-  return c.json({ stopped: aborted })
+  return c.json({ stopped: aborted, cancelledSubagents })
+})
+
+// Cancel a single running subagent by AgentManager instance id
+app.post('/agent/subagents/:instanceId/stop', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
+  const instanceId = c.req.param('instanceId')
+  if (!instanceId) return c.json({ error: 'Missing instanceId' }, 400)
+  const cancelled = agentGateway.agentManager.cancel(instanceId)
+  return c.json({ cancelled, instanceId })
 })
 
 // ---------------------------------------------------------------------------
@@ -1751,9 +1766,12 @@ function walkFilesTree(
   return results
 }
 
-// Bundle all workspace files for project export (called by the API server in K8s mode)
+// Bundle all workspace files for project export (called by the API server in K8s mode).
+// `dist/` and `build/` are intentionally NOT excluded here: shipping the built app output
+// lets imports start the preview immediately without waiting for install + vite build.
+// See preview-manager.ts — presence of `project/dist/index.html` marks the preview ready.
 const BUNDLE_EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', '.cache', '.next', 'build', '.turbo', '.expo',
+  'node_modules', '.git', '.cache', '.next', '.turbo', '.expo',
 ])
 const BUNDLE_MAX_FILE_SIZE = 10 * 1024 * 1024
 

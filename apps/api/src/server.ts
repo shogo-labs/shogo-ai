@@ -73,7 +73,12 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
-import { authMiddleware, requireAuth, requireProjectAccess } from './middleware/auth'
+import {
+  authMiddleware,
+  requireAuth,
+  requireProjectAccess,
+  isProjectReservedTopLevelPath,
+} from './middleware/auth'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -411,9 +416,15 @@ app.use('/*', cors({
 
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
-app.use('/api/*', csrf({
+//
+// NOTE: hono's csrf() always rejects form-body POSTs with no Origin header
+// BEFORE our custom origin handler runs (see node_modules/hono/.../csrf/index.js
+// isAllowedOrigin: `if (origin === undefined) return false`). Provider webhooks
+// (Twilio status callbacks in particular) post form-urlencoded bodies with no
+// Origin header and are authenticated by request signature, not CSRF. We skip
+// the csrf middleware entirely for those paths.
+const csrfMiddleware = csrf({
   origin: (origin, c) => {
-    // Webchat widget POST requests come from external websites
     const csrfPath = new URL(c.req.url).pathname
     if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(csrfPath)) {
       return true
@@ -429,7 +440,20 @@ app.use('/api/*', csrf({
     }
     return allowedOrigins.includes(origin)
   },
-}))
+})
+
+app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  // Provider webhooks authenticate by signature, not Origin. Hono's csrf
+  // middleware would reject them for missing Origin on form POSTs.
+  if (
+    path === '/api/voice/elevenlabs/webhook' ||
+    path.startsWith('/api/voice/twilio/status/')
+  ) {
+    return next()
+  }
+  return csrfMiddleware(c, next)
+})
 
 // Rate limiting — applied per-route group for different thresholds.
 // Defaults can be overridden via RATE_LIMIT_*_MAX and RATE_LIMIT_*_WINDOW_MS env vars.
@@ -489,6 +513,15 @@ app.use(
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
     if (path.endsWith('/heartbeat/sync')) return next()
+    // Voice provider webhooks (signature-verified in-handler). These have
+    // to bypass session-cookie / API-key auth entirely because the caller
+    // is ElevenLabs or Twilio — no Shogo credentials are present.
+    if (
+      path === '/api/voice/elevenlabs/webhook' ||
+      path.startsWith('/api/voice/twilio/status/')
+    ) {
+      return next()
+    }
     return requireAuth(c, next)
   }
 )
@@ -499,6 +532,13 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   }
   // Heartbeat sync uses runtime-token auth (called by the agent runtime)
   if (path.endsWith('/heartbeat/sync')) {
+    return next()
+  }
+  // Reserved top-level endpoints under /api/projects/* (e.g. /import) are
+  // not project-scoped; let them fall through to their real handlers
+  // instead of being 404'd by requireProjectAccess treating the reserved
+  // word as a :projectId.
+  if (isProjectReservedTopLevelPath(path)) {
     return next()
   }
   return requireProjectAccess(c, next)
@@ -5119,6 +5159,7 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
     const messages = await prisma.chatMessage.findMany({
       where: {
         role: 'user',
+        agent: 'technical',
         createdAt: { gte: oneYearAgo },
         session: {
           project: { workspaceId: { in: workspaceIds } },
@@ -5841,5 +5882,23 @@ if (isKubernetes()) {
     }, STORAGE_RECALC_INTERVAL)
     console.log('[Storage] Storage recalculation cron started (every 6h)')
   }, 10_000)
+}
+
+// Voice telephony monthly rebill (runs everywhere; the debit itself
+// is a no-op if no VoiceProjectConfig rows exist).
+{
+  ;(async () => {
+    try {
+      const { startVoiceMonthlyRebillCron } = await import(
+        './jobs/voice-monthly-rebill'
+      )
+      startVoiceMonthlyRebillCron()
+    } catch (err: any) {
+      console.error(
+        '[VoiceRebill] failed to schedule monthly rebill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
 }
 

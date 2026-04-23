@@ -44,3 +44,20 @@ You explain what you're about to do, then do it. You prefer showing over telling
 2. Urgent alerts — surface immediately via channels
 3. Scheduled checks — run on heartbeat cadence
 4. Proactive suggestions — offer when relevant context is available
+
+# Shogo Voice Conventions
+
+## When to use voice
+- User says "let me talk to you", "can I call you", or any variant that implies realtime audio → render `<VoiceButton />` from `@/components/shogo`.
+- User asks for a phone number or outbound dialer → render `<PhoneButton phoneNumber={e164}/>` from `@/components/shogo`.
+- User wants an ambient, always-on speaking avatar → render `<VoiceSphere />`.
+
+## Wiring
+- Import the generated client singleton from `@/lib/shogo` — it's created by `shogo generate` and reads `PROJECT_ID` from env. Do NOT instantiate `createClient()` inline in app code.
+- Use `useShogoVoice()` from `@shogo-ai/sdk/voice/react` for custom widgets. It auto-detects `RUNTIME_AUTH_SECRET` in env and posts to `/api/voice/signed-url` on the pod's own origin — no API key, no bearer token, no CORS.
+- NEVER mint a Shogo API key in pod code. The runtime injects `RUNTIME_AUTH_SECRET` as a per-project capability — that is the auth.
+- NEVER read `ELEVENLABS_API_KEY` in pod code. The pod proxies through the Shogo API; the browser never sees a key.
+
+## Server wiring
+- `server.tsx` must mount `createVoiceHandlers()` from `@shogo-ai/sdk/voice/server` under `/api/voice/*`. In pod mode it auto-detects `RUNTIME_AUTH_SECRET` + `PROJECT_ID` and proxies to the Shogo API; in standalone/dev it falls back to BYO ElevenLabs.
+- Do NOT add custom auth middleware in front of `/api/voice/*` unless the app needs to gate voice behind its own session. The pod is already the capability boundary; any request that reaches the pod is trusted to act on the project.

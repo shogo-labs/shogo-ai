@@ -35,6 +35,7 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
+import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 
 function safeErrorString(error: unknown): string | undefined {
@@ -473,13 +474,21 @@ export const AssistantContent = memo(
       }
       // Capture the AgentManager instance id from the preliminary/final tool output
       // so the Agents panel can open the live browser screencast for this run.
+      // Skip if we've already captured it — session restores replay every
+      // historical agent_spawn tool part and we don't want to spam logs or
+      // re-notify the store on every load.
       const instanceId = (tool.result as any)?.instance_id as string | undefined
-      if (instanceId) {
-        console.log(
+      const existing = subagentStreamStore.get(tool.id)
+      if (instanceId && existing?.instanceId !== instanceId) {
+        logScreencast(
           `[screencast] AssistantContent capture instance_id toolId=${tool.id} ` +
           `instanceId=${instanceId}`,
         )
         subagentStreamStore.setInstanceId(tool.id, instanceId)
+      }
+      const model = (tool.result as any)?.model as string | undefined
+      if (model && existing?.model !== model) {
+        subagentStreamStore.setModel(tool.id, model)
       }
     }
   }, [orderedParts])

@@ -100,7 +100,7 @@ export function SearchPane({
       while ((m = re.exec(line)) && i++ < 50) {
         if (m.index > last) parts.push(line.slice(last, m.index));
         parts.push(
-          <span key={`${m.index}-${i}`} className="bg-[#514b17] text-[#ffd75e]">
+          <span key={`${m.index}-${i}`} className="bg-[color:var(--ide-highlight-bg)] text-[color:var(--ide-highlight-text)]">
             {m[0]}
           </span>,
         );
@@ -116,14 +116,14 @@ export function SearchPane({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[#858585]">
+      <div className="px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
         Search
       </div>
 
       {/* Query input */}
       <div className="px-3 pb-1">
-        <div className="relative flex items-center rounded border border-[#3a3a3a] bg-[#1a1a1a] focus-within:border-[#0078d4]">
-          <Search size={14} className="ml-2.5 mr-1 shrink-0 text-[#858585]" />
+        <div className="relative flex items-center rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-input-bg)] focus-within:border-[color:var(--ide-active-ring)]">
+          <Search size={14} className="ml-2.5 mr-1 shrink-0 text-[color:var(--ide-muted)]" />
           <input
             ref={inputRef}
             value={query}
@@ -133,12 +133,12 @@ export function SearchPane({
               if (e.key === "Escape") setQuery("");
             }}
             placeholder="Search across all workspaces"
-            className="no-focus-ring min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-white placeholder:text-[#666] outline-none"
+            className="no-focus-ring min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-[color:var(--ide-text-strong)] placeholder:text-[color:var(--ide-muted-strong)] outline-none"
           />
           {query && (
             <button
               onClick={() => setQuery("")}
-              className="mr-1 rounded p-0.5 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              className="mr-1 rounded p-0.5 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
             >
               <X size={12} />
             </button>
@@ -152,7 +152,7 @@ export function SearchPane({
           <ToggleBtn on={useRegex} onClick={() => setUseRegex((v) => !v)} title="Use Regular Expression">
             <Regex size={12} />
           </ToggleBtn>
-          <div className="ml-auto flex items-center gap-2 text-[10px] text-[#858585]">
+          <div className="ml-auto flex items-center gap-2 text-[10px] text-[color:var(--ide-muted)]">
             {running && <Loader2 size={11} className="animate-spin" />}
             {query && !running && (
               <span>
@@ -167,9 +167,9 @@ export function SearchPane({
       {/* Results */}
       <div className="mt-2 flex-1 overflow-auto text-[12px]">
         {!query && (
-          <div className="px-4 py-6 text-center text-[11px] text-[#666]">
+          <div className="px-4 py-6 text-center text-[11px] text-[color:var(--ide-muted-strong)]">
             Type to search across{" "}
-            <span className="text-[#cccccc]">
+            <span className="text-[color:var(--ide-text)]">
               {roots.length} workspace{roots.length === 1 ? "" : "s"}
             </span>
             .
@@ -178,7 +178,7 @@ export function SearchPane({
         )}
 
         {query && !running && rootResults.every((r) => r.results.length === 0 && !r.error) && (
-          <div className="px-4 py-6 text-center text-[11px] text-[#666]">No results</div>
+          <div className="px-4 py-6 text-center text-[11px] text-[color:var(--ide-muted-strong)]">No results</div>
         )}
 
         {rootResults.map((rr) => {
@@ -187,13 +187,13 @@ export function SearchPane({
           return (
             <div key={rr.rootId} className="mb-1">
               {multi && (
-                <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#858585]">
+                <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
                   {rr.rootLabel}
-                  {rr.truncated && <span className="ml-2 text-[#ffb74d]">(truncated)</span>}
+                  {rr.truncated && <span className="ml-2 text-[color:var(--ide-warning)]">(truncated)</span>}
                 </div>
               )}
               {rr.error && (
-                <div className="px-4 py-1 text-[11px] text-[#f48771]">{rr.error}</div>
+                <div className="px-4 py-1 text-[11px] text-[color:var(--ide-error)]">{rr.error}</div>
               )}
               {rr.results.map((file) => {
                 const key = `${rr.rootId}::${file.path}`;
@@ -204,16 +204,16 @@ export function SearchPane({
                       onClick={() =>
                         setCollapsed((c) => ({ ...c, [key]: !c[key] }))
                       }
-                      className="flex w-full items-center gap-1 px-2 py-0.5 text-left text-[12px] hover:bg-[#2a2a2a]"
+                      className="flex w-full items-center gap-1 px-2 py-0.5 text-left text-[12px] hover:bg-[color:var(--ide-hover)]"
                     >
                       {hidden ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                      <span className="truncate text-[#cccccc]">
+                      <span className="truncate text-[color:var(--ide-text)]">
                         {file.path.split("/").pop()}
                       </span>
-                      <span className="truncate text-[11px] text-[#858585]">
+                      <span className="truncate text-[11px] text-[color:var(--ide-muted)]">
                         {file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : ""}
                       </span>
-                      <span className="ml-auto rounded bg-[#2a2a2a] px-1.5 text-[10px] text-[#858585]">
+                      <span className="ml-auto rounded bg-[color:var(--ide-border)] px-1.5 text-[10px] text-[color:var(--ide-muted)]">
                         {file.matches.length}
                       </span>
                     </button>
@@ -222,11 +222,11 @@ export function SearchPane({
                         <button
                           key={`${key}-${i}`}
                           onClick={() => onReveal(rr.rootId, file.path, m.line, m.col)}
-                          className="flex w-full items-baseline gap-2 px-6 py-[2px] text-left font-mono text-[11px] hover:bg-[#2a2a2a]"
+                          className="flex w-full items-baseline gap-2 px-6 py-[2px] text-left font-mono text-[11px] hover:bg-[color:var(--ide-hover)]"
                           title={`${file.path}:${m.line}:${m.col}`}
                         >
-                          <span className="w-10 shrink-0 text-right text-[#666]">{m.line}</span>
-                          <span className="truncate text-[#d4d4d4]">{highlight(m.preview)}</span>
+                          <span className="w-10 shrink-0 text-right text-[color:var(--ide-muted-strong)]">{m.line}</span>
+                          <span className="truncate text-[color:var(--ide-text)]">{highlight(m.preview)}</span>
                         </button>
                       ))}
                   </div>
@@ -257,8 +257,8 @@ function ToggleBtn({
       title={title}
       className={`rounded border px-1.5 py-0.5 ${
         on
-          ? "border-[#0078d4] bg-[#0078d4]/20 text-[#75beff]"
-          : "border-[#3a3a3a] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
+          ? "border-[color:var(--ide-active-ring)] bg-[color:var(--ide-active-ring)]/20 text-[color:var(--ide-accent-file-icon)]"
+          : "border-[color:var(--ide-border-strong)] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
       }`}
     >
       {children}

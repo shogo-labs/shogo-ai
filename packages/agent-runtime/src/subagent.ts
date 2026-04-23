@@ -87,6 +87,8 @@ export interface SubagentResult {
 
 export interface SubagentStreamCallbacks {
   onStart?: (name: string, description: string, agentId: string) => void
+  /** Fired once the subagent's concrete model id is known (after routing/tier resolution). */
+  onModelResolved?: (model: string) => void
   onEnd?: (name: string) => void
   onTextDelta?: (delta: string) => void
   onThinkingStart?: () => void
@@ -317,7 +319,7 @@ Regardless of whether the canvas exists, always save a final markdown artifact t
 - **Console / Network Errors** — raw error lines grouped by step, or "None observed".
 - **Recommendations** — prioritized, actionable suggestions for the main agent / developer.
 
-Screenshots should be saved under \`.shogo/reports/qa-<ISO-timestamp>-step-N.png\` so they survive after the run. When referencing a screenshot from the canvas \`latestScreenshot\` field, use the same \`.shogo/reports/...\` path.
+The \`browser\` tool saves screenshots automatically under \`.shogo/screenshots/<run>/step-N.png\` (relative to the workspace) — use the \`path\` field it returns verbatim when you reference a screenshot from the canvas \`latestScreenshot\` field or from the markdown report. Do not construct screenshot paths yourself.
 
 Return a short final response (≤ 10 lines): canvas surface path if built, markdown report path, overall verdict.
 
@@ -666,14 +668,17 @@ export async function runSubagent(
     // browser tool closure captured the parent ctx where subagentInstanceId
     // is always undefined, which would silently disable the screencast.
     // Also isolates the browser/page/cdp state per subagent run.
+    const debugScreencast = process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
     if (tools.some(t => t.name === 'browser')) {
-      console.log(
-        `[screencast] runSubagent rebuilding browser tool instanceId=${options?.instanceId ?? '<none>'} ` +
-        `agent=${config.name}`,
-      )
+      if (debugScreencast) {
+        console.log(
+          `[screencast] runSubagent rebuilding browser tool instanceId=${options?.instanceId ?? '<none>'} ` +
+          `agent=${config.name}`,
+        )
+      }
       tools = tools.filter(t => t.name !== 'browser')
       tools.push(createBrowserTool(subCtx))
-    } else {
+    } else if (debugScreencast) {
       console.log(
         `[screencast] runSubagent no browser tool to rebuild instanceId=${options?.instanceId ?? '<none>'} ` +
         `agent=${config.name}`,
@@ -741,6 +746,8 @@ export async function runSubagent(
   } else {
     model = resolveModelTier(config.modelTier, parentModel)
   }
+
+  try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
 
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
     const runProvider = useAutoRouting ? inferProviderFromModel(runModel, provider) : provider

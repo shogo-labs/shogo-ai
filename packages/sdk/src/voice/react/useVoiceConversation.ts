@@ -59,8 +59,34 @@ export interface UseVoiceConversationOptions {
    */
   onTranscript?: (transcript: string) => void | Promise<void>
 
-  /** Credentials mode for built-in fetch calls. Default: `same-origin`. */
+  /**
+   * Credentials mode for built-in fetch calls.
+   *
+   * - Defaults to `same-origin` in the legacy cookie path.
+   * - Defaults to `omit` when `shogoApiKey` is provided (bearer auth is
+   *   self-contained and you don't want browsers to attach unrelated
+   *   third-party cookies cross-origin).
+   * - Explicit values always win — pass `'include'` to carry both a cookie
+   *   and the bearer in a hybrid same-origin app.
+   */
   fetchCredentials?: RequestCredentials
+
+  /**
+   * Shogo API key (`shogo_sk_*`) used to authenticate voice routes. When
+   * provided, the hook attaches `Authorization: Bearer <key>` to the
+   * signed-URL fetch and memory fetches, and appends `?projectId=` to
+   * the signed-URL path. Either `shogoApiKey` or a session cookie must
+   * be resolvable by the server — both may be passed; the server's
+   * `apiKeyOrSession` middleware picks bearer first.
+   */
+  shogoApiKey?: string
+
+  /**
+   * Project id (Shogo's `projectId`). Required alongside `shogoApiKey`
+   * for Mode B voice. The server uses it to look up / provision the
+   * project's ElevenLabs agent and resolve the workspace.
+   */
+  projectId?: string
 
   /** Called on connection errors. */
   onError?: (error: unknown) => void
@@ -84,6 +110,20 @@ export interface UseVoiceConversationResult {
   getOutputByteFrequencyData: () => Uint8Array | null
   /** Imperatively send a contextual update (e.g. "user navigated to X"). */
   sendContextualUpdate: (text: string) => void
+  /**
+   * Imperatively inject a user-role message, forcing the agent to take
+   * its next turn immediately (rather than waiting for the human to
+   * speak). Useful for out-of-band prompts like "please summarise what
+   * just happened". The injected text is *not* spoken aloud — the agent
+   * treats it as if the user said it.
+   */
+  sendUserMessage: (text: string) => void
+  /**
+   * Low-level signal that the user is active (typing, clicking) so the
+   * agent doesn't try to fill silence. Used as a fallback nudge when we
+   * want to keep the session "warm" without forcing a full turn.
+   */
+  sendUserActivity: () => void
 }
 
 /**
@@ -103,28 +143,42 @@ export function useVoiceConversation(
     includeMemoryTool = true,
     clientTools = {},
     onTranscript,
-    fetchCredentials = 'same-origin',
+    shogoApiKey,
+    projectId,
+    fetchCredentials = shogoApiKey ? 'omit' : 'same-origin',
     onError,
     onMessage,
   } = options
+
+  const authHeaders = useCallback((): Record<string, string> => {
+    return shogoApiKey ? { authorization: `Bearer ${shogoApiKey}` } : {}
+  }, [shogoApiKey])
+
+  const resolvedSignedUrlPath = (() => {
+    if (!projectId) return signedUrlPath
+    const sep = signedUrlPath.includes('?') ? '&' : '?'
+    return `${signedUrlPath}${sep}projectId=${encodeURIComponent(projectId)}`
+  })()
 
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
   const weStartedSessionRef = useRef(false)
   const conversationRef = useRef<{
     sendContextualUpdate: (text: string) => void
+    sendUserMessage?: (text: string) => void
+    sendUserActivity?: () => void
   } | null>(null)
 
   const postJson = useCallback(
     async (path: string, body: unknown) => {
       return fetch(path, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...authHeaders() },
         credentials: fetchCredentials,
         body: JSON.stringify(body),
       })
     },
-    [fetchCredentials],
+    [fetchCredentials, authHeaders],
   )
 
   const injectMemoryContext = useCallback(
@@ -223,6 +277,8 @@ export function useVoiceConversation(
   const { status, isSpeaking, isListening, startSession, endSession } = conversation
   conversationRef.current = conversation as unknown as {
     sendContextualUpdate: (text: string) => void
+    sendUserMessage?: (text: string) => void
+    sendUserActivity?: () => void
   }
 
   // Flush any pending transcript on `pagehide` using sendBeacon — the regular
@@ -254,7 +310,10 @@ export function useVoiceConversation(
       }
     }
     await navigator.mediaDevices.getUserMedia({ audio: true })
-    const res = await fetch(signedUrlPath, { credentials: fetchCredentials })
+    const res = await fetch(resolvedSignedUrlPath, {
+      credentials: fetchCredentials,
+      headers: authHeaders(),
+    })
     if (!res.ok) throw new Error(`Signed URL request failed: ${res.status}`)
     const data = (await res.json()) as { signedUrl: string; userContext?: string }
     const ctx = data.userContext || 'No prior memories yet.'
@@ -266,7 +325,7 @@ export function useVoiceConversation(
         user_context: ctx,
       },
     } as never)
-  }, [status, endSession, signedUrlPath, fetchCredentials, startSession, characterName])
+  }, [status, endSession, resolvedSignedUrlPath, fetchCredentials, startSession, characterName, authHeaders])
 
   const end = useCallback(() => {
     endSession()
@@ -274,6 +333,28 @@ export function useVoiceConversation(
 
   const sendContextualUpdate = useCallback((text: string) => {
     conversationRef.current?.sendContextualUpdate(text)
+  }, [])
+
+  const sendUserMessage = useCallback((text: string) => {
+    const ref = conversationRef.current
+    if (!ref) return
+    if (typeof ref.sendUserMessage === 'function') {
+      ref.sendUserMessage(text)
+      return
+    }
+    // Older @elevenlabs/react versions only expose sendContextualUpdate.
+    // Fall back to injecting the text as context and nudging activity so
+    // the agent is more likely to take its turn.
+    ref.sendContextualUpdate(text)
+    try {
+      ref.sendUserActivity?.()
+    } catch {
+      /* best effort */
+    }
+  }, [])
+
+  const sendUserActivity = useCallback(() => {
+    conversationRef.current?.sendUserActivity?.()
   }, [])
 
   const getOutputByteFrequencyData = useCallback((): Uint8Array | null => {
@@ -294,5 +375,7 @@ export function useVoiceConversation(
     isListening,
     getOutputByteFrequencyData,
     sendContextualUpdate,
+    sendUserMessage,
+    sendUserActivity,
   }
 }

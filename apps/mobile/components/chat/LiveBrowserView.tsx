@@ -15,6 +15,7 @@ import { View, Text, Image, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useChatContextSafe } from "./ChatContext"
 import { createAuthedEventSource } from "../../lib/authed-event-source"
+import { logScreencast, warnScreencast } from "../../lib/screencast-debug"
 
 const MAX_RECONNECT_ATTEMPTS = 5
 
@@ -55,7 +56,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
 
   useEffect(() => {
     if (!active || !agentUrl || !instanceId) {
-      console.log(
+      logScreencast(
         `[screencast] LiveBrowserView skip connect active=${active} ` +
         `hasAgentUrl=${!!agentUrl} instanceId=${instanceId ?? "<none>"}`,
       )
@@ -70,12 +71,12 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
       if (!alive) return
       try {
         const url = `${agentUrl}/agent/subagents/${encodeURIComponent(instanceId)}/screencast`
-        console.log(`[screencast] LiveBrowserView connect url=${url} attempt=${attempts + 1}/${MAX_RECONNECT_ATTEMPTS}`)
+        logScreencast(`[screencast] LiveBrowserView connect url=${url} attempt=${attempts + 1}/${MAX_RECONNECT_ATTEMPTS}`)
         const es = createAuthedEventSource(url)
         esRef.current = es
         es.onopen = () => {
           if (!alive) return
-          console.log(`[screencast] LiveBrowserView onopen instanceId=${instanceId}`)
+          logScreencast(`[screencast] LiveBrowserView onopen instanceId=${instanceId}`)
           attempts = 0
           setError(null)
           setExhaustedRetries(false)
@@ -87,7 +88,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
             if (f?.jpegBase64) {
               frameCount++
               if (frameCount === 1 || frameCount % 60 === 0) {
-                console.log(
+                logScreencast(
                   `[screencast] LiveBrowserView frame#${frameCount} instanceId=${instanceId} ` +
                   `size=${f.width}x${f.height}`,
                 )
@@ -95,11 +96,11 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
               setFrame(f)
             }
           } catch (err: any) {
-            console.warn(`[screencast] LiveBrowserView parse error: ${err?.message ?? err}`)
+            warnScreencast(`[screencast] LiveBrowserView parse error: ${err?.message ?? err}`)
           }
         }
         es.onerror = (err: any) => {
-          console.warn(
+          warnScreencast(
             `[screencast] LiveBrowserView onerror instanceId=${instanceId} ` +
             `readyState=${(es as any)?.readyState} err=${err?.message ?? "?"}`,
           )
@@ -108,7 +109,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
 
           attempts++
           if (attempts >= MAX_RECONNECT_ATTEMPTS) {
-            console.warn(
+            warnScreencast(
               `[screencast] LiveBrowserView exhausted ${MAX_RECONNECT_ATTEMPTS} retries for instanceId=${instanceId}`,
             )
             setError("Connection failed")
@@ -120,7 +121,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
           reconnectTimer = setTimeout(connect, 2000)
         }
       } catch (err: any) {
-        console.warn(`[screencast] LiveBrowserView connect threw: ${err?.message ?? err}`)
+        warnScreencast(`[screencast] LiveBrowserView connect threw: ${err?.message ?? err}`)
         setError(err?.message ?? "Failed to connect")
         setExhaustedRetries(true)
       }
@@ -128,7 +129,7 @@ export function LiveBrowserView({ instanceId, active = true, agentUrl: agentUrlP
     connect()
 
     return () => {
-      console.log(`[screencast] LiveBrowserView cleanup instanceId=${instanceId}`)
+      logScreencast(`[screencast] LiveBrowserView cleanup instanceId=${instanceId}`)
       alive = false
       if (reconnectTimer) clearTimeout(reconnectTimer)
       try { esRef.current?.close() } catch {}

@@ -27,6 +27,8 @@ export interface ShogoClientConfig<DB = unknown> {
    * that routes through the Shogo Cloud LLM proxy. When unset, `client.llm`
    * is `null` and attempts to call LLMs should configure a key via
    * `client.setShogoApiKey()` or recreate the client.
+   *
+   * Also unlocks Mode B (hosted) voice telephony when paired with `projectId`.
    */
   shogoApiKey?: string
 
@@ -36,6 +38,40 @@ export interface ShogoClientConfig<DB = unknown> {
    * staging / self-hosted Shogo deployments.
    */
   shogoCloudUrl?: string
+
+  /**
+   * Shogo project id. Required for Mode B voice telephony, pod-native
+   * runtime-token voice telephony, and also forwarded to the direct
+   * (Mode A) telephony client as a bookkeeping handle.
+   *
+   * When the process has `RUNTIME_AUTH_SECRET` in its env (true for every
+   * Shogo-managed pod), `createClient({ projectId })` automatically
+   * wires `voice.telephony` to a pod-native `HostedRuntimeTokenClient`
+   * — no API key required.
+   */
+  projectId?: string
+
+  /**
+   * Bring-your-own ElevenLabs credentials. Supplying this (and `twilio`)
+   * opts the `client.voice.telephony` module into Mode A — the SDK talks
+   * directly to ElevenLabs + Twilio and never contacts Shogo's API for
+   * voice. Ignored when `shogoApiKey` is also supplied (hosted wins).
+   */
+  elevenlabs?: {
+    apiKey: string
+    agentId: string
+    phoneNumberId?: string
+    baseUrl?: string
+  }
+
+  /** Bring-your-own Twilio credentials — see `elevenlabs`. */
+  twilio?: {
+    accountSid: string
+    authToken: string
+    fromNumber?: string
+    phoneSid?: string
+    baseUrl?: string
+  }
 }
 
 export interface ShogoAuthConfig {

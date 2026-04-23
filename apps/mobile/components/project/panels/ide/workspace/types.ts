@@ -60,6 +60,16 @@ export interface WorkspaceService {
   rename(from: string, to: string): Promise<void>;
   search(query: string, opts?: SearchOptions): Promise<SearchResponse>;
   /**
+   * Resolve a path to a URL that can be used by <img>, <video>, etc. Used for
+   * previewing binary assets (images, pdfs) that can't round-trip through the
+   * text-only readFile path. The returned URL may be a blob: URL (local) or
+   * an http(s): URL pointing at the backing server (agent).
+   *
+   * Callers are responsible for revoking blob: URLs when done — each call
+   * may allocate a fresh one. Optional: not all backends support it.
+   */
+  readFileUrl?(path: string): Promise<string>;
+  /**
    * Subscribe to live file-level edits performed by the backing agent.
    * Returns a disposer. Optional — not all backends support it.
    */

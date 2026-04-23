@@ -320,6 +320,24 @@ export class AgentClient {
     return this.url(`/agent/workspace/download/${this.encodePath(relativePath)}`)
   }
 
+  /**
+   * Fetch a workspace file as a raw Blob — used for images, PDFs, and other
+   * binaries the text-only `readFile` can't represent. Goes through the same
+   * authed fetch wrapper as every other SDK call, so auth headers / cookies
+   * travel with the request automatically.
+   */
+  async readFileBlob(relativePath: string): Promise<Blob> {
+    const res = await this.doFetch(
+      this.url(`/agent/workspace/download/${this.encodePath(relativePath)}`),
+      { headers: this.ambientHeaders },
+    )
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`Agent readFileBlob ${res.status}: ${text}`)
+    }
+    return res.blob()
+  }
+
   async exportAgentBundle(): Promise<AgentExportBundle> {
     return this.fetchJson<AgentExportBundle>('/agent/export')
   }

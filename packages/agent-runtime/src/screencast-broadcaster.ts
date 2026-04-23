@@ -27,6 +27,16 @@ const lastFrame = new Map<string, ScreencastFrame>()
 // N-th frame without spamming the console.
 const publishCounts = new Map<string, number>()
 
+// All `[screencast]` server logs are opt-in — set DEBUG_SCREENCAST=1 to enable.
+// Default off keeps the runtime quiet in normal operation; the CDP pipeline is
+// stable and these logs are only useful when diagnosing connectivity issues.
+function debugEnabled(): boolean {
+  return process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+}
+function dlog(...args: unknown[]): void {
+  if (debugEnabled()) console.log(...args)
+}
+
 /** Publish a frame for `instanceId`. Stores it as the last frame and notifies listeners. */
 export function publish(instanceId: string, frame: ScreencastFrame): void {
   if (!instanceId) return
@@ -35,7 +45,7 @@ export function publish(instanceId: string, frame: ScreencastFrame): void {
   const count = (publishCounts.get(instanceId) ?? 0) + 1
   publishCounts.set(instanceId, count)
   if (count === 1 || count % 60 === 0) {
-    console.log(
+    dlog(
       `[screencast] publish instanceId=${instanceId} frame#${count} ` +
       `subscribers=${ls?.size ?? 0} size=${frame.width}x${frame.height} ` +
       `bytes~${frame.jpegBase64.length}`,
@@ -59,7 +69,7 @@ export function subscribe(instanceId: string, listener: Listener): () => void {
     listeners.set(instanceId, set)
   }
   set.add(listener)
-  console.log(
+  dlog(
     `[screencast] subscribe instanceId=${instanceId} subscribers=${set.size} ` +
     `lastFrame=${lastFrame.has(instanceId) ? 'yes' : 'no'}`,
   )
@@ -68,7 +78,7 @@ export function subscribe(instanceId: string, listener: Listener): () => void {
     if (!s) return
     s.delete(listener)
     if (s.size === 0) listeners.delete(instanceId)
-    console.log(`[screencast] unsubscribe instanceId=${instanceId} subscribers=${s.size}`)
+    dlog(`[screencast] unsubscribe instanceId=${instanceId} subscribers=${s.size}`)
   }
 }
 
@@ -89,7 +99,7 @@ export function dropChannel(instanceId: string): void {
   listeners.delete(instanceId)
   lastFrame.delete(instanceId)
   publishCounts.delete(instanceId)
-  if (had) console.log(`[screencast] dropChannel instanceId=${instanceId}`)
+  if (had) dlog(`[screencast] dropChannel instanceId=${instanceId}`)
 }
 
 /** Test-only: reset all state. */

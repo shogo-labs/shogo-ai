@@ -11,3 +11,4 @@ if (process.env.SHOGO_LOCAL_MODE !== 'true') {
 
 const server = await import('./server')
 export default server.default
+

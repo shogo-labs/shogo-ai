@@ -66,13 +66,43 @@ import type {
 
 export type GetVoiceUser = (req: Request) => Promise<VoiceUser | null> | VoiceUser | null
 
+/**
+ * Runtime-token proxy options. When `createVoiceHandlers()` detects
+ * these (either passed explicitly or auto-detected from env), the
+ * returned handlers become a thin pass-through to the Shogo API and do
+ * NOT require `apiKey` / `getUser` / `companionStore`.
+ *
+ * Auto-detection looks for:
+ *   - `process.env.RUNTIME_AUTH_SECRET` (pod-injected runtime token)
+ *   - `process.env.PROJECT_ID` (pod-injected project scope)
+ *   - `process.env.SHOGO_API_URL` (defaults to `http://localhost:8002`)
+ */
+export interface VoiceProxyOptions {
+  runtimeToken: string
+  projectId: string
+  apiUrl: string
+  /** Custom fetch impl (forwarded to the proxy fetches). */
+  fetch?: typeof fetch
+}
+
 export interface VoiceHandlersConfig {
-  /** 11Labs API key. */
-  apiKey: string
-  /** Resolve the authenticated user from a request, or `null` for unauthenticated. */
-  getUser: GetVoiceUser
-  /** Consumer-owned persistence layer for Companion records. */
-  companionStore: CompanionStore
+  /**
+   * 11Labs API key. Required in BYO-EL mode; ignored / optional when
+   * runtime-token proxy mode is active (explicit `proxy` or env detection).
+   */
+  apiKey?: string
+  /**
+   * Resolve the authenticated user from a request, or `null` for
+   * unauthenticated. Required in BYO-EL mode; optional in proxy mode —
+   * the Shogo API handles user-less project-scoped auth via the runtime
+   * token, and per-user memory is out of scope for pod apps.
+   */
+  getUser?: GetVoiceUser
+  /**
+   * Consumer-owned persistence layer for Companion records. Required
+   * in BYO-EL mode; unused in proxy mode.
+   */
+  companionStore?: CompanionStore
   /** Optional memory store — when present, `signedUrl` preloads context bullets. */
   memoryStore?: (userId: string) => VoiceMemoryStore
   /**
@@ -86,6 +116,13 @@ export interface VoiceHandlersConfig {
   fetch?: typeof fetch
   /** Optional structured logger. */
   logger?: (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void
+  /**
+   * Explicitly opt into runtime-token proxy mode with the given options.
+   * If omitted, `createVoiceHandlers()` will auto-detect proxy mode from
+   * process env (`RUNTIME_AUTH_SECRET` + `PROJECT_ID`). Passing `proxy`
+   * overrides env detection.
+   */
+  proxy?: VoiceProxyOptions
 }
 
 export interface VoiceHandlers {
@@ -132,12 +169,158 @@ const NOOP_LOGGER: NonNullable<VoiceHandlersConfig['logger']> = () => {
   /* noop */
 }
 
+/**
+ * Resolve the runtime-token proxy options — explicit `config.proxy` wins,
+ * else read from env vars that every Shogo-managed pod has injected.
+ */
+function resolveProxyOptions(
+  config: VoiceHandlersConfig,
+): VoiceProxyOptions | null {
+  if (config.proxy) {
+    if (!config.proxy.runtimeToken || !config.proxy.projectId || !config.proxy.apiUrl) {
+      throw new Error(
+        'createVoiceHandlers: proxy requires runtimeToken, projectId, and apiUrl',
+      )
+    }
+    return config.proxy
+  }
+  if (typeof process === 'undefined' || !process.env) return null
+  const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+  const projectId = process.env.PROJECT_ID
+  if (!runtimeToken || !projectId) return null
+  const apiUrl =
+    process.env.SHOGO_API_URL ?? process.env.SHOGO_CLOUD_URL ?? 'http://localhost:8002'
+  return {
+    runtimeToken,
+    projectId,
+    apiUrl,
+    ...(config.fetch ? { fetch: config.fetch } : {}),
+  }
+}
+
+/**
+ * Build proxy handlers that forward requests to the Shogo API using the
+ * runtime token. Mirrors the shape of {@link VoiceHandlers}: the same
+ * method names, so templates that mount voice routes never need to
+ * branch on mode.
+ *
+ * Only endpoints that make sense for a project-scoped, user-less pod
+ * context are implemented end-to-end:
+ *   - `signedUrl` — proxies to `GET /api/voice/signed-url?projectId=…`
+ *   - `audioTags` — static catalog; never hits the network
+ *
+ * User-scoped companion/agent CRUD (`agent.create/patch/delete`, `tts`)
+ * assume a `getUser` context that doesn't exist in runtime-token mode;
+ * those handlers return `501 Not Implemented` with a clear message. A
+ * pod app that needs per-end-user voice should either (a) stay in
+ * BYO-EL mode, or (b) wait for the hosted user-voice API.
+ */
+function createProxyHandlers(
+  proxy: VoiceProxyOptions,
+  log: NonNullable<VoiceHandlersConfig['logger']>,
+): VoiceHandlers {
+  const fetchImpl = proxy.fetch ?? globalThis.fetch
+  if (typeof fetchImpl !== 'function') {
+    throw new Error(
+      'createVoiceHandlers proxy: global fetch is unavailable; pass proxy.fetch',
+    )
+  }
+  const apiBase = proxy.apiUrl.replace(/\/+$/, '')
+
+  function proxyUrl(path: string): string {
+    const sep = path.includes('?') ? '&' : '?'
+    return `${apiBase}${path}${sep}projectId=${encodeURIComponent(proxy.projectId)}`
+  }
+
+  async function doSignedUrl(req: Request): Promise<Response> {
+    if (req.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405)
+    try {
+      const upstream = await fetchImpl(proxyUrl('/api/voice/signed-url'), {
+        method: 'GET',
+        headers: { 'x-runtime-token': proxy.runtimeToken },
+        credentials: 'omit',
+      })
+      const body = await upstream.text()
+      // Pass through the upstream content-type (JSON expected) and status.
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      const ct = upstream.headers.get('content-type')
+      if (ct) headers['content-type'] = ct
+      return new Response(body, { status: upstream.status, headers })
+    } catch (err) {
+      log('error', 'proxy signedUrl failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return json({ error: 'signedUrl proxy failed' }, 502)
+    }
+  }
+
+  async function doAudioTags(req: Request): Promise<Response> {
+    if (req.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405)
+    return json({
+      tags: AUDIO_TAGS,
+      groups: AUDIO_TAG_GROUPS,
+      expressivity: EXPRESSIVITY_OPTIONS,
+      defaults: {
+        allowedTags: DEFAULT_ALLOWED_TAGS,
+        voiceSettings: DEFAULT_VOICE_SETTINGS,
+        ttsModelId: CONVAI_TTS_MODEL_FALLBACK,
+      },
+    })
+  }
+
+  function notImplemented(label: string): (req: Request) => Promise<Response> {
+    return async () =>
+      json(
+        {
+          error: 'Not Implemented',
+          detail: `${label} is not available in runtime-token proxy mode; use BYO-EL or the hosted bearer SDK path.`,
+        },
+        501,
+      )
+  }
+
+  return {
+    signedUrl: doSignedUrl,
+    tts: notImplemented('tts'),
+    agent: {
+      create: notImplemented('agent.create'),
+      patch: notImplemented('agent.patch'),
+      delete: notImplemented('agent.delete'),
+    },
+    audioTags: doAudioTags,
+    // In proxy mode we don't own an EL client. Expose a throwing stub so
+    // accidental use is loud instead of silently passing around a
+    // half-configured client.
+    elevenLabs: new Proxy({} as ElevenLabsClient, {
+      get(_t, prop) {
+        throw new Error(
+          `createVoiceHandlers: elevenLabs.${String(prop)} is not available in runtime-token proxy mode`,
+        )
+      },
+    }),
+  }
+}
+
 export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers {
+  const log = config.logger ?? NOOP_LOGGER
+
+  // Proxy mode short-circuit — skips every BYO-EL requirement. A pod
+  // started with RUNTIME_AUTH_SECRET + PROJECT_ID in env just works.
+  const proxy = resolveProxyOptions(config)
+  if (proxy) {
+    if (config.apiKey) {
+      log('warn', 'createVoiceHandlers: apiKey provided but runtime-token proxy mode is active; apiKey is ignored')
+    }
+    return createProxyHandlers(proxy, log)
+  }
+
   if (!config.apiKey) throw new Error('createVoiceHandlers: apiKey is required')
   if (!config.getUser) throw new Error('createVoiceHandlers: getUser is required')
   if (!config.companionStore) throw new Error('createVoiceHandlers: companionStore is required')
 
-  const log = config.logger ?? NOOP_LOGGER
+  // TypeScript narrowing — alias post-guard so closures can use them.
+  const getUser = config.getUser
+  const companionStore = config.companionStore
   const includeMemoryTools = config.includeMemoryTools ?? true
   const tools: ReadonlyArray<ConvaiClientTool> | undefined = includeMemoryTools
     ? MEMORY_CLIENT_TOOLS
@@ -151,7 +334,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
   const el = new ElevenLabsClient(elConfig)
 
   async function resolveUser(req: Request): Promise<VoiceUser | Response> {
-    const u = await config.getUser(req)
+    const u = await getUser(req)
     if (!u) return json({ error: 'Unauthorized' }, 401)
     return u
   }
@@ -171,7 +354,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
-    const companion = await config.companionStore.findByUserId(u.id)
+    const companion = await companionStore.findByUserId(u.id)
     if (!companion || !companion.agentId) return json({ error: 'No companion' }, 404)
 
     // Keep the agent in sync with the persisted config before minting a URL.
@@ -192,7 +375,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
         ...(includeMemoryTools ? {} : { memoryBlock: null }),
       })
       if (basePrompt !== companion.systemPrompt) {
-        await config.companionStore.update(u.id, { systemPrompt: basePrompt })
+        await companionStore.update(u.id, { systemPrompt: basePrompt })
       }
     } catch (e) {
       log('warn', 'signedUrl: pre-sync patch failed; continuing', {
@@ -276,7 +459,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
-    const existing = await config.companionStore.findByUserId(u.id)
+    const existing = await companionStore.findByUserId(u.id)
     if (existing) return json({ error: 'Companion already exists' }, 409)
 
     const raw = await readJson(req)
@@ -317,7 +500,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     }
 
     const cleanedPrompt = extractBasePrompt(body.systemPrompt)
-    const companion = await config.companionStore.create({
+    const companion = await companionStore.create({
       userId: u.id,
       agentId,
       displayName: body.displayName,
@@ -338,7 +521,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
-    const existing = await config.companionStore.findByUserId(u.id)
+    const existing = await companionStore.findByUserId(u.id)
     if (!existing) return json({ error: 'No companion' }, 404)
 
     const raw = await readJson(req)
@@ -414,7 +597,7 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
       }
     }
 
-    const companion = await config.companionStore.update(u.id, patch)
+    const companion = await companionStore.update(u.id, patch)
     return json(companion)
   }
 
@@ -423,11 +606,11 @@ export function createVoiceHandlers(config: VoiceHandlersConfig): VoiceHandlers 
     const u = await resolveUser(req)
     if (u instanceof Response) return u
 
-    const existing = await config.companionStore.findByUserId(u.id)
+    const existing = await companionStore.findByUserId(u.id)
     if (!existing) return json({ ok: true })
 
     if (existing.agentId) await el.deleteAgent(existing.agentId)
-    await config.companionStore.delete(u.id)
+    await companionStore.delete(u.id)
     return json({ ok: true })
   }
 

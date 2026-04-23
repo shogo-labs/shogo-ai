@@ -61,11 +61,11 @@ export function VerticalSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEve
   return (
     <div
       onMouseDown={onMouseDown}
-      className="group relative w-[1px] shrink-0 cursor-col-resize bg-[#2a2a2a]"
+      className="group relative w-[1px] shrink-0 cursor-col-resize bg-[color:var(--ide-border)]"
     >
       <div
         aria-hidden
-        className="absolute inset-y-0 -left-[3px] -right-[3px] group-hover:bg-[#0078d4]/60 transition-colors"
+        className="absolute inset-y-0 -left-[3px] -right-[3px] group-hover:bg-[color:var(--ide-active-ring)]/60 transition-colors"
       />
     </div>
   );
@@ -83,11 +83,11 @@ export function HorizontalSplit({
       onMouseDown={onMouseDown}
       onDoubleClick={onDoubleClick}
       title="Drag to resize · double-click to reset"
-      className="group relative h-[1px] shrink-0 cursor-row-resize bg-[#2a2a2a]"
+      className="group relative h-[1px] shrink-0 cursor-row-resize bg-[color:var(--ide-border)]"
     >
       <div
         aria-hidden
-        className="absolute inset-x-0 -top-[3px] -bottom-[3px] group-hover:bg-[#0078d4]/60 transition-colors"
+        className="absolute inset-x-0 -top-[3px] -bottom-[3px] group-hover:bg-[color:var(--ide-active-ring)]/60 transition-colors"
       />
     </div>
   );

@@ -63,7 +63,7 @@ export function highlightMatch(text: string, indices: number[]): React.ReactNode
       run += text[i];
     } else if (runStart !== -1) {
       parts.push(
-        <mark key={runStart} className="bg-transparent text-[#0078d4] font-semibold">
+        <mark key={runStart} className="bg-transparent text-[color:var(--ide-active-ring)] font-semibold">
           {run}
         </mark>,
       );
@@ -74,7 +74,7 @@ export function highlightMatch(text: string, indices: number[]): React.ReactNode
   }
   if (runStart !== -1) {
     parts.push(
-      <mark key={runStart} className="bg-transparent text-[#0078d4] font-semibold">
+      <mark key={runStart} className="bg-transparent text-[color:var(--ide-active-ring)] font-semibold">
         {run}
       </mark>,
     );
