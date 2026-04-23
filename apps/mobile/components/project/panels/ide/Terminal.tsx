@@ -32,6 +32,18 @@ import { agentFetch } from "../../../../lib/agent-fetch";
  *     the user's mental model: "X on the last terminal should hide the
  *     whole thing, not spawn a new one").
  *
+ * Synthetic persistent shell:
+ *   - `bash -c` is spawned fresh for every command, so shell-local state
+ *     (`cd`, `export`, aliases) doesn't naturally survive. We give users the
+ *     illusion of a long-lived shell by tracking `cwd` + `prevCwd` per
+ *     session and passing them with every run. The server `cd`s into `cwd`
+ *     before the command and reports the post-command `pwd` back on an
+ *     out-of-band stream channel (wrapped in 0x1E record-separator bytes so
+ *     it can't collide with program output). The client parses it, updates
+ *     state, and the next command starts from the new directory. Enough to
+ *     make `cd`, `cd -`, `cd ..`, `pwd`, pipes, redirects, subshells, etc.
+ *     all feel like a real terminal.
+ *
  * Why no raw PTY / xterm.js: the product is agent-first (commit 7f9bdd0), so
  * we lean on simple streamed stdout over HTTP instead of a persistent shell.
  * That covers ~all real workflows (`ls`, `cat`, `bun run …`, `git status`,
@@ -54,6 +66,51 @@ interface Session {
   abort: AbortController | null;
   /** Free-form prompt history, oldest → newest. */
   history: string[];
+  /**
+   * Synthetic-shell cwd for this tab. `null` means "server default"
+   * (project workspace root) — we resolve it lazily on first command so
+   * new tabs don't need an up-front API call. Updated from the
+   * out-of-band metadata trailer after every command.
+   */
+  cwd: string | null;
+  /** Previous cwd so `cd -` works across independent `bash -c` invocations. */
+  prevCwd: string | null;
+}
+
+/**
+ * Record-Separator framed trailer emitted by the server after a free-form
+ * command finishes. Carries `{ cwd, exitCode, signal }` as base64-encoded
+ * JSON. Kept in sync with META_SENTINEL_{PREFIX,SUFFIX} in
+ * apps/api/src/routes/terminal.ts — change both or neither.
+ */
+const META_SENTINEL_RE = /\u001eSHOGO_TERM_META:([A-Za-z0-9+/=]+)\u001e\n?/;
+
+interface RunMeta {
+  cwd?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+}
+
+/**
+ * Strip any complete metadata sentinel out of `buf`, returning the decoded
+ * payload (if any) plus the remaining buffer with the sentinel removed.
+ * Callers feed chunks in progressively and hold back a tail to handle
+ * sentinels that straddle chunk boundaries.
+ */
+function extractMeta(buf: string): { meta: RunMeta | null; rest: string } {
+  const m = META_SENTINEL_RE.exec(buf);
+  if (!m) return { meta: null, rest: buf };
+  let meta: RunMeta | null = null;
+  try {
+    const json =
+      typeof atob === "function"
+        ? atob(m[1])
+        : Buffer.from(m[1], "base64").toString("utf8");
+    meta = JSON.parse(json) as RunMeta;
+  } catch {
+    meta = null;
+  }
+  return { meta, rest: buf.slice(0, m.index) + buf.slice(m.index + m[0].length) };
 }
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -73,7 +130,25 @@ const makeSession = (): Session => ({
   runningCmdId: null,
   abort: null,
   history: [],
+  cwd: null,
+  prevCwd: null,
 });
+
+/**
+ * Best-effort "looks like an absolute POSIX path inside this project".
+ * Purely cosmetic — used to decide whether to render the prompt as `~/foo`
+ * (inside project) or `/abs/path` (user cd'd elsewhere). Not a security
+ * boundary; the server enforces/ignores escape as it sees fit.
+ */
+function formatPromptCwd(cwd: string | null): string {
+  if (!cwd) return "";
+  // Show last two path segments for compactness, but keep absolute form if we
+  // only have one (`/tmp` stays `/tmp`).
+  const parts = cwd.split("/").filter(Boolean);
+  if (parts.length === 0) return "/";
+  if (parts.length === 1) return "/" + parts[0];
+  return parts.slice(-2).join("/");
+}
 
 export function Terminal({
   projectId,
@@ -220,6 +295,57 @@ export function Terminal({
     setSessions((prev) => prev.map((s) => (s.id === id ? patch(s) : s)));
   }, []);
 
+  // ─── Output batching ────────────────────────────────────────────────
+  // Chunks from `fetch().body.getReader()` arrive as often as the TCP
+  // stack delivers them — for verbose commands (`yes`, `find /`,
+  // `bun install`) that's thousands of tiny writes per second. Rendering
+  // a fresh React tree for each chunk pegs the main thread. Instead we
+  // accumulate per-session text in a ref and flush once per animation
+  // frame, so React only runs reconciliation ~60×/sec regardless of how
+  // chatty the command is.
+  const pendingOutputRef = useRef<Map<string, string>>(new Map());
+  const flushScheduledRef = useRef(false);
+  const flushPending = useCallback(() => {
+    flushScheduledRef.current = false;
+    const pending = pendingOutputRef.current;
+    if (pending.size === 0) return;
+    const snapshot = new Map(pending);
+    pending.clear();
+    setSessions((prev) =>
+      prev.map((s) => {
+        const extra = snapshot.get(s.id);
+        return extra ? { ...s, output: s.output + extra } : s;
+      }),
+    );
+  }, []);
+  const scheduleFlush = useCallback(() => {
+    if (flushScheduledRef.current) return;
+    flushScheduledRef.current = true;
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(flushPending);
+    } else {
+      // Tests / non-browser environments: fall back to microtask.
+      queueMicrotask(flushPending);
+    }
+  }, [flushPending]);
+  const appendOutput = useCallback(
+    (id: string, text: string) => {
+      if (!text) return;
+      const map = pendingOutputRef.current;
+      map.set(id, (map.get(id) ?? "") + text);
+      scheduleFlush();
+    },
+    [scheduleFlush],
+  );
+
+  // Drain any pending rAF-buffered output on unmount so we don't leak
+  // state into a next mount that happens to reuse a session id.
+  useEffect(() => {
+    return () => {
+      pendingOutputRef.current.clear();
+    };
+  }, []);
+
   // ─── Shared streaming helper ────────────────────────────────────────
   /**
    * Stream a text-chunked HTTP response into a session's output buffer.
@@ -240,9 +366,12 @@ export function Terminal({
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
-          if (chunk) patchSession(targetId, (s) => ({ ...s, output: s.output + chunk }));
+          if (chunk) appendOutput(targetId, chunk);
         }
       } catch (err) {
+        // Flush any batched output first so the trailer always lands
+        // *after* the actual command output, not a frame earlier.
+        flushPending();
         if ((err as { name?: string })?.name === "AbortError") {
           patchSession(targetId, (s) => ({ ...s, output: s.output + "\n[Cancelled]\n" }));
         } else {
@@ -250,12 +379,13 @@ export function Terminal({
           patchSession(targetId, (s) => ({ ...s, output: s.output + `\n[Error ${tag}] ${msg}\n` }));
         }
       } finally {
+        flushPending();
         patchSession(targetId, (s) =>
           s.abort === ctl ? { ...s, runningCmdId: null, abort: null } : s,
         );
       }
     },
-    [patchSession],
+    [appendOutput, flushPending, patchSession],
   );
 
   // ─── Run preset ─────────────────────────────────────────────────────
@@ -272,6 +402,9 @@ export function Terminal({
       }
       setConfirming(null);
       const ctl = new AbortController();
+      // Flush any rAF-batched chunks so the preset header lands after
+      // whatever output the previous command was still emitting.
+      flushPending();
       patchSession(targetId, (s) => ({
         ...s,
         runningCmdId: cmd.id,
@@ -290,7 +423,7 @@ export function Terminal({
       });
       await streamInto(targetId, cmd.label, res, ctl);
     },
-    [apiBase, projectId, activeId, patchSession, streamInto],
+    [apiBase, projectId, activeId, patchSession, streamInto, flushPending],
   );
 
   // ─── Run free-form command from the prompt ──────────────────────────
@@ -302,24 +435,69 @@ export function Terminal({
       const target = sessionsRef.current.find((s) => s.id === targetId);
       if (!target) return;
       if (target.runningCmdId) return;
-      const ctl = new AbortController();
-      patchSession(targetId, (s) => ({
+
+      // Record the command in history *before* handling built-ins so that ↑
+      // recalls `clear` / `exit` the same as any other line.
+      const pushHistory = (s: Session): Session => ({
         ...s,
-        runningCmdId: `free:${trimmed}`,
-        abort: ctl,
         history:
           s.history[s.history.length - 1] === trimmed
             ? s.history
             : [...s.history, trimmed].slice(-100),
-      }));
+      });
+
+      // Built-ins handled client-side — these have no meaningful output or
+      // would require a real PTY to behave correctly (`clear` emits raw ANSI
+      // escapes that our <pre> can't interpret). Mirrors VS Code's behavior
+      // where ⌘K also clears the buffer without a server round-trip.
+      if (trimmed === "clear" || trimmed === "cls") {
+        // Drop any rAF-batched chunks for this session so they don't bleed
+        // back in on the next animation frame.
+        pendingOutputRef.current.delete(targetId);
+        patchSession(targetId, (s) => pushHistory({ ...s, output: "" }));
+        return;
+      }
+      if (trimmed === "exit" || trimmed === "logout") {
+        flushPending();
+        patchSession(targetId, (s) =>
+          pushHistory({ ...s, output: s.output + "\n[session closed]\n" }),
+        );
+        return;
+      }
+
+      const ctl = new AbortController();
+      // Render the prompt line that the user just submitted, the way a real
+      // shell echoes what you typed before showing output. Using the tab's
+      // current cwd (best-effort formatted) makes `cd somewhere` + next
+      // command obviously originate from the new directory.
+      const echoPrefix = `${formatPromptCwd(target.cwd) || "~"} $ `;
+      // Make sure any output still sitting in the rAF batch is committed
+      // so the echoed prompt doesn't appear before the previous command's
+      // last lines.
+      flushPending();
+      patchSession(targetId, (s) =>
+        pushHistory({
+          ...s,
+          runningCmdId: `free:${trimmed}`,
+          abort: ctl,
+          output:
+            (s.output ? s.output.replace(/\n?$/, "\n") : "") +
+            `${echoPrefix}${trimmed}\n`,
+        }),
+      );
+
       try {
         const res = await agentFetch(`${apiBase}/api/projects/${projectId}/terminal/run`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ command: trimmed }),
+          body: JSON.stringify({
+            command: trimmed,
+            cwd: target.cwd ?? undefined,
+            prevCwd: target.prevCwd ?? undefined,
+          }),
           signal: ctl.signal,
         });
-        await streamInto(targetId, "run", res, ctl);
+        await streamRunInto(targetId, res, ctl);
       } catch (err) {
         if ((err as { name?: string })?.name !== "AbortError") {
           const msg = err instanceof Error ? err.message : String(err);
@@ -330,7 +508,117 @@ export function Terminal({
         );
       }
     },
-    [apiBase, projectId, activeId, patchSession, streamInto],
+    // streamRunInto is defined below and stable via useCallback
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [apiBase, projectId, activeId, patchSession, flushPending],
+  );
+
+  // ─── Free-form streaming: filters the meta sentinel out of display ──
+  /**
+   * Specialised streamer for `/terminal/run`. Unlike `streamInto`, we need
+   * to strip a trailing base64 metadata sentinel from the visible output
+   * and apply the `{ cwd, exitCode }` it carries to the session. The
+   * sentinel is framed in Record-Separator bytes, so we hold back any
+   * partial tail that *could* be the start of a sentinel until we see the
+   * closing byte.
+   */
+  const streamRunInto = useCallback(
+    async (targetId: string, res: Response, ctl: AbortController) => {
+      try {
+        if (!res.ok || !res.body) {
+          const body = (await res.json().catch(() => ({}))) as {
+            error?: { code?: string; message?: string };
+          };
+          throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let pending = ""; // bytes we've decoded but not yet flushed to `output`
+        let meta: RunMeta | null = null;
+        const flush = (chunk: string) => {
+          if (!chunk) return;
+          appendOutput(targetId, chunk);
+        };
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+
+          // 1. Pull out a complete sentinel, if present. There's only ever
+          //    one (emitted at the very end by the server), but we keep
+          //    looping defensively in case the server ever sends more.
+          for (;;) {
+            const { meta: found, rest } = extractMeta(pending);
+            if (!found) break;
+            meta = found;
+            pending = rest;
+          }
+
+          // 2. Flush whatever precedes a possibly-incomplete sentinel tail.
+          //    If pending ends with a 0x1E that hasn't been closed yet, it
+          //    *could* be the start of the sentinel — hold it back so we
+          //    don't accidentally render `\x1eSHOGO_TERM_META:...` to the
+          //    user if the TCP chunk boundary lands mid-sentinel.
+          const tail = pending.lastIndexOf("\u001e");
+          if (tail === -1) {
+            flush(pending);
+            pending = "";
+          } else {
+            flush(pending.slice(0, tail));
+            pending = pending.slice(tail);
+          }
+        }
+
+        // Drain any final decoder bytes.
+        pending += decoder.decode();
+        // One last try to pluck a meta sentinel out of the remainder…
+        const finalExtract = extractMeta(pending);
+        if (finalExtract.meta) {
+          meta = finalExtract.meta;
+          pending = finalExtract.rest;
+        }
+        // If what's left *still* looks like an unterminated sentinel, drop
+        // it rather than leaking control bytes into the display.
+        if (/^\u001eSHOGO_TERM_META:[A-Za-z0-9+/=]*$/.test(pending)) {
+          pending = "";
+        }
+        flush(pending);
+
+        // Make sure any batched chunks hit state before we append the
+        // trailing `[exit N]` line — otherwise the exit marker can race
+        // ahead of the last few bytes of command output.
+        flushPending();
+        if (meta?.cwd) {
+          patchSession(targetId, (s) =>
+            s.cwd === meta!.cwd
+              ? s
+              : { ...s, prevCwd: s.cwd ?? s.prevCwd, cwd: meta!.cwd ?? s.cwd },
+          );
+        }
+        if (typeof meta?.exitCode === "number" && meta.exitCode !== 0) {
+          patchSession(targetId, (s) => ({
+            ...s,
+            output: s.output + `[exit ${meta!.exitCode}]\n`,
+          }));
+        }
+      } catch (err) {
+        flushPending();
+        if ((err as { name?: string })?.name === "AbortError") {
+          patchSession(targetId, (s) => ({ ...s, output: s.output + "\n[Cancelled]\n" }));
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          patchSession(targetId, (s) => ({ ...s, output: s.output + `\n[Error run] ${msg}\n` }));
+        }
+      } finally {
+        flushPending();
+        patchSession(targetId, (s) =>
+          s.abort === ctl ? { ...s, runningCmdId: null, abort: null } : s,
+        );
+      }
+    },
+    [appendOutput, flushPending, patchSession],
   );
 
   const stop = useCallback(() => {
@@ -422,7 +710,9 @@ export function Terminal({
             ref={promptInputRef}
             disabled={!projectId}
             history={active?.history ?? []}
+            cwdLabel={formatPromptCwd(active?.cwd ?? null)}
             onRun={(cmd) => void runFreeCommand(cmd)}
+            onClear={clear}
           />
         )}
       </div>
@@ -722,9 +1012,11 @@ const Prompt = React.forwardRef<
   {
     disabled: boolean;
     history: string[];
+    cwdLabel: string;
     onRun: (cmd: string) => void;
+    onClear: () => void;
   }
->(function Prompt({ disabled, history, onRun }, ref) {
+>(function Prompt({ disabled, history, cwdLabel, onRun, onClear }, ref) {
   const [value, setValue] = useState("");
   const [histIdx, setHistIdx] = useState<number | null>(null);
 
@@ -747,6 +1039,9 @@ const Prompt = React.forwardRef<
         setHistIdx(null);
       }}
     >
+      {cwdLabel && (
+        <span className="shrink-0 select-none text-[#6a9955]">{cwdLabel}</span>
+      )}
       <span className="shrink-0 select-none text-[#4ec9b0]">$</span>
       <input
         ref={ref}
@@ -773,6 +1068,26 @@ const Prompt = React.forwardRef<
               setHistIdx(next);
               setValue(history[next] ?? "");
             }
+          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
+            // Ctrl+L / ⌘K parity with a real shell: clear the buffer but
+            // preserve whatever the user was typing. We swallow the event so
+            // the browser doesn't focus the URL bar on Ctrl+L.
+            e.preventDefault();
+            onClear();
+          } else if (e.ctrlKey && e.key.toLowerCase() === "c" && !value) {
+            // Empty-line Ctrl+C in a real shell just reprints the prompt.
+            // With text selected we let the browser handle copy normally.
+            const sel = window.getSelection?.()?.toString();
+            if (!sel) {
+              e.preventDefault();
+              setValue("");
+              setHistIdx(null);
+            }
+          } else if (e.ctrlKey && e.key.toLowerCase() === "u") {
+            // Ctrl+U: kill line (shell parity).
+            e.preventDefault();
+            setValue("");
+            setHistIdx(null);
           }
         }}
         disabled={disabled}

@@ -3,18 +3,51 @@
 /**
  * Terminal API Routes
  *
- * Endpoints for executing preset shell commands on project workspaces.
- * Only allows a predefined set of safe commands to prevent arbitrary execution.
- *
  * Endpoints:
- * - POST /projects/:projectId/terminal/exec - Execute a preset command
- * - GET /projects/:projectId/terminal/commands - List available commands
+ * - GET  /projects/:projectId/terminal/commands - List curated preset commands
+ * - POST /projects/:projectId/terminal/exec     - Run a curated preset command
+ * - POST /projects/:projectId/terminal/run      - Run an arbitrary shell command
+ *                                                 inside the project workspace
+ *
+ * The `run` endpoint is what gives the IDE a real terminal: `ls`, `cat`,
+ * pipes, redirects, `git status`, `bun run foo`, … all work. It's the
+ * free-form counterpart to `exec` (which only knows curated commands).
+ *
+ * Shell semantics:
+ *   - Each call runs in an ephemeral `bash -c` process. `cd`, `export`,
+ *     shell-local aliases, background jobs etc. do not persist on their own.
+ *   - To give users the illusion of a persistent shell we track the CWD on
+ *     the client: the client sends the session's current `cwd` (and
+ *     previous `prevCwd` for `cd -`), we `cd` into it before running the
+ *     command, then report back the post-command `pwd` through a per-request
+ *     tempfile which we read once the child exits. The client uses that to
+ *     update its state so the *next* command starts from the right place.
+ *     (We initially used an fd-3 pipe, but Bun's `child_process` silently
+ *     merges extra fds into stdout, which would leak the pwd bytes into the
+ *     user-visible stream. A tempfile is boring and 100% portable.)
+ *   - Output (stdout+stderr) is streamed as a chunked text response. A
+ *     trailing, base64-encoded JSON sentinel carries the new cwd + exit
+ *     code. The sentinel is wrapped in ASCII Record-Separator (0x1E) bytes
+ *     so it cannot be confused with command output; the client strips it
+ *     before rendering.
+ *   - If the client disconnects mid-stream (Stop button / navigation /
+ *     tab close), we SIGTERM the child and SIGKILL it 2s later. This is
+ *     what makes Ctrl+C / Stop actually *stop* the command on the server.
  */
 
 import { Hono } from "hono"
 import { spawn, execSync } from "child_process"
-import { existsSync } from "fs"
-import { join } from "path"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs"
+import { tmpdir } from "os"
+import { isAbsolute, join, resolve } from "path"
+
+/**
+ * ASCII Record-Separator framed sentinel used to carry post-command metadata
+ * (new cwd, exit code) out-of-band on the same HTTP stream. Keep in sync with
+ * the client-side regex in apps/mobile/components/project/panels/ide/Terminal.tsx.
+ */
+const META_SENTINEL_PREFIX = "\u001eSHOGO_TERM_META:"
+const META_SENTINEL_SUFFIX = "\u001e\n"
 
 /**
  * Preset command definition
@@ -245,6 +278,7 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
     const { readable, writable } = new TransformStream()
     const writer = writable.getWriter()
     const encoder = new TextEncoder()
+    const clientSignal = c.req.raw.signal
 
     // Execute command asynchronously
     ;(async () => {
@@ -252,7 +286,10 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
         // Write header
         await writer.write(encoder.encode(`$ ${preset.command}\n\n`))
 
-        // Spawn the command
+        // Spawn the command in its own process group so that Stop / client
+        // abort / timeout can signal the whole tree (sh + children like
+        // `playwright test` workers) instead of orphaning grandchildren.
+        // See `makeKillChild` for the negative-pid group-signal mechanics.
         const child = spawn('sh', ['-c', preset.command], {
           cwd: projectDir,
           env: {
@@ -263,52 +300,61 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
             CI: 'true',
           },
           stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
         })
+
+        const killChild = makeKillChild(child)
 
         // Set up timeout
         const timeoutId = setTimeout(() => {
-          child.kill('SIGTERM')
-          writer.write(encoder.encode('\n\n[ERROR] Command timed out\n'))
+          writer.write(encoder.encode('\n\n[ERROR] Command timed out\n')).catch(() => {})
+          killChild('SIGTERM')
         }, timeout)
 
-        // Stream stdout
-        child.stdout?.on('data', async (data: Buffer) => {
-          try {
-            await writer.write(data)
-          } catch {
-            // Writer closed, ignore
-          }
-        })
+        // Kill child if the client goes away (Stop button / tab close / nav)
+        const onAbort = () => killChild('SIGTERM')
+        clientSignal?.addEventListener('abort', onAbort)
 
-        // Stream stderr
-        child.stderr?.on('data', async (data: Buffer) => {
+        // Guard against both 'error' and 'close' firing (Node allows this).
+        let settled = false
+        const settle = async (trailer: string) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeoutId)
+          clientSignal?.removeEventListener('abort', onAbort)
           try {
-            await writer.write(data)
+            await writer.write(encoder.encode(trailer))
+            await writer.close()
           } catch {
-            // Writer closed, ignore
+            // Writer already closed, ignore
           }
-        })
+        }
 
-        // Handle completion
+        // Pipe with backpressure so a verbose preset (e.g. `bun install`
+        // resolving 1k deps) can't balloon server memory when the HTTP
+        // client reads slowly.
+        const pipe = (src: NodeJS.ReadableStream | null) => {
+          if (!src) return
+          src.on('data', (data: Buffer) => {
+            const p = writer.write(data).catch(() => {})
+            if (writer.desiredSize !== null && writer.desiredSize <= 0) {
+              src.pause()
+              void Promise.resolve(p)
+                .then(() => writer.ready)
+                .then(() => src.resume())
+                .catch(() => src.resume())
+            }
+          })
+        }
+        pipe(child.stdout)
+        pipe(child.stderr)
+
         child.on('close', async (code) => {
-          clearTimeout(timeoutId)
-          try {
-            await writer.write(encoder.encode(`\n\n[Process exited with code ${code}]\n`))
-            await writer.close()
-          } catch {
-            // Writer already closed, ignore
-          }
+          await settle(`\n\n[Process exited with code ${code}]\n`)
         })
 
-        // Handle errors
         child.on('error', async (err) => {
-          clearTimeout(timeoutId)
-          try {
-            await writer.write(encoder.encode(`\n\n[ERROR] ${err.message}\n`))
-            await writer.close()
-          } catch {
-            // Writer already closed, ignore
-          }
+          await settle(`\n\n[ERROR] ${err.message}\n`)
         })
 
       } catch (err: any) {
@@ -332,7 +378,321 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
     })
   })
 
+  /**
+   * POST /projects/:projectId/terminal/run - Execute a free-form shell command
+   *
+   * Body:
+   *   command:   string              // required, the shell line to run
+   *   cwd?:      string              // absolute path; must exist. Defaults to projectDir.
+   *   prevCwd?:  string              // absolute path for OLDPWD (so `cd -` works)
+   *   timeoutMs?: number             // 1s … 30min, default 10min
+   *
+   * Response: `text/plain; charset=utf-8` streaming stdout+stderr, followed by
+   * a single Record-Separator framed JSON sentinel carrying { cwd, exitCode,
+   * signal } so the client can keep its synthetic shell state in sync.
+   */
+  router.post("/projects/:projectId/terminal/run", async (c) => {
+    const projectId = c.req.param("projectId")
+    const projectDir = join(workspacesDir, projectId)
+
+    if (!existsSync(projectDir)) {
+      return c.json(
+        { error: { code: "project_not_found", message: "Project not found" } },
+        404,
+      )
+    }
+
+    let body: { command?: string; cwd?: string; prevCwd?: string; timeoutMs?: number }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        { error: { code: "invalid_body", message: "Invalid request body" } },
+        400,
+      )
+    }
+
+    const command = typeof body.command === "string" ? body.command : ""
+    if (!command.trim()) {
+      return c.json(
+        { error: { code: "empty_command", message: "Command is required" } },
+        400,
+      )
+    }
+
+    // Clamp timeout to a sane window. Mirrors VS Code's "long running tasks
+    // are fine" stance without letting a stuck curl keep a worker busy forever.
+    const rawTimeout = typeof body.timeoutMs === "number" ? body.timeoutMs : 10 * 60_000
+    const timeout = Math.min(Math.max(rawTimeout, 1_000), 30 * 60_000)
+
+    const effectiveCwd = pickCwd(body.cwd, projectDir)
+    const prevCwd = pickCwd(body.prevCwd, projectDir)
+
+    const { readable, writable } = new TransformStream()
+    const writer = writable.getWriter()
+    const encoder = new TextEncoder()
+    const clientSignal = c.req.raw.signal
+
+    // Allocate a per-request temp dir that the launcher can drop its
+    // post-command pwd into. We initially tried a stdio[3] pipe (fd 3), but
+    // Bun's child_process implementation silently glues extra fds onto
+    // stdout, which both broke cwd reporting and leaked path bytes into the
+    // user-visible stream. A tempfile is boring and 100% portable.
+    const metaDir = mkdtempSync(join(tmpdir(), "shogo-term-"))
+    const pwdFile = join(metaDir, "pwd")
+    const cleanup = () => {
+      try {
+        rmSync(metaDir, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    ;(async () => {
+      // Launcher script. We run the user command via `eval "$SHOGO_CMD"` so
+      // that aliases, pipes, redirects, env-var expansion and multi-statement
+      // lines all work. After the user command finishes we dump the current
+      // pwd to a side-file that the server reads once the child exits, so
+      // `cd`, `cd ..`, `cd -`, `cd ~` all persist across requests without any
+      // fd multiplexing tricks.
+      // NB: we re-export OLDPWD *after* the initial cd. Bash's own `cd`
+      // rewrites OLDPWD to "the pwd before the cd", which in our case is
+      // always effectiveCwd — that would silently destroy the prevCwd the
+      // client passed in, breaking `cd -`. Setting it again afterwards
+      // restores the caller's intent so `cd -` jumps back to the user's
+      // actual previous directory.
+      const launcher =
+        'cd -- "${SHOGO_CWD:-$SHOGO_ROOT}" 2>/dev/null || cd -- "$SHOGO_ROOT"; ' +
+        'export OLDPWD="${SHOGO_OLDPWD:-$PWD}"; ' +
+        'eval "$SHOGO_CMD"; ' +
+        '__shogo_rc=$?; ' +
+        '{ pwd > "$SHOGO_PWD_FILE"; } 2>/dev/null; ' +
+        'exit $__shogo_rc'
+
+      let child: ReturnType<typeof spawn>
+      try {
+        child = spawn("bash", ["-c", launcher], {
+          cwd: effectiveCwd,
+          env: {
+            ...process.env,
+            // Hand the command and target cwd through env so we don't have to
+            // worry about escaping them into the `bash -c` argv. This is the
+            // standard technique for safely wrapping arbitrary user input in
+            // a shell launcher.
+            SHOGO_CMD: command,
+            SHOGO_CWD: effectiveCwd,
+            SHOGO_ROOT: projectDir,
+            SHOGO_PWD_FILE: pwdFile,
+            // OLDPWD makes `cd -` work across separate spawns. We pass it
+            // twice: as OLDPWD so programs that read it early (before our
+            // launcher's explicit export) still see it, and as SHOGO_OLDPWD
+            // so the launcher can restore it *after* its own initial `cd`
+            // stomps on bash's built-in OLDPWD tracking.
+            OLDPWD: prevCwd,
+            SHOGO_OLDPWD: prevCwd,
+            // Scope tilde-expansion and programs that look at $HOME (npm, git,
+            // etc.) to the project workspace by default. Users can still pass
+            // HOME=... explicitly on the command line if they want.
+            HOME: projectDir,
+            PWD: effectiveCwd,
+            // Colors / TTY-ish hints so tools like `ls --color=auto`, `git`,
+            // `eslint` produce helpful output even without a PTY.
+            FORCE_COLOR: "1",
+            CLICOLOR: "1",
+            CLICOLOR_FORCE: "1",
+            TERM: process.env.TERM || "xterm-256color",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+          // Put the child in its own process group so we can signal the
+          // whole tree (bash + any grandchildren like `sleep`) at once.
+          // Without this, SIGTERM'ing bash while it's `wait`ing on a child
+          // orphans the child — the visible symptom was "Stop doesn't stop
+          // a running sleep".
+          detached: true,
+        })
+      } catch (err: any) {
+        cleanup()
+        try {
+          await writer.write(
+            encoder.encode(`\n[shogo] failed to spawn shell: ${err?.message ?? String(err)}\n`),
+          )
+          await writeMetaSentinel(writer, encoder, {
+            cwd: effectiveCwd,
+            exitCode: null,
+            signal: null,
+          })
+          await writer.close()
+        } catch {
+          /* writer already closed */
+        }
+        return
+      }
+
+      const killChild = makeKillChild(child)
+
+      const timeoutId = setTimeout(() => {
+        writer
+          .write(encoder.encode("\n[shogo] command timed out\n"))
+          .catch(() => {})
+        killChild("SIGTERM")
+      }, timeout)
+
+      const onAbort = () => killChild("SIGTERM")
+      clientSignal?.addEventListener("abort", onAbort)
+
+      // Single-shot teardown. Node's ChildProcess can emit both 'error' and
+      // 'close', and we also tear down from timeout/abort. Without this
+      // flag we'd write the metadata sentinel twice and hit "writer already
+      // closed" on the second path.
+      let settled = false
+      const settle = async (meta: {
+        cwd: string
+        exitCode: number | null
+        signal: string | null
+      }) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        clientSignal?.removeEventListener("abort", onAbort)
+        cleanup()
+        try {
+          await writeMetaSentinel(writer, encoder, meta)
+          await writer.close()
+        } catch {
+          /* writer already closed */
+        }
+      }
+
+      // Pipe stdout/stderr with backpressure: if the HTTP sink slows down
+      // we pause the child's stream so memory doesn't balloon under chatty
+      // commands like `yes` or `find /`. Resuming once the writer is ready
+      // keeps throughput high for normal output.
+      const pipeWithBackpressure = (src: NodeJS.ReadableStream | null) => {
+        if (!src) return
+        src.on("data", (data: Buffer) => {
+          const p = writer.write(data).catch(() => {})
+          if (writer.desiredSize !== null && writer.desiredSize <= 0) {
+            src.pause()
+            void Promise.resolve(p)
+              .then(() => writer.ready)
+              .then(() => src.resume())
+              .catch(() => src.resume())
+          }
+        })
+      }
+      pipeWithBackpressure(child.stdout)
+      pipeWithBackpressure(child.stderr)
+
+      child.on("error", async (err) => {
+        try {
+          await writer.write(encoder.encode(`\n[shogo] ${err.message}\n`))
+        } catch {
+          /* writer already closed */
+        }
+        await settle({ cwd: effectiveCwd, exitCode: null, signal: null })
+      })
+
+      child.on("close", async (code, signal) => {
+        let reported = ""
+        try {
+          if (existsSync(pwdFile)) {
+            reported = readFileSync(pwdFile, "utf8").trim()
+          }
+        } catch {
+          /* fall through — we'll use effectiveCwd as fallback */
+        }
+        // If the child was killed before it could write pwd (abort, timeout,
+        // SIGKILL from a panicking command) fall back to the starting cwd so
+        // the client doesn't get stuck at some half-updated state.
+        const finalCwd = reported && existsSync(reported) ? reported : effectiveCwd
+        await settle({
+          cwd: finalCwd,
+          exitCode: typeof code === "number" ? code : null,
+          signal: signal ?? null,
+        })
+      })
+    })()
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Transfer-Encoding": "chunked",
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+      },
+    })
+  })
+
   return router
+}
+
+/**
+ * Resolve a caller-supplied cwd to an absolute path, falling back to the
+ * project root if the candidate is missing, relative, or no longer exists.
+ * We intentionally *allow* absolute paths outside the project dir: users
+ * frequently `cd /tmp` etc. during debugging and we don't want to surprise
+ * them. The project dir is only a default.
+ */
+function pickCwd(candidate: string | undefined, projectDir: string): string {
+  if (!candidate || typeof candidate !== "string") return projectDir
+  const abs = isAbsolute(candidate) ? candidate : resolve(projectDir, candidate)
+  return existsSync(abs) ? abs : projectDir
+}
+
+/**
+ * Returns a function that terminates the child **and every grandchild** it
+ * spawned. Two-phase: SIGTERM first so well-behaved programs can clean up,
+ * SIGKILL 2s later for anything that ignores it (looking at you,
+ * `sleep infinity`). Safe to call repeatedly.
+ *
+ * We need group killing because the launcher is `bash -c '…; eval "$CMD"; …'`
+ * and bash does not forward signals to its children in non-job-control mode.
+ * If we only killed `child` (the bash process), its running `sleep` would be
+ * reparented to init and keep ticking — which is exactly the bug the test
+ * harness caught. Spawn must pass `detached: true` so `child.pid` is also
+ * the process-group id that we negate below.
+ */
+function makeKillChild(child: ReturnType<typeof spawn>) {
+  let killed = false
+  const killGroup = (sig: NodeJS.Signals) => {
+    if (!child.pid) return
+    try {
+      // Negative pid = "signal the whole process group".
+      process.kill(-child.pid, sig)
+    } catch {
+      // Group may already be gone; fall back to a direct child.kill so we at
+      // least try to terminate the known process.
+      try {
+        child.kill(sig)
+      } catch {
+        /* already exited */
+      }
+    }
+  }
+  return function killChild(signal: NodeJS.Signals = "SIGTERM") {
+    if (killed) return
+    killed = true
+    killGroup(signal)
+    setTimeout(() => {
+      if (!child.killed && child.exitCode === null) killGroup("SIGKILL")
+    }, 2_000).unref?.()
+  }
+}
+
+/**
+ * Serialize the out-of-band metadata trailer. Base64-wrapping the JSON means
+ * the payload itself cannot contain our Record-Separator framing bytes, so
+ * there's no way for a weird cwd string to break the parser on the client.
+ */
+async function writeMetaSentinel(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  encoder: TextEncoder,
+  meta: { cwd: string; exitCode: number | null; signal: string | null },
+) {
+  const payload = Buffer.from(JSON.stringify(meta), "utf8").toString("base64")
+  await writer.write(
+    encoder.encode(META_SENTINEL_PREFIX + payload + META_SENTINEL_SUFFIX),
+  )
 }
 
 export default terminalRoutes
