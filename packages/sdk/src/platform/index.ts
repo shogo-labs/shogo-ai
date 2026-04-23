@@ -36,8 +36,25 @@ export interface PlatformConfig {
     oauth: boolean
     analytics: boolean
     publishing: boolean
+    marketplace: boolean
+    shogoMode: boolean
+    phoneChannel: boolean
   }
 }
+
+/** Super-admin feature flag overrides. `null` means "use platform default". */
+export interface FeatureFlagOverrides {
+  marketplace: boolean | null
+  shogoMode: boolean | null
+  phoneChannel: boolean | null
+}
+
+/** Partial feature flag patch; omit a key to leave it unchanged; `null` to reset to default. */
+export type FeatureFlagPatch = Partial<{
+  marketplace: boolean | null
+  shogoMode: boolean | null
+  phoneChannel: boolean | null
+}>
 
 /** API keys come in two flavours:
  * - "user": manually created via the Keys UI or the SHOGO_API_KEY env var.
@@ -392,6 +409,25 @@ export class PlatformApi {
   /** Set which models the basic/advanced agent modes resolve to and the default mode. Pass null to reset to platform default. */
   async putAgentModelDefaults(overrides: { basic?: string | null; advanced?: string | null; defaultMode?: string | null }): Promise<void> {
     await this.http.request('/api/admin/settings/agent-models', { method: 'PUT', body: overrides })
+  }
+
+  // ===========================================================================
+  // Admin: Feature Flags
+  // ===========================================================================
+
+  /** Read super-admin feature flag overrides. `null` means "use platform default". */
+  async getFeatureFlags(): Promise<FeatureFlagOverrides> {
+    const res = await this.http.get<FeatureFlagOverrides>('/api/admin/settings/features')
+    return res.data ?? { marketplace: null, shogoMode: null, phoneChannel: null }
+  }
+
+  /** Update feature flag overrides. Pass `null` for a flag to reset to platform default. */
+  async putFeatureFlags(patch: FeatureFlagPatch): Promise<{ ok: boolean; flags: FeatureFlagOverrides }> {
+    const res = await this.http.request<{ ok: boolean; flags: FeatureFlagOverrides }>(
+      '/api/admin/settings/features',
+      { method: 'PUT', body: patch },
+    )
+    return res.data ?? { ok: false, flags: { marketplace: null, shogoMode: null, phoneChannel: null } }
   }
 
   // ===========================================================================

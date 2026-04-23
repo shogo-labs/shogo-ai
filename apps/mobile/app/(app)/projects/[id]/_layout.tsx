@@ -1539,8 +1539,9 @@ export default observer(function ProjectLayout() {
 
           {/* Floating Shogo Mode toggle — screen-level bottom-right so it's
               reachable from every layout (wide split, narrow tabs, chat
-              fullscreen). Web-only for now; native renders a null stub. */}
-          {Platform.OS === 'web' && (
+              fullscreen). Web-only for now; native renders a null stub.
+              Hidden entirely when the shogoMode feature flag is off. */}
+          {Platform.OS === 'web' && features.shogoMode && (
             <View
               className="absolute bottom-4 right-4 z-40"
               pointerEvents="box-none"
@@ -1603,7 +1604,8 @@ export default observer(function ProjectLayout() {
 
 function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
   const { shogoModeActive, shogoPeekActive, setShogoPeekActive } = useChatBridge()
-  const showShogo = Platform.OS === 'web' && shogoModeActive
+  const { features } = usePlatformConfig()
+  const showShogo = Platform.OS === 'web' && shogoModeActive && features.shogoMode
   // "Peek" hides the Shogo overlay without tearing it down, so the voice
   // session + translator thread keep running while the user interacts
   // with the real ChatPanel underneath.
