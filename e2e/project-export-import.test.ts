@@ -141,6 +141,11 @@ describe('Project Export/Import E2E', () => {
     writeFileSync(join(projectDir, 'AGENTS.md'), '# Test Agent\nThis is a test agent.')
     writeFileSync(join(projectDir, 'src', 'main.tsx'), 'export default function App() { return <div>Hello</div> }')
     writeFileSync(join(projectDir, 'package.json'), JSON.stringify({ name: 'test-project', version: '1.0.0' }))
+    // Prebuilt dist/ — must be included in the export so imported projects
+    // can serve the preview immediately (see preview-manager.ts).
+    mkdirSync(join(projectDir, 'dist', 'assets'), { recursive: true })
+    writeFileSync(join(projectDir, 'dist', 'index.html'), '<html><body>Hi</body></html>')
+    writeFileSync(join(projectDir, 'dist', 'assets', 'app.js'), 'console.log("hi")')
 
     console.log(`[Setup] Created test project: ${testProjectId}`)
   })
@@ -383,5 +388,166 @@ describe('Project Export/Import E2E', () => {
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: string }
     expect(body.error).toContain('missing project.json')
+  })
+
+  // ─── includeChats toggle ───────────────────────────────────
+
+  it('export with ?includeChats=false omits chat-history entries', async () => {
+    const res = await app.fetch(
+      new Request(`http://localhost/api/projects/${testProjectId}/export?includeChats=false`),
+    )
+    expect(res.status).toBe(200)
+    const unzipped = unzipSync(new Uint8Array(await res.arrayBuffer()))
+
+    const chatFiles = Object.keys(unzipped).filter((k) => k.startsWith('chat-history/'))
+    expect(chatFiles.length).toBe(0)
+
+    // Sanity: project metadata records that chats were excluded.
+    const meta = JSON.parse(strFromU8(unzipped['project.json']))
+    expect(meta.includedChats).toBe(false)
+  })
+
+  it('import with includeChats=false skips chat sessions even when bundle has them', async () => {
+    // Export normally (bundle includes chats)
+    const exportRes = await app.fetch(
+      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+    )
+    const zipBuf = await exportRes.arrayBuffer()
+
+    const formData = new FormData()
+    formData.append('file', new Blob([zipBuf], { type: 'application/zip' }), 'no-chats.shogo-project')
+    formData.append('workspaceId', testWorkspaceId)
+    formData.append('includeChats', 'false')
+
+    const importRes = await app.fetch(
+      new Request('http://localhost/api/projects/import', { method: 'POST', body: formData }),
+    )
+    expect(importRes.status).toBe(200)
+    const { project } = (await importRes.json()) as { project: { id: string } }
+    cleanupProjectIds.push(project.id)
+
+    const sessions = await prisma.chatSession.findMany({
+      where: { contextId: project.id },
+    })
+    expect(sessions.length).toBe(0)
+  })
+
+  // ─── Prebuilt dist/ inclusion ──────────────────────────────
+
+  it('export includes workspace/dist/* so imports can serve the preview immediately', async () => {
+    const res = await app.fetch(
+      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+    )
+    const unzipped = unzipSync(new Uint8Array(await res.arrayBuffer()))
+
+    expect(unzipped['workspace/dist/index.html']).toBeDefined()
+    expect(strFromU8(unzipped['workspace/dist/index.html'])).toContain('<html>')
+    expect(unzipped['workspace/dist/assets/app.js']).toBeDefined()
+  })
+
+  it('round-trip: imported project has dist/ on disk ready for preview-manager', async () => {
+    const exportRes = await app.fetch(
+      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+    )
+    const formData = new FormData()
+    formData.append('file', new Blob([await exportRes.arrayBuffer()]), 'dist.shogo-project')
+    formData.append('workspaceId', testWorkspaceId)
+    const importRes = await app.fetch(
+      new Request('http://localhost/api/projects/import', { method: 'POST', body: formData }),
+    )
+    const { project } = (await importRes.json()) as { project: { id: string } }
+    cleanupProjectIds.push(project.id)
+
+    const { existsSync, readFileSync } = await import('node:fs')
+    const { join, resolve } = await import('node:path')
+    const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(process.cwd(), 'workspaces')
+    const importedDir = join(WORKSPACES_DIR, project.id)
+
+    expect(existsSync(join(importedDir, 'dist', 'index.html'))).toBe(true)
+    expect(readFileSync(join(importedDir, 'dist', 'index.html'), 'utf-8')).toContain('<html>')
+    expect(existsSync(join(importedDir, 'dist', 'assets', 'app.js'))).toBe(true)
+  })
+
+  // ─── Streaming SSE progress ────────────────────────────────
+
+  it('SSE import emits phase events and a terminal done event', async () => {
+    const exportRes = await app.fetch(
+      new Request(`http://localhost/api/projects/${testProjectId}/export`),
+    )
+    const zipBuf = await exportRes.arrayBuffer()
+
+    const formData = new FormData()
+    formData.append('file', new Blob([zipBuf], { type: 'application/zip' }), 'sse.shogo-project')
+    formData.append('workspaceId', testWorkspaceId)
+    formData.append('includeChats', 'true')
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/projects/import', {
+        method: 'POST',
+        body: formData,
+        headers: { Accept: 'text/event-stream' },
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type') || '').toContain('text/event-stream')
+
+    const text = await res.text()
+    const events: { event: string; data: any }[] = []
+    for (const frame of text.split('\n\n')) {
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+      if (dataLines.length > 0) {
+        try {
+          events.push({ event, data: JSON.parse(dataLines.join('\n')) })
+        } catch {}
+      }
+    }
+
+    const phases = events
+      .filter((e) => e.event === 'progress')
+      .map((e) => e.data.phase as string)
+    expect(phases).toContain('parse')
+    expect(phases).toContain('createProject')
+    expect(phases).toContain('writeFiles')
+
+    const doneEvent = events.find((e) => e.event === 'done')
+    expect(doneEvent).toBeDefined()
+    expect(doneEvent!.data.project?.id).toBeTruthy()
+    expect(typeof doneEvent!.data.stats?.filesWritten).toBe('number')
+
+    const createdId: string = doneEvent!.data.project.id
+    cleanupProjectIds.push(createdId)
+
+    // writeFiles events should be incremental (done counter grows towards total)
+    const writeFilesEvents = events
+      .filter((e) => e.event === 'progress' && e.data.phase === 'writeFiles')
+      .map((e) => e.data as { done: number; total: number })
+    expect(writeFilesEvents.length).toBeGreaterThan(0)
+    const last = writeFilesEvents[writeFilesEvents.length - 1]
+    expect(last.done).toBe(last.total)
+  })
+
+  it('SSE import emits fatal event on invalid ZIP', async () => {
+    const formData = new FormData()
+    formData.append('file', new Blob(['not a zip']), 'bad.shogo-project')
+    formData.append('workspaceId', testWorkspaceId)
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/projects/import', {
+        method: 'POST',
+        body: formData,
+        headers: { Accept: 'text/event-stream' },
+      }),
+    )
+
+    expect(res.status).toBe(200) // streaming starts OK; error surfaces as an event
+    const text = await res.text()
+    expect(text).toContain('event: fatal')
+    expect(text).toMatch(/Invalid or corrupt ZIP file/)
   })
 })

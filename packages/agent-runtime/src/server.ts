@@ -1753,9 +1753,12 @@ function walkFilesTree(
   return results
 }
 
-// Bundle all workspace files for project export (called by the API server in K8s mode)
+// Bundle all workspace files for project export (called by the API server in K8s mode).
+// `dist/` and `build/` are intentionally NOT excluded here: shipping the built app output
+// lets imports start the preview immediately without waiting for install + vite build.
+// See preview-manager.ts — presence of `project/dist/index.html` marks the preview ready.
 const BUNDLE_EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', '.cache', '.next', 'build', '.turbo', '.expo',
+  'node_modules', '.git', '.cache', '.next', '.turbo', '.expo',
 ])
 const BUNDLE_MAX_FILE_SIZE = 10 * 1024 * 1024
 
