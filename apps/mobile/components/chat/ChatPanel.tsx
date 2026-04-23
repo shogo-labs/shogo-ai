@@ -82,6 +82,7 @@ import {
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
 import { CompactChatInput } from "./CompactChatInput"
+import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
@@ -3432,6 +3433,7 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Input */}
           <View className="bg-transparent max-w-3xl w-full self-center mt-1">
+            <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}
               disabled={!currentSessionId}
