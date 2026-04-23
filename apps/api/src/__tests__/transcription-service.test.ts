@@ -9,11 +9,9 @@
  * Run: bun test apps/api/src/__tests__/transcription-service.test.ts
  */
 
-import { describe, test, expect, beforeAll } from 'bun:test'
-import { existsSync, readFileSync, writeFileSync, mkdtempSync } from 'fs'
-import { join, resolve } from 'path'
-import { tmpdir } from 'os'
-import { spawn } from 'child_process'
+import { describe, test, expect } from 'bun:test'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
 
 // ---------------------------------------------------------------------------
 // WAV helpers
@@ -82,109 +80,10 @@ function createWavBuffer(
 }
 
 // ---------------------------------------------------------------------------
-// Live recording test — spawns shogo-audio and records for a few seconds
+// Note: the old "shogo-audio live recording" describe block was removed
+// alongside the Swift binary. Audio capture now runs inside Electron — see
+// `apps/desktop/e2e/notetaker.spec.ts` for the replacement end-to-end test.
 // ---------------------------------------------------------------------------
-
-function getHelperPath(): string | null {
-  const root = resolve(__dirname, '..', '..', '..', '..')
-  const release = join(root, 'apps', 'desktop', 'native', 'shogo-audio', '.build', 'release', 'shogo-audio')
-  if (existsSync(release)) return release
-  const debug = join(root, 'apps', 'desktop', 'native', 'shogo-audio', '.build', 'debug', 'shogo-audio')
-  if (existsSync(debug)) return debug
-  return null
-}
-
-function recordForSeconds(helperPath: string, outputPath: string, seconds: number): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(helperPath, [], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const events: string[] = []
-
-    proc.stdout?.on('data', (data: Buffer) => {
-      for (const line of data.toString().trim().split('\n')) {
-        events.push(line)
-        try {
-          const evt = JSON.parse(line)
-          if (evt.type === 'ready') {
-            proc.stdin?.write(`record ${outputPath}\n`)
-          }
-          if (evt.type === 'recording_started') {
-            setTimeout(() => {
-              proc.stdin?.write('stop\n')
-              setTimeout(() => proc.stdin?.write('quit\n'), 500)
-            }, seconds * 1000)
-          }
-        } catch {}
-      }
-    })
-
-    proc.stderr?.on('data', (data: Buffer) => events.push(`stderr: ${data.toString().trim()}`))
-    proc.on('error', reject)
-    proc.on('exit', () => resolve(events))
-
-    setTimeout(() => {
-      if (!proc.killed) proc.kill('SIGTERM')
-      reject(new Error('Recording timed out'))
-    }, (seconds + 10) * 1000)
-  })
-}
-
-describe('shogo-audio live recording', () => {
-  const helperPath = getHelperPath()
-  let testWav: string
-  let events: string[]
-  let wavInfo: WavInfo
-
-  beforeAll(async () => {
-    if (!helperPath) return
-
-    const tmpDir = mkdtempSync(join(tmpdir(), 'shogo-audio-test-'))
-    testWav = join(tmpDir, 'test-recording.wav')
-
-    events = await recordForSeconds(helperPath, testWav, 3)
-    const buf = readFileSync(testWav)
-    wavInfo = parseWavHeader(buf)
-  }, 30_000)
-
-  test('shogo-audio binary exists', () => {
-    expect(helperPath).not.toBeNull()
-  })
-
-  test('helper emits ready, recording_started, wav_finalized, recording_stopped', () => {
-    if (!helperPath) return
-    const types = events.flatMap(e => { try { return [JSON.parse(e).type] } catch { return [] } })
-    expect(types).toContain('ready')
-    expect(types).toContain('recording_started')
-    expect(types).toContain('wav_finalized')
-    expect(types).toContain('recording_stopped')
-  })
-
-  test('output is a valid WAV with audio data', () => {
-    if (!helperPath) return
-    expect(existsSync(testWav)).toBe(true)
-    expect(wavInfo.valid).toBe(true)
-    expect(wavInfo.sampleRate).toBe(48000)
-    expect(wavInfo.channels).toBe(1)
-    expect(wavInfo.bitsPerSample).toBe(16)
-    expect(wavInfo.dataSize).toBeGreaterThan(0)
-  })
-
-  test('WAV duration is at least 2 seconds', () => {
-    if (!helperPath) return
-    expect(wavInfo.durationSeconds).toBeGreaterThanOrEqual(2)
-  })
-
-  test('wav_finalized event reports matching stats', () => {
-    if (!helperPath) return
-    const finalizeEvt = events
-      .map(e => { try { return JSON.parse(e) } catch { return null } })
-      .find(e => e?.type === 'wav_finalized')
-
-    expect(finalizeEvt).toBeDefined()
-    expect(finalizeEvt.data.dataBytes).toBeGreaterThan(0)
-    expect(finalizeEvt.data.writeCount).toBeGreaterThan(0)
-    expect(finalizeEvt.data.durationSeconds).toBeGreaterThanOrEqual(2)
-  })
-})
 
 // ---------------------------------------------------------------------------
 // WAV header parsing

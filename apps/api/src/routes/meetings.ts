@@ -18,7 +18,8 @@ import {
 import {
   startRecording as startRec,
   stopRecording as stopRec,
-  getRecordingStatus as getRecStatus,
+  getRecordingStatusAsync as getRecStatus,
+  BridgeUnavailableError,
 } from '../services/recording.service'
 import { existsSync, unlinkSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'fs'
 import { join, resolve } from 'path'
@@ -193,7 +194,7 @@ meetingRoutes.post('/api/local/meetings/install-sherpa', async (c) => {
 // =============================================================================
 
 meetingRoutes.get('/api/local/meetings/recording/status', async (c) => {
-  return c.json(getRecStatus())
+  return c.json(await getRecStatus())
 })
 
 meetingRoutes.post('/api/local/meetings/recording/start', async (c) => {
@@ -201,7 +202,8 @@ meetingRoutes.post('/api/local/meetings/recording/start', async (c) => {
     const result = await startRec()
     return c.json(result)
   } catch (err: any) {
-    return c.json({ error: err.message }, 400)
+    const status = err instanceof BridgeUnavailableError ? 503 : 400
+    return c.json({ error: err.message }, status)
   }
 })
 
