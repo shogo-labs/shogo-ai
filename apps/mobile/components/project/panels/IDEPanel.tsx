@@ -41,12 +41,12 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
   if (Platform.OS !== 'web') {
     if (!visible) return null
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#1e1e1e' }}>
+      <View className="flex-1 items-center justify-center p-6 bg-background">
         <Code2 size={32} color="#0078d4" />
-        <Text style={{ color: '#cccccc', fontSize: 14, fontWeight: '600', marginTop: 12 }}>
+        <Text className="text-foreground text-sm font-semibold mt-3">
           IDE requires a desktop browser
         </Text>
-        <Text style={{ color: '#858585', fontSize: 12, marginTop: 6, textAlign: 'center', maxWidth: 320 }}>
+        <Text className="text-muted-foreground text-xs mt-1.5 text-center max-w-[320px]">
           The full code editor is built on Monaco (DOM-only). Open this project
           in Chrome or Edge on your desktop to use the IDE tab.
         </Text>
@@ -57,8 +57,8 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
   if (!agentService) {
     if (!visible) return null
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#1e1e1e' }}>
-        <Text style={{ color: '#858585', fontSize: 12 }}>Agent not ready yet…</Text>
+      <View className="flex-1 items-center justify-center p-6 bg-background">
+        <Text className="text-muted-foreground text-xs">Agent not ready yet…</Text>
       </View>
     )
   }

@@ -14,13 +14,13 @@ export function SettingsPane({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-4 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-[#858585]">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
           Settings
         </span>
         <button
           onClick={() => onChange(DEFAULT_SETTINGS)}
           title="Reset to defaults"
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
         >
           <RotateCcw size={11} /> Reset
         </button>
@@ -108,10 +108,10 @@ export function SettingsPane({
           />
         </Section>
 
-        <div className="mt-4 rounded border border-[#2a2a2a] bg-[#1a1a1a] p-2 text-[10px] text-[#858585]">
+        <div className="mt-4 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-2 text-[10px] text-[color:var(--ide-muted)]">
           Settings are stored in{" "}
-          <code className="text-[#cccccc]">localStorage</code> under{" "}
-          <code className="text-[#cccccc]">shogo.ide.settings</code>.
+          <code className="text-[color:var(--ide-text)]">localStorage</code> under{" "}
+          <code className="text-[color:var(--ide-text)]">shogo.ide.settings</code>.
         </div>
       </div>
     </div>
@@ -127,10 +127,10 @@ function Section({
 }) {
   return (
     <div className="mb-4">
-      <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-[#858585]">
+      <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
         {title}
       </div>
-      <div className="flex flex-col gap-1 rounded border border-[#2a2a2a] bg-[#1a1a1a] p-1">
+      <div className="flex flex-col gap-1 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-panel)] p-1">
         {children}
       </div>
     </div>
@@ -149,10 +149,10 @@ function ToggleRow({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[#2a2a2a]">
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[color:var(--ide-hover)]">
       <div className="min-w-0">
-        <div className="text-[12px] text-[#cccccc]">{label}</div>
-        {hint && <div className="truncate text-[10px] text-[#858585]">{hint}</div>}
+        <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
+        {hint && <div className="truncate text-[10px] text-[color:var(--ide-muted)]">{hint}</div>}
       </div>
       <button
         type="button"
@@ -160,22 +160,14 @@ function ToggleRow({
         aria-checked={value}
         onClick={() => onChange(!value)}
         className={`relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
-          value ? "bg-[#0078d4]" : "bg-[#3a3a3a]"
+          value ? "bg-[color:var(--ide-active-ring)]" : "bg-[color:var(--ide-border-strong)]"
         }`}
       >
         <span
           aria-hidden
-          style={{
-            position: "absolute",
-            top: 2,
-            left: 2,
-            width: 12,
-            height: 12,
-            borderRadius: 9999,
-            background: "#ffffff",
-            transform: `translateX(${value ? 12 : 0}px)`,
-            transition: "transform 150ms",
-          }}
+          className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-[color:var(--ide-toggle-knob)] transition-transform duration-150 ${
+            value ? "translate-x-3" : "translate-x-0"
+          }`}
         />
       </button>
     </label>
@@ -194,12 +186,12 @@ function SelectRow({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[#2a2a2a]">
-      <div className="text-[12px] text-[#cccccc]">{label}</div>
+    <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[color:var(--ide-hover)]">
+      <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="no-focus-ring rounded border border-[#3a3a3a] bg-[#1a1a1a] px-1.5 py-0.5 text-[11px] text-[#cccccc] outline-none hover:border-[#0078d4]"
+        className="no-focus-ring rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-panel)] px-1.5 py-0.5 text-[11px] text-[color:var(--ide-text)] outline-none hover:border-[color:var(--ide-active-ring)]"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -227,8 +219,8 @@ function SliderRow({
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[#2a2a2a]">
-      <div className="text-[12px] text-[#cccccc]">{label}</div>
+    <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[color:var(--ide-hover)]">
+      <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
       <div className="flex items-center gap-2">
         <input
           type="range"
@@ -236,9 +228,9 @@ function SliderRow({
           max={max}
           value={value}
           onChange={(e) => onChange(parseInt(e.target.value, 10))}
-          className="h-1 w-24 accent-[#0078d4]"
+          className="h-1 w-24 accent-[color:var(--ide-active-ring)]"
         />
-        <span className="w-10 text-right text-[11px] text-[#858585]">
+        <span className="w-10 text-right text-[11px] text-[color:var(--ide-muted)]">
           {value}
           {unit}
         </span>

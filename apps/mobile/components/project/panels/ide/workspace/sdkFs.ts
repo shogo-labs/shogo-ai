@@ -113,6 +113,16 @@ export class SdkFs implements WorkspaceService {
     })
   }
 
+  /**
+   * Fetch a binary asset (images, pdfs, etc.) as a blob: URL via the SDK so
+   * auth headers / agent-proxy cookie travel with the request. The returned
+   * URL is owned by the caller and must be revoked on cleanup.
+   */
+  async readFileUrl(path: string): Promise<string> {
+    const blob = await retry429(() => this.client.readFileBlob(path))
+    return URL.createObjectURL(blob)
+  }
+
   async listTree(): Promise<WsNode[]> {
     const tree = await retry429(() => this.client.getWorkspaceTree())
     return tree.map(toWsNode)
