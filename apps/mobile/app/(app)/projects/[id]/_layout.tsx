@@ -1392,41 +1392,23 @@ export default observer(function ProjectLayout() {
                   </View>
                 )}
                 {isChatFullscreen ? (
-                  <View className="min-h-0 flex-1 flex-col relative">
-                    <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
-                    {Platform.OS === 'web' && (
-                      <View
-                        className="absolute bottom-4 right-4 z-30"
-                        pointerEvents="box-none"
-                      >
-                        <ShogoModeToggle />
-                      </View>
-                    )}
-                  </View>
+                  <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                 ) : (
                   <>
                     {isWide && (
-                      <View className="flex-row items-center">
-                        <View className="flex-1 min-w-0">
-                          <ChatTabBar
-                            tabs={openChatTabs}
-                            activeTabId={chatSessionId}
-                            onSelectTab={handleSelectTab}
-                            onCloseTab={handleCloseTab}
-                            onNewChat={handleCreateNewSession}
-                            onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
-                            showHistory={showChatSessions}
-                            streamingTabIds={streamingTabIds}
-                            onRenameSession={handleRenameChatSession}
-                            onDeleteSession={handleDeleteChatSession}
-                          />
-                        </View>
-                        {Platform.OS === 'web' && (
-                          <ShogoModeToggle className="shrink-0 pr-2" />
-                        )}
-                      </View>
+                      <ChatTabBar
+                        tabs={openChatTabs}
+                        activeTabId={chatSessionId}
+                        onSelectTab={handleSelectTab}
+                        onCloseTab={handleCloseTab}
+                        onNewChat={handleCreateNewSession}
+                        onHistoryToggle={() => setShowChatSessions((s: boolean) => !s)}
+                        showHistory={showChatSessions}
+                        streamingTabIds={streamingTabIds}
+                        onRenameSession={handleRenameChatSession}
+                        onDeleteSession={handleDeleteChatSession}
+                      />
                     )}
-                    {!isWide && <ChatColumnShogoToggleRow />}
                     <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                   </>
                 )}
@@ -1539,6 +1521,18 @@ export default observer(function ProjectLayout() {
               />
             </View>
           )}
+
+          {/* Floating Shogo Mode toggle — screen-level bottom-right so it's
+              reachable from every layout (wide split, narrow tabs, chat
+              fullscreen). Web-only for now; native renders a null stub. */}
+          {Platform.OS === 'web' && (
+            <View
+              className="absolute bottom-4 right-4 z-40"
+              pointerEvents="box-none"
+            >
+              <ShogoModeToggle />
+            </View>
+          )}
           </View>
 
         </View>
@@ -1634,21 +1628,6 @@ function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
           </Pressable>
         </View>
       )}
-    </View>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// ChatColumnShogoToggleRow — thin top strip hosting the Shogo Mode toggle
-// for layouts that don't render the wide-mode `ChatTabBar` (mobile / phone
-// layout / fullscreen chat). Keeps the toggle reachable in every mode.
-// ---------------------------------------------------------------------------
-
-function ChatColumnShogoToggleRow() {
-  if (Platform.OS !== 'web') return null
-  return (
-    <View className="flex-row justify-end px-2 py-1.5 border-b border-border bg-background">
-      <ShogoModeToggle />
     </View>
   )
 }
