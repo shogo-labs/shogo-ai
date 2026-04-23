@@ -2505,6 +2505,71 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
     method: 'POST',
     headers: c.req.raw.headers,
     body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
+  })
+  return router.fetch(newReq)
+})
+
+// Execute a free-form shell command (the IDE "$" prompt). Mirrors /exec but
+// forwards arbitrary user input instead of a curated command id.
+app.post('/api/projects/:projectId/terminal/run', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to the project's runtime pod.
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/terminal/run`
+
+      console.log(`[TerminalProxy] Proxying run to ${targetUrl}`)
+
+      const body = await c.req.text()
+
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body,
+        signal: c.req.raw.signal,
+      })
+
+      console.log(`[TerminalProxy] run response status: ${response.status}`)
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[TerminalProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to run command' }
+      }, 502)
+    }
+  }
+
+  // Local development: Use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = terminalRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/terminal/run`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
   })
   return router.fetch(newReq)
 })
