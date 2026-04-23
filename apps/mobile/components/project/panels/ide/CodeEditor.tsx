@@ -1,5 +1,5 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
 import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
@@ -25,6 +25,17 @@ function configureMonaco(monaco: MonacoNs) {
       "editor.background": "#1e1e1e",
       "editor.lineHighlightBackground": "#2a2a2a",
       "editorGutter.background": "#1e1e1e",
+    },
+  });
+
+  monaco.editor.defineTheme("shogo-light", {
+    base: "vs",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": "#ffffff",
+      "editor.lineHighlightBackground": "#f3f3f3",
+      "editorGutter.background": "#ffffff",
     },
   });
 
@@ -73,6 +84,7 @@ export function CodeEditor({
   language,
   pathKey,
   settings,
+  themeMode,
   onChange,
   onCursor,
   onMount,
@@ -82,16 +94,28 @@ export function CodeEditor({
   /** Stable unique path used as the Monaco model URI so IntelliSense scopes per-file. */
   pathKey: string;
   settings: EditorSettings;
+  /** Resolved app theme — Monaco flips between shogo-dark / shogo-light. */
+  themeMode: "dark" | "light";
   onChange: (v: string) => void;
   onCursor: (line: number, col: number) => void;
   onMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
 }) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const monacoRef = useRef<MonacoNs | null>(null);
+
+  const themeName = themeMode === "light" ? "shogo-light" : "shogo-dark";
+
+  // Live-swap Monaco theme when the app theme changes under an already-mounted
+  // editor (e.g. user toggles theme while a file is open).
+  useEffect(() => {
+    monacoRef.current?.editor.setTheme(themeName);
+  }, [themeName]);
 
   const handleMount: OnMount = (ed, monaco) => {
     editorRef.current = ed;
+    monacoRef.current = monaco;
     configureMonaco(monaco);
-    monaco.editor.setTheme("shogo-dark");
+    monaco.editor.setTheme(themeName);
 
     ed.onDidChangeCursorPosition((e) => {
       onCursor(e.position.lineNumber, e.position.column);
@@ -106,7 +130,7 @@ export function CodeEditor({
       path={pathKey}
       language={language}
       value={value}
-      theme="shogo-dark"
+      theme={themeName}
       onChange={(v) => onChange(v ?? "")}
       onMount={handleMount}
       options={{

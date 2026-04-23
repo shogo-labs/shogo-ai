@@ -59,7 +59,7 @@ export function VerticalSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEve
   return (
     <div
       onMouseDown={onMouseDown}
-      className="w-1 cursor-col-resize bg-[#2a2a2a] hover:bg-[#0078d4] transition-colors"
+      className="w-1 cursor-col-resize bg-[color:var(--ide-border)] hover:bg-[color:var(--ide-active-ring)] transition-colors"
     />
   );
 }
@@ -68,7 +68,7 @@ export function HorizontalSplit({ onMouseDown }: { onMouseDown: (e: React.MouseE
   return (
     <div
       onMouseDown={onMouseDown}
-      className="h-1 cursor-row-resize bg-[#2a2a2a] hover:bg-[#0078d4] transition-colors"
+      className="h-1 cursor-row-resize bg-[color:var(--ide-border)] hover:bg-[color:var(--ide-active-ring)] transition-colors"
     />
   );
 }

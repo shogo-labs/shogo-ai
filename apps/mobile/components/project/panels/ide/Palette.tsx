@@ -73,7 +73,7 @@ export function Palette({
       onClick={onClose}
     >
       <div
-        className="mt-[12vh] w-[560px] max-w-[calc(100vw-40px)] overflow-hidden rounded-md border border-[#454545] bg-[#252526] shadow-2xl"
+        className="mt-[12vh] w-[560px] max-w-[calc(100vw-40px)] overflow-hidden rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <input
@@ -96,11 +96,11 @@ export function Palette({
               onClose();
             }
           }}
-          className="no-focus-ring w-full border-b border-[#2a2a2a] bg-transparent px-4 py-3 text-[14px] text-white placeholder:text-[#858585] outline-none"
+          className="no-focus-ring w-full border-b border-[color:var(--ide-border)] bg-transparent px-4 py-3 text-[14px] text-[color:var(--ide-text-strong)] placeholder:text-[color:var(--ide-muted)] outline-none"
         />
         <div ref={listRef} className="max-h-[50vh] overflow-auto py-1">
           {results.length === 0 ? (
-            <div className="px-4 py-4 text-center text-[12px] text-[#858585]">
+            <div className="px-4 py-4 text-center text-[12px] text-[color:var(--ide-muted)]">
               {emptyHint ?? "No matches"}
             </div>
           ) : (
@@ -113,7 +113,7 @@ export function Palette({
                   onMouseMove={() => setActive(i)}
                   onClick={() => pick(i)}
                   className={`flex cursor-pointer items-center justify-between gap-4 px-4 py-[6px] text-[13px] ${
-                    isActive ? "bg-[#094771] text-white" : "text-[#cccccc]"
+                    isActive ? "bg-[color:var(--ide-active-bg)] text-white" : "text-[color:var(--ide-text)]"
                   }`}
                 >
                   <div className="min-w-0 flex-1">
@@ -121,13 +121,13 @@ export function Palette({
                       {query ? highlightMatch(item.label, indices) : item.label}
                     </div>
                     {item.sublabel && (
-                      <div className="truncate text-[11px] text-[#858585]">
+                      <div className="truncate text-[11px] text-[color:var(--ide-muted)]">
                         {item.sublabel}
                       </div>
                     )}
                   </div>
                   {item.hint && (
-                    <span className="shrink-0 text-[11px] text-[#858585]">
+                    <span className="shrink-0 text-[11px] text-[color:var(--ide-muted)]">
                       {item.hint}
                     </span>
                   )}

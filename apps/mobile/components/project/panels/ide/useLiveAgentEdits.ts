@@ -38,6 +38,7 @@ import type { Dispatch, SetStateAction } from "react";
 
 import type { EditorGroup, OpenFile } from "./types";
 import type { WorkspaceService } from "./workspace/types";
+import { isImagePath } from "./ImagePreview";
 
 const AGENT_ROOT_ID = "agent";
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
@@ -269,7 +270,16 @@ export function useLiveAgentEdits({
     const openAgentFiles = new Set<string>();
     for (const g of groupsRef.current) {
       for (const f of g.files) {
-        if (f.rootId === AGENT_ROOT_ID && !f.loading && !f.error) {
+        // Skip image tabs — their content is a blob: URL, not text, and
+        // running readFile() on them would clobber the URL with the raw
+        // bytes interpreted as a string (which breaks <img src>).
+        if (
+          f.rootId === AGENT_ROOT_ID &&
+          !f.loading &&
+          !f.error &&
+          f.language !== "image" &&
+          !isImagePath(f.path)
+        ) {
           openAgentFiles.add(f.path);
         }
       }
@@ -311,6 +321,9 @@ export function useLiveAgentEdits({
 
       if (evt.type !== "file.changed") return;
       const { path, mtime } = evt;
+      // file.changed on an image doesn't round-trip through readFile — the
+      // image viewer owns a blob: URL that we mustn't replace with text.
+      if (isImagePath(path)) return;
 
       void (async () => {
         const svc = serviceRef.current;
@@ -371,7 +384,9 @@ export function useLiveAgentEdits({
         active.rootId !== AGENT_ROOT_ID ||
         active.loading ||
         active.error ||
-        active.dirty
+        active.dirty ||
+        active.language === "image" ||
+        isImagePath(active.path)
       ) {
         return;
       }

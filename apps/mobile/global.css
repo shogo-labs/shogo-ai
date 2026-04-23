@@ -393,3 +393,112 @@ body {
   margin-right: 6px;
   animation: agent-tab-pulse 1s ease-in-out infinite;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   IDE theme tokens. The Workbench wraps itself in `.shogo-ide` and uses
+   `var(--ide-*)` for all chrome colors (bg, text, borders, hovers, accents).
+   Switching the app between light and dark (`html.dark`) flips the palette
+   below, so the in-app code editor follows the rest of the UI.
+   ────────────────────────────────────────────────────────────────────────── */
+.shogo-ide {
+  /* Dark defaults — matches the VS Code "Dark+" look the IDE started with. */
+  --ide-bg: #1e1e1e;
+  --ide-surface: #252526;
+  --ide-panel: #1a1a1a;
+  --ide-border: #2a2a2a;
+  --ide-border-strong: #3a3a3a;
+  --ide-border-muted: #454545;
+  --ide-hover: #2a2d2e;
+  --ide-hover-subtle: rgba(255, 255, 255, 0.06);
+  --ide-active: #37373d;
+  --ide-active-bg: #094771;
+  --ide-active-ring: #0078d4;
+  --ide-input: #3c3c3c;
+  --ide-input-bg: #1a1a1a;
+  --ide-muted: #858585;
+  --ide-muted-strong: #666666;
+  --ide-text: #cccccc;
+  --ide-text-strong: #ffffff;
+  --ide-primary: #0078d4;
+  --ide-error: #f48771;
+  --ide-warning: #ffb74d;
+  --ide-tab-inactive: #2d2d2d;
+  --ide-tab-inactive-text: #969696;
+  --ide-accent-file-icon: #75beff;
+  --ide-accent-folder: #dcb67a;
+  --ide-highlight-bg: #514b17;
+  --ide-highlight-text: #ffd75e;
+  --ide-selected-bg: #264f78;
+  --ide-conflict-border: rgba(249, 130, 108, 0.6);
+  --ide-conflict-bg: rgba(249, 130, 108, 0.15);
+  --ide-conflict-pill-bg: rgba(249, 130, 108, 0.25);
+  --ide-conflict-text: #f9d7cf;
+  --ide-toggle-knob: #ffffff;
+  --ide-btn-primary-bg: #0e639c;
+  --ide-btn-primary-hover: #1177bb;
+  --ide-btn-secondary-bg: #3a3d41;
+  --ide-btn-secondary-hover: #4a4d51;
+  --ide-danger-hover: #c4314b;
+  --ide-kbd-bg: #2a2a2a;
+  --ide-scrollbar: rgba(255, 255, 255, 0.2);
+
+  color: var(--ide-text);
+  background: var(--ide-bg);
+}
+
+html:not(.dark) .shogo-ide,
+.shogo-ide[data-theme="light"] {
+  --ide-bg: #ffffff;
+  --ide-surface: #f3f3f3;
+  --ide-panel: #ececec;
+  --ide-border: #e5e5e5;
+  --ide-border-strong: #cecece;
+  --ide-border-muted: #cccccc;
+  --ide-hover: #e8e8e8;
+  --ide-hover-subtle: rgba(0, 0, 0, 0.05);
+  --ide-active: #d6ebff;
+  --ide-active-bg: #cce6f7;
+  --ide-active-ring: #0066b8;
+  --ide-input: #ffffff;
+  --ide-input-bg: #ffffff;
+  --ide-muted: #616161;
+  --ide-muted-strong: #9d9d9d;
+  --ide-text: #1f1f1f;
+  --ide-text-strong: #000000;
+  --ide-primary: #0066b8;
+  --ide-error: #e51400;
+  --ide-warning: #b88217;
+  --ide-tab-inactive: #ececec;
+  --ide-tab-inactive-text: #5f5f5f;
+  --ide-accent-file-icon: #316dca;
+  --ide-accent-folder: #d6a558;
+  --ide-highlight-bg: #fff3b0;
+  --ide-highlight-text: #3a2e00;
+  --ide-selected-bg: #add6ff;
+  --ide-conflict-border: rgba(215, 58, 73, 0.45);
+  --ide-conflict-bg: rgba(255, 225, 220, 0.8);
+  --ide-conflict-pill-bg: rgba(215, 58, 73, 0.2);
+  --ide-conflict-text: #7a1f03;
+  --ide-toggle-knob: #ffffff;
+  --ide-btn-primary-bg: #0066b8;
+  --ide-btn-primary-hover: #1177bb;
+  --ide-btn-secondary-bg: #e5e5e5;
+  --ide-btn-secondary-hover: #d0d0d0;
+  --ide-danger-hover: #e51400;
+  --ide-kbd-bg: #e5e5e5;
+  --ide-scrollbar: rgba(0, 0, 0, 0.25);
+}
+
+/* Scrollbars inside the IDE pick up the current palette so the light theme
+   doesn't end up with a dark-on-light scrollbar. */
+.shogo-ide *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.shogo-ide *::-webkit-scrollbar-thumb {
+  background: var(--ide-scrollbar);
+  border-radius: 6px;
+}
+.shogo-ide *::-webkit-scrollbar-track {
+  background: transparent;
+}

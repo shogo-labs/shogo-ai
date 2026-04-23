@@ -168,6 +168,15 @@ export class LocalFs implements WorkspaceService {
     };
   }
 
+  /** Read a file as a blob: URL — used by the image viewer for png/jpg/etc. */
+  async readFileUrl(path: string): Promise<string> {
+    const { parent, name } = await this.resolve(path);
+    if (!name) throw new Error("Invalid path");
+    const handle = await parent.getFileHandle(name);
+    const file = await handle.getFile();
+    return URL.createObjectURL(file);
+  }
+
   async writeFile(path: string, content: string) {
     const { parent, name } = await this.resolve(path, { create: true });
     if (!name) throw new Error("Invalid path");

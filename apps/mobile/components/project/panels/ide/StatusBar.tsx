@@ -12,7 +12,7 @@ export function StatusBar({
   saved: boolean;
 }) {
   return (
-    <div className="flex h-6 items-center justify-between bg-[#0078d4] px-3 text-[12px] text-white">
+    <div className="flex h-6 items-center justify-between bg-[color:var(--ide-primary)] px-3 text-[12px] text-white">
       <div className="flex items-center gap-4" />
       <div className="flex items-center gap-4">
         <span>
