@@ -5,6 +5,7 @@ import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
 import { EditorGroupView } from "./EditorGroup";
+import { isImagePath } from "./ImagePreview";
 import { Palette, type PaletteItem } from "./Palette";
 import {
   DEFAULT_SETTINGS,
@@ -27,6 +28,7 @@ import type { WorkspaceService } from "./workspace/types";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
 import { matchesShortcut, type Command } from "./commands";
+import { useTheme } from "../../../../contexts/theme";
 import {
   RefreshCw,
   History,
@@ -39,14 +41,39 @@ import {
 
 let groupSeq = 1;
 const newGroupId = () => `g${groupSeq++}`;
+/** Binary files we refuse to open at all — Monaco can't render them and we
+ *  have no viewer. Images are handled separately (see isImagePath) and open
+ *  in the in-editor ImagePreview instead. */
 const BINARY_EXTENSIONS = new Set([
-  "png","jpg","jpeg","gif","webp","bmp","ico","avif","heic","tiff","tif",
+  "heic","tiff","tif",
   "pdf","zip","gz","tar","tgz","bz2","xz","7z","rar",
   "mp3","mp4","m4a","m4v","mov","avi","mkv","webm","wav","flac","ogg","aac",
   "woff","woff2","ttf","otf","eot",
   "exe","dll","so","dylib","bin","class","jar","wasm",
   "sqlite","db","pack","idx","psd","ai","sketch","fig",
 ]);
+
+/** Resolve the theme preference to a concrete "light" | "dark" — mirrors the
+ *  logic in ThemeProvider so the IDE's Monaco and chrome colours stay in sync
+ *  with the rest of the app, including when the user picks "system" and the
+ *  OS-level scheme flips underfoot. */
+function useResolvedTheme(): "light" | "dark" {
+  const { theme } = useTheme();
+  const [systemDark, setSystemDark] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+  useEffect(() => {
+    if (theme !== "system" || typeof window === "undefined") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, [theme]);
+  if (theme === "dark") return "dark";
+  if (theme === "light") return "light";
+  return systemDark ? "dark" : "light";
+}
 
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
 
@@ -70,6 +97,7 @@ function flattenFiles(tree: TreeNode[], out: TreeNode[] = []): TreeNode[] {
 }
 
 export function Workbench({ agentService, agentLabel = "agent-workspace" }: { agentService: WorkspaceService; agentLabel?: string }) {
+  const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
   const [services, setServices] = useState<Record<string, WorkspaceService>>({ agent: agentService });
   const [roots, setRoots] = useState<Root[]>([
@@ -361,7 +389,8 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
     async (node: TreeNode, groupIdx: number) => {
       if (node.kind !== "file") return;
       const ext = node.name.toLowerCase().split(".").pop() ?? "";
-      if (BINARY_EXTENSIONS.has(ext)) {
+      const isImage = isImagePath(node.path);
+      if (!isImage && BINARY_EXTENSIONS.has(ext)) {
         showToast(`Cannot open binary file: ${node.name}`, 2500);
         return;
       }
@@ -382,7 +411,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         rootId: node.rootId,
         name: node.name,
         path: node.path,
-        language: node.language ?? "plaintext",
+        language: isImage ? "image" : node.language ?? "plaintext",
         content: "",
         savedContent: "",
         dirty: false,
@@ -395,6 +424,34 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       }));
       setActiveGroupIdx(groupIdx);
       try {
+        if (isImage) {
+          // Images never hit readFile() — that path is text-only and rejects
+          // binaries. Instead resolve a URL (blob: for local, http: for the
+          // agent download endpoint) and stash it as the file content. The
+          // EditorGroupView notices language === "image" and mounts
+          // <ImagePreview> instead of Monaco.
+          if (!svc.readFileUrl) {
+            throw new Error("Image preview not supported for this workspace");
+          }
+          const url = await svc.readFileUrl(node.path);
+          setGroups((prev) =>
+            prev.map((g) => ({
+              ...g,
+              files: g.files.map((f) =>
+                f.id === id
+                  ? {
+                      ...f,
+                      content: url,
+                      savedContent: url,
+                      language: "image",
+                      loading: false,
+                    }
+                  : f,
+              ),
+            })),
+          );
+          return;
+        }
         const file = await svc.readFile(node.path);
         setGroups((prev) =>
           prev.map((g) => ({
@@ -458,6 +515,11 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       if (idx < 0) return prev;
       const f = g.files[idx];
       if (f.dirty && !confirm(`Close ${f.name} without saving?`)) return prev;
+      // Image tabs allocate a blob: URL on open — revoke it on close so long
+      // browsing sessions don't leak one per image opened.
+      if (f.language === "image" && f.content.startsWith("blob:")) {
+        try { URL.revokeObjectURL(f.content); } catch { /* ignore */ }
+      }
       const nextFiles = g.files.filter((x) => x.id !== id);
       const nextActive =
         g.activeId === id ? nextFiles[Math.max(0, idx - 1)]?.id ?? null : g.activeId;
@@ -953,31 +1015,17 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   ]);
 
   return (
-    <div className="flex h-full w-full min-w-0 min-h-0 flex-col bg-[#1e1e1e] text-white overflow-hidden">
-      {/* Title bar */}
-      <div className="flex h-9 items-center justify-between border-b border-[#2a2a2a] bg-[#1a1a1a] px-3 text-[12px]">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-[#cccccc] shrink-0 font-medium">shogo-ai</span>
-          <span className="text-[#858585] shrink-0 hidden sm:inline">—</span>
-          <span className="text-[#858585] truncate max-w-[40vw]">
-            {roots.length === 1 ? roots[0].label : `${roots.length} workspaces`}
-          </span>
-        </div>
-        <div className="hidden lg:flex items-center gap-3 text-[#858585]">
-          <span>⌘P files</span>
-          <span>⌘⇧P commands</span>
-          <span>⌘⇧F search</span>
-          <span className="hidden xl:inline">⌘⇧O open folder</span>
-        </div>
-      </div>
-
+    <div
+      className="shogo-ide flex h-full w-full min-w-0 min-h-0 flex-col overflow-hidden"
+      data-theme={themeMode}
+    >
       <div className="flex flex-1 min-h-0">
         <ActivityBar active={activity} onSelect={setActivity} />
 
         <div className="flex flex-1 min-w-0">
           <div
             style={{ width: sidebarSplit.size, flexShrink: 0, maxWidth: "55%", minWidth: 0 }}
-            className="h-full bg-[#252526] overflow-hidden"
+            className="h-full bg-[color:var(--ide-surface)] overflow-hidden"
           >
             {activity === "files" && (
               <FilesPane
@@ -1036,6 +1084,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                     <EditorGroupView
                       group={g}
                       focused={i === activeGroupIdx}
+                      themeMode={themeMode}
                       onFocus={() => setActiveGroupIdx(i)}
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
@@ -1085,7 +1134,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                 }, [])}
 
               {toast && (
-                <div className="pointer-events-none absolute bottom-4 right-4 z-40 rounded bg-[#0078d4] px-3 py-1.5 text-[12px] text-white shadow-lg">
+                <div className="pointer-events-none absolute bottom-4 right-4 z-40 rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[12px] text-white shadow-lg">
                   {toast}
                 </div>
               )}
@@ -1178,7 +1227,7 @@ function FilesPane({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-4 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-[#858585]">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
           Explorer
         </span>
         <div className="flex items-center gap-1">
@@ -1186,7 +1235,7 @@ function FilesPane({
             onClick={onOpenFolder}
             title={fsaSupported ? "Add local folder…" : "Local folders require Chrome or Edge"}
             disabled={!fsaSupported}
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <FolderOpen size={13} />
           </button>
@@ -1194,7 +1243,7 @@ function FilesPane({
             <button
               onClick={onRestore}
               title="Reopen recent local folder"
-              className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
             >
               <History size={13} />
             </button>
@@ -1202,21 +1251,21 @@ function FilesPane({
           <button
             onClick={() => onNew("file")}
             title="New File"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
           >
             <FilePlus size={13} />
           </button>
           <button
             onClick={() => onNew("dir")}
             title="New Folder"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
           >
             <FolderPlus size={13} />
           </button>
           <button
             onClick={onRefresh}
             title="Refresh All"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
           >
             <RefreshCw size={13} className={anyLoading ? "animate-spin" : ""} />
           </button>
@@ -1225,11 +1274,11 @@ function FilesPane({
 
 
       {anyError ? (
-        <div className="px-4 py-3 text-[12px] text-[#f48771]">
+        <div className="px-4 py-3 text-[12px] text-[color:var(--ide-error)]">
           <div className="flex items-center gap-1 mb-1">
             <AlertTriangle size={13} /> {anyError.label}
           </div>
-          <div className="text-[#858585]">{anyError.error}</div>
+          <div className="text-[color:var(--ide-muted)]">{anyError.error}</div>
         </div>
       ) : null}
 
@@ -1244,18 +1293,18 @@ function FilesPane({
 
       {/* Local root badges at the bottom for quick close */}
       {roots.filter((r) => r.kind === "local").length > 0 && (
-        <div className="border-t border-[#2a2a2a] px-3 py-2">
+        <div className="border-t border-[color:var(--ide-border)] px-3 py-2">
           {roots
             .filter((r) => r.kind === "local")
             .map((r) => (
               <div
                 key={r.id}
-                className="flex items-center justify-between gap-2 rounded px-1 py-[2px] text-[11px] text-[#858585] hover:bg-[#2a2a2a]"
+                className="flex items-center justify-between gap-2 rounded px-1 py-[2px] text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
               >
                 <span className="truncate">📁 {r.label}</span>
                 <button
                   onClick={() => onCloseRoot(r.id)}
-                  className="rounded p-[2px] hover:bg-[#ffffff1a] hover:text-white"
+                  className="rounded p-[2px] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
                   title="Close folder"
                 >
                   <X size={11} />
@@ -1279,11 +1328,11 @@ function Placeholder({
 }) {
   return (
     <div className="flex h-full flex-col">
-      <div className="px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[#858585]">
+      <div className="px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
         {title}
       </div>
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-[#858585]">
-        <div className="text-[#4ec9b0]">{icon}</div>
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-[color:var(--ide-muted)]">
+        <div className="text-[color:var(--ide-primary)]">{icon}</div>
         <div className="text-[13px]">{hint}</div>
       </div>
     </div>
