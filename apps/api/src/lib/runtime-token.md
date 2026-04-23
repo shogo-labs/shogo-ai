@@ -10,23 +10,62 @@ The code: [`runtime-token.ts`](./runtime-token.ts),
 
 ## What the token is
 
-`deriveRuntimeToken(projectId) = HMAC-SHA256(signingSecret, "runtime-auth:" + projectId)`
+Current format (**v1**, self-identifying):
 
-- Deterministic — the API re-derives it per request, we never store it.
-- Project-scoped — each token only authenticates requests for **its**
-  `projectId`. A token for project A can't act on project B.
-- Injected into every managed pod at assign-time as `RUNTIME_AUTH_SECRET`
-  (see `knative-project-manager.ts`, `runtime/build-project-env.ts`).
-- **Bearer capability, no replay window.** Tokens are valid as long as
-  the signing secret is stable and the project exists. There is no
-  `iat`, no nonce, no short-lived refresh. Whoever holds the token can
-  act on the project — treat it like any other bearer key. If you need
-  per-request freshness, layer a nonce in your application protocol.
-- **Transport.** The SDK sends the token as `x-runtime-token`. The API
-  also accepts `Authorization: Bearer <token>` (as long as the value
-  does not start with `shogo_sk_`) because some proxies strip
-  non-standard headers. Both paths hit the same HMAC check; our own
-  SDK always uses the dedicated header.
+```
+rt_v1_<projectId>_<hmac-hex>
+  where hmac-hex = HMAC-SHA256(signingSecret, "runtime-auth:" + projectId)
+```
+
+- **Self-identifying.** The projectId is embedded verbatim, so the
+  verifier can recover scope from the bearer alone. This is why
+  `GET /api/voice/calls/:projectId` works with `x-runtime-token` even
+  though `authMiddleware` is mounted at `/api/*` — Hono's
+  `c.req.param('projectId')` returns `undefined` from wildcard
+  middleware, but the v1 token doesn't need it. Any new
+  project-scoped route authenticates correctly without needing to
+  thread `?projectId=` through the caller.
+- **Deterministic.** The API re-derives the HMAC per request; we
+  never store the token. The `projectId` portion is non-secret
+  (it's already in URLs, logs, and DB rows) — the HMAC is the
+  capability.
+- **Project-scoped.** Each token only authenticates requests for
+  **its** `projectId`. A token for project A can't act on project
+  B. `authorizeProject` still enforces this against the request's
+  target project (see §9) — the embedded projectId supplies the
+  scope to the middleware; `authorizeProject` cross-checks it.
+- **Injected into every managed pod at assign-time** as
+  `RUNTIME_AUTH_SECRET` (see `knative-project-manager.ts`,
+  `runtime/build-project-env.ts`). Pods treat it as opaque — no
+  pod-side format awareness required.
+- **Bearer capability, no replay window.** Tokens are valid as long
+  as the signing secret is stable and the project exists. There is
+  no `iat`, no nonce, no short-lived refresh. Whoever holds the
+  token can act on the project — treat it like any other bearer
+  key. If you need per-request freshness, layer a nonce in your
+  application protocol.
+- **Transport.** The SDK sends the token as `x-runtime-token`. The
+  API also accepts `Authorization: Bearer <token>` (as long as the
+  value does not start with `shogo_sk_`) because some proxies strip
+  non-standard headers. Both paths hit the same `verifyRuntimeToken`
+  check; our own SDK always uses the dedicated header.
+- **Version tag.** The `v1` marker reserves space for format bumps
+  (JWT-style `kid`, short-lived tokens, rotation windows). Adding
+  `rt_v2_*` later is a dual-accept rollout, not a migration script.
+
+### Legacy format (pre-v1, still accepted)
+
+Older pods were booted with a bare 64-char hex HMAC (no prefix, no
+embedded projectId). The verifier keeps accepting them by falling
+back to a `projectId` taken from the request's query string / route
+param. The legacy path has the limitation you probably just learned
+about the hard way: it doesn't work on wildcard-middleware routes
+where `c.req.param('projectId')` returns `undefined` — so it only
+covers `?projectId=` callers.
+
+Once every long-running pod has cycled to a v1 `RUNTIME_AUTH_SECRET`,
+the legacy branch in `verifyRuntimeToken` can be deleted. Until
+then, keep it — the compatibility cost is ~10 lines and one branch.
 
 ## Gotchas
 
@@ -114,11 +153,22 @@ restates it so code review agents catch accidental mounts.
 
 ### 5. Shared-agent `/voice/signed-url` is **not** reachable via runtime-token
 
-The middleware only sets `via: 'runtimeToken'` when a `projectId` is
-supplied via query / route param. Shared-agent paths that do not carry
-a `projectId` fall through to session auth, which means an
-unauthenticated caller gets a 401. Do not add a `projectId` to those
-routes without thinking through the scope widening.
+Runtime tokens are project-scoped capabilities; shared-agent paths
+are either user-scoped (the in-app translator overlay) or anonymous.
+The shared-agent branch of `GET /voice/signed-url` (no `?projectId=`)
+therefore rejects `auth.via === 'runtimeToken'` with a 403. Same
+pattern as the translator gate in §7 — the rejection is **explicit**
+in the handler, not a side-effect of the auth middleware.
+
+Historical note: pre-v1 runtime tokens were opaque HMACs that required
+the caller to also supply `projectId` via query/route param for the
+middleware to mint `via: 'runtimeToken'`. The "no projectId → no
+runtime auth → 401 from `requireAuth`" chain implicitly gated
+shared-agent routes. v1 self-identifying tokens removed that implicit
+gate (they mint runtime-auth without any hint), so the gate moved
+into the handler where it's visible in code review. If you add a new
+shared-agent route, copy the `via === 'runtimeToken'` check — do not
+rely on auth-middleware side effects.
 
 ### 6. Timing-safe comparison is mandatory
 

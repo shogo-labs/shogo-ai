@@ -17,9 +17,10 @@
  * returns a signed URL.
  *
  * Negative path: pod env carries the wrong projectId (simulating a
- * misconfigured / tampered pod). API rejects with 401 (token/HMAC
- * mismatch) OR 403 (scope mismatch), pod returns the upstream error
- * body transparently.
+ * misconfigured / tampered pod). With v1 self-identifying tokens the
+ * HMAC passes against the token's own scope, then `authorizeProject`
+ * rejects the cross-project request with 403. Pod returns the
+ * upstream error body transparently.
  *
  * Run: bun test apps/api/src/__tests__/runtime-token-voice.e2e.test.ts
  */
@@ -266,10 +267,16 @@ describe('E2E: pod → Shogo API runtime-token flow', () => {
     expect(createAgentMock).not.toHaveBeenCalled()
   })
 
-  test('negative: pod configured with wrong runtimeToken → upstream 401 propagates', async () => {
+  test('negative: pod configured with stale runtimeToken → upstream 403 (scope mismatch)', async () => {
     const apiApp = createShogoApiApp()
     // Pod boots with a token derived for a DIFFERENT project than its
     // PROJECT_ID — e.g. a warm-pool pod reassigned but env not refreshed.
+    // v1 tokens self-identify, so the middleware now authenticates the
+    // caller as WRONG_PROJECT_ID (the token's true scope) rather than
+    // rejecting at the HMAC check. `authorizeProject` then enforces the
+    // target project from `?projectId=PROJECT_ID` against the
+    // authenticated scope → 403. Same security outcome as before, just
+    // a more honest status code (see runtime-token.md §9).
     const podApp = createPodApp(
       {
         runtimeToken: deriveRuntimeToken(WRONG_PROJECT_ID),
@@ -279,31 +286,32 @@ describe('E2E: pod → Shogo API runtime-token flow', () => {
     )
 
     const res = await podApp.request('/api/voice/signed-url')
-    // Upstream API: HMAC(signingSecret, "runtime-auth:"+PROJECT_ID) !==
-    // provided token (derived for WRONG_PROJECT_ID) → no runtime auth
-    // set, falls through to session (none) → 401.
-    expect(res.status).toBe(401)
-    // EL was never called — fast rejection at the auth layer.
+    expect(res.status).toBe(403)
+    // EL was never called — fast rejection at the authorization layer.
     expect(getSignedUrlMock).not.toHaveBeenCalled()
   })
 
-  test('negative: pod configured with wrong projectId → upstream 403 forbidden', async () => {
+  test('negative: direct API call with token for project A but ?projectId=B → 403', async () => {
     const apiApp = createShogoApiApp()
-    // This time the token matches its projectId (auth succeeds at the
-    // middleware), but the pod's SDK sends `?projectId=WRONG` meaning
-    // `authorizeProject` runs against a different project than the
-    // token's scope → 403. This simulates a pod that got PROJECT_ID
-    // rotated out from under it while keeping a stale token.
-    //
-    // The SDK currently derives both from the same opts, so to model
-    // this we drive the pod with coherent (token, projectId) = WRONG
-    // against an API that has both projects — the request for WRONG
-    // succeeds. Use a different angle: attempt to fetch a signed-url
-    // for a project the token doesn't own by calling the API directly.
+    // Token for WRONG_PROJECT_ID, routed at /api/voice/signed-url?projectId=PROJECT_ID.
+    // With v1 tokens, authentication succeeds as WRONG_PROJECT_ID; the
+    // scope mismatch is caught by `authorizeProject`.
     const wrongToken = deriveRuntimeToken(WRONG_PROJECT_ID)
     const res = await apiApp.request(
       `/api/voice/signed-url?projectId=${PROJECT_ID}`,
       { headers: { 'x-runtime-token': wrongToken } },
+    )
+    expect(res.status).toBe(403)
+  })
+
+  test('negative: structurally malformed runtime token → 401 at the auth layer', async () => {
+    const apiApp = createShogoApiApp()
+    // Not a v1 token, not a bare-hex token — just garbage. Middleware
+    // can't recover any scope and falls through to session auth (none)
+    // → 401. This is the remaining 401-path for runtime tokens.
+    const res = await apiApp.request(
+      `/api/voice/signed-url?projectId=${PROJECT_ID}`,
+      { headers: { 'x-runtime-token': 'not-a-valid-runtime-token' } },
     )
     expect(res.status).toBe(401)
   })

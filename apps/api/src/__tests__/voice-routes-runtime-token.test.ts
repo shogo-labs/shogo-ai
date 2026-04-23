@@ -237,28 +237,38 @@ describe('GET /api/voice/signed-url?projectId=X with x-runtime-token', () => {
     expect(mockPrisma.member.findFirst).not.toHaveBeenCalled()
   })
 
-  test('token for project A presented with projectId=B → 401 (token/scope mismatch)', async () => {
+  test('token for project A presented with projectId=B → 403 (scope mismatch)', async () => {
+    // v1 semantics: the tokenA authenticates as project A (scope comes
+    // from the token itself). `authorizeProject` then runs against the
+    // request's target (B from `?projectId=B`) and returns 403. Pre-v1
+    // this surfaced as 401 at the HMAC check; 403 is the more honest
+    // code — see runtime-token.md §9.
     const app = createApp()
     const tokenA = deriveRuntimeToken(PROJECT_A)
     const res = await app.request(
       `/api/voice/signed-url?projectId=${PROJECT_B}`,
       { method: 'GET', headers: { 'x-runtime-token': tokenA } },
     )
-    // Token never validates (HMAC uses projectId=B), so auth falls
-    // through to session, which is absent → 401 from apiKeyOrSession.
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(403)
   })
 
-  test('shared-agent path (no projectId) with runtime-token → 401', async () => {
+  test('shared-agent path (no projectId) with runtime-token → 403 (explicit rejection)', async () => {
+    // Per runtime-token.md §5: shared-agent voice endpoints are NOT
+    // reachable via runtime-token. Pre-v1 this was enforced implicitly
+    // (no projectId on the request meant the middleware never minted
+    // runtime-auth → 401 from requireAuth). v1 tokens self-identify,
+    // so the middleware now authenticates the caller; the shared-agent
+    // branch of the handler rejects `via === 'runtimeToken'` explicitly
+    // (pattern matches the translator gate in §7).
     const app = createApp()
     const token = deriveRuntimeToken(PROJECT_A)
     const res = await app.request('/api/voice/signed-url', {
       method: 'GET',
       headers: { 'x-runtime-token': token },
     })
-    // authMiddleware requires projectId on the request to mint runtime
-    // auth; without one, no auth is set and apiKeyOrSession 401s.
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(403)
+    const body: any = await res.json()
+    expect(body.error.code).toBe('forbidden')
   })
 
   test('no auth header at all → 401', async () => {
@@ -272,10 +282,12 @@ describe('GET /api/voice/signed-url?projectId=X with x-runtime-token', () => {
 })
 
 describe('GET /api/voice/config/:projectId with x-runtime-token', () => {
-  // NOTE: app-level `authMiddleware` can't see Hono route params — they
-  // are only resolved after route matching. The SDK's
-  // `HostedRuntimeTokenClient` always appends `?projectId=` to every
-  // URL for exactly this reason, and these tests mirror that behavior.
+  // HISTORICAL NOTE: app-level `authMiddleware` can't see Hono route
+  // params from wildcard-mounted middleware, so the SDK used to append
+  // `?projectId=` to every URL as a workaround. The v1 runtime token
+  // embeds projectId in the bearer itself, making that workaround
+  // unnecessary; these tests keep the `?projectId=` to continue
+  // exercising the rollout-compat path (belt and suspenders).
 
   test('matching project, no config row → 200 { provisioned: false }', async () => {
     const app = createApp()
@@ -312,14 +324,21 @@ describe('GET /api/voice/config/:projectId with x-runtime-token', () => {
     expect(body.elevenlabsAgentId).toBe('agent_test')
   })
 
-  test('mismatched token / path projectId → 401 (HMAC fails)', async () => {
+  test('token for A + path/query for B → 403 (scope mismatch caught downstream)', async () => {
+    // With v1 self-identifying tokens: the token for A authenticates
+    // the caller as A regardless of path/query hints. `authorizeProject`
+    // is then invoked against the request's target project (B from the
+    // path) and rejects the cross-project access with 403.
+    // Pre-v1 this surfaced as 401 at the HMAC check — both outcomes
+    // block access, but 403 is the more honest code
+    // (see runtime-token.md §9).
     const app = createApp()
     const tokenA = deriveRuntimeToken(PROJECT_A)
     const res = await app.request(
       `/api/voice/config/${PROJECT_B}?projectId=${PROJECT_B}`,
       { headers: { 'x-runtime-token': tokenA } },
     )
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(403)
   })
 
   test('token scope mismatch: path projectId=B, query projectId=A → 403 forbidden', async () => {

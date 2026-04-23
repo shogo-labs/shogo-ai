@@ -31,8 +31,7 @@ import type { Context, Next } from "hono"
 import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
 import { resolveApiKey } from "../routes/api-keys"
-import { deriveRuntimeToken } from "../lib/runtime-token"
-import { safeTokenEqual } from "../lib/crypto-util"
+import { verifyRuntimeToken } from "../lib/runtime-token"
 
 /**
  * Auth context set by middleware
@@ -117,97 +116,109 @@ export async function authMiddleware(c: Context, next: Next) {
 
   // 2. Try runtime-token auth (pod → API, project-scoped capability).
   //    Every Shogo-managed pod is started with env:
-  //      PROJECT_ID       — the project this pod serves
-  //      RUNTIME_AUTH_SECRET — HMAC(signingSecret, "runtime-auth:"+projectId)
+  //      PROJECT_ID           — the project this pod serves
+  //      RUNTIME_AUTH_SECRET  — v1 token: `rt_v1_<projectId>_<hmac>`
   //    When user code running inside the pod calls the Shogo API on
   //    behalf of the project, it forwards `x-runtime-token: $RUNTIME_AUTH_SECRET`
-  //    (or equivalent `Authorization: Bearer <token>`). We validate by
-  //    re-deriving the token for the projectId supplied in the request
-  //    and comparing in constant time. Project-scoped → downstream
-  //    `authorizeProject` still must verify the requested project
-  //    matches `authCtx.projectId`.
+  //    (or equivalent `Authorization: Bearer <token>`).
+  //
+  //    `verifyRuntimeToken` handles both:
+  //      - v1 self-identifying tokens — projectId is recovered from the
+  //        token itself, so this works for routes that carry projectId in
+  //        the path (`:projectId`), query string, body, or nowhere at all.
+  //      - Legacy bare-hex tokens — require a `fallbackProjectId` from
+  //        query / route param. Kept only until all pre-v1 pods have
+  //        cycled; see `../lib/runtime-token.ts`.
+  //
+  //    Project-scoped → downstream `authorizeProject` still verifies the
+  //    requested project matches `authCtx.projectId`. The token embedding
+  //    the scope does NOT replace that check — it only supplies the scope
+  //    to this middleware without relying on path introspection.
   const runtimeToken =
     c.req.header("x-runtime-token") ??
     (authHeader?.startsWith("Bearer ") && !authHeader.startsWith("Bearer shogo_sk_")
       ? authHeader.slice(7)
       : undefined)
   if (runtimeToken) {
-    const scopedProjectId =
+    // Legacy-fallback projectId: only used when the token itself is
+    // pre-v1 bare-hex and thus doesn't carry its own scope. v1 tokens
+    // ignore this. NOTE: `c.req.param("projectId")` returns undefined
+    // for wildcard-mounted middleware (`app.use('/api/*', …)`); the v1
+    // format exists precisely so we don't need it to work.
+    const legacyFallbackProjectId =
       c.req.query("projectId") ?? c.req.param("projectId") ?? undefined
-    if (scopedProjectId) {
-      try {
-        const expected = deriveRuntimeToken(scopedProjectId)
-        if (safeTokenEqual(runtimeToken, expected)) {
-          // Resolve a real owner userId in the same round-trip as the
-          // project existence check. See ../lib/runtime-token.md §3:
-          // AuthContext.userId for runtime-token callers is the project's
-          // owner Member (project-scoped first, then workspace-scoped).
-          // This is representation, not an identity assertion — the pod
-          // did not authenticate as that user; `via === 'runtimeToken'`
-          // remains the capability signal.
-          const project = await prisma.project.findUnique({
-            where: { id: scopedProjectId },
-            select: {
-              workspaceId: true,
-              members: {
-                where: { role: 'owner' },
-                orderBy: { createdAt: 'asc' },
-                select: { userId: true },
-                take: 1,
-              },
-              workspace: {
-                select: {
-                  members: {
-                    where: { role: 'owner' },
-                    orderBy: { createdAt: 'asc' },
-                    select: { userId: true },
-                    take: 1,
-                  },
+    try {
+      const verified = verifyRuntimeToken(runtimeToken, legacyFallbackProjectId)
+      if (verified.ok) {
+        const scopedProjectId = verified.projectId
+        // Resolve a real owner userId in the same round-trip as the
+        // project existence check. See ../lib/runtime-token.md §3:
+        // AuthContext.userId for runtime-token callers is the project's
+        // owner Member (project-scoped first, then workspace-scoped).
+        // This is representation, not an identity assertion — the pod
+        // did not authenticate as that user; `via === 'runtimeToken'`
+        // remains the capability signal.
+        const project = await prisma.project.findUnique({
+          where: { id: scopedProjectId },
+          select: {
+            workspaceId: true,
+            members: {
+              where: { role: 'owner' },
+              orderBy: { createdAt: 'asc' },
+              select: { userId: true },
+              take: 1,
+            },
+            workspace: {
+              select: {
+                members: {
+                  where: { role: 'owner' },
+                  orderBy: { createdAt: 'asc' },
+                  select: { userId: true },
+                  take: 1,
                 },
               },
             },
-          })
-          const ownerUserId =
-            project?.members[0]?.userId ??
-            project?.workspace.members[0]?.userId
-          if (project && ownerUserId) {
-            c.set("auth", {
-              userId: ownerUserId,
-              workspaceId: project.workspaceId,
-              projectId: scopedProjectId,
-              isAuthenticated: true,
-              via: 'runtimeToken',
-            })
-            await next()
-            return
-          }
-          if (project && !ownerUserId) {
-            // Project exists but has no owner in either scope. This
-            // should not happen given workspace-creation invariants,
-            // but we fall through (→ 401 at requireAuth) rather than
-            // silently attributing to a random user.
-            console.warn(
-              "[authMiddleware] runtime-token: no owner resolvable for project",
-              { path: c.req.path, projectId: scopedProjectId },
-            )
-          }
-        }
-      } catch (err) {
-        // derive may throw in production if signing secret missing;
-        // fall through to next auth path rather than 500.
-        // NOTE: never log the incoming `runtimeToken` — it's a bearer
-        // capability. The err itself should not contain the token, but
-        // if future changes pass more context in, route them through
-        // `redactSensitiveHeaders` first. The path/projectId are safe.
-        console.warn(
-          "[authMiddleware] runtime-token derive failed:",
-          {
-            path: c.req.path,
-            projectId: scopedProjectId,
-            message: err instanceof Error ? err.message : String(err),
           },
-        )
+        })
+        const ownerUserId =
+          project?.members[0]?.userId ??
+          project?.workspace.members[0]?.userId
+        if (project && ownerUserId) {
+          c.set("auth", {
+            userId: ownerUserId,
+            workspaceId: project.workspaceId,
+            projectId: scopedProjectId,
+            isAuthenticated: true,
+            via: 'runtimeToken',
+          })
+          await next()
+          return
+        }
+        if (project && !ownerUserId) {
+          // Project exists but has no owner in either scope. This
+          // should not happen given workspace-creation invariants,
+          // but we fall through (→ 401 at requireAuth) rather than
+          // silently attributing to a random user.
+          console.warn(
+            "[authMiddleware] runtime-token: no owner resolvable for project",
+            { path: c.req.path, projectId: scopedProjectId },
+          )
+        }
       }
+    } catch (err) {
+      // verify may throw in production if signing secret missing;
+      // fall through to next auth path rather than 500.
+      // NOTE: never log the incoming `runtimeToken` — it's a bearer
+      // capability. The err itself should not contain the token, but
+      // if future changes pass more context in, route them through
+      // `redactSensitiveHeaders` first. The path is safe.
+      console.warn(
+        "[authMiddleware] runtime-token verify failed:",
+        {
+          path: c.req.path,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      )
     }
   }
 
