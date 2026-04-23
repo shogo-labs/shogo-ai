@@ -38,6 +38,13 @@ export interface AuthContext {
   /** True when the session check failed due to a server-side error (DB, etc.) */
   authError?: boolean
   /**
+   * How the request was authenticated. Set by `authMiddleware`.
+   * Used by voice routes and other dual-mode endpoints that need to
+   * branch on credential type (e.g. to skip session-cookie-only
+   * behaviors for SDK callers).
+   */
+  via?: 'apiKey' | 'session' | 'tunnel'
+  /**
    * True when the request was authenticated via tunnel headers
    * (x-tunnel-auth-user-id). The cloud proxy already verified workspace
    * membership, so local DB membership checks can be skipped.
@@ -69,6 +76,7 @@ export async function authMiddleware(c: Context, next: Next) {
           userId: result.userId,
           workspaceId: result.workspaceId,
           isAuthenticated: true,
+          via: 'apiKey',
         })
         await next()
         return
@@ -92,6 +100,7 @@ export async function authMiddleware(c: Context, next: Next) {
       name: c.req.header("x-tunnel-auth-name") || undefined,
       isAuthenticated: true,
       tunnelAuthenticated: true,
+      via: 'tunnel',
     })
     await next()
     return
@@ -109,6 +118,7 @@ export async function authMiddleware(c: Context, next: Next) {
         email: session.user.email,
         name: session.user.name ?? undefined,
         isAuthenticated: true,
+        via: 'session',
       })
     } else {
       c.set("auth", {
@@ -284,4 +294,122 @@ export const PROJECT_RESERVED_TOP_LEVEL_PATHS: ReadonlySet<string> = new Set([
 
 export function isProjectReservedTopLevelPath(path: string): boolean {
   return PROJECT_RESERVED_TOP_LEVEL_PATHS.has(path)
+}
+
+/**
+ * Dual-mode auth middleware for routes that must accept either a
+ * Shogo API key (`Authorization: Bearer shogo_sk_*`) or a Better Auth
+ * session cookie. Returns 401 on neither.
+ *
+ * Relies on `authMiddleware` having already populated `c.get('auth')`.
+ * The API server mounts `authMiddleware` at `/api/*`, so this
+ * middleware just asserts the result for voice / telephony routes that
+ * are intentionally reachable both from in-app browser UI (cookie) and
+ * from third-party SDK consumers (bearer key).
+ *
+ * Resolution precedence (inherited from authMiddleware):
+ *   1. Authorization: Bearer shogo_sk_* → via: 'apiKey'
+ *   2. x-tunnel-auth-user-id            → via: 'tunnel'
+ *   3. Better Auth session cookie       → via: 'session'
+ */
+export async function apiKeyOrSession(c: Context, next: Next) {
+  const authCtx = c.get('auth')
+  if (!authCtx?.isAuthenticated || !authCtx.userId) {
+    if (authCtx?.authError) {
+      return c.json(
+        { error: { code: 'service_unavailable', message: 'Auth service temporarily unavailable' } },
+        503,
+      )
+    }
+    return c.json(
+      { error: { code: 'unauthorized', message: 'Shogo API key or session required' } },
+      401,
+    )
+  }
+  await next()
+}
+
+/**
+ * Result of `authorizeProject` — either `{ ok: true, workspaceId }`
+ * or an error payload with the HTTP status to return.
+ */
+export type AuthorizeProjectResult =
+  | { ok: true; workspaceId: string; projectId: string }
+  | { ok: false; status: 400 | 401 | 403 | 404; code: string; message: string }
+
+/**
+ * Verify the authenticated caller has access to `projectId`.
+ *
+ * - API-key callers: project.workspaceId must match auth.workspaceId.
+ * - Session callers: caller must be a member of project.workspaceId.
+ * - Tunnel callers: trusted (cloud proxy already verified membership).
+ *
+ * Returns a structured result instead of throwing / responding so
+ * handlers can shape their own error envelope.
+ */
+export async function authorizeProject(
+  c: Context,
+  projectId: string,
+): Promise<AuthorizeProjectResult> {
+  const authCtx = c.get('auth')
+  if (!authCtx?.isAuthenticated || !authCtx.userId) {
+    return {
+      ok: false,
+      status: 401,
+      code: 'unauthorized',
+      message: 'Authentication required',
+    }
+  }
+  if (!projectId || typeof projectId !== 'string') {
+    return {
+      ok: false,
+      status: 400,
+      code: 'bad_request',
+      message: 'projectId is required',
+    }
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, workspaceId: true },
+  })
+  if (!project) {
+    return {
+      ok: false,
+      status: 404,
+      code: 'not_found',
+      message: 'Project not found',
+    }
+  }
+
+  if (authCtx.via === 'apiKey') {
+    if (!authCtx.workspaceId || authCtx.workspaceId !== project.workspaceId) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'forbidden',
+        message: 'Project is not in this API key\'s workspace',
+      }
+    }
+    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
+  }
+
+  if (authCtx.tunnelAuthenticated) {
+    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
+  }
+
+  // Session / other: verify workspace membership.
+  const member = await prisma.member.findFirst({
+    where: { userId: authCtx.userId, workspaceId: project.workspaceId },
+    select: { id: true },
+  })
+  if (!member) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'forbidden',
+      message: 'Access denied to this project',
+    }
+  }
+  return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
 }

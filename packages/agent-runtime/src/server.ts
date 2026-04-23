@@ -937,7 +937,9 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
 // here to render a running subagent's viewport under its card.
 app.get('/agent/subagents/:instanceId/screencast', (c) => {
   const instanceId = c.req.param('instanceId')
-  console.log(`[screencast] SSE open instanceId=${instanceId}`)
+  const debugScreencast = process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+  const scLog = (msg: string) => { if (debugScreencast) console.log(msg) }
+  scLog(`[screencast] SSE open instanceId=${instanceId}`)
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const enc = new TextEncoder()
@@ -950,16 +952,16 @@ app.get('/agent/subagents/:instanceId/screencast', (c) => {
       // Replay the most recent frame so new subscribers see something immediately.
       const last = getLastScreencastFrame(instanceId)
       if (last) {
-        console.log(`[screencast] SSE replay last frame instanceId=${instanceId}`)
+        scLog(`[screencast] SSE replay last frame instanceId=${instanceId}`)
         send(`data: ${JSON.stringify(last)}\n\n`)
         sentFrames++
       } else {
-        console.log(`[screencast] SSE no last frame yet instanceId=${instanceId}`)
+        scLog(`[screencast] SSE no last frame yet instanceId=${instanceId}`)
       }
       const unsub = subscribeScreencast(instanceId, (frame) => {
         sentFrames++
         if (sentFrames === 1 || sentFrames % 60 === 0) {
-          console.log(`[screencast] SSE send frame#${sentFrames} instanceId=${instanceId}`)
+          scLog(`[screencast] SSE send frame#${sentFrames} instanceId=${instanceId}`)
         }
         send(`data: ${JSON.stringify(frame)}\n\n`)
       })
@@ -970,7 +972,7 @@ app.get('/agent/subagents/:instanceId/screencast', (c) => {
         clearInterval(iv)
         try { unsub() } catch {}
         try { controller.close() } catch {}
-        console.log(
+        scLog(
           `[screencast] SSE close instanceId=${instanceId} sentFrames=${sentFrames}`,
         )
       }

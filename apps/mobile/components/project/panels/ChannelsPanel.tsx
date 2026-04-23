@@ -20,9 +20,11 @@ import {
   ChevronRight,
   Copy,
   Check,
+  Phone,
 } from 'lucide-react-native'
 import * as Clipboard from 'expo-clipboard'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { PhonePanel } from './PhonePanel'
 
 interface ChannelInfo {
   type: string
@@ -150,6 +152,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
   const [savingModel, setSavingModel] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
+  const [phoneExpanded, setPhoneExpanded] = useState(false)
 
   const loadChannels = useCallback(async () => {
     if (!agentUrl) return
@@ -636,10 +639,44 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
               )
             })}
 
+            {/* Phone (Voice) — Twilio + ElevenLabs, provisioned by Shogo. */}
+            <View className="border border-border rounded-lg overflow-hidden">
+              <Pressable
+                onPress={() => setPhoneExpanded((v) => !v)}
+                className="px-3 py-2.5 flex-row items-center gap-3 active:bg-muted/50"
+              >
+                <Phone size={18} className="text-muted-foreground" />
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground">
+                    Phone (Voice)
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    Inbound + outbound PSTN calls that bridge to this project's
+                    ElevenLabs agent
+                  </Text>
+                </View>
+                {phoneExpanded ? (
+                  <ChevronDown size={14} className="text-muted-foreground" />
+                ) : (
+                  <ChevronRight size={14} className="text-muted-foreground" />
+                )}
+              </Pressable>
+              {phoneExpanded && (
+                <View className="px-3 py-3 border-t border-border">
+                  <PhonePanel
+                    projectId={projectId}
+                    visible={phoneExpanded}
+                    embedded
+                  />
+                </View>
+              )}
+            </View>
+
             <Text className="text-xs text-muted-foreground mt-4">
               Or ask the builder AI to connect channels. For example: "Connect my Telegram
               bot", "Set up Discord", "Connect WhatsApp", "Add Slack", "Set up a webhook
-              channel", "Set up Microsoft Teams", or "Add a webchat widget to my website".
+              channel", "Set up Microsoft Teams", "Add a webchat widget to my website",
+              or "Get me a phone number".
             </Text>
           </View>
         )}

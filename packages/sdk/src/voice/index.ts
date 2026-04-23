@@ -75,3 +75,31 @@ export type {
   VoiceMemoryStore,
   VoiceUser,
 } from './types.js'
+
+export {
+  DEFAULT_TWILIO_BASE_URL,
+  TwilioApiError,
+  TwilioClient,
+  type AvailableNumber,
+  type IncomingNumber,
+  type TwilioClientConfig,
+} from './twilio.js'
+
+export {
+  DirectTelephonyClient,
+  HostedTelephonyClient,
+  TelephonyApiError,
+  TelephonyConfigError,
+  createTelephonyClient,
+  type CreateTelephonyOptions,
+  type DirectTelephonyOptions,
+  type HostedTelephonyOptions,
+  type OutboundCallOptions,
+  type OutboundCallResult,
+  type ProvisionNumberOptions,
+  type ProvisionNumberResult,
+  type ReleaseNumberResult,
+  type TelephonyClient,
+  type VoiceUsageRange,
+  type VoiceUsageSummary,
+} from './telephony.js'

@@ -23,6 +23,19 @@ import {
   sweepLooseScreenshots,
   trimOldRuns as trimOldScreenshotRuns,
 } from './screenshot-manager'
+
+// All `[screencast]` diagnostic logs are opt-in: set DEBUG_SCREENCAST=1 to
+// enable. The CDP pipeline is stable; these logs are only useful when
+// diagnosing connectivity or propagation problems.
+function screencastDebugEnabled(): boolean {
+  return process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+}
+function scLog(...args: unknown[]): void {
+  if (screencastDebugEnabled()) console.log(...args)
+}
+function scWarn(...args: unknown[]): void {
+  if (screencastDebugEnabled()) console.warn(...args)
+}
 import {
   runSubagent,
   getBuiltinSubagentConfig,
@@ -1857,7 +1870,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   let screenshotCount = 0
   let screenshotHousekeepingDone = false
 
-  console.log(
+  scLog(
     `[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`,
   )
 
@@ -1868,21 +1881,21 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     // to a user's real Chrome would be invasive.
     const instanceId = ctx.subagentInstanceId
     if (!instanceId) {
-      console.log('[screencast] ensureScreencast bail: no subagentInstanceId on ctx')
+      scLog('[screencast] ensureScreencast bail: no subagentInstanceId on ctx')
       return
     }
     if (isExtensionMode) {
-      console.log(`[screencast] ensureScreencast bail: extension mode instanceId=${instanceId}`)
+      scLog(`[screencast] ensureScreencast bail: extension mode instanceId=${instanceId}`)
       return
     }
     if (!page) {
-      console.log(`[screencast] ensureScreencast bail: no page yet instanceId=${instanceId}`)
+      scLog(`[screencast] ensureScreencast bail: no page yet instanceId=${instanceId}`)
       return
     }
     // If the page changed (rare — we don't swap pages today), tear down + redo.
     if (screencastStarted && screencastPageKey === page) return
     if (screencastStarted && screencastPageKey !== page) {
-      console.log(`[screencast] ensureScreencast page changed; restarting instanceId=${instanceId}`)
+      scLog(`[screencast] ensureScreencast page changed; restarting instanceId=${instanceId}`)
       try { if (cdpSession) await cdpSession.send('Page.stopScreencast') } catch {}
       try { if (cdpSession) await cdpSession.detach() } catch {}
       cdpSession = null
@@ -1891,11 +1904,11 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     try {
       const { publish } = await import('./screencast-broadcaster')
       cdpSession = await page.context().newCDPSession(page)
-      console.log(`[screencast] CDP session attached instanceId=${instanceId}`)
+      scLog(`[screencast] CDP session attached instanceId=${instanceId}`)
       cdpSession.on('Page.screencastFrame', async (e: any) => {
         frameCount++
         if (frameCount === 1 || frameCount % 60 === 0) {
-          console.log(
+          scLog(
             `[screencast] CDP frame#${frameCount} instanceId=${instanceId} ` +
             `size=${e?.metadata?.deviceWidth ?? '?'}x${e?.metadata?.deviceHeight ?? '?'} ` +
             `dataLen=${(e?.data as string | undefined)?.length ?? 0}`,
@@ -1909,7 +1922,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             height: e?.metadata?.deviceHeight ?? 0,
           })
         } catch (err: any) {
-          console.warn(`[screencast] publish threw instanceId=${instanceId}: ${err?.message ?? err}`)
+          scWarn(`[screencast] publish threw instanceId=${instanceId}: ${err?.message ?? err}`)
         }
         try { await cdpSession.send('Page.screencastFrameAck', { sessionId: e.sessionId }) } catch {}
       })
@@ -1922,10 +1935,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       })
       screencastStarted = true
       screencastPageKey = page
-      console.log(`[screencast] Page.startScreencast OK instanceId=${instanceId}`)
+      scLog(`[screencast] Page.startScreencast OK instanceId=${instanceId}`)
     } catch (err: any) {
       // Screencast is best-effort — if CDP isn't available, the browser tool still works.
-      console.warn(
+      scWarn(
         `[screencast] ensureScreencast failed instanceId=${instanceId}: ${err?.message ?? err}`,
       )
       try { if (cdpSession) await cdpSession.detach() } catch {}
@@ -2975,7 +2988,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       if (!spawnResult.ok) return textResult({ error: spawnResult.error })
 
       const instanceId = spawnResult.instanceId
-      console.log(`[screencast] agent_spawn -> instanceId=${instanceId} type=${type}`)
+      scLog(`[screencast] agent_spawn -> instanceId=${instanceId} type=${type}`)
       spawn?.setInstanceId(instanceId)
 
       if (background) {
@@ -3125,7 +3138,7 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     getAccumulatedOutput: () => ({ agentId, parts: [...parts] }),
     setInstanceId: (id: string) => {
       instanceId = id
-      console.log(
+      scLog(
         `[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` +
         `instanceId=${id}`,
       )
