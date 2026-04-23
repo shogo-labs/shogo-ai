@@ -18,7 +18,23 @@ import {
   createShogoLlmProvider,
   type ShogoLlmProvider,
 } from './llm/index.js'
+import {
+  DirectTelephonyClient,
+  HostedTelephonyClient,
+  type TelephonyClient,
+} from './voice/telephony.js'
 import type { ShogoClientConfig } from './types.js'
+
+export interface ShogoVoiceModule {
+  /**
+   * Telephony client for Twilio + ElevenLabs.
+   *
+   * `null` when the client was constructed without either a Shogo API key
+   * + projectId (Mode B) or direct elevenlabs + twilio credentials (Mode A).
+   * Call {@link ShogoClient.setShogoApiKey} or recreate the client to enable.
+   */
+  telephony: TelephonyClient | null
+}
 
 /**
  * Shogo Client interface
@@ -51,9 +67,22 @@ export interface ShogoClient<DB = unknown> {
   llm: ShogoLlmProvider | null
 
   /**
+   * Voice module — Twilio + ElevenLabs telephony.
+   *
+   * `voice.telephony` resolves to `HostedTelephonyClient` when `shogoApiKey`
+   * + `projectId` are configured, `DirectTelephonyClient` when direct
+   * `elevenlabs` + `twilio` credentials are passed, or `null` otherwise.
+   */
+  voice: ShogoVoiceModule
+
+  /**
    * Configure (or replace) the Shogo API key used by {@link ShogoClient.llm}.
    * Pass `null` to clear the provider (e.g. on sign-out). Useful when the key
    * is fetched asynchronously from secure storage or `platform.getShogoKeyStatus()`.
+   *
+   * Also re-evaluates {@link ShogoClient.voice.telephony}: setting a key when
+   * a `projectId` was originally supplied lights up Mode B; clearing the key
+   * drops back to Mode A (if direct creds were supplied) or `null`.
    */
   setShogoApiKey: (key: string | null) => void
 
@@ -69,11 +98,14 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   platform: PlatformApi
   db: DB
   llm: ShogoLlmProvider | null
+  voice: ShogoVoiceModule
   _http: HttpClient
 
   private shogoCloudUrl: string | undefined
+  private config: ShogoClientConfig<DB>
 
   constructor(config: ShogoClientConfig<DB>) {
+    this.config = config
     // Get or create storage adapter
     const storage: StorageAdapter = config.storage ?? getDefaultStorageAdapter()
 
@@ -104,12 +136,44 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
           baseUrl: this.shogoCloudUrl,
         })
       : null
+
+    this.voice = { telephony: this.buildTelephony(config.shogoApiKey) }
+  }
+
+  private buildTelephony(
+    shogoApiKey: string | undefined | null,
+  ): TelephonyClient | null {
+    const { projectId, elevenlabs, twilio, apiUrl } = this.config
+    const hasHosted = Boolean(shogoApiKey && projectId)
+    const hasDirect = Boolean(elevenlabs && twilio)
+
+    if (hasHosted && hasDirect) {
+      console.warn(
+        '[shogo] createClient received both shogoApiKey + direct elevenlabs/twilio creds; using hosted (Mode B). Drop shogoApiKey to use direct (Mode A).',
+      )
+    }
+    if (hasHosted) {
+      return new HostedTelephonyClient({
+        shogoApiKey: shogoApiKey as string,
+        projectId: projectId as string,
+        apiUrl,
+      })
+    }
+    if (hasDirect) {
+      return new DirectTelephonyClient({
+        projectId,
+        elevenlabs: elevenlabs!,
+        twilio: twilio!,
+      })
+    }
+    return null
   }
 
   setShogoApiKey(key: string | null): void {
     this.llm = key
       ? createShogoLlmProvider({ apiKey: key, baseUrl: this.shogoCloudUrl })
       : null
+    this.voice = { telephony: this.buildTelephony(key) }
   }
 }
 

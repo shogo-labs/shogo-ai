@@ -21,6 +21,21 @@ function parseMeta(raw: unknown): Record<string, any> {
   return {}
 }
 
+function voiceLabel(actionType: string): string {
+  switch (actionType) {
+    case 'voice_minutes_inbound':
+      return 'Voice · inbound'
+    case 'voice_minutes_outbound':
+      return 'Voice · outbound'
+    case 'voice_number_setup':
+      return 'Voice · number setup'
+    case 'voice_number_monthly':
+      return 'Voice · number monthly'
+    default:
+      return 'Voice'
+  }
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -484,6 +499,16 @@ export interface UsageLogEntry {
   durationMs: number
   success: boolean
   createdAt: string
+  /**
+   * Raw action type (e.g. `ai_proxy_completion`, `voice_minutes_inbound`).
+   * UIs can switch on this to render a badge; older entries may omit it.
+   */
+  actionType?: string
+  /**
+   * Metadata snapshot useful for the billing panel (voice call direction,
+   * phone numbers, billed minutes). Opaque record — UIs should feature-detect.
+   */
+  metadata?: Record<string, unknown>
 }
 
 /** Aggregated usage per user+model pair. */
@@ -517,7 +542,16 @@ export async function getUsageLog(
   const limit = Math.min(options.limit ?? 50, 100)
 
   const where: any = {
-    actionType: { in: ['ai_proxy_completion', 'chat_message'] },
+    actionType: {
+      in: [
+        'ai_proxy_completion',
+        'chat_message',
+        'voice_minutes_inbound',
+        'voice_minutes_outbound',
+        'voice_number_setup',
+        'voice_number_monthly',
+      ],
+    },
     createdAt: { gte: since },
   }
   if (scope.workspaceId) where.workspaceId = scope.workspaceId
@@ -549,22 +583,28 @@ export async function getUsageLog(
   const entries: UsageLogEntry[] = events.map((event) => {
     const meta = parseMeta(event.actionMetadata)
     const user = userMap.get(event.memberId)
+    const isVoice = typeof event.actionType === 'string' &&
+      event.actionType.startsWith('voice_')
     return {
       id: event.id,
       userId: event.memberId,
       userName: user?.name ?? null,
       userEmail: user?.email ?? event.memberId,
       userImage: user?.image ?? null,
-      model: meta.model || meta.modelUsed || 'unknown',
-      provider: meta.provider || 'anthropic',
+      model: isVoice
+        ? voiceLabel(event.actionType)
+        : (meta.model || meta.modelUsed || 'unknown'),
+      provider: isVoice ? 'elevenlabs' : (meta.provider || 'anthropic'),
       inputTokens: meta.inputTokens || 0,
       outputTokens: meta.outputTokens || 0,
       totalTokens: meta.totalTokens || 0,
       creditCost: event.creditCost,
       dollarCost: meta.dollarCost || 0,
-      durationMs: meta.durationMs || 0,
+      durationMs: (meta.durationSeconds ?? 0) * 1000 || meta.durationMs || 0,
       success: meta.success !== false,
       createdAt: event.createdAt.toISOString(),
+      actionType: event.actionType,
+      metadata: meta as Record<string, unknown>,
     }
   })
 
@@ -582,7 +622,16 @@ export async function getUsageSummary(
   const since = periodToDate(period)
 
   const where: any = {
-    actionType: { in: ['ai_proxy_completion', 'chat_message'] },
+    actionType: {
+      in: [
+        'ai_proxy_completion',
+        'chat_message',
+        'voice_minutes_inbound',
+        'voice_minutes_outbound',
+        'voice_number_setup',
+        'voice_number_monthly',
+      ],
+    },
     createdAt: { gte: since },
   }
   if (scope.workspaceId) where.workspaceId = scope.workspaceId

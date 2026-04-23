@@ -666,14 +666,17 @@ export async function runSubagent(
     // browser tool closure captured the parent ctx where subagentInstanceId
     // is always undefined, which would silently disable the screencast.
     // Also isolates the browser/page/cdp state per subagent run.
+    const debugScreencast = process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
     if (tools.some(t => t.name === 'browser')) {
-      console.log(
-        `[screencast] runSubagent rebuilding browser tool instanceId=${options?.instanceId ?? '<none>'} ` +
-        `agent=${config.name}`,
-      )
+      if (debugScreencast) {
+        console.log(
+          `[screencast] runSubagent rebuilding browser tool instanceId=${options?.instanceId ?? '<none>'} ` +
+          `agent=${config.name}`,
+        )
+      }
       tools = tools.filter(t => t.name !== 'browser')
       tools.push(createBrowserTool(subCtx))
-    } else {
+    } else if (debugScreencast) {
       console.log(
         `[screencast] runSubagent no browser tool to rebuild instanceId=${options?.instanceId ?? '<none>'} ` +
         `agent=${config.name}`,

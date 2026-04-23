@@ -122,6 +122,7 @@ model Workspace {
   instances            Instance[]
   apiKeys              ApiKey[]
   meetings             Meeting[]
+  voiceProjectConfigs  VoiceProjectConfig[]
   @@map("workspaces")
 }
 
@@ -163,6 +164,7 @@ model Project {
   agentConfig        AgentConfig?
   meetings         Meeting[]
   marketplaceListing MarketplaceListing?
+  voiceConfig        VoiceProjectConfig?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1364,4 +1366,56 @@ model MarketplaceTransaction {
   @@index([status])
   @@index([createdAt])
   @@map("marketplace_transactions")
+}
+
+// =============================================================================
+// VOICE / TELEPHONY (Twilio + ElevenLabs)
+// =============================================================================
+// Mirrors prisma/schema.prisma. See that file for the canonical docs.
+
+model VoiceProjectConfig {
+  id                    String    @id @default(cuid())
+  projectId             String    @unique
+  workspaceId           String
+  elevenlabsAgentId     String?
+  twilioPhoneNumber     String?
+  twilioPhoneSid        String?
+  elevenlabsPhoneId     String?
+  purchasedAt           DateTime?
+  monthlyRateDebitedFor DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("voice_project_configs")
+}
+
+model VoiceCallMeter {
+  id              String    @id @default(cuid())
+  projectId       String
+  workspaceId     String
+  conversationId  String?   @unique
+  callSid         String?   @unique
+  direction       String
+  durationSeconds Int
+  billedMinutes   Int
+  usageEventId    String?   @unique
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+
+  /// Post-call transcript payload from ElevenLabs, serialized as JSON
+  /// (SQLite has no native Json). Populated from the
+  /// `post_call_transcription` webhook; null for Twilio-only deliveries
+  /// or calls that didn't reach EL.
+  transcript      String?
+  /// Optional single-sentence summary. EL returns one when enabled.
+  transcriptSummary String?
+
+  @@index([projectId])
+  @@index([workspaceId])
+  @@map("voice_call_meters")
 }

@@ -342,6 +342,161 @@ export class ElevenLabsClient {
     )
     return res.ok
   }
+
+  /**
+   * Register a Twilio phone number with an ElevenLabs agent. EL becomes
+   * the SIP target for inbound calls to that number — Twilio bridges
+   * the call via EL's native integration and we never have to run a
+   * Media Streams ↔ convai WebSocket bridge ourselves.
+   *
+   * Returns the ElevenLabs `phone_number_id` (distinct from the Twilio
+   * `sid`) which is the handle used by `outboundCall` + `deletePhoneNumber`.
+   */
+  async createPhoneNumberTwilio(params: {
+    phoneNumber: string
+    label?: string
+    agentId: string
+    twilioAccountSid: string
+    twilioAuthToken: string
+  }): Promise<{ phoneNumberId: string }> {
+    // Current EL API (late-2026): POST /v1/convai/phone-numbers with a
+    // oneOf discriminator body. Agent assignment is NOT part of create
+    // — we do it in a follow-up PATCH below. See
+    // https://elevenlabs.io/docs/api-reference/phone-numbers/create
+    const body = {
+      phone_number: params.phoneNumber,
+      label: params.label ?? params.phoneNumber,
+      provider: 'twilio',
+      sid: params.twilioAccountSid,
+      token: params.twilioAuthToken,
+    }
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/v1/convai/phone-numbers`,
+      {
+        method: 'POST',
+        headers: this.headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify(body),
+      },
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ElevenLabsApiError(
+        `createPhoneNumberTwilio failed: ${res.status}`,
+        res.status,
+        text,
+      )
+    }
+    const data = (await res.json()) as { phone_number_id?: string; id?: string }
+    const id = data.phone_number_id ?? data.id
+    if (!id) {
+      throw new ElevenLabsApiError(
+        'createPhoneNumberTwilio returned no id',
+        500,
+        JSON.stringify(data),
+      )
+    }
+
+    // Assign the agent via PATCH /v1/convai/phone-numbers/{id}.
+    // On failure compensate by deleting the just-created EL phone-number
+    // record so we don't leak a dangling unassigned import — the outer
+    // caller still owns Twilio-side compensation (release the purchased
+    // number) so that side stays balanced.
+    const patchRes = await this.fetchImpl(
+      `${this.baseUrl}/v1/convai/phone-numbers/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: this.headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ agent_id: params.agentId }),
+      },
+    )
+    if (!patchRes.ok) {
+      const text = await patchRes.text()
+      try {
+        await this.deletePhoneNumber(id)
+      } catch {}
+      throw new ElevenLabsApiError(
+        `assignAgentToPhoneNumber failed: ${patchRes.status}`,
+        patchRes.status,
+        text,
+      )
+    }
+
+    return { phoneNumberId: id }
+  }
+
+  /** Detach a previously-registered phone number from ElevenLabs. */
+  async deletePhoneNumber(phoneNumberId: string): Promise<void> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/v1/convai/phone-numbers/${encodeURIComponent(phoneNumberId)}`,
+      { method: 'DELETE', headers: this.headers() },
+    )
+    // 404 is acceptable — resource was already released.
+    if (!res.ok && res.status !== 404) {
+      const text = await res.text()
+      throw new ElevenLabsApiError(
+        `deletePhoneNumber failed: ${res.status}`,
+        res.status,
+        text,
+      )
+    }
+  }
+
+  /**
+   * Place an outbound PSTN call via a previously-registered EL phone
+   * number. EL drives Twilio under the hood — we just hand it the
+   * destination number and the agent to bridge to. Returns the Twilio
+   * `callSid` + EL `conversationId` for metering / tracing.
+   */
+  async outboundCall(params: {
+    phoneNumberId: string
+    agentId: string
+    toNumber: string
+    dynamicVariables?: Record<string, string>
+  }): Promise<{ callSid: string; conversationId: string }> {
+    const body: Record<string, unknown> = {
+      agent_id: params.agentId,
+      to_number: params.toNumber,
+    }
+    if (params.dynamicVariables) {
+      body.conversation_initiation_client_data = {
+        dynamic_variables: params.dynamicVariables,
+      }
+    }
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/v1/convai/phone-numbers/${encodeURIComponent(
+        params.phoneNumberId,
+      )}/outbound-call`,
+      {
+        method: 'POST',
+        headers: this.headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify(body),
+      },
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ElevenLabsApiError(
+        `outboundCall failed: ${res.status}`,
+        res.status,
+        text,
+      )
+    }
+    const data = (await res.json()) as {
+      call_sid?: string
+      callSid?: string
+      conversation_id?: string
+      conversationId?: string
+    }
+    const callSid = data.call_sid ?? data.callSid
+    const conversationId = data.conversation_id ?? data.conversationId
+    if (!callSid || !conversationId) {
+      throw new ElevenLabsApiError(
+        'outboundCall missing callSid or conversationId',
+        500,
+        JSON.stringify(data),
+      )
+    }
+    return { callSid, conversationId }
+  }
 }
 
 /**

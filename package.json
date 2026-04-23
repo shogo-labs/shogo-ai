@@ -18,6 +18,7 @@
     "api:dev": "bun scripts/watch-api.ts",
     "api:start": "bun apps/api/src/server.ts",
     "dev:all": "bun scripts/dev-all.ts",
+    "voice:webhooks": "bun scripts/voice-webhooks.ts",
     "dev:backend": "mkdir -p logs && bun run api:dev 2>&1 | tee logs/api.log",
     "dev:start": "./scripts/docker-dev-start.sh",
     "dev:infra": "./scripts/docker-dev-start.sh --infra",

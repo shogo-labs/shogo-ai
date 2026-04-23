@@ -34,3 +34,32 @@ export function getMonthlyCreditsForPlan(planId: string): number {
   if (!isNaN(tierCredits)) return tierCredits * 2
   return PLAN_CREDITS[parts[0] as keyof typeof PLAN_CREDITS] ?? PLAN_CREDITS.free
 }
+
+export type PlanId = keyof typeof PLAN_CREDITS
+
+/**
+ * Voice / telephony rate card (Mode B only). Rates are credits, which
+ * are billed at $0.10/credit today. Per-minute charges are rounded up
+ * to the nearest whole minute (`Math.ceil(durationSeconds / 60)`).
+ *
+ * These cover Shogo's own Twilio + ElevenLabs costs plus margin. Mode
+ * A (self-hosted BYO keys) is not metered — the customer pays Twilio
+ * and ElevenLabs directly.
+ */
+export const VOICE_RATES = {
+  minutesInbound: 10,
+  minutesOutbound: 12,
+  numberSetup: 100,
+  numberMonthly: 150,
+} as const
+
+export type VoiceRateKey = keyof typeof VOICE_RATES
+
+/**
+ * Optional per-plan overrides. Left empty by default — the flat
+ * VOICE_RATES apply to every plan until product wants to tier them.
+ * Values are sparse: omit any key to inherit from VOICE_RATES.
+ */
+export const PLAN_VOICE_RATE_OVERRIDES: Partial<
+  Record<PlanId, Partial<typeof VOICE_RATES>>
+> = {}

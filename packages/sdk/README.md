@@ -821,6 +821,111 @@ const agentId = await el.createAgent({
 })
 ```
 
+## Telephony (Twilio + ElevenLabs)
+
+The SDK exposes a dual-mode `TelephonyClient` for PSTN phone numbers.
+Same method surface in both modes — only the constructor differs.
+
+### Mode B — Shogo-hosted (just a Shogo API key)
+
+Shogo's API server owns the ElevenLabs + Twilio accounts, lazily
+provisions a per-project EL agent + Twilio number on demand, and bills
+the workspace's credit ledger.
+
+```ts
+import { createClient } from '@shogo-ai/sdk'
+
+const shogo = createClient({
+  apiUrl: 'https://api.yourapp.com',
+  db: prisma,
+  shogoApiKey: process.env.SHOGO_API_KEY!,
+  projectId: 'b3be0bcd-a5e4-4769-95e3-f91fe78fe99d',
+})
+
+// Buy a US number in area code 415 and link it to the project's EL agent.
+const { phoneNumber } = await shogo.voice.telephony!.provisionNumber({
+  areaCode: '415',
+})
+
+// Call a user and bridge them to the agent.
+await shogo.voice.telephony!.outboundCall({ to: '+14155559999' })
+
+// Recent usage (aggregated by direction).
+await shogo.voice.telephony!.getUsage()
+```
+
+Browser voice uses the same Shogo key — no session cookie required:
+
+```tsx
+useVoiceConversation({
+  characterName: 'Ari',
+  shogoApiKey: process.env.NEXT_PUBLIC_SHOGO_API_KEY!,
+  projectId: 'b3be0bcd-...',
+})
+```
+
+### Mode A — self-hosted (BYO Twilio + ElevenLabs keys)
+
+The SDK talks directly to Twilio REST + ElevenLabs REST using your
+credentials. Shogo's API is not involved and no usage is recorded on
+Shogo's side — `getUsage()` throws.
+
+```ts
+const shogo = createClient({
+  apiUrl: 'https://api.yourapp.com',
+  db: prisma,
+  projectId: 'b3be0bcd-...',
+  elevenlabs: {
+    apiKey: process.env.ELEVENLABS_API_KEY!,
+    agentId: 'agent_...',
+  },
+  twilio: {
+    accountSid: process.env.TWILIO_ACCOUNT_SID!,
+    authToken:  process.env.TWILIO_AUTH_TOKEN!,
+  },
+})
+
+await shogo.voice.telephony!.provisionNumber({ areaCode: '415' })
+await shogo.voice.telephony!.outboundCall({ to: '+14155559999' })
+```
+
+If both a Shogo API key and direct EL/Twilio creds are supplied, Mode B
+wins with a runtime warning. Drop `shogoApiKey` to force Mode A.
+
+### Billing (Mode B)
+
+All voice activity flows through the same `UsageEvent` /
+`CreditLedger` path AI calls already use. Four action types:
+
+- `voice_minutes_inbound` — per-call, minute-billed (rounds up).
+- `voice_minutes_outbound` — per-call, minute-billed (rounds up).
+- `voice_number_setup` — one-time charge when a number is provisioned.
+- `voice_number_monthly` — recurring, debited nightly by the
+  `voice-monthly-rebill` cron.
+
+Rates live in `apps/api/src/config/credit-plans.ts` under
+`VOICE_RATES` and can be overridden per plan via
+`PLAN_VOICE_RATE_OVERRIDES`. The effective rate is recorded on every
+`UsageEvent.actionMetadata` for auditability.
+
+Outbound calls refuse with HTTP 402 if the ledger can't cover at least
+one minute; `provisionNumber` refuses if the ledger can't cover
+`setup + monthly` upfront.
+
+### Environment variables (Mode B only)
+
+Required on Shogo's API server to enable Mode B:
+
+```bash
+ELEVENLABS_API_KEY=sk_...
+ELEVENLABS_WEBHOOK_SECRET=whsec_...
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+```
+
+Customers never paste these — Shogo owns them. No Shogo-specific
+prefix; we use the conventional EL / Twilio env-var names.
+
 ### Recipe: "Shogo Mode" translator overlay (voice + text)
 
 Build a single overlay that lets a business user drive a *second*, technical

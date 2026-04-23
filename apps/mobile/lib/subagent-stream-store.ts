@@ -12,6 +12,7 @@
  */
 
 import type { MessagePart } from "../components/chat/turns/types"
+import { logScreencast } from "./screencast-debug"
 
 export type SubagentStreamPart = MessagePart
 
@@ -88,7 +89,7 @@ export const subagentStreamStore = {
   setInstanceId(toolId: string, instanceId: string) {
     const entry = store.get(toolId)
     if (!entry || entry.instanceId === instanceId) return
-    console.log(
+    logScreencast(
       `[screencast] subagentStreamStore.setInstanceId toolId=${toolId} ` +
       `instanceId=${instanceId}`,
     )
