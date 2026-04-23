@@ -24,6 +24,7 @@ import {
 } from 'lucide-react-native'
 import * as Clipboard from 'expo-clipboard'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { usePlatformConfig } from '../../../lib/platform-config'
 import { PhonePanel } from './PhonePanel'
 
 interface ChannelInfo {
@@ -141,6 +142,7 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
 }
 
 export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAccess = false }: ChannelsPanelProps) {
+  const { features } = usePlatformConfig()
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -639,38 +641,41 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
               )
             })}
 
-            {/* Phone (Voice) — Twilio + ElevenLabs, provisioned by Shogo. */}
-            <View className="border border-border rounded-lg overflow-hidden">
-              <Pressable
-                onPress={() => setPhoneExpanded((v) => !v)}
-                className="px-3 py-2.5 flex-row items-center gap-3 active:bg-muted/50"
-              >
-                <Phone size={18} className="text-muted-foreground" />
-                <View className="flex-1">
-                  <Text className="text-sm font-medium text-foreground">
-                    Phone (Voice)
-                  </Text>
-                  <Text className="text-xs text-muted-foreground">
-                    Inbound + outbound PSTN calls that bridge to this project's
-                    ElevenLabs agent
-                  </Text>
-                </View>
-                {phoneExpanded ? (
-                  <ChevronDown size={14} className="text-muted-foreground" />
-                ) : (
-                  <ChevronRight size={14} className="text-muted-foreground" />
+            {/* Phone (Voice) — Twilio + ElevenLabs, provisioned by Shogo.
+                Gated by the `phoneChannel` super-admin feature flag. */}
+            {features.phoneChannel && (
+              <View className="border border-border rounded-lg overflow-hidden">
+                <Pressable
+                  onPress={() => setPhoneExpanded((v) => !v)}
+                  className="px-3 py-2.5 flex-row items-center gap-3 active:bg-muted/50"
+                >
+                  <Phone size={18} className="text-muted-foreground" />
+                  <View className="flex-1">
+                    <Text className="text-sm font-medium text-foreground">
+                      Phone (Voice)
+                    </Text>
+                    <Text className="text-xs text-muted-foreground">
+                      Inbound + outbound PSTN calls that bridge to this project's
+                      ElevenLabs agent
+                    </Text>
+                  </View>
+                  {phoneExpanded ? (
+                    <ChevronDown size={14} className="text-muted-foreground" />
+                  ) : (
+                    <ChevronRight size={14} className="text-muted-foreground" />
+                  )}
+                </Pressable>
+                {phoneExpanded && (
+                  <View className="px-3 py-3 border-t border-border">
+                    <PhonePanel
+                      projectId={projectId}
+                      visible={phoneExpanded}
+                      embedded
+                    />
+                  </View>
                 )}
-              </Pressable>
-              {phoneExpanded && (
-                <View className="px-3 py-3 border-t border-border">
-                  <PhonePanel
-                    projectId={projectId}
-                    visible={phoneExpanded}
-                    embedded
-                  />
-                </View>
-              )}
-            </View>
+              </View>
+            )}
 
             <Text className="text-xs text-muted-foreground mt-4">
               Or ask the builder AI to connect channels. For example: "Connect my Telegram

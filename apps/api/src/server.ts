@@ -664,18 +664,40 @@ app.get('/api/config', async (c) => {
     const hasLocalLlm = !!process.env.LOCAL_LLM_BASE_URL
     needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm && !hasShogоApiKey)
   }
+
+  // Defaults (backward-compatible with the previous hardcoded values).
+  const featureDefaults = {
+    billing: !localMode,
+    admin: !localMode,
+    oauth: !localMode,
+    analytics: true,
+    publishing: !localMode,
+    marketplace: true,
+    shogoMode: true,
+    phoneChannel: !localMode,
+  }
+
+  // Super-admin overrides from PlatformSetting (absence = use default).
+  let overrides: Record<string, boolean> = {}
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['feature.marketplace', 'feature.shogo_mode', 'feature.phone_channel'] } },
+    })
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      if (row.key === 'feature.marketplace') overrides.marketplace = bool
+      if (row.key === 'feature.shogo_mode') overrides.shogoMode = bool
+      if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
+    }
+  } catch (err) {
+    console.error('[config] Failed to load feature flag overrides:', err)
+  }
+
   return c.json({
     localMode,
     needsSetup,
     shogoKeyConnected: hasShogоApiKey,
-    features: {
-      billing: !localMode,
-      admin: !localMode,
-      oauth: !localMode,
-      analytics: true,
-      publishing: !localMode,
-      marketplace: true,
-    },
+    features: { ...featureDefaults, ...overrides },
   })
 })
 
@@ -4022,6 +4044,80 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 
     setAgentModeOverrides(overrides)
     return c.json({ ok: true, overrides })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+const FEATURE_FLAG_KEYS = {
+  marketplace: 'feature.marketplace',
+  shogoMode: 'feature.shogo_mode',
+  phoneChannel: 'feature.phone_channel',
+} as const
+
+type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
+
+// GET /api/admin/settings/features - Read feature flag overrides (null = use default)
+app.get('/api/admin/settings/features', async (c) => {
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: Object.values(FEATURE_FLAG_KEYS) } },
+    })
+    const flags: Record<FeatureFlagName, boolean | null> = {
+      marketplace: null,
+      shogoMode: null,
+      phoneChannel: null,
+    }
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+        if (row.key === key) flags[name] = bool
+      }
+    }
+    return c.json(flags)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/features - Update feature flag overrides. `null`/`""` deletes (= use default).
+app.put('/api/admin/settings/features', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+      if (body[name] === undefined) continue
+      const value = body[name]
+      if (value === null || value === '') {
+        await prisma.platformSetting.deleteMany({ where: { key } })
+      } else if (typeof value === 'boolean') {
+        await prisma.platformSetting.upsert({
+          where: { key },
+          create: { key, value: String(value), updatedBy: userId },
+          update: { value: String(value), updatedBy: userId },
+        })
+      } else {
+        return c.json({ error: `${name} must be a boolean or null` }, 400)
+      }
+    }
+
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: Object.values(FEATURE_FLAG_KEYS) } },
+    })
+    const flags: Record<FeatureFlagName, boolean | null> = {
+      marketplace: null,
+      shogoMode: null,
+      phoneChannel: null,
+    }
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+        if (row.key === key) flags[name] = bool
+      }
+    }
+    return c.json({ ok: true, flags })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
