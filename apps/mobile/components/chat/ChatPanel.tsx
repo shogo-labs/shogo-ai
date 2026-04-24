@@ -59,6 +59,7 @@ import {
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions, useChatMessageCollectionForSession } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
+import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 
@@ -2320,6 +2321,44 @@ export const ChatPanel = observer(function ChatPanel({
     wasStreamingRef.current = isStreaming
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, isStreaming, currentSessionId])
+
+  // Surface a system notification when a turn finishes streaming while the
+  // user is not currently active in the app (desktop window unfocused,
+  // browser tab hidden, or mobile app backgrounded). Platform-agnostic —
+  // dispatches through the platform-split chat-notifier module.
+  const chatSessionForNotify = currentSessionId
+    ? (studioChat.chatSessionCollection.get(currentSessionId) as any)
+    : null
+  const notifyTitle =
+    chatSessionForNotify?.inferredName ||
+    chatSessionForNotify?.name ||
+    featureName ||
+    'Shogo'
+  const notifyPreview = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m: any = messages[i]
+      if (m?.role !== 'assistant') continue
+      const parts = m?.parts as any[] | undefined
+      if (!parts) continue
+      const text = parts
+        .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
+        .map((p: any) => p.text as string)
+        .join(' ')
+        .trim()
+      if (text) return text
+      break
+    }
+    return 'Reply is ready.'
+  }, [messages])
+  useNotifyOnTurnComplete({
+    isStreaming,
+    isActiveTab: isActive,
+    wasAborted: stoppedMessages !== null,
+    sessionId: currentSessionId ?? null,
+    projectId: projectId ?? null,
+    title: notifyTitle,
+    preview: notifyPreview,
+  })
 
   // Load older messages when user scrolls to top.
   // isLoadingOlderRef stays true until onContentSizeChange adjusts scroll position,

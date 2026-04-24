@@ -56,6 +56,13 @@
           "microphonePermission": "Allow Shogo to use the microphone for voice input.",
           "speechRecognitionPermission": "Allow Shogo to use speech recognition for voice input."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/adaptive-icon.png",
+          "color": "#E27927"
+        }
       ]
     ],
     "extra": {
