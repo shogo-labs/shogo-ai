@@ -12,8 +12,6 @@
  *   - Cursor agent prompting patterns (edit mastery, code quality, task planning)
  */
 
-const SKILL_PORT = process.env.SKILL_SERVER_PORT || '4100'
-
 export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_GENERAL_GUIDE }
 // APP_MODE_DISABLED: CODE_AGENT_ENVIRONMENT_GUIDE and CODE_AGENT_APP_BUILDING_GUIDE no longer exported
 

@@ -155,6 +155,8 @@ After writing or editing files under \`src/\`, **always** call \`read_lints\` wi
 
 **From agent tools (web, exec):** Use the full URL — \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`
 
+**From scripts or server-side code (Node/Bun):** Read the port from \`process.env.SKILL_SERVER_PORT\` (currently \`${SKILL_PORT}\` on this runtime). The port varies per deployment — do NOT hardcode it. Example: \`const port = process.env.SKILL_SERVER_PORT ?? '${SKILL_PORT}'; await fetch(\\\`http://localhost:\${port}/api/items\\\`)\`.
+
 ### Build Systems, Not Reports
 
 When the user asks you to analyze, organize, track, or monitor data:
@@ -198,7 +200,7 @@ model Lead {
 }
 \`\`\`
 
-That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
+That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. In scripts or server-side code, read the port from \`process.env.SKILL_SERVER_PORT\` (currently \`${SKILL_PORT}\` on this runtime) — do not hardcode it, it varies per deployment. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
 
 **CRITICAL — No custom servers:** NEVER create your own HTTP server (Hono, Express, Fastify, etc.). Do NOT write \`server.ts\`, \`server.tsx\`, or any file that imports a server framework and calls \`.listen()\` or \`Bun.serve()\`. The skill server is **always running** at \`http://localhost:${SKILL_PORT}\` with a \`/health\` endpoint — it starts automatically and provides full CRUD on every model once a schema is written. There are three ways to get data into the app:
 1. **Integration Tools SDK** — For external APIs (Meta Ads, Gmail, Slack, etc.), use \`useTools()\` from \`@shogo-ai/sdk/tools\` directly in React code. This proxies through the runtime automatically — no custom server needed.
