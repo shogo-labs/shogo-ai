@@ -14,7 +14,7 @@
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   View,
   Text,
@@ -73,6 +73,11 @@ import {
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
+import {
+  clearChatDraft,
+  loadChatDraft,
+  saveChatDraft,
+} from "../../lib/chat-draft-storage"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -127,10 +132,11 @@ const MAX_FILES = 10
 
 interface AttachedFile {
   id: string
-  dataUrl: string
+  dataUrl?: string
   name: string
   type: string
   size: number
+  requiresReattach?: boolean
 }
 
 export interface FileAttachment {
@@ -156,6 +162,7 @@ export type QueuedMessage = {
 
 export interface ChatInputProps {
   onSubmit: (content: string, files?: FileAttachment[], modelId?: string) => void
+  draftStorageKey?: string | null
   disabled?: boolean
   placeholder?: string
   isStreaming?: boolean
@@ -176,6 +183,7 @@ export interface ChatInputProps {
 
 export function ChatInput({
   onSubmit,
+  draftStorageKey,
   disabled = false,
   placeholder = "Ask Shogo...",
   isStreaming = false,
@@ -200,6 +208,8 @@ export function ChatInput({
   const dropZoneRef = useRef<View>(null)
   const dragCounterRef = useRef(0)
   const inputValueRef = useRef("")
+  const skipNextSaveRef = useRef(false)
+  const isFirstDraftKeyRef = useRef(true)
   // Guards against the DOM paste listener AND onChangeText both firing for
   // the same clipboard event, which would create duplicate chips.
   const pasteHandledRef = useRef(false)
@@ -213,6 +223,8 @@ export function ChatInput({
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
+  const [isDraftHydrated, setIsDraftHydrated] = useState(false)
+  const [draftPersistenceWarning, setDraftPersistenceWarning] = useState<string | null>(null)
 
   useEffect(() => {
     inputValueRef.current = inputValue
@@ -268,6 +280,111 @@ export function ChatInput({
   const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
   const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
 
+  useLayoutEffect(() => {
+    if (isFirstDraftKeyRef.current) {
+      isFirstDraftKeyRef.current = false
+      return
+    }
+    skipNextSaveRef.current = false
+    inputValueRef.current = ""
+    setInputValue("")
+    setPendingFiles([])
+    setPastedTexts([])
+    setViewingPastedId(null)
+    setFileError(null)
+    setDraftPersistenceWarning(null)
+  }, [draftStorageKey])
+
+  useEffect(() => {
+    let cancelled = false
+    setIsDraftHydrated(false)
+
+    if (!draftStorageKey) {
+      setIsDraftHydrated(true)
+      return
+    }
+
+    loadChatDraft(draftStorageKey).then((draft) => {
+      if (cancelled) return
+
+      if (draft) {
+        const shouldHydrateText =
+          draft.text.length > 0 || inputValueRef.current.length === 0
+        if (shouldHydrateText) {
+          setInputValue(draft.text)
+        }
+      }
+      setPendingFiles(draft?.files ?? [])
+      setPastedTexts(
+        draft?.pastedTexts?.map((entry) => ({
+          id: entry.id,
+          content: entry.content,
+          info: analyzeContent(entry.content),
+        })) ?? []
+      )
+      setViewingPastedId(null)
+      const hasPlaceholderFiles = !!draft?.files?.some(
+        (file) => file.requiresReattach || !file.dataUrl
+      )
+      setFileError(
+        hasPlaceholderFiles
+          ? "Some attachments could not be safely restored. Re-attach them before sending."
+          : null
+      )
+      setDraftPersistenceWarning(
+        hasPlaceholderFiles
+          ? "Large attachments were restored as placeholders and must be re-attached before sending."
+          : null
+      )
+      skipNextSaveRef.current = true
+      setIsDraftHydrated(true)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [draftStorageKey])
+
+  useEffect(() => {
+    if (!isDraftHydrated || !draftStorageKey) return
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false
+      return
+    }
+
+    void saveChatDraft(draftStorageKey, {
+      text: inputValue,
+      files: pendingFiles,
+      pastedTexts: pastedTexts.map((entry) => ({
+        id: entry.id,
+        content: entry.content,
+      })),
+    }).then((result) => {
+      if (result === "metadata-only") {
+        setDraftPersistenceWarning(
+          "Large attachments are saved as placeholders only and must be re-attached after refresh."
+        )
+        return
+      }
+      if (result === "failed") {
+        setDraftPersistenceWarning(
+          "Draft persistence failed for the current attachments. Re-attach them after refresh if needed."
+        )
+        return
+      }
+      if (result === "full" || result === "cleared") {
+        const hasPlaceholderFiles = pendingFiles.some(
+          (file) => file.requiresReattach || !file.dataUrl
+        )
+        setDraftPersistenceWarning(
+          hasPlaceholderFiles
+            ? "Large attachments were restored as placeholders and must be re-attached before sending."
+            : null
+        )
+      }
+    })
+  }, [draftStorageKey, inputValue, isDraftHydrated, pastedTexts, pendingFiles])
+
   const addPastedText = useCallback((content: string) => {
     const info = analyzeContent(content)
     if (!info.isLong) return false
@@ -317,8 +434,21 @@ export function ChatInput({
   }, [])
 
   const handleRemoveFile = useCallback((fileId: string) => {
-    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
-    setFileError(null)
+    setPendingFiles((prev) => {
+      const next = prev.filter((f) => f.id !== fileId)
+      const hasPlaceholderFiles = next.some((file) => file.requiresReattach || !file.dataUrl)
+      setFileError(
+        hasPlaceholderFiles
+          ? "Some attachments could not be safely restored. Re-attach them before sending."
+          : null
+      )
+      setDraftPersistenceWarning(
+        hasPlaceholderFiles
+          ? "Large attachments were restored as placeholders and must be re-attached before sending."
+          : null
+      )
+      return next
+    })
   }, [])
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -496,6 +626,10 @@ export function ChatInput({
 
   const handleSubmit = useCallback(() => {
     const trimmedContent = inputValue.trim()
+    if (pendingFiles.some((file) => file.requiresReattach || !file.dataUrl)) {
+      setFileError("Re-attach the restored placeholder attachments before sending.")
+      return
+    }
     if (
       (!trimmedContent && pendingFiles.length === 0 && pastedTexts.length === 0) ||
       disabled ||
@@ -510,7 +644,7 @@ export function ChatInput({
     // text part and the file parts so it sees everything.
     const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
     const combinedFiles: FileAttachment[] = [
-      ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
+      ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl!, name: f.name, type: f.type })),
       ...pastedAttachments,
     ]
     const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
@@ -521,9 +655,11 @@ export function ChatInput({
     setPastedTexts([])
     setViewingPastedId(null)
     setFileError(null)
+    setDraftPersistenceWarning(null)
+    void clearChatDraft(draftStorageKey)
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, voiceInput.isBusy])
+  }, [disabled, draftStorageKey, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, voiceInput.isBusy])
 
   const handleChangeText = useCallback(
     (text: string) => {
@@ -583,7 +719,8 @@ export function ChatInput({
           contentContainerClassName="gap-2 mb-2"
         >
           {pendingFiles.map((file) => {
-            const isImage = file.type.startsWith("image/")
+            const isImage = file.type.startsWith("image/") && !!file.dataUrl
+            const needsReattach = file.requiresReattach || !file.dataUrl
             return (
               <View
                 key={file.id}
@@ -613,6 +750,11 @@ export function ChatInput({
                       <Text className="text-xs text-muted-foreground">
                         {formatFileSize(file.size)}
                       </Text>
+                      {needsReattach && (
+                        <Text className="text-xs text-amber-600">
+                          Re-attach to send
+                        </Text>
+                      )}
                     </View>
                   </View>
                 )}
@@ -639,6 +781,10 @@ export function ChatInput({
       {/* Error message */}
       {fileError && (
         <Text className="text-sm text-destructive mb-2">{fileError}</Text>
+      )}
+
+      {draftPersistenceWarning && !fileError && (
+        <Text className="text-sm text-amber-600 mb-2">{draftPersistenceWarning}</Text>
       )}
 
       {voiceInput.error && (
