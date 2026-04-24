@@ -1,0 +1,58 @@
+{
+  "id": "virtual-engineering-team",
+  "name": "Virtual Engineering Team",
+  "description": "A compact virtual engineering team modeled on garrytan/gstack. Runs your product idea through a 7-stage sprint (Think → Plan → Build → Review → Test → Ship → Reflect) with role sub-agents (Host, CEO, Eng Mgr, Designer, Staff Eng reviewer, QA, CSO, Release, Retro). Every role's system prompt is the verbatim SKILL.md from gstack — no invented prompts. Ships as a Vite + React app backed by an auto-generated Prisma + SQLite CRUD server.",
+  "category": "development",
+  "icon": "Users",
+  "tags": [
+    "engineering",
+    "gstack",
+    "sprint",
+    "team",
+    "review",
+    "qa",
+    "ship",
+    "retro",
+    "office-hours",
+    "cso",
+    "virtual-team"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-6",
+    "quietHours": {
+      "start": "22:00",
+      "end": "06:30",
+      "timezone": "UTC"
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "project-management",
+      "description": "Track sprints, artifacts, and ship decisions"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Broadcast review verdicts, QA reports, and ship notes to the team"
+    },
+    {
+      "categoryId": "notes",
+      "description": "Store design docs, retros, and postmortems"
+    }
+  ],
+  "techStack": "react-app",
+  "attribution": {
+    "upstream": "https://github.com/garrytan/gstack",
+    "commit": "9e244c0bed0fa0ac1e7473e4ca3e6d73944d5634",
+    "license": "MIT",
+    "note": "Every .shogo/skills/gstack-*/SKILL.md body is a verbatim byte-identical port of the upstream file at the pinned commit."
+  }
+}
