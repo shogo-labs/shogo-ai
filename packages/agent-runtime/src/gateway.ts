@@ -2680,6 +2680,8 @@ export class AgentGateway {
       lines.push('')
       lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it.`)
       lines.push('')
+      lines.push(`If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`)
+      lines.push('')
       lines.push('To add new models or change the schema, edit `.shogo/server/schema.prisma`.')
       lines.push('Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts`.')
       lines.push('For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `.shogo/server/custom-routes.ts` (it already exists).')
@@ -2710,6 +2712,8 @@ export class AgentGateway {
       }
 
       lines.push('')
+      lines.push(`If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`)
+      lines.push('')
       lines.push(regenGuide)
       return lines.join('\n')
     }
@@ -2723,6 +2727,8 @@ export class AgentGateway {
         genError,
         '```',
         'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
+        '',
+        `If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`,
         '',
         regenGuide,
       ].join('\n')
