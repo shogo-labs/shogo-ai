@@ -93,3 +93,47 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 export function useTheme() {
   return useContext(ThemeContext)
 }
+
+/**
+ * Returns the currently resolved theme (`'light'` or `'dark'`) as applied
+ * to the DOM. On web this mirrors the `dark` class on <html>, which is the
+ * same source of truth Tailwind's `dark:` variants read. Kept in sync with
+ * MutationObserver + media-query listener so callers re-render when the
+ * user toggles the theme or the OS preference flips under `system` mode.
+ *
+ * Prefer this over nativewind's `useColorScheme()` when you need to pick
+ * assets (e.g. Shiki theme) that must match the actual rendered theme —
+ * `useColorScheme()` returns the OS preference, which can disagree with
+ * the app's chosen theme.
+ */
+export function useResolvedTheme(): 'light' | 'dark' {
+  const getResolved = (): 'light' | 'dark' => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') {
+      // Native: fall back to OS preference via matchMedia-equivalent (not
+      // reliable off-web). Callers on native typically don't need Shiki.
+      return 'light'
+    }
+    return document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+  }
+
+  const [resolved, setResolved] = useState<'light' | 'dark'>(getResolved)
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return
+    const update = () => setResolved(getResolved())
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    })
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    media.addEventListener('change', update)
+    return () => {
+      observer.disconnect()
+      media.removeEventListener('change', update)
+    }
+  }, [])
+
+  return resolved
+}
