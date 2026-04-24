@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   View,
   Text,
@@ -55,6 +55,7 @@ interface PlansPanelProps {
   visible: boolean
   projectId: string
   agentUrl?: string | null
+  selectedModel?: string
   onBuildPlan?: (plan: PlanData, modelId: string) => void
 }
 
@@ -100,7 +101,7 @@ function extractTodos(
   return todos
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansPanelProps) {
+export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuildPlan }: PlansPanelProps) {
   const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -108,8 +109,28 @@ export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansP
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [buildMode, setBuildMode] = useState<string>(DEFAULT_MODEL_PRO)
+  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const prevSelectedPlanRef = useRef<string | null>(null)
+
+  // Align Build model with chat when opening a plan or switching plans — not when only
+  // `selectedModel` changes while staying on the same plan (preserves Plans-picker override).
+  useEffect(() => {
+    const prev = prevSelectedPlanRef.current
+    prevSelectedPlanRef.current = selectedPlan
+
+    if (!selectedPlan || selectedPlan === "__streaming__") return
+
+    const enteredFromList = !prev && !!selectedPlan
+    const switchedBetweenPlans =
+      !!prev && prev !== "__streaming__" && prev !== selectedPlan
+    const leftStreamingToFile =
+      prev === "__streaming__" && selectedPlan !== "__streaming__"
+
+    if (enteredFromList || switchedBetweenPlans || leftStreamingToFile) {
+      setBuildMode(selectedModel || DEFAULT_MODEL_PRO)
+    }
+  }, [selectedPlan, selectedModel])
 
   const baseUrl = agentUrl || `${API_URL}/api/projects/${projectId}/agent-proxy`
 
