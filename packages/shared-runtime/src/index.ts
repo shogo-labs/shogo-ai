@@ -96,4 +96,27 @@ export {
   StreamBufferStore,
   createBufferingTransform,
   type StreamBufferWriter,
+  type StreamBufferStoreOptions,
 } from './stream-buffer'
+
+export {
+  DurableStreamLedger,
+  type DurableStreamMeta,
+  type DurableStreamReplayOptions,
+  type DurableStreamStartOptions,
+  type DurableStreamStatus,
+} from './durable-stream-ledger'
+
+export {
+  TurnCheckpointLedger,
+  type TurnMeta,
+  type TurnStatus,
+  type TurnCheckpointRecord,
+  type TurnStartOptions,
+} from './turn-checkpoint-ledger'
+
+export {
+  getDurableTurnEnv,
+  logDurableTurnStartup,
+  type DurableTurnEnv,
+} from './durable-turn-env'

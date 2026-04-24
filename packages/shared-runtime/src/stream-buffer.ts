@@ -10,9 +10,16 @@
  * StreamBufferStore singleton — no shared state between processes.
  */
 
+import type {
+  DurableStreamLedger,
+  DurableStreamReplayOptions,
+  DurableStreamStartOptions,
+  DurableStreamMeta,
+} from './durable-stream-ledger'
+
 const CLEANUP_INTERVAL_MS = 60_000
-const MAX_BUFFER_AGE_MS = 30 * 60_000
-const COMPLETED_GRACE_MS = 30_000
+const MAX_BUFFER_AGE_MS = Number(process.env.STREAM_BUFFER_MAX_AGE_MS || 30 * 60_000)
+const COMPLETED_GRACE_MS = Number(process.env.STREAM_BUFFER_COMPLETED_GRACE_MS || 30_000)
 
 interface StreamBuffer {
   chunks: Uint8Array[]
@@ -20,6 +27,9 @@ interface StreamBuffer {
   status: 'active' | 'completed'
   createdAt: number
   completedAt: number | null
+  turnId?: string
+  runtimeId?: string
+  lastSeq: number
 }
 
 /**
@@ -30,13 +40,20 @@ interface StreamBuffer {
 export interface StreamBufferWriter {
   append(chunk: Uint8Array): void
   complete(): void
+  readonly turnId?: string
+}
+
+export interface StreamBufferStoreOptions {
+  durableLedger?: DurableStreamLedger
 }
 
 export class StreamBufferStore {
   private buffers = new Map<string, StreamBuffer>()
   private cleanupTimer: ReturnType<typeof setInterval> | null = null
+  private readonly durableLedger?: DurableStreamLedger
 
-  constructor() {
+  constructor(options: StreamBufferStoreOptions = {}) {
+    this.durableLedger = options.durableLedger
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS)
     if (this.cleanupTimer && typeof this.cleanupTimer === 'object' && 'unref' in this.cleanupTimer) {
       this.cleanupTimer.unref()
@@ -49,23 +66,31 @@ export class StreamBufferStore {
    *
    * Returns a writer bound to this specific buffer instance.
    */
-  create(key: string): StreamBufferWriter {
+  create(key: string, options: DurableStreamStartOptions = {}): StreamBufferWriter {
     const existing = this.buffers.get(key)
     if (existing && existing.status === 'active') {
       this.completeBuffer(existing)
     }
+    const durableMeta = this.durableLedger?.start(key, options)
     const buf: StreamBuffer = {
       chunks: [],
       subscribers: new Set(),
       status: 'active',
       createdAt: Date.now(),
       completedAt: null,
+      turnId: durableMeta?.turnId ?? options.turnId,
+      runtimeId: options.runtimeId,
+      lastSeq: 0,
     }
     this.buffers.set(key, buf)
 
     return {
+      get turnId() {
+        return buf.turnId
+      },
       append: (chunk: Uint8Array) => {
         if (buf.status !== 'active') return
+        buf.lastSeq = this.durableLedger?.appendChunk(key, chunk) ?? (buf.lastSeq + 1)
         buf.chunks.push(chunk)
         for (const ctrl of buf.subscribers) {
           try {
@@ -89,6 +114,7 @@ export class StreamBufferStore {
     const buf = this.buffers.get(key)
     if (!buf || buf.status !== 'active') return
 
+    buf.lastSeq = this.durableLedger?.appendChunk(key, chunk) ?? (buf.lastSeq + 1)
     buf.chunks.push(chunk)
     for (const ctrl of buf.subscribers) {
       try {
@@ -115,13 +141,40 @@ export class StreamBufferStore {
    */
   abort(key: string): void {
     const buf = this.buffers.get(key)
+    this.durableLedger?.abort(key)
     if (!buf) return
     this.completeBuffer(buf)
     this.buffers.delete(key)
   }
 
   has(key: string): boolean {
-    return this.buffers.has(key)
+    return this.buffers.has(key) || !!this.durableLedger?.has(key)
+  }
+
+  getStatus(key: string): DurableStreamMeta | {
+    key: string
+    turnId?: string
+    runtimeId?: string
+    status: 'active' | 'completed'
+    createdAt: number
+    updatedAt: number
+    completedAt?: number
+    lastSeq: number
+  } | null {
+    const buf = this.buffers.get(key)
+    if (buf) {
+      return {
+        key,
+        turnId: buf.turnId,
+        runtimeId: buf.runtimeId,
+        status: buf.status,
+        createdAt: buf.createdAt,
+        updatedAt: buf.completedAt ?? Date.now(),
+        completedAt: buf.completedAt ?? undefined,
+        lastSeq: buf.lastSeq,
+      }
+    }
+    return this.durableLedger?.getMeta(key) ?? null
   }
 
   /**
@@ -130,17 +183,20 @@ export class StreamBufferStore {
    *
    * Returns null if no buffer exists for the key.
    */
-  createReplayStream(key: string): ReadableStream<Uint8Array> | null {
+  createReplayStream(key: string, options: DurableStreamReplayOptions = {}): ReadableStream<Uint8Array> | null {
     const buf = this.buffers.get(key)
-    if (!buf) return null
+    if (!buf) return this.durableLedger?.createReplayStream(key, options) ?? null
+    if (options.turnId && buf.turnId && options.turnId !== buf.turnId) return null
 
     let subscribedController: ReadableStreamDefaultController<Uint8Array> | null = null
+    const rawFromSeq = options.fromSeq ?? 0
+    const fromSeq = Number.isFinite(rawFromSeq) ? Math.max(0, rawFromSeq) : 0
 
     return new ReadableStream<Uint8Array>({
       start(controller) {
-        for (const chunk of buf.chunks) {
+        for (let i = fromSeq; i < buf.chunks.length; i++) {
           try {
-            controller.enqueue(chunk)
+            controller.enqueue(buf.chunks[i])
           } catch {
             return
           }
@@ -165,6 +221,7 @@ export class StreamBufferStore {
 
   cleanup(): void {
     const now = Date.now()
+    this.durableLedger?.cleanup()
     for (const [key, buf] of this.buffers) {
       if (buf.status === 'completed' && buf.completedAt && now - buf.completedAt > COMPLETED_GRACE_MS) {
         this.buffers.delete(key)
@@ -175,13 +232,21 @@ export class StreamBufferStore {
     }
   }
 
-  dispose(): void {
+  dispose(options: { interruptActive?: boolean } = {}): void {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer)
       this.cleanupTimer = null
     }
-    for (const buf of this.buffers.values()) {
-      this.completeBuffer(buf)
+    for (const [key, buf] of this.buffers) {
+      if (options.interruptActive && buf.status === 'active') {
+        this.durableLedger?.interrupt(key)
+        for (const ctrl of buf.subscribers) {
+          try { ctrl.close() } catch { /* already closed */ }
+        }
+        buf.subscribers.clear()
+      } else {
+        this.completeBuffer(buf)
+      }
     }
     this.buffers.clear()
   }
@@ -190,6 +255,12 @@ export class StreamBufferStore {
     if (buf.status === 'completed') return
     buf.status = 'completed'
     buf.completedAt = Date.now()
+    for (const [key, candidate] of this.buffers) {
+      if (candidate === buf) {
+        this.durableLedger?.complete(key)
+        break
+      }
+    }
     for (const ctrl of buf.subscribers) {
       try { ctrl.close() } catch { /* already closed */ }
     }

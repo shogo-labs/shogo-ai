@@ -75,8 +75,19 @@ export interface IRuntimeManager {
 
   /**
    * Stop the runtime for the specified project.
+   *
+   * The optional `options` let callers pick an urgency profile:
+   *   - reason: label for logs/metrics
+   *   - maxAgentWaitMs / maxViteWaitMs: upper bound before SIGKILL
+   *
+   * Defaults align with AGENT_DRAIN_TIMEOUT_MS so long-running turns can
+   * drain before the agent process is forcibly killed.
    */
-  stop(projectId: string): Promise<void>
+  stop(projectId: string, options?: {
+    reason?: 'api-shutdown' | 'project-removed' | 'health-failure' | 'user-stop' | 'restart'
+    maxAgentWaitMs?: number
+    maxViteWaitMs?: number
+  }): Promise<void>
 
   /**
    * Restart the runtime for the specified project.
@@ -96,7 +107,7 @@ export interface IRuntimeManager {
   /**
    * Stop all active runtimes.
    */
-  stopAll(): Promise<void>
+  stopAll(options?: { reason?: 'api-shutdown' | 'project-removed' | 'restart'; maxAgentWaitMs?: number }): Promise<void>
 
   /**
    * Get list of all active project IDs.

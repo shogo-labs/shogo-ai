@@ -30,6 +30,9 @@ import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } fr
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
+import { runDurableTurn, type TurnCheckpoint } from './durable-turn-runner'
+import { ToolIdempotencyRegistry } from './tool-idempotency'
+import { TurnTelemetry, logTurnEvent } from './turn-telemetry'
 import { createTools, textResult } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -1089,6 +1092,18 @@ export class AgentGateway {
       interactionMode?: 'agent' | 'plan' | 'ask'
       confirmedPlan?: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
       chatSessionId?: string
+      turnId?: string
+      turnCheckpointSink?: (cp: TurnCheckpoint & { extra?: Record<string, unknown> }) => void
+      turnTerminalSink?: (
+        status:
+          | 'completed'
+          | 'aborted'
+          | 'interrupted_recoverable'
+          | 'max_continuations'
+          | 'provider_fatal'
+          | 'loop_detected',
+        terminalReason?: string,
+      ) => void
     },
   ): Promise<void> {
     const sessionId = options?.chatSessionId || 'chat'
@@ -1157,10 +1172,24 @@ export class AgentGateway {
 
     const interactionMode = options?.interactionMode || 'agent'
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
-    this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
-    this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
+    // Stash the per-turn sinks/metadata for _agentTurnInner / runDurableTurn
+    // so we don't have to plumb them through several private signatures.
+    if (options?.turnId || options?.turnCheckpointSink || options?.turnTerminalSink) {
+      this.turnSinksBySession.set(sessionId, {
+        turnId: options.turnId,
+        checkpointSink: options.turnCheckpointSink,
+        terminalSink: options.turnTerminalSink,
+      })
+    }
+    try {
+      const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
+      this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
+
+      this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
+    } finally {
+      this.turnSinksBySession.delete(sessionId)
+    }
   }
 
   async processWebhookMessage(text: string): Promise<string> {
@@ -1660,8 +1689,23 @@ export class AgentGateway {
 
     const streamedToolCalls = new Set<string>()
 
+    // Idempotency registry: survives across DurableTurnRunner auto-continuations
+    // so we can detect tool calls that started in a prior attempt but never
+    // finished (e.g. provider stream died mid tool execution).
+    const toolRegistry = new ToolIdempotencyRegistry()
+
     const turnAbort = new AbortController()
     this.turnAbortControllers.set(sessionId, turnAbort)
+
+    // Start a turn-scoped telemetry span *before* the main try block so the
+    // error/finally branches can always finalize it (the catch branch may
+    // fire before we enter the inner scopes that previously owned this
+    // variable).
+    const telemetryTurnId = this.turnSinksBySession.get(sessionId)?.turnId || sessionId
+    const telemetry = TurnTelemetry.start(telemetryTurnId, {
+      sessionId,
+      interactionMode,
+    })
 
     try {
       const hookEmitter = this.hookEmitter
@@ -1747,7 +1791,97 @@ export class AgentGateway {
       // Reset per-turn edit tracking so read_lints auto-scope starts clean.
       this.fileStateCache.resetTurn()
 
-      const result = await runAgentLoop({
+      // Durable-turn feature flag. When on (default), runAgentLoop is wrapped
+      // by DurableTurnRunner so the gateway can automatically continue after
+      // max_tokens, iteration-limit, or mid-stream provider errors inside the
+      // same visible turn — instead of telling the user to type "continue".
+      // Toggle via DURABLE_AGENT_TURNS=false to fall back to the old path.
+      //
+      // NOTE: We intentionally read the env var *per turn* (not captured at
+      // module load) so the flag can be flipped via SIGHUP/config reload
+      // without requiring a full runtime restart. The cost of one env read
+      // per turn is negligible compared to a provider round-trip.
+      const durableTurnsEnabled =
+        (process.env.DURABLE_AGENT_TURNS ?? 'true').toLowerCase() !== 'false'
+      const runLoop = durableTurnsEnabled ? runDurableTurn : runAgentLoop
+      if (!durableTurnsEnabled) {
+        // Make the legacy path loud — if something goes wrong with a long
+        // turn while this flag is off, we want the log line to explain why
+        // the auto-continuation didn't kick in.
+        console.log(
+          `${this.logPrefix} [durable-turns] DISABLED for session=${sessionId} ` +
+            `(DURABLE_AGENT_TURNS=${process.env.DURABLE_AGENT_TURNS ?? ''}); ` +
+            `falling back to single-shot runAgentLoop — max_tokens/iteration ` +
+            `exhaustion will NOT auto-continue on this turn.`,
+        )
+      }
+
+      // The auto-continuation loop needs to see completed tool results from
+      // the previous attempt. We commit them to the session here and rebuild
+      // history the same way we would for a fresh turn.
+      const prepareNextHistory = async (prev: AgentLoopResult) => {
+        this.sessionManager.addMessages(sessionId, ...prev.newMessages)
+        this.sessionManager.touch(sessionId)
+        let h = this.sessionManager.buildHistory(sessionId)
+        h = applyToolResultBudget(h, contextBudgetChars)
+        h = microcompact(h).messages
+        h = snipConsumedResults(h)
+        return h
+      }
+
+      const turnSinks = this.turnSinksBySession.get(sessionId)
+      const onCheckpoint = (cp: TurnCheckpoint) => {
+        // Detect mutating tools that started but never reported completion.
+        // After a provider-mid-stream failure, we don't know whether the
+        // side-effect landed — surface the names so a client/operator can
+        // decide. Read-only tools are safe to silently re-execute, so we
+        // don't flag them.
+        const unfinished = toolRegistry
+          .listStartedButUnfinished()
+          .filter(r => r.cls.mutating)
+          .map(r => ({ toolCallId: r.toolCallId, toolName: r.toolName, attempt: r.attempt }))
+
+        console.log(
+          `${this.logPrefix} [turn-checkpoint session=${sessionId}] ` +
+          `attempt=${cp.attempt} reason=${cp.reason} iterations=${cp.iterations} ` +
+          `toolCallsTotal=${cp.toolCallsTotal} outTokensTotal=${cp.outputTokensTotal} ` +
+          `stopReason=${cp.lastStopReason ?? '-'} willContinue=${cp.willContinue}` +
+          (unfinished.length ? ` unfinishedMutating=${unfinished.length}` : ''),
+        )
+
+        if (uiWriter) {
+          try {
+            uiWriter.write({
+              type: 'data-turn-checkpoint',
+              data: {
+                attempt: cp.attempt,
+                reason: cp.reason,
+                willContinue: cp.willContinue,
+                iterations: cp.iterations,
+                toolCallsTotal: cp.toolCallsTotal,
+                outputTokensTotal: cp.outputTokensTotal,
+                unfinishedMutating: unfinished,
+              },
+            } as any)
+          } catch { /* client disconnected */ }
+        }
+
+        // Persist checkpoint to the semantic turn ledger (see server.ts).
+        if (turnSinks?.checkpointSink) {
+          try {
+            turnSinks.checkpointSink({
+              ...cp,
+              extra: unfinished.length ? { unfinishedMutating: unfinished } : undefined,
+            })
+          } catch (err: any) {
+            console.warn(`${this.logPrefix} turnCheckpointSink threw:`, err?.message || err)
+          }
+        }
+
+        telemetry.attempt(cp)
+      }
+
+      const result = (await runLoop({
         provider,
         model: modelId,
         system: systemPrompt,
@@ -1760,6 +1894,8 @@ export class AgentGateway {
         streamFn: this._streamFn,
         thinkingLevel: resolveThinkingLevel(autoRouting ? undefined : session.modelOverride),
         signal: turnAbort.signal,
+        prepareNextHistory: durableTurnsEnabled ? prepareNextHistory : undefined,
+        onCheckpoint: durableTurnsEnabled ? onCheckpoint : undefined,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
           const fileStateSummary = this.fileStateCache.size > 0
@@ -1834,6 +1970,7 @@ export class AgentGateway {
             uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
             streamedToolCalls.add(toolCallId)
           }
+          toolRegistry.plan(toolCallId, toolName)
         },
         onToolCallDelta: (toolName, delta, toolCallId) => {
           if (uiWriter) {
@@ -1852,6 +1989,7 @@ export class AgentGateway {
             uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
           }
           streamedToolCalls.delete(toolCallId)
+          toolRegistry.start(toolCallId, toolName, args)
           // Store a flush gate that resolves after a short delay, giving
           // the HTTP layer time to deliver the tool-input-start chunk to
           // the client before tool-output-available arrives.
@@ -1869,6 +2007,7 @@ export class AgentGateway {
           )
         },
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+          toolRegistry.finish(toolCallId, result, !!isError)
           if (isError) {
             console.error(`${this.logPrefix} Tool error: ${toolName}`, JSON.stringify(result).substring(0, 500))
           } else {
@@ -1932,11 +2071,16 @@ export class AgentGateway {
             })
           )
         },
-      })
+      } as any)) as AgentLoopResult & { terminationReason?: string; attempts?: AgentLoopResult[]; checkpoints?: TurnCheckpoint[] }
 
       // Persist messages to session FIRST — before any uiWriter calls that
-      // could throw due to client disconnect.  This ensures "continue" after
+      // could throw due to client disconnect. This ensures "continue" after
       // stop always has the interrupted turn's context.
+      //
+      // In durable-turn mode, `prepareNextHistory` has already committed
+      // each intermediate attempt's newMessages to the session, and the
+      // merged `result.newMessages` is only the LAST attempt. So the same
+      // one-shot addMessages call is correct for both modes.
       this.sessionManager.addMessages(sessionId, ...result.newMessages)
 
       if (this.sessionManager.needsCompaction(session)) {
@@ -2009,18 +2153,32 @@ export class AgentGateway {
           const isIterationLimit = /maximum iteration limit/i.test(msg)
           const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits/i.test(msg)
           const isBillingError = /billing|insufficient.credits|upgrade your plan/i.test(msg)
+          const terminationReason = (result as any).terminationReason as string | undefined
+          const attempts = (result as any).attempts?.length ?? 1
           console.error(
-            `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
+            `${this.logPrefix} Agent error for session ${sessionId}: ${msg} ` +
+            `(attempts=${attempts}, termination=${terminationReason ?? 'n/a'}, ` +
+            `${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
           )
           chunker?.dispose()
           if (uiWriter) {
-            const errorText = isIterationLimit
-              ? 'I reached my iteration limit before finishing the task. Send a follow-up message like "continue" to pick up where I left off.'
-              : isBillingError
-                ? 'Insufficient credits. Please check your plan or AI provider settings.'
-                : isProviderError
-                  ? `AI provider error: ${msg}`
-                  : `I encountered an issue processing your message: ${msg}`
+            // With durable-turn continuations, the runner already made up to
+            // AGENT_MAX_CONTINUATIONS attempts. If we still land here with an
+            // iteration-limit-style error, it means the turn truly ran out of
+            // budget — tell the user it's paused, not "type continue".
+            const isMaxContinuations = terminationReason === 'max_continuations'
+            const isHostCancelled = terminationReason === 'host_cancelled'
+            const errorText = isBillingError
+              ? 'Insufficient credits. Please check your plan or AI provider settings.'
+              : isMaxContinuations
+                ? 'I ran out of my auto-continuation budget on this turn. Part of the work is saved — send "continue" to resume, or rephrase.'
+                : isIterationLimit
+                  ? 'I paused after a very long run. You can send "continue" to resume from the last saved state.'
+                  : isHostCancelled
+                    ? 'Turn paused. You can resume the conversation when ready.'
+                    : isProviderError
+                      ? `AI provider error: ${msg}`
+                      : `I encountered an issue processing your message: ${msg}`
             uiWriter.write({ type: 'error', errorText } as any)
           }
         } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
@@ -2038,6 +2196,44 @@ export class AgentGateway {
         console.warn(`${this.logPrefix} Post-loop UI write failed (session messages already persisted): ${uiErr.message}`)
         chunker?.dispose()
       }
+
+      // Finalize the semantic turn ledger. Map DurableTurnRunner
+      // terminationReason → TurnStatus; if no runner ran, default to
+      // 'completed' for non-error turns and let the catch branch below
+      // handle exceptions.
+      const terminationReason = (result as any).terminationReason as string | undefined
+      const finalStatus: 'completed' | 'aborted' | 'interrupted_recoverable' | 'max_continuations' | 'provider_fatal' | 'loop_detected' =
+        result.loopBreak
+          ? 'loop_detected'
+          : result.error
+            ? terminationReason === 'max_continuations'
+              ? 'max_continuations'
+              : terminationReason === 'host_cancelled'
+                ? 'aborted'
+                : 'provider_fatal'
+            : 'completed'
+      const finalReason = result.loopBreak
+        ? result.loopBreak.pattern
+        : result.error
+          ? terminationReason === 'max_continuations'
+            ? 'auto_continuation_exhausted'
+            : terminationReason === 'host_cancelled'
+              ? 'host_cancelled'
+              : result.error.message
+          : (terminationReason ?? 'completed')
+
+      if (turnSinks?.terminalSink) {
+        try { turnSinks.terminalSink(finalStatus, finalReason) }
+        catch (err: any) {
+          console.warn(`${this.logPrefix} turnTerminalSink threw:`, err?.message || err)
+        }
+      }
+      telemetry.end(finalStatus, finalReason, {
+        outputTokens: result.outputTokens,
+        toolCalls: result.toolCalls.length,
+        iterations: result.iterations,
+        attempts: (result as any).attempts?.length ?? 1,
+      })
 
       if (result.text) return result.text
       if (isHeartbeat) return 'HEARTBEAT_OK'
@@ -2058,6 +2254,18 @@ export class AgentGateway {
           } as any)
         }
       } catch { /* writer may be dead — ignore */ }
+      // Finalize as provider_fatal when a hard throw escapes the loop.
+      const turnSinks2 = this.turnSinksBySession.get(sessionId)
+      if (turnSinks2?.terminalSink) {
+        try { turnSinks2.terminalSink('provider_fatal', error?.message || 'unhandled_exception') }
+        catch {}
+      }
+      try {
+        logTurnEvent(turnSinks2?.turnId || sessionId, 'unhandled_throw', {
+          error: error?.message,
+        }, 'error')
+      } catch {}
+      try { telemetry.end('provider_fatal', error?.message || 'unhandled_exception') } catch {}
       if (isHeartbeat) return 'HEARTBEAT_OK'
       return `Sorry, I encountered an error processing your message. Please try again.`
     } finally {
@@ -3242,6 +3450,28 @@ export class AgentGateway {
   /** Per-session turn lock: ensures sequential turn execution so a "continue"
    *  after stop always sees the interrupted turn's messages in the session. */
   private turnLocks = new Map<string, Promise<unknown>>()
+
+  /** Per-session turn metadata + sinks, populated by processChatMessageStream
+   *  before the agent turn runs and consumed by the DurableTurnRunner's
+   *  onCheckpoint callback. Kept as a simple map so private turn helpers
+   *  don't need signature changes. */
+  private turnSinksBySession = new Map<
+    string,
+    {
+      turnId?: string
+      checkpointSink?: (cp: TurnCheckpoint & { extra?: Record<string, unknown> }) => void
+      terminalSink?: (
+        status:
+          | 'completed'
+          | 'aborted'
+          | 'interrupted_recoverable'
+          | 'max_continuations'
+          | 'provider_fatal'
+          | 'loop_detected',
+        terminalReason?: string,
+      ) => void
+    }
+  >()
 
   abortCurrentTurn(sessionId: string): boolean {
     const controller = this.turnAbortControllers.get(sessionId)

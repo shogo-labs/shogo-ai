@@ -25,6 +25,9 @@ import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession } from "../lib/proxy-billing-session"
+import { turnStore, type StoredTurnCheckpoint } from "../lib/turns/turn-store"
+
+type StoredTurnCheckpointLike = StoredTurnCheckpoint
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -467,7 +470,24 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    * - Starting the runtime if stopped/error/missing
    * - Waiting if runtime is already starting from another request
    */
-  async function getProjectUrl(projectId: string): Promise<string> {
+  async function probeAgentHealth(baseUrl: string, projectId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${baseUrl}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(3_000),
+      })
+      if (!response.ok) return false
+      const data = await response.json().catch(() => ({})) as { projectId?: string }
+      return !data.projectId || data.projectId === projectId
+    } catch {
+      return false
+    }
+  }
+
+  async function getProjectUrl(
+    projectId: string,
+    options: { forceRestart?: boolean; verifyAgentHealth?: boolean } = {},
+  ): Promise<string> {
     if (isKubernetes()) {
       // In Kubernetes: Use Knative project manager
       const { getProjectPodUrl } = await import("../lib/knative-project-manager")
@@ -509,6 +529,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Local development: Use RuntimeManager
       let runtime = runtimeManager.status(projectId)
 
+      if (options.forceRestart && runtime && runtime.status !== "starting") {
+        console.warn(`[ProjectChat] Restarting local runtime for ${projectId} before retry due to stale/unhealthy agent URL`)
+        runtime = await runtimeManager.restart(projectId)
+      }
+
       if (!runtime || runtime.status === "stopped" || runtime.status === "error") {
         // No runtime or failed - start it
         console.log(`[ProjectChat] Starting runtime for ${projectId}...`)
@@ -523,7 +548,20 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       const agentPort = runtime.agentPort || (runtime.port + 1000)
       const runtimeHost = new URL(runtime.url).hostname
-      return `http://${runtimeHost}:${agentPort}`
+      const agentUrl = `http://${runtimeHost}:${agentPort}`
+
+      if (options.verifyAgentHealth !== false && runtime.status === "running") {
+        const healthy = await probeAgentHealth(agentUrl, projectId)
+        if (!healthy) {
+          console.warn(`[ProjectChat] Agent runtime for ${projectId} failed health probe at ${agentUrl}; restarting`)
+          runtime = await runtimeManager.restart(projectId)
+          const restartedPort = runtime.agentPort || (runtime.port + 1000)
+          const restartedHost = new URL(runtime.url).hostname
+          return `http://${restartedHost}:${restartedPort}`
+        }
+      }
+
+      return agentUrl
     } else {
       throw new Error("No runtime manager available for local development")
     }
@@ -538,14 +576,28 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     path: string,
     init?: RequestInit,
   ): Promise<Response> {
-    const baseUrl = await getProjectUrl(projectId)
     const { deriveRuntimeToken } = await import("../lib/runtime-token")
     const headers = new Headers(init?.headers)
     if (!headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json")
     }
     headers.set("x-runtime-token", deriveRuntimeToken(projectId))
-    return fetch(`${baseUrl}${path}`, { ...init, headers })
+
+    let baseUrl = await getProjectUrl(projectId)
+    try {
+      return await fetch(`${baseUrl}${path}`, { ...init, headers })
+    } catch (err: any) {
+      const isConnectionFailure =
+        err.code === 'ECONNREFUSED' ||
+        err.cause?.code === 'ECONNREFUSED' ||
+        err.message?.includes('ECONNREFUSED') ||
+        err.message?.includes('connection refused')
+      if (!isConnectionFailure) throw err
+
+      console.warn(`[ProjectChat] Runtime fetch to ${baseUrl}${path} failed with connection refused; reacquiring runtime URL`)
+      baseUrl = await getProjectUrl(projectId, { forceRestart: true, verifyAgentHealth: true })
+      return fetch(`${baseUrl}${path}`, { ...init, headers })
+    }
   }
 
   /**
@@ -718,19 +770,24 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Retry configuration for transient errors during cold starts.
       // Uses exponential backoff: 500ms, 1s, 2s, 4s, 4s... (capped at 4s)
-      // Max 30 retries (~45 seconds total) with explicit 30min fetch timeout
+      // Max 30 retries (~45 seconds total). Long-running agent streams should
+      // not have an absolute HTTP timeout by default; recovery is handled by
+      // reconnect/replay and runtime health checks.
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const FETCH_TIMEOUT_MS = 1_800_000
+      const FETCH_TIMEOUT_MS = Number(process.env.AGENT_STREAM_ABSOLUTE_TIMEOUT_MS || '0')
       let lastError: Error | null = null
+      let refreshRuntimeBeforeNextAttempt = false
 
       // Do NOT include clientSignal in fetchSignal. A client disconnect
       // (e.g. page refresh) must NOT abort the upstream fetch — the runtime
       // keeps the agent running in memory so the client can resume the stream.
       // trackUsageFromStream also needs the full stream for billing/persistence.
       const clientSignal = c.req.raw.signal
-      const fetchSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      const makeFetchSignal = () => (
+        FETCH_TIMEOUT_MS > 0 ? AbortSignal.timeout(FETCH_TIMEOUT_MS) : undefined
+      )
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         // Check if client already disconnected before retrying
@@ -742,11 +799,20 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
 
         try {
+          if (attempt > 1 || refreshRuntimeBeforeNextAttempt) {
+            podUrl = await getProjectUrl(projectId, {
+              forceRestart: refreshRuntimeBeforeNextAttempt,
+              verifyAgentHealth: true,
+            })
+            console.log(`[ProjectChat] Retry attempt ${attempt} using runtime URL: ${podUrl}${chatEndpoint}`)
+            refreshRuntimeBeforeNextAttempt = false
+          }
+
           const response = await fetch(`${podUrl}${chatEndpoint}`, {
             method: "POST",
             headers,
             body,
-            signal: fetchSignal,
+            signal: makeFetchSignal(),
           })
 
           // Check for errors
@@ -783,6 +849,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             if (isTransientAuthError) {
               const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
               console.log(`[ProjectChat] Transient ${response.status} from pod, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`)
+              refreshRuntimeBeforeNextAttempt = response.status === 404
               await new Promise(resolve => setTimeout(resolve, delay))
               continue
             }
@@ -798,6 +865,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             if (attempt < MAX_RETRIES) {
               const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
               console.log(`[ProjectChat] Retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})...`)
+              refreshRuntimeBeforeNextAttempt = true
               await new Promise(resolve => setTimeout(resolve, delay))
               continue
             }
@@ -942,6 +1010,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           if ((isTransientError || isAbortError) && attempt < MAX_RETRIES) {
             const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
             console.log(`[ProjectChat] Connection error, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES}):`, fetchError.message || fetchError.code)
+            refreshRuntimeBeforeNextAttempt = isTransientError
             await new Promise(resolve => setTimeout(resolve, delay))
             continue
           }
@@ -992,6 +1061,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   router.get("/projects/:projectId/chat/:chatSessionId/stream", async (c) => {
     const projectId = c.req.param("projectId")
     const chatSessionId = c.req.param("chatSessionId")
+    const url = new URL(c.req.url)
+    const fromSeq = url.searchParams.get("fromSeq")
+    const lastEventId = c.req.header("Last-Event-ID")
 
     try {
       const project = await validateProject(projectId)
@@ -1002,15 +1074,276 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
+      const qs = fromSeq ? `?fromSeq=${encodeURIComponent(fromSeq)}` : ""
       const response = await fetchFromRuntime(
         projectId,
-        `/agent/chat/${chatSessionId}/stream`,
-        { method: "GET" },
+        `/agent/chat/${chatSessionId}/stream${qs}`,
+        {
+          method: "GET",
+          headers: lastEventId ? { "Last-Event-ID": lastEventId } : undefined,
+        },
       )
 
-      if (response.status === 204) {
-        return new Response(null, { status: 204 })
+      // Forward the runtime's response verbatim. We no longer collapse any
+      // response to 204 — callers rely on structured status headers
+      // (X-Shogo-Turn-Status, X-Shogo-Terminal-Reason) and JSON error bodies
+      // to decide whether to retry, show a terminal state, or resume.
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!["content-length", "transfer-encoding", "connection"].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      responseHeaders.set("Access-Control-Allow-Origin", "*")
+      responseHeaders.set("X-Accel-Buffering", "no")
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Resume stream failed for ${projectId}/${chatSessionId}:`, err?.message || err)
+      return c.json(
+        { error: { code: "runtime_recovering", message: "Project runtime is recovering. Retry stream resume shortly.", retryable: true } },
+        503,
+      )
+    }
+  })
+
+  router.get("/projects/:projectId/chat/:chatSessionId/turns/active", async (c) => {
+    const projectId = c.req.param("projectId")
+    const chatSessionId = c.req.param("chatSessionId")
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
       }
+
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/chat/${chatSessionId}/turns/active`,
+        { method: "GET" },
+      )
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Active turn lookup failed for ${projectId}/${chatSessionId}:`, err?.message || err)
+      return c.json(
+        { error: { code: "runtime_recovering", message: "Project runtime is recovering. Retry active turn lookup shortly.", retryable: true } },
+        503,
+      )
+    }
+  })
+
+  /**
+   * GET /projects/:projectId/turns/:turnId/status
+   * Returns the semantic turn status (meta + checkpoint history) so a client
+   * UI or reconciler can decide whether to resume, mark recoverable, or
+   * finalize. Served from the in-memory TurnStore first; falls back to the
+   * runtime's on-disk ledger if the entry is missing.
+   */
+  router.get("/projects/:projectId/turns/:turnId/status", async (c) => {
+    const projectId = c.req.param("projectId")
+    const turnId = c.req.param("turnId")
+    const url = new URL(c.req.url)
+    const fromSeq = Number(url.searchParams.get("fromSeq") || 0)
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
+      }
+
+      const cached = turnStore.get(turnId)
+      if (cached && cached.projectId === projectId) {
+        const checkpoints = cached.checkpoints.filter((cp) => cp.seq > fromSeq)
+        return c.json({
+          ok: true,
+          source: "cache",
+          meta: {
+            turnId: cached.turnId,
+            projectId: cached.projectId,
+            chatSessionId: cached.chatSessionId,
+            runtimeId: cached.runtimeId,
+            status: cached.status,
+            createdAt: cached.createdAt,
+            updatedAt: cached.updatedAt,
+            terminalReason: cached.terminalReason,
+          },
+          checkpoints,
+        })
+      }
+
+      const path = `/agent/turns/${encodeURIComponent(turnId)}/status${fromSeq ? `?fromSeq=${fromSeq}` : ""}`
+      const response = await fetchFromRuntime(projectId, path, { method: "GET" })
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Turn status lookup failed for ${projectId}/${turnId}:`, err?.message || err)
+      return c.json(
+        { error: { code: "runtime_recovering", message: "Project runtime is recovering. Retry turn status shortly.", retryable: true } },
+        503,
+      )
+    }
+  })
+
+  /**
+   * GET /projects/:projectId/turns/active
+   * Returns active turns from the API's in-memory store. Falls back to the
+   * runtime's /agent/turns/active endpoint if the cache is empty (e.g.
+   * after an API restart).
+   */
+  router.get("/projects/:projectId/turns/active", async (c) => {
+    const projectId = c.req.param("projectId")
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
+      }
+
+      const cached = turnStore.listActive(projectId)
+      if (cached.length > 0) {
+        return c.json({ ok: true, source: "cache", active: cached })
+      }
+
+      const response = await fetchFromRuntime(projectId, `/agent/turns/active`, { method: "GET" })
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Active turns lookup failed for ${projectId}:`, err?.message || err)
+      return c.json(
+        { error: { code: "runtime_recovering", message: "Project runtime is recovering. Retry active turns shortly.", retryable: true } },
+        503,
+      )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/turns/:turnId/resume
+   * Proxies the runtime's /agent/turns/:turnId/resume decision endpoint.
+   */
+  router.post("/projects/:projectId/turns/:turnId/resume", async (c) => {
+    const projectId = c.req.param("projectId")
+    const turnId = c.req.param("turnId")
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
+      }
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/turns/${encodeURIComponent(turnId)}/resume`,
+        { method: "POST" },
+      )
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Turn resume failed for ${projectId}/${turnId}:`, err?.message || err)
+      return c.json(
+        { error: { code: "runtime_recovering", message: "Project runtime is recovering. Retry resume shortly.", retryable: true } },
+        503,
+      )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/turns/ingest
+   * Internal ingestion endpoint called by the runtime to push turn lifecycle
+   * events into the API's in-memory TurnStore. Low-trust by design — the
+   * runtime's on-disk TurnCheckpointLedger remains the source of truth.
+   */
+  router.post("/projects/:projectId/turns/ingest", async (c) => {
+    const projectId = c.req.param("projectId")
+    try {
+      const body = await c.req.json().catch(() => null) as {
+        kind?: 'start' | 'checkpoint' | 'finalize'
+        turnId?: string
+        chatSessionId?: string
+        runtimeId?: string
+        status?: string
+        terminalReason?: string
+        checkpoint?: Partial<StoredTurnCheckpointLike>
+      } | null
+      if (!body?.turnId || !body?.kind) {
+        return c.json({ ok: false, error: "invalid_body" }, 400)
+      }
+      if (body.kind === 'start') {
+        turnStore.upsertStart({
+          turnId: body.turnId,
+          projectId,
+          chatSessionId: body.chatSessionId,
+          runtimeId: body.runtimeId,
+        })
+      } else if (body.kind === 'checkpoint' && body.checkpoint) {
+        // Make sure the entry exists even if we missed the start event.
+        if (!turnStore.get(body.turnId)) {
+          turnStore.upsertStart({
+            turnId: body.turnId,
+            projectId,
+            chatSessionId: body.chatSessionId,
+            runtimeId: body.runtimeId,
+          })
+        }
+        turnStore.appendCheckpoint(body.turnId, {
+          attempt: body.checkpoint.attempt ?? 0,
+          reason: body.checkpoint.reason ?? 'unknown',
+          willContinue: body.checkpoint.willContinue ?? false,
+          iterations: body.checkpoint.iterations ?? 0,
+          toolCallsThisAttempt: body.checkpoint.toolCallsThisAttempt ?? 0,
+          toolCallsTotal: body.checkpoint.toolCallsTotal ?? 0,
+          outputTokensTotal: body.checkpoint.outputTokensTotal ?? 0,
+          lastStopReason: body.checkpoint.lastStopReason,
+          modelId: body.checkpoint.modelId,
+          error: body.checkpoint.error,
+          extra: body.checkpoint.extra,
+          seq: body.checkpoint.seq,
+          at: body.checkpoint.at,
+        })
+      } else if (body.kind === 'finalize') {
+        turnStore.finalize(
+          body.turnId,
+          (body.status as any) || 'completed',
+          body.terminalReason,
+        )
+      }
+      return c.json({ ok: true })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Turn ingest failed for ${projectId}:`, err?.message || err)
+      return c.json({ ok: false, error: err?.message || "ingest_failed" }, 500)
+    }
+  })
+
+  router.get("/projects/:projectId/chat/:chatSessionId/turns/:turnId/stream", async (c) => {
+    const projectId = c.req.param("projectId")
+    const chatSessionId = c.req.param("chatSessionId")
+    const turnId = c.req.param("turnId")
+    const url = new URL(c.req.url)
+    const fromSeq = url.searchParams.get("fromSeq")
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
+      }
+
+      const path = `/agent/chat/${chatSessionId}/turns/${turnId}/stream${fromSeq ? `?fromSeq=${encodeURIComponent(fromSeq)}` : ""}`
+      const response = await fetchFromRuntime(projectId, path, {
+        method: "GET",
+        headers: {
+          ...(c.req.header("Last-Event-ID") ? { "Last-Event-ID": c.req.header("Last-Event-ID")! } : {}),
+        },
+      })
 
       if (response.body) {
         const responseHeaders = new Headers()
@@ -1027,9 +1360,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         })
       }
 
-      return new Response(null, { status: 204 })
-    } catch {
-      return new Response(null, { status: 204 })
+      return new Response(null, { status: response.status })
+    } catch (err: any) {
+      console.warn(`[ProjectChat] Durable replay failed for ${projectId}/${chatSessionId}/${turnId}:`, err?.message || err)
+      return c.json(
+        { error: { code: "runtime_recovering", message: "Project runtime is recovering. Retry durable replay shortly.", retryable: true } },
+        503,
+      )
     }
   })
 

@@ -26,8 +26,15 @@ const WATCH_DIRS = [
 ];
 
 const DEBOUNCE_MS = 800;
-const KILL_TIMEOUT_MS = 5_000;
-const PORT_WAIT_MS = 10_000;
+// How long we give the running API to gracefully shut down before SIGKILL.
+// The API's own gracefulShutdown waits for active agent turns to drain
+// (API_DRAIN_TIMEOUT_MS). In dev we don't want to block indefinitely on a
+// paused turn, but we must NOT kill the API in 5s while a legitimate long
+// chat is streaming — that's what was causing ConnectionRefused mid-turn
+// when a file save happened during a 10-tool response. Override via
+// WATCH_API_KILL_TIMEOUT_MS.
+const KILL_TIMEOUT_MS = Number(process.env.WATCH_API_KILL_TIMEOUT_MS || 90_000);
+const PORT_WAIT_MS = Number(process.env.WATCH_API_PORT_WAIT_MS || 30_000);
 const PORT_POLL_INTERVAL_MS = 300;
 
 let child: Subprocess | null = null;
@@ -71,7 +78,15 @@ async function startServer() {
     if (child) {
       const oldChild = child;
       child = null;
-      oldChild.kill();
+      // SIGTERM first — gives gracefulShutdown a chance to drain active
+      // agent turns. SIGKILL only after the grace period.
+      try { oldChild.kill("SIGTERM" as any); } catch { try { oldChild.kill(); } catch {} }
+
+      console.log(
+        `[watch-api] Sent SIGTERM to API; waiting up to ${Math.round(
+          KILL_TIMEOUT_MS / 1000,
+        )}s for graceful shutdown (drain active chat turns)...`,
+      );
 
       const killTimeout = setTimeout(() => {
         console.log(`[watch-api] Graceful exit timed out — sending SIGKILL`);

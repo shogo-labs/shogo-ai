@@ -948,6 +948,19 @@ export const ChatPanel = observer(function ChatPanel({
   const processedProgressEventsRef = useRef<Set<string>>(new Set())
 
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
+  // Banner state driven by the runtime's `data-turn-checkpoint` frames so we
+  // can surface "continuing…"/"paused" states for durable long-running turns.
+  const [turnContinuation, setTurnContinuation] = useState<
+    | {
+        attempt: number
+        reason: string
+        willContinue: boolean
+        toolCallsTotal: number
+        outputTokensTotal: number
+        unfinishedMutating?: Array<{ toolCallId: string; toolName: string }>
+      }
+    | null
+  >(null)
   const [reconnecting, setReconnecting] = useState(false)
   const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
   const contextUsageThrottleRef = useRef<{ inputTokens: number; contextWindowTokens: number } | null>(null)
@@ -1400,6 +1413,22 @@ export const ChatPanel = observer(function ChatPanel({
         })
       }
 
+      // DurableTurnRunner emits one of these every time an attempt boundary
+      // is crossed. Use it to render a "continuing…" banner during auto-
+      // continuations and a stronger warning when mutating tools started
+      // but never reported completion (so the user can verify state).
+      if ((dataPart as any).type === "data-turn-checkpoint") {
+        const cp = (dataPart as any).data ?? {}
+        setTurnContinuation({
+          attempt: cp.attempt ?? 0,
+          reason: cp.reason ?? "unknown",
+          willContinue: !!cp.willContinue,
+          toolCallsTotal: cp.toolCallsTotal ?? 0,
+          outputTokensTotal: cp.outputTokensTotal ?? 0,
+          unfinishedMutating: cp.unfinishedMutating,
+        })
+      }
+
       if (dataPart.type === "data-canvas-preview") {
         const { surfaceId, components } = (dataPart as any).data
         onCanvasPreview?.(surfaceId, components)
@@ -1716,12 +1745,8 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages])
 
-  // Abort any active stream when this panel unmounts (e.g. tab closed)
-  const stopRef = useRef(stop)
-  stopRef.current = stop
-  useEffect(() => {
-    return () => { stopRef.current() }
-  }, [])
+  // Let active turns survive panel unmounts, tab switches, and browser refreshes.
+  // Explicit user Stop is the only path that should cancel the backend turn.
 
   useEffect(() => {
     if (status === 'ready' && stoppedMessages !== null) {
@@ -1767,6 +1792,7 @@ export const ChatPanel = observer(function ChatPanel({
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
+  const [streamStalled, setStreamStalled] = useState(false)
 
   const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(error && isRemoteInstance && isTunnelDisconnectError(error.message))
@@ -1775,9 +1801,10 @@ export const ChatPanel = observer(function ChatPanel({
     () => {
       if (isTunnelError && tunnelReconnecting) return 'Connection to desktop instance lost. Reconnecting\u2026'
       if (isTunnelError) return 'Connection to desktop instance lost. Tap Reconnect to retry.'
+      if (streamStalled && isStreaming) return 'Still working. Waiting for the agent to send more progress\u2026'
       return (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ''
     },
-    [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting]
+    [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting, streamStalled, isStreaming]
   )
   useEffect(() => {
     setErrorBannerExpanded(false)
@@ -1801,7 +1828,7 @@ export const ChatPanel = observer(function ChatPanel({
         try {
           const fetchFn = expoFetch ?? globalThis.fetch
           const hdrs: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
-          const res = await fetchFn(`${localAgentUrl}/agent/health`, {
+          const res = await fetchFn(`${localAgentUrl}/health`, {
             headers: hdrs,
             credentials: Platform.OS === 'web' ? 'include' : undefined,
             signal: AbortSignal.timeout(5000),
@@ -1823,6 +1850,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const errorBannerNeedsReadMore =
     errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
+  const isWarningBanner = isTunnelError || (streamStalled && isStreaming)
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
 
@@ -1940,7 +1968,9 @@ export const ChatPanel = observer(function ChatPanel({
     return () => { configureSubagentStop(null) }
   }, [localAgentUrl, projectId, expoFetch])
 
-  // Idle timeout to force-complete hung streams
+  // Idle detection should never cancel an agent turn. Long tool calls and
+  // extended model thinking can legitimately go quiet from the UI's point of
+  // view, so we surface a stalled state and let durable replay/reconnect recover.
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageContentRef = useRef<string>("")
   const IDLE_TIMEOUT_MS = 600_000
@@ -1957,12 +1987,13 @@ export const ChatPanel = observer(function ChatPanel({
 
       if (currentContent !== lastMessageContentRef.current) {
         lastMessageContentRef.current = currentContent
+        setStreamStalled(false)
       }
 
       idleTimeoutRef.current = setTimeout(() => {
         if (isStreaming) {
-          console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
-          handleStop()
+          console.warn("[ChatPanel] Stream idle timeout - marking stream as stalled without stopping backend turn")
+          setStreamStalled(true)
         }
       }, IDLE_TIMEOUT_MS)
     } else {
@@ -1971,6 +2002,7 @@ export const ChatPanel = observer(function ChatPanel({
         idleTimeoutRef.current = null
       }
       lastMessageContentRef.current = ""
+      setStreamStalled(false)
     }
 
     return () => {
@@ -1978,7 +2010,7 @@ export const ChatPanel = observer(function ChatPanel({
         clearTimeout(idleTimeoutRef.current)
       }
     }
-  }, [isStreaming, messages, handleStop])
+  }, [isStreaming, messages])
 
   // Fallback: detect file changes when streaming ends
   const prevStreamingForScanRef = useRef(false)
@@ -2001,6 +2033,13 @@ export const ChatPanel = observer(function ChatPanel({
     if (isStreaming && !wasStreaming) {
       filesChangedFiredRef.current = false
       setToolErrorBanner(null)
+      setTurnContinuation(null)
+    }
+    if (!isStreaming && wasStreaming) {
+      // Stream ended cleanly — fade any lingering continuation banner after
+      // a short delay so users still see the last status briefly.
+      const timer = setTimeout(() => setTurnContinuation(null), 2_000)
+      return () => clearTimeout(timer)
     }
   }, [isStreaming, messages, onFilesChanged])
 
@@ -3267,6 +3306,58 @@ export const ChatPanel = observer(function ChatPanel({
 
           </ScrollView>
 
+          {/* Durable-turn continuation banner. Shown when the runtime reports
+              an auto-continuation in progress, or warns about mutating tools
+              that started but never confirmed completion. */}
+          {turnContinuation && (turnContinuation.willContinue || (turnContinuation.unfinishedMutating?.length ?? 0) > 0) && (
+            <View className="px-4 pb-2">
+              <View className={cn(
+                "flex-row items-start gap-2 rounded-lg p-3",
+                (turnContinuation.unfinishedMutating?.length ?? 0) > 0
+                  ? "border border-orange-400/50 bg-orange-50 dark:bg-orange-900/20"
+                  : "border border-blue-400/50 bg-blue-50 dark:bg-blue-900/20",
+              )}>
+                <AlertCircle
+                  className={cn(
+                    "shrink-0 mt-0.5",
+                    (turnContinuation.unfinishedMutating?.length ?? 0) > 0
+                      ? "text-orange-600 dark:text-orange-400"
+                      : "text-blue-600 dark:text-blue-400",
+                  )}
+                  size={16}
+                />
+                <View className="flex-1 gap-1">
+                  <Text className={cn(
+                    "text-sm font-medium",
+                    (turnContinuation.unfinishedMutating?.length ?? 0) > 0
+                      ? "text-orange-800 dark:text-orange-200"
+                      : "text-blue-800 dark:text-blue-200",
+                  )}>
+                    {(turnContinuation.unfinishedMutating?.length ?? 0) > 0
+                      ? "Continuing — verifying in-flight tool work"
+                      : `Continuing (attempt ${turnContinuation.attempt + 1})`}
+                  </Text>
+                  <Text className={cn(
+                    "text-xs",
+                    (turnContinuation.unfinishedMutating?.length ?? 0) > 0
+                      ? "text-orange-700 dark:text-orange-300"
+                      : "text-blue-700 dark:text-blue-300",
+                  )}>
+                    {turnContinuation.reason.replace(/^continuation_/, "").replace(/_/g, " ")}
+                    {" · "}
+                    {turnContinuation.toolCallsTotal} tool call(s), {turnContinuation.outputTokensTotal} tokens so far
+                    {(turnContinuation.unfinishedMutating?.length ?? 0) > 0 && (
+                      <>
+                        {"\nUnfinished: "}
+                        {turnContinuation.unfinishedMutating!.map(t => t.toolName).join(", ")}
+                      </>
+                    )}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+
           {/* Tool Error Banner */}
           {toolErrorBanner && (
             <View className="px-4 pb-2">
@@ -3382,15 +3473,15 @@ export const ChatPanel = observer(function ChatPanel({
           )}
 
           {/* Error Alert — cap long messages so the sidebar layout stays usable */}
-          {(error || emptyResponseError) && (
+          {(error || emptyResponseError || (streamStalled && isStreaming)) && (
             <View className="px-4 pb-2 max-w-3xl w-full self-center">
               <View className={`flex-row items-start gap-2 rounded-lg border p-3 ${
-                isTunnelError
+                isWarningBanner
                   ? 'border-orange-400/50 bg-orange-50 dark:bg-orange-950/30'
                   : 'border-destructive/50 bg-destructive/10'
               }`}>
                 <AlertCircle className={`h-4 w-4 shrink-0 mt-0.5 ${
-                  isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
+                  isWarningBanner ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
                 }`} size={16} />
                 <View className="flex-1 min-w-0 flex-row items-start justify-between gap-2">
                   <View className="flex-1 min-w-0 pr-1">
@@ -3400,13 +3491,13 @@ export const ChatPanel = observer(function ChatPanel({
                         className="max-h-48"
                         showsVerticalScrollIndicator
                       >
-                        <Text className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
+                        <Text className={`text-sm ${isWarningBanner ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`} selectable>
                           {errorBannerText}
                         </Text>
                       </ScrollView>
                     ) : (
                       <Text
-                        className={`text-sm ${isTunnelError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
+                        className={`text-sm ${isWarningBanner ? 'text-orange-700 dark:text-orange-300' : 'text-destructive'}`}
                         numberOfLines={4}
                         selectable
                       >

@@ -21,3 +21,15 @@ export {
   buildRemoteChatApiUrl,
   type RemoteChatTransportOptions,
 } from './useRemoteChatTransport'
+
+export {
+  fetchActiveTurns,
+  fetchTurnStatus,
+  postTurnResume,
+  buildTurnStreamResumeUrl,
+  useActiveTurn,
+  type TurnMetaLike,
+  type TurnCheckpointLike,
+  type TurnStatusResult,
+  type ResumeDecision,
+} from './useTurnResume'
