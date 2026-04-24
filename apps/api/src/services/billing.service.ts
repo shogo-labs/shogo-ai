@@ -67,30 +67,46 @@ export async function allocateFreeCredits(workspaceId: string) {
 }
 
 /**
- * Allocate monthly credits based on subscription plan
+ * Allocate monthly credits based on subscription plan.
+ *
+ * On a plan upgrade/downgrade (detected by a change in monthlyAllocation),
+ * unused credits from the previous plan are carried over and added on top of
+ * the new plan's allocation. When the allocation is unchanged (same-plan
+ * renewal or duplicate webhook), credits reset to the plan's full allocation.
  */
 export async function allocateMonthlyCredits(
   workspaceId: string,
   planId: string
 ) {
-  const monthlyCredits = getMonthlyCreditsForPlan(planId);
-
+  const newAllocation = getMonthlyCreditsForPlan(planId);
   const now = new Date();
 
-  return prisma.creditLedger.upsert({
+  const existing = await prisma.creditLedger.findUnique({
     where: { workspaceId },
-    create: {
-      workspaceId,
-      monthlyCredits,
-      monthlyAllocation: monthlyCredits,
-      dailyCredits: DAILY_CREDITS,
-      anniversaryDay: now.getDate(),
-      lastDailyReset: now,
-      lastMonthlyReset: now,
-    },
-    update: {
-      monthlyCredits,
-      monthlyAllocation: monthlyCredits,
+  });
+
+  if (!existing) {
+    return prisma.creditLedger.create({
+      data: {
+        workspaceId,
+        monthlyCredits: newAllocation,
+        monthlyAllocation: newAllocation,
+        dailyCredits: DAILY_CREDITS,
+        anniversaryDay: now.getDate(),
+        lastDailyReset: now,
+        lastMonthlyReset: now,
+      },
+    });
+  }
+
+  const isPlanChange = existing.monthlyAllocation !== newAllocation;
+  const carryOver = isPlanChange ? Math.max(0, existing.monthlyCredits) : 0;
+
+  return prisma.creditLedger.update({
+    where: { workspaceId },
+    data: {
+      monthlyCredits: carryOver + newAllocation,
+      monthlyAllocation: newAllocation,
       lastMonthlyReset: now,
     },
   });
