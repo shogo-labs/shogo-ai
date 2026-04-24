@@ -13,7 +13,7 @@ const ALL_TEMPLATE_IDS = [
   // directory-based originals
   'code-quality', 'comms-monitoring', 'engineering-pulse', 'incident-response',
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
-  'self-evolving', 'yc-founder-operating-system',
+  'self-evolving', 'yc-founder-operating-system', 'virtual-engineering-team',
 ]
 
 const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length
@@ -31,9 +31,10 @@ const TEMPLATES_WITH_CANVAS_SRC = [
 
 // Templates that ship a real `prisma/schema.prisma` and a `src/` whose surfaces
 // fetch from the auto-generated `/api/*` CRUD routes (no `.data.json` mocks).
-const TEMPLATES_WITH_PRISMA_SCHEMA = [
-  'yc-founder-operating-system',
-]
+const TEMPLATES_WITH_PRISMA_SCHEMA: Record<string, string[]> = {
+  'yc-founder-operating-system': ['Decision', 'Review', 'Priority'],
+  'virtual-engineering-team': ['Sprint', 'Artifact', 'SkillDoc'],
+}
 
 let tempRoot: string
 
@@ -171,7 +172,7 @@ describe('template directory structure', () => {
   })
 
   test('schema-backed templates ship a prisma/schema.prisma and no .data.json mocks', () => {
-    for (const id of TEMPLATES_WITH_PRISMA_SCHEMA) {
+    for (const id of Object.keys(TEMPLATES_WITH_PRISMA_SCHEMA)) {
       const prismaDir = getTemplatePrismaDir(id)
       expect(prismaDir).not.toBeNull()
       const schemaPath = join(prismaDir!, 'schema.prisma')
@@ -252,15 +253,14 @@ describe('workspace seeding', () => {
   })
 
   test('copies prisma/ directory for schema-backed templates', () => {
-    for (const id of TEMPLATES_WITH_PRISMA_SCHEMA) {
+    for (const [id, expectedModels] of Object.entries(TEMPLATES_WITH_PRISMA_SCHEMA)) {
       const dir = join(tempRoot, `seed-${id}`)
       const schemaPath = join(dir, 'prisma', 'schema.prisma')
       expect(existsSync(schemaPath)).toBe(true)
       const schema = readFileSync(schemaPath, 'utf-8')
-      // Sanity-check a couple of the expected models are present.
-      expect(schema).toContain('model Decision')
-      expect(schema).toContain('model Review')
-      expect(schema).toContain('model Priority')
+      for (const model of expectedModels) {
+        expect(schema).toContain(`model ${model}`)
+      }
 
       const migRoot = join(dir, 'prisma', 'migrations')
       expect(existsSync(join(migRoot, 'migration_lock.toml'))).toBe(true)

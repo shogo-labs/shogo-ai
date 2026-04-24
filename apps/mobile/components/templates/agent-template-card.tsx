@@ -25,6 +25,7 @@ const SPINNER_COLOR: Record<string, string> = {
   'revenue-finance': '#22c55e',
   'standup-automation': '#f59e0b',
   'yc-founder-operating-system': '#f97316',
+  'virtual-engineering-team': '#14b8a6',
 }
 
 const POPULAR_IDS = new Set([
@@ -602,6 +603,38 @@ function AgentTemplatePreview({
                 <View className="flex-1">
                   <Text className={fs} numberOfLines={1}>
                     {row.title}
+                  </Text>
+                  <Text className={muted}>{row.meta}</Text>
+                </View>
+              </View>
+            </PreviewRow>
+          ))}
+        </View>
+      )
+    case 'virtual-engineering-team':
+      return (
+        <View>
+          <Text className={h}>Sprint Pipeline</Text>
+          {[
+            { stage: 'Think',  role: 'host',     meta: 'office-hours · design doc' },
+            { stage: 'Plan',   role: 'ceo · eng · design', meta: '3 reviews · verdict owed' },
+            { stage: 'Review', role: 'reviewer', meta: 'staff eng · ship / revise / kill' },
+          ].map((row) => (
+            <PreviewRow key={row.stage} className={box}>
+              <View className="flex-row items-center gap-2">
+                <View className="w-4 h-4 rounded-full items-center justify-center bg-teal-100 dark:bg-teal-500/25">
+                  <Text
+                    className={cn(
+                      compact ? 'text-[8px]' : 'text-[9px]',
+                      'font-bold text-teal-700 dark:text-teal-300',
+                    )}
+                  >
+                    {row.stage[0]}
+                  </Text>
+                </View>
+                <View className="flex-1">
+                  <Text className={fs} numberOfLines={1}>
+                    {row.stage} · {row.role}
                   </Text>
                   <Text className={muted}>{row.meta}</Text>
                 </View>
