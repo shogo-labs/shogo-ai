@@ -280,7 +280,7 @@ describe('runDurableTurn', () => {
 
   test('refuses provider retry when registry has unfinished mutating tool (f1)', async () => {
     const registry = new ToolIdempotencyRegistry()
-    registry.start('call-write-1', 'write_file', { path: '/tmp/a' })
+    registry.start('call-write-1', 'write_file', { path: '/tmp/a' }, { readOnly: false, mutating: true })
     // Not finished on purpose — this simulates a mid-stream failure right
     // after a mutating tool started but before its result streamed back.
 
@@ -302,7 +302,7 @@ describe('runDurableTurn', () => {
 
   test('still retries provider error when only READ-ONLY tools are unfinished (f1)', async () => {
     const registry = new ToolIdempotencyRegistry()
-    registry.start('call-read-1', 'read_file', { path: '/tmp/a' })
+    registry.start('call-read-1', 'read_file', { path: '/tmp/a' }, { readOnly: true, mutating: false })
     // read_file is classified read-only, so replaying is safe.
 
     const scripted: AgentLoopResult[] = [

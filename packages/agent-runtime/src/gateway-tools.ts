@@ -11,6 +11,7 @@
  */
 
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
+import type { ShogoAgentTool } from './tool-idempotency'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname, relative } from 'path'
 import { execSync } from 'child_process'
@@ -219,9 +220,10 @@ export function containerToHost(containerPath: string, workspaceDir: string): st
 // Tool Definitions (created via factory)
 // ---------------------------------------------------------------------------
 
-function createExecTool(ctx: ToolContext): AgentTool {
+function createExecTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'exec',
+    cls: { readOnly: false, mutating: true },
     description:
       'Run a shell command. The shell remembers your working directory across calls — ' +
       'do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. ' +
@@ -313,9 +315,10 @@ const IMAGE_READ_MIME: Record<string, string> = {
 }
 const MAX_IMAGE_READ_BYTES = 20 * 1024 * 1024
 
-function createReadFileTool(ctx: ToolContext): AgentTool {
+function createReadFileTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'read_file',
+    cls: { readOnly: true, mutating: false },
     description:
       'Read a file from the agent workspace. Supports partial reads via offset and limit ' +
       'to handle large files without consuming the full context window. ' +
@@ -457,9 +460,10 @@ function appendImpactHint(ctx: ToolContext, filePath: string, result: Record<str
   } catch { /* best-effort — do not fail the write */ }
 }
 
-function createWriteFileTool(ctx: ToolContext): AgentTool {
+function createWriteFileTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'write_file',
+    cls: { readOnly: false, mutating: true },
     description: 'Create a NEW file in the agent workspace. Creates parent directories as needed. ' +
       'WARNING: Do NOT use write_file to modify existing files — use edit_file instead. ' +
       'write_file overwrites the entire file which risks losing code. Only use for creating brand-new files.',
@@ -667,9 +671,10 @@ function maybeValidateQuickActions(
 // Skill Server Sync Tool
 // ---------------------------------------------------------------------------
 
-function createSkillServerSyncTool(ctx: ToolContext): AgentTool {
+function createSkillServerSyncTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'skill_server_sync',
+    cls: { readOnly: false, mutating: true },
     description:
       'Force the skill server to regenerate routes from schema.prisma and restart. ' +
       'Use this when routes are returning 404 after a schema change, or to verify the server is healthy. ' +
@@ -781,9 +786,10 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
 
 const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024 // 1 GiB
 
-function createEditFileTool(ctx: ToolContext): AgentTool {
+function createEditFileTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'edit_file',
+    cls: { readOnly: false, mutating: true },
     description:
       'Performs exact string replacements in files.\n\n' +
       'Usage:\n' +
@@ -995,9 +1001,10 @@ const APP_TEMPLATE_METADATA: Array<{
   { name: 'data-explorer', description: 'Data exploration tool with tables, metrics, and agent-driven data collection', complexity: 'intermediate', models: ['User', 'Dataset', 'SavedQuery'] },
 ]
 
-function createTemplateListTool(): AgentTool {
+function createTemplateListTool(): ShogoAgentTool {
   return {
     name: 'template_list',
+    cls: { readOnly: true, mutating: false },
     description:
       'List available app starter templates. Every new app MUST start from a template. ' +
       'Choose the closest match, or use "_template" (blank) if nothing fits. ' +
@@ -1013,9 +1020,10 @@ function createTemplateListTool(): AgentTool {
   }
 }
 
-function createTemplateCopyTool(ctx: ToolContext): AgentTool {
+function createTemplateCopyTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'template_copy',
+    cls: { readOnly: false, mutating: true },
     description:
       'Scaffold a project from a starter template. Extracts the template into project/, ' +
       'sets up the database, installs dependencies, and restarts the preview server. ' +
@@ -1067,9 +1075,10 @@ END APP_MODE_DISABLED */
 
 const todoStores = new Map<string, Array<{ id: string; content: string; status: string }>>()
 
-function createTodoWriteTool(ctx: ToolContext): AgentTool {
+function createTodoWriteTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'todo_write',
+    cls: { readOnly: true, mutating: false },
     description:
       'Manage a session task checklist. Each call replaces the full todo list. ' +
       'Use to track progress on multi-step tasks.',
@@ -1100,9 +1109,10 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
 // AskUser Tool (structured multiple-choice questions)
 // ---------------------------------------------------------------------------
 
-function createAskUserTool(_ctx: ToolContext): AgentTool {
+function createAskUserTool(_ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'ask_user',
+    cls: { readOnly: true, mutating: false },
     description:
       'Ask the user structured multiple-choice questions to gather requirements or clarify ambiguity. ' +
       'The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
@@ -1129,9 +1139,10 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
 // NotifyUserError Tool (prominent error toast in chat UI)
 // ---------------------------------------------------------------------------
 
-function createNotifyUserErrorTool(): AgentTool {
+function createNotifyUserErrorTool(): ShogoAgentTool {
   return {
     name: 'notify_user_error',
+    cls: { readOnly: true, mutating: false },
     description:
       'Show a prominent error notification to the user when a tool fails, an integration is broken, ' +
       'or you cannot complete the requested task. Call this BEFORE explaining the error in chat text. ' +
@@ -1669,9 +1680,10 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
   return textResult({ error: 'All fetch attempts failed', url })
 }
 
-function createWebTool(): AgentTool {
+function createWebTool(): ShogoAgentTool {
   return {
     name: 'web',
+    cls: { readOnly: true, mutating: false },
     description:
       'Unified web tool: fetch a URL or search the web via Google (Serper API). ' +
       'Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) ' +
@@ -1739,9 +1751,10 @@ function createWebTool(): AgentTool {
   }
 }
 
-function createMemoryReadTool(ctx: ToolContext): AgentTool {
+function createMemoryReadTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'memory_read',
+    cls: { readOnly: true, mutating: false },
     description: 'Read agent memory. Use "MEMORY.md" for long-lived facts or a date like "2026-02-18" for daily logs.',
     label: 'Read Memory',
     parameters: Type.Object({
@@ -1762,7 +1775,7 @@ function createMemoryReadTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMemorySearchTool(ctx: ToolContext): AgentTool {
+function createMemorySearchTool(ctx: ToolContext): ShogoAgentTool {
   let engine: MemorySearchEngine | null = null
 
   function getEngine(): MemorySearchEngine {
@@ -1774,6 +1787,7 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
 
   return {
     name: 'memory_search',
+    cls: { readOnly: true, mutating: false },
     description:
       'Search across all agent memory (MEMORY.md and daily logs) using hybrid keyword + semantic matching. Returns the most relevant memory chunks ranked by relevance.',
     label: 'Search Memory',
@@ -1856,7 +1870,7 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
   })
 }
 
-export function createBrowserTool(ctx: ToolContext): AgentTool {
+export function createBrowserTool(ctx: ToolContext): ShogoAgentTool {
   let browser: any = null
   let page: any = null
   let isExtensionMode = false
@@ -2042,6 +2056,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 
   return {
     name: 'browser',
+    cls: { readOnly: false, mutating: true },
     description:
       'Control a browser. MUST snapshot before any interaction to get element refs. ' +
       'Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. ' +
@@ -2311,9 +2326,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createSendMessageTool(ctx: ToolContext): AgentTool {
+function createSendMessageTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'send_message',
+    cls: { readOnly: false, mutating: true },
     description:
       'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email).',
     label: 'Send Message',
@@ -2349,9 +2365,10 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
+function createChannelDisconnectTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'channel_disconnect',
+    cls: { readOnly: false, mutating: true },
     description: 'Disconnect a messaging channel and remove it from config.',
     label: 'Disconnect Channel',
     parameters: Type.Object({
@@ -2384,9 +2401,10 @@ function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createChannelListTool(ctx: ToolContext): AgentTool {
+function createChannelListTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'channel_list',
+    cls: { readOnly: true, mutating: false },
     description: 'List all configured messaging channels and their connection status.',
     label: 'List Channels',
     parameters: Type.Object({}),
@@ -2424,9 +2442,10 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
 // MCP Discovery Tools
 // ---------------------------------------------------------------------------
 
-function createToolSearchTool(ctx: ToolContext): AgentTool {
+function createToolSearchTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'tool_search',
+    cls: { readOnly: true, mutating: false },
     description: 'Search for managed OAuth integrations and bundled skills by keyword. For MCP servers, use mcp_search.',
     label: 'Search Tools & Skills',
     parameters: Type.Object({
@@ -2491,9 +2510,10 @@ function createToolSearchTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpSearchTool(): AgentTool {
+function createMcpSearchTool(): ShogoAgentTool {
   return {
     name: 'mcp_search',
+    cls: { readOnly: true, mutating: false },
     description: 'Search for MCP protocol servers (databases, file systems, APIs). For managed OAuth integrations, use tool_search.',
     label: 'Search MCP Servers',
     parameters: Type.Object({
@@ -2561,9 +2581,10 @@ function formatToolInstallMessage(
   return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.`
 }
 
-function createToolInstallTool(ctx: ToolContext): AgentTool {
+function createToolInstallTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'tool_install',
+    cls: { readOnly: false, mutating: true },
     description: 'Install a managed OAuth integration or bundled skill. For integrations, just provide the name (no API keys needed). For skills, use "skill:" prefix. See read_guide("mcp-discovery") for details.',
     label: 'Install Integration or Skill',
     parameters: Type.Object({
@@ -2666,9 +2687,10 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpInstallTool(ctx: ToolContext): AgentTool {
+function createMcpInstallTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'mcp_install',
+    cls: { readOnly: false, mutating: true },
     description: `Install and start an MCP server, making its tools available immediately. Catalog: ${MCP_CATALOG.map(e => e.id).join(', ')}. For remote servers, provide name + url. May require env vars for API keys.`,
     label: 'Install MCP Server',
     parameters: Type.Object({
@@ -2748,9 +2770,10 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createToolUninstallTool(ctx: ToolContext): AgentTool {
+function createToolUninstallTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'tool_uninstall',
+    cls: { readOnly: false, mutating: true },
     description: 'Stop and remove a managed integration. Its tools will no longer be available. For MCP servers, use mcp_uninstall instead.',
     label: 'Uninstall Integration',
     parameters: Type.Object({
@@ -2778,9 +2801,10 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpUninstallTool(ctx: ToolContext): AgentTool {
+function createMcpUninstallTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'mcp_uninstall',
+    cls: { readOnly: false, mutating: true },
     description: 'Stop and remove a running MCP server. Its tools will no longer be available. For managed integrations, use tool_uninstall instead.',
     label: 'Uninstall MCP Server',
     parameters: Type.Object({
@@ -2821,9 +2845,10 @@ import { AgentManager } from './agent-manager'
 import type { ModelTierName, ForkContext } from './subagent'
 import { isInForkChild, buildForkDirective } from './subagent-prompts'
 
-function createAgentCreateTool(ctx: ToolContext): AgentTool {
+function createAgentCreateTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'agent_create',
+    cls: { readOnly: false, mutating: true },
     description:
       'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. ' +
       'Use the same name to update an existing type. Set persist: true to save across sessions.',
@@ -2867,9 +2892,10 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): ShogoAgentTool {
   return {
     name: 'agent_spawn',
+    cls: { readOnly: false, mutating: true },
     description:
       'Launch an instance of a registered or built-in agent type. Returns an instance_id. ' +
       'Use background: true for async execution, then check with agent_status/agent_result. ' +
@@ -3156,9 +3182,10 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
   }
 }
 
-function createAgentStatusTool(ctx: ToolContext): AgentTool {
+function createAgentStatusTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'agent_status',
+    cls: { readOnly: true, mutating: false },
     description: 'Check the status of agent instances. Omit instance_id to see all.',
     label: 'Agent Status',
     parameters: Type.Object({
@@ -3186,9 +3213,10 @@ function createAgentStatusTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createAgentCancelTool(ctx: ToolContext): AgentTool {
+function createAgentCancelTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'agent_cancel',
+    cls: { readOnly: false, mutating: true },
     description: 'Cancel a running agent instance.',
     label: 'Cancel Agent',
     parameters: Type.Object({
@@ -3205,9 +3233,10 @@ function createAgentCancelTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createAgentResultTool(ctx: ToolContext): AgentTool {
+function createAgentResultTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'agent_result',
+    cls: { readOnly: true, mutating: false },
     description:
       'Wait for and retrieve the result of an agent instance. Blocks until the agent completes ' +
       'by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
@@ -3282,9 +3311,10 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): ShogoAgentTool {
   return {
     name: 'agent_list',
+    cls: { readOnly: true, mutating: false },
     description: 'List all registered agent types (built-in and custom) with performance metrics.',
     label: 'List Agents',
     parameters: Type.Object({}),
@@ -3314,9 +3344,10 @@ function ensureTeamContext(ctx: ToolContext): { teamId: string; agentId: string;
   return ctx.teamContext
 }
 
-function createTeamCreateTool(ctx: ToolContext): AgentTool {
+function createTeamCreateTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'team_create',
+    cls: { readOnly: false, mutating: true },
     description: 'Create a team of long-lived agent teammates for complex multi-step projects. Teammates persist across turns, communicate via messages, and claim tasks from a shared queue.',
     label: 'Create Team',
     parameters: Type.Object({
@@ -3354,9 +3385,10 @@ function createTeamCreateTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTeamDeleteTool(ctx: ToolContext): AgentTool {
+function createTeamDeleteTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'team_delete',
+    cls: { readOnly: false, mutating: true },
     description: 'Delete a team and kill all running teammates. Cascading delete removes all tasks and messages.',
     label: 'Delete Team',
     parameters: Type.Object({
@@ -3386,9 +3418,10 @@ function createTeamDeleteTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskCreateTool(ctx: ToolContext): AgentTool {
+function createTaskCreateTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'task_create',
+    cls: { readOnly: false, mutating: true },
     description: 'Create a task in the team\'s shared task queue. Teammates will automatically claim available tasks when idle.',
     label: 'Create Task',
     parameters: Type.Object({
@@ -3421,9 +3454,10 @@ function createTaskCreateTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskGetTool(ctx: ToolContext): AgentTool {
+function createTaskGetTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'task_get',
+    cls: { readOnly: true, mutating: false },
     description: 'Get detailed information about a specific task including its dependencies.',
     label: 'Get Task',
     parameters: Type.Object({
@@ -3440,9 +3474,10 @@ function createTaskGetTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskListTool(ctx: ToolContext): AgentTool {
+function createTaskListTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'task_list',
+    cls: { readOnly: true, mutating: false },
     description: 'List all tasks in the team\'s queue with their status, owner, and dependencies.',
     label: 'List Tasks',
     parameters: Type.Object({}),
@@ -3456,9 +3491,10 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskUpdateTool(ctx: ToolContext): AgentTool {
+function createTaskUpdateTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'task_update',
+    cls: { readOnly: false, mutating: true },
     description: 'Update a task\'s status, description, owner, or dependencies. Use to mark tasks in_progress or completed.',
     label: 'Update Task',
     parameters: Type.Object({
@@ -3509,9 +3545,10 @@ function createTaskUpdateTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
+function createSendTeamMessageTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'send_team_message',
+    cls: { readOnly: false, mutating: true },
     description: 'Send a message to a teammate, the team lead, or broadcast to all team members. Use structured message types for shutdown negotiation.',
     label: 'Send Team Message',
     parameters: Type.Object({
@@ -3569,9 +3606,10 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
 // Quick Action Tool
 // ---------------------------------------------------------------------------
 
-function createQuickActionTool(ctx: ToolContext): AgentTool {
+function createQuickActionTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'quick_action',
+    cls: { readOnly: true, mutating: false },
     description:
       'Register a quick action — a one-click prompt shortcut shown in the user\'s chat UI. ' +
       'Use this when you notice a user sending a repeatable workflow prompt (commits, tests, deploys, etc.).',
@@ -3595,9 +3633,10 @@ function createQuickActionTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createReadGuideTool(ctx: ToolContext): AgentTool {
+function createReadGuideTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'read_guide',
+    cls: { readOnly: true, mutating: false },
     description: 'Read a capability guide by name. See the Capabilities Index in your system prompt for available guides.',
     label: 'Read Guide',
     parameters: Type.Object({
@@ -3720,9 +3759,10 @@ function inferRuntime(filename: string): string {
   return map[ext || ''] || 'bash'
 }
 
-function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): ShogoAgentTool {
   return {
     name: 'skill',
+    cls: { readOnly: false, mutating: true },
     description:
       'Manage and invoke skills. Actions: invoke (default), search, install, run_script. ' +
       'See read_guide("skill-matching") for details.',
@@ -4015,9 +4055,10 @@ function getOrCreateIndex(ctx: ToolContext): IndexEngine {
   return ctx.indexEngine
 }
 
-function createDeleteFileTool(ctx: ToolContext): AgentTool {
+function createDeleteFileTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'delete_file',
+    cls: { readOnly: false, mutating: true },
     description: 'Delete a file from the workspace files/ directory.',
     label: 'Delete File',
     parameters: Type.Object({
@@ -4044,9 +4085,10 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createSearchTool(ctx: ToolContext): AgentTool {
+function createSearchTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'search',
+    cls: { readOnly: true, mutating: false },
     description:
       'Semantic search across the workspace by meaning. Searches code and uploaded files. ' +
       'Returns ranked chunks with file paths and line numbers. ' +
@@ -4109,9 +4151,10 @@ function getOrCreateGraph(ctx: ToolContext): import('./workspace-graph').Workspa
   }
 }
 
-function createImpactRadiusTool(ctx: ToolContext): AgentTool {
+function createImpactRadiusTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'impact_radius',
+    cls: { readOnly: true, mutating: false },
     description:
       'Find all files and symbols affected by changes to given files. ' +
       'Shows blast radius: callers, dependents, importers, and related documents. ' +
@@ -4158,9 +4201,10 @@ function createImpactRadiusTool(ctx: ToolContext): AgentTool {
 // Detect Changes Tool
 // ---------------------------------------------------------------------------
 
-function createDetectChangesTool(ctx: ToolContext): AgentTool {
+function createDetectChangesTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'detect_changes',
+    cls: { readOnly: true, mutating: false },
     description:
       'Analyze git changes and map them to code graph nodes. Shows which functions/classes changed, ' +
       'their risk scores, affected execution flows, and test gaps. ' +
@@ -4298,9 +4342,10 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
 // Review Context Tool
 // ---------------------------------------------------------------------------
 
-function createReviewContextTool(ctx: ToolContext): AgentTool {
+function createReviewContextTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'review_context',
+    cls: { readOnly: true, mutating: false },
     description:
       'Get a comprehensive, token-optimized review bundle for changed files. ' +
       'Includes structural subgraph, risk scores, affected flows, test gaps, ' +
@@ -4578,9 +4623,10 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
   },
 }
 
-function createChannelConnectTool(ctx: ToolContext): AgentTool {
+function createChannelConnectTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'channel_connect',
+    cls: { readOnly: false, mutating: true },
     description:
       'Connect a messaging channel. Supported: telegram, discord, email, slack, whatsapp, webhook, teams, webchat. ' +
       'Saves config and hot-connects immediately.',
@@ -4729,9 +4775,10 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
 // Audio Transcription Tool (OpenAI Whisper)
 // ---------------------------------------------------------------------------
 
-function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
+function createTranscribeAudioTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'transcribe_audio',
+    cls: { readOnly: false, mutating: true },
     description:
       'Transcribe an audio file to text using OpenAI Whisper. ' +
       'Supports mp3, mp4, mpeg, mpga, m4a, wav, and webm formats. ' +
@@ -4809,9 +4856,10 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
 // Image Generation Tool
 // ---------------------------------------------------------------------------
 
-function createGenerateImageTool(ctx: ToolContext): AgentTool {
+function createGenerateImageTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'generate_image',
+    cls: { readOnly: false, mutating: true },
     description:
       'Generate an image from a text prompt using AI (DALL-E, GPT Image, Imagen, etc). ' +
       'The image is saved to the agent workspace. Optionally provide a reference_image path ' +
@@ -4955,9 +5003,10 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 // Heartbeat Tools
 // ---------------------------------------------------------------------------
 
-function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
+function createHeartbeatConfigureTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'heartbeat_configure',
+    cls: { readOnly: false, mutating: true },
     description:
       'Configure the heartbeat system: enable/disable, set interval, and quiet hours. ' +
       'Changes are persisted to config.json and synced to the central scheduler database.',
@@ -5025,9 +5074,10 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
+function createHeartbeatStatusTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'heartbeat_status',
+    cls: { readOnly: true, mutating: false },
     description: 'Get current heartbeat configuration and HEARTBEAT.md checklist preview',
     label: 'Heartbeat Status',
     parameters: Type.Object({}),
@@ -5067,9 +5117,10 @@ function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
 // Plan Mode: create_plan tool
 // ---------------------------------------------------------------------------
 
-function createCreatePlanTool(ctx: ToolContext): AgentTool {
+function createCreatePlanTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'create_plan',
+    cls: { readOnly: false, mutating: true },
     description: 'Create a structured plan for the user to review and confirm before execution. The plan is saved to .shogo/plans/ as a markdown file and presented to the user for approval.',
     label: 'Create Plan',
     parameters: Type.Object({
@@ -5135,9 +5186,10 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
 // Plan Mode: update_plan tool
 // ---------------------------------------------------------------------------
 
-function createUpdatePlanTool(ctx: ToolContext): AgentTool {
+function createUpdatePlanTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'update_plan',
+    cls: { readOnly: false, mutating: true },
     description: 'Update an existing plan file in .shogo/plans/. Provide only the fields you want to change — omitted fields are preserved. Use this instead of create_plan when the user asks to modify, refine, or extend an existing plan.',
     label: 'Update Plan',
     parameters: Type.Object({
@@ -5231,9 +5283,10 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
 // Read Lints Tool (LSP-backed diagnostics for any TypeScript file)
 // ---------------------------------------------------------------------------
 
-function createReadLintsTool(ctx: ToolContext): AgentTool {
+function createReadLintsTool(ctx: ToolContext): ShogoAgentTool {
   return {
     name: 'read_lints',
+    cls: { readOnly: true, mutating: false },
     description:
       'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) ' +
       'and canvas runtime errors (compile/render failures from the live preview). ' +

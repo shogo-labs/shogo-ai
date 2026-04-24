@@ -1,3 +1,5 @@
+import type { AgentTool } from '@mariozechner/pi-agent-core'
+import type { TSchema } from '@sinclair/typebox'
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
@@ -63,65 +65,67 @@ export interface ToolCallRecord {
  * tools as mutating since the only cost is a conservative "ask before
  * retry" in the continuation path.
  */
-const BUILTIN_TOOL_CLASSES: Record<string, ToolCallClass> = {
-  // Read-only (pure queries / safe to replay)
-  read_file: { readOnly: true, mutating: false },
-  search: { readOnly: true, mutating: false },
-  glob: { readOnly: true, mutating: false },
-  grep: { readOnly: true, mutating: false },
-  list_dir: { readOnly: true, mutating: false },
-  read_lints: { readOnly: true, mutating: false },
-  web: { readOnly: true, mutating: false },
-  memory_read: { readOnly: true, mutating: false },
-  memory_search: { readOnly: true, mutating: false },
-  read_guide: { readOnly: true, mutating: false },
-  impact_radius: { readOnly: true, mutating: false },
-  agent_list: { readOnly: true, mutating: false },
-  agent_status: { readOnly: true, mutating: false },
-  task_get: { readOnly: true, mutating: false },
-  task_list: { readOnly: true, mutating: false },
-  // Meta / UI-side-effect-only (safe to replay: UI reconciles by id)
-  todo_write: { readOnly: true, mutating: false },
-  notify_user_error: { readOnly: true, mutating: false },
-  quick_action: { readOnly: true, mutating: false },
-  ask_user: { readOnly: true, mutating: false },
-  // Mutating (filesystem, process, external APIs, team/agent state)
-  exec: { readOnly: false, mutating: true },
-  write_file: { readOnly: false, mutating: true },
-  edit_file: { readOnly: false, mutating: true },
-  create_file: { readOnly: false, mutating: true },
-  delete_file: { readOnly: false, mutating: true },
-  move_file: { readOnly: false, mutating: true },
-  send_message: { readOnly: false, mutating: true },
-  send_team_message: { readOnly: false, mutating: true },
-  channel_connect: { readOnly: false, mutating: true },
-  channel_disconnect: { readOnly: false, mutating: true },
-  agent_spawn: { readOnly: false, mutating: true },
-  agent_cancel: { readOnly: false, mutating: true },
-  agent_create: { readOnly: false, mutating: true },
-  team_create: { readOnly: false, mutating: true },
-  team_delete: { readOnly: false, mutating: true },
-  task_create: { readOnly: false, mutating: true },
-  task_update: { readOnly: false, mutating: true },
-  skill: { readOnly: false, mutating: true },
-  create_plan: { readOnly: false, mutating: true },
-  update_plan: { readOnly: false, mutating: true },
+/**
+ * Shogo's extension of pi-agent-core's AgentTool: every tool definition
+ * carries its own idempotency classification. Putting `cls` on the type
+ * as REQUIRED (not optional) means TypeScript enforces it at the
+ * definition site for every current and future tool — eliminating the
+ * drift hazard of a hardcoded name-to-class map (Russell review, PR #442).
+ */
+export interface ShogoAgentTool<TP extends TSchema = TSchema, TD = any>
+  extends AgentTool<TP, TD> {
+  /**
+   * Idempotency classification. Tools MUST declare whether they are
+   * safe to blind-replay (read-only) or have side effects that cannot
+   * be re-executed without risk of double-application (mutating).
+   */
+  cls: ToolCallClass
 }
 
-function classifyTool(toolName: string, explicit?: Partial<ToolCallClass>): ToolCallClass {
+/**
+ * Conservative default for dynamic / externally-sourced tools (MCP,
+ * composio, skill-server proxies) where static metadata isn't
+ * available at definition time. Assume mutating so the registry's
+ * safety gate is opt-out for replay rather than opt-in.
+ */
+export const DEFAULT_UNKNOWN_TOOL_CLASS: ToolCallClass = {
+  readOnly: false,
+  mutating: true,
+}
+
+/**
+ * Classify a tool. Prefer the explicit `cls` field on a `ShogoAgentTool`
+ * (single source of truth, type-enforced). Fall back to the conservative
+ * default for tools that don't carry metadata (dynamic / external).
+ *
+ * Accepts either a full tool object, or `(name, explicitCls)` for the
+ * legacy call pattern still used by ToolIdempotencyRegistry.start().
+ *
+ * The prior hardcoded name-to-class map was removed in response to
+ * review feedback — metadata belongs at the definition site so
+ * TypeScript enforces it on every future tool.
+ */
+export function classifyTool(
+  toolOrName: { cls?: ToolCallClass } | string,
+  explicit?: Partial<ToolCallClass>,
+): ToolCallClass {
   if (explicit) {
     return {
       readOnly: explicit.readOnly ?? !(explicit.mutating ?? true),
       mutating: explicit.mutating ?? !(explicit.readOnly ?? false),
     }
   }
-  const builtin = BUILTIN_TOOL_CLASSES[toolName]
-  if (builtin) return builtin
-  // Tools beginning with these prefixes are always read-only subagents/queries
-  if (toolName.startsWith('mcp_') && toolName.endsWith('_read')) {
-    return { readOnly: true, mutating: false }
+  if (typeof toolOrName === 'string') {
+    // Legacy / dynamic call site without a tool object. New code should
+    // pass the tool itself (ShogoAgentTool has a required `cls` field).
+    // For MCP proxies and external tools where we only have a string
+    // name, use naming conventions as a best-effort hint.
+    if (toolOrName.startsWith('mcp_') && toolOrName.endsWith('_read')) {
+      return { readOnly: true, mutating: false }
+    }
+    return { ...DEFAULT_UNKNOWN_TOOL_CLASS }
   }
-  return { readOnly: false, mutating: true }
+  return toolOrName.cls ?? { ...DEFAULT_UNKNOWN_TOOL_CLASS }
 }
 
 export class ToolIdempotencyRegistry {
