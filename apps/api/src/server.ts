@@ -1950,29 +1950,30 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
   let podUrl: string
 
-  if (isKubernetes()) {
-    try {
+  async function resolveAgentProxyPodUrl(forceRestart = false): Promise<string> {
+    if (isKubernetes()) {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      podUrl = await getProjectPodUrl(projectId)
-    } catch (error: any) {
-      console.error('[AgentProxy] K8s pod resolution error:', error)
-      return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to resolve agent pod' } }, 502)
+      return getProjectPodUrl(projectId)
     }
-  } else {
+
     const manager = getRuntimeManager()
     let runtime = manager.status(projectId)
-    if (!runtime || !runtime.agentPort) {
-      try {
-        runtime = await manager.start(projectId)
-      } catch (error: any) {
-        console.error(`[AgentProxy] Failed to auto-start runtime for ${projectId}:`, error)
-        return c.json({ error: { code: 'agent_start_failed', message: error.message || 'Failed to start agent runtime' } }, 503)
-      }
+    if (forceRestart && runtime && runtime.status !== 'starting') {
+      console.warn(`[AgentProxy] Restarting local runtime for ${projectId} before retry due to stale/unhealthy agent URL`)
+      runtime = await manager.restart(projectId)
     }
-    podUrl = `http://localhost:${runtime.agentPort}`
+    if (!runtime || !runtime.agentPort) {
+      runtime = await manager.start(projectId)
+    }
+    return `http://localhost:${runtime.agentPort}`
   }
 
-  const targetUrl = `${podUrl}${path}${qs}`
+  try {
+    podUrl = await resolveAgentProxyPodUrl()
+  } catch (error: any) {
+    console.error(`[AgentProxy] Failed to resolve runtime for ${projectId}:`, error)
+    return c.json({ error: { code: 'agent_start_failed', message: error.message || 'Failed to resolve agent runtime' } }, isKubernetes() ? 502 : 503)
+  }
 
   const headers = new Headers()
   const contentType = c.req.header('content-type')
@@ -2001,6 +2002,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const MAX_DELAY_MS = 5000
   const FETCH_TIMEOUT_MS = 1_800_000
   let lastError: Error | null = null
+  let refreshRuntimeBeforeNextAttempt = false
 
   const proxyClientSignal = c.req.raw.signal
   const proxyFetchSignal = proxyClientSignal
@@ -2009,6 +2011,11 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      if (attempt > 1 && refreshRuntimeBeforeNextAttempt) {
+        podUrl = await resolveAgentProxyPodUrl(true)
+        refreshRuntimeBeforeNextAttempt = false
+      }
+      const targetUrl = `${podUrl}${path}${qs}`
       const response = await fetch(targetUrl, {
         method: c.req.method,
         headers,
@@ -2021,6 +2028,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         if (attempt === 1) {
           console.log(`[AgentProxy] ${c.req.method} ${path} → ${response.status}, retrying (cold start?)...`)
         }
+        refreshRuntimeBeforeNextAttempt = !isKubernetes()
         await new Promise(resolve => setTimeout(resolve, delay))
         continue
       }
@@ -2088,6 +2096,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         if (attempt <= 2) {
           console.log(`[AgentProxy] ${c.req.method} ${path} ${isTimeout ? 'timeout' : 'connection failed'}, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`)
         }
+        refreshRuntimeBeforeNextAttempt = isTransient && !isKubernetes()
         await new Promise(resolve => setTimeout(resolve, delay))
         continue
       }
@@ -3657,6 +3666,43 @@ app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/${c.req.param('chatSessionId')}/stream`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  const resp = await router.fetch(newReq)
+
+  if (resp.body && resp.status !== 204) {
+    const trackedBody = resp.body.pipeThrough(new TransformStream({
+      flush() { activeProxyConnections-- },
+    }))
+    activeProxyConnections++
+    c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+    return new Response(trackedBody, { status: resp.status, headers: resp.headers })
+  }
+
+  return resp
+})
+
+// GET /api/projects/:projectId/chat/:chatSessionId/turns/active - Active durable turn status
+app.get('/api/projects/:projectId/chat/:chatSessionId/turns/active', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/${c.req.param('chatSessionId')}/turns/active`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+// GET /api/projects/:projectId/chat/:chatSessionId/turns/:turnId/stream - Durable replay by sequence
+app.get('/api/projects/:projectId/chat/:chatSessionId/turns/:turnId/stream', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/${c.req.param('chatSessionId')}/turns/${c.req.param('turnId')}/stream`
   const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
   const resp = await router.fetch(newReq)
 
@@ -5701,8 +5747,36 @@ app.route('/api', generatedRoutes)
 // Graceful shutdown handling
 // =============================================================================
 
-const DRAIN_TIMEOUT_MS = 600_000
+const DRAIN_TIMEOUT_MS = Number(process.env.API_DRAIN_TIMEOUT_MS || 30 * 60 * 1000)
 const DRAIN_POLL_MS = 1_000
+
+/**
+ * Poll /agent/health on every active local runtime and return the sum of
+ * activeTurns / activeStreams. Used by gracefulShutdown so we wait for the
+ * agent to actually finish turns, not just for HTTP proxy bodies to close.
+ */
+async function sumActiveAgentTurns(): Promise<number> {
+  if (!runtimeManager) return 0
+  const projectIds = runtimeManager.getActiveProjects()
+  if (projectIds.length === 0) return 0
+  let total = 0
+  await Promise.all(projectIds.map(async (projectId) => {
+    try {
+      const runtime = runtimeManager!.status(projectId)
+      if (!runtime?.agentPort) return
+      const res = await fetch(`http://localhost:${runtime.agentPort}/agent/health`, {
+        signal: AbortSignal.timeout(1_500),
+      })
+      if (!res.ok) return
+      const body = await res.json().catch(() => null) as any
+      const count = Number(body?.activeTurns ?? body?.activeStreams ?? 0)
+      if (Number.isFinite(count)) total += count
+    } catch {
+      // Unreachable runtime doesn't count as active.
+    }
+  }))
+  return total
+}
 
 async function gracefulShutdown(signal: string) {
   if (isShuttingDown) return
@@ -5719,13 +5793,54 @@ async function gracefulShutdown(signal: string) {
     } catch (_) { /* may not be initialized */ }
   }
 
-  // In local dev mode, stop child-process runtimes and VM warm pool.
-  // In K8s mode the project runtimes are independent Knative services and must NOT be killed.
+  // Drain in two layers:
+  //  1) Wait for active agent TURNS to finish (authoritative signal — a
+  //     proxy connection may have closed while the runtime is still
+  //     working, e.g. client refresh during a long multi-tool turn).
+  //  2) Wait for active proxy connections to drain (last bytes to flush
+  //     to clients that are still attached).
+  const deadline = Date.now() + DRAIN_TIMEOUT_MS
+
+  try {
+    let activeTurns = await sumActiveAgentTurns()
+    if (activeTurns > 0) {
+      console.log(`[Server] Draining ${activeTurns} active agent turn(s)...`)
+      while (Date.now() < deadline) {
+        activeTurns = await sumActiveAgentTurns()
+        if (activeTurns <= 0) break
+        await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_MS))
+      }
+      if (activeTurns > 0) {
+        console.log(`[Server] Drain timeout reached with ${activeTurns} agent turn(s) remaining — runtime will mark them interrupted_recoverable`)
+      } else {
+        console.log('[Server] All agent turns drained')
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Server] sumActiveAgentTurns threw during drain:', err?.message || err)
+  }
+
+  if (activeProxyConnections > 0) {
+    console.log(`[Server] Draining ${activeProxyConnections} active proxy connection(s)...`)
+    while (activeProxyConnections > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_MS))
+    }
+    if (activeProxyConnections > 0) {
+      console.log(`[Server] Drain timeout reached with ${activeProxyConnections} connection(s) remaining`)
+    } else {
+      console.log('[Server] All proxy connections drained')
+    }
+  }
+
+  // In local dev mode, stop child-process runtimes and VM warm pool only after
+  // API proxy streams have drained. Stopping runtimes first breaks long chat
+  // turns in the middle of a response.
   if (!isKubernetes()) {
     if (runtimeManager) {
       console.log('[Server] Stopping local project runtimes...')
       try {
-        await runtimeManager.stopAll()
+        const remainingMs = Math.max(5_000, deadline - Date.now())
+        await runtimeManager.stopAll({ reason: 'api-shutdown', maxAgentWaitMs: remainingMs })
         console.log('[Server] All local runtimes stopped')
       } catch (err: any) {
         console.error('[Server] Error stopping runtimes:', err.message)
@@ -5737,20 +5852,6 @@ async function gracefulShutdown(signal: string) {
       await stopVMWarmPool()
       console.log('[Server] VM warm pool stopped')
     } catch (_) { /* may not be initialized */ }
-  }
-
-  // Drain active proxy connections (SSE streams, chat)
-  if (activeProxyConnections > 0) {
-    console.log(`[Server] Draining ${activeProxyConnections} active proxy connection(s)...`)
-    const deadline = Date.now() + DRAIN_TIMEOUT_MS
-    while (activeProxyConnections > 0 && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_MS))
-    }
-    if (activeProxyConnections > 0) {
-      console.log(`[Server] Drain timeout reached with ${activeProxyConnections} connection(s) remaining`)
-    } else {
-      console.log('[Server] All proxy connections drained')
-    }
   }
 
   stopAllPrismaStudios()
@@ -5769,6 +5870,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 // Start server
+try {
+  const { logDurableTurnStartup } = await import('@shogo/shared-runtime')
+  logDurableTurnStartup('api')
+} catch { /* optional */ }
 console.log(`🚀 API server running on http://localhost:${API_PORT}`)
 console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
 console.log(`   Runtime endpoints: POST/GET http://localhost:${API_PORT}/api/projects/:id/runtime/*`)
@@ -6063,4 +6168,3 @@ if (isKubernetes()) {
     }
   })()
 }
-

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, afterEach } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import { StreamBufferStore, createBufferingTransform } from '../stream-buffer'
+import { DurableStreamLedger } from '../durable-stream-ledger'
 
 function encode(text: string): Uint8Array {
   return new TextEncoder().encode(text)
@@ -21,9 +25,14 @@ async function collectStream(stream: ReadableStream<Uint8Array>): Promise<string
 
 describe('StreamBufferStore', () => {
   let store: StreamBufferStore
+  let tempDir: string | null = null
 
   afterEach(() => {
     store?.dispose()
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true })
+      tempDir = null
+    }
   })
 
   test('create + append + replay returns chunks in order', async () => {
@@ -123,6 +132,36 @@ describe('StreamBufferStore', () => {
     const replay = store.createReplayStream('done')!
     const text = await collectStream(replay)
     expect(text).toBe('ab')
+  })
+
+  test('falls back to durable replay when memory buffer is gone', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'shogo-stream-buffer-'))
+    const ledger = new DurableStreamLedger(tempDir)
+    store = new StreamBufferStore({ durableLedger: ledger })
+    store.create('durable', { turnId: 'turn-1' })
+    store.append('durable', encode('persisted\n'))
+    store.complete('durable')
+    store.dispose()
+
+    store = new StreamBufferStore({ durableLedger: new DurableStreamLedger(tempDir) })
+    const replay = store.createReplayStream('durable', { turnId: 'turn-1' })
+    expect(replay).not.toBeNull()
+    expect(await collectStream(replay!)).toBe('persisted\n')
+  })
+
+  test('dispose can mark active durable streams as interrupted and replayable', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'shogo-stream-buffer-'))
+    const ledger = new DurableStreamLedger(tempDir)
+    store = new StreamBufferStore({ durableLedger: ledger })
+    store.create('durable', { turnId: 'turn-1' })
+    store.append('durable', encode('partial\n'))
+    store.dispose({ interruptActive: true })
+
+    expect(ledger.getMeta('durable')?.status).toBe('interrupted_recoverable')
+    store = new StreamBufferStore({ durableLedger: new DurableStreamLedger(tempDir) })
+    const replay = store.createReplayStream('durable', { turnId: 'turn-1' })
+    expect(replay).not.toBeNull()
+    expect(await collectStream(replay!)).toBe('partial\n')
   })
 
   test('isolation: two buffers do not cross-contaminate', async () => {

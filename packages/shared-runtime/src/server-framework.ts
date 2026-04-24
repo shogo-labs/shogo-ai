@@ -330,6 +330,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   }
 
   const publicPaths = new Set([
+    '/agent/health',
     '/agent/channels/webchat/widget.js',
     '/agent/channels/webchat/config',
     '/agent/channels/webchat/health',

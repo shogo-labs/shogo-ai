@@ -766,6 +766,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.log(`[RuntimeManager] Vite process exited for ${projectId}: code=${code}, signal=${signal}`)
         if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
           runtime.status = 'stopped'
+          this.stopHealthCheck(projectId)
+          if (runtime.agentProcess && !runtime.agentProcess.killed) {
+            runtime.agentProcess.kill('SIGTERM')
+          }
         }
         this.releasePort(port)
       })
@@ -930,6 +934,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.log(`[RuntimeManager] Agent process exited for ${projectId}: code=${code}, signal=${signal}`)
           if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
             runtime.status = 'stopped'
+            this.stopHealthCheck(projectId)
+            if (runtime.process && !runtime.process.killed) {
+              runtime.process.kill('SIGTERM')
+            }
+            this.releasePort(port)
           }
         })
 
@@ -1061,32 +1070,104 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     throw new Error(`Timeout waiting for agent server ${projectId} to start on port ${port} after ${MAX_RETRIES} attempts`)
   }
 
-  async stop(projectId: string): Promise<void> {
+  /**
+   * Stop a project's runtime processes.
+   *
+   * For long-running agent turns we must not SIGKILL eagerly; the agent
+   * runtime's own graceful shutdown needs time to drain active streams and
+   * mark unfinished turns `interrupted_recoverable`. Callers with urgency
+   * (force remove, unit tests, project delete) can pass a small
+   * `maxAgentWaitMs`; API graceful-shutdown passes the drain-aligned value.
+   *
+   * Defaults:
+   *   AGENT_KILL_GRACE_MS (env) — SIGTERM→SIGKILL window for the agent
+   *     process. Defaults to AGENT_DRAIN_TIMEOUT_MS if not set, else 30 min.
+   *   VITE_KILL_GRACE_MS (env) — same for the Vite child. Defaults 10s.
+   *
+   * During the wait we poll the agent's /agent/health?waitDrain=1 so a clean
+   * drain resolves before the hard-kill timer fires.
+   */
+  async stop(projectId: string, options: {
+    reason?: 'api-shutdown' | 'project-removed' | 'health-failure' | 'user-stop' | 'restart'
+    maxAgentWaitMs?: number
+    maxViteWaitMs?: number
+  } = {}): Promise<void> {
     const runtime = this.runtimes.get(projectId)
     if (!runtime) {
-      // Idempotent: succeed silently if not running
       return
     }
 
     this.stopHealthCheck(projectId)
     runtime.status = 'stopping'
 
-    // Stop agent process first
-    if (runtime.agentProcess) {
-      runtime.agentProcess.kill('SIGTERM')
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          if (runtime.agentProcess && !runtime.agentProcess.killed) {
-            runtime.agentProcess.kill('SIGKILL')
-          }
-          resolve()
-        }, 3000)
+    const defaultAgentGrace = Number(
+      process.env.AGENT_KILL_GRACE_MS
+        || process.env.AGENT_DRAIN_TIMEOUT_MS
+        || 30 * 60 * 1000,
+    )
+    const defaultViteGrace = Number(process.env.VITE_KILL_GRACE_MS || 10_000)
+    const agentWaitMs = Math.max(1_000, options.maxAgentWaitMs ?? defaultAgentGrace)
+    const viteWaitMs = Math.max(1_000, options.maxViteWaitMs ?? defaultViteGrace)
 
-        runtime.agentProcess?.on('exit', () => {
-          clearTimeout(timeout)
-          resolve()
+    console.log(
+      `[RuntimeManager] Stopping runtime ${projectId} ` +
+      `(reason=${options.reason || 'unspecified'}, agent-grace=${agentWaitMs}ms, vite-grace=${viteWaitMs}ms)`,
+    )
+
+    if (runtime.agentProcess && runtime.agentPort) {
+      runtime.agentProcess.kill('SIGTERM')
+      const agentPort = runtime.agentPort
+      const start = Date.now()
+      const processRef = runtime.agentProcess
+      const drainedOrExited = await Promise.race([
+        new Promise<'exited'>((resolve) => {
+          processRef.once('exit', () => resolve('exited'))
+        }),
+        new Promise<'drained'>(async (resolve) => {
+          while (Date.now() - start < agentWaitMs) {
+            if (processRef.killed || processRef.exitCode !== null) {
+              resolve('drained')
+              return
+            }
+            try {
+              const res = await fetch(
+                `http://localhost:${agentPort}/agent/health`,
+                { signal: AbortSignal.timeout(1_500) },
+              )
+              if (res.ok) {
+                const body = await res.json().catch(() => null) as any
+                const activeTurns = Number(body?.activeTurns ?? body?.activeStreams ?? 0)
+                if (activeTurns === 0) {
+                  resolve('drained')
+                  return
+                }
+              } else if (res.status === 503) {
+                resolve('drained')
+                return
+              }
+            } catch {
+              // agent not responding — probably gone; wait for exit event
+            }
+            await new Promise((r) => setTimeout(r, 500))
+          }
+          resolve('drained')
+        }),
+      ])
+
+      if (drainedOrExited !== 'exited' && processRef && !processRef.killed && processRef.exitCode === null) {
+        console.warn(
+          `[RuntimeManager] Agent ${projectId} did not exit within ${agentWaitMs}ms ` +
+          `(reason=${options.reason || 'unspecified'}) — sending SIGKILL`,
+        )
+        processRef.kill('SIGKILL')
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 1_000)
+          processRef.once('exit', () => {
+            clearTimeout(t)
+            resolve()
+          })
         })
-      })
+      }
     }
 
     if (runtime.process) {
@@ -1097,7 +1178,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             runtime.process.kill('SIGKILL')
           }
           resolve()
-        }, 5000)
+        }, viteWaitMs)
 
         runtime.process?.on('exit', () => {
           clearTimeout(timeout)
@@ -1117,7 +1198,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     const existing = this.runtimes.get(projectId)
     if (existing && existing.status !== 'stopped') {
       console.log(`[RuntimeManager] Stopping existing runtime for ${projectId}`)
-      await this.stop(projectId)
+      // Restart is called to recover from an unresponsive runtime — cap the
+      // drain wait to something short so the caller isn't blocked forever
+      // on a process that can't gracefully shut down.
+      const restartWait = Number(process.env.RUNTIME_RESTART_WAIT_MS || 10_000)
+      await this.stop(projectId, { reason: 'restart', maxAgentWaitMs: restartWait, maxViteWaitMs: restartWait })
     }
 
     console.log(`[RuntimeManager] Starting fresh runtime for ${projectId}`)
@@ -1170,9 +1255,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     }
   }
 
-  async stopAll(): Promise<void> {
+  async stopAll(options: { reason?: 'api-shutdown' | 'project-removed' | 'restart'; maxAgentWaitMs?: number } = {}): Promise<void> {
     const stopPromises = Array.from(this.runtimes.keys()).map((projectId) =>
-      this.stop(projectId).catch((err) =>
+      this.stop(projectId, { reason: options.reason || 'api-shutdown', maxAgentWaitMs: options.maxAgentWaitMs }).catch((err) =>
         console.error(`[RuntimeManager] Failed to stop ${projectId}:`, err)
       )
     )

@@ -36,6 +36,9 @@ import {
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
+  DurableStreamLedger,
+  TurnCheckpointLedger,
+  logDurableTurnStartup,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
@@ -332,7 +335,84 @@ let gatewayReadyPromise: Promise<void> | null = null
 // Stream Buffer Store (SSE reconnect support)
 // =============================================================================
 
-const streamBufferStore = new StreamBufferStore()
+const durableEnv = logDurableTurnStartup('agent-runtime')
+const durableStreamLedger = new DurableStreamLedger(
+  join(WORKSPACE_DIR, '.shogo', 'stream-ledger'),
+  { retentionMs: durableEnv.agentStreamLedgerRetentionMs },
+)
+const streamBufferStore = new StreamBufferStore({ durableLedger: durableStreamLedger })
+
+// Semantic turn-checkpoint ledger: captures attempt boundaries, continuation
+// reasons, token totals, and terminal status for each turn. Used by the
+// reconciler on runtime boot and by the /agent/turns/:turnId/status endpoint.
+const turnCheckpointLedger = new TurnCheckpointLedger(
+  join(WORKSPACE_DIR, '.shogo', 'turn-ledger'),
+  { retentionMs: durableEnv.agentStreamLedgerRetentionMs },
+)
+
+/**
+ * Reconciler: run on boot to mark any `active` entries in the turn ledger as
+ * `interrupted_recoverable`. We cannot reliably resume them in-process (the
+ * session history and provider connection are gone), so we surface the
+ * interrupt state to callers who can re-drive the turn from the stream
+ * ledger replay + a continuation prompt.
+ *
+ * This intentionally runs synchronously on import so that by the time the
+ * first request is served, no in-flight turn is mis-reported as 'active'.
+ */
+try {
+  const stale = turnCheckpointLedger.listActive()
+  if (stale.length > 0) {
+    console.warn(
+      `[AgentRuntime][reconciler] Found ${stale.length} active turn(s) on boot — ` +
+        `marking as interrupted_recoverable:`,
+      stale.map((t) => t.turnId),
+    )
+    for (const meta of stale) {
+      try {
+        turnCheckpointLedger.finalize(
+          meta.turnId,
+          'interrupted_recoverable',
+          'runtime_restart',
+        )
+      } catch (err: any) {
+        console.warn(
+          `[AgentRuntime][reconciler] Failed to finalize stale turn ${meta.turnId}:`,
+          err?.message || err,
+        )
+      }
+    }
+  }
+  // Also GC aged records.
+  try { turnCheckpointLedger.cleanup() } catch {}
+  try { durableStreamLedger.cleanup() } catch {}
+} catch (err: any) {
+  console.warn('[AgentRuntime][reconciler] Reconciler failed:', err?.message || err)
+}
+
+/**
+ * Best-effort fire-and-forget push of a turn lifecycle event to the API's
+ * in-memory TurnStore. The runtime's on-disk ledger remains authoritative —
+ * this is purely a performance/observability optimization so the API can
+ * answer UI polls without round-tripping.
+ */
+function pushTurnIngest(
+  kind: 'start' | 'checkpoint' | 'finalize',
+  payload: Record<string, unknown>,
+): void {
+  const apiUrl = deriveApiUrl()
+  const projectId = state.currentProjectId
+  if (!apiUrl || !projectId) return
+  const url = `${apiUrl}/api/projects/${projectId}/turns/ingest`
+  fetch(url, {
+    method: 'POST',
+    headers: getInternalHeaders(),
+    body: JSON.stringify({ kind, ...payload }),
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => {
+    // Intentionally swallow — the ledger on disk is the source of truth.
+  })
+}
 
 // =============================================================================
 // Stream Keep-Alive Utility
@@ -832,7 +912,30 @@ app.post('/agent/chat', async (c) => {
   // The agent writes into this buffer via a background consumer so that
   // a client disconnect (e.g. page refresh) does NOT cancel the agent.
   console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
-  const bufWriter = streamBufferStore.create(chatSessionKey)
+  const requestedTurnId = typeof body.turnId === 'string' ? body.turnId : undefined
+  const runtimeId = `${state.currentProjectId || process.env.PROJECT_ID || 'unassigned'}:${PORT}`
+  const bufWriter = streamBufferStore.create(chatSessionKey, {
+    turnId: requestedTurnId,
+    runtimeId,
+  })
+  const turnId = bufWriter.turnId
+
+  // Open a semantic turn-checkpoint ledger entry alongside the stream ledger.
+  // Checkpoints written through the gateway's onCheckpoint callback flow into
+  // this ledger (see turnCheckpointSink below).
+  try {
+    turnCheckpointLedger.start(turnId, {
+      chatSessionId: chatSessionKey,
+      runtimeId,
+    })
+    pushTurnIngest('start', {
+      turnId,
+      chatSessionId: chatSessionKey,
+      runtimeId,
+    })
+  } catch (err: any) {
+    console.warn(`[AgentChat] Failed to start turn ledger for ${turnId}:`, err?.message || err)
+  }
 
   trackStreamStart()
   const stream = createUIMessageStream({
@@ -846,6 +949,50 @@ app.post('/agent/chat', async (c) => {
           interactionMode,
           confirmedPlan,
           chatSessionId: chatSessionKey,
+          turnId,
+          turnCheckpointSink: (cp) => {
+            try {
+              const record = turnCheckpointLedger.append(turnId, {
+                attempt: cp.attempt,
+                reason: cp.reason,
+                willContinue: cp.willContinue,
+                iterations: cp.iterations,
+                toolCallsThisAttempt: cp.toolCallsThisAttempt,
+                toolCallsTotal: cp.toolCallsTotal,
+                outputTokensTotal: cp.outputTokensTotal,
+                lastStopReason: cp.lastStopReason,
+                modelId: cp.modelId,
+                error: cp.error,
+                extra: cp.extra,
+              })
+              pushTurnIngest('checkpoint', {
+                turnId,
+                chatSessionId: chatSessionKey,
+                runtimeId,
+                checkpoint: record,
+              })
+            } catch (err: any) {
+              console.warn(
+                `[AgentChat] turnCheckpointLedger.append failed for ${turnId}:`,
+                err?.message || err,
+              )
+            }
+          },
+          turnTerminalSink: (status, terminalReason) => {
+            try {
+              turnCheckpointLedger.finalize(turnId, status, terminalReason)
+              pushTurnIngest('finalize', {
+                turnId,
+                status,
+                terminalReason,
+              })
+            } catch (err: any) {
+              console.warn(
+                `[AgentChat] turnCheckpointLedger.finalize failed for ${turnId}:`,
+                err?.message || err,
+              )
+            }
+          },
         })
 
         const usage = agentGateway!.consumeLastTurnUsage()
@@ -891,6 +1038,21 @@ app.post('/agent/chat', async (c) => {
         console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
       } finally {
         bufWriter.complete()
+        // Safety net: if the gateway-provided terminal sink was never called
+        // (e.g. synchronous throw before runDurableTurn ran), make sure the
+        // turn ledger is marked completed so the reconciler doesn't treat it
+        // as still-active forever.
+        try {
+          const meta = turnCheckpointLedger.getMeta(turnId)
+          if (meta && meta.status === 'active') {
+            turnCheckpointLedger.finalize(turnId, 'completed', 'stream_closed')
+            pushTurnIngest('finalize', {
+              turnId,
+              status: 'completed',
+              terminalReason: 'stream_closed',
+            })
+          }
+        } catch {}
       }
     })()
 
@@ -898,35 +1060,285 @@ app.post('/agent/chat', async (c) => {
     // If this client disconnects, only the replay subscriber is removed;
     // the background reader + agent keep running.
     const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
-    const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+    const wrappedStream = wrapStreamWithKeepalive(replayStream, KEEPALIVE_MS)
+    const headers = new Headers(response.headers)
+    if (turnId) headers.set('X-Shogo-Turn-Id', turnId)
+    headers.set('X-Shogo-Stream-Resumable', 'true')
     return new Response(wrappedStream, {
       status: response.status,
-      headers: response.headers,
+      headers,
     })
   }
   return response
 })
 
+app.get('/agent/health', (c) => {
+  // Aliasing activeTurns == activeStreams for now; when DurableTurnRunner
+  // tracks turn lifecycles independently, activeTurns may exceed/lag
+  // activeStreams (e.g. during provider-retry gaps without an open HTTP body).
+  // Callers that decide whether to drain must treat "either > 0" as "busy".
+  return c.json({
+    status: isShuttingDown ? 'draining' : 'ok',
+    projectId: state.currentProjectId,
+    runtimeType: 'unified',
+    gatewayRunning: !!agentGateway,
+    activeStreams,
+    activeTurns: activeStreams,
+    shuttingDown: isShuttingDown,
+  })
+})
+
+const KEEPALIVE_MS = Number(process.env.STREAM_KEEPALIVE_MS || 15_000)
+
+/**
+ * Build an X-Shogo-Turn-Status header from a buffer/ledger status.
+ * Clients (and the API proxy) use this to decide whether to keep resuming,
+ * stop, or show a terminal/recoverable banner without ever relying on a
+ * silent 204/EOF.
+ */
+function turnStatusHeaders(status: ReturnType<typeof streamBufferStore.getStatus>): Record<string, string> {
+  if (!status) return {}
+  const headers: Record<string, string> = {}
+  if (status.turnId) headers['X-Shogo-Turn-Id'] = status.turnId
+  headers['X-Shogo-Turn-Status'] = status.status
+  if ('lastSeq' in status && typeof status.lastSeq === 'number') {
+    headers['X-Shogo-Last-Seq'] = String(status.lastSeq)
+  }
+  if ('terminalReason' in status && status.terminalReason) {
+    headers['X-Shogo-Terminal-Reason'] = String(status.terminalReason)
+  }
+  return headers
+}
+
 // Reconnect to an active stream — replays buffered SSE events then continues live.
 // URL pattern matches the AI SDK's default resume convention: ${api}/${chatId}/stream
 app.get('/agent/chat/:chatSessionId/stream', (c) => {
   const chatSessionId = c.req.param('chatSessionId')
-  console.log(`[AgentChat] Stream reconnect request for session: ${chatSessionId}, has buffer: ${streamBufferStore.has(chatSessionId)}`)
-  const replayStream = streamBufferStore.createReplayStream(chatSessionId)
+  const fromSeq = Number(new URL(c.req.url).searchParams.get('fromSeq') || c.req.header('Last-Event-ID') || 0)
+  console.log(`[AgentChat] Stream reconnect request for session: ${chatSessionId}, has buffer: ${streamBufferStore.has(chatSessionId)}, fromSeq: ${fromSeq}`)
+  const status = streamBufferStore.getStatus(chatSessionId)
+  const replayStream = streamBufferStore.createReplayStream(chatSessionId, { fromSeq })
 
   if (!replayStream) {
-    console.log(`[AgentChat] No active stream buffer for session: ${chatSessionId}`)
-    return new Response(null, { status: 204 })
+    // Never return 204 with no body: the AI-SDK client interprets that as
+    // "turn complete", which silently hides the fact that the runtime does
+    // not know this session. Return a structured JSON response with headers
+    // that the proxy/client can reason about.
+    if (!status) {
+      console.log(`[AgentChat] No stream record found for session: ${chatSessionId}`)
+      return c.json(
+        {
+          ok: false,
+          code: 'turn_not_found',
+          chatSessionId,
+          message: 'No active or recoverable turn for this chat session.',
+          retryable: false,
+        },
+        404,
+      )
+    }
+    if (status.status === 'aborted') {
+      return c.json(
+        {
+          ok: false,
+          code: 'turn_aborted',
+          chatSessionId,
+          turnId: status.turnId,
+          terminalReason: (status as any).terminalReason || 'aborted',
+          retryable: false,
+        },
+        410,
+        turnStatusHeaders(status),
+      )
+    }
+    if (status.status === 'completed') {
+      // Stream bytes are gone from the hot cache and from the ledger (e.g.
+      // past retention). Return a known-terminal-but-healthy status instead
+      // of 204; the client should treat this as "turn finished" explicitly.
+      return c.json(
+        {
+          ok: true,
+          code: 'turn_completed',
+          chatSessionId,
+          turnId: status.turnId,
+          lastSeq: status.lastSeq,
+        },
+        200,
+        turnStatusHeaders(status),
+      )
+    }
+    return c.json(
+      {
+        ok: false,
+        code: 'turn_recovering',
+        chatSessionId,
+        turnId: status.turnId,
+        turnStatus: status.status,
+        retryable: true,
+        message: 'The turn is recoverable but its stream buffer is not yet available. Retry shortly.',
+      },
+      503,
+      turnStatusHeaders(status),
+    )
   }
 
   console.log(`[AgentChat] Replaying stream buffer for session: ${chatSessionId}`)
-  const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+  const wrappedStream = wrapStreamWithKeepalive(replayStream, KEEPALIVE_MS)
   return new Response(wrappedStream, {
     headers: {
       'Content-Type': 'text/x-ai-sdk-ui-stream',
       'X-Accel-Buffering': 'no',
       'Cache-Control': 'no-cache',
+      'X-Shogo-Stream-Resumable': 'true',
+      ...turnStatusHeaders(status),
     },
+  })
+})
+
+app.get('/agent/chat/:chatSessionId/turns/active', (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  const status = streamBufferStore.getStatus(chatSessionId)
+  if (!status) {
+    return c.json(
+      { ok: false, code: 'turn_not_found', chatSessionId, retryable: false },
+      404,
+    )
+  }
+  if (status.status === 'aborted') {
+    return c.json({ ok: true, status }, 200, turnStatusHeaders(status))
+  }
+  return c.json({ ok: true, status }, 200, turnStatusHeaders(status))
+})
+
+app.get('/agent/chat/:chatSessionId/turns/:turnId/stream', (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  const turnId = c.req.param('turnId')
+  const fromSeq = Number(new URL(c.req.url).searchParams.get('fromSeq') || c.req.header('Last-Event-ID') || 0)
+  const status = streamBufferStore.getStatus(chatSessionId)
+  const replayStream = streamBufferStore.createReplayStream(chatSessionId, { turnId, fromSeq })
+
+  if (!replayStream) {
+    if (!status) {
+      return c.json(
+        { ok: false, code: 'turn_not_found', chatSessionId, turnId, retryable: false },
+        404,
+      )
+    }
+    if (status.turnId && status.turnId !== turnId) {
+      return c.json(
+        {
+          ok: false,
+          code: 'turn_id_mismatch',
+          chatSessionId,
+          activeTurnId: status.turnId,
+          requestedTurnId: turnId,
+          retryable: false,
+        },
+        409,
+        turnStatusHeaders(status),
+      )
+    }
+    return c.json(
+      {
+        ok: false,
+        code: 'turn_stream_unavailable',
+        chatSessionId,
+        turnId,
+        turnStatus: status.status,
+        retryable: status.status === 'active' || status.status === 'interrupted_recoverable',
+      },
+      status.status === 'completed' ? 200 : 503,
+      turnStatusHeaders(status),
+    )
+  }
+
+  const wrappedStream = wrapStreamWithKeepalive(replayStream, KEEPALIVE_MS)
+  return new Response(wrappedStream, {
+    headers: {
+      'Content-Type': 'text/x-ai-sdk-ui-stream',
+      'X-Accel-Buffering': 'no',
+      'Cache-Control': 'no-cache',
+      'X-Shogo-Stream-Resumable': 'true',
+      ...turnStatusHeaders(status),
+      'X-Shogo-Turn-Id': turnId,
+    },
+  })
+})
+
+// Semantic turn status + checkpoint history for a single turn. Used by the
+// API reconciler/ingest and by the client UI to display continuation banners.
+app.get('/agent/turns/:turnId/status', (c) => {
+  const turnId = c.req.param('turnId')
+  const fromSeq = Number(new URL(c.req.url).searchParams.get('fromSeq') || 0)
+  const meta = turnCheckpointLedger.getMeta(turnId)
+  if (!meta) {
+    return c.json({ ok: false, code: 'turn_not_found', turnId }, 404)
+  }
+  const checkpoints = turnCheckpointLedger.readCheckpoints(turnId, fromSeq)
+  return c.json({ ok: true, meta, checkpoints })
+})
+
+// List turns still marked active in the checkpoint ledger. On runtime boot
+// the reconciler uses this to decide which turns need to be resumed or
+// marked `interrupted_recoverable`.
+app.get('/agent/turns/active', (c) => {
+  const active = turnCheckpointLedger.listActive()
+  return c.json({ ok: true, active })
+})
+
+/**
+ * POST /agent/turns/:turnId/resume
+ *
+ * Caller-driven reconciliation entry point. Inspects the current ledger
+ * state and returns a decision:
+ *   - `replay`: the turn is still `active`, callers should hit the stream
+ *     replay endpoint to consume remaining frames.
+ *   - `interrupted_recoverable`: the runtime cannot automatically resume
+ *     the turn in this process (no live provider connection). Callers
+ *     should re-issue a chat request to continue the work — the gateway
+ *     will pick up the session history and DurableTurnRunner will finish
+ *     the work.
+ *   - `terminal`: the turn is already completed/aborted/fatal — no action.
+ *   - `not_found`: the turn is unknown to this runtime.
+ *
+ * This endpoint intentionally does not spawn a new turn itself — that
+ * requires the user's chat-session context the API already owns.
+ */
+app.post('/agent/turns/:turnId/resume', (c) => {
+  const turnId = c.req.param('turnId')
+  const meta = turnCheckpointLedger.getMeta(turnId)
+  if (!meta) {
+    return c.json({ ok: false, code: 'turn_not_found', turnId }, 404)
+  }
+  if (meta.status === 'active') {
+    return c.json({
+      ok: true,
+      decision: 'replay',
+      turnId,
+      chatSessionId: meta.chatSessionId,
+      replayPath: meta.chatSessionId
+        ? `/agent/chat/${meta.chatSessionId}/turns/${turnId}/stream`
+        : null,
+      meta,
+    })
+  }
+  if (meta.status === 'interrupted_recoverable') {
+    return c.json({
+      ok: true,
+      decision: 'interrupted_recoverable',
+      turnId,
+      chatSessionId: meta.chatSessionId,
+      meta,
+      hint: 'Re-issue a chat request to continue — session history is preserved.',
+    })
+  }
+  return c.json({
+    ok: true,
+    decision: 'terminal',
+    turnId,
+    terminalStatus: meta.status,
+    terminalReason: meta.terminalReason,
+    meta,
   })
 })
 
@@ -1171,7 +1583,18 @@ app.delete('/agent/plans/:filename', async (c) => {
   return c.json({ deleted: true })
 })
 
-// Stop/interrupt the current agent turn (and any active code agent task)
+// Stop/interrupt the current agent turn (and any active code agent task).
+//
+// Cancellation matrix (see Phase 2.6):
+//   - User-initiated stop (this endpoint):       ABORTS the turn
+//   - Client HTTP disconnect:                    turn continues in background
+//   - Runtime shutdown (SIGTERM):                graceful drain, then
+//                                                interrupted_recoverable
+//   - Provider error after tool calls:           DurableTurnRunner retries
+//
+// Here we record the user's explicit intent: finalize the turn ledger as
+// 'aborted' with terminalReason 'user_stop' so the client UI, reconciler,
+// and any future replay consumers all see a consistent terminal state.
 app.post('/agent/stop', async (c) => {
   if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
 
@@ -1179,14 +1602,33 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
-  // Also cancel every running subagent spawned via AgentManager. The main turn
-  // signal does not reach these instances because each has its own AbortController.
   const cancelledSubagents = agentGateway.agentManager.cancelAll()
 
-  // Remove the buffer entirely so resume after stop returns 204 (not a replay)
+  // Capture the current turnId BEFORE aborting the buffer, so we can finalize
+  // the checkpoint ledger with the correct turn. Abort removes the buffer
+  // entry, so the query must come first.
+  const status = streamBufferStore.getStatus(stopSessionKey)
+  const abortedTurnId = status?.turnId
+
   streamBufferStore.abort(stopSessionKey)
 
-  return c.json({ stopped: aborted, cancelledSubagents })
+  if (abortedTurnId) {
+    try {
+      turnCheckpointLedger.finalize(abortedTurnId, 'aborted', 'user_stop')
+      pushTurnIngest('finalize', {
+        turnId: abortedTurnId,
+        status: 'aborted',
+        terminalReason: 'user_stop',
+      })
+    } catch (err: any) {
+      console.warn(
+        `[AgentRuntime] Failed to finalize aborted turn ${abortedTurnId}:`,
+        err?.message || err,
+      )
+    }
+  }
+
+  return c.json({ stopped: aborted, cancelledSubagents, turnId: abortedTurnId })
 })
 
 // Cancel a single running subagent by AgentManager instance id
@@ -3031,13 +3473,14 @@ function trackStreamEnd(): void { activeStreams = Math.max(0, activeStreams - 1)
 // Graceful Shutdown
 // =============================================================================
 
-const DRAIN_TIMEOUT_MS = 30_000
+const DRAIN_TIMEOUT_MS = Number(process.env.AGENT_DRAIN_TIMEOUT_MS || 30 * 60 * 1000)
 
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return
   isShuttingDown = true
   console.log(`[agent-runtime] ${signal} received — draining ${activeStreams} active stream(s) (max ${DRAIN_TIMEOUT_MS / 1000}s)`)
 
+  let drainTimedOut = false
   if (activeStreams > 0) {
     const drainStart = Date.now()
     await new Promise<void>((resolve) => {
@@ -3045,6 +3488,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
         if (activeStreams <= 0 || Date.now() - drainStart > DRAIN_TIMEOUT_MS) {
           clearInterval(check)
           if (activeStreams > 0) {
+            drainTimedOut = true
             console.warn(`[agent-runtime] Drain timeout — ${activeStreams} stream(s) still active, proceeding with shutdown`)
           } else {
             console.log(`[agent-runtime] All streams drained in ${Date.now() - drainStart}ms`)
@@ -3055,7 +3499,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
     })
   }
 
-  streamBufferStore.dispose()
+  streamBufferStore.dispose({ interruptActive: drainTimedOut && activeStreams > 0 })
 
   try {
     if (s3SyncInstance) {
