@@ -27,6 +27,7 @@ export default function SprintBoard() {
   const [idea, setIdea] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [viewer, setViewer] = useState<Artifact | null>(null)
 
   useEffect(() => {
@@ -65,13 +66,20 @@ export default function SprintBoard() {
   async function handleCreate() {
     if (!idea.trim() || busy) return
     setBusy(true)
-    const created = await createSprint(idea.trim())
-    setBusy(false)
-    if (!created) return
-    setIdea('')
-    const rows = await listSprints()
-    setSprints(rows)
-    setActiveId(created.id)
+    setError(null)
+    try {
+      const created = await createSprint(idea.trim())
+      if (!created) {
+        setError('Could not create sprint. Check that the skill server is running.')
+        return
+      }
+      setIdea('')
+      const rows = await listSprints()
+      setSprints(rows)
+      setActiveId(created.id)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function handleAdvance() {
@@ -79,10 +87,18 @@ export default function SprintBoard() {
     const target = nextStage(activeSprint.stage)
     if (!target) return
     setBusy(true)
-    await advanceSprint(activeSprint.id, target)
-    const rows = await listSprints()
-    setSprints(rows)
-    setBusy(false)
+    setError(null)
+    try {
+      const updated = await advanceSprint(activeSprint.id, target)
+      if (!updated) {
+        setError(`Could not advance to ${target}. API error.`)
+        return
+      }
+      const rows = await listSprints()
+      setSprints(rows)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -140,6 +156,18 @@ export default function SprintBoard() {
         </div>
       )}
 
+      {error && (
+        <div className="border border-red-300 bg-red-50 text-red-900 rounded-md px-4 py-2 text-sm flex items-center justify-between">
+          <span>{error}</span>
+          <button
+            onClick={() => setError(null)}
+            className="text-xs underline"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
+
       {activeSprint ? (
         <>
           <div className="flex items-center justify-between border rounded-md px-4 py-3 bg-muted/30">
@@ -154,9 +182,11 @@ export default function SprintBoard() {
                 onClick={handleAdvance}
                 disabled={busy || !nextStage(activeSprint.stage)}
               >
-                {nextStage(activeSprint.stage)
-                  ? `Advance → ${STAGE_LABELS[nextStage(activeSprint.stage)!]}`
-                  : 'Shipped'}
+                {busy && nextStage(activeSprint.stage)
+                  ? 'Advancing…'
+                  : nextStage(activeSprint.stage)
+                    ? `Advance → ${STAGE_LABELS[nextStage(activeSprint.stage)!]}`
+                    : 'Complete'}
               </Button>
             </div>
           </div>

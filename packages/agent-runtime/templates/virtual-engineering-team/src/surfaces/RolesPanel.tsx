@@ -3,7 +3,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import SkillViewer from '@/components/SkillViewer'
-import { listSkills, STAGE_LABELS, type SkillDoc, type Stage } from '@/lib/vet-api'
+import {
+  listSkills,
+  seedSkillsFromManifest,
+  STAGE_LABELS,
+  type SeedResult,
+  type SkillDoc,
+  type Stage,
+} from '@/lib/vet-api'
 
 // Display order for the core roles — mirrors the 7-stage sprint pipeline.
 const STAGE_ORDER: Stage[] = ['think', 'plan', 'build', 'review', 'test', 'ship', 'reflect']
@@ -12,6 +19,14 @@ export default function RolesPanel() {
   const [skills, setSkills] = useState<SkillDoc[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<SkillDoc | null>(null)
+  const [seeding, setSeeding] = useState(false)
+  const [seedMsg, setSeedMsg] = useState<string | null>(null)
+
+  async function refresh() {
+    const rows = await listSkills({ core: true })
+    setSkills(rows)
+    setLoading(false)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -24,6 +39,25 @@ export default function RolesPanel() {
       cancelled = true
     }
   }, [])
+
+  async function handleSeed() {
+    setSeeding(true)
+    setSeedMsg(null)
+    try {
+      const r: SeedResult = await seedSkillsFromManifest()
+      setSeedMsg(
+        `Seeded ${r.created} skill${r.created === 1 ? '' : 's'}` +
+          (r.skipped ? `, skipped ${r.skipped} already present` : '') +
+          (r.failed ? `, ${r.failed} failed` : '') +
+          ` (of ${r.total}).`,
+      )
+      await refresh()
+    } catch (e) {
+      setSeedMsg(`Seed failed: ${(e as Error).message}`)
+    } finally {
+      setSeeding(false)
+    }
+  }
 
   const grouped = STAGE_ORDER.map((stage) => ({
     stage,
@@ -48,11 +82,25 @@ export default function RolesPanel() {
 
       {!loading && skills.length === 0 && (
         <Card>
-          <CardContent className="p-6 text-sm text-muted-foreground">
-            SkillDoc table is empty. Run the <code>seed-skills</code> skill to
-            populate it from <code>.shogo/skills/gstack-*/SKILL.md</code>.
+          <CardContent className="p-6 text-sm text-muted-foreground space-y-3">
+            <p>
+              SkillDoc table is empty. Seed it now from the verbatim-ported
+              files bundled under{' '}
+              <code>.shogo/skills/gstack-&lt;name&gt;/SKILL.md</code>, or run
+              the <code>seed-skills</code> skill in chat.
+            </p>
+            <div className="flex items-center gap-3">
+              <Button size="sm" onClick={handleSeed} disabled={seeding}>
+                {seeding ? 'Seeding…' : 'Seed skills from manifest'}
+              </Button>
+              {seedMsg && <span className="text-xs">{seedMsg}</span>}
+            </div>
           </CardContent>
         </Card>
+      )}
+
+      {!loading && skills.length > 0 && seedMsg && (
+        <div className="text-xs text-muted-foreground">{seedMsg}</div>
       )}
 
       {grouped.map((group) =>

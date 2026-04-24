@@ -171,3 +171,75 @@ export function nextStage(current: Stage): Stage | null {
   const i = STAGES.indexOf(current)
   return i < 0 || i === STAGES.length - 1 ? null : STAGES[i + 1]
 }
+
+// ---- Seeding -----------------------------------------------------------
+
+export interface SeedResult {
+  created: number
+  skipped: number
+  failed: number
+  total: number
+  errors: string[]
+}
+
+/**
+ * Read the bundled gstack manifest and each verbatim SKILL.md body, then
+ * POST /api/skill-docs for every row not already present. Skips rows whose
+ * `name` already exists so the button is safe to click multiple times.
+ *
+ * The heavy lifting (reading the files) happens client-side via
+ * import.meta.glob in src/data/gstack-skills.ts — no filesystem access on
+ * the server is required.
+ */
+export async function seedSkillsFromManifest(): Promise<SeedResult> {
+  const { loadManifest, loadSkillBody, stripPortFrontmatter } = await import(
+    '../data/gstack-skills'
+  )
+  const manifest = loadManifest()
+  const existing = await listSkills()
+  const have = new Set(existing.map((s) => s.name))
+
+  const result: SeedResult = {
+    created: 0,
+    skipped: 0,
+    failed: 0,
+    total: manifest.skills.length,
+    errors: [],
+  }
+
+  for (const m of manifest.skills) {
+    if (have.has(m.name)) {
+      result.skipped++
+      continue
+    }
+    try {
+      const raw = await loadSkillBody(m.name)
+      if (raw == null) {
+        result.failed++
+        result.errors.push(`${m.name}: body not found in bundle`)
+        continue
+      }
+      const body = stripPortFrontmatter(raw)
+      const res = await call<SkillDoc>('POST', 'skill-docs', {
+        name: m.name,
+        role: m.role,
+        stage: m.stage,
+        sourceUrl: m.sourceUrl,
+        sourceSha: m.sourceSha,
+        body,
+        isCore: m.isCore,
+        portedAt: m.portedAt,
+      })
+      if (!res.ok) {
+        result.failed++
+        result.errors.push(`${m.name}: ${res.error?.message ?? 'unknown error'}`)
+      } else {
+        result.created++
+      }
+    } catch (e) {
+      result.failed++
+      result.errors.push(`${m.name}: ${(e as Error).message}`)
+    }
+  }
+  return result
+}
