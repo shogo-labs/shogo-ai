@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated UsageEvent MST Model
  *
@@ -25,8 +24,9 @@ export const UsageEventModel = types
     memberId: types.string,
     actionType: types.string,
     actionMetadata: types.optional(types.frozen(), {}),
-    creditCost: types.number,
-    creditSource: types.enumeration("CreditSource", ["daily", "monthly"]),
+    rawUsd: types.optional(types.number, 0),
+    billedUsd: types.number,
+    source: types.enumeration("UsageSource", ["daily", "monthly", "overage"]),
     balanceBefore: types.number,
     balanceAfter: types.number,
     createdAt: types.optional(types.number, 0),

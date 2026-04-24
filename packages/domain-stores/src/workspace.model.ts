@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated Workspace MST Model
  *
@@ -16,7 +15,7 @@ import { BillingAccountModel } from "./billing-account.model"
 import { InvitationModel } from "./invitation.model"
 import { FolderModel } from "./folder.model"
 import { SubscriptionModel } from "./subscription.model"
-import { CreditLedgerModel } from "./credit-ledger.model"
+import { UsageWalletModel } from "./usage-wallet.model"
 import { UsageEventModel } from "./usage-event.model"
 import { StarredProjectModel } from "./starred-project.model"
 
@@ -30,7 +29,8 @@ export const WorkspaceModel = types
     name: types.string,
     slug: types.string,
     description: types.optional(types.string, ""),
-    ssoSettings: types.frozen(),
+    ssoSettings: types.optional(types.frozen(), {}),
+    instanceSize: types.enumeration("InstanceSize", ["micro", "small", "medium", "large", "xlarge"]),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),
@@ -39,7 +39,7 @@ export const WorkspaceModel = types
     invitations: types.optional(types.array(types.safeReference(types.late(() => InvitationModel))), []),
     folders: types.optional(types.array(types.safeReference(types.late(() => FolderModel))), []),
     subscriptions: types.optional(types.array(types.safeReference(types.late(() => SubscriptionModel))), []),
-    creditLedgers: types.optional(types.array(types.safeReference(types.late(() => CreditLedgerModel))), []),
+    usageWallets: types.optional(types.array(types.safeReference(types.late(() => UsageWalletModel))), []),
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
     starredProjects: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
   })

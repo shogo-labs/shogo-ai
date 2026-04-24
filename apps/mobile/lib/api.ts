@@ -155,6 +155,23 @@ export const api = {
     return res.data
   },
 
+  async setUsageBasedPricing(
+    http: HttpClient,
+    workspaceId: string,
+    params: { enabled: boolean; hardLimitUsd: number | null },
+  ) {
+    const res = await http.post<{
+      ok: boolean
+      overageEnabled?: boolean
+      overageHardLimitUsd?: number | null
+    }>(`/api/billing/usage-based-pricing`, {
+      workspaceId,
+      overageEnabled: params.enabled,
+      overageHardLimitUsd: params.hardLimitUsd,
+    })
+    return res.data
+  },
+
   async getRegionalPricing(http: HttpClient) {
     const res = await http.get<RegionalPricingResponse>('/api/billing/regional-pricing')
     return res.data

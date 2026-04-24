@@ -44,7 +44,7 @@ import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { voiceRoutes } from './routes/voice'
 import { toolsProxyRoutes } from './routes/tools-proxy'
-import { calculateCreditCost } from './lib/credit-cost'
+import { calculateUsageCost } from './lib/usage-cost'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { adminMarketplaceRoutes } from './routes/admin-marketplace'
 import { marketplaceRoutes } from './routes/marketplace'
@@ -4328,14 +4328,22 @@ Examples:
       name = fallbackGenerateProjectName(prompt)
     }
 
-    // Track credit usage (fire-and-forget, small cost for Haiku)
+    // Track USD usage (fire-and-forget, small cost for Haiku)
     if (workspaceId) {
       const usage = result.usage as any
       const inTok = usage?.inputTokens || usage?.promptTokens || 0
       const outTok = usage?.outputTokens || usage?.completionTokens || 0
       if (inTok + outTok > 0) {
-        const { credits: creditCost } = calculateCreditCost(inTok, outTok, 'haiku')
-        billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok }).catch(() => {})
+        const { rawUsd, billedUsd } = calculateUsageCost(inTok, outTok, 'haiku')
+        billingService.consumeUsage({
+          workspaceId,
+          projectId: null,
+          memberId: authUserId || 'system',
+          actionType: 'project_name_generation',
+          rawUsd,
+          billedUsd,
+          actionMetadata: { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok, rawUsd },
+        }).catch(() => {})
       }
     }
 
@@ -4361,7 +4369,7 @@ Examples:
   }
 })
 
-// Credit cost calculation imported from ./lib/credit-cost
+// Usage cost calculation imported from ./lib/usage-cost
 
 /**
  * AI Chat endpoint — stub pending agent-runtime migration.
@@ -4472,14 +4480,18 @@ app.get('/api/billing/workspace-plan', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
     const sub = await billingService.getSubscription(workspaceId)
-    const ledger = await billingService.getCreditLedger(workspaceId)
+    const wallet = await billingService.getUsageWallet(workspaceId)
     return c.json({
       ok: true,
       planId: sub?.planId ?? 'free',
       status: sub?.status ?? null,
       billingInterval: sub?.billingInterval ?? null,
-      monthlyCredits: ledger?.monthlyCredits ?? 0,
-      dailyCredits: ledger?.dailyCredits ?? 0,
+      monthlyIncludedUsd: wallet?.monthlyIncludedUsd ?? 0,
+      dailyIncludedUsd: wallet?.dailyIncludedUsd ?? 0,
+      monthlyIncludedAllocationUsd: wallet?.monthlyIncludedAllocationUsd ?? 0,
+      overageEnabled: wallet?.overageEnabled ?? false,
+      overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
+      overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
     })
   } catch (error: any) {
     return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
@@ -4515,8 +4527,8 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     const newWorkspaceId = wsResult.workspace.id
     console.log('[Billing] Created paid workspace:', newWorkspaceId, 'for user:', userId)
 
-    // Allocate free credits so the workspace is usable while subscription provisions
-    await billingService.allocateFreeCredits(newWorkspaceId)
+    // Allocate free-tier wallet so the workspace is usable while subscription provisions
+    await billingService.allocateFreeWallet(newWorkspaceId)
 
     const metadata: Record<string, string> = {
       workspaceId: newWorkspaceId,
@@ -4607,13 +4619,46 @@ app.post('/api/billing/verify-checkout', async (c) => {
       cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
     })
 
-    await billingService.allocateMonthlyCredits(workspaceId, planId)
+    await billingService.allocateMonthlyIncluded(workspaceId, planId)
     console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId)
 
     return c.json({ ok: true, workspaceId, planId }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/usage-based-pricing', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({})) as {
+      workspaceId?: string
+      overageEnabled?: boolean
+      overageHardLimitUsd?: number | null
+    }
+    const { workspaceId, overageEnabled, overageHardLimitUsd } = body
+    if (!workspaceId || typeof overageEnabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId or overageEnabled' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const limit = overageHardLimitUsd == null
+      ? null
+      : (typeof overageHardLimitUsd === 'number' && overageHardLimitUsd >= 0 ? overageHardLimitUsd : null)
+    const wallet = await billingService.setUsageBasedPricing(workspaceId, {
+      overageEnabled,
+      overageHardLimitUsd: limit,
+    })
+    return c.json({
+      ok: true,
+      overageEnabled: wallet.overageEnabled,
+      overageHardLimitUsd: wallet.overageHardLimitUsd,
+      overageAccumulatedUsd: wallet.overageAccumulatedUsd,
+    })
+  } catch (error: any) {
+    console.error('[Billing] usage-based-pricing error:', error)
+    return c.json({ error: { code: 'usage_based_pricing_failed', message: error.message } }, 500)
   }
 })
 
@@ -5062,8 +5107,8 @@ app.post('/api/webhooks/stripe', async (c) => {
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
 
-            await billingService.allocateMonthlyCredits(workspaceId, planId)
-            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
+            await billingService.allocateMonthlyIncluded(workspaceId, planId)
+            console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId)
 
             // Send plan-upgraded email to workspace owner
             try {
@@ -5093,18 +5138,31 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null; billing_reason?: string }
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
         if (customerId && invoice.subscription) {
           try {
             const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
             const wsId = sub.metadata?.workspaceId
-            if (wsId) {
+            const planId = sub.metadata?.planId
+            if (wsId && planId) {
+              // Refill monthly included USD on every successful subscription
+              // payment cycle. `subscription_create` already allocates via the
+              // checkout.session.completed handler above, so only refill on
+              // the recurring cycle events.
+              const reason = invoice.billing_reason
+              if (reason === 'subscription_cycle' || reason === 'subscription_update') {
+                try {
+                  await billingService.allocateMonthlyIncluded(wsId, planId)
+                  console.log('[Webhook] Monthly USD refilled for workspace:', wsId, 'plan:', planId, 'reason:', reason)
+                } catch (allocErr: any) {
+                  console.error('[Webhook] Failed to refill monthly included USD:', allocErr.message)
+                }
+              }
               const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
-                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
                 sendPaymentReceiptEmail({
                   to: ownerEmail,
                   workspaceName: workspace!.name,

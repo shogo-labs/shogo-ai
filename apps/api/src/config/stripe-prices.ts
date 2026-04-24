@@ -277,6 +277,47 @@ export function getInstancePriceId(
 }
 
 // =============================================================================
+// USAGE-BASED PRICING (OVERAGE)
+// =============================================================================
+// A single metered Stripe price charges workspaces for marked-up usage beyond
+// the monthly included $ amount. We report usage via `usage_records.create`
+// against the subscription item created for this price. The price itself is
+// billed at $1.00 / 1.00 units with `billing_scheme=per_unit` so the reported
+// `quantity` is the marked-up USD amount in dollars (rounded to cents).
+//
+// Create a metered recurring price in Stripe (currency=USD, price=$1.00 per
+// unit, `usage_type=metered`, `aggregate_usage=sum`) and drop the ID in.
+
+export interface OveragePriceConfig {
+  priceId: string
+  /**
+   * Denominator for the reported `quantity`. 1 = dollars, 100 = cents.
+   * Cents give finer granularity — set the Stripe price unit amount to $0.01
+   * when using 100.
+   */
+  unitsPerDollar: number
+}
+
+export const OVERAGE_PRICE_STAGING: OveragePriceConfig = {
+  priceId: "price_overage_usd_metered_staging",
+  unitsPerDollar: 100,
+}
+
+export const OVERAGE_PRICE_PRODUCTION: OveragePriceConfig = {
+  priceId: "price_overage_usd_metered_live",
+  unitsPerDollar: 100,
+}
+
+export function getOveragePriceConfig(): OveragePriceConfig {
+  const isProduction = process.env.NODE_ENV === "production"
+  return isProduction ? OVERAGE_PRICE_PRODUCTION : OVERAGE_PRICE_STAGING
+}
+
+export function getOveragePriceId(): string {
+  return getOveragePriceConfig().priceId
+}
+
+// =============================================================================
 // HELPERS
 // =============================================================================
 

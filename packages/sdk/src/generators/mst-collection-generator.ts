@@ -67,6 +67,12 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
   const relationFields = getRelationFields(model)
   const relationFieldNames = relationFields.map(f => f.name)
 
+  // Derive date field names from the model so transformForMST converts
+  // ISO strings to numeric timestamps for every DateTime column
+  const dateFieldNames = model.fields
+    .filter(f => f.kind === 'scalar' && f.type === 'DateTime' && !f.isList)
+    .map(f => f.name)
+
   const lines: string[] = [
     GENERATED_FILE_LICENSE_HEADER,
     '/**',
@@ -472,7 +478,7 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     'function transformForMST(obj: any): any {',
     '  if (!obj || typeof obj !== "object") return obj',
     '',
-    '  const dateFields = ["createdAt", "updatedAt", "expiresAt", "publishedAt", "readAt", "emailSentAt", "lastActiveAt"]',
+    `  const dateFields = ${JSON.stringify(dateFieldNames)}`,
     '  const result: Record<string, any> = {}',
     '',
     '  for (const [key, value] of Object.entries(obj)) {',

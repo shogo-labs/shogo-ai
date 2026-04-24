@@ -23,9 +23,11 @@ export interface DiarizationResult {
 
 function getSherpaDir(): string {
   const candidates = [
+    process.env.SHOGO_SHERPA_DIR,
+    process.env.SHOGO_DATA_DIR ? join(process.env.SHOGO_DATA_DIR, 'sherpa-onnx') : undefined,
     resolve(process.cwd(), 'apps', 'desktop', 'resources', 'sherpa-onnx'),
-    join(process.resourcesPath || '', 'sherpa-onnx'),
-  ]
+    join((process as any).resourcesPath || '', 'sherpa-onnx'),
+  ].filter(Boolean) as string[]
   for (const dir of candidates) {
     if (existsSync(join(dir, 'bin', 'sherpa-onnx-offline-speaker-diarization'))) return dir
   }

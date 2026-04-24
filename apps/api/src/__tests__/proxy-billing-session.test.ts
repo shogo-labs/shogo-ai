@@ -5,20 +5,22 @@
  *
  * Tests the session-based token accumulator that allows the AI proxy
  * to buffer usage across multiple API calls in an agentic loop and
- * charge once at the end.
+ * charge once at the end — in USD (raw provider cost + MARKUP_MULTIPLIER).
  *
  * Run: bun test apps/api/src/__tests__/proxy-billing-session.test.ts
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
-// Track calls to consumeCredits
-let consumeCreditsCalls: any[] = []
+import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
+
+// Track calls to consumeUsage (new single-object-arg API)
+let consumeUsageCalls: any[] = []
 
 mock.module('../services/billing.service', () => ({
-  consumeCredits: async (...args: any[]) => {
-    consumeCreditsCalls.push(args)
-    return { success: true, remainingCredits: 99 }
+  consumeUsage: async (args: any) => {
+    consumeUsageCalls.push(args)
+    return { success: true, remainingIncludedUsd: 99 }
   },
 }))
 
@@ -32,7 +34,7 @@ import {
 
 describe('Proxy Billing Session', () => {
   beforeEach(() => {
-    consumeCreditsCalls = []
+    consumeUsageCalls = []
   })
 
   test('openSession creates an active session', () => {
@@ -63,41 +65,47 @@ describe('Proxy Billing Session', () => {
     accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 2000)
     accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 3000)
 
-    const { creditCost, totalTokens } = await closeSession('proj-multi')
+    const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-multi')
 
     expect(totalTokens).toBe(21000) // 15000 input + 6000 output
-    expect(creditCost).toBeGreaterThan(0)
+    expect(rawUsd).toBeGreaterThan(0)
+    expect(billedUsd).toBeGreaterThan(0)
+    expect(billedUsd).toBeCloseTo(rawUsd * MARKUP_MULTIPLIER, 10)
     expect(hasSession('proj-multi')).toBe(false)
 
-    // Should have called consumeCredits exactly once
-    expect(consumeCreditsCalls.length).toBe(1)
-    const [workspaceId, projectId, memberId, actionType, cost, metadata] = consumeCreditsCalls[0]
-    expect(workspaceId).toBe('ws-multi')
-    expect(projectId).toBe('proj-multi')
-    expect(memberId).toBe('user-multi')
-    expect(actionType).toBe('chat_message')
-    expect(metadata.totalTokens).toBe(21000)
-    expect(metadata.inputTokens).toBe(15000)
-    expect(metadata.outputTokens).toBe(6000)
-    expect(metadata.requestCount).toBe(3)
+    // Should have called consumeUsage exactly once
+    expect(consumeUsageCalls.length).toBe(1)
+    const args = consumeUsageCalls[0]
+    expect(args.workspaceId).toBe('ws-multi')
+    expect(args.projectId).toBe('proj-multi')
+    expect(args.memberId).toBe('user-multi')
+    expect(args.actionType).toBe('chat_message')
+    expect(args.rawUsd).toBeCloseTo(rawUsd, 10)
+    expect(args.billedUsd).toBeCloseTo(billedUsd, 10)
+    expect(args.actionMetadata.totalTokens).toBe(21000)
+    expect(args.actionMetadata.inputTokens).toBe(15000)
+    expect(args.actionMetadata.outputTokens).toBe(6000)
+    expect(args.actionMetadata.requestCount).toBe(3)
   })
 
   test('closeSession with no accumulated tokens charges nothing', async () => {
     openSession('proj-empty', 'ws-1', 'user-1')
 
-    const { creditCost, totalTokens } = await closeSession('proj-empty')
+    const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-empty')
 
     expect(totalTokens).toBe(0)
-    expect(creditCost).toBe(0)
-    expect(consumeCreditsCalls.length).toBe(0)
+    expect(billedUsd).toBe(0)
+    expect(rawUsd).toBe(0)
+    expect(consumeUsageCalls.length).toBe(0)
   })
 
   test('closeSession with no session returns zero', async () => {
-    const { creditCost, totalTokens } = await closeSession('proj-none')
+    const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-none')
 
     expect(totalTokens).toBe(0)
-    expect(creditCost).toBe(0)
-    expect(consumeCreditsCalls.length).toBe(0)
+    expect(billedUsd).toBe(0)
+    expect(rawUsd).toBe(0)
+    expect(consumeUsageCalls.length).toBe(0)
   })
 
   test('session is removed after close', async () => {
@@ -119,7 +127,7 @@ describe('Proxy Billing Session', () => {
     openSession('proj-overwrite', 'ws-2', 'user-2')
 
     // The old session's flush may be async, give it a tick
-    await new Promise(r => setTimeout(r, 10))
+    await new Promise((r) => setTimeout(r, 10))
 
     // New session should be fresh
     accumulateUsage('proj-overwrite', 'haiku', 100, 50)
@@ -129,15 +137,16 @@ describe('Proxy Billing Session', () => {
     expect(totalTokens).toBe(150)
   })
 
-  test('single API call charges based on split input/output tokens', async () => {
+  test('single API call charges billedUsd = rawUsd * MARKUP_MULTIPLIER', async () => {
     openSession('proj-single', 'ws-1', 'user-1')
     accumulateUsage('proj-single', 'claude-sonnet-4-5', 2000, 1000)
 
-    const { creditCost, totalTokens } = await closeSession('proj-single')
+    const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-single')
 
-    // Sonnet: (2000 * $3/1M) + (1000 * $15/1M) = $0.021 → $0.021/$0.10 = 0.21 → ceil = 0.3
+    // Sonnet: (2000 * $3/1M) + (1000 * $15/1M) = $0.021 raw
     expect(totalTokens).toBe(3000)
-    expect(creditCost).toBe(0.3)
+    expect(rawUsd).toBeCloseTo(0.021, 6)
+    expect(billedUsd).toBeCloseTo(0.021 * MARKUP_MULTIPLIER, 6)
   })
 
   test('many small API calls charge based on accumulated split tokens', async () => {
@@ -147,12 +156,13 @@ describe('Proxy Billing Session', () => {
       accumulateUsage('proj-many', 'claude-sonnet-4-5', 400, 200)
     }
 
-    const { creditCost, totalTokens } = await closeSession('proj-many')
+    const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-many')
 
-    // 2000 input + 1000 output, same as single call above
+    // 2000 input + 1000 output, same totals as single call above
     expect(totalTokens).toBe(3000)
-    expect(creditCost).toBe(0.3)
+    expect(rawUsd).toBeCloseTo(0.021, 6)
+    expect(billedUsd).toBeCloseTo(0.021 * MARKUP_MULTIPLIER, 6)
 
-    expect(consumeCreditsCalls.length).toBe(1)
+    expect(consumeUsageCalls.length).toBe(1)
   })
 })

@@ -60,7 +60,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { getCreditsCapacityForDisplay, formatCredits } from '../../lib/billing-config'
+import { getIncludedUsdCapacityForDisplay, formatUsd } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
@@ -1176,13 +1176,13 @@ const ROLE_COLORS: Record<string, string> = {
   viewer: 'bg-slate-400',
 }
 
-type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
+type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'spendLimit'
 type SortDir = 'asc' | 'desc'
 
-function formatCreditsLabel(value: number): string {
-  if (value === 0) return '0 credits'
-  if (value < 0.01) return '<0.01 credits'
-  return `${value.toFixed(2)} credits`
+function formatUsdLabel(value: number): string {
+  if (value === 0) return '$0.00'
+  if (value < 0.01) return '<$0.01'
+  return `$${value.toFixed(2)}`
 }
 
 const PeopleTab = observer(function PeopleTab() {
@@ -1401,7 +1401,7 @@ const PeopleTab = observer(function PeopleTab() {
   const colRole = 'w-[104px]'
   const colJoined = 'w-[128px]'
   const colUsage = 'w-[140px]'
-  const colCredit = 'w-[120px]'
+  const colSpend = 'w-[120px]'
   const colActions = 'w-11 items-center justify-center pr-1'
 
   const memberListTable = (
@@ -1443,8 +1443,8 @@ const PeopleTab = observer(function PeopleTab() {
             <Text className="text-xs font-medium text-muted-foreground text-right">Total usage</Text>
             <SortArrow field="totalUsage" />
           </Pressable>
-          <View className={cn(colCredit, 'items-end')}>
-            <Text className="text-xs font-medium text-muted-foreground text-right">Credit limit</Text>
+          <View className={cn(colSpend, 'items-end')}>
+            <Text className="text-xs font-medium text-muted-foreground text-right">Spend limit</Text>
           </View>
           <View className={colActions} />
         </View>
@@ -1514,17 +1514,17 @@ const PeopleTab = observer(function PeopleTab() {
 
               <View className={cn(colUsage, 'items-end')}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatCreditsLabel(memberUsage.monthly[member.userId] ?? 0)}
+                  {formatUsdLabel(memberUsage.monthly[member.userId] ?? 0)}
                 </Text>
               </View>
 
               <View className={cn(colUsage, 'items-end')}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatCreditsLabel(memberUsage.total[member.userId] ?? 0)}
+                  {formatUsdLabel(memberUsage.total[member.userId] ?? 0)}
                 </Text>
               </View>
 
-              <View className={cn(colCredit, 'items-end')}>
+              <View className={cn(colSpend, 'items-end')}>
                 <Text className="text-sm text-foreground text-right tabular-nums">—</Text>
               </View>
 
@@ -1640,7 +1640,7 @@ const PeopleTab = observer(function PeopleTab() {
           <Text className="font-semibold text-foreground">
             {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
           </Text>{' '}
-          gives access to workspace shared projects and credits.{' '}
+          gives access to workspace shared projects and usage.{' '}
           You have {builderCount} builder{builderCount !== 1 ? 's' : ''} in this workspace.
         </Text>
       </View>
@@ -2375,8 +2375,51 @@ function BillingTab() {
   const router = useRouter()
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
-  const { subscription, effectiveBalance } = useBillingData(workspace?.id)
+  const { subscription, effectiveBalance, refetchUsageWallet } = useBillingData(workspace?.id)
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
+  const [overageEnabled, setOverageEnabled] = useState(false)
+  const [overageLimitInput, setOverageLimitInput] = useState<string>('')
+  const [overageSaving, setOverageSaving] = useState(false)
+  const [overageError, setOverageError] = useState<string | null>(null)
+  const [overageSaved, setOverageSaved] = useState(false)
+
+  useEffect(() => {
+    if (!effectiveBalance) return
+    setOverageEnabled(effectiveBalance.overageEnabled)
+    setOverageLimitInput(
+      effectiveBalance.overageHardLimitUsd != null
+        ? String(effectiveBalance.overageHardLimitUsd)
+        : ''
+    )
+  }, [effectiveBalance?.overageEnabled, effectiveBalance?.overageHardLimitUsd])
+
+  const handleSaveOverage = useCallback(async () => {
+    if (!workspace?.id) return
+    setOverageSaving(true)
+    setOverageError(null)
+    setOverageSaved(false)
+    try {
+      const trimmed = overageLimitInput.trim()
+      let limitUsd: number | null = null
+      if (trimmed !== '') {
+        const parsed = Number(trimmed)
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          throw new Error('Enter a non-negative number')
+        }
+        limitUsd = parsed
+      }
+      await api.setUsageBasedPricing(http, workspace.id, {
+        enabled: overageEnabled,
+        hardLimitUsd: limitUsd,
+      })
+      setOverageSaved(true)
+      refetchUsageWallet()
+    } catch (e: any) {
+      setOverageError(e?.message ?? 'Failed to update usage-based pricing')
+    } finally {
+      setOverageSaving(false)
+    }
+  }, [workspace?.id, overageEnabled, overageLimitInput, http, refetchUsageWallet])
 
   useEffect(() => {
     if (!workspace?.id) return
@@ -2401,14 +2444,15 @@ function BillingTab() {
           ? 'Basic'
           : 'Free'
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const totalCredits = getCreditsCapacityForDisplay(
+  const totalUsd = getIncludedUsdCapacityForDisplay(
     hasActiveSubscription ? subscription?.planId : undefined,
     effectiveBalance?.total,
-    effectiveBalance?.monthlyAllocation,
+    effectiveBalance?.monthlyIncludedAllocationUsd,
   )
-  const creditsRemaining = effectiveBalance?.total ?? 0
-  const creditsUsed = Math.max(0, totalCredits - creditsRemaining)
-  const usagePct = totalCredits > 0 ? Math.min(100, Math.round((creditsUsed / totalCredits) * 100)) : 0
+  const usdRemaining = effectiveBalance?.total ?? 0
+  const usdUsed = Math.max(0, totalUsd - usdRemaining)
+  const usagePct = totalUsd > 0 ? Math.min(100, Math.round((usdUsed / totalUsd) * 100)) : 0
+  const canUseOverage = hasActiveSubscription
 
   if (!workspace?.id) {
     return (
@@ -2423,7 +2467,7 @@ function BillingTab() {
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Billing</Text>
         <Text className="text-xs text-muted-foreground">
-          Manage your plan and view credit usage
+          Manage your plan and view usage
         </Text>
       </View>
 
@@ -2448,9 +2492,9 @@ function BillingTab() {
 
           <View className="gap-2">
             <View className="flex-row items-center justify-between">
-              <Text className="text-sm text-muted-foreground">Credits</Text>
+              <Text className="text-sm text-muted-foreground">Usage</Text>
               <Text className="text-sm font-medium text-foreground">
-                {formatCredits(effectiveBalance?.total ?? 0)} / {formatCredits(totalCredits)}
+                {formatUsd(effectiveBalance?.total ?? 0)} / {formatUsd(totalUsd)}
               </Text>
             </View>
             <View className="h-2 bg-muted rounded-full overflow-hidden">
@@ -2461,9 +2505,14 @@ function BillingTab() {
             </View>
             <Text className="text-xs text-muted-foreground">
               {effectiveBalance
-                ? `${formatCredits(effectiveBalance.dailyCredits)} daily + ${formatCredits(effectiveBalance.monthlyCredits)} monthly remaining`
+                ? `${formatUsd(effectiveBalance.dailyIncludedUsd)} daily + ${formatUsd(effectiveBalance.monthlyIncludedUsd)} monthly remaining`
                 : 'Loading...'}
             </Text>
+            {effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
+              <Text className="text-xs text-muted-foreground">
+                Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)}
+              </Text>
+            )}
           </View>
 
           {instanceLabel && (
@@ -2487,6 +2536,57 @@ function BillingTab() {
           </Button>
         </CardContent>
       </Card>
+
+      {canUseOverage && (
+        <Card>
+          <CardContent className="p-4 gap-3">
+            <View className="gap-1">
+              <Text className="text-sm font-semibold text-foreground">Usage-based pricing</Text>
+              <Text className="text-xs text-muted-foreground">
+                When your included usage runs out, keep working and pay provider cost + 20% for
+                the extra. Overage is billed at the end of each period. Set a monthly hard cap
+                to protect your workspace from surprise bills.
+              </Text>
+            </View>
+
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-foreground">Enable usage-based pricing</Text>
+              <Switch value={overageEnabled} onValueChange={setOverageEnabled} />
+            </View>
+
+            <View className="gap-1">
+              <Text className="text-xs text-muted-foreground">Monthly hard cap (USD)</Text>
+              <Input
+                value={overageLimitInput}
+                onChangeText={setOverageLimitInput}
+                keyboardType="decimal-pad"
+                placeholder="e.g. 100"
+                editable={overageEnabled}
+              />
+              <Text className="text-[10px] text-muted-foreground">
+                Leave blank for no cap. Set to 0 to disable overage without turning the toggle off.
+              </Text>
+            </View>
+
+            {overageError && (
+              <Text className="text-xs text-destructive">{overageError}</Text>
+            )}
+            {overageSaved && !overageError && (
+              <Text className="text-xs text-primary">Saved</Text>
+            )}
+
+            <Button
+              variant="outline"
+              onPress={handleSaveOverage}
+              disabled={overageSaving}
+            >
+              <Text className="text-foreground font-medium">
+                {overageSaving ? 'Saving...' : 'Save usage-based pricing'}
+              </Text>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </View>
   )
 }
@@ -2571,7 +2671,7 @@ function WorkspaceAnalyticsTab() {
         <Text className="text-xs text-muted-foreground mb-3">
           {localMode
             ? 'Token usage and agent activity for this workspace'
-            : 'Usage metrics and credit consumption for this workspace'}
+            : 'Usage metrics and spend for this workspace'}
         </Text>
         <PeriodSelector value={period} onChange={setPeriod} />
       </View>
@@ -2610,7 +2710,7 @@ function WorkspaceAnalyticsTab() {
               Advanced Team Analytics
             </Text>
             <Text className="text-xs text-muted-foreground text-center max-w-[320px]">
-              Growth charts, per-member credit breakdown, and chat analytics are available on Business plans.
+              Growth charts, per-member spend breakdown, and chat analytics are available on Business plans.
             </Text>
             <Button
               variant="outline"

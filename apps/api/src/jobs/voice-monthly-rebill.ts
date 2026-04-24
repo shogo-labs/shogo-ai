@@ -8,17 +8,17 @@
  *
  * Safe to re-run: the watermark is advanced inside the debit
  * transaction, so any second run inside the same period is a strict
- * no-op. If a debit fails (e.g. insufficient credits) the watermark
+ * no-op. If a debit fails (e.g. usage limit reached) the watermark
  * stays put so the next run retries. The Project Settings > Phone tab
- * also pre-flights `numberSetup + numberMonthly` against the ledger
+ * also pre-flights `numberSetup + numberMonthly` against the wallet
  * when a customer provisions a number, so failures here are rare.
  */
 
 import { prisma } from '../lib/prisma'
-import { consumeCredits } from '../services/billing.service'
+import { consumeUsage } from '../services/billing.service'
 import {
   resolvePlanIdForWorkspace,
-  resolveVoiceRate,
+  calculateVoiceNumberCost,
 } from '../lib/voice-cost'
 
 function startOfMonthUtc(d: Date): Date {
@@ -66,21 +66,23 @@ export async function runVoiceMonthlyRebill(
   for (const cfg of configs) {
     try {
       const planId = await resolvePlanIdForWorkspace(cfg.workspaceId)
-      const cost = resolveVoiceRate(planId, 'numberMonthly')
-      const result = await consumeCredits(
-        cfg.workspaceId,
-        cfg.projectId,
-        'voice-rebill',
-        'voice_number_monthly',
-        cost,
-        {
+      const { rawUsd, billedUsd } = calculateVoiceNumberCost(planId, 'monthly')
+      const result = await consumeUsage({
+        workspaceId: cfg.workspaceId,
+        projectId: cfg.projectId,
+        memberId: 'voice-rebill',
+        actionType: 'voice_number_monthly',
+        rawUsd,
+        billedUsd,
+        actionMetadata: {
           projectId: cfg.projectId,
           twilioPhoneSid: cfg.twilioPhoneSid,
           twilioPhoneNumber: cfg.twilioPhoneNumber,
-          creditsForPeriod: cost,
+          rawUsd,
+          billedUsd,
           periodStart: period.toISOString(),
         },
-      )
+      })
 
       if (!result.success) {
         console.warn(

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated ChatSession MST Model
  *
@@ -27,6 +26,7 @@ export const ChatSessionModel = types
     contextId: types.optional(types.string, ""),
     phase: types.optional(types.string, ""),
     claudeCodeSessionId: types.optional(types.string, ""),
+    cachedMessageCount: types.optional(types.number, 0),
     contextUsageTokens: types.optional(types.number, 0),
     contextWindowTokens: types.optional(types.number, 0),
     createdAt: types.optional(types.number, 0),

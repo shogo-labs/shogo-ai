@@ -12,6 +12,8 @@ export type ProjectStatus = 'draft' | 'active' | 'archived'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
 
+export type ProjectCategory = 'app' | 'website' | 'tool' | 'game'
+
 export interface ProjectType {
   id: string
   name: string
@@ -27,9 +29,14 @@ export interface ProjectType {
   publishedSubdomain?: string
   publishedAt?: Date
   accessLevel: AccessLevel
-  category?: string
+  category?: ProjectCategory
   siteTitle?: string
   siteDescription?: string
+  thumbnailUrl?: string
+  templateId?: string
+  knativeServiceName?: string
+  settings?: Record<string, unknown>
+  lastMessageAt?: Date
 }
 
 export interface ProjectCreateInput {
@@ -44,9 +51,14 @@ export interface ProjectCreateInput {
   publishedSubdomain?: string
   publishedAt?: Date
   accessLevel?: AccessLevel
-  category?: string
+  category?: ProjectCategory
   siteTitle?: string
   siteDescription?: string
+  thumbnailUrl?: string
+  templateId?: string
+  knativeServiceName?: string
+  settings?: Record<string, unknown>
+  lastMessageAt?: Date
 }
 
 export interface ProjectUpdateInput {
@@ -61,7 +73,12 @@ export interface ProjectUpdateInput {
   publishedSubdomain?: string
   publishedAt?: Date
   accessLevel?: AccessLevel
-  category?: string
+  category?: ProjectCategory
   siteTitle?: string
   siteDescription?: string
+  thumbnailUrl?: string
+  templateId?: string
+  knativeServiceName?: string
+  settings?: Record<string, unknown>
+  lastMessageAt?: Date
 }

@@ -11,7 +11,6 @@ export interface BillingAccountType {
   workspaceId: string
   stripeCustomerId?: string
   taxId?: string
-  creditsBalance: number
   createdAt: Date
   updatedAt: Date
 }
@@ -20,12 +19,10 @@ export interface BillingAccountCreateInput {
   workspaceId: string
   stripeCustomerId?: string
   taxId?: string
-  creditsBalance?: number
 }
 
 export interface BillingAccountUpdateInput {
   workspaceId?: string
   stripeCustomerId?: string
   taxId?: string
-  creditsBalance?: number
 }

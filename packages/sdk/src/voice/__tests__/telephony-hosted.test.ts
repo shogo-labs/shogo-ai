@@ -89,7 +89,9 @@ describe('HostedTelephonyClient', () => {
           phoneNumber: '+14155550001',
           twilioPhoneSid: 'PN1',
           elevenlabsPhoneId: 'el_1',
-          creditsDebited: { setup: 100, monthly: 150 },
+          setupBilledUsd: 2.4,
+          monthlyBilledUsd: 3.6,
+          usageDebited: { setup: true, monthly: true },
         },
       },
     ])
@@ -105,7 +107,9 @@ describe('HostedTelephonyClient', () => {
     expect(result.phoneNumber).toBe('+14155550001')
     expect(result.twilioPhoneSid).toBe('PN1')
     expect(result.elevenlabsPhoneId).toBe('el_1')
-    expect(result.creditsDebited).toEqual({ setup: 100, monthly: 150 })
+    expect(result.setupBilledUsd).toBe(2.4)
+    expect(result.monthlyBilledUsd).toBe(3.6)
+    expect(result.usageDebited).toEqual({ setup: true, monthly: true })
 
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe(
@@ -128,7 +132,8 @@ describe('HostedTelephonyClient', () => {
         body: {
           callSid: 'CA1',
           conversationId: 'conv_1',
-          estimatedCredits: 12,
+          estimatedBilledUsd: 0.288,
+          billedUsdPerMinute: 0.288,
         },
       },
     ])
@@ -146,7 +151,8 @@ describe('HostedTelephonyClient', () => {
 
     expect(result.callSid).toBe('CA1')
     expect(result.conversationId).toBe('conv_1')
-    expect(result.estimatedCredits).toBe(12)
+    expect(result.estimatedBilledUsd).toBe(0.288)
+    expect(result.billedUsdPerMinute).toBe(0.288)
     expect(calls[0].url).toBe(
       'https://api.test/api/voice/twilio/outbound/proj-xyz',
     )
@@ -154,11 +160,11 @@ describe('HostedTelephonyClient', () => {
     expect((calls[0].body as any).dynamicVariables).toEqual({ campaign: 'x' })
   })
 
-  test('insufficient-credits error maps to TelephonyApiError(402)', async () => {
+  test('usage-limit-reached error maps to TelephonyApiError(402)', async () => {
     const { impl } = mockFetch([
       {
         status: 402,
-        body: { error: 'insufficient_credits' },
+        body: { error: 'usage_limit_reached' },
       },
     ])
     const client = new HostedTelephonyClient({
@@ -177,7 +183,7 @@ describe('HostedTelephonyClient', () => {
     expect(caught).toBeInstanceOf(TelephonyApiError)
     expect((caught as TelephonyApiError).status).toBe(402)
     expect((caught as TelephonyApiError).message).toContain(
-      'insufficient_credits',
+      'usage_limit_reached',
     )
   })
 

@@ -124,7 +124,8 @@ interface UsageSummaryData {
     totalInputTokens: number
     totalOutputTokens: number
     totalTokens: number
-    totalCredits: number
+    totalBilledUsd: number
+    totalRawUsd: number
     totalToolCalls: number
     uniqueUsers: number
     uniqueModels: number
@@ -134,7 +135,7 @@ interface UsageSummaryData {
     userName: string
     totalRequests: number
     totalTokens: number
-    totalCredits: number
+    totalBilledUsd: number
   }>
 }
 
@@ -458,7 +459,7 @@ function AIUsageSummaryCard({ data, loading }: { data: UsageSummaryData | null; 
   const items = [
     { label: 'Total Requests', value: totals?.totalRequests ?? 0, icon: Zap, color: 'text-amber-500' },
     { label: 'Total Tokens', value: fmtTokens(totals?.totalTokens ?? 0), icon: Cpu, color: 'text-blue-500' },
-    { label: 'Credits Used', value: (totals?.totalCredits ?? 0).toFixed(1), icon: Activity, color: 'text-purple-500' },
+    { label: 'Total Spend', value: `$${(totals?.totalBilledUsd ?? 0).toFixed(2)}`, icon: Activity, color: 'text-purple-500' },
     { label: 'Tool Calls', value: totals?.totalToolCalls ?? 0, icon: Box, color: 'text-emerald-500' },
   ]
 
