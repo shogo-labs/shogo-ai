@@ -115,7 +115,7 @@ model Workspace {
   folders              Folder[]
   subscriptions        Subscription[]
   instanceSubscription InstanceSubscription?
-  creditLedgers        CreditLedger[]
+  usageWallets         UsageWallet[]
   usageEvents          UsageEvent[]
   storageUsage         StorageUsage?
   starredProjects      StarredProject[]
@@ -286,7 +286,6 @@ model BillingAccount {
   workspaceId      String
   stripeCustomerId String?
   taxId            String?
-  creditsBalance   Float    @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -377,7 +376,7 @@ model Notification {
 }
 
 // =============================================================================
-// BILLING (Subscriptions & Credits)
+// BILLING (Subscriptions & Usage)
 // =============================================================================
 
 model Subscription {
@@ -400,21 +399,26 @@ model Subscription {
   @@map("subscriptions")
 }
 
-model CreditLedger {
-  id               String   @id @default(uuid())
-  workspaceId      String   @unique
-  monthlyCredits   Float    @default(0)
-  dailyCredits     Float    @default(0)
-  dailyCreditsDispensedThisMonth Float @default(0)
-  anniversaryDay   Int
-  lastDailyReset   DateTime
-  lastMonthlyReset DateTime
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+model UsageWallet {
+  id                            String   @id @default(uuid())
+  workspaceId                   String   @unique
+  monthlyIncludedUsd            Float    @default(0)
+  dailyIncludedUsd              Float    @default(0)
+  monthlyIncludedAllocationUsd  Float    @default(0)
+  dailyUsedThisMonthUsd         Float    @default(0)
+  overageEnabled                Boolean  @default(false)
+  overageHardLimitUsd           Float?
+  overageAccumulatedUsd         Float    @default(0)
+  stripeMeteredItemId           String?
+  anniversaryDay                Int
+  lastDailyReset                DateTime
+  lastMonthlyReset              DateTime
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@map("credit_ledgers")
+  @@map("usage_wallets")
 }
 
 model UsageEvent {
@@ -424,8 +428,9 @@ model UsageEvent {
   memberId       String
   actionType     String
   actionMetadata String?
-  creditCost     Float
-  creditSource   String
+  rawUsd         Float?
+  billedUsd      Float
+  source         String
   balanceBefore  Float
   balanceAfter   Float
   createdAt      DateTime @default(now())
@@ -1130,7 +1135,7 @@ model AnalyticsDigest {
   totalMessages        Int      @default(0)
   totalSessions        Int      @default(0)
   totalToolCalls       Int      @default(0)
-  totalCreditsUsed     Float    @default(0)
+  totalSpendUsd        Float    @default(0)
 
   templateStats        String?
   chunksProcessed      Int      @default(1)

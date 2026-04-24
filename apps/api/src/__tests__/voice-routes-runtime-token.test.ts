@@ -120,7 +120,7 @@ mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({
 // right after `authorizeProject`. Stub them enough to reach a
 // deterministic response code. The default twilio stub returns an
 // error (most tests short-circuit early on 503); tests that need to
-// reach `consumeCredits` install a success client into
+// reach `consumeUsage` install a success client into
 // `twilioResolveState` before issuing the request.
 type TwilioResolveResult =
   | { error: string }
@@ -142,31 +142,27 @@ mock.module('../lib/twilio', () => ({
 mock.module('../lib/voice-cost', () => ({
   resolveVoiceRate: () => 0,
   resolvePlanIdForWorkspace: async () => 'plan_test',
-  getCreditBalance: async () => 1000,
-  calculateVoiceMinuteCost: () => 0,
+  getUsdBalance: async () => 1000,
+  calculateVoiceMinuteCost: () => ({
+    billedMinutes: 1,
+    rawUsd: 0.2,
+    billedUsd: 0.24,
+    rawUsdPerMinute: 0.2,
+    billedUsdPerMinute: 0.24,
+  }),
+  calculateVoiceNumberCost: () => ({ rawUsd: 2, billedUsd: 2.4 }),
 }))
 
-// Capture consumeCredits args so the memberId contract can be
-// asserted. Default return shape matches what voice.ts checks
-// (`.success`). Mutate `consumeCreditsState.calls` / reset per test.
-const consumeCreditsMock = mock(
-  async (
-    workspaceId: string,
-    projectId: string | null,
-    memberId: string,
-    actionType: string,
-    _creditCost: number,
-    _metadata?: unknown,
-  ) => {
-    void workspaceId
-    void projectId
-    void actionType
-    void memberId
-    return { success: true }
-  },
-)
+// Capture consumeUsage args so the memberId contract can be asserted.
+// The new billing API takes a single object arg (workspaceId, projectId,
+// memberId, actionType, rawUsd, billedUsd, actionMetadata). Default
+// return shape matches what voice.ts checks (`.success`).
+const consumeUsageMock = mock(async (args: { memberId: string }) => {
+  void args
+  return { success: true }
+})
 mock.module('../services/billing.service', () => ({
-  consumeCredits: consumeCreditsMock,
+  consumeUsage: consumeUsageMock,
 }))
 mock.module('../lib/voice-meter', () => ({
   recordCallUsage: async () => ({ ok: true }),
@@ -213,7 +209,7 @@ beforeEach(() => {
   getSignedUrlMock.mockClear()
   createAgentMock.mockClear()
   createPhoneNumberTwilioMock.mockClear()
-  consumeCreditsMock.mockClear()
+  consumeUsageMock.mockClear()
   twilioResolveState = { error: 'twilio not configured in test' }
 })
 
@@ -396,14 +392,14 @@ describe('POST /api/voice/twilio/provision-number/:projectId with x-runtime-toke
   /**
    * Gotcha 3 in apps/api/src/lib/runtime-token.md: runtime-token callers
    * carry a real project-owner userId, so billable actions attribute to
-   * the owner in `UsageEvent.memberId` (via `auditMemberId` → `consumeCredits`).
+   * the owner in `UsageEvent.memberId` (via `auditMemberId` → `consumeUsage`).
    * Before the real-userId resolution, this wrote the synthetic
    * `runtime:<projectId>` string into analytics — this test locks the new
    * contract in place.
    */
-  test('credited actions attribute `memberId` to the real project owner', async () => {
+  test('billed actions attribute `memberId` to the real project owner', async () => {
     // Wire the twilio stub into full success so the provision path
-    // reaches `consumeCredits`. Keep it scoped to this test — the
+    // reaches `consumeUsage`. Keep it scoped to this test — the
     // `beforeEach` resets `twilioResolveState` to the default error
     // stub so other tests stay deterministic.
     twilioResolveState = {
@@ -431,22 +427,27 @@ describe('POST /api/voice/twilio/provision-number/:projectId with x-runtime-toke
       },
     )
 
-    // We only care that provisioning reached `consumeCredits` with the
+    // We only care that provisioning reached `consumeUsage` with the
     // right memberId. Whether the 200 happens depends on downstream
     // Prisma shape — accept any non-auth status here.
     expect(res.status).not.toBe(401)
     expect(res.status).not.toBe(403)
 
-    // consumeCredits must have been called and memberId must be the
+    // consumeUsage must have been called and memberId must be the
     // real project-owner userId, NOT a synthetic `runtime:<projectId>`
     // string, NOT `voice-system`.
-    expect(consumeCreditsMock).toHaveBeenCalled()
-    const firstCall = consumeCreditsMock.mock.calls[0]!
-    const memberIdArg = firstCall[2]
+    expect(consumeUsageMock).toHaveBeenCalled()
+    const firstCall = consumeUsageMock.mock.calls[0]!
+    const memberIdArg = firstCall[0].memberId
     expect(typeof memberIdArg).toBe('string')
     expect(memberIdArg).toBe(USER_OWNER_A)
     expect(memberIdArg.startsWith('runtime:')).toBe(false)
     expect(memberIdArg).not.toBe('voice-system')
+
+    // And the debit must be in USD shape, not credit shape.
+    expect(typeof firstCall[0].rawUsd).toBe('number')
+    expect(typeof firstCall[0].billedUsd).toBe('number')
+    expect(firstCall[0].billedUsd).toBeGreaterThanOrEqual(firstCall[0].rawUsd)
   })
 })
 

@@ -211,7 +211,7 @@ export interface ChatPanelProps {
   billingData?: {
     hasActiveSubscription: boolean
     hasAdvancedModelAccess?: boolean
-    refetchCreditLedger: () => void
+    refetchUsageWallet: () => void
   }
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
   onMessagesChange?: (messages: any[]) => void
@@ -609,7 +609,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const hasActiveSubscription = billingData?.hasActiveSubscription ?? false
   const hasAdvancedModelAccess = billingData?.hasAdvancedModelAccess ?? hasActiveSubscription
-  const refetchCreditLedger = billingData?.refetchCreditLedger ?? (() => {})
+  const refetchUsageWallet = billingData?.refetchUsageWallet ?? (() => {})
 
   const handleUpgradeClick = useCallback(() => {
     router.push('/(app)/billing' as any)
@@ -1512,7 +1512,7 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       if (currentSessionId) {
-        refetchCreditLedger()
+        refetchUsageWallet()
 
         const toolCalls = extractToolCalls(message)
         if (toolCalls.length > 0) {

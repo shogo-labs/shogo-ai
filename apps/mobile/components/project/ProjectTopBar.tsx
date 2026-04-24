@@ -67,7 +67,7 @@ import {
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
-import { formatCredits } from '../../lib/billing-config'
+import { formatUsd } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
@@ -113,8 +113,8 @@ export interface ProjectTopBarProps {
   hasActiveSubscription?: boolean
   workspaceName?: string
   planLabel?: string
-  creditsRemaining?: number
-  creditsTotal?: number
+  usdRemaining?: number
+  usdTotal?: number
   ownerName?: string
   projectCreatedAt?: string | number
   projectModifiedAt?: string | number
@@ -217,8 +217,8 @@ export function ProjectTopBar({
   hasActiveSubscription = false,
   workspaceName = '',
   planLabel = 'Free',
-  creditsRemaining = 5,
-  creditsTotal = 5,
+  usdRemaining = 0.5,
+  usdTotal = 0.5,
   ownerName = '',
   projectCreatedAt,
   projectModifiedAt,
@@ -403,8 +403,8 @@ export function ProjectTopBar({
                   onClose={() => setShowDropdown(false)}
                   workspaceName={workspaceName}
                   planLabel={planLabel}
-                  creditsRemaining={creditsRemaining}
-                  creditsTotal={creditsTotal}
+                  usdRemaining={usdRemaining}
+                  usdTotal={usdTotal}
                   ownerName={ownerName}
                   projectCreatedAt={projectCreatedAt}
                   projectModifiedAt={projectModifiedAt}
@@ -560,8 +560,8 @@ export function ProjectTopBar({
                   onClose={() => setShowDropdown(false)}
                   workspaceName={workspaceName}
                   planLabel={planLabel}
-                  creditsRemaining={creditsRemaining}
-                  creditsTotal={creditsTotal}
+                  usdRemaining={usdRemaining}
+                  usdTotal={usdTotal}
                   ownerName={ownerName}
                   projectCreatedAt={projectCreatedAt}
                   projectModifiedAt={projectModifiedAt}
@@ -870,8 +870,8 @@ function ProjectDropdownContent({
   onClose,
   workspaceName,
   planLabel,
-  creditsRemaining,
-  creditsTotal,
+  usdRemaining,
+  usdTotal,
   ownerName,
   projectCreatedAt,
   projectModifiedAt,
@@ -890,8 +890,8 @@ function ProjectDropdownContent({
   onClose: () => void
   workspaceName: string
   planLabel: string
-  creditsRemaining: number
-  creditsTotal: number
+  usdRemaining: number
+  usdTotal: number
   ownerName: string
   projectCreatedAt?: string | number
   projectModifiedAt?: string | number
@@ -923,8 +923,8 @@ function ProjectDropdownContent({
       projectName={projectName}
       workspaceName={workspaceName}
       planLabel={planLabel}
-      creditsRemaining={creditsRemaining}
-      creditsTotal={creditsTotal}
+      usdRemaining={usdRemaining}
+      usdTotal={usdTotal}
       onGoToDashboard={onGoToDashboard}
       onSwitchProject={() => setView('switcher')}
       onClose={onClose}
@@ -951,8 +951,8 @@ function ProjectMenuView({
   projectName,
   workspaceName,
   planLabel,
-  creditsRemaining,
-  creditsTotal,
+  usdRemaining,
+  usdTotal,
   onGoToDashboard,
   onSwitchProject,
   onClose,
@@ -971,8 +971,8 @@ function ProjectMenuView({
   projectName: string
   workspaceName: string
   planLabel: string
-  creditsRemaining: number
-  creditsTotal: number
+  usdRemaining: number
+  usdTotal: number
   onGoToDashboard: () => void
   onSwitchProject: () => void
   onClose: () => void
@@ -994,7 +994,7 @@ function ProjectMenuView({
   const [isExporting, setIsExporting] = useState(false)
   const { features } = usePlatformConfig()
   const showBilling = features.billing
-  const creditsPercent = creditsTotal > 0 ? (creditsRemaining / creditsTotal) * 100 : 0
+  const usdPercent = usdTotal > 0 ? (usdRemaining / usdTotal) * 100 : 0
 
   const runExport = useCallback(async (options: { includeChats: boolean }) => {
     if (isExporting) return
@@ -1145,26 +1145,26 @@ function ProjectMenuView({
               {Platform.OS === 'web' ? (
                 <>
                   <View className="flex-row items-center justify-between">
-                    <Text className="text-sm font-medium text-foreground">Credits</Text>
+                    <Text className="text-sm font-medium text-foreground">Usage</Text>
                     <Pressable
                       onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
                       className="flex-row items-center gap-1"
                     >
                       <Text className="text-sm font-medium text-foreground">
-                        {formatCredits(creditsRemaining)} left
+                        {formatUsd(usdRemaining)} left
                       </Text>
                       <ChevronRight size={14} className="text-muted-foreground" />
                     </Pressable>
                   </View>
                   <Progress
-                    value={creditsPercent}
+                    value={usdPercent}
                     className="h-1.5"
                   />
                 </>
               ) : (
                 <>
                   <View className="flex-row items-center justify-between gap-2">
-                    <Text className="text-sm font-medium text-foreground shrink-0">Credits</Text>
+                    <Text className="text-sm font-medium text-foreground shrink-0">Usage</Text>
                     <Pressable
                       onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
                       className="flex-row items-center gap-1 min-w-0 flex-1 justify-end"
@@ -1174,13 +1174,13 @@ function ProjectMenuView({
                         numberOfLines={1}
                         ellipsizeMode="tail"
                       >
-                        {formatCredits(creditsRemaining)} left
+                        {formatUsd(usdRemaining)} left
                       </Text>
                       <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
                     </Pressable>
                   </View>
                   <Progress
-                    value={creditsPercent}
+                    value={usdPercent}
                     className="h-1.5 w-full"
                   />
                 </>
@@ -1188,7 +1188,7 @@ function ProjectMenuView({
               <View className="flex-row items-center gap-1.5">
                 <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
                 <Text className="text-xs text-muted-foreground">
-                  Daily credits reset at midnight UTC
+                  Daily allowance resets at midnight UTC
                 </Text>
               </View>
             </View>

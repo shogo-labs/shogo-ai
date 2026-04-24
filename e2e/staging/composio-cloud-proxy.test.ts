@@ -33,8 +33,8 @@ import { makeTestUser, signUpAndOnboard } from "./helpers"
  *    - API Keys page loads and shows the created key
  *    - Navigation between Remote Control and API Keys works
  *
- * 6. Billing & Credit Visibility
- *    - Workspace plan endpoint returns credit info
+ * 6. Billing & Usage Visibility
+ *    - Workspace plan endpoint returns usage info (USD)
  *    - API key usage is billed to the workspace
  *
  * 7. Key Revocation Security
@@ -380,10 +380,10 @@ test.describe("API Key Feature — Full E2E", () => {
   })
 
   // =========================================================================
-  // 6. Billing & Credit Visibility
+  // 6. Billing & Usage Visibility
   // =========================================================================
 
-  test("6a — workspace plan endpoint returns billing info", async () => {
+  test("6a — workspace plan endpoint returns USD usage info", async () => {
     const res = await request.get(
       `${API_BASE}/api/billing/workspace-plan?workspaceId=${workspaceId}`,
       { headers: { Authorization: `Bearer ${apiKey}` } },
@@ -392,7 +392,9 @@ test.describe("API Key Feature — Full E2E", () => {
     const body = await res.json()
     expect(body.ok).toBe(true)
     expect(body.planId).toBeTruthy()
-    expect(typeof body.dailyCredits).toBe("number")
+    expect(typeof body.dailyIncludedUsd).toBe("number")
+    expect(typeof body.monthlyIncludedUsd).toBe("number")
+    expect(typeof body.overageEnabled).toBe("boolean")
   })
 
   // =========================================================================

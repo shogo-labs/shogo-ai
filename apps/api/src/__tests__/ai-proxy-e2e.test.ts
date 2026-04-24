@@ -16,7 +16,7 @@
 import { describe, test, expect, beforeAll, mock } from 'bun:test'
 import { Hono } from 'hono'
 
-// Run the billing service in local mode so credit-ledger checks are bypassed
+// Run the billing service in local mode so usage-wallet checks are bypassed
 // without needing to stub every model in the mocked Prisma client. The env
 // var is read at module load, so set it before importing anything that
 // transitively loads billing.service.
@@ -38,12 +38,17 @@ mock.module('../lib/prisma', () => ({
         return args.data
       },
     },
-    creditLedger: {
+    usageWallet: {
       findUnique: async () => ({
         workspaceId: 'e2e-workspace',
-        monthlyCredits: 1_000_000,
-        dailyCredits: 1_000_000,
-        dailyCreditsDispensedThisMonth: 0,
+        monthlyIncludedUsd: 1_000_000,
+        monthlyIncludedAllocationUsd: 1_000_000,
+        dailyIncludedUsd: 1_000_000,
+        dailyUsedThisMonthUsd: 0,
+        overageEnabled: false,
+        overageHardLimitUsd: null,
+        overageAccumulatedUsd: 0,
+        stripeMeteredItemId: null,
         lastDailyReset: new Date(),
         lastMonthlyReset: new Date(),
       }),

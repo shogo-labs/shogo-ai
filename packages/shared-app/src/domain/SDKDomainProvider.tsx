@@ -131,7 +131,7 @@ function createDomainFacades(store: IDomainStore) {
     },
     billing: {
       subscriptionCollection: store.subscriptionCollection,
-      creditLedgerCollection: store.creditLedgerCollection,
+      usageWalletCollection: store.usageWalletCollection,
       usageEventCollection: store.usageEventCollection,
       billingAccountCollection: store.billingAccountCollection,
     },

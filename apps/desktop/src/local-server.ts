@@ -315,6 +315,7 @@ export async function startLocalServer(): Promise<void> {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
     }),
     SHOGO_DATA_DIR: getDataDir(),
+    SHOGO_SHERPA_DIR: path.join(getDataDir(), 'sherpa-onnx'),
     SHOGO_VM_IMAGE_DIR: getVMImageDir(),
     ...(vmIsolationAvailable ? {
       SHOGO_VM_ISOLATION: 'true',

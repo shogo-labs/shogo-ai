@@ -264,9 +264,11 @@ export default observer(function AllProjectsPage() {
   useEffect(() => {
     if (!sdkReady || !store || !user?.id) return
 
-    store.workspaceCollection.loadAll({ userId: user.id }).catch((err: any) =>
-      console.warn('[AllProjectsPage] Failed to load workspaces:', err),
-    )
+    store.workspaceCollection
+      .loadAll({ userId: user.id })
+      .catch((err: any) =>
+        console.warn('[AllProjectsPage] Failed to load workspaces:', err),
+      )
   }, [sdkReady, store, user?.id])
 
   useEffect(() => {
@@ -276,17 +278,21 @@ export default observer(function AllProjectsPage() {
     // the remote returns all its projects; the sidebar "Recent" already works
     // this way (no workspaceId filter).
     if (isRemoteSource) {
-      store.projectCollection.loadAll().catch((err: any) =>
-        console.warn('[AllProjectsPage] Failed to load projects:', err),
-      )
+      store.projectCollection
+        .loadAll()
+        .catch((err: any) =>
+          console.warn('[AllProjectsPage] Failed to load projects:', err),
+        )
       store.folderCollection?.loadAll().catch((err: any) =>
         console.warn('[AllProjectsPage] Failed to load folders:', err),
       )
     } else {
       if (!currentWorkspace?.id) return
-      store.projectCollection.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
-        console.warn('[AllProjectsPage] Failed to load projects:', err),
-      )
+      store.projectCollection
+        .loadAll({ workspaceId: currentWorkspace.id })
+        .catch((err: any) =>
+          console.warn('[AllProjectsPage] Failed to load projects:', err),
+        )
       store.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch((err: any) =>
         console.warn('[AllProjectsPage] Failed to load folders:', err),
       )

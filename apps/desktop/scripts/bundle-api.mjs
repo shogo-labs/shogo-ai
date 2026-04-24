@@ -341,6 +341,21 @@ function main() {
     console.warn('  ⚠ tree-sitter-wasms package not found')
   }
 
+  // --- Copy runtime install scripts (invoked by API at runtime, e.g. sherpa-onnx installer) ---
+  logStep('Copying runtime install scripts...')
+  const runtimeScriptsDest = path.join(RESOURCES_DIR, 'scripts')
+  fs.mkdirSync(runtimeScriptsDest, { recursive: true })
+  const runtimeScripts = ['download-sherpa.mjs']
+  for (const scriptName of runtimeScripts) {
+    const src = path.join(DESKTOP_DIR, 'scripts', scriptName)
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(runtimeScriptsDest, scriptName))
+      console.log(`  ✓ ${scriptName}`)
+    } else {
+      console.warn(`  ⚠ ${scriptName} not found at ${src}`)
+    }
+  }
+
   // --- Prepare VM bundle (server.js, shogo.js, tree-sitter.wasm for seed ISO) ---
   // With pre-provisioned images, only JS bundles and wasm need to be in
   // vm-bundle. Bun, templates, and deps are baked into rootfs-provisioned.qcow2.

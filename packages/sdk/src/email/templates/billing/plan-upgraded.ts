@@ -8,7 +8,7 @@ export const planUpgradedTemplate: EmailTemplate<{
   workspaceName: string
   planName: string
   billingInterval?: string
-  creditsTotal?: string
+  includedUsdTotal?: string
   dashboardUrl: string
   appName: string
 }> = {
@@ -30,15 +30,15 @@ export const planUpgradedTemplate: EmailTemplate<{
         <td class="email-detail-value" align="right">{{billingInterval}}</td>
       </tr>
       <tr>
-        <td class="email-detail-label">Monthly credits</td>
-        <td class="email-detail-value" align="right">{{creditsTotal}}</td>
+        <td class="email-detail-label">Monthly included usage</td>
+        <td class="email-detail-value" align="right">{{includedUsdTotal}}</td>
       </tr>
     </table>
     <br>
     <a href="{{dashboardUrl}}" class="email-btn" style="color:#ffffff;text-decoration:none;">Go to Dashboard</a>
     <hr class="email-divider">
     <p class="email-muted">
-      Manage your subscription anytime from Settings &rarr; Plans &amp; Credits.
+      Manage your subscription anytime from Settings &rarr; Plans &amp; Billing.
     </p>
   `),
   defaults: {

@@ -87,7 +87,12 @@ describe('HostedRuntimeTokenClient', () => {
     const apiUrl = 'https://api.shogo.test'
     const { fetch: fetchImpl, calls } = makeMockFetch(() => ({
       status: 200,
-      body: { callSid: 'CA1', conversationId: 'conv_1', estimatedCredits: 3 },
+      body: {
+        callSid: 'CA1',
+        conversationId: 'conv_1',
+        estimatedBilledUsd: 0.288,
+        billedUsdPerMinute: 0.288,
+      },
     }))
     const client = new HostedRuntimeTokenClient({
       runtimeToken,
@@ -117,7 +122,9 @@ describe('HostedRuntimeTokenClient', () => {
         phoneNumber: '+15550001111',
         twilioPhoneSid: 'PN1',
         elevenlabsPhoneId: 'epid_1',
-        creditsDebited: { setup: 100, monthly: 500 },
+        setupBilledUsd: 2.4,
+        monthlyBilledUsd: 3.6,
+        usageDebited: { setup: true, monthly: true },
       },
     }))
     const client = new HostedRuntimeTokenClient({
@@ -128,7 +135,9 @@ describe('HostedRuntimeTokenClient', () => {
     })
     const res = await client.provisionNumber({ areaCode: '415' })
     expect(res.phoneNumber).toBe('+15550001111')
-    expect(res.creditsDebited?.setup).toBe(100)
+    expect(res.setupBilledUsd).toBe(2.4)
+    expect(res.monthlyBilledUsd).toBe(3.6)
+    expect(res.usageDebited).toEqual({ setup: true, monthly: true })
 
     expect(calls[0].url).toContain('/api/voice/twilio/provision-number/p1')
     expect(calls[0].url).toContain('projectId=p1')

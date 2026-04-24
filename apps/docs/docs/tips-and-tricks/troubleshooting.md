@@ -12,7 +12,7 @@ Common issues and how to resolve them.
 
 ### AI not responding
 
-1. Check your credit balance — you may have run out.
+1. Check your balance — you may have run out of allowance or hit your hard cap.
 2. Wait a moment — the AI may be processing a complex request.
 3. Try refreshing the page and resending your message.
 

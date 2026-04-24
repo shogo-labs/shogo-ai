@@ -116,11 +116,18 @@ mock.module('../lib/twilio', () => ({
 mock.module('../lib/voice-cost', () => ({
   resolveVoiceRate: () => 0,
   resolvePlanIdForWorkspace: async () => 'plan_test',
-  getCreditBalance: async () => 1000,
-  calculateVoiceMinuteCost: () => 0,
+  getUsdBalance: async () => 1000,
+  calculateVoiceMinuteCost: () => ({
+    billedMinutes: 1,
+    rawUsd: 0.2,
+    billedUsd: 0.24,
+    rawUsdPerMinute: 0.2,
+    billedUsdPerMinute: 0.24,
+  }),
+  calculateVoiceNumberCost: () => ({ rawUsd: 2, billedUsd: 2.4 }),
 }))
 mock.module('../services/billing.service', () => ({
-  consumeCredits: async () => ({ ok: true }),
+  consumeUsage: async () => ({ success: true }),
 }))
 mock.module('../lib/voice-meter', () => ({
   recordCallUsage: async () => ({ ok: true }),

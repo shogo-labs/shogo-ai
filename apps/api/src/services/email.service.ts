@@ -200,14 +200,14 @@ export async function sendPlanUpgradedEmail(params: {
   workspaceName: string
   planName: string
   billingInterval?: string
-  creditsTotal?: string
+  includedUsdTotal?: string
   dashboardUrl: string
 }): Promise<{ success: boolean; error?: string }> {
   return sendTemplateEmail('plan-upgraded', params.to, {
     workspaceName: params.workspaceName,
     planName: params.planName,
     billingInterval: params.billingInterval || 'Monthly',
-    creditsTotal: params.creditsTotal || 'Unlimited',
+    includedUsdTotal: params.includedUsdTotal || 'Unlimited',
     dashboardUrl: params.dashboardUrl,
   })
 }

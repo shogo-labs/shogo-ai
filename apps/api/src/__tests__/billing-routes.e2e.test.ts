@@ -138,12 +138,12 @@ describe("Billing Routes E2E", () => {
     })
   })
 
-  describe("GET /api/credit-ledgers", () => {
-    test("returns credit ledger for workspace", async () => {
+  describe("GET /api/usage-wallets", () => {
+    test("returns usage wallet for workspace", async () => {
       if (!apiAvailable) return
 
       const response = await fetch(
-        `${API_BASE}/api/credit-ledgers?workspaceId=test-workspace-123`
+        `${API_BASE}/api/usage-wallets?workspaceId=test-workspace-123`
       )
 
       expect(response.status).toBeLessThanOrEqual(401)
