@@ -104,16 +104,9 @@ jobs:
       - name: Resolve app version from tag
         id: resolve-version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
-            VERSION="${{ github.ref_name }}"
-            VERSION="${VERSION#android-v}"
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "Extracted version from tag: $VERSION"
-          else
-            VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "Using app.json version: $VERSION"
-          fi
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using app.json version: $VERSION"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
