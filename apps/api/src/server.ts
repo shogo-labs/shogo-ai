@@ -527,6 +527,13 @@ app.use(
 )
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
+  // Reserved non-:projectId collection-level routes under /api/projects.
+  // Hono's `*` wildcard matches zero or more segments, so e.g.
+  // POST /api/projects/import would otherwise be matched by this middleware
+  // with :projectId = 'import' and fail with "Project not found".
+  if (path === '/api/projects/import' || path.startsWith('/api/projects/import/')) {
+    return next()
+  }
   if (isAllowedUnauthWebchatProxyPath(path)) {
     return next()
   }
