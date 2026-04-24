@@ -64,7 +64,7 @@ mock.module('../services/billing.service', () => ({
 }))
 
 // voice-cost is NOT mocked: we rely on the real `resolveVoiceRate`
-// returning VOICE_RATES.numberMonthly (150). `resolvePlanIdForWorkspace`
+// returning VOICE_RATES.numberMonthly (30). `resolvePlanIdForWorkspace`
 // resolves against prisma.subscription which is unmocked here; it will
 // fail-safe back to 'free' (the try/catch around the query catches the
 // missing model). That's the real production behavior on a fresh ws.
@@ -105,7 +105,7 @@ describe('runVoiceMonthlyRebill', () => {
     for (const call of consumeCalls) {
       const [, , , actionType, cost] = call
       expect(actionType).toBe('voice_number_monthly')
-      expect(cost).toBe(150)
+      expect(cost).toBe(30)
     }
     expect(updatedWatermarks.length).toBe(2)
   })

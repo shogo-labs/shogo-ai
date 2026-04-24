@@ -52,6 +52,15 @@ describe('calculateVoiceMinuteCost', () => {
     const r = calculateVoiceMinuteCost(null, 'inbound', -30)
     expect(r.billedMinutes).toBe(1)
   })
+
+  test('fractional outbound rate multiplies through without integer truncation', () => {
+    // Outbound rate is 2.4 credits/min — 5 min should bill 12.0 credits,
+    // not 10 or 12.5. Guards against anyone re-typing VOICE_RATES as int.
+    const r = calculateVoiceMinuteCost(null, 'outbound', 5 * 60)
+    expect(r.billedMinutes).toBe(5)
+    expect(r.creditsPerMinute).toBe(VOICE_RATES.minutesOutbound)
+    expect(r.creditCost).toBeCloseTo(VOICE_RATES.minutesOutbound * 5, 10)
+  })
 })
 
 describe('resolveVoiceRate', () => {

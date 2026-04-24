@@ -39,18 +39,27 @@ export type PlanId = keyof typeof PLAN_CREDITS
 
 /**
  * Voice / telephony rate card (Mode B only). Rates are credits, which
- * are billed at $0.10/credit today. Per-minute charges are rounded up
- * to the nearest whole minute (`Math.ceil(durationSeconds / 60)`).
+ * are billed at $0.10/credit today — so the values below translate to:
  *
- * These cover Shogo's own Twilio + ElevenLabs costs plus margin. Mode
- * A (self-hosted BYO keys) is not metered — the customer pays Twilio
+ *   inbound  minute  = 2   credits ≈ $0.20/min
+ *   outbound minute  = 2.4 credits ≈ $0.24/min
+ *   number provision = 20  credits = $2.00 one-time
+ *   number monthly   = 30  credits = $3.00/month
+ *
+ * Per-minute charges are rounded up to the nearest whole minute
+ * (`Math.ceil(durationSeconds / 60)`); fractional credit values are
+ * multiplied through and persisted as Float in `UsageEvent.creditCost`.
+ *
+ * These cover Shogo's own Twilio + ElevenLabs costs plus a ~2× margin
+ * and sit in the same ballpark as Vapi / Retell / Bland. Mode A
+ * (self-hosted BYO keys) is not metered — the customer pays Twilio
  * and ElevenLabs directly.
  */
 export const VOICE_RATES = {
-  minutesInbound: 10,
-  minutesOutbound: 12,
-  numberSetup: 100,
-  numberMonthly: 150,
+  minutesInbound: 2,
+  minutesOutbound: 2.4,
+  numberSetup: 20,
+  numberMonthly: 30,
 } as const
 
 export type VoiceRateKey = keyof typeof VOICE_RATES
