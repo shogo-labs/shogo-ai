@@ -195,6 +195,21 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   },
   showRemoteActionNotification: (title: string, body: string) =>
     ipcRenderer.invoke('show-remote-action-notification', title, body),
+  showChatNotification: (args: {
+    title: string
+    body: string
+    sessionId: string
+    projectId: string
+  }) => ipcRenderer.invoke('show-chat-notification', args),
+  onNotificationClicked: (
+    callback: (data: { sessionId: string; projectId: string }) => void,
+  ) => {
+    ipcRenderer.on('notification-clicked', (_event, data) => callback(data))
+  },
+  removeNotificationClickedListener: () => {
+    ipcRenderer.removeAllListeners('notification-clicked')
+  },
+  isWindowFocused: () => ipcRenderer.invoke('get-window-focused'),
 
   // Cloud login (replaces the old paste-API-key flow)
   getDeviceInfo: (): Promise<{ id: string; name: string; platform: string; appVersion: string }> =>

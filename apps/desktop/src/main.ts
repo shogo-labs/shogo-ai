@@ -440,6 +440,36 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // Chat-turn-complete notification: includes session + project so a click
+  // can focus the window and navigate the renderer to the right chat.
+  ipcMain.handle(
+    'show-chat-notification',
+    (
+      _event,
+      args: { title: string; body: string; sessionId: string; projectId: string },
+    ) => {
+      if (!Notification.isSupported()) return
+      const { title, body, sessionId, projectId } = args
+      const n = new Notification({ title, body, silent: false })
+      n.on('click', () => {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+          mainWindow.webContents.send('notification-clicked', { sessionId, projectId })
+        }
+      })
+      n.show()
+    },
+  )
+
+  // Source of truth for renderer inactivity detection on desktop —
+  // document.hasFocus() is unreliable when another app is foregrounded on
+  // macOS, so we defer to BrowserWindow.isFocused().
+  ipcMain.handle('get-window-focused', () => {
+    return !!mainWindow && mainWindow.isFocused()
+  })
+
   ipcMain.handle('check-vm-image-update', async () => {
     try {
       const { getVMImageDir, VMImageManager } = require('./vm') as typeof import('./vm')
