@@ -1508,7 +1508,7 @@ export default observer(function ProjectLayout() {
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>
