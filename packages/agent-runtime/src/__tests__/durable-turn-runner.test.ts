@@ -253,6 +253,72 @@ describe('runDurableTurn', () => {
     expect(captured[1]?.prompt).not.toBe(captured[0]?.prompt)
     expect(captured[1]?.prompt?.toLowerCase()).toMatch(/resume|continue|pick/i)
   })
+
+  test('aborts with host_cancelled when prepareNextHistory throws (f5)', async () => {
+    const scripted: AgentLoopResult[] = [
+      makeResult({
+        text: 'part1',
+        outputTokens: 10,
+        maxIterationsExhausted: true,
+        lastStopReason: 'length',
+      }),
+      makeResult({ text: 'should not reach', outputTokens: 1 }),
+    ]
+    const checkpoints: TurnCheckpoint[] = []
+    const opts = baseOptions(scripted, {
+      prepareNextHistory: async () => {
+        throw new Error('session store unreachable')
+      },
+    })
+
+    const res = await runDurableTurn({ ...opts, onCheckpoint: cp => checkpoints.push(cp) })
+
+    expect(res.terminationReason).toBe('host_cancelled')
+    expect(res.attempts).toHaveLength(1)
+    expect(checkpoints.find(c => c.reason === 'terminal_history_sync_failed')).toBeDefined()
+  })
+
+  test('refuses provider retry when registry has unfinished mutating tool (f1)', async () => {
+    const registry = new ToolIdempotencyRegistry()
+    registry.start('call-write-1', 'write_file', { path: '/tmp/a' })
+    // Not finished on purpose — this simulates a mid-stream failure right
+    // after a mutating tool started but before its result streamed back.
+
+    const scripted: AgentLoopResult[] = [
+      makeResult({ error: new Error('ECONNRESET during mutation'), outputTokens: 0 }),
+    ]
+    const opts = baseOptions(scripted, {
+      providerRetriesPerAttempt: 5,
+      toolRegistry: registry,
+    })
+
+    const res = await runDurableTurn(opts)
+
+    // With an unfinished mutating tool, the retry is refused and the
+    // outer classifier surfaces the error as provider_fatal.
+    expect(res.terminationReason).toBe('provider_fatal')
+    expect(res.attempts).toHaveLength(1)
+  })
+
+  test('still retries provider error when only READ-ONLY tools are unfinished (f1)', async () => {
+    const registry = new ToolIdempotencyRegistry()
+    registry.start('call-read-1', 'read_file', { path: '/tmp/a' })
+    // read_file is classified read-only, so replaying is safe.
+
+    const scripted: AgentLoopResult[] = [
+      makeResult({ error: new Error('ECONNRESET transient'), outputTokens: 0 }),
+      makeResult({ text: 'finished', outputTokens: 5, lastStopReason: 'end_turn' }),
+    ]
+    const opts = baseOptions(scripted, {
+      providerRetriesPerAttempt: 2,
+      toolRegistry: registry,
+    })
+
+    const res = await runDurableTurn(opts)
+
+    expect(res.terminationReason).toBe('completed')
+    expect(res.text).toBe('finished')
+  })
 })
 
 describe('classifyAttempt', () => {
