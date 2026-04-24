@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: Plans and Pricing
-slug: /getting-started/plans-and-pricing
+slug: /getting-started/plans-and-credits
 ---
 
 # Plans and Pricing
