@@ -129,11 +129,11 @@ mock.module('../lib/prisma', () => {
 const stripeCalls: {
   retrieve: any[]
   subItemCreate: any[]
-  usageRecordCreate: any[]
+  meterEventCreate: any[]
 } = {
   retrieve: [],
   subItemCreate: [],
-  usageRecordCreate: [],
+  meterEventCreate: [],
 }
 
 let stripeSubResponse: any = { items: { data: [] } }
@@ -151,9 +151,13 @@ class MockStripe {
       stripeCalls.subItemCreate.push(args)
       return { id: 'si_mocked', ...args }
     },
-    createUsageRecord: async (itemId: string, args: any) => {
-      stripeCalls.usageRecordCreate.push({ itemId, ...args })
-      return { id: 'ur_mocked' }
+  }
+  billing = {
+    meterEvents: {
+      create: async (args: any) => {
+        stripeCalls.meterEventCreate.push(args)
+        return { id: 'me_mocked' }
+      },
     },
   }
 }
@@ -169,7 +173,7 @@ beforeEach(() => {
   subscriptions = []
   stripeCalls.retrieve = []
   stripeCalls.subItemCreate = []
-  stripeCalls.usageRecordCreate = []
+  stripeCalls.meterEventCreate = []
   stripeSubResponse = { items: { data: [] } }
   process.env.STRIPE_SECRET_KEY = 'sk_test_mock'
 })
@@ -388,21 +392,22 @@ describe('reportOverageToStripe', () => {
   test('no-ops for zero or negative amounts', async () => {
     await billing.reportOverageToStripe('ws1', 0)
     await billing.reportOverageToStripe('ws1', -5)
-    expect(stripeCalls.usageRecordCreate).toHaveLength(0)
+    expect(stripeCalls.meterEventCreate).toHaveLength(0)
   })
 
   test('no-ops when the workspace has no active Stripe subscription', async () => {
     wallets.set('ws1', freshWallet('ws1'))
     await billing.reportOverageToStripe('ws1', 1.5)
     expect(stripeCalls.retrieve).toHaveLength(0)
-    expect(stripeCalls.usageRecordCreate).toHaveLength(0)
+    expect(stripeCalls.meterEventCreate).toHaveLength(0)
   })
 
-  test('creates a metered subscription item on first overage and stamps the wallet', async () => {
+  test('attaches a metered subscription item on first overage and stamps the wallet', async () => {
     subscriptions.push({
       workspaceId: 'ws1',
       status: 'active',
       stripeSubscriptionId: 'sub_123',
+      stripeCustomerId: 'cus_abc',
       planId: 'pro',
     })
     wallets.set('ws1', freshWallet('ws1', { stripeMeteredItemId: null }))
@@ -414,11 +419,13 @@ describe('reportOverageToStripe', () => {
     expect(stripeCalls.subItemCreate[0].subscription).toBe('sub_123')
     expect(wallets.get('ws1')!.stripeMeteredItemId).toBe('si_mocked')
 
-    // Usage record should be 250 cents (2.5 * unitsPerDollar=100), min 1.
-    expect(stripeCalls.usageRecordCreate).toHaveLength(1)
-    expect(stripeCalls.usageRecordCreate[0].itemId).toBe('si_mocked')
-    expect(stripeCalls.usageRecordCreate[0].quantity).toBe(250)
-    expect(stripeCalls.usageRecordCreate[0].action).toBe('increment')
+    // Meter event: value=250 cents (2.5 * unitsPerDollar=100), keyed by customer.
+    expect(stripeCalls.meterEventCreate).toHaveLength(1)
+    const ev = stripeCalls.meterEventCreate[0]
+    expect(ev.event_name).toBe('usage_overage_cents')
+    expect(ev.payload.stripe_customer_id).toBe('cus_abc')
+    expect(ev.payload.value).toBe('250')
+    expect(typeof ev.identifier).toBe('string')
   })
 
   test('reuses an existing metered item on the Stripe subscription instead of creating one', async () => {
@@ -426,6 +433,7 @@ describe('reportOverageToStripe', () => {
       workspaceId: 'ws1',
       status: 'active',
       stripeSubscriptionId: 'sub_123',
+      stripeCustomerId: 'cus_abc',
       planId: 'pro',
     })
     wallets.set('ws1', freshWallet('ws1', { stripeMeteredItemId: null }))
@@ -434,7 +442,7 @@ describe('reportOverageToStripe', () => {
         data: [
           {
             id: 'si_existing',
-            price: { id: 'price_overage_usd_metered_staging' },
+            price: { id: 'price_1TPrwgAp5PDuxitpra3BDHvR' },
           },
         ],
       },
@@ -444,14 +452,16 @@ describe('reportOverageToStripe', () => {
 
     expect(stripeCalls.subItemCreate).toHaveLength(0)
     expect(wallets.get('ws1')!.stripeMeteredItemId).toBe('si_existing')
-    expect(stripeCalls.usageRecordCreate[0].itemId).toBe('si_existing')
+    expect(stripeCalls.meterEventCreate).toHaveLength(1)
+    expect(stripeCalls.meterEventCreate[0].payload.value).toBe('100')
   })
 
-  test('on subsequent overages skips the retrieve + create round-trip', async () => {
+  test('on subsequent overages skips the retrieve + attach round-trip and just emits the meter event', async () => {
     subscriptions.push({
       workspaceId: 'ws1',
       status: 'active',
       stripeSubscriptionId: 'sub_123',
+      stripeCustomerId: 'cus_abc',
       planId: 'pro',
     })
     wallets.set(
@@ -463,17 +473,17 @@ describe('reportOverageToStripe', () => {
 
     expect(stripeCalls.retrieve).toHaveLength(0)
     expect(stripeCalls.subItemCreate).toHaveLength(0)
-    expect(stripeCalls.usageRecordCreate).toHaveLength(1)
-    expect(stripeCalls.usageRecordCreate[0].itemId).toBe('si_cached')
-    // 0.75 * 100 = 75, rounded to integer cents.
-    expect(stripeCalls.usageRecordCreate[0].quantity).toBe(75)
+    expect(stripeCalls.meterEventCreate).toHaveLength(1)
+    // 0.75 * 100 = 75 cents
+    expect(stripeCalls.meterEventCreate[0].payload.value).toBe('75')
   })
 
-  test('clamps the reported Stripe quantity to a minimum of 1 for tiny overages', async () => {
+  test('clamps the reported meter event value to a minimum of 1 for tiny overages', async () => {
     subscriptions.push({
       workspaceId: 'ws1',
       status: 'active',
       stripeSubscriptionId: 'sub_123',
+      stripeCustomerId: 'cus_abc',
       planId: 'pro',
     })
     wallets.set(
@@ -483,7 +493,7 @@ describe('reportOverageToStripe', () => {
 
     // $0.001 would round to 0 cents — must still report 1.
     await billing.reportOverageToStripe('ws1', 0.001)
-    expect(stripeCalls.usageRecordCreate[0].quantity).toBe(1)
+    expect(stripeCalls.meterEventCreate[0].payload.value).toBe('1')
   })
 
   test('no-ops when STRIPE_SECRET_KEY is unset', async () => {
@@ -492,13 +502,14 @@ describe('reportOverageToStripe', () => {
       workspaceId: 'ws1',
       status: 'active',
       stripeSubscriptionId: 'sub_123',
+      stripeCustomerId: 'cus_abc',
       planId: 'pro',
     })
     wallets.set('ws1', freshWallet('ws1'))
 
     await billing.reportOverageToStripe('ws1', 1.5)
 
-    expect(stripeCalls.usageRecordCreate).toHaveLength(0)
+    expect(stripeCalls.meterEventCreate).toHaveLength(0)
   })
 })
 

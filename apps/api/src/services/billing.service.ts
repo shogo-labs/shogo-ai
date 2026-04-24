@@ -465,10 +465,17 @@ async function _consumeUsageTransaction(
 }
 
 /**
- * Report marked-up overage in USD to Stripe as metered usage.
- * Lazily creates a metered subscription item on the workspace's active
- * subscription when absent, and stamps its id on the wallet so future
- * calls are a single API round-trip.
+ * Report marked-up overage in USD to Stripe via the Meter Events API.
+ *
+ * Stripe API versions >= 2025-03-31.basil require metered prices to be backed
+ * by a `billing.meter`; the legacy `subscription_items.create_usage_record`
+ * path no longer accepts new prices. We emit a `billing.meter_event` with the
+ * payload `{ stripe_customer_id, value }` and Stripe routes the volume to
+ * the metered price item attached to the customer's subscription.
+ *
+ * Lazily ensures the metered price item is attached to the active subscription
+ * (and stamps `usageWallet.stripeMeteredItemId` on first attach so we have a
+ * cheap idempotency check).
  *
  * Best-effort: logs and swallows errors. The amount stays in
  * `overageAccumulatedUsd` so a reconciler can retry later.
@@ -493,10 +500,10 @@ export async function reportOverageToStripe(
 
   const sub = await prisma.subscription.findFirst({
     where: { workspaceId, status: { in: ['active', 'trialing'] } },
-    select: { stripeSubscriptionId: true },
+    select: { stripeSubscriptionId: true, stripeCustomerId: true },
   })
-  if (!sub?.stripeSubscriptionId) {
-    console.warn(`[billing] no active Stripe subscription for workspace ${workspaceId}; overage not reported`)
+  if (!sub?.stripeSubscriptionId || !sub.stripeCustomerId) {
+    console.warn(`[billing] no active Stripe subscription/customer for workspace ${workspaceId}; overage not reported`)
     return
   }
 
@@ -510,8 +517,8 @@ export async function reportOverageToStripe(
   }
   const stripe = new Stripe(stripeKey)
 
-  let subscriptionItemId = wallet?.stripeMeteredItemId ?? null
   const cfg = getOveragePriceConfig()
+  let subscriptionItemId = wallet?.stripeMeteredItemId ?? null
 
   if (!subscriptionItemId) {
     const stripeSub = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId)
@@ -533,11 +540,19 @@ export async function reportOverageToStripe(
     })
   }
 
-  const quantity = Math.max(1, Math.round(amountUsd * cfg.unitsPerDollar))
-  await stripe.subscriptionItems.createUsageRecord(subscriptionItemId!, {
-    quantity,
-    timestamp: Math.floor(Date.now() / 1000),
-    action: 'increment',
+  const value = Math.max(1, Math.round(amountUsd * cfg.unitsPerDollar))
+  // Idempotency: Stripe dedupes meter events by `identifier` within a 24h
+  // window. Pair workspace + minute + value to absorb retries while still
+  // keeping legitimate distinct events.
+  const identifier = `${workspaceId}-${Math.floor(Date.now() / 60000)}-${value}`
+
+  await stripe.billing.meterEvents.create({
+    event_name: cfg.meterEventName,
+    payload: {
+      stripe_customer_id: sub.stripeCustomerId,
+      value: String(value),
+    },
+    identifier,
   })
 }
 
