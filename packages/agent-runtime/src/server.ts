@@ -363,12 +363,34 @@ const turnCheckpointLedger = new TurnCheckpointLedger(
 try {
   const stale = turnCheckpointLedger.listActive()
   if (stale.length > 0) {
-    console.warn(
-      `[AgentRuntime][reconciler] Found ${stale.length} active turn(s) on boot — ` +
-        `marking as interrupted_recoverable:`,
-      stale.map((t) => t.turnId),
-    )
+    // Bucket by staleness (PR #442 review: f6): turns whose last checkpoint
+    // is within 2× the SSE keepalive window are likely genuinely resumable.
+    // Anything older has almost certainly been dead since a prior restart
+    // and should be aborted outright so the UI doesn't offer "resume" on
+    // turns from hours/days ago (until retention GC runs).
+    const now = Date.now()
+    const recoverableWindowMs = Math.max(durableEnv.streamKeepaliveMs * 2, 60_000)
+    const recoverable: typeof stale = []
+    const abandoned: typeof stale = []
     for (const meta of stale) {
+      if (now - meta.updatedAt <= recoverableWindowMs) recoverable.push(meta)
+      else abandoned.push(meta)
+    }
+    if (recoverable.length > 0) {
+      console.warn(
+        `[AgentRuntime][reconciler] ${recoverable.length} recently-active turn(s) — ` +
+          `marking as interrupted_recoverable:`,
+        recoverable.map((t) => t.turnId),
+      )
+    }
+    if (abandoned.length > 0) {
+      console.warn(
+        `[AgentRuntime][reconciler] ${abandoned.length} stale turn(s) (>` +
+          `${recoverableWindowMs}ms since last checkpoint) — marking as aborted:`,
+        abandoned.map((t) => t.turnId),
+      )
+    }
+    for (const meta of recoverable) {
       try {
         turnCheckpointLedger.finalize(
           meta.turnId,
@@ -378,6 +400,16 @@ try {
       } catch (err: any) {
         console.warn(
           `[AgentRuntime][reconciler] Failed to finalize stale turn ${meta.turnId}:`,
+          err?.message || err,
+        )
+      }
+    }
+    for (const meta of abandoned) {
+      try {
+        turnCheckpointLedger.finalize(meta.turnId, 'aborted', 'runtime_restart_stale')
+      } catch (err: any) {
+        console.warn(
+          `[AgentRuntime][reconciler] Failed to finalize abandoned turn ${meta.turnId}:`,
           err?.message || err,
         )
       }

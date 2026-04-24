@@ -36,6 +36,8 @@ import {
   type AgentLoopResult,
   type ToolCallRecord,
 } from './agent-loop'
+import { ToolIdempotencyRegistry } from './tool-idempotency'
+import { getDurableTurnEnv } from '@shogo/shared-runtime'
 
 /** A lightweight semantic checkpoint persisted as the runner progresses. */
 export interface TurnCheckpoint {
@@ -105,6 +107,16 @@ export interface DurableTurnRunnerOptions extends AgentLoopOptions {
    */
   buildContinuationPrompt?: (reason: ContinuationReason, previous: AgentLoopResult) => string
   /**
+   * Optional tool-call idempotency registry (PR #442 review: f1). When
+   * provided, the runner consults `listStartedButUnfinished()` before each
+   * mid-stream provider retry and refuses to blind-retry if any *mutating*
+   * tool was started but never completed — re-planning the same tool_use
+   * could double-apply a side-effect (write_file, exec, external API).
+   * The caller (e.g. gateway.ts) is responsible for populating the
+   * registry from its onBeforeToolCall / onAfterToolCall hooks.
+   */
+  toolRegistry?: ToolIdempotencyRegistry
+  /**
    * Test hook: allows unit tests to inject a deterministic agent-loop
    * driver without having to mock pi-agent-core. Do NOT use in production
    * code paths — production always uses the real `runAgentLoop`.
@@ -149,13 +161,6 @@ function defaultBuildContinuationPrompt(
   return DEFAULT_CONTINUATION_PROMPT[reason]
 }
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name]
-  if (!raw) return fallback
-  const n = Number(raw)
-  return Number.isFinite(n) && n >= 0 ? n : fallback
-}
-
 /**
  * Classify a finished attempt into a continuation decision.
  */
@@ -176,14 +181,21 @@ export function classifyAttempt(result: AgentLoopResult): {
     if (result.lastStopReason === 'length') {
       return { reason: 'max_tokens', fatal: false }
     }
-    if (/maximum iteration limit/i.test(msg) || result.iterations > 0) {
+    // Explicit iteration-limit error message is the ONLY signal we trust
+    // for iteration_limit classification. Previously we also accepted
+    // `result.iterations > 0` which was almost always true and masked
+    // genuine provider outages by auto-continuing them up to
+    // `maxContinuations` times (PR #442 review: f2).
+    if (/maximum iteration limit/i.test(msg)) {
       return { reason: 'iteration_limit', fatal: false }
     }
     // A provider error after at least one tool call promotes
-    // maxIterationsExhausted inside runAgentLoop — treat as recoverable.
+    // maxIterationsExhausted inside runAgentLoop — treat as recoverable
+    // with a dedicated reason so the UI can distinguish it from iteration_limit.
     if (result.toolCalls.length > 0) {
       return { reason: 'provider_error_after_tools', fatal: false }
     }
+    // Unrecognized exhaustion falls through to the error branch below.
   }
 
   if (err) {
@@ -248,9 +260,13 @@ function mergeAttempt(acc: AgentLoopResult, next: AgentLoopResult): AgentLoopRes
 export async function runDurableTurn(
   options: DurableTurnRunnerOptions,
 ): Promise<DurableTurnResult> {
-  const maxContinuations = options.maxContinuations ?? envInt('AGENT_MAX_CONTINUATIONS', 5)
+  // Read env once per turn via the single durable-turn-env source of truth
+  // so ops-visible logs from logDurableTurnStartup() match the runtime's
+  // actual behaviour (PR #442 review: f9).
+  const durableEnv = getDurableTurnEnv()
+  const maxContinuations = options.maxContinuations ?? durableEnv.agentMaxContinuations
   const providerRetriesPerAttempt =
-    options.providerRetriesPerAttempt ?? envInt('AGENT_PROVIDER_RETRIES', 2)
+    options.providerRetriesPerAttempt ?? durableEnv.agentProviderRetries
   const buildPrompt = options.buildContinuationPrompt ?? defaultBuildContinuationPrompt
   const runLoop = options._runLoopForTests ?? runAgentLoop
   const emitCheckpoint = (cp: TurnCheckpoint) => {
@@ -319,6 +335,26 @@ export async function runDurableTurn(
 
       if (!needsProviderRetry) break
 
+      // Safety gate (PR #442 review: f1): if any MUTATING tool call from a
+      // prior attempt started but never completed, a blind re-invocation
+      // would let the model re-plan the same tool_use and double-apply a
+      // side-effect (write, exec, external API). Break out of the retry
+      // loop and let the outer classifier surface this as provider_fatal
+      // so the caller can reconcile. Read-only unfinished tools are safe
+      // to replay so we only gate on `mutating`.
+      const unfinishedMutating = options.toolRegistry
+        ?.listStartedButUnfinished()
+        .filter((r) => r.cls.mutating)
+      if (unfinishedMutating && unfinishedMutating.length > 0) {
+        console.warn(
+          `[DurableTurnRunner] Refusing to retry attempt ${attemptIndex}: ` +
+            `${unfinishedMutating.length} mutating tool call(s) started but ` +
+            `not completed — blind retry could double-apply side-effects. ` +
+            `Unfinished: ${unfinishedMutating.map((r) => `${r.toolName}(${r.toolCallId})`).join(', ')}`,
+        )
+        break
+      }
+
       providerRetry++
       const backoffMs = Math.min(1_000 * Math.pow(2, providerRetry - 1), 30_000)
       console.warn(
@@ -386,6 +422,7 @@ export async function runDurableTurn(
     // the session so the next attempt sees completed tool results) and
     // short-circuit if the user has cancelled or the host wants to stop.
     let nextHistory: Message[] | null = null
+    let prepareFailed = false
     try {
       const prepared = options.prepareNextHistory
         ? await options.prepareNextHistory(attemptResult)
@@ -396,7 +433,32 @@ export async function runDurableTurn(
       }
       nextHistory = prepared ?? null
     } catch (err: any) {
-      console.warn('[DurableTurnRunner] prepareNextHistory threw:', err?.message || err)
+      // If the host's history-preparer throws, the session store has NOT been
+      // updated. Continuing with a locally-reconstructed history would diverge
+      // from the source of truth and the next attempt would write into a
+      // split timeline. Safer to surface a terminal state and let the caller
+      // resume from the ledger. (PR #442 review: f5)
+      console.warn(
+        '[DurableTurnRunner] prepareNextHistory threw; aborting turn to avoid ' +
+          'diverging from session store:',
+        err?.message || err,
+      )
+      prepareFailed = true
+      emitCheckpoint({
+        attempt: attemptIndex,
+        at: new Date().toISOString(),
+        reason: 'terminal_history_sync_failed',
+        iterations: attemptResult.iterations,
+        toolCallsThisAttempt: attemptResult.toolCalls.length,
+        toolCallsTotal: cumulativeToolCalls,
+        outputTokensTotal: cumulativeOutputTokens,
+        willContinue: false,
+        error: err?.message || String(err),
+      })
+    }
+    if (prepareFailed) {
+      terminationReason = 'host_cancelled'
+      break
     }
 
     currentHistory = nextHistory ?? [...currentHistory, ...attemptResult.newMessages]

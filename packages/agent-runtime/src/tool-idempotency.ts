@@ -64,7 +64,7 @@ export interface ToolCallRecord {
  * retry" in the continuation path.
  */
 const BUILTIN_TOOL_CLASSES: Record<string, ToolCallClass> = {
-  // Read-only
+  // Read-only (pure queries / safe to replay)
   read_file: { readOnly: true, mutating: false },
   search: { readOnly: true, mutating: false },
   glob: { readOnly: true, mutating: false },
@@ -74,8 +74,18 @@ const BUILTIN_TOOL_CLASSES: Record<string, ToolCallClass> = {
   web: { readOnly: true, mutating: false },
   memory_read: { readOnly: true, mutating: false },
   memory_search: { readOnly: true, mutating: false },
+  read_guide: { readOnly: true, mutating: false },
+  impact_radius: { readOnly: true, mutating: false },
+  agent_list: { readOnly: true, mutating: false },
+  agent_status: { readOnly: true, mutating: false },
+  task_get: { readOnly: true, mutating: false },
+  task_list: { readOnly: true, mutating: false },
+  // Meta / UI-side-effect-only (safe to replay: UI reconciles by id)
   todo_write: { readOnly: true, mutating: false },
-  // Mutating
+  notify_user_error: { readOnly: true, mutating: false },
+  quick_action: { readOnly: true, mutating: false },
+  ask_user: { readOnly: true, mutating: false },
+  // Mutating (filesystem, process, external APIs, team/agent state)
   exec: { readOnly: false, mutating: true },
   write_file: { readOnly: false, mutating: true },
   edit_file: { readOnly: false, mutating: true },
@@ -83,8 +93,19 @@ const BUILTIN_TOOL_CLASSES: Record<string, ToolCallClass> = {
   delete_file: { readOnly: false, mutating: true },
   move_file: { readOnly: false, mutating: true },
   send_message: { readOnly: false, mutating: true },
+  send_team_message: { readOnly: false, mutating: true },
   channel_connect: { readOnly: false, mutating: true },
   channel_disconnect: { readOnly: false, mutating: true },
+  agent_spawn: { readOnly: false, mutating: true },
+  agent_cancel: { readOnly: false, mutating: true },
+  agent_create: { readOnly: false, mutating: true },
+  team_create: { readOnly: false, mutating: true },
+  team_delete: { readOnly: false, mutating: true },
+  task_create: { readOnly: false, mutating: true },
+  task_update: { readOnly: false, mutating: true },
+  skill: { readOnly: false, mutating: true },
+  create_plan: { readOnly: false, mutating: true },
+  update_plan: { readOnly: false, mutating: true },
 }
 
 function classifyTool(toolName: string, explicit?: Partial<ToolCallClass>): ToolCallClass {
