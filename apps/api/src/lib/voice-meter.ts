@@ -6,12 +6,12 @@
  * Shared by the ElevenLabs `post_call_transcription` webhook and the
  * Twilio `statusCallback` webhook so both paths dedupe against the
  * same `VoiceCallMeter` row and result in exactly one `UsageEvent` +
- * credit debit per call.
+ * USD debit per call.
  *
  * Idempotency: keyed by `(conversationId, callSid)` with unique
  * constraints on both columns. The first webhook to arrive creates or
  * finds the row; the second fills in whichever id it had and, if
- * `usageEventId` is still null, debits credits. Once `usageEventId`
+ * `usageEventId` is still null, debits usage. Once `usageEventId`
  * is set, subsequent webhooks are a strict no-op.
  */
 
@@ -21,7 +21,7 @@ import {
   resolvePlanIdForWorkspace,
   type VoiceDirection,
 } from './voice-cost'
-import { consumeCredits } from '../services/billing.service'
+import { consumeUsage } from '../services/billing.service'
 
 export interface RecordCallParams {
   projectId: string
@@ -58,16 +58,18 @@ export interface RecordCallParams {
 export interface RecordCallResult {
   meterId: string
   usageEventRecorded: boolean
-  creditCost: number
+  rawUsd: number
+  billedUsd: number
   billedMinutes: number
-  creditsPerMinute: number
+  rawUsdPerMinute: number
+  billedUsdPerMinute: number
   alreadyBilled: boolean
   actionType: 'voice_minutes_inbound' | 'voice_minutes_outbound'
 }
 
 /**
  * Upsert a VoiceCallMeter row for a completed call and — if not yet
- * billed — debit the right number of credits via billing.service.
+ * billed — debit the right amount of USD via billing.service.
  *
  * Returns `{ alreadyBilled: true }` for duplicate webhooks.
  */
@@ -84,7 +86,7 @@ export async function recordCallUsage(
       : 'voice_minutes_outbound'
 
   const planId = await resolvePlanIdForWorkspace(params.workspaceId)
-  const { billedMinutes, creditCost, creditsPerMinute } =
+  const { billedMinutes, rawUsd, billedUsd, rawUsdPerMinute, billedUsdPerMinute } =
     calculateVoiceMinuteCost(planId, params.direction, params.durationSeconds)
 
   // 1. Upsert by whichever unique key we have. We prefer conversationId
@@ -106,7 +108,7 @@ export async function recordCallUsage(
 
   // Transcript-only updates are always allowed — even for an
   // already-billed row — so late-arriving post-call webhooks can
-  // backfill the transcript without re-debiting credits.
+  // backfill the transcript without re-debiting usage.
   const transcriptPatch: Record<string, unknown> = {}
   if (params.transcript !== undefined) {
     transcriptPatch.transcript = params.transcript as any
@@ -162,24 +164,27 @@ export async function recordCallUsage(
     return {
       meterId,
       usageEventRecorded: false,
-      creditCost,
+      rawUsd,
+      billedUsd,
       billedMinutes,
-      creditsPerMinute,
+      rawUsdPerMinute,
+      billedUsdPerMinute,
       alreadyBilled: true,
       actionType,
     }
   }
 
-  // 2. Debit credits (single UsageEvent). Set usageEventId on the
-  // meter afterward — first-writer-wins on the unique constraint.
+  // 2. Debit USD (single UsageEvent). Set usageEventId on the meter
+  // afterward — first-writer-wins on the unique constraint.
   const memberId = params.memberId ?? 'voice-webhook'
-  const debit = await consumeCredits(
-    params.workspaceId,
-    params.projectId,
+  const debit = await consumeUsage({
+    workspaceId: params.workspaceId,
+    projectId: params.projectId,
     memberId,
     actionType,
-    creditCost,
-    {
+    rawUsd,
+    billedUsd,
+    actionMetadata: {
       conversationId: params.conversationId,
       callSid: params.callSid,
       direction: params.direction,
@@ -187,11 +192,12 @@ export async function recordCallUsage(
       toNumber: params.toNumber,
       durationSeconds: params.durationSeconds,
       billedMinutes,
-      creditsPerMinute,
+      rawUsdPerMinute,
+      billedUsdPerMinute,
       agentId: params.agentId,
       projectId: params.projectId,
     },
-  )
+  })
 
   if (!debit.success) {
     // Leave usageEventId null so a later reconciler can retry. Surface
@@ -199,16 +205,18 @@ export async function recordCallUsage(
     return {
       meterId,
       usageEventRecorded: false,
-      creditCost,
+      rawUsd,
+      billedUsd,
       billedMinutes,
-      creditsPerMinute,
+      rawUsdPerMinute,
+      billedUsdPerMinute,
       alreadyBilled: false,
       actionType,
     }
   }
 
   // Link the usage event to the meter. We look up the most recent
-  // UsageEvent for this workspace+action — `consumeCredits` doesn't
+  // UsageEvent for this workspace+action — `consumeUsage` doesn't
   // return the event id today. We scope tightly on (workspaceId,
   // actionType, metadata.conversationId) to avoid mis-attribution.
   const latest = await prisma.usageEvent.findFirst({
@@ -233,9 +241,11 @@ export async function recordCallUsage(
   return {
     meterId,
     usageEventRecorded: true,
-    creditCost,
+    rawUsd,
+    billedUsd,
     billedMinutes,
-    creditsPerMinute,
+    rawUsdPerMinute,
+    billedUsdPerMinute,
     alreadyBilled: false,
     actionType,
   }

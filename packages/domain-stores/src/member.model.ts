@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated Member MST Model
  *
@@ -9,9 +8,10 @@
 
 import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
-// Cyclic model references are resolved lazily to avoid "Require cycle" warnings.
-// types.late() defers resolution until the MST tree is first instantiated, by
-// which point all modules are fully evaluated.
+// Referenced models (use types.late() to avoid circular imports)
+import { UserModel } from "./user.model"
+import { WorkspaceModel } from "./workspace.model"
+import { ProjectModel } from "./project.model"
 
 // ============================================================================
 // Member Model
@@ -24,12 +24,12 @@ export const MemberModel = types
     role: types.enumeration("MemberRole", ["owner", "admin", "member", "viewer"]),
     workspaceId: types.optional(types.string, ""),
     projectId: types.optional(types.string, ""),
-    isBillingAdmin: types.boolean,
+    isBillingAdmin: types.optional(types.boolean, false),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
-    user: types.safeReference(types.late(() => require("./user.model").UserModel)),
-    workspace: types.safeReference(types.late(() => require("./workspace.model").WorkspaceModel)),
-    project: types.safeReference(types.late(() => require("./project.model").ProjectModel)),
+    user: types.safeReference(types.late(() => UserModel)),
+    workspace: types.safeReference(types.late(() => WorkspaceModel)),
+    project: types.safeReference(types.late(() => ProjectModel)),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Credit Cost Calculator
+ * Usage Cost Calculator
  *
- * Shared module for computing credit costs from token usage.
- * Used by both the AI chat endpoint and the AI proxy.
+ * Computes USD usage cost from LLM/image/voice usage using raw provider costs
+ * plus a flat MARKUP_MULTIPLIER (Cursor-style pricing).
  *
- * 1 credit = $0.10 of raw LLM cost. Credits are calculated from actual
- * dollar cost using separate input/output token pricing per model tier.
+ * `rawUsd` is the provider list-price cost; `billedUsd` is what we charge the
+ * workspace. There are no per-call minimums.
  *
- * Model costs (per 1M tokens):
- * - GPT-5.4-Nano: $0.20 input / $0.25 cache-write / $0.02 cache-read / $1.25 output
- * - Haiku:       $0.80 input / $1.00 cache-write / $0.08 cache-read / $4.00 output
- * - GPT-5.4-Mini: $0.75 input / $0.9375 cache-write / $0.075 cache-read / $4.40 output
- * - Sonnet:      $3.00 input / $3.75 cache-write / $0.30 cache-read / $15.00 output
- * - Opus:        $15.00 input / $18.75 cache-write / $1.50 cache-read / $75.00 output
- *
- * Cache write = 1.25x input (Anthropic), cache read = 0.1x input (Anthropic) / 0.5x (OpenAI).
+ * Model costs (per 1M tokens) come from `@shogo/model-catalog` MODEL_DOLLAR_COSTS.
  */
 
 import {
@@ -33,19 +26,10 @@ import {
 export type { ModelTier, AgentMode }
 export { MODEL_DOLLAR_COSTS, calculateDollarCost }
 
-export const CREDIT_DOLLAR_VALUE = 0.10
-export const MIN_CREDIT_COST = 0.2
-export const MIN_CREDIT_COST_ECONOMY = 0.1
+/** Flat markup applied to all raw provider costs (LLM, voice, images). */
+export const MARKUP_MULTIPLIER = 1.20
 
 export type ModelName = BillingModel
-
-const BILLING_MODEL_TIER: Record<ModelName, ModelTier> = {
-  'gpt-5.4-nano': 'economy',
-  haiku:          'economy',
-  'gpt-5.4-mini': 'economy',
-  sonnet:         'standard',
-  opus:           'premium',
-}
 
 /** Re-export from the shared catalog for backward compatibility. */
 export const getModelTier = catalogGetModelTier
@@ -85,75 +69,77 @@ function resolveModel(modelOrAgentMode?: string): ModelName {
   return 'sonnet'
 }
 
-export interface CreditCostResult {
-  credits: number
-  dollarCost: number
+export interface UsageCostResult {
+  /** Raw provider cost in USD (no markup). */
+  rawUsd: number
+  /** Marked-up cost charged to the workspace in USD. */
+  billedUsd: number
 }
 
 /**
- * Calculate credit cost from separate input/output token counts.
- * 1 credit = $0.10 of raw LLM cost.
+ * Calculate USD cost from separate input/output token counts.
  *
  * `inputTokens` should be non-cached input only. Pass `cachedInputTokens`
  * separately so they're billed at the discounted cache-read rate. Pass
- * `cacheWriteTokens` separately so they're billed at the 1.25x cache-write rate.
+ * `cacheWriteTokens` separately so they're billed at the cache-write rate.
  */
-export function calculateCreditCost(
+export function calculateUsageCost(
   inputTokens: number,
   outputTokens: number,
   modelOrAgentMode?: string,
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
-): CreditCostResult {
+): UsageCostResult {
   const model = resolveModel(modelOrAgentMode)
   const costs = MODEL_DOLLAR_COSTS[model]
-  const dollarCost =
+  const rawUsd =
     (inputTokens * costs.inputPerMillion / 1_000_000) +
     (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +
     (cachedInputTokens * costs.cachedInputPerMillion / 1_000_000) +
     (outputTokens * costs.outputPerMillion / 1_000_000)
 
-  const raw = Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10
-  if (raw === 0) return { credits: 0, dollarCost: 0 }
-  const min = BILLING_MODEL_TIER[model] === 'economy' ? MIN_CREDIT_COST_ECONOMY : MIN_CREDIT_COST
-  return { credits: Math.max(min, raw), dollarCost }
+  if (rawUsd === 0) return { rawUsd: 0, billedUsd: 0 }
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }
 
 // =============================================================================
-// Image Generation Credit Costs
+// Image Generation Usage Costs
 // =============================================================================
 
-// Base costs are expressed directly in credits (1 credit = $0.10).
-export const IMAGE_CREDIT_CONFIG: Record<string, { base: number; hdMultiplier: number; largeSizeMultiplier: number }> = {
-  'dall-e-3':       { base: 2.6, hdMultiplier: 2.0, largeSizeMultiplier: 1.5 },
-  'dall-e-2':       { base: 1.3, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'gpt-image-1':    { base: 3.9, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'gpt-image-1.5':  { base: 3.9, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'imagen-4':       { base: 2.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
-  'imagen-4-ultra': { base: 3.9, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
-  'imagen-4-fast':  { base: 1.3, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+/**
+ * Raw provider costs per image in USD (approximate list price).
+ * Derived from previous credit-based config at $0.10/credit.
+ */
+export const IMAGE_USD_CONFIG: Record<string, { base: number; hdMultiplier: number; largeSizeMultiplier: number }> = {
+  'dall-e-3':       { base: 0.26, hdMultiplier: 2.0, largeSizeMultiplier: 1.5 },
+  'dall-e-2':       { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'gpt-image-1':    { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'gpt-image-1.5':  { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'imagen-4':       { base: 0.20, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'imagen-4-ultra': { base: 0.39, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'imagen-4-fast':  { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
 }
 
 const LARGE_IMAGE_SIZES = new Set(['1792x1024', '1024x1792', '1536x1024', '1024x1536'])
 
 /**
- * Calculate credit cost for image generation (flat per-image, not token-based).
+ * Calculate USD cost for image generation (flat per-image, not token-based).
  */
-export function calculateImageCreditCost(
+export function calculateImageUsageCost(
   model: string,
   quality: string = 'standard',
   size: string = '1024x1024',
-): number {
-  const config = IMAGE_CREDIT_CONFIG[model] || IMAGE_CREDIT_CONFIG['dall-e-3']
-  let cost = config.base
+): UsageCostResult {
+  const config = IMAGE_USD_CONFIG[model] || IMAGE_USD_CONFIG['dall-e-3']
+  let rawUsd = config.base
 
   if (quality === 'hd' || quality === 'high') {
-    cost *= config.hdMultiplier
+    rawUsd *= config.hdMultiplier
   }
 
   if (LARGE_IMAGE_SIZES.has(size)) {
-    cost *= config.largeSizeMultiplier
+    rawUsd *= config.largeSizeMultiplier
   }
 
-  return Math.ceil(cost * 10) / 10
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }

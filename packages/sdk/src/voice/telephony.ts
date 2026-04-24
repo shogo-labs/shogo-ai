@@ -9,7 +9,8 @@
  *   - `HostedTelephonyClient` (Mode B) — proxies every call through
  *     Shogo's API using a `shogo_sk_*` bearer. Shogo owns the EL +
  *     Twilio accounts, provisions resources per project, and meters
- *     usage against the workspace's credit ledger.
+ *     usage against the workspace's USD usage wallet (raw provider
+ *     cost + 20% markup).
  *
  *   - `DirectTelephonyClient` (Mode A) — talks directly to Twilio REST
  *     and ElevenLabs REST using developer-provided credentials. Shogo's
@@ -36,11 +37,12 @@ export interface ProvisionNumberResult {
   phoneNumber: string
   twilioPhoneSid: string
   elevenlabsPhoneId: string
-  /** Credits debited for setup + first month (Mode B only). */
-  creditsDebited?: {
-    setup: number
-    monthly: number
-  }
+  /** USD billed (raw provider cost + 20% markup) for setup (Mode B only). */
+  setupBilledUsd?: number
+  /** USD billed for the first monthly number fee (Mode B only). */
+  monthlyBilledUsd?: number
+  /** Whether each debit succeeded against the workspace's usage wallet. */
+  usageDebited?: { setup: boolean; monthly: boolean }
 }
 
 export interface OutboundCallOptions {
@@ -51,8 +53,10 @@ export interface OutboundCallOptions {
 export interface OutboundCallResult {
   callSid: string
   conversationId: string
-  /** Pre-flight estimate (Mode B only). */
-  estimatedCredits?: number
+  /** Pre-flight USD estimate for one minute outbound (Mode B only). */
+  estimatedBilledUsd?: number
+  /** USD per minute outbound, billed rate (raw + markup). */
+  billedUsdPerMinute?: number
 }
 
 export interface VoiceUsageRange {
@@ -72,10 +76,14 @@ export interface VoiceUsageSummary {
   totals: {
     minutesInbound: number
     minutesOutbound: number
-    creditsInbound: number
-    creditsOutbound: number
-    creditsNumbers: number
-    credits: number
+    /** USD billed (raw + markup) for inbound minutes. */
+    billedUsdInbound: number
+    /** USD billed for outbound minutes. */
+    billedUsdOutbound: number
+    /** USD billed for number setup + monthly fees. */
+    billedUsdNumbers: number
+    /** Grand total USD billed across all voice usage. */
+    billedUsd: number
     calls: number
     inboundCalls: number
     outboundCalls: number
@@ -84,7 +92,10 @@ export interface VoiceUsageSummary {
     id: string
     actionType: string
     actionMetadata: unknown
-    creditCost: number
+    /** Raw provider cost in USD, before markup. */
+    rawUsd: number
+    /** Amount billed to the workspace in USD (raw + markup). */
+    billedUsd: number
     createdAt: string
   }>
 }
@@ -257,7 +268,9 @@ export class HostedTelephonyClient implements TelephonyClient {
       phoneNumber: string
       twilioPhoneSid: string
       elevenlabsPhoneId: string
-      creditsDebited?: { setup: number; monthly: number }
+      setupBilledUsd?: number
+      monthlyBilledUsd?: number
+      usageDebited?: { setup: boolean; monthly: boolean }
     }>(
       `/api/voice/twilio/provision-number/${encodeURIComponent(
         this.opts.projectId,
@@ -275,7 +288,9 @@ export class HostedTelephonyClient implements TelephonyClient {
       phoneNumber: data.phoneNumber,
       twilioPhoneSid: data.twilioPhoneSid,
       elevenlabsPhoneId: data.elevenlabsPhoneId,
-      creditsDebited: data.creditsDebited,
+      setupBilledUsd: data.setupBilledUsd,
+      monthlyBilledUsd: data.monthlyBilledUsd,
+      usageDebited: data.usageDebited,
     }
   }
 
@@ -283,7 +298,8 @@ export class HostedTelephonyClient implements TelephonyClient {
     const data = await this.request<{
       callSid: string
       conversationId: string
-      estimatedCredits?: number
+      estimatedBilledUsd?: number
+      billedUsdPerMinute?: number
     }>(
       `/api/voice/twilio/outbound/${encodeURIComponent(this.opts.projectId)}`,
       {
@@ -294,7 +310,8 @@ export class HostedTelephonyClient implements TelephonyClient {
     return {
       callSid: data.callSid,
       conversationId: data.conversationId,
-      estimatedCredits: data.estimatedCredits,
+      estimatedBilledUsd: data.estimatedBilledUsd,
+      billedUsdPerMinute: data.billedUsdPerMinute,
     }
   }
 
@@ -443,7 +460,9 @@ export class HostedRuntimeTokenClient implements TelephonyClient {
       phoneNumber: string
       twilioPhoneSid: string
       elevenlabsPhoneId: string
-      creditsDebited?: { setup: number; monthly: number }
+      setupBilledUsd?: number
+      monthlyBilledUsd?: number
+      usageDebited?: { setup: boolean; monthly: boolean }
     }>(
       `/api/voice/twilio/provision-number/${encodeURIComponent(
         this.opts.projectId,
@@ -461,7 +480,9 @@ export class HostedRuntimeTokenClient implements TelephonyClient {
       phoneNumber: data.phoneNumber,
       twilioPhoneSid: data.twilioPhoneSid,
       elevenlabsPhoneId: data.elevenlabsPhoneId,
-      creditsDebited: data.creditsDebited,
+      setupBilledUsd: data.setupBilledUsd,
+      monthlyBilledUsd: data.monthlyBilledUsd,
+      usageDebited: data.usageDebited,
     }
   }
 
@@ -469,7 +490,8 @@ export class HostedRuntimeTokenClient implements TelephonyClient {
     const data = await this.request<{
       callSid: string
       conversationId: string
-      estimatedCredits?: number
+      estimatedBilledUsd?: number
+      billedUsdPerMinute?: number
     }>(
       `/api/voice/twilio/outbound/${encodeURIComponent(this.opts.projectId)}`,
       {
@@ -480,7 +502,8 @@ export class HostedRuntimeTokenClient implements TelephonyClient {
     return {
       callSid: data.callSid,
       conversationId: data.conversationId,
-      estimatedCredits: data.estimatedCredits,
+      estimatedBilledUsd: data.estimatedBilledUsd,
+      billedUsdPerMinute: data.billedUsdPerMinute,
     }
   }
 

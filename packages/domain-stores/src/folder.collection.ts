@@ -30,7 +30,10 @@ export const FolderCollection = types
   .model("FolderCollection", {
     items: types.map(FolderModel),
     isLoading: types.optional(types.boolean, false),
+    isLoadingMore: types.optional(types.boolean, false),
     error: types.maybeNull(types.string),
+    total: types.optional(types.number, 0),
+    hasMore: types.optional(types.boolean, false),
   })
 
   // =========================================================================
@@ -164,6 +167,73 @@ export const FolderCollection = types
       }),
 
       /**
+       * Load a page of items (append mode for infinite scroll).
+       * API returns items in desc order (newest first).
+       * On offset=0 (first page), clears the map to handle refresh.
+       */
+      loadPage: flow(function* (
+        filter?: Record<string, any>,
+        pagination?: { limit?: number; offset?: number },
+      ) {
+        const limit = pagination?.limit ?? 50
+        const offset = pagination?.offset ?? 0
+        const isFirstPage = offset === 0
+
+        if (isFirstPage) {
+          self.isLoading = true
+        } else {
+          self.isLoadingMore = true
+        }
+        self.error = null
+
+        try {
+          const env = getEnv<ISDKEnvironment>(self)
+          const params = new URLSearchParams({
+            ...(filter as any),
+            limit: String(limit),
+            offset: String(offset),
+          })
+          const url = `${ENDPOINT}?${params.toString()}`
+
+          const response = yield env.http.get<{
+            ok: boolean
+            items?: any[]
+            total?: number
+          }>(url)
+
+          if (response.data?.ok && response.data.items) {
+            if (isFirstPage) {
+              self.items.clear()
+            }
+
+            for (const item of response.data.items) {
+              const transformed = transformForMST(item)
+              const id = transformed.id
+              const existing = self.items.get(id)
+              if (existing) {
+                applySnapshot(existing, transformed)
+              } else {
+                self.items.put(transformed)
+              }
+            }
+
+            const serverTotal = response.data.total ?? 0
+            self.total = serverTotal
+            self.hasMore = offset + response.data.items.length < serverTotal
+          }
+
+          self.isLoading = false
+          self.isLoadingMore = false
+          return self.all
+        } catch (error: any) {
+          self.error = error.message || "Failed to load page"
+          self.isLoading = false
+          self.isLoadingMore = false
+          throw error
+        }
+      }),
+
+      /**
        * Load single item by ID
        */
       loadById: flow(function* (id: string) {
@@ -191,16 +261,10 @@ export const FolderCollection = types
         const tempId = `temp-${crypto.randomUUID()}`
         const now = Date.now()
 
-        // Normalize parentId: null -> undefined for MST (MST doesn't accept null, but API expects null)
-        const normalizedInput = {
-          ...input,
-          parentId: input.parentId === null ? undefined : input.parentId,
-        }
-
-        // Create optimistic item with normalized input for MST
+        // Create optimistic item
         const optimistic = {
           id: tempId,
-          ...normalizedInput,
+          ...input,
           createdAt: now,
           updatedAt: now,
         }
@@ -212,7 +276,6 @@ export const FolderCollection = types
 
         try {
           const env = getEnv<ISDKEnvironment>(self)
-          // Send original input to API (with null if provided, as API expects)
           const response = yield env.http.post<{ ok: boolean; data?: any }>(ENDPOINT, input)
 
           if (!response.data?.ok || !response.data.data) {
@@ -340,7 +403,7 @@ const relationFields = ["workspace","parent","children","projects"]
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
-  const dateFields = ["createdAt", "updatedAt", "expiresAt", "publishedAt", "readAt", "emailSentAt", "lastActiveAt"]
+  const dateFields = ["createdAt","updatedAt"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {
@@ -352,8 +415,8 @@ function transformForMST(obj: any): any {
       result[key] = new Date(value).getTime()
     }
     // For relation fields, extract only the ID (for safeReference)
-    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && (value as any).id) {
-      result[key] = (value as any).id
+    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && value.id) {
+      result[key] = value.id
     }
     // For array relation fields, extract IDs
     else if (relationFields.includes(key) && Array.isArray(value)) {
@@ -362,9 +425,9 @@ function transformForMST(obj: any): any {
     // Skip nested objects that are not relations (they might be JSON fields)
     else if (value && typeof value === "object" && !Array.isArray(value)) {
       // Only include if it has an id (likely a reference) or is a plain data object
-      if ((value as any).id && !relationFields.includes(key)) {
+      if (value.id && !relationFields.includes(key)) {
         result[key] = value // Keep as-is for JSON fields
-      } else if (!(value as any).id) {
+      } else if (!value.id) {
         result[key] = value // Keep plain objects (like metadata)
       }
       // If it has an id but is a relation field, we already handled it above

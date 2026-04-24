@@ -1430,7 +1430,7 @@ function splitSystemBlocksForCaching(parsed: any): void {
 // Billing
 // =============================================================================
 
-import { calculateCreditCost, proxyModelToBillingModel, getModelTier } from '../lib/credit-cost'
+import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing.service'
 import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, hasSession } from '../lib/proxy-billing-session'
@@ -1472,28 +1472,29 @@ async function recordUsage(
 
   try {
     const billingModel = proxyModelToBillingModel(model)
-    const { credits: creditCost, dollarCost } = calculateCreditCost(inputTokens, outputTokens, billingModel, cachedInputTokens, cacheWriteTokens)
+    const { rawUsd, billedUsd } = calculateUsageCost(inputTokens, outputTokens, billingModel, cachedInputTokens, cacheWriteTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
     }
 
-    const result = await billingService.consumeCredits(
-      tokenPayload.workspaceId,
-      billingProjectId,
-      billingUserId,
-      'ai_proxy_completion',
-      creditCost,
-      { model, billingModel, dollarCost, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens }
-    )
+    const result = await billingService.consumeUsage({
+      workspaceId: tokenPayload.workspaceId,
+      projectId: billingProjectId,
+      memberId: billingUserId,
+      actionType: 'ai_proxy_completion',
+      rawUsd,
+      billedUsd,
+      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens },
+    })
 
     if (result.success) {
-      console.log(`[AI Proxy] 💰 Charged ${creditCost} credits ($${dollarCost.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
+      console.log(`[AI Proxy] 💰 Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${billingModel}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
-      console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
+      console.warn(`[AI Proxy] ⚠️ Could not charge usage: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to charge credits:', err)
+    console.error('[AI Proxy] Failed to charge usage:', err)
   }
 }
 
@@ -1665,7 +1666,7 @@ async function generateImageLocal(
   return await response.json() as ImageGenerationResponse
 }
 
-import { calculateImageCreditCost } from '../lib/credit-cost'
+import { calculateImageUsageCost } from '../lib/usage-cost'
 
 async function recordImageUsage(
   tokenPayload: ProxyTokenPayload,
@@ -1675,8 +1676,10 @@ async function recordImageUsage(
   n: number,
 ) {
   try {
-    const creditCost = calculateImageCreditCost(model, quality, size) * n
-    if (creditCost === 0) return
+    const single = calculateImageUsageCost(model, quality, size)
+    const rawUsd = single.rawUsd * n
+    const billedUsd = single.billedUsd * n
+    if (billedUsd === 0) return
 
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
@@ -1685,22 +1688,23 @@ async function recordImageUsage(
       console.log(`[AI Proxy] 🎨 Accumulated image gen for session (project: ${tokenPayload.projectId}, model: ${model})`)
     }
 
-    const result = await billingService.consumeCredits(
-      tokenPayload.workspaceId,
-      tokenPayload.projectId || null,
-      billingUserId,
-      'ai_image_generation',
-      creditCost,
-      { model, quality, size, n }
-    )
+    const result = await billingService.consumeUsage({
+      workspaceId: tokenPayload.workspaceId,
+      projectId: tokenPayload.projectId || null,
+      memberId: billingUserId,
+      actionType: 'ai_image_generation',
+      rawUsd,
+      billedUsd,
+      actionMetadata: { model, quality, size, n, rawUsd },
+    })
 
     if (result.success) {
-      console.log(`[AI Proxy] 🎨 Charged ${creditCost} credits (image gen, model: ${model}) — remaining: ${result.remainingCredits}`)
+      console.log(`[AI Proxy] 🎨 Charged $${billedUsd.toFixed(4)} (image gen, model: ${model}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
-      console.warn(`[AI Proxy] ⚠️ Could not charge image credits: ${result.error}`)
+      console.warn(`[AI Proxy] ⚠️ Could not charge image usage: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to charge image credits:', err)
+    console.error('[AI Proxy] Failed to charge image usage:', err)
   }
 }
 
@@ -1881,14 +1885,14 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check: reject if workspace has no credits (skip in local dev)
-    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+    // Pre-check: reject if workspace has no included USD left (skip in local dev)
+    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
         {
           error: {
-            message: 'Insufficient credits. Please upgrade your plan.',
+            message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.',
             type: 'billing_error',
-            code: 'insufficient_credits',
+            code: 'usage_limit_reached',
           },
         },
         402
@@ -2039,9 +2043,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { error: { message: 'Insufficient credits.', type: 'billing_error', code: 'insufficient_credits' } },
+        { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached' } },
         402
       )
     }
@@ -2314,10 +2318,10 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check credits (skip in local dev)
-    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+    // Pre-check usage balance (skip in local dev)
+    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { type: 'error', error: { type: 'billing_error', message: 'Insufficient credits. Please upgrade your plan.' } },
+        { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.' } },
         402
       )
     }
@@ -2711,9 +2715,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+    if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached' } },
         402
       )
     }
@@ -2797,9 +2801,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+    if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached' } },
         402
       )
     }
@@ -2899,7 +2903,7 @@ export function aiProxyRoutes() {
     }
 
     const sub = await billingService.getSubscription(tokenPayload.workspaceId)
-    const ledger = await billingService.getCreditLedger(tokenPayload.workspaceId)
+    const wallet = await billingService.getUsageWallet(tokenPayload.workspaceId)
 
     return c.json({
       workspaceId: tokenPayload.workspaceId,
@@ -2910,9 +2914,12 @@ export function aiProxyRoutes() {
         currentPeriodEnd: sub.currentPeriodEnd,
         cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
       } : null,
-      credits: ledger ? {
-        monthlyCredits: ledger.monthlyCredits,
-        dailyCredits: ledger.dailyCredits,
+      usage: wallet ? {
+        monthlyIncludedUsd: wallet.monthlyIncludedUsd,
+        dailyIncludedUsd: wallet.dailyIncludedUsd,
+        overageEnabled: wallet.overageEnabled,
+        overageHardLimitUsd: wallet.overageHardLimitUsd,
+        overageAccumulatedUsd: wallet.overageAccumulatedUsd,
       } : null,
       hasAdvancedModelAccess: isLocalDev || await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId),
     })
@@ -2945,7 +2952,7 @@ export function aiProxyRoutes() {
       cancelAtPeriodEnd: false,
     })
 
-    await billingService.allocateMonthlyCredits(tokenPayload.workspaceId, planId)
+    await billingService.allocateMonthlyIncluded(tokenPayload.workspaceId, planId)
 
     const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
     return c.json({

@@ -64,11 +64,12 @@ import { prisma } from '../lib/prisma'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import { resolveShogoTwilioClient, verifyTwilioSignature } from '../lib/twilio'
 import {
-  getCreditBalance,
+  getUsdBalance,
   resolvePlanIdForWorkspace,
-  resolveVoiceRate,
+  calculateVoiceNumberCost,
+  calculateVoiceMinuteCost,
 } from '../lib/voice-cost'
-import { consumeCredits } from '../services/billing.service'
+import { consumeUsage } from '../services/billing.service'
 import {
   recordCallUsage,
   verifyElevenLabsSignature,
@@ -90,7 +91,7 @@ function startOfMonthUtc(d: Date): Date {
  * as the member id for API-key callers (their member row may not
  * match 1:1 with the workspace the key is scoped to, so user id is
  * the most stable key). For session callers we also use user id for
- * consistency. `consumeCredits` doesn't care about the shape of this
+ * consistency. `consumeUsage` doesn't care about the shape of this
  * string beyond it being stable.
  *
  * Runtime-token callers carry a real project-owner userId stamped by
@@ -780,7 +781,7 @@ export function voiceRoutes() {
    *   - limit (default 10, max 30)
    *
    * Auth: standard `authorizeProject` (same as provision-number).
-   * No credits are debited — this is a catalog lookup only.
+   * No usage is debited — this is a catalog lookup only.
    */
   router.get(
     '/voice/twilio/available-numbers/:projectId',
@@ -846,7 +847,7 @@ export function voiceRoutes() {
    *   3. Ensures the project has an EL agent (see Phase 2).
    *   4. Registers the Twilio number with the EL agent via EL's
    *      native phone-numbers import + PATCH agent_id endpoints.
-   *   5. Debits voice_number_setup + voice_number_monthly credits.
+   *   5. Debits voice_number_setup + voice_number_monthly USD.
    *   6. Persists Twilio + EL handles in VoiceProjectConfig.
    *
    * Returns 402 if the workspace can't afford setup + first month.
@@ -894,20 +895,21 @@ export function voiceRoutes() {
         return c.json({ error: twResolved.error }, 503)
       }
 
-      // Pre-flight credit check.
+      // Pre-flight USD check.
       const planId = await resolvePlanIdForWorkspace(authz.workspaceId)
-      const setupCost = resolveVoiceRate(planId, 'numberSetup')
-      const monthlyCost = resolveVoiceRate(planId, 'numberMonthly')
-      const balance = await getCreditBalance(authz.workspaceId)
-      if (balance < setupCost + monthlyCost) {
+      const setup = calculateVoiceNumberCost(planId, 'setup')
+      const monthly = calculateVoiceNumberCost(planId, 'monthly')
+      const totalBilled = setup.billedUsd + monthly.billedUsd
+      const balance = await getUsdBalance(authz.workspaceId)
+      if (balance < totalBilled) {
         return c.json(
           {
             error: {
-              code: 'insufficient_credits',
+              code: 'usage_limit_reached',
               message:
-                'Insufficient credits to provision a number. Setup + first month exceeds available balance.',
-              required: setupCost + monthlyCost,
-              available: balance,
+                'Not enough available usage to provision a number. Setup + first month exceeds your included balance. Enable usage-based pricing or upgrade your plan.',
+              requiredUsd: totalBilled,
+              availableUsd: balance,
             },
           },
           402,
@@ -1048,7 +1050,7 @@ export function voiceRoutes() {
         )
       }
 
-      // 4 + 5. Debit credits (setup then monthly). We debit BEFORE
+      // 4 + 5. Debit USD (setup then monthly). We debit BEFORE
       // persisting so that if the debit fails we haven't surfaced the
       // number as owned — the Twilio + EL resources are still live
       // and will be picked up by the manual reconciler.
@@ -1056,21 +1058,23 @@ export function voiceRoutes() {
       const period = startOfMonthUtc(now)
       const memberId = auditMemberId(c)
 
-      const setupDebit = await consumeCredits(
-        authz.workspaceId,
-        authz.projectId,
+      const setupDebit = await consumeUsage({
+        workspaceId: authz.workspaceId,
+        projectId: authz.projectId,
         memberId,
-        'voice_number_setup',
-        setupCost,
-        {
+        actionType: 'voice_number_setup',
+        rawUsd: setup.rawUsd,
+        billedUsd: setup.billedUsd,
+        actionMetadata: {
           projectId: authz.projectId,
           twilioPhoneSid: purchased.sid,
           twilioPhoneNumber: purchased.phoneNumber,
           elevenlabsPhoneId: elPhoneId,
           elevenlabsAgentId: agentId,
-          creditsForPeriod: setupCost,
+          rawUsd: setup.rawUsd,
+          billedUsd: setup.billedUsd,
         },
-      )
+      })
       if (!setupDebit.success) {
         console.error(
           '[Voice] provision-number: setup debit failed after Twilio purchase:',
@@ -1081,20 +1085,22 @@ export function voiceRoutes() {
         // a ghost state.
       }
 
-      const monthlyDebit = await consumeCredits(
-        authz.workspaceId,
-        authz.projectId,
+      const monthlyDebit = await consumeUsage({
+        workspaceId: authz.workspaceId,
+        projectId: authz.projectId,
         memberId,
-        'voice_number_monthly',
-        monthlyCost,
-        {
+        actionType: 'voice_number_monthly',
+        rawUsd: monthly.rawUsd,
+        billedUsd: monthly.billedUsd,
+        actionMetadata: {
           projectId: authz.projectId,
           twilioPhoneSid: purchased.sid,
           twilioPhoneNumber: purchased.phoneNumber,
-          creditsForPeriod: monthlyCost,
+          rawUsd: monthly.rawUsd,
+          billedUsd: monthly.billedUsd,
           periodStart: period.toISOString(),
         },
-      )
+      })
       if (!monthlyDebit.success) {
         console.error(
           '[Voice] provision-number: monthly debit failed:',
@@ -1130,9 +1136,9 @@ export function voiceRoutes() {
         twilioPhoneSid: config.twilioPhoneSid,
         elevenlabsPhoneId: config.elevenlabsPhoneId,
         purchasedAt: config.purchasedAt,
-        setupCredits: setupCost,
-        monthlyCredits: monthlyCost,
-        creditsDebited: {
+        setupBilledUsd: setup.billedUsd,
+        monthlyBilledUsd: monthly.billedUsd,
+        usageDebited: {
           setup: setupDebit.success,
           monthly: monthlyDebit.success,
         },
@@ -1148,9 +1154,9 @@ export function voiceRoutes() {
    *
    * Requires:
    *   - `VoiceProjectConfig.elevenlabsPhoneId` (run provisionNumber first).
-   *   - Workspace has >= 1 minute of outbound credits.
+   *   - Workspace has >= 1 minute of outbound usage USD.
    *
-   * Returns `{ callSid, conversationId, estimatedCredits }` on success.
+   * Returns `{ callSid, conversationId, estimatedBilledUsd }` on success.
    * The actual per-minute debit happens asynchronously via the EL
    * post_call webhook (or Twilio status callback) — see Phase 5b.
    */
@@ -1205,19 +1211,19 @@ export function voiceRoutes() {
       return c.json({ error: elResolved.error }, 503)
     }
 
-    // Pre-flight: require at least one minute of outbound credits.
+    // Pre-flight: require at least one minute of outbound USD.
     const planId = await resolvePlanIdForWorkspace(authz.workspaceId)
-    const outboundRate = resolveVoiceRate(planId, 'minutesOutbound')
-    const balance = await getCreditBalance(authz.workspaceId)
-    if (balance < outboundRate) {
+    const oneMinute = calculateVoiceMinuteCost(planId, 'outbound', 60)
+    const balance = await getUsdBalance(authz.workspaceId)
+    if (balance < oneMinute.billedUsd) {
       return c.json(
         {
           error: {
-            code: 'insufficient_credits',
+            code: 'usage_limit_reached',
             message:
-              'Insufficient credits for outbound call. At least one minute of outbound credits is required.',
-            required: outboundRate,
-            available: balance,
+              'Not enough available usage for outbound call. At least one minute of outbound usage is required. Enable usage-based pricing or upgrade your plan.',
+            requiredUsd: oneMinute.billedUsd,
+            availableUsd: balance,
           },
         },
         402,
@@ -1259,8 +1265,8 @@ export function voiceRoutes() {
       return c.json({
         callSid: result.callSid,
         conversationId: result.conversationId,
-        estimatedCredits: outboundRate,
-        creditsPerMinute: outboundRate,
+        estimatedBilledUsd: oneMinute.billedUsd,
+        billedUsdPerMinute: oneMinute.billedUsdPerMinute,
       })
     } catch (err: any) {
       console.error(
@@ -1382,16 +1388,17 @@ export function voiceRoutes() {
         id: true,
         actionType: true,
         actionMetadata: true,
-        creditCost: true,
+        billedUsd: true,
+        rawUsd: true,
         createdAt: true,
       },
     })
 
     let minutesInbound = 0
     let minutesOutbound = 0
-    let creditsInbound = 0
-    let creditsOutbound = 0
-    let creditsNumbers = 0
+    let billedUsdInbound = 0
+    let billedUsdOutbound = 0
+    let billedUsdNumbers = 0
     let inboundCalls = 0
     let outboundCalls = 0
 
@@ -1412,14 +1419,14 @@ export function voiceRoutes() {
       const mins = typeof meta.billedMinutes === 'number' ? meta.billedMinutes : 0
       if (ev.actionType === 'voice_minutes_inbound') {
         minutesInbound += mins
-        creditsInbound += ev.creditCost
+        billedUsdInbound += ev.billedUsd
         inboundCalls += 1
       } else if (ev.actionType === 'voice_minutes_outbound') {
         minutesOutbound += mins
-        creditsOutbound += ev.creditCost
+        billedUsdOutbound += ev.billedUsd
         outboundCalls += 1
       } else {
-        creditsNumbers += ev.creditCost
+        billedUsdNumbers += ev.billedUsd
       }
     }
 
@@ -1432,10 +1439,10 @@ export function voiceRoutes() {
       totals: {
         minutesInbound,
         minutesOutbound,
-        creditsInbound,
-        creditsOutbound,
-        creditsNumbers,
-        credits: creditsInbound + creditsOutbound + creditsNumbers,
+        billedUsdInbound,
+        billedUsdOutbound,
+        billedUsdNumbers,
+        billedUsd: billedUsdInbound + billedUsdOutbound + billedUsdNumbers,
         calls: inboundCalls + outboundCalls,
         inboundCalls,
         outboundCalls,
@@ -1696,7 +1703,7 @@ export function voiceRoutes() {
       return c.json({
         ok: true,
         billedMinutes: result.billedMinutes,
-        creditCost: result.creditCost,
+        billedUsd: result.billedUsd,
         alreadyBilled: result.alreadyBilled,
       })
     } catch (err: any) {
@@ -1802,7 +1809,7 @@ export function voiceRoutes() {
       return c.json({
         ok: true,
         billedMinutes: result.billedMinutes,
-        creditCost: result.creditCost,
+        billedUsd: result.billedUsd,
         alreadyBilled: result.alreadyBilled,
       })
     } catch (err: any) {
@@ -1822,7 +1829,7 @@ export function voiceRoutes() {
    *
    * Releases the Twilio number + EL phone registration, clears the
    * fields in VoiceProjectConfig. Stops recurring monthly debits.
-   * Already-consumed monthly credit is not refunded (v1 behavior;
+   * Already-consumed monthly USD is not refunded (v1 behavior;
    * matches how most PSTN carriers handle mid-cycle releases).
    */
   router.delete('/voice/twilio/number/:projectId', async (c) => {

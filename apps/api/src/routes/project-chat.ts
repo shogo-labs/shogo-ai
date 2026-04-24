@@ -74,8 +74,8 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
  *   d: (finish_message/finish_step) — JSON with usage
  *
  * We consume the entire tracking stream, count tool calls, and extract the
- * final usage object. Then we charge credits via the billing service and
- * log a `ToolCallLog` entry per tool call.
+ * final usage object. Then we charge marked-up USD via the billing service
+ * and log a `ToolCallLog` entry per tool call.
  */
 async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
@@ -325,14 +325,14 @@ async function trackUsageFromStream(
     `[ProjectChat] 📊 Stream ${streamInterrupted ? 'interrupted' : 'complete'} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
-  // Credit billing is handled by the AI proxy billing session (opened before
+  // Usage billing is handled by the AI proxy billing session (opened before
   // proxying, closed after stream completes in the route handler).
 
-  // Close the billing session — this triggers the actual credit charge
-  // based on total accumulated tokens across all API calls in the agentic loop.
-  const { creditCost } = await closeSession(project.id)
-  if (creditCost > 0) {
-    console.log(`[ProjectChat] 💰 Billing session closed — charged ${creditCost} credits for project ${project.id}`)
+  // Close the billing session — this triggers the actual USD charge based
+  // on total accumulated tokens across all API calls in the agentic loop.
+  const { billedUsd } = await closeSession(project.id)
+  if (billedUsd > 0) {
+    console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }
 
   // Persist assistant message first so we have a messageId for tool call logs.
@@ -575,11 +575,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      if (!await billingService.hasCredits(project.workspaceId)) {
-        chatSpan.setAttribute("error.type", "insufficient_credits")
+      if (!await billingService.hasBalance(project.workspaceId)) {
+        chatSpan.setAttribute("error.type", "usage_limit_reached")
         chatSpan.end()
         return c.json(
-          { error: { code: "insufficient_credits", message: "You've run out of credits. Please upgrade your plan to continue." } },
+          { error: { code: "usage_limit_reached", message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue." } },
           402
         )
       }

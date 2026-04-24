@@ -137,13 +137,13 @@ function mergeTimeSeries(
  */
 export async function getOverviewStats(scope: AnalyticsScope = {}) {
   if (scope.userId && !scope.workspaceId && !scope.projectId) {
-    const [usageEvents, totalCreditsResult, chatSessions] = await Promise.all([
+    const [usageEvents, totalBilledUsdResult, chatSessions] = await Promise.all([
       prisma.usageEvent.count({
         where: { memberId: scope.userId },
       }),
       prisma.usageEvent.aggregate({
         where: { memberId: scope.userId },
-        _sum: { creditCost: true },
+        _sum: { billedUsd: true },
       }),
       prisma.chatSession.count({
         where: {
@@ -157,7 +157,7 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
     ])
     return {
       usageEvents,
-      totalCreditsConsumed: totalCreditsResult._sum.creditCost ?? 0,
+      totalSpendUsd: totalBilledUsdResult._sum.billedUsd ?? 0,
       chatSessions,
     }
   }
@@ -289,7 +289,7 @@ export async function getGrowthTimeSeries(
 // ============================================================================
 
 /**
- * Per-member credit usage for the people/settings table.
+ * Per-member USD usage for the people/settings table.
  * Returns current-month and all-time totals keyed by memberId (userId).
  */
 export async function getMemberUsageStats(
@@ -305,23 +305,23 @@ export async function getMemberUsageStats(
     prisma.usageEvent.groupBy({
       by: ['memberId'],
       where: { workspaceId, createdAt: { gte: monthStart } },
-      _sum: { creditCost: true },
+      _sum: { billedUsd: true },
     }),
     prisma.usageEvent.groupBy({
       by: ['memberId'],
       where: { workspaceId },
-      _sum: { creditCost: true },
+      _sum: { billedUsd: true },
     }),
   ])
 
   const monthly: Record<string, number> = {}
   for (const row of monthlyRows) {
-    monthly[row.memberId] = row._sum.creditCost ?? 0
+    monthly[row.memberId] = row._sum.billedUsd ?? 0
   }
 
   const total: Record<string, number> = {}
   for (const row of totalRows) {
-    total[row.memberId] = row._sum.creditCost ?? 0
+    total[row.memberId] = row._sum.billedUsd ?? 0
   }
 
   return { monthly, total }
@@ -332,7 +332,7 @@ export async function getMemberUsageStats(
 // ============================================================================
 
 /**
- * Get usage/credit analytics - consumption by action type, top consumers.
+ * Get usage analytics - USD consumption by action type, top consumers.
  */
 export async function getUsageAnalytics(
   scope: AnalyticsScope = {},
@@ -348,8 +348,8 @@ export async function getUsageAnalytics(
     where,
     select: {
       actionType: true,
-      creditCost: true,
-      creditSource: true,
+      billedUsd: true,
+      source: true,
       memberId: true,
       createdAt: true,
     },
@@ -357,44 +357,44 @@ export async function getUsageAnalytics(
   })
 
   // Aggregate by action type
-  const byActionType = new Map<string, { count: number; totalCredits: number }>()
+  const byActionType = new Map<string, { count: number; totalSpendUsd: number }>()
   for (const event of events) {
-    const existing = byActionType.get(event.actionType) || { count: 0, totalCredits: 0 }
+    const existing = byActionType.get(event.actionType) || { count: 0, totalSpendUsd: 0 }
     existing.count += 1
-    existing.totalCredits += event.creditCost
+    existing.totalSpendUsd += event.billedUsd
     byActionType.set(event.actionType, existing)
   }
 
-  // Aggregate by credit source
-  const byCreditSource = new Map<string, number>()
+  // Aggregate by usage source (daily/monthly/overage)
+  const bySource = new Map<string, number>()
   for (const event of events) {
-    byCreditSource.set(
-      event.creditSource,
-      (byCreditSource.get(event.creditSource) || 0) + event.creditCost
+    bySource.set(
+      event.source,
+      (bySource.get(event.source) || 0) + event.billedUsd
     )
   }
 
   // Top consumers by member
   const byMember = new Map<string, number>()
   for (const event of events) {
-    byMember.set(event.memberId, (byMember.get(event.memberId) || 0) + event.creditCost)
+    byMember.set(event.memberId, (byMember.get(event.memberId) || 0) + event.billedUsd)
   }
   const topConsumers = Array.from(byMember.entries())
-    .map(([memberId, totalCredits]) => ({ memberId, totalCredits }))
-    .sort((a, b) => b.totalCredits - a.totalCredits)
+    .map(([memberId, totalSpendUsd]) => ({ memberId, totalSpendUsd }))
+    .sort((a, b) => b.totalSpendUsd - a.totalSpendUsd)
     .slice(0, 10)
 
   // Daily usage time series
   const dailyUsage = groupByDate(events)
 
-  // Total credits consumed
-  const totalCreditsConsumed = events.reduce((sum, e) => sum + e.creditCost, 0)
+  // Total USD spent
+  const totalSpendUsd = events.reduce((sum, e) => sum + e.billedUsd, 0)
 
   return {
     totalEvents: events.length,
-    totalCreditsConsumed,
+    totalSpendUsd,
     byActionType: Object.fromEntries(byActionType),
-    byCreditSource: Object.fromEntries(byCreditSource),
+    bySource: Object.fromEntries(bySource),
     topConsumers,
     dailyUsage,
   }
@@ -494,8 +494,8 @@ export interface UsageLogEntry {
   inputTokens: number
   outputTokens: number
   totalTokens: number
-  creditCost: number
-  dollarCost: number
+  billedUsd: number
+  rawUsd: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -523,8 +523,8 @@ export interface UsageSummaryEntry {
   totalInputTokens: number
   totalOutputTokens: number
   totalTokens: number
-  totalCredits: number
-  totalDollarCost: number
+  totalBilledUsd: number
+  totalRawUsd: number
   avgDurationMs: number
 }
 
@@ -598,8 +598,8 @@ export async function getUsageLog(
       inputTokens: meta.inputTokens || 0,
       outputTokens: meta.outputTokens || 0,
       totalTokens: meta.totalTokens || 0,
-      creditCost: event.creditCost,
-      dollarCost: meta.dollarCost || 0,
+      billedUsd: event.billedUsd,
+      rawUsd: (meta.rawUsd as number | undefined) ?? (meta.dollarCost as number | undefined) ?? 0,
       durationMs: (meta.durationSeconds ?? 0) * 1000 || meta.durationMs || 0,
       success: meta.success !== false,
       createdAt: event.createdAt.toISOString(),
@@ -643,7 +643,8 @@ export async function getUsageSummary(
     where,
     select: {
       memberId: true,
-      creditCost: true,
+      billedUsd: true,
+      rawUsd: true,
       actionMetadata: true,
     },
   })
@@ -657,8 +658,8 @@ export async function getUsageSummary(
     totalInputTokens: number
     totalOutputTokens: number
     totalTokens: number
-    totalCredits: number
-    totalDollarCost: number
+    totalBilledUsd: number
+    totalRawUsd: number
     totalDurationMs: number
   }>()
 
@@ -667,14 +668,15 @@ export async function getUsageSummary(
     const model = meta.model || meta.modelUsed || 'unknown'
     const key = `${event.memberId}::${model}`
     const existing = aggregateMap.get(key)
+    const rawForEvent = event.rawUsd ?? (meta.rawUsd as number | undefined) ?? 0
 
     if (existing) {
       existing.requestCount += 1
       existing.totalInputTokens += meta.inputTokens || 0
       existing.totalOutputTokens += meta.outputTokens || 0
       existing.totalTokens += meta.totalTokens || 0
-      existing.totalCredits += event.creditCost
-      existing.totalDollarCost += meta.dollarCost || 0
+      existing.totalBilledUsd += event.billedUsd
+      existing.totalRawUsd += rawForEvent
       existing.totalDurationMs += meta.durationMs || 0
     } else {
       aggregateMap.set(key, {
@@ -685,8 +687,8 @@ export async function getUsageSummary(
         totalInputTokens: meta.inputTokens || 0,
         totalOutputTokens: meta.outputTokens || 0,
         totalTokens: meta.totalTokens || 0,
-        totalCredits: event.creditCost,
-        totalDollarCost: meta.dollarCost || 0,
+        totalBilledUsd: event.billedUsd,
+        totalRawUsd: rawForEvent,
         totalDurationMs: meta.durationMs || 0,
       })
     }
@@ -730,8 +732,8 @@ export async function getUsageSummary(
         totalInputTokens: agg.totalInputTokens,
         totalOutputTokens: agg.totalOutputTokens,
         totalTokens: agg.totalTokens,
-        totalCredits: agg.totalCredits,
-        totalDollarCost: agg.totalDollarCost,
+        totalBilledUsd: agg.totalBilledUsd,
+        totalRawUsd: agg.totalRawUsd,
         avgDurationMs: agg.requestCount > 0 ? Math.round(agg.totalDurationMs / agg.requestCount) : 0,
       }
     })
@@ -743,8 +745,8 @@ export async function getUsageSummary(
     totalInputTokens: summaries.reduce((s, e) => s + e.totalInputTokens, 0),
     totalOutputTokens: summaries.reduce((s, e) => s + e.totalOutputTokens, 0),
     totalTokens: summaries.reduce((s, e) => s + e.totalTokens, 0),
-    totalCredits: summaries.reduce((s, e) => s + e.totalCredits, 0),
-    totalDollarCost: summaries.reduce((s, e) => s + e.totalDollarCost, 0),
+    totalBilledUsd: summaries.reduce((s, e) => s + e.totalBilledUsd, 0),
+    totalRawUsd: summaries.reduce((s, e) => s + e.totalRawUsd, 0),
     totalToolCalls,
     uniqueUsers: new Set(summaries.map((s) => s.userId)).size,
     uniqueModels: new Set(summaries.map((s) => s.model)).size,
@@ -1081,7 +1083,7 @@ export interface UserActivity {
   messages: number
   sessions: number
   toolCalls: number
-  creditsUsed: number
+  spendUsd: number
 }
 
 export async function getUserActivityTable(
@@ -1127,7 +1129,7 @@ export async function getUserActivityTable(
 
   const userIds = users.map(u => u.id)
 
-  const [projectCounts, messageCounts, sessionCounts, toolCallCounts, creditSums] =
+  const [projectCounts, messageCounts, sessionCounts, toolCallCounts, usdSums] =
     await Promise.all([
       prisma.project.groupBy({
         by: ['createdBy'],
@@ -1186,7 +1188,7 @@ export async function getUserActivityTable(
       prisma.usageEvent.groupBy({
         by: ['memberId'],
         where: { memberId: { in: userIds } },
-        _sum: { creditCost: true },
+        _sum: { billedUsd: true },
       }),
     ])
 
@@ -1194,7 +1196,7 @@ export async function getUserActivityTable(
   const messageMap = new Map(messageCounts.map(r => [r.userId, r.count]))
   const sessionMap = new Map(sessionCounts.map(r => [r.userId, r.count]))
   const toolCallMap = new Map(toolCallCounts.map(r => [r.userId, r.count]))
-  const creditMap = new Map(creditSums.map(r => [r.memberId, r._sum.creditCost ?? 0]))
+  const usdMap = new Map(usdSums.map(r => [r.memberId, r._sum.billedUsd ?? 0]))
 
   const result: UserActivity[] = users.map(u => ({
     id: u.id,
@@ -1207,7 +1209,7 @@ export async function getUserActivityTable(
     messages: messageMap.get(u.id) ?? 0,
     sessions: sessionMap.get(u.id) ?? 0,
     toolCalls: toolCallMap.get(u.id) ?? 0,
-    creditsUsed: creditMap.get(u.id) ?? 0,
+    spendUsd: usdMap.get(u.id) ?? 0,
   }))
 
   return { users: result, total }

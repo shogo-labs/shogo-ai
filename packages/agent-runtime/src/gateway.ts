@@ -2007,8 +2007,8 @@ export class AgentGateway {
         if (result.error) {
           const msg = result.error.message || 'An unexpected error occurred'
           const isIterationLimit = /maximum iteration limit/i.test(msg)
-          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits/i.test(msg)
-          const isBillingError = /billing|insufficient.credits|upgrade your plan/i.test(msg)
+          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits|usage limit/i.test(msg)
+          const isBillingError = /billing|insufficient.credits|usage limit|upgrade your plan|usage.based pricing/i.test(msg)
           console.error(
             `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
           )
@@ -2017,7 +2017,7 @@ export class AgentGateway {
             const errorText = isIterationLimit
               ? 'I reached my iteration limit before finishing the task. Send a follow-up message like "continue" to pick up where I left off.'
               : isBillingError
-                ? 'Insufficient credits. Please check your plan or AI provider settings.'
+                ? 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
                 : isProviderError
                   ? `AI provider error: ${msg}`
                   : `I encountered an issue processing your message: ${msg}`

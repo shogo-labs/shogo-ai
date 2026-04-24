@@ -49,10 +49,10 @@ interface VoiceUsageSummary {
   totals: {
     minutesInbound: number
     minutesOutbound: number
-    creditsInbound: number
-    creditsOutbound: number
-    creditsNumbers: number
-    credits: number
+    billedUsdInbound: number
+    billedUsdOutbound: number
+    billedUsdNumbers: number
+    billedUsd: number
     calls: number
     inboundCalls: number
     outboundCalls: number
@@ -437,7 +437,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
           <Text className="mt-2 text-xs text-muted-foreground">
             Inbound calls bridge to this project's ElevenLabs agent. Monthly
             line fee and per-minute usage are billed against your workspace
-            credits.
+            at provider cost + 20% markup.
           </Text>
         </View>
       )}
@@ -460,8 +460,8 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
             value={String(usage.totals.minutesOutbound ?? 0)}
           />
           <Row
-            label="Credits used"
-            value={String(usage.totals.credits ?? 0)}
+            label="Usage billed"
+            value={`$${(usage.totals.billedUsd ?? 0).toFixed(4)}`}
           />
         </View>
       )}

@@ -11,6 +11,9 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
+import { VOICE_RAW_USD } from '../config/usage-plans'
+import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
+
 // ---------- mocks ----------
 
 interface VoiceCfg {
@@ -57,14 +60,14 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../services/billing.service', () => ({
-  consumeCredits: async (...args: any[]) => {
+  consumeUsage: async (args: any) => {
     consumeCalls.push(args)
-    return { success: true, remainingCredits: 99 }
+    return { success: true, remainingUsd: 99 }
   },
 }))
 
 // voice-cost is NOT mocked: we rely on the real `resolveVoiceRate`
-// returning VOICE_RATES.numberMonthly (30). `resolvePlanIdForWorkspace`
+// returning VOICE_RAW_USD.numberMonthly ($3). `resolvePlanIdForWorkspace`
 // resolves against prisma.subscription which is unmocked here; it will
 // fail-safe back to 'free' (the try/catch around the query catches the
 // missing model). That's the real production behavior on a fresh ws.
@@ -79,7 +82,7 @@ describe('runVoiceMonthlyRebill', () => {
     updatedWatermarks = []
   })
 
-  test('debits each active number exactly once per period', async () => {
+  test('debits each active number exactly once per period with raw+billed USD', async () => {
     const now = new Date('2026-05-15T12:00:00Z')
     rows = [
       {
@@ -102,10 +105,19 @@ describe('runVoiceMonthlyRebill', () => {
     expect(summary.debited).toBe(2)
     expect(summary.failed).toBe(0)
     expect(consumeCalls.length).toBe(2)
-    for (const call of consumeCalls) {
-      const [, , , actionType, cost] = call
-      expect(actionType).toBe('voice_number_monthly')
-      expect(cost).toBe(30)
+
+    for (const args of consumeCalls) {
+      expect(args.actionType).toBe('voice_number_monthly')
+      expect(args.rawUsd).toBeCloseTo(VOICE_RAW_USD.numberMonthly, 10)
+      expect(args.billedUsd).toBeCloseTo(
+        VOICE_RAW_USD.numberMonthly * MARKUP_MULTIPLIER,
+        10,
+      )
+      expect(args.actionMetadata.rawUsd).toBeCloseTo(VOICE_RAW_USD.numberMonthly, 10)
+      expect(args.actionMetadata.billedUsd).toBeCloseTo(
+        VOICE_RAW_USD.numberMonthly * MARKUP_MULTIPLIER,
+        10,
+      )
     }
     expect(updatedWatermarks.length).toBe(2)
   })
