@@ -277,6 +277,69 @@ export function getInstancePriceId(
 }
 
 // =============================================================================
+// USAGE-BASED PRICING (OVERAGE)
+// =============================================================================
+// Marked-up usage beyond the monthly included $ amount is charged through a
+// Stripe Meter (`billing.meter`) backed metered price. The Meter aggregates
+// `meter_events` keyed by Stripe customer id; the metered price item attached
+// to each workspace's subscription bills the resulting volume.
+//
+// Each meter event payload carries:
+//   - stripe_customer_id  -- routes the event to the subscription
+//   - value               -- non-negative integer quantity (cents @ $0.01/unit)
+//
+// To bring up a new environment:
+//   1. Create a `billing.meter` (event_name + customer_mapping=by_id +
+//      value_settings.event_payload_key=value + default_aggregation.formula=sum)
+//   2. Create a metered recurring USD price with:
+//        currency=usd, unit_amount=1 (=$0.01), billing_scheme=per_unit,
+//        recurring.usage_type=metered, recurring.interval=month,
+//        recurring.meter=<meter id>
+//   3. Drop the meter id, event name, and price id below.
+
+export interface OveragePriceConfig {
+  priceId: string
+  /**
+   * Stripe Meter id (e.g. `mtr_test_...`). When set, overage is reported via
+   * the Meter Events API; the legacy `usage_records.create` path is no longer
+   * supported by Stripe API versions >= 2025-03-31.basil.
+   */
+  meterId: string
+  /**
+   * `event_name` configured on the Meter. We emit billing.meter_events with
+   * this name, payload `{ stripe_customer_id, value }`.
+   */
+  meterEventName: string
+  /**
+   * Denominator for the reported value. 100 = cents (one unit = $0.01).
+   */
+  unitsPerDollar: number
+}
+
+export const OVERAGE_PRICE_STAGING: OveragePriceConfig = {
+  priceId: "price_1TPrwgAp5PDuxitpra3BDHvR",
+  meterId: "mtr_test_61UZFtwbFz7EF6Fo541Ap5PDuxitpJ5U",
+  meterEventName: "usage_overage_cents",
+  unitsPerDollar: 100,
+}
+
+export const OVERAGE_PRICE_PRODUCTION: OveragePriceConfig = {
+  priceId: "price_overage_usd_metered_live",
+  meterId: "mtr_overage_usd_live",
+  meterEventName: "usage_overage_cents",
+  unitsPerDollar: 100,
+}
+
+export function getOveragePriceConfig(): OveragePriceConfig {
+  const isProduction = process.env.NODE_ENV === "production"
+  return isProduction ? OVERAGE_PRICE_PRODUCTION : OVERAGE_PRICE_STAGING
+}
+
+export function getOveragePriceId(): string {
+  return getOveragePriceConfig().priceId
+}
+
+// =============================================================================
 // HELPERS
 // =============================================================================
 

@@ -47,8 +47,8 @@ import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
-  getTotalCreditsForPlan,
-  getCreditsCapacityForDisplay,
+  getIncludedUsdForPlan,
+  getIncludedUsdCapacityForDisplay,
   getPlanDisplayName,
 } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
@@ -193,13 +193,13 @@ export default observer(function ProjectLayout() {
     ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
 
-  const creditsRemaining =
+  const usdRemaining =
     billingData.effectiveBalance?.total ??
-    getTotalCreditsForPlan(billingData.subscription?.planId)
-  const creditsTotal = getCreditsCapacityForDisplay(
+    getIncludedUsdForPlan(billingData.subscription?.planId)
+  const usdTotal = getIncludedUsdCapacityForDisplay(
     billingData.subscription?.planId,
     billingData.effectiveBalance?.total,
-    billingData.effectiveBalance?.monthlyAllocation,
+    billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
   )
 
   const isStarred = useMemo(() => {
@@ -1164,16 +1164,16 @@ export default observer(function ProjectLayout() {
   // `billingDataResolved` every render and break observer()/memo equality in
   // every mounted ChatPanel (the root cause of tab-switch + streaming jank).
   // Depend on the primitive fields ChatPanel actually consumes instead. The
-  // `refetchCreditLedger` callback is wrapped in useCallback([]) inside the
+  // `refetchUsageWallet` callback is wrapped in useCallback([]) inside the
   // hook, so its identity is already stable across renders.
   const billingHasActive = features.billing ? billingData.hasActiveSubscription : true
   const billingHasAdvanced = features.billing ? billingData.hasAdvancedModelAccess : true
-  const billingRefetch = billingData.refetchCreditLedger
+  const billingRefetch = billingData.refetchUsageWallet
   const billingDataResolved = useMemo(
     () => ({
       hasActiveSubscription: billingHasActive,
       hasAdvancedModelAccess: billingHasAdvanced,
-      refetchCreditLedger: billingRefetch,
+      refetchUsageWallet: billingRefetch,
     }),
     [billingHasActive, billingHasAdvanced, billingRefetch],
   )
@@ -1269,8 +1269,8 @@ export default observer(function ProjectLayout() {
     hasActiveSubscription: effectiveHasActiveSubscription,
     workspaceName,
     planLabel,
-    creditsRemaining,
-    creditsTotal,
+    usdRemaining,
+    usdTotal,
     ownerName: user?.name || '',
     projectCreatedAt: project.createdAt,
     projectModifiedAt: project.updatedAt,
@@ -1508,7 +1508,7 @@ export default observer(function ProjectLayout() {
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>

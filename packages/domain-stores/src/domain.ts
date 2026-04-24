@@ -21,7 +21,7 @@ import { InvitationCollection, type IInvitationCollection } from "./invitation.c
 import { FolderCollection, type IFolderCollection } from "./folder.collection"
 import { NotificationCollection, type INotificationCollection } from "./notification.collection"
 import { SubscriptionCollection, type ISubscriptionCollection } from "./subscription.collection"
-import { CreditLedgerCollection, type ICreditLedgerCollection } from "./credit-ledger.collection"
+import { UsageWalletCollection, type IUsageWalletCollection } from "./usage-wallet.collection"
 import { UsageEventCollection, type IUsageEventCollection } from "./usage-event.collection"
 import { ChatSessionCollection, type IChatSessionCollection } from "./chat-session.collection"
 import { ChatMessageCollection, type IChatMessageCollection } from "./chat-message.collection"
@@ -39,7 +39,7 @@ export { InvitationModel, type IInvitation, type IInvitationSnapshotIn, type IIn
 export { FolderModel, type IFolder, type IFolderSnapshotIn, type IFolderSnapshotOut } from "./folder.model"
 export { NotificationModel, type INotification, type INotificationSnapshotIn, type INotificationSnapshotOut } from "./notification.model"
 export { SubscriptionModel, type ISubscription, type ISubscriptionSnapshotIn, type ISubscriptionSnapshotOut } from "./subscription.model"
-export { CreditLedgerModel, type ICreditLedger, type ICreditLedgerSnapshotIn, type ICreditLedgerSnapshotOut } from "./credit-ledger.model"
+export { UsageWalletModel, type IUsageWallet, type IUsageWalletSnapshotIn, type IUsageWalletSnapshotOut } from "./usage-wallet.model"
 export { UsageEventModel, type IUsageEvent, type IUsageEventSnapshotIn, type IUsageEventSnapshotOut } from "./usage-event.model"
 export { ChatSessionModel, type IChatSession, type IChatSessionSnapshotIn, type IChatSessionSnapshotOut } from "./chat-session.model"
 export { ChatMessageModel, type IChatMessage, type IChatMessageSnapshotIn, type IChatMessageSnapshotOut } from "./chat-message.model"
@@ -57,7 +57,7 @@ export { InvitationCollection, type IInvitationCollection }
 export { FolderCollection, type IFolderCollection }
 export { NotificationCollection, type INotificationCollection }
 export { SubscriptionCollection, type ISubscriptionCollection }
-export { CreditLedgerCollection, type ICreditLedgerCollection }
+export { UsageWalletCollection, type IUsageWalletCollection }
 export { UsageEventCollection, type IUsageEventCollection }
 export { ChatSessionCollection, type IChatSessionCollection }
 export { ChatMessageCollection, type IChatMessageCollection }
@@ -101,7 +101,7 @@ export const DomainStore = types
     folderCollection: types.optional(FolderCollection, { items: {} }),
     notificationCollection: types.optional(NotificationCollection, { items: {} }),
     subscriptionCollection: types.optional(SubscriptionCollection, { items: {} }),
-    creditLedgerCollection: types.optional(CreditLedgerCollection, { items: {} }),
+    usageWalletCollection: types.optional(UsageWalletCollection, { items: {} }),
     usageEventCollection: types.optional(UsageEventCollection, { items: {} }),
     chatSessionCollection: types.optional(ChatSessionCollection, { items: {} }),
     chatMessageCollection: types.optional(ChatMessageCollection, { items: {} }),
@@ -123,7 +123,7 @@ export const DomainStore = types
         "folderCollection",
         "notificationCollection",
         "subscriptionCollection",
-        "creditLedgerCollection",
+        "usageWalletCollection",
         "usageEventCollection",
         "chatSessionCollection",
         "chatMessageCollection",
@@ -146,7 +146,7 @@ export const DomainStore = types
       self.folderCollection.clear()
       self.notificationCollection.clear()
       self.subscriptionCollection.clear()
-      self.creditLedgerCollection.clear()
+      self.usageWalletCollection.clear()
       self.usageEventCollection.clear()
       self.chatSessionCollection.clear()
       self.chatMessageCollection.clear()
@@ -166,7 +166,7 @@ export const DomainStore = types
       self.folderCollection.clearError()
       self.notificationCollection.clearError()
       self.subscriptionCollection.clearError()
-      self.creditLedgerCollection.clearError()
+      self.usageWalletCollection.clearError()
       self.usageEventCollection.clearError()
       self.chatSessionCollection.clearError()
       self.chatMessageCollection.clearError()

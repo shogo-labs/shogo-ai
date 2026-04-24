@@ -163,7 +163,7 @@ export async function generateDigest(prisma: PrismaClient) {
     getChatConversations(since, true),
   ])
 
-  const totalCreditsUsed = activityResult.users.reduce((s, u) => s + u.creditsUsed, 0)
+  const totalSpendUsd = activityResult.users.reduce((s, u) => s + u.spendUsd, 0)
   const totalToolCalls = activityResult.users.reduce((s, u) => s + u.toolCalls, 0)
   const totalMessages = activityResult.users.reduce((s, u) => s + u.messages, 0)
   const totalSessions = activityResult.users.reduce((s, u) => s + u.sessions, 0)
@@ -208,7 +208,7 @@ export async function generateDigest(prisma: PrismaClient) {
       totalMessages,
       totalSessions,
       totalToolCalls,
-      totalCreditsUsed,
+      totalSpendUsd,
       templateStats: templates.templates as any,
       chunksProcessed,
       messagesAnalyzed: userMessageCount,
@@ -226,7 +226,7 @@ export async function generateDigest(prisma: PrismaClient) {
       totalMessages,
       totalSessions,
       totalToolCalls,
-      totalCreditsUsed,
+      totalSpendUsd,
       templateStats: templates.templates as any,
       chunksProcessed,
       messagesAnalyzed: userMessageCount,

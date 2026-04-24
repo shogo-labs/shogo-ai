@@ -22,8 +22,35 @@ import {
   BridgeUnavailableError,
 } from '../services/recording.service'
 import { existsSync, unlinkSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'fs'
-import { join, resolve } from 'path'
+import { join, resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { execSync } from 'child_process'
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+
+// Locates apps/desktop/scripts/download-sherpa.mjs in both dev and packaged builds.
+// Dev: apps/api/src/routes/meetings.ts -> ../../../desktop/scripts/download-sherpa.mjs
+// Packaged: bundle-api.mjs copies the script to resources/scripts/download-sherpa.mjs,
+// and local-server sets cwd to resourcesPath, so cwd/scripts/download-sherpa.mjs resolves it.
+function findDownloadSherpaScript(): string | null {
+  const candidates = [
+    resolve(MODULE_DIR, '..', '..', '..', 'desktop', 'scripts', 'download-sherpa.mjs'),
+    resolve(process.cwd(), 'scripts', 'download-sherpa.mjs'),
+    resolve(process.cwd(), 'apps', 'desktop', 'scripts', 'download-sherpa.mjs'),
+    resolve(process.cwd(), '..', '..', 'apps', 'desktop', 'scripts', 'download-sherpa.mjs'),
+    resolve((process as any).resourcesPath || '', 'scripts', 'download-sherpa.mjs'),
+  ]
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+// Prefer the bun binary the desktop shell spawned us with (packaged users likely
+// don't have `node` on PATH). Falls back to `bun` then `node`.
+function getScriptInterpreter(): string {
+  return process.env.SHOGO_BUN_PATH || 'bun'
+}
 
 const db = prisma as any
 
@@ -169,16 +196,34 @@ meetingRoutes.post('/api/local/meetings/install-sherpa', async (c) => {
   const steps: string[] = []
 
   try {
-    const scriptPath = resolve(process.cwd(), 'apps', 'desktop', 'scripts', 'download-sherpa.mjs')
-    if (!existsSync(scriptPath)) {
-      return c.json({ error: 'download-sherpa.mjs not found' }, 500)
+    const scriptPath = findDownloadSherpaScript()
+    if (!scriptPath) {
+      return c.json(
+        {
+          error:
+            'download-sherpa.mjs not found. Expected at apps/desktop/scripts/download-sherpa.mjs relative to the API source or repo root.',
+        },
+        500,
+      )
     }
 
+    const interpreter = getScriptInterpreter()
+    // In packaged mode SHOGO_SHERPA_DIR points into the user data dir (writable);
+    // in dev it's unset and the script falls back to apps/desktop/resources/sherpa-onnx.
+    const destDir = process.env.SHOGO_SHERPA_DIR || ''
+
     steps.push(`Installing sherpa-onnx with model ${model}...`)
-    execSync(`node "${scriptPath}" --model ${model}`, {
+    steps.push(`Running: ${interpreter} ${scriptPath} --model ${model}`)
+    if (destDir) steps.push(`Destination: ${destDir}`)
+
+    execSync(`"${interpreter}" "${scriptPath}" --model ${model}`, {
       timeout: 600_000,
       encoding: 'utf-8',
       stdio: 'pipe',
+      env: {
+        ...process.env,
+        ...(destDir ? { SHERPA_DEST_DIR: destDir } : {}),
+      },
     })
     steps.push('sherpa-onnx installed successfully')
 

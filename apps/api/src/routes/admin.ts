@@ -61,7 +61,7 @@ export function adminRoutes(): Hono {
   })
 
   /**
-   * GET /analytics/usage - Usage/credit analytics
+   * GET /analytics/usage - Usage/spend analytics
    */
   router.get('/analytics/usage', async (c) => {
     try {

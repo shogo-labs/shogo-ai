@@ -11,7 +11,7 @@
     "Notification",
     "BillingAccount",
     "Subscription",
-    "CreditLedger",
+    "UsageWallet",
     "UsageEvent",
     "ChatSession",
     "ChatMessage",

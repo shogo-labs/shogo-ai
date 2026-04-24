@@ -3,7 +3,7 @@
 /**
  * NewWorkspacePage - Create a paid workspace
  *
- * Reuses the billing page layout with plan cards, credit tier selectors,
+ * Reuses the billing page layout with plan cards, usage tier selectors,
  * and monthly/annual toggle. Adds a workspace name input at the top.
  * On checkout, creates the workspace + Stripe subscription.
  */
@@ -38,7 +38,8 @@ import {
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
-  BASE_TIER_CREDITS,
+  BASE_TIER_INCLUDED_USD,
+  formatUsd,
 } from '../../lib/billing-config'
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
@@ -64,12 +65,13 @@ export default function NewWorkspacePage() {
   const proTier = PRO_TIERS[selectedProTier]
   const businessTier = BUSINESS_TIERS[selectedBusinessTier]
 
-  const handleCheckout = useCallback(async (planType: 'pro' | 'business', credits: number) => {
+  const handleCheckout = useCallback(async (planType: 'pro' | 'business', includedUsd: number) => {
     if (!workspaceName.trim() || !user?.id) return
     setIsCheckoutLoading(true)
     setError(null)
     try {
-      const stripeTierKey = credits >= BASE_TIER_CREDITS ? Math.round(credits / 2) : credits
+      const legacyCredits = Math.round(includedUsd * 10)
+      const stripeTierKey = includedUsd >= BASE_TIER_INCLUDED_USD ? Math.round(legacyCredits / 2) : legacyCredits
       const planId = stripeTierKey === 100 ? planType : `${planType}_${stripeTierKey}`
       const isNative = Platform.OS !== 'web'
 
@@ -252,7 +254,7 @@ export default function NewWorkspacePage() {
 
               <View>
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly credits
+                  Monthly included usage
                 </Text>
                 <TierSelector
                   tiers={PRO_TIERS}
@@ -262,7 +264,7 @@ export default function NewWorkspacePage() {
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('pro', proTier.credits)}
+                onPress={() => handleCheckout('pro', proTier.includedUsd)}
                 disabled={isCheckoutLoading || !nameValid}
                 className={cn(
                   'w-full items-center justify-center py-3 rounded-md',
@@ -279,7 +281,7 @@ export default function NewWorkspacePage() {
 
               <View className="gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {proTier.credits.toLocaleString()} credits / month
+                  {formatUsd(proTier.includedUsd)} of usage / month
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -321,17 +323,18 @@ export default function NewWorkspacePage() {
 
               <View>
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly credits
+                  Monthly included usage (per seat)
                 </Text>
                 <TierSelector
                   tiers={BUSINESS_TIERS}
                   selectedIndex={selectedBusinessTier}
                   onSelect={setSelectedBusinessTier}
+                  suffix=" / seat"
                 />
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('business', businessTier.credits)}
+                onPress={() => handleCheckout('business', businessTier.includedUsd)}
                 disabled={isCheckoutLoading || !nameValid}
                 className={cn(
                   'w-full items-center justify-center py-3 rounded-md',
@@ -348,7 +351,7 @@ export default function NewWorkspacePage() {
 
               <View className="gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {businessTier.credits.toLocaleString()} credits / month
+                  {formatUsd(businessTier.includedUsd)} of usage / seat / month
                 </Text>
                 <FeatureList features={BUSINESS_FEATURES} />
               </View>

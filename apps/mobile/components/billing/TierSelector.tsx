@@ -6,6 +6,11 @@ import { ChevronDown } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { PriceTier } from '../../lib/billing-config'
 
+function formatIncludedUsd(amount: number): string {
+  if (Number.isInteger(amount)) return `$${amount.toLocaleString()}`
+  return `$${amount.toFixed(2)}`
+}
+
 export function TierSelector({
   tiers,
   selectedIndex,
@@ -27,7 +32,7 @@ export function TierSelector({
         className="flex-row items-center justify-between border border-border rounded-md px-3 py-2.5 bg-background"
       >
         <Text className="text-sm text-foreground">
-          {selected.credits.toLocaleString()} credits{suffix}
+          {formatIncludedUsd(selected.includedUsd)} of usage{suffix}
         </Text>
         <ChevronDown size={16} className="text-muted-foreground" />
       </Pressable>
@@ -35,7 +40,7 @@ export function TierSelector({
         <View className="border border-border rounded-md mt-1 bg-card overflow-hidden">
           {tiers.map((tier, i) => (
             <Pressable
-              key={tier.credits}
+              key={tier.includedUsd}
               onPress={() => { onSelect(i); setOpen(false) }}
               className={cn(
                 'px-3 py-2 active:bg-muted',
@@ -46,7 +51,7 @@ export function TierSelector({
                 'text-sm',
                 i === selectedIndex ? 'text-foreground font-medium' : 'text-foreground'
               )}>
-                {tier.credits.toLocaleString()} credits{suffix}
+                {formatIncludedUsd(tier.includedUsd)} of usage{suffix}
               </Text>
             </Pressable>
           ))}

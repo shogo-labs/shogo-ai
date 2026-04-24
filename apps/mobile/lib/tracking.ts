@@ -54,9 +54,10 @@ export function lookupPlanValue(planId: string, billingInterval: string): number
   if (!match) return undefined
 
   const planType = match[1] as 'pro' | 'business'
-  const credits = match[2] ? parseInt(match[2], 10) : 100
+  const legacyCredits = match[2] ? parseInt(match[2], 10) : 100
+  const includedUsd = legacyCredits / 10
   const tiers: PriceTier[] = planType === 'pro' ? PRO_TIERS : BUSINESS_TIERS
-  const tier = tiers.find((t) => t.credits === credits)
+  const tier = tiers.find((t) => t.includedUsd === includedUsd)
   if (!tier) return undefined
 
   return isAnnual ? tier.annual : tier.monthly

@@ -3,22 +3,27 @@
 /**
  * useBillingData Hook (shared)
  *
- * Provides billing data from the SDK domain store.
+ * Provides billing data from the SDK domain store. All values are in USD.
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { useSDKDomain } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
 
+export interface EffectiveBalance {
+  dailyIncludedUsd: number
+  monthlyIncludedUsd: number
+  monthlyIncludedAllocationUsd: number
+  overageAccumulatedUsd: number
+  overageEnabled: boolean
+  overageHardLimitUsd: number | null
+  total: number
+}
+
 export interface BillingDataState {
   subscription: any | undefined
-  creditLedger: any | undefined
-  effectiveBalance: {
-    dailyCredits: number
-    monthlyCredits: number
-    monthlyAllocation: number
-    total: number
-  } | undefined
+  usageWallet: any | undefined
+  effectiveBalance: EffectiveBalance | undefined
   usageEvents: any[]
   hasActiveSubscription: boolean
   hasAdvancedModelAccess: boolean
@@ -26,7 +31,7 @@ export interface BillingDataState {
   isLoading: boolean
   error: Error | null
   refetchSubscription: () => void
-  refetchCreditLedger: () => void
+  refetchUsageWallet: () => void
   refetchUsageEvents: () => void
 }
 
@@ -34,12 +39,12 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   const store = useSDKDomain() as IDomainStore
 
   const [isLoadingSubscription, setIsLoadingSubscription] = useState(false)
-  const [isLoadingCreditLedger, setIsLoadingCreditLedger] = useState(false)
+  const [isLoadingUsageWallet, setIsLoadingUsageWallet] = useState(false)
   const [isLoadingUsageEvents, setIsLoadingUsageEvents] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
   const [subscriptionRefetchCounter, setSubscriptionRefetchCounter] = useState(0)
-  const [creditLedgerRefetchCounter, setCreditLedgerRefetchCounter] = useState(0)
+  const [usageWalletRefetchCounter, setUsageWalletRefetchCounter] = useState(0)
   const [usageEventsRefetchCounter, setUsageEventsRefetchCounter] = useState(0)
 
   useEffect(() => {
@@ -54,14 +59,15 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   }, [workspaceId, store, subscriptionRefetchCounter])
 
   useEffect(() => {
-    if (!workspaceId || !store?.creditLedgerCollection) { setIsLoadingCreditLedger(false); return }
+    const wallet = (store as any)?.usageWalletCollection
+    if (!workspaceId || !wallet) { setIsLoadingUsageWallet(false); return }
     let cancelled = false
-    setIsLoadingCreditLedger(true)
-    store.creditLedgerCollection.loadAll({ workspaceId })
-      .catch((err: any) => { if (!cancelled) setError(err instanceof Error ? err : new Error("Failed to load credit ledger")) })
-      .finally(() => { if (!cancelled) setIsLoadingCreditLedger(false) })
+    setIsLoadingUsageWallet(true)
+    wallet.loadAll({ workspaceId })
+      .catch((err: any) => { if (!cancelled) setError(err instanceof Error ? err : new Error("Failed to load usage wallet")) })
+      .finally(() => { if (!cancelled) setIsLoadingUsageWallet(false) })
     return () => { cancelled = true }
-  }, [workspaceId, store, creditLedgerRefetchCounter])
+  }, [workspaceId, store, usageWalletRefetchCounter])
 
   useEffect(() => {
     if (!workspaceId || !store?.usageEventCollection) { setIsLoadingUsageEvents(false); return }
@@ -74,7 +80,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   }, [workspaceId, store, usageEventsRefetchCounter])
 
   const refetchSubscription = useCallback(() => setSubscriptionRefetchCounter((c) => c + 1), [])
-  const refetchCreditLedger = useCallback(() => setCreditLedgerRefetchCounter((c) => c + 1), [])
+  const refetchUsageWallet = useCallback(() => setUsageWalletRefetchCounter((c) => c + 1), [])
   const refetchUsageEvents = useCallback(() => setUsageEventsRefetchCounter((c) => c + 1), [])
 
   const subsLength = store?.subscriptionCollection?.all?.length ?? 0
@@ -85,25 +91,37 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     } catch { return undefined }
   }, [workspaceId, store, isLoadingSubscription, subsLength])
 
-  const ledgerLength = store?.creditLedgerCollection?.all?.length ?? 0
-  const creditLedger = useMemo(() => {
-    if (!workspaceId || !store?.creditLedgerCollection) return undefined
+  const walletLength = (store as any)?.usageWalletCollection?.all?.length ?? 0
+  const usageWallet = useMemo(() => {
+    const coll = (store as any)?.usageWalletCollection
+    if (!workspaceId || !coll) return undefined
     try {
-      return store.creditLedgerCollection.all.find((cl: any) => cl.workspaceId === workspaceId)
+      return coll.all.find((w: any) => w.workspaceId === workspaceId)
     } catch { return undefined }
-  }, [workspaceId, store, isLoadingCreditLedger, ledgerLength])
+  }, [workspaceId, store, isLoadingUsageWallet, walletLength])
 
-  const effectiveBalance = useMemo(() => {
-    if (!creditLedger) return undefined
+  const effectiveBalance = useMemo<EffectiveBalance | undefined>(() => {
+    if (!usageWallet) return undefined
     try {
-      const lastReset = creditLedger.lastDailyReset ? new Date(creditLedger.lastDailyReset).toDateString() : ''
+      const lastReset = usageWallet.lastDailyReset ? new Date(usageWallet.lastDailyReset).toDateString() : ''
       const needsReset = lastReset !== new Date().toDateString()
-      const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
-      const monthly = creditLedger.monthlyCredits ?? 0
-      const monthlyAllocation = creditLedger.monthlyAllocation ?? 0
-      return { dailyCredits: daily, monthlyCredits: monthly, monthlyAllocation, total: daily + monthly }
+      const daily = needsReset ? 0.50 : (usageWallet.dailyIncludedUsd ?? 0)
+      const monthly = usageWallet.monthlyIncludedUsd ?? 0
+      const monthlyAllocation = usageWallet.monthlyIncludedAllocationUsd ?? 0
+      const overageAccumulated = usageWallet.overageAccumulatedUsd ?? 0
+      const overageEnabled = usageWallet.overageEnabled === true
+      const overageHardLimit = typeof usageWallet.overageHardLimitUsd === 'number' ? usageWallet.overageHardLimitUsd : null
+      return {
+        dailyIncludedUsd: daily,
+        monthlyIncludedUsd: monthly,
+        monthlyIncludedAllocationUsd: monthlyAllocation,
+        overageAccumulatedUsd: overageAccumulated,
+        overageEnabled,
+        overageHardLimitUsd: overageHardLimit,
+        total: daily + monthly,
+      }
     } catch { return undefined }
-  }, [creditLedger])
+  }, [usageWallet])
 
   const usageEvents = useMemo(() => {
     if (!workspaceId || !store?.usageEventCollection) return []
@@ -120,16 +138,16 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
 
   return {
     subscription,
-    creditLedger,
+    usageWallet,
     effectiveBalance,
     usageEvents,
     hasActiveSubscription,
     hasAdvancedModelAccess,
     daysRemaining: subscription?.daysRemaining,
-    isLoading: isLoadingSubscription || isLoadingCreditLedger || isLoadingUsageEvents,
+    isLoading: isLoadingSubscription || isLoadingUsageWallet || isLoadingUsageEvents,
     error,
     refetchSubscription,
-    refetchCreditLedger,
+    refetchUsageWallet,
     refetchUsageEvents,
   }
 }

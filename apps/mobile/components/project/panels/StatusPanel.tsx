@@ -35,12 +35,14 @@ const CONTEXT_FILES = [
 
 const POLL_INTERVAL_MS = 5_000
 
-const CREDIT_MARKUP = 1.3
+/** Shogo bills raw provider cost + 20% markup (mirrors server MARKUP_MULTIPLIER). */
+const USAGE_MARKUP = 1.2
 const ESTIMATED_TOKENS_PER_TICK = 3000
-const MODEL_CREDITS: Record<string, { perBatch: number; batchSize: number }> = {
-  haiku: { perBatch: 0.025, batchSize: 5000 },
-  sonnet: { perBatch: 0.1, batchSize: 5000 },
-  opus: { perBatch: 0.5, batchSize: 5000 },
+/** Rough $/1M-token per-tick cost estimates used purely for heartbeat planning UI. */
+const MODEL_USD_PER_TICK: Record<string, number> = {
+  haiku: 0.003,
+  sonnet: 0.012,
+  opus: 0.06,
 }
 
 function modelNameToBillingTier(modelName: string): string {
@@ -55,7 +57,7 @@ function estimateDailyCost(
   modelName: string,
   quietHoursStart?: string | null,
   quietHoursEnd?: string | null,
-): { ticksPerDay: number; creditsPerTick: number; creditsPerDay: number } {
+): { ticksPerDay: number; usdPerTick: number; usdPerDay: number } {
   let activeHours = 24
   if (quietHoursStart && quietHoursEnd) {
     const [sh, sm] = quietHoursStart.split(':').map(Number)
@@ -68,11 +70,11 @@ function estimateDailyCost(
 
   const ticksPerDay = Math.floor((activeHours * 3600) / intervalSeconds)
   const tier = modelNameToBillingTier(modelName)
-  const config = MODEL_CREDITS[tier] || MODEL_CREDITS.sonnet
-  const creditsPerTick =
-    Math.ceil(((ESTIMATED_TOKENS_PER_TICK / config.batchSize) * config.perBatch * CREDIT_MARKUP) * 10) / 10
+  const rawUsdPerTick = MODEL_USD_PER_TICK[tier] ?? MODEL_USD_PER_TICK.sonnet
+  const tokenScale = ESTIMATED_TOKENS_PER_TICK / 3000
+  const usdPerTick = rawUsdPerTick * tokenScale * USAGE_MARKUP
 
-  return { ticksPerDay, creditsPerTick, creditsPerDay: Math.ceil(ticksPerDay * creditsPerTick * 10) / 10 }
+  return { ticksPerDay, usdPerTick, usdPerDay: ticksPerDay * usdPerTick }
 }
 
 interface HeartbeatConfig {
@@ -492,7 +494,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                   ))}
                   <View className="flex-row items-center justify-between px-3 py-1.5">
                     <Text className="text-xs text-muted-foreground">
-                      {localMode ? 'Total estimated tokens' : 'Credits used'}
+                      {localMode ? 'Total estimated tokens' : 'Tokens used'}
                     </Text>
                     <Text className="text-xs font-medium text-foreground">
                       {localMode
@@ -606,10 +608,10 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                           <DollarSign size={13} className="text-amber-500" />
                           <View className="flex-1">
                             <Text className="text-xs text-foreground">
-                              ~{cost.creditsPerDay} credits/day
+                              ~${cost.usdPerDay.toFixed(2)}/day
                             </Text>
                             <Text className="text-[10px] text-muted-foreground">
-                              ~{cost.ticksPerDay} ticks/day × ~{cost.creditsPerTick} credits/tick
+                              ~{cost.ticksPerDay} ticks/day × ~${cost.usdPerTick.toFixed(4)}/tick
                             </Text>
                           </View>
                         </View>

@@ -20,7 +20,7 @@ import { createInvitationRoutes, setPrisma as setPrismaInvitation, setInvitation
 import { createFolderRoutes, setPrisma as setPrismaFolder, setFolderHooks } from "./folder.routes"
 import { createNotificationRoutes, setPrisma as setPrismaNotification, setNotificationHooks } from "./notification.routes"
 import { createSubscriptionRoutes, setPrisma as setPrismaSubscription, setSubscriptionHooks } from "./subscription.routes"
-import { createCreditLedgerRoutes, setPrisma as setPrismaCreditLedger, setCreditLedgerHooks } from "./credit-ledger.routes"
+import { createUsageWalletRoutes, setPrisma as setPrismaUsageWallet, setUsageWalletHooks } from "./usage-wallet.routes"
 import { createUsageEventRoutes, setPrisma as setPrismaUsageEvent, setUsageEventHooks } from "./usage-event.routes"
 import { createChatSessionRoutes, setPrisma as setPrismaChatSession, setChatSessionHooks } from "./chat-session.routes"
 import { createChatMessageRoutes, setPrisma as setPrismaChatMessage, setChatMessageHooks } from "./chat-message.routes"
@@ -38,7 +38,7 @@ import { invitationHooks } from "./invitation.hooks"
 import { folderHooks } from "./folder.hooks"
 import { notificationHooks } from "./notification.hooks"
 import { subscriptionHooks } from "./subscription.hooks"
-import { creditLedgerHooks } from "./credit-ledger.hooks"
+import { usageWalletHooks } from "./usage-wallet.hooks"
 import { usageEventHooks } from "./usage-event.hooks"
 import { chatSessionHooks } from "./chat-session.hooks"
 import { chatMessageHooks } from "./chat-message.hooks"
@@ -77,9 +77,9 @@ export {
   createSubscriptionRoutes,
   setPrismaSubscription,
   setSubscriptionHooks,
-  createCreditLedgerRoutes,
-  setPrismaCreditLedger,
-  setCreditLedgerHooks,
+  createUsageWalletRoutes,
+  setPrismaUsageWallet,
+  setUsageWalletHooks,
   createUsageEventRoutes,
   setPrismaUsageEvent,
   setUsageEventHooks,
@@ -109,7 +109,7 @@ export {
   folderHooks,
   notificationHooks,
   subscriptionHooks,
-  creditLedgerHooks,
+  usageWalletHooks,
   usageEventHooks,
   chatSessionHooks,
   chatMessageHooks,
@@ -128,7 +128,7 @@ export type { InvitationHooks } from "./invitation.hooks"
 export type { FolderHooks } from "./folder.hooks"
 export type { NotificationHooks } from "./notification.hooks"
 export type { SubscriptionHooks } from "./subscription.hooks"
-export type { CreditLedgerHooks } from "./credit-ledger.hooks"
+export type { UsageWalletHooks } from "./usage-wallet.hooks"
 export type { UsageEventHooks } from "./usage-event.hooks"
 export type { ChatSessionHooks } from "./chat-session.hooks"
 export type { ChatMessageHooks } from "./chat-message.hooks"
@@ -152,7 +152,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setPrismaFolder(prisma)
   setPrismaNotification(prisma)
   setPrismaSubscription(prisma)
-  setPrismaCreditLedger(prisma)
+  setPrismaUsageWallet(prisma)
   setPrismaUsageEvent(prisma)
   setPrismaChatSession(prisma)
   setPrismaChatMessage(prisma)
@@ -170,7 +170,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setFolderHooks(folderHooks)
   setNotificationHooks(notificationHooks)
   setSubscriptionHooks(subscriptionHooks)
-  setCreditLedgerHooks(creditLedgerHooks)
+  setUsageWalletHooks(usageWalletHooks)
   setUsageEventHooks(usageEventHooks)
   setChatSessionHooks(chatSessionHooks)
   setChatMessageHooks(chatMessageHooks)
@@ -188,7 +188,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   app.route("/folders", createFolderRoutes())
   app.route("/notifications", createNotificationRoutes())
   app.route("/subscriptions", createSubscriptionRoutes())
-  app.route("/credit-ledgers", createCreditLedgerRoutes())
+  app.route("/usage-wallets", createUsageWalletRoutes())
   app.route("/usage-events", createUsageEventRoutes())
   app.route("/chat-sessions", createChatSessionRoutes())
   app.route("/chat-messages", createChatMessageRoutes())

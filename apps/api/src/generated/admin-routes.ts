@@ -99,6 +99,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
         where: { id },
         include: {
           signupAttribution: true,
+          creatorProfile: true,
           sessions: { take: 50 },
           accounts: { take: 50 },
           members: { take: 50 },
@@ -189,7 +190,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { projects: true, members: true, billingAccounts: true, invitations: true, inviteLinks: true, folders: true, subscriptions: true, creditLedgers: true, usageEvents: true, starredProjects: true, apiKeys: true, instances: true } },
+            _count: { select: { projects: true, members: true, billingAccounts: true, invitations: true, inviteLinks: true, folders: true, subscriptions: true, usageWallets: true, usageEvents: true, starredProjects: true, apiKeys: true, instances: true, meetings: true, voiceProjectConfigs: true } },
           },
         }),
         prisma.workspace.count({ where }),
@@ -209,6 +210,8 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
       const item = await prisma.workspace.findUnique({
         where: { id },
         include: {
+          instanceSubscription: true,
+          storageUsage: true,
           projects: { take: 50 },
           members: { take: 50 },
           billingAccounts: { take: 50 },
@@ -216,11 +219,13 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           inviteLinks: { take: 50 },
           folders: { take: 50 },
           subscriptions: { take: 50 },
-          creditLedgers: { take: 50 },
+          usageWallets: { take: 50 },
           usageEvents: { take: 50 },
           starredProjects: { take: 50 },
           apiKeys: { take: 50 },
           instances: { take: 50 },
+          meetings: { take: 50 },
+          voiceProjectConfigs: { take: 50 },
         },
       })
 
@@ -314,7 +319,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { members: true, inviteLinks: true, featureSessions: true, chatSessions: true, usageEvents: true, checkpoints: true, starredBy: true } },
+            _count: { select: { members: true, inviteLinks: true, featureSessions: true, chatSessions: true, usageEvents: true, checkpoints: true, starredBy: true, meetings: true } },
           },
         }),
         prisma.project.count({ where }),
@@ -338,6 +343,8 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           folder: true,
           githubConnection: true,
           agentConfig: true,
+          marketplaceListing: true,
+          voiceConfig: true,
           members: { take: 50 },
           inviteLinks: { take: 50 },
           featureSessions: { take: 50 },
@@ -345,6 +352,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           usageEvents: { take: 50 },
           checkpoints: { take: 50 },
           starredBy: { take: 50 },
+          meetings: { take: 50 },
         },
       })
 
@@ -1034,6 +1042,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
             { workspaceId: { contains: search, mode: "insensitive" } },
             { stripeSubscriptionId: { contains: search, mode: "insensitive" } },
             { stripeCustomerId: { contains: search, mode: "insensitive" } },
+            { planId: { contains: search, mode: "insensitive" } },
           ]
         }
       }
@@ -1117,10 +1126,10 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
     }
   })
 
-  // ========== CreditLedger ==========
+  // ========== UsageWallet ==========
 
-  // LIST credit-ledgers
-  router.get("/credit-ledgers", async (c) => {
+  // LIST usage-wallets
+  router.get("/usage-wallets", async (c) => {
     try {
       const url = new URL(c.req.url)
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"))
@@ -1134,6 +1143,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
         where = {
           OR: [
             { workspaceId: { contains: search, mode: "insensitive" } },
+            { stripeMeteredItemId: { contains: search, mode: "insensitive" } },
           ]
         }
       }
@@ -1149,27 +1159,27 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
       }
 
       const [items, total] = await Promise.all([
-        prisma.creditLedger.findMany({
+        prisma.usageWallet.findMany({
           where,
           orderBy: { [orderBy]: order },
           skip: (page - 1) * limit,
           take: limit,
         }),
-        prisma.creditLedger.count({ where }),
+        prisma.usageWallet.count({ where }),
       ])
 
-      return c.json({ ok: true, data: { creditLedgers: items, total, page, limit } })
+      return c.json({ ok: true, data: { usageWallets: items, total, page, limit } })
     } catch (error: any) {
-      console.error("[Admin] List CreditLedger error:", error)
+      console.error("[Admin] List UsageWallet error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)
     }
   })
 
-  // GET credit-ledgers/:id
-  router.get("/credit-ledgers/:id", async (c) => {
+  // GET usage-wallets/:id
+  router.get("/usage-wallets/:id", async (c) => {
     try {
       const id = c.req.param("id")
-      const item = await prisma.creditLedger.findUnique({
+      const item = await prisma.usageWallet.findUnique({
         where: { id },
         include: {
           workspace: true,
@@ -1177,42 +1187,42 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
       })
 
       if (!item) {
-        return c.json({ error: { code: "not_found", message: "CreditLedger not found" } }, 404)
+        return c.json({ error: { code: "not_found", message: "UsageWallet not found" } }, 404)
       }
 
       return c.json({ ok: true, data: item })
     } catch (error: any) {
-      console.error("[Admin] Get CreditLedger error:", error)
+      console.error("[Admin] Get UsageWallet error:", error)
       return c.json({ error: { code: "get_failed", message: error.message } }, 500)
     }
   })
 
-  // PATCH credit-ledgers/:id
-  router.patch("/credit-ledgers/:id", async (c) => {
+  // PATCH usage-wallets/:id
+  router.patch("/usage-wallets/:id", async (c) => {
     try {
       const id = c.req.param("id")
       const body = await c.req.json()
 
-      const item = await prisma.creditLedger.update({
+      const item = await prisma.usageWallet.update({
         where: { id },
         data: body,
       })
 
       return c.json({ ok: true, data: item })
     } catch (error: any) {
-      console.error("[Admin] Update CreditLedger error:", error)
+      console.error("[Admin] Update UsageWallet error:", error)
       return c.json({ error: { code: "update_failed", message: error.message } }, 500)
     }
   })
 
-  // DELETE credit-ledgers/:id
-  router.delete("/credit-ledgers/:id", async (c) => {
+  // DELETE usage-wallets/:id
+  router.delete("/usage-wallets/:id", async (c) => {
     try {
       const id = c.req.param("id")
-      await prisma.creditLedger.delete({ where: { id } })
+      await prisma.usageWallet.delete({ where: { id } })
       return c.json({ ok: true })
     } catch (error: any) {
-      console.error("[Admin] Delete CreditLedger error:", error)
+      console.error("[Admin] Delete UsageWallet error:", error)
       return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
     }
   })
@@ -1450,6 +1460,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
             { content: { contains: search, mode: "insensitive" } },
             { imageData: { contains: search, mode: "insensitive" } },
             { parts: { contains: search, mode: "insensitive" } },
+            { agent: { contains: search, mode: "insensitive" } },
           ]
         }
       }
@@ -1767,7 +1778,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
         folderCount,
         notificationCount,
         subscriptionCount,
-        creditLedgerCount,
+        usageWalletCount,
         usageEventCount,
         chatSessionCount,
         chatMessageCount,
@@ -1784,7 +1795,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
         prisma.folder.count(),
         prisma.notification.count(),
         prisma.subscription.count(),
-        prisma.creditLedger.count(),
+        prisma.usageWallet.count(),
         prisma.usageEvent.count(),
         prisma.chatSession.count(),
         prisma.chatMessage.count(),
@@ -1805,7 +1816,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           folder: folderCount,
           notification: notificationCount,
           subscription: subscriptionCount,
-          creditLedger: creditLedgerCount,
+          usageWallet: usageWalletCount,
           usageEvent: usageEventCount,
           chatSession: chatSessionCount,
           chatMessage: chatMessageCount,
