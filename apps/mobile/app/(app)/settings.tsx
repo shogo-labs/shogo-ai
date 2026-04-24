@@ -86,8 +86,10 @@ import {
   Badge,
   Separator,
   Skeleton,
+  Switch,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../lib/notifications/preferences'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
@@ -864,6 +866,33 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 // ACCOUNT TAB
 // ============================================================================
 
+function NotificationsCard() {
+  const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref()
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <View className="px-6 py-5 flex-row items-center justify-between">
+          <View className="flex-1 mr-4">
+            <Text className="text-sm font-semibold text-foreground">
+              Notify when a reply is ready
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Send a system notification when a chat turn finishes while Shogo
+              isn't in the foreground. Applies on desktop, web, and mobile.
+            </Text>
+          </View>
+          <Switch
+            checked={notifyOnTurn}
+            onCheckedChange={(v) => {
+              void setNotifyOnTurn(v)
+            }}
+          />
+        </View>
+      </CardContent>
+    </Card>
+  )
+}
+
 function AccountTab() {
   const { user, signOut, updateUser } = useAuth()
   const http = useDomainHttp()
@@ -1024,6 +1053,8 @@ function AccountTab() {
 
         </CardContent>
       </Card>
+
+      <NotificationsCard />
 
       {!localMode && (
         <Card>

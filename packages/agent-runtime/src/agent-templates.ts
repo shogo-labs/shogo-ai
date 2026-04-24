@@ -10,6 +10,17 @@
 import type { TemplateIntegrationRef } from './integration-catalog'
 import { loadDirTemplates } from './template-loader'
 
+/** In production, templates are read once. In dev/test, re-read so new dirs appear without restarting the API. */
+let productionTemplatesCache: AgentTemplate[] | null = null
+
+function getTemplatesList(): AgentTemplate[] {
+  if (process.env.NODE_ENV === 'production') {
+    if (!productionTemplatesCache) productionTemplatesCache = loadDirTemplates()
+    return productionTemplatesCache
+  }
+  return loadDirTemplates()
+}
+
 export interface AgentTemplate {
   id: string
   name: string
@@ -67,16 +78,17 @@ export const TEMPLATE_CATEGORIES: Record<TemplateCategory, { label: string; icon
   sales: { label: 'Sales & CRM', icon: '🤝', description: 'Pipeline management, outreach, and deal tracking' },
 }
 
+/** Snapshot at import time; tests and introspection. Prefer getTemplatesList() for API routes in dev. */
 export const AGENT_TEMPLATES: AgentTemplate[] = loadDirTemplates()
 
 export function getAgentTemplateById(id: string): AgentTemplate | undefined {
-  return AGENT_TEMPLATES.find((t) => t.id === id)
+  return getTemplatesList().find((t) => t.id === id)
 }
 
 export function getTemplatesByCategory(category: TemplateCategory): AgentTemplate[] {
-  return AGENT_TEMPLATES.filter((t) => t.category === category)
+  return getTemplatesList().filter((t) => t.category === category)
 }
 
 export function getTemplateSummaries(): Array<Omit<AgentTemplate, 'files'> & { techStack?: string }> {
-  return AGENT_TEMPLATES.map(({ files: _files, ...rest }) => rest)
+  return getTemplatesList().map(({ files: _files, ...rest }) => rest)
 }

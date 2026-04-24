@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef, useMemo, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
+import { useResolvedTheme } from "../../../contexts/theme"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FilePlus2, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
@@ -52,6 +53,7 @@ function truncateContent(text: string): { display: string; truncated: boolean; t
 const SHIKI_DEBOUNCE_MS = 150
 
 const HighlightedCode = memo(function HighlightedCode({ code, language }: { code: string; language: string }) {
+  const isDark = useResolvedTheme() === "dark"
   const containerRef = useRef<HTMLDivElement>(null)
   const [fallback, setFallback] = useState(false)
 
@@ -63,7 +65,7 @@ const HighlightedCode = memo(function HighlightedCode({ code, language }: { code
           const { codeToHtml } = await import("shiki")
           const html = await codeToHtml(code, {
             lang: language === "text" ? "plaintext" : language,
-            theme: "github-dark-default",
+            theme: isDark ? "github-dark-default" : "github-light-high-contrast",
           })
           if (!cancelled && containerRef.current) {
             containerRef.current.innerHTML = html
@@ -72,8 +74,8 @@ const HighlightedCode = memo(function HighlightedCode({ code, language }: { code
               pre.style.margin = "0"
               pre.style.padding = "0"
               pre.style.background = "transparent"
-              pre.style.fontSize = "10px"
-              pre.style.lineHeight = "16px"
+              pre.style.fontSize = "11px"
+              pre.style.lineHeight = "18px"
               pre.style.fontFamily = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace"
             }
             const codeEl = containerRef.current.querySelector("code")
@@ -87,17 +89,17 @@ const HighlightedCode = memo(function HighlightedCode({ code, language }: { code
       })()
     }, SHIKI_DEBOUNCE_MS)
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [code, language])
+  }, [code, language, isDark])
 
   if (fallback) {
     return (
-      <Text className="text-[10px] font-mono text-gray-300 leading-[16px]" selectable>
+      <Text className="text-[11px] font-mono text-foreground leading-[18px]" selectable>
         {code}
       </Text>
     )
   }
 
-  return <div ref={containerRef} style={{ minHeight: 16 }} />
+  return <div ref={containerRef} style={{ minHeight: 18 }} />
 })
 
 function stableStringify(val: unknown): string {
@@ -155,30 +157,30 @@ export const WriteFileWidget = memo(function WriteFileWidget({
       {/* Header */}
       <Pressable
         onPress={handleToggle}
-        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-900 dark:bg-gray-950"
+        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-transparent"
       >
         <View className="group-hover:hidden">
-          <FilePlus2 className="w-3 h-3 text-emerald-500" size={12} />
+          <FilePlus2 className="w-3 h-3 text-emerald-600 dark:text-emerald-500" size={12} />
         </View>
         <View className="hidden group-hover:flex">
           {isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronDown className="w-3 h-3 text-gray-800 dark:text-gray-400" size={12} />
           ) : (
-            <ChevronRight className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronRight className="w-3 h-3 text-gray-800 dark:text-gray-400" size={12} />
           )}
         </View>
 
-        <View className="bg-gray-800 rounded px-1 py-0.5">
-          <Text className="text-[8px] font-medium text-gray-400 uppercase tracking-wide">
+        <View className="bg-gray-200 dark:bg-gray-800 rounded px-1 py-0.5">
+          <Text className="text-[8px] font-medium text-gray-800 dark:text-gray-300 uppercase tracking-wide">
             {langLabel}
           </Text>
         </View>
 
-        <Text className="flex-1 font-mono text-[10px] text-gray-300" numberOfLines={1}>
+        <Text className="flex-1 font-mono text-[11px] font-medium text-foreground" numberOfLines={1}>
           {basename}
         </Text>
 
-        <Text className="font-mono text-[9px] text-gray-600 mr-1">
+        <Text className="font-mono text-[9px] text-gray-700 dark:text-gray-500 mr-1">
           {append ? "Append" : totalLines > 1 ? `${totalLines} lines` : ""}{" "}
           {formatBytes(bytes)}
         </Text>
@@ -196,11 +198,11 @@ export const WriteFileWidget = memo(function WriteFileWidget({
 
       {/* Expanded code preview */}
       {isExpanded && (
-        <View className="bg-gray-900 dark:bg-gray-950 border-t border-gray-800">
+        <View className="bg-gray-50 dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800">
           {tool.state === "streaming" && !content && (
             <View className="flex-row items-center gap-1.5 px-2 py-2">
               <Loader2 className="w-3 h-3 text-primary" size={12} />
-              <Text className="text-[10px] text-gray-500">Writing…</Text>
+              <Text className="text-[10px] text-gray-800 dark:text-gray-400">Writing…</Text>
             </View>
           )}
 
@@ -208,9 +210,9 @@ export const WriteFileWidget = memo(function WriteFileWidget({
             <ScrollView nestedScrollEnabled className="max-h-64">
               <View className="flex-row">
                 {/* Line number gutter */}
-                <View className="px-1.5 py-1.5 border-r border-gray-800 items-end select-none">
+                <View className="px-1.5 py-1.5 border-r border-gray-200 dark:border-gray-800 items-end select-none">
                   {Array.from({ length: lineCount }, (_, i) => (
-                    <Text key={i} className="text-[9px] font-mono text-gray-600 leading-[16px]">
+                    <Text key={i} className="text-[10px] font-mono text-gray-700 dark:text-gray-500 leading-[18px]">
                       {i + 1}
                     </Text>
                   ))}
@@ -224,16 +226,16 @@ export const WriteFileWidget = memo(function WriteFileWidget({
           )}
 
           {truncated && !showFull && (
-            <Pressable onPress={() => setShowFull(true)} className="px-2 py-1 border-t border-gray-800">
-              <Text className="text-[9px] text-gray-500">
+            <Pressable onPress={() => setShowFull(true)} className="px-2 py-1 border-t border-gray-200 dark:border-gray-800">
+              <Text className="text-[9px] text-gray-800 dark:text-gray-400">
                 Show all {totalLines} lines
               </Text>
             </Pressable>
           )}
 
           {tool.state === "error" && tool.error && (
-            <View className="bg-red-500/10 px-2 py-1.5 border-t border-gray-800">
-              <Text className="text-[10px] font-mono text-red-400" selectable>
+            <View className="bg-red-500/10 px-2 py-1.5 border-t border-gray-200 dark:border-gray-800">
+              <Text className="text-[10px] font-mono text-red-600 dark:text-red-400" selectable>
                 {tool.error}
               </Text>
             </View>

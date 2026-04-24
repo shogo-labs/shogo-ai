@@ -664,18 +664,40 @@ app.get('/api/config', async (c) => {
     const hasLocalLlm = !!process.env.LOCAL_LLM_BASE_URL
     needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm && !hasShogоApiKey)
   }
+
+  // Defaults (backward-compatible with the previous hardcoded values).
+  const featureDefaults = {
+    billing: !localMode,
+    admin: !localMode,
+    oauth: !localMode,
+    analytics: true,
+    publishing: !localMode,
+    marketplace: true,
+    shogoMode: true,
+    phoneChannel: !localMode,
+  }
+
+  // Super-admin overrides from PlatformSetting (absence = use default).
+  let overrides: Record<string, boolean> = {}
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['feature.marketplace', 'feature.shogo_mode', 'feature.phone_channel'] } },
+    })
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      if (row.key === 'feature.marketplace') overrides.marketplace = bool
+      if (row.key === 'feature.shogo_mode') overrides.shogoMode = bool
+      if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
+    }
+  } catch (err) {
+    console.error('[config] Failed to load feature flag overrides:', err)
+  }
+
   return c.json({
     localMode,
     needsSetup,
     shogoKeyConnected: hasShogоApiKey,
-    features: {
-      billing: !localMode,
-      admin: !localMode,
-      oauth: !localMode,
-      analytics: true,
-      publishing: !localMode,
-      marketplace: true,
-    },
+    features: { ...featureDefaults, ...overrides },
   })
 })
 
@@ -2483,6 +2505,71 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
     method: 'POST',
     headers: c.req.raw.headers,
     body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
+  })
+  return router.fetch(newReq)
+})
+
+// Execute a free-form shell command (the IDE "$" prompt). Mirrors /exec but
+// forwards arbitrary user input instead of a curated command id.
+app.post('/api/projects/:projectId/terminal/run', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to the project's runtime pod.
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/terminal/run`
+
+      console.log(`[TerminalProxy] Proxying run to ${targetUrl}`)
+
+      const body = await c.req.text()
+
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body,
+        signal: c.req.raw.signal,
+      })
+
+      console.log(`[TerminalProxy] run response status: ${response.status}`)
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[TerminalProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to run command' }
+      }, 502)
+    }
+  }
+
+  // Local development: Use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = terminalRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/terminal/run`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
   })
   return router.fetch(newReq)
 })
@@ -4022,6 +4109,80 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 
     setAgentModeOverrides(overrides)
     return c.json({ ok: true, overrides })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+const FEATURE_FLAG_KEYS = {
+  marketplace: 'feature.marketplace',
+  shogoMode: 'feature.shogo_mode',
+  phoneChannel: 'feature.phone_channel',
+} as const
+
+type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
+
+// GET /api/admin/settings/features - Read feature flag overrides (null = use default)
+app.get('/api/admin/settings/features', async (c) => {
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: Object.values(FEATURE_FLAG_KEYS) } },
+    })
+    const flags: Record<FeatureFlagName, boolean | null> = {
+      marketplace: null,
+      shogoMode: null,
+      phoneChannel: null,
+    }
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+        if (row.key === key) flags[name] = bool
+      }
+    }
+    return c.json(flags)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/features - Update feature flag overrides. `null`/`""` deletes (= use default).
+app.put('/api/admin/settings/features', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+      if (body[name] === undefined) continue
+      const value = body[name]
+      if (value === null || value === '') {
+        await prisma.platformSetting.deleteMany({ where: { key } })
+      } else if (typeof value === 'boolean') {
+        await prisma.platformSetting.upsert({
+          where: { key },
+          create: { key, value: String(value), updatedBy: userId },
+          update: { value: String(value), updatedBy: userId },
+        })
+      } else {
+        return c.json({ error: `${name} must be a boolean or null` }, 400)
+      }
+    }
+
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: Object.values(FEATURE_FLAG_KEYS) } },
+    })
+    const flags: Record<FeatureFlagName, boolean | null> = {
+      marketplace: null,
+      shogoMode: null,
+      phoneChannel: null,
+    }
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+        if (row.key === key) flags[name] = bool
+      }
+    }
+    return c.json({ ok: true, flags })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }

@@ -443,18 +443,32 @@ export class ElevenLabsClient {
 
   /**
    * Place an outbound PSTN call via a previously-registered EL phone
-   * number. EL drives Twilio under the hood — we just hand it the
-   * destination number and the agent to bridge to. Returns the Twilio
-   * `callSid` + EL `conversationId` for metering / tracing.
+   * number. EL drives Twilio (or a SIP trunk) under the hood — we just
+   * hand it the destination number and the agent to bridge to. Returns
+   * the Twilio `callSid` + EL `conversationId` for metering / tracing.
+   *
+   * As of 2026-Q2 the EL API uses provider-scoped routes:
+   *   - Twilio numbers → POST /v1/convai/twilio/outbound-call
+   *   - SIP numbers    → POST /v1/convai/sip-trunk/outbound-call
+   * and `agent_phone_number_id` is a body field (no longer a path
+   * segment). The previous `/v1/convai/phone-numbers/{id}/outbound-call`
+   * route now returns 404. Callers that don't know the provider can
+   * look it up from `GET /v1/convai/phone-numbers/{id}` (`provider:
+   * "twilio" | "sip_trunk"`); most hosted setups are Twilio, so that's
+   * the default here.
    */
   async outboundCall(params: {
     phoneNumberId: string
     agentId: string
     toNumber: string
+    /** EL provider route to use. Defaults to `'twilio'`. */
+    provider?: 'twilio' | 'sip-trunk'
     dynamicVariables?: Record<string, string>
   }): Promise<{ callSid: string; conversationId: string }> {
+    const provider = params.provider ?? 'twilio'
     const body: Record<string, unknown> = {
       agent_id: params.agentId,
+      agent_phone_number_id: params.phoneNumberId,
       to_number: params.toNumber,
     }
     if (params.dynamicVariables) {
@@ -463,9 +477,7 @@ export class ElevenLabsClient {
       }
     }
     const res = await this.fetchImpl(
-      `${this.baseUrl}/v1/convai/phone-numbers/${encodeURIComponent(
-        params.phoneNumberId,
-      )}/outbound-call`,
+      `${this.baseUrl}/v1/convai/${provider}/outbound-call`,
       {
         method: 'POST',
         headers: this.headers({ 'content-type': 'application/json' }),

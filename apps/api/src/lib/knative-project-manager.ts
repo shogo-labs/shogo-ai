@@ -25,6 +25,7 @@ import * as fs from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
+import { upsertPreviewDnsRecord, deletePreviewDnsRecord } from './cloudflare-dns'
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 import type { InstanceSizeName } from '../config/instance-sizes'
 
@@ -384,6 +385,11 @@ export class KnativeProjectManager {
         throw error
       }
     }
+
+    // Keep the Cloudflare A record for this hostname pointing at this
+    // cluster's Kourier LB so cross-region routing picks the right origin.
+    // No-op when CF_* env vars are unset (single-region / local dev).
+    await upsertPreviewDnsRecord(domainName)
   }
 
   /**
@@ -464,6 +470,9 @@ export class KnativeProjectManager {
         throw error
       }
     }
+
+    // Remove the matching Cloudflare record (no-op when unconfigured).
+    await deletePreviewDnsRecord(domainName)
   }
 
   /**

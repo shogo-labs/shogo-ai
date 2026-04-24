@@ -25,12 +25,15 @@ import {
   Monitor,
   Info,
   LogIn,
+  Flag,
+  RotateCcw,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { PlatformApi, type InstanceInfo } from '@shogo-ai/sdk'
+import { PlatformApi, type InstanceInfo, type FeatureFlagOverrides } from '@shogo-ai/sdk'
 import { API_URL, createHttpClient } from '../../lib/api'
 import { useAccentTheme } from '../../contexts/accent-theme'
 import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
+import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
 
 /** True when this window is the Electron desktop shell — only then can we
  * use the native system-browser handshake. Metro dev or a plain browser
@@ -43,6 +46,7 @@ function hasDesktopBridge(): boolean {
 const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
 
 export default function AdminGeneralPage() {
+  const { localMode } = usePlatformConfig()
   const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
   const [shogoKeyMask, setShogoKeyMask] = useState('')
   const [shogoWorkspaceName, setShogoWorkspaceName] = useState('')
@@ -260,6 +264,9 @@ export default function AdminGeneralPage() {
             Cloud connection, appearance, and machine registration.
           </Text>
         </View>
+
+        {/* Feature Flags — platform-wide, cloud-only (no meaning on a single-user local install). */}
+        {!localMode && <FeatureFlagsCard />}
 
         {/* Shogo Cloud Connection */}
         <SectionCard
@@ -543,6 +550,195 @@ function AccentColorPicker() {
         })}
       </View>
     </SectionCard>
+  )
+}
+
+// =============================================================================
+// Feature Flags Card
+// =============================================================================
+
+const FEATURE_FLAG_DEFINITIONS: Array<{
+  key: keyof FeatureFlagOverrides
+  label: string
+  hint: string
+}> = [
+  {
+    key: 'marketplace',
+    label: 'Marketplace',
+    hint: 'Browse, install, and publish agent listings. When off, the Marketplace nav link and screens are hidden.',
+  },
+  {
+    key: 'shogoMode',
+    label: 'Shogo Mode',
+    hint: 'Floating voice-mode / translator overlay inside projects. When off, the toggle and overlay are hidden.',
+  },
+  {
+    key: 'phoneChannel',
+    label: 'Phone Channel',
+    hint: "Twilio + ElevenLabs PSTN calls. When off, the Phone (Voice) section inside a project's Channels tab is hidden.",
+  },
+]
+
+function FeatureFlagsCard() {
+  const [flags, setFlags] = useState<FeatureFlagOverrides>({
+    marketplace: null,
+    shogoMode: null,
+    phoneChannel: null,
+  })
+  const [effective, setEffective] = useState<Record<keyof FeatureFlagOverrides, boolean | null>>({
+    marketplace: null,
+    shogoMode: null,
+    phoneChannel: null,
+  })
+  const [loading, setLoading] = useState(true)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [pending, setPending] = useState<keyof FeatureFlagOverrides | null>(null)
+
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([platform.getFeatureFlags(), platform.getConfig()])
+      .then(([overrides, cfg]) => {
+        if (cancelled) return
+        setFlags(overrides)
+        setEffective({
+          marketplace: cfg.features?.marketplace ?? null,
+          shogoMode: cfg.features?.shogoMode ?? null,
+          phoneChannel: cfg.features?.phoneChannel ?? null,
+        })
+      })
+      .catch((err) => console.error('[FeatureFlags] load failed:', err))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [platform])
+
+  const persist = useCallback(async (key: keyof FeatureFlagOverrides, value: boolean | null) => {
+    setPending(key)
+    setSaveStatus('saving')
+    try {
+      const res = await platform.putFeatureFlags({ [key]: value })
+      setFlags(res.flags)
+      invalidatePlatformConfigCache()
+      try {
+        const cfg = await platform.getConfig()
+        setEffective({
+          marketplace: cfg.features?.marketplace ?? null,
+          shogoMode: cfg.features?.shogoMode ?? null,
+          phoneChannel: cfg.features?.phoneChannel ?? null,
+        })
+      } catch {}
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 1500)
+    } catch (err) {
+      console.error('[FeatureFlags] save failed:', err)
+      setSaveStatus('error')
+      setTimeout(() => setSaveStatus('idle'), 2500)
+    } finally {
+      setPending(null)
+    }
+  }, [platform])
+
+  return (
+    <View className="bg-card border border-border rounded-xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border flex-row items-start justify-between">
+        <View className="flex-1 pr-3">
+          <View className="flex-row items-center gap-2.5 mb-1">
+            <Flag size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Feature Flags</Text>
+          </View>
+          <Text className="text-xs text-muted-foreground">
+            Turn platform features on or off for all users. Changes take effect on each
+            client's next config fetch.
+          </Text>
+        </View>
+        <FeatureFlagsSaveIndicator status={saveStatus} />
+      </View>
+      <View className="px-5 py-4 gap-4">
+        {loading ? (
+          <ActivityIndicator />
+        ) : (
+          FEATURE_FLAG_DEFINITIONS.map((def) => {
+            const override = flags[def.key]
+            const resolved = override ?? effective[def.key]
+            const isOn = resolved === true
+            const isDefault = override === null
+            const disabled = pending !== null && pending !== def.key
+            return (
+              <View key={String(def.key)} className="gap-1.5">
+                <View className="flex-row items-start gap-3">
+                  <View className="flex-1">
+                    <Text className="text-sm font-medium text-foreground">{def.label}</Text>
+                    <Text className="text-xs text-muted-foreground mt-0.5">{def.hint}</Text>
+                  </View>
+                  <Pressable
+                    onPress={() => {
+                      if (disabled) return
+                      persist(def.key, !isOn)
+                    }}
+                    disabled={disabled}
+                    className={cn(
+                      'h-7 w-12 rounded-full border justify-center px-0.5',
+                      isOn ? 'bg-primary border-primary' : 'bg-muted border-border',
+                      disabled && 'opacity-60',
+                    )}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: isOn, disabled }}
+                    accessibilityLabel={`${def.label} feature flag`}
+                  >
+                    <View
+                      className={cn(
+                        'h-5 w-5 rounded-full bg-background',
+                        isOn ? 'self-end' : 'self-start',
+                      )}
+                    />
+                  </Pressable>
+                </View>
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-[11px] text-muted-foreground">
+                    {isDefault
+                      ? `Using platform default (${isOn ? 'on' : 'off'})`
+                      : `Overridden: ${isOn ? 'on' : 'off'}`}
+                  </Text>
+                  {!isDefault && (
+                    <Pressable
+                      onPress={() => {
+                        if (disabled) return
+                        persist(def.key, null)
+                      }}
+                      disabled={disabled}
+                      className="flex-row items-center gap-1 px-1.5 py-0.5 rounded active:bg-muted"
+                    >
+                      <RotateCcw size={10} className="text-muted-foreground" />
+                      <Text className="text-[11px] text-muted-foreground">Reset</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+            )
+          })
+        )}
+      </View>
+    </View>
+  )
+}
+
+function FeatureFlagsSaveIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | 'error' }) {
+  if (status === 'idle') return null
+  return (
+    <View className="flex-row items-center gap-1.5">
+      {status === 'saving' && <ActivityIndicator size="small" />}
+      {status === 'saved' && <CheckCircle size={14} className="text-green-500" />}
+      {status === 'error' && <AlertTriangle size={14} className="text-destructive" />}
+      <Text className={cn(
+        'text-xs',
+        status === 'saving' && 'text-muted-foreground',
+        status === 'saved' && 'text-green-500',
+        status === 'error' && 'text-destructive',
+      )}>
+        {status === 'saving' ? 'Saving...' : status === 'saved' ? 'Saved' : 'Failed to save'}
+      </Text>
+    </View>
   )
 }
 

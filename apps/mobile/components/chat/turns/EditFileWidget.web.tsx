@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef, useMemo, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
+import { useResolvedTheme } from "../../../contexts/theme"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileEdit, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
@@ -34,16 +35,28 @@ const LINE_BG: Record<DiffLine["type"], string> = {
   context: "transparent",
 }
 
-const GUTTER_COLOR: Record<DiffLine["type"], string> = {
+const GUTTER_COLOR_DARK: Record<DiffLine["type"], string> = {
   removed: "#f85149",
   added: "#3fb950",
   context: "#484f58",
 }
 
-const FALLBACK_COLOR: Record<DiffLine["type"], string> = {
+const GUTTER_COLOR_LIGHT: Record<DiffLine["type"], string> = {
+  removed: "#a40e26",
+  added: "#0a4f23",
+  context: "#374151",
+}
+
+const FALLBACK_COLOR_DARK: Record<DiffLine["type"], string> = {
   removed: "#ffa198",
   added: "#7ee787",
   context: "#8b949e",
+}
+
+const FALLBACK_COLOR_LIGHT: Record<DiffLine["type"], string> = {
+  removed: "#82071e",
+  added: "#0a3622",
+  context: "#0a0a0a",
 }
 
 const SHIKI_DEBOUNCE_MS = 150
@@ -55,8 +68,13 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
   lines: DiffLine[]
   language: string
 }) {
+  const isDark = useResolvedTheme() === "dark"
   const containerRef = useRef<HTMLDivElement>(null)
   const [tokenMap, setTokenMap] = useState<Map<number, string> | null>(null)
+
+  const gutterColors = isDark ? GUTTER_COLOR_DARK : GUTTER_COLOR_LIGHT
+  const fallbackColors = isDark ? FALLBACK_COLOR_DARK : FALLBACK_COLOR_LIGHT
+  const defaultTokenColor = isDark ? "#e6edf3" : "#1f2328"
 
   useEffect(() => {
     let cancelled = false
@@ -75,7 +93,7 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
 
           const result = await codeToTokens(fullCode, {
             lang: language === "text" ? "plaintext" : language,
-            theme: "github-dark-default",
+            theme: isDark ? "github-dark-default" : "github-light-high-contrast",
           })
 
           const lineHtmlMap = new Map<string, string>()
@@ -83,7 +101,7 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
             const tokenLine = result.tokens[ti]
             const lineText = combined[ti]
             const spans = tokenLine
-              .map(t => `<span style="color:${t.color || '#e6edf3'}">${escapeHtml(t.content)}</span>`)
+              .map(t => `<span style="color:${t.color || defaultTokenColor}">${escapeHtml(t.content)}</span>`)
               .join("")
             lineHtmlMap.set(lineText, spans)
           }
@@ -101,7 +119,7 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
       })()
     }, SHIKI_DEBOUNCE_MS)
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [lines, language])
+  }, [lines, language, isDark, defaultTokenColor])
 
   return (
     <div ref={containerRef} style={{ fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" }}>
@@ -117,11 +135,11 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
         >
           {/* Gutter */}
           <div style={{
-            width: 20,
+            width: 22,
             textAlign: "center",
-            fontSize: 10,
-            lineHeight: "16px",
-            color: GUTTER_COLOR[line.type],
+            fontSize: 11,
+            lineHeight: "18px",
+            color: gutterColors[line.type],
             userSelect: "none",
             flexShrink: 0,
           }}>
@@ -131,13 +149,13 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
           <div
             style={{
               flex: 1,
-              fontSize: 10,
-              lineHeight: "16px",
+              fontSize: 11,
+              lineHeight: "18px",
               paddingLeft: 4,
               paddingRight: 4,
               whiteSpace: "pre",
               overflowX: "auto",
-              color: FALLBACK_COLOR[line.type],
+              color: fallbackColors[line.type],
             }}
             dangerouslySetInnerHTML={
               tokenMap?.has(i)
@@ -217,34 +235,34 @@ export const EditFileWidget = memo(function EditFileWidget({
       {/* Header */}
       <Pressable
         onPress={handleToggle}
-        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-900 dark:bg-gray-950"
+        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-transparent"
       >
         <View className="group-hover:hidden">
           <FileEdit className="w-3 h-3 text-primary" size={12} />
         </View>
         <View className="hidden group-hover:flex">
           {isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronDown className="w-3 h-3 text-gray-800 dark:text-gray-400" size={12} />
           ) : (
-            <ChevronRight className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronRight className="w-3 h-3 text-gray-800 dark:text-gray-400" size={12} />
           )}
         </View>
 
-        <View className="bg-gray-800 rounded px-1 py-0.5">
-          <Text className="text-[8px] font-medium text-gray-400 uppercase tracking-wide">
+        <View className="bg-gray-200 dark:bg-gray-800 rounded px-1 py-0.5">
+          <Text className="text-[8px] font-medium text-gray-800 dark:text-gray-300 uppercase tracking-wide">
             {langLabel}
           </Text>
         </View>
 
-        <Text className="flex-1 font-mono text-[10px] text-gray-300" numberOfLines={1}>
+        <Text className="flex-1 font-mono text-[11px] font-medium text-foreground" numberOfLines={1}>
           {basename}
         </Text>
 
         {(added > 0 || removed > 0) && (
           <Text className="font-mono text-[9px] mr-1">
-            {added > 0 && <Text className="text-emerald-500">+{added}</Text>}
-            {added > 0 && removed > 0 && <Text className="text-gray-600"> </Text>}
-            {removed > 0 && <Text className="text-red-400">-{removed}</Text>}
+            {added > 0 && <Text className="text-emerald-600 dark:text-emerald-500">+{added}</Text>}
+            {added > 0 && removed > 0 && <Text className="text-gray-500 dark:text-gray-600"> </Text>}
+            {removed > 0 && <Text className="text-red-600 dark:text-red-400">-{removed}</Text>}
           </Text>
         )}
 
@@ -261,11 +279,11 @@ export const EditFileWidget = memo(function EditFileWidget({
 
       {/* Expanded diff view */}
       {isExpanded && (
-        <View className="bg-gray-900 dark:bg-gray-950 border-t border-gray-800">
+        <View className="bg-gray-50 dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800">
           {tool.state === "streaming" && !oldString && !newString && (
             <View className="flex-row items-center gap-1.5 px-2 py-2">
               <Loader2 className="w-3 h-3 text-primary" size={12} />
-              <Text className="text-[10px] text-gray-500">Editing…</Text>
+              <Text className="text-[10px] text-gray-800 dark:text-gray-400">Editing…</Text>
             </View>
           )}
 
@@ -276,8 +294,8 @@ export const EditFileWidget = memo(function EditFileWidget({
           )}
 
           {tool.state === "error" && tool.error && (
-            <View className="bg-red-500/10 px-2 py-1.5 border-t border-gray-800">
-              <Text className="text-[10px] font-mono text-red-400" selectable>
+            <View className="bg-red-500/10 px-2 py-1.5 border-t border-gray-200 dark:border-gray-800">
+              <Text className="text-[10px] font-mono text-red-600 dark:text-red-400" selectable>
                 {tool.error}
               </Text>
             </View>
