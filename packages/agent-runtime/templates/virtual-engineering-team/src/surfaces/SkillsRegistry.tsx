@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import SkillViewer from '@/components/SkillViewer'
-import { listSkills, type SkillDoc } from '@/lib/vet-api'
+import { listSkills, seedSkillsFromManifest, type SeedResult, type SkillDoc } from '@/lib/vet-api'
 
 export default function SkillsRegistry() {
   const [skills, setSkills] = useState<SkillDoc[]>([])
@@ -12,6 +12,28 @@ export default function SkillsRegistry() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'core' | 'optional'>('all')
   const [selected, setSelected] = useState<SkillDoc | null>(null)
+  const [seeding, setSeeding] = useState(false)
+  const [seedMsg, setSeedMsg] = useState<string | null>(null)
+
+  async function handleSeed() {
+    setSeeding(true)
+    setSeedMsg(null)
+    try {
+      const r: SeedResult = await seedSkillsFromManifest()
+      setSeedMsg(
+        `Seeded ${r.created}` +
+          (r.skipped ? `, skipped ${r.skipped}` : '') +
+          (r.failed ? `, ${r.failed} failed` : '') +
+          ` (of ${r.total}).`,
+      )
+      const rows = await listSkills()
+      setSkills(rows)
+    } catch (e) {
+      setSeedMsg(`Seed failed: ${(e as Error).message}`)
+    } finally {
+      setSeeding(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -87,8 +109,25 @@ export default function SkillsRegistry() {
               <span></span>
             </div>
             {visible.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {loading ? 'Loading…' : 'No skills match.'}
+              <div className="px-4 py-6 text-sm text-muted-foreground space-y-3">
+                {loading ? (
+                  'Loading…'
+                ) : skills.length === 0 ? (
+                  <div className="space-y-3">
+                    <p>
+                      SkillDoc table is empty. Seed it from the verbatim-ported
+                      files bundled with this template.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <Button size="sm" onClick={handleSeed} disabled={seeding}>
+                        {seeding ? 'Seeding…' : 'Seed skills from manifest'}
+                      </Button>
+                      {seedMsg && <span className="text-xs">{seedMsg}</span>}
+                    </div>
+                  </div>
+                ) : (
+                  'No skills match.'
+                )}
               </div>
             ) : (
               visible.map((s) => (
