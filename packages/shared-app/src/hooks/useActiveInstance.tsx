@@ -96,6 +96,9 @@ export function ActiveInstanceProvider({
   const [instance, setInstanceState] = useState<ActiveInstance | null>(null)
   const [instanceStatus, setInstanceStatus] = useState<InstanceStatus>('unknown')
   const validatedRef = useRef(false)
+  const validationRef = useRef({ apiUrl, fetchFn, fetchOptions })
+
+  validationRef.current = { apiUrl, fetchFn, fetchOptions }
 
   useEffect(() => {
     storage
@@ -104,7 +107,13 @@ export function ActiveInstanceProvider({
         if (!raw) return
         try {
           const restored: ActiveInstance = JSON.parse(raw)
-          const result = await validateInstance(restored, apiUrl, fetchFn, fetchOptions)
+          const validation = validationRef.current
+          const result = await validateInstance(
+            restored,
+            validation.apiUrl,
+            validation.fetchFn,
+            validation.fetchOptions,
+          )
           if (result.valid) {
             setInstanceState(restored)
             setInstanceStatus(result.status ?? 'unknown')
@@ -119,7 +128,7 @@ export function ActiveInstanceProvider({
       .catch(() => {
         validatedRef.current = true
       })
-  }, [apiUrl, storage, fetchFn, fetchOptions])
+  }, [apiUrl, storage])
 
   // Live status polling — detects mid-conversation disconnects so the UI can
   // toast "machine offline, continue in cloud?". Only runs when an instance
@@ -131,7 +140,13 @@ export function ActiveInstanceProvider({
     }
     let cancelled = false
     const tick = async () => {
-      const result = await validateInstance(instance, apiUrl, fetchFn, fetchOptions)
+      const validation = validationRef.current
+      const result = await validateInstance(
+        instance,
+        validation.apiUrl,
+        validation.fetchFn,
+        validation.fetchOptions,
+      )
       if (cancelled) return
       if (!result.valid) {
         // Instance was deleted or no longer belongs to this workspace.
@@ -146,7 +161,7 @@ export function ActiveInstanceProvider({
       cancelled = true
       clearInterval(id)
     }
-  }, [instance, apiUrl, fetchFn, fetchOptions])
+  }, [instance, apiUrl])
 
   const setInstance = useCallback(
     (inst: ActiveInstance) => {
