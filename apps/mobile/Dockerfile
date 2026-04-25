@@ -58,6 +58,10 @@ COPY apps/mobile/package.json ./apps/mobile/
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
 
+# Copy patches required by `patchedDependencies` in package.json — bun install
+# fails fast if a referenced .patch file isn't present in the build context.
+COPY patches ./patches
+
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
