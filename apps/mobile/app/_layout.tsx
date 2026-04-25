@@ -13,6 +13,7 @@ import * as Sentry from '@sentry/react-native'
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
 import { ActiveInstanceProvider } from '../contexts/active-instance'
+import { InstanceOfflineWatcher } from '../components/instance/InstanceOfflineWatcher'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 import { AccentThemeProvider } from '../contexts/accent-theme'
@@ -71,6 +72,7 @@ function RootLayoutInner() {
       <PostHogProvider>
         <AuthProvider>
           <ActiveInstanceProvider>
+            <InstanceOfflineWatcher />
             <UpdateBanner />
             <StatusBar style={statusBarScheme === 'dark' ? 'light' : 'dark'} />
             <Stack screenOptions={{ headerShown: false, lazy: true }}>

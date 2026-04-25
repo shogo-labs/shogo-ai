@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: Apache-2.0
+# Builds the @shogo-ai/worker CLI into single-file binaries for
+# darwin-arm64, darwin-x64, linux-x64, linux-arm64, win-x64
+# using Bun's --compile target, then publishes them as a GitHub Release.
+#
+# Triggered on tags matching `shogo-cli-v*` (e.g. shogo-cli-v0.1.0).
+
+name: Publish CLI
+
+on:
+  push:
+    tags:
+      - "shogo-cli-v*"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel (stable or beta)"
+        default: "beta"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            bun-target: bun-darwin-arm64
+            ext: ""
+            archive: tar.gz
+          - target: darwin-x64
+            bun-target: bun-darwin-x64
+            ext: ""
+            archive: tar.gz
+          - target: linux-x64
+            bun-target: bun-linux-x64
+            ext: ""
+            archive: tar.gz
+          - target: linux-arm64
+            bun-target: bun-linux-arm64
+            ext: ""
+            archive: tar.gz
+          - target: win-x64
+            bun-target: bun-windows-x64
+            ext: ".exe"
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        working-directory: packages/shogo-worker
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Compile binary
+        working-directory: packages/shogo-worker
+        run: |
+          mkdir -p dist
+          bun build --compile --minify \
+            --target=${{ matrix.bun-target }} \
+            src/cli.ts \
+            --outfile dist/shogo${{ matrix.ext }}
+
+      - name: Package
+        working-directory: packages/shogo-worker/dist
+        run: |
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar -czf shogo-${{ matrix.target }}.tar.gz shogo
+            shasum -a 256 shogo-${{ matrix.target }}.tar.gz > shogo-${{ matrix.target }}.tar.gz.sha256
+          else
+            zip -9 shogo-${{ matrix.target }}.zip shogo.exe
+            shasum -a 256 shogo-${{ matrix.target }}.zip > shogo-${{ matrix.target }}.zip.sha256
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shogo-${{ matrix.target }}
+          path: |
+            packages/shogo-worker/dist/shogo-${{ matrix.target }}.*
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
