@@ -55,6 +55,15 @@ const sidebars: SidebarsConfig = {
             "features/billing",
           ],
         },
+        {
+          type: "category",
+          label: "My Machines",
+          items: [
+            "features/my-machines/quickstart",
+            "features/my-machines/networking",
+            "features/my-machines/troubleshooting",
+          ],
+        },
       ],
     },
     {

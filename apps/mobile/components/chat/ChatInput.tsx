@@ -77,6 +77,8 @@ import { PastedTextChip } from "./PastedTextChip"
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
+import { EnvironmentPicker } from "./EnvironmentPicker"
+
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
   models: g.models.map((e) => ({
@@ -1015,6 +1017,9 @@ export function ChatInput({
                 </PopoverContent>
               </Popover>
             )}
+
+            {/* Environment selector — pick Cloud or a paired machine */}
+            <EnvironmentPicker disabled={disabled} />
 
             {/* Model selector */}
             <Popover

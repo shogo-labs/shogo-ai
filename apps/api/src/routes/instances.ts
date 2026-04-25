@@ -717,6 +717,50 @@ export function instanceRoutes() {
     return c.json({ instances: withLiveStatus })
   })
 
+
+  // GET /instances/online — Trimmed list of online instances (for Phase 3 chat environment picker)
+  router.get('/instances/online', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const workspaceId = c.req.query('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { userId: auth.userId, workspaceId },
+    })
+    if (!member) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    const instances = await prisma.instance.findMany({
+      where: { workspaceId },
+      orderBy: { lastSeenAt: 'desc' },
+    })
+
+    const online = (await Promise.all(
+      instances.map(async (inst) => {
+        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id))
+        return isOnline ? inst : null
+      })
+    )).filter((x): x is NonNullable<typeof x> => x !== null)
+
+    return c.json({
+      instances: online.map((inst) => ({
+        id: inst.id,
+        name: inst.name,
+        hostname: inst.hostname,
+        os: inst.os,
+        arch: inst.arch,
+        lastSeenAt: inst.lastSeenAt,
+      })),
+    })
+  })
+
   // GET /instances/:id — Instance details
   router.get('/instances/:id', async (c) => {
     const auth = c.get('auth') as any
