@@ -21,6 +21,7 @@ import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { isPreinstalledMcpId, isMcpServerAllowed, isCatalogEntry, getPreinstalledPackages } from './mcp-catalog'
 import { getSanitizedEnv } from './sandbox-exec'
+import { shouldRouteThroughCloud, getCloudDispatcher, type McpTransportPin } from './lib/cloud-fetcher'
 
 const MAX_MCP_SERVERS = 10
 const MCP_CONNECT_TIMEOUT_MS = 90_000
@@ -50,6 +51,21 @@ export interface RemoteMCPServerConfig {
   excludeTools?: string[]
   /** Max characters for a single tool result before truncation (default: unlimited) */
   maxResultChars?: number
+  /**
+   * Where HTTP/SSE MCP traffic should originate from when this agent-runtime
+   * is running on a paired worker machine:
+   *
+   *   - 'auto'   (default) — cloud-route public URLs; worker-route private
+   *                          (localhost/RFC1918/.local/.internal/.corp).
+   *   - 'cloud'            — always outbound from the cloud pod.
+   *   - 'worker'           — always outbound from the worker (needed for
+   *                          VPN-only and corp-internal MCP services).
+   *
+   * Only consulted when SHOGO_MCP_PIN_HTTP_TO_CLOUD=true (env flag for the
+   * initial rollout — see docs/mcp-transport-routing.md "PR-2"). Ignored
+   * for stdio servers (those always spawn on the local process).
+   */
+  pin?: McpTransportPin
 }
 
 interface ManagedServer {
@@ -438,13 +454,33 @@ export class MCPClientManager {
       return this.remoteServers.get(name)!.tools
     }
 
-    console.log(`[MCPClient] Starting remote MCP server "${name}": ${config.url}`)
+    // Decide whether outbound traffic for this HTTP MCP should originate
+    // from the cloud pod instead of wherever agent-runtime happens to be
+    // running (may be a paired worker machine). Opt-in for the initial
+    // rollout — see docs/mcp-transport-routing.md PR-2.
+    const pinRollout = process.env.SHOGO_MCP_PIN_HTTP_TO_CLOUD === 'true'
+    const routeThroughCloud = pinRollout && shouldRouteThroughCloud(config.url, config.pin ?? 'auto')
+
+    console.log(
+      `[MCPClient] Starting remote MCP server "${name}": ${config.url}` +
+      (routeThroughCloud ? ' [pinned→cloud]' : ''),
+    )
+
+    // When pinned to cloud we pass an undici dispatcher via the Fetch init
+    // object. StreamableHTTPClientTransport forwards requestInit to its
+    // internal fetch calls, and undici's global fetch honours `dispatcher`.
+    // The cast is necessary because RequestInit from the standard DOM libs
+    // does not include the `dispatcher` key.
+    const requestInit: RequestInit | undefined = config.headers || routeThroughCloud
+      ? {
+          ...(config.headers ? { headers: config.headers } : {}),
+          ...(routeThroughCloud ? ({ dispatcher: getCloudDispatcher() } as any) : {}),
+        }
+      : undefined
 
     const transport = new StreamableHTTPClientTransport(
       new URL(config.url),
-      {
-        requestInit: config.headers ? { headers: config.headers } : undefined,
-      },
+      { requestInit },
     )
 
     const client = new Client(
@@ -754,6 +790,7 @@ export class MCPClientManager {
       ...(config.headers ? { headers: config.headers } : {}),
       ...(config.excludeTools?.length ? { excludeTools: config.excludeTools } : {}),
       ...(config.maxResultChars ? { maxResultChars: config.maxResultChars } : {}),
+      ...(config.pin && config.pin !== 'auto' ? { pin: config.pin } : {}),
     }
     writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
     this.onConfigPersisted?.()

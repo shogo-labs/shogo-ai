@@ -64,6 +64,7 @@ import {
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
+import { EnvironmentPicker } from "./EnvironmentPicker"
 
 const MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -679,6 +680,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   </View>
                 </PopoverContent>
               </Popover>
+
+              {/* Environment selector — pick Cloud or a paired machine */}
+              <EnvironmentPicker disabled={disabled || isLoading} />
 
               {/* Model selector */}
               <Popover
