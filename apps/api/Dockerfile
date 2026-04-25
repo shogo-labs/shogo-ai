@@ -162,6 +162,10 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/packag
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
+# Same patches as builder/deps stages — bun install --ignore-scripts at line ~189
+# also resolves `patchedDependencies` and fails without these files.
+COPY --chown=appuser:appgroup --from=builder /app/patches ./patches
+
 # Copy prisma schema, config, and migrations for runtime migrations
 COPY --chown=appuser:appgroup --from=builder /app/prisma ./prisma
 COPY --chown=appuser:appgroup --from=builder /app/prisma.config.ts ./prisma.config.ts
