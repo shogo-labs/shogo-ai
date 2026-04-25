@@ -1,7 +1,7 @@
 {
   "name": "@shogo-ai/worker",
   "version": "0.1.0",
-  "description": "Shogo Cloud Agent Worker — run Shogo agents on your own machine (laptop, devbox, CI).",
+  "description": "Shogo Cloud Agent Worker \u2014 run Shogo agents on your own machine (laptop, devbox, CI).",
   "license": "Apache-2.0",
   "author": "Shogo Technologies, Inc.",
   "homepage": "https://shogo.ai/docs/cloud-agent/my-machines",
@@ -17,7 +17,13 @@
   ],
   "scripts": {
     "start": "bun src/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile --minify --target=bun src/cli.ts --outfile dist/shogo",
+    "build:darwin-arm64": "bun build --compile --minify --target=bun-darwin-arm64 src/cli.ts --outfile dist/shogo-darwin-arm64",
+    "build:darwin-x64": "bun build --compile --minify --target=bun-darwin-x64   src/cli.ts --outfile dist/shogo-darwin-x64",
+    "build:linux-x64": "bun build --compile --minify --target=bun-linux-x64    src/cli.ts --outfile dist/shogo-linux-x64",
+    "build:linux-arm64": "bun build --compile --minify --target=bun-linux-arm64  src/cli.ts --outfile dist/shogo-linux-arm64",
+    "build:all": "bun run build:darwin-arm64 && bun run build:darwin-x64 && bun run build:linux-x64 && bun run build:linux-arm64"
   },
   "dependencies": {
     "commander": "^12.1.0",

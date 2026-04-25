@@ -31,6 +31,8 @@ export interface ActiveInstance {
   workspaceId: string
 }
 
+export type InstanceStatus = 'online' | 'heartbeat' | 'offline' | 'unknown'
+
 export interface ActiveInstanceContextValue {
   instance: ActiveInstance | null
   /**
@@ -39,6 +41,13 @@ export interface ActiveInstanceContextValue {
    * null when controlling locally.
    */
   remoteAgentBaseUrl: string | null
+  /**
+   * Live status of the active instance, refreshed every 15s while selected.
+   * 'unknown' until the first poll completes.
+   * Consumers can use this to render a toast / badge when the chosen
+   * machine drops mid-conversation.
+   */
+  instanceStatus: InstanceStatus
   setInstance: (instance: ActiveInstance) => void
   clearInstance: () => void
 }
@@ -70,6 +79,7 @@ const STORAGE_KEY = 'shogo:activeInstance'
 const ActiveInstanceContext = createContext<ActiveInstanceContextValue>({
   instance: null,
   remoteAgentBaseUrl: null,
+  instanceStatus: 'unknown',
   setInstance: () => {},
   clearInstance: () => {},
 })
@@ -84,6 +94,7 @@ export function ActiveInstanceProvider({
   fetchOptions,
 }: ActiveInstanceProviderProps) {
   const [instance, setInstanceState] = useState<ActiveInstance | null>(null)
+  const [instanceStatus, setInstanceStatus] = useState<InstanceStatus>('unknown')
   const validatedRef = useRef(false)
 
   useEffect(() => {
@@ -93,9 +104,10 @@ export function ActiveInstanceProvider({
         if (!raw) return
         try {
           const restored: ActiveInstance = JSON.parse(raw)
-          const valid = await validateInstance(restored, apiUrl, fetchFn, fetchOptions)
-          if (valid) {
+          const result = await validateInstance(restored, apiUrl, fetchFn, fetchOptions)
+          if (result.valid) {
             setInstanceState(restored)
+            setInstanceStatus(result.status ?? 'unknown')
           } else {
             storage.removeItem(STORAGE_KEY).catch(() => {})
           }
@@ -109,9 +121,37 @@ export function ActiveInstanceProvider({
       })
   }, [apiUrl, storage, fetchFn, fetchOptions])
 
+  // Live status polling — detects mid-conversation disconnects so the UI can
+  // toast "machine offline, continue in cloud?". Only runs when an instance
+  // is actively selected. 15s interval matches mobile EnvironmentPicker poll.
+  useEffect(() => {
+    if (!instance || !apiUrl) {
+      setInstanceStatus('unknown')
+      return
+    }
+    let cancelled = false
+    const tick = async () => {
+      const result = await validateInstance(instance, apiUrl, fetchFn, fetchOptions)
+      if (cancelled) return
+      if (!result.valid) {
+        // Instance was deleted or no longer belongs to this workspace.
+        setInstanceStatus('offline')
+        return
+      }
+      setInstanceStatus(result.status ?? 'unknown')
+    }
+    void tick()
+    const id = setInterval(tick, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [instance, apiUrl, fetchFn, fetchOptions])
+
   const setInstance = useCallback(
     (inst: ActiveInstance) => {
       setInstanceState(inst)
+      setInstanceStatus('unknown')
       storage.setItem(STORAGE_KEY, JSON.stringify(inst)).catch(() => {})
     },
     [storage],
@@ -119,6 +159,7 @@ export function ActiveInstanceProvider({
 
   const clearInstance = useCallback(() => {
     setInstanceState(null)
+    setInstanceStatus('unknown')
     storage.removeItem(STORAGE_KEY).catch(() => {})
   }, [storage])
 
@@ -128,8 +169,8 @@ export function ActiveInstanceProvider({
   }, [instance, apiUrl])
 
   const value = useMemo<ActiveInstanceContextValue>(
-    () => ({ instance, remoteAgentBaseUrl, setInstance, clearInstance }),
-    [instance, remoteAgentBaseUrl, setInstance, clearInstance],
+    () => ({ instance, remoteAgentBaseUrl, instanceStatus, setInstance, clearInstance }),
+    [instance, remoteAgentBaseUrl, instanceStatus, setInstance, clearInstance],
   )
 
   return (
@@ -150,17 +191,22 @@ async function validateInstance(
   apiUrl: string,
   fetchFn: typeof fetch,
   fetchOptions?: RequestInit,
-): Promise<boolean> {
-  if (!apiUrl) return false
+): Promise<{ valid: boolean; status?: InstanceStatus }> {
+  if (!apiUrl) return { valid: false }
   try {
     const res = await fetchFn(`${apiUrl}/api/instances/${inst.instanceId}`, {
       ...fetchOptions,
     })
-    if (!res.ok) return false
+    if (!res.ok) return { valid: false }
     const data = await res.json()
-    return data.workspaceId === inst.workspaceId
+    if (data.workspaceId !== inst.workspaceId) return { valid: false }
+    const status: InstanceStatus =
+      data.status === 'online' || data.status === 'heartbeat' || data.status === 'offline'
+        ? data.status
+        : 'unknown'
+    return { valid: true, status }
   } catch {
-    return false
+    return { valid: false }
   }
 }
 

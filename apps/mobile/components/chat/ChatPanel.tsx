@@ -65,6 +65,7 @@ import { API_URL, api, createHttpClient } from "../../lib/api"
 
 import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
+import { useActiveInstance } from "../../contexts/active-instance"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import {
@@ -1771,6 +1772,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(error && isRemoteInstance && isTunnelDisconnectError(error.message))
+  const { clearInstance: clearActiveInstance } = useActiveInstance()
 
   const errorBannerText = useMemo(
     () => {
@@ -3434,18 +3436,36 @@ export const ChatPanel = observer(function ChatPanel({
                       <Text className="text-sm text-orange-600 dark:text-orange-400 font-medium">Reconnecting…</Text>
                     </View>
                   ) : (
-                    <Pressable
-                      onPress={handleRetry}
-                      className={`shrink-0 rounded-md border px-1 py-1.5 self-start ${
-                        isTunnelError
-                          ? 'border-orange-400/30'
-                          : 'border-destructive/30'
-                      }`}
-                    >
-                      <Text className={`text-sm font-medium ${
-                        isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
-                      }`}>{isTunnelError ? 'Reconnect' : 'Retry'}</Text>
-                    </Pressable>
+                    <View className="shrink-0 flex-row gap-1.5 self-start">
+                      {isTunnelError && (
+                        <Pressable
+                          onPress={() => {
+                            clearActiveInstance()
+                            // Defer so the context update flushes and localAgentUrl
+                            // becomes null before the retry fires — otherwise the
+                            // retry would still hit the (now-offline) tunnel URL.
+                            setTimeout(() => handleRetry(), 0)
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel="Continue this conversation in the cloud sandbox"
+                          className="rounded-md border border-orange-400/30 px-2 py-1.5"
+                        >
+                          <Text className="text-sm font-medium text-orange-700 dark:text-orange-300">Continue in cloud</Text>
+                        </Pressable>
+                      )}
+                      <Pressable
+                        onPress={handleRetry}
+                        className={`rounded-md border px-1 py-1.5 ${
+                          isTunnelError
+                            ? 'border-orange-400/30'
+                            : 'border-destructive/30'
+                        }`}
+                      >
+                        <Text className={`text-sm font-medium ${
+                          isTunnelError ? 'text-orange-600 dark:text-orange-400' : 'text-destructive'
+                        }`}>{isTunnelError ? 'Reconnect' : 'Retry'}</Text>
+                      </Pressable>
+                    </View>
                   )}
                 </View>
               </View>
