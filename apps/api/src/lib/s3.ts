@@ -416,6 +416,10 @@ let artifactS3PublicClient: S3Client | null = null
 /**
  * Get or create the S3 client for internal artifact writes.
  * Falls back to the default schema S3 client if `S3_ARTIFACT_*` is unset.
+ *
+ * The override client is a process-wide singleton built from environment
+ * variables. This is intended for one startup-time artifact configuration,
+ * not multi-tenant same-process request isolation.
  */
 export function getArtifactS3Client(): S3Client {
   const hasOverride =
@@ -457,6 +461,8 @@ export function getArtifactS3Client(): S3Client {
  * Get or create the S3 client used when minting public-facing presigned URLs
  * for artifacts. Prefers S3_ARTIFACT_PUBLIC_ENDPOINT > S3_ARTIFACT_ENDPOINT,
  * then falls back to the schema public client.
+ *
+ * Like `getArtifactS3Client`, this caches one process-wide env-based client.
  */
 export function getArtifactS3PublicClient(): S3Client {
   const hasOverride =
@@ -496,7 +502,7 @@ export function getArtifactS3PublicClient(): S3Client {
 }
 
 /**
- * Reset artifact clients (for tests).
+ * Reset artifact clients (for tests that mutate S3_ARTIFACT_* env vars).
  */
 export function resetArtifactS3Client(): void {
   artifactS3Client = null
