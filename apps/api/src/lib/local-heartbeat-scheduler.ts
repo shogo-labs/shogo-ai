@@ -43,23 +43,40 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
   protected async fetchDueAgents(): Promise<DueAgent[]> {
     const { prisma } = await import('./prisma')
 
-    return prisma.agentConfig.findMany({
-      where: {
-        heartbeatEnabled: true,
-        nextHeartbeatAt: { lte: new Date() },
-      },
-      select: {
-        id: true,
-        projectId: true,
-        heartbeatInterval: true,
-        quietHoursStart: true,
-        quietHoursEnd: true,
-        quietHoursTimezone: true,
-      },
-      orderBy: { nextHeartbeatAt: 'asc' },
-      take: BATCH_SIZE,
-    })
+    try {
+      return await prisma.agentConfig.findMany({
+        where: {
+          heartbeatEnabled: true,
+          nextHeartbeatAt: { lte: new Date() },
+        },
+        select: {
+          id: true,
+          projectId: true,
+          heartbeatInterval: true,
+          quietHoursStart: true,
+          quietHoursEnd: true,
+          quietHoursTimezone: true,
+        },
+        orderBy: { nextHeartbeatAt: 'asc' },
+        take: BATCH_SIZE,
+      })
+    } catch (err: any) {
+      // Local SQLite may be missing the table when running in CLI worker mode
+      // before any agent has been provisioned. No-op silently in that case
+      // instead of spamming the worker log every poll interval.
+      const msg = String(err?.message ?? err)
+      if (msg.includes('does not exist') || msg.includes('no such table')) {
+        if (!this.warnedMissingTable) {
+          console.log('[LocalHeartbeat] agent_configs table not present yet; scheduler idle')
+          this.warnedMissingTable = true
+        }
+        return []
+      }
+      throw err
+    }
   }
+
+  private warnedMissingTable = false
 
   protected async triggerAgent(projectId: string): Promise<void> {
     try {
