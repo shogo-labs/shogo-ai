@@ -38,6 +38,18 @@ ok()    { printf "\033[32m✓\033[0m %s\n" "$*"; }
 warn()  { printf "\033[33m!\033[0m %s\n" "$*" >&2; }
 die()   { printf "\033[31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 
+verify_checksum() {
+  local checksum_file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "$checksum_file" >/dev/null
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c "$checksum_file" >/dev/null
+  else
+    warn "No SHA-256 checksum tool found; skipping verification"
+    return 0
+  fi
+}
+
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH_RAW="$(uname -m)"
 case "$ARCH_RAW" in
@@ -73,7 +85,7 @@ install_binary() {
   fi
   if curl -fsSL "$sha_url" -o "$tmp/shogo.sha256" 2>/dev/null; then
     info "Verifying checksum"
-    ( cd "$tmp" && shasum -a 256 -c shogo.sha256 >/dev/null ) || die "Checksum mismatch"
+    ( cd "$tmp" && verify_checksum shogo.sha256 ) || die "Checksum mismatch"
   else
     warn "No checksum published yet; skipping verification"
   fi
@@ -85,6 +97,11 @@ install_binary() {
 
 install_via_npm() {
   command -v npm >/dev/null 2>&1 || die "No prebuilt binary for $TARGET and npm not found. Install Node.js 20+ or use --force with a supported target."
+  npm view @shogo-ai/worker version >/dev/null 2>&1 || die "@shogo-ai/worker is not published to npm or is not reachable. Install a prebuilt binary or try again after the package is published."
+  local npm_prefix; npm_prefix="$(npm prefix -g 2>/dev/null)" || die "Unable to resolve npm global prefix"
+  if [ -e "$npm_prefix" ] && [ ! -w "$npm_prefix" ]; then
+    die "npm global prefix is not writable: $npm_prefix. Fix npm permissions or install a prebuilt binary."
+  fi
   info "Installing via npm: @shogo-ai/worker"
   npm install -g @shogo-ai/worker
   ok "Installed via npm"
