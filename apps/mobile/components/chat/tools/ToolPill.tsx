@@ -11,6 +11,7 @@ import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Wrench, CheckCircle2, XCircle, ChevronDown } from "lucide-react-native"
 import { type ToolCallData } from "./types"
+import { TransportBadge } from "../TransportBadge"
 
 export interface ToolPillProps {
   tools: ToolCallData[]
@@ -58,6 +59,8 @@ export function ToolPill({ tools, onPress, className }: ToolPillProps) {
 
       {hasErrors && <XCircle className="w-3 h-3 text-red-500" size={12} />}
       {allSuccess && <CheckCircle2 className="w-3 h-3 text-green-500" size={12} />}
+
+      <TransportBadge size="xs" className="ml-0.5" />
 
       {onPress && <ChevronDown className="w-3 h-3 ml-0.5 text-gray-400" size={12} />}
     </Pressable>

@@ -398,3 +398,173 @@ export async function listAllObjectsInS3(prefix: string, bucket?: string): Promi
 
   return objects
 }
+
+// ============================================================================
+// Artifact S3 — dedicated client/bucket for blockable artifact uploads
+// ----------------------------------------------------------------------------
+// Phase 4: gives the artifact upload path (thumbnails, voice clips, publish
+// bundles) its own env-configurable bucket + endpoint so firewall teams can
+// allow/deny artifact traffic independently of schema/project storage.
+//
+// FULLY BACKWARD COMPATIBLE: if S3_ARTIFACT_* vars are unset, these helpers
+// return the exact same clients/bucket the rest of the code already uses.
+// ============================================================================
+
+let artifactS3Client: S3Client | null = null
+let artifactS3PublicClient: S3Client | null = null
+
+/**
+ * Get or create the S3 client for internal artifact writes.
+ * Falls back to the default schema S3 client if `S3_ARTIFACT_*` is unset.
+ */
+export function getArtifactS3Client(): S3Client {
+  const hasOverride =
+    !!process.env.S3_ARTIFACT_ENDPOINT ||
+    !!process.env.S3_ARTIFACT_ACCESS_KEY_ID ||
+    !!process.env.S3_ARTIFACT_REGION
+
+  if (!hasOverride) return getS3Client()
+
+  if (!artifactS3Client) {
+    const region =
+      process.env.S3_ARTIFACT_REGION || process.env.AWS_REGION || 'us-east-1'
+    const endpoint = process.env.S3_ARTIFACT_ENDPOINT
+    const forcePathStyle =
+      (process.env.S3_ARTIFACT_FORCE_PATH_STYLE || process.env.S3_FORCE_PATH_STYLE) === 'true'
+
+    const accessKeyId =
+      process.env.S3_ARTIFACT_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID
+    const secretAccessKey =
+      process.env.S3_ARTIFACT_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
+
+    const config: ConstructorParameters<typeof S3Client>[0] = {
+      region,
+      ...(endpoint && {
+        endpoint,
+        forcePathStyle: forcePathStyle || !!endpoint,
+      }),
+      ...(accessKeyId && secretAccessKey && {
+        credentials: { accessKeyId, secretAccessKey },
+      }),
+    }
+
+    artifactS3Client = new S3Client(config)
+  }
+  return artifactS3Client
+}
+
+/**
+ * Get or create the S3 client used when minting public-facing presigned URLs
+ * for artifacts. Prefers S3_ARTIFACT_PUBLIC_ENDPOINT > S3_ARTIFACT_ENDPOINT,
+ * then falls back to the schema public client.
+ */
+export function getArtifactS3PublicClient(): S3Client {
+  const hasOverride =
+    !!process.env.S3_ARTIFACT_PUBLIC_ENDPOINT ||
+    !!process.env.S3_ARTIFACT_ENDPOINT ||
+    !!process.env.S3_ARTIFACT_ACCESS_KEY_ID
+
+  if (!hasOverride) return getS3PublicClient()
+
+  if (!artifactS3PublicClient) {
+    const region =
+      process.env.S3_ARTIFACT_REGION || process.env.AWS_REGION || 'us-east-1'
+    const endpoint =
+      process.env.S3_ARTIFACT_PUBLIC_ENDPOINT || process.env.S3_ARTIFACT_ENDPOINT
+    const forcePathStyle =
+      (process.env.S3_ARTIFACT_FORCE_PATH_STYLE || process.env.S3_FORCE_PATH_STYLE) === 'true'
+
+    const accessKeyId =
+      process.env.S3_ARTIFACT_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID
+    const secretAccessKey =
+      process.env.S3_ARTIFACT_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
+
+    const config: ConstructorParameters<typeof S3Client>[0] = {
+      region,
+      ...(endpoint && {
+        endpoint,
+        forcePathStyle: forcePathStyle || !!endpoint,
+      }),
+      ...(accessKeyId && secretAccessKey && {
+        credentials: { accessKeyId, secretAccessKey },
+      }),
+    }
+
+    artifactS3PublicClient = new S3Client(config)
+  }
+  return artifactS3PublicClient
+}
+
+/**
+ * Reset artifact clients (for tests).
+ */
+export function resetArtifactS3Client(): void {
+  artifactS3Client = null
+  artifactS3PublicClient = null
+}
+
+/**
+ * Bucket for artifact uploads. Falls back to the default schema bucket.
+ */
+export function getArtifactBucket(): string {
+  return process.env.S3_ARTIFACT_BUCKET || getS3Bucket()
+}
+
+/**
+ * True if artifact storage has been split onto a dedicated bucket/host.
+ * Use from health endpoints / observability to know which mode we're in.
+ */
+export function isArtifactStorageIsolated(): boolean {
+  return (
+    !!process.env.S3_ARTIFACT_BUCKET ||
+    !!process.env.S3_ARTIFACT_ENDPOINT ||
+    !!process.env.S3_ARTIFACT_PUBLIC_ENDPOINT
+  )
+}
+
+/**
+ * Build an artifact S3 key with an optional prefix (default: "artifacts/").
+ * Kept separate from buildS3Key so schema keys never collide with artifacts.
+ */
+export function buildArtifactKey(...parts: string[]): string {
+  const prefix = process.env.S3_ARTIFACT_PREFIX || 'artifacts/'
+  return prefix + parts.join('/')
+}
+
+/**
+ * Generate a pre-signed URL for READING an artifact.
+ * Uses the artifact public client + bucket; falls back transparently when
+ * artifact env vars are unset.
+ */
+export async function getArtifactPresignedReadUrl(
+  key: string,
+  options: PresignOptions = {}
+): Promise<string> {
+  const client = getArtifactS3PublicClient()
+  const bucket = options.bucket || getArtifactBucket()
+  const expiresIn = options.expiresIn || 3600
+
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key })
+  return getSignedUrl(client, command, { expiresIn })
+}
+
+/**
+ * Generate a pre-signed URL for WRITING an artifact.
+ * Uses the artifact public client + bucket; falls back transparently when
+ * artifact env vars are unset.
+ */
+export async function getArtifactPresignedWriteUrl(
+  key: string,
+  options: PresignOptions = {}
+): Promise<string> {
+  const client = getArtifactS3PublicClient()
+  const bucket = options.bucket || getArtifactBucket()
+  const expiresIn = options.expiresIn || 3600
+
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ...(options.contentType && { ContentType: options.contentType }),
+  })
+  return getSignedUrl(client, command, { expiresIn })
+}
