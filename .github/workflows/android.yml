@@ -104,16 +104,9 @@ jobs:
       - name: Resolve app version from tag
         id: resolve-version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
-            VERSION="${{ github.ref_name }}"
-            VERSION="${VERSION#android-v}"
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "Extracted version from tag: $VERSION"
-          else
-            VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "Using app.json version: $VERSION"
-          fi
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using app.json version: $VERSION"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -147,28 +140,24 @@ jobs:
           path: .fingerprint-android
           key: android-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
 
-      - name: Seed cache if missing
-        if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
-        run: echo "${{ steps.fingerprint.outputs.runtime_version }}" > .fingerprint-android
-
-      - name: Save fingerprint cache
-        if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: .fingerprint-android
-          key: android-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
+      # NOTE: cache is only saved from the build job after a SUCCESSFUL AAB build.
+      # Seeding here previously caused failed builds to poison the cache and force
+      # unintended OTA updates on subsequent runs at the same fingerprint.
 
       - name: Determine if build is needed
         id: decide
         run: |
-          if [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
+          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
+            echo "Tag push (android-v*) → release event, forcing full build + submit"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
-            echo "Fingerprint cached from previous build → OTA update only"
+            echo "Fingerprint cached from a previous successful build → OTA update only"
             echo "needs_build=false" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.mode }}" = "ota" ]; then
-            echo "OTA mode: trusting no native changes, seeding cache"
+            echo "OTA mode: trusting no native changes"
             echo "needs_build=false" >> $GITHUB_OUTPUT
           else
             echo "New fingerprint → full build required"
