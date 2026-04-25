@@ -57,8 +57,13 @@ function Install-Via-Npm {
   if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     Die "No prebuilt binary for $target and npm not found. Install Node.js 20+ or use -Force with a supported target."
   }
+  npm view @shogo-ai/worker version *> $null
+  if ($LASTEXITCODE -ne 0) {
+    Die "@shogo-ai/worker is not published to npm or is not reachable. Install a prebuilt binary or try again after the package is published."
+  }
   Info "Installing via npm: @shogo-ai/worker"
   npm install -g @shogo-ai/worker
+  if ($LASTEXITCODE -ne 0) { Die "npm install failed" }
   Ok "Installed via npm"
   $script:binPath = (Get-Command shogo).Source
 }
@@ -75,7 +80,13 @@ if ($userPath -notlike "*$Prefix*") {
 }
 
 Write-Host ""
-& $binPath --version 2>$null
+if ($binaryInstalled) {
+  $verifyPath = Join-Path $Prefix 'shogo.exe'
+  & $verifyPath --version 2>$null
+} else {
+  & $binPath --version 2>$null
+}
+if ($LASTEXITCODE -ne 0) { Die "Installed shogo CLI failed verification" }
 Ok "shogo CLI ready"
 Write-Host ""
 Write-Host "Next steps:"
