@@ -1657,6 +1657,7 @@ export class AgentGateway {
     // writing tool-output events, preventing React from batching all
     // tool events into a single render that skips the loading state.
     const toolFlushGates = new Map<string, Promise<void>>()
+    const toolHeartbeatTimers = new Map<string, ReturnType<typeof setInterval>>()
 
     const streamedToolCalls = new Set<string>()
 
@@ -1851,6 +1852,26 @@ export class AgentGateway {
             uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
             uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
           }
+          if (uiWriter && !toolHeartbeatTimers.has(toolCallId)) {
+            const startedAt = Date.now()
+            const timer = setInterval(() => {
+              try {
+                uiWriter.write({
+                  type: 'data-tool-progress',
+                  data: {
+                    toolCallId,
+                    toolName,
+                    elapsedMs: Date.now() - startedAt,
+                    status: 'running',
+                  },
+                } as any)
+              } catch {
+                clearInterval(timer)
+                toolHeartbeatTimers.delete(toolCallId)
+              }
+            }, 15_000)
+            toolHeartbeatTimers.set(toolCallId, timer)
+          }
           streamedToolCalls.delete(toolCallId)
           // Store a flush gate that resolves after a short delay, giving
           // the HTTP layer time to deliver the tool-input-start chunk to
@@ -1869,6 +1890,11 @@ export class AgentGateway {
           )
         },
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+          const timer = toolHeartbeatTimers.get(toolCallId)
+          if (timer) {
+            clearInterval(timer)
+            toolHeartbeatTimers.delete(toolCallId)
+          }
           if (isError) {
             console.error(`${this.logPrefix} Tool error: ${toolName}`, JSON.stringify(result).substring(0, 500))
           } else {
@@ -2063,6 +2089,10 @@ export class AgentGateway {
     } finally {
       this.turnAbortControllers.delete(sessionId)
       if (typingInterval) clearInterval(typingInterval)
+      for (const timer of toolHeartbeatTimers.values()) {
+        clearInterval(timer)
+      }
+      toolHeartbeatTimers.clear()
     }
   }
 

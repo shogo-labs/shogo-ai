@@ -949,6 +949,16 @@ export const ChatPanel = observer(function ChatPanel({
   const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<ToolCallData[]>([])
   const processedProgressEventsRef = useRef<Set<string>>(new Set())
 
+  // Durable-turn lifecycle tracking. The runtime emits `data-turn-start`
+  // exactly once per turn, periodic `data-turn-seq` heartbeats, and
+  // `data-turn-complete` exactly once at clean termination. The fetch-level
+  // auto-resume wrapper handles transparent reconnects on premature EOF;
+  // these refs let the UI react to the higher-level lifecycle (e.g. show a
+  // "stalled" indicator if we ever exhaust the resume budget).
+  const currentTurnIdRef = useRef<string | null>(null)
+  const turnCompletedRef = useRef<boolean>(false)
+  const turnLastSeqRef = useRef<number>(0)
+
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
   const [contextUsage, setContextUsage] = useState<{ inputTokens: number; contextWindowTokens: number } | null>(null)
@@ -1309,6 +1319,39 @@ export const ChatPanel = observer(function ChatPanel({
             }
             return next
           })
+        }
+      }
+
+      // Durable-turn lifecycle markers (emitted by agent-runtime). The
+      // fetch wrapper already auto-resumes on premature EOF; we just track
+      // the latest state here so the UI/idle-watchdog know whether the
+      // stream completed cleanly.
+      if (dataPart.type === "data-turn-start") {
+        const d = (dataPart as any).data ?? {}
+        if (d.turnId && d.turnId !== currentTurnIdRef.current) {
+          currentTurnIdRef.current = d.turnId
+          turnCompletedRef.current = false
+          turnLastSeqRef.current = 0
+        }
+      }
+      if (dataPart.type === "data-turn-seq") {
+        const seq = (dataPart as any).data?.seq
+        if (typeof seq === "number" && seq > turnLastSeqRef.current) {
+          turnLastSeqRef.current = seq
+        }
+      }
+      if (dataPart.type === "data-turn-complete") {
+        turnCompletedRef.current = true
+        const d = (dataPart as any).data ?? {}
+        if (typeof d.lastSeq === "number" && d.lastSeq > turnLastSeqRef.current) {
+          turnLastSeqRef.current = d.lastSeq
+        }
+        if (d.status && d.status !== "completed") {
+          console.warn(
+            "[ChatPanel] turn ended with non-completed status:",
+            d.status,
+            d.error,
+          )
         }
       }
 
@@ -1908,6 +1951,34 @@ export const ChatPanel = observer(function ChatPanel({
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
 
+  // Detect when the AI SDK stream ends but we never observed a
+  // `data-turn-complete` marker. The fetch wrapper auto-resumes through
+  // transient disconnects, so reaching this state means it gave up after
+  // exhausting its retry budget — the turn may still be running on the
+  // server while the UI looks "done".
+  const prevIsStreamingForTurnRef = useRef(false)
+  const turnStalledRef = useRef(false)
+  useEffect(() => {
+    const wasStreaming = prevIsStreamingForTurnRef.current
+    prevIsStreamingForTurnRef.current = isStreaming
+    if (isStreaming && !wasStreaming) {
+      turnStalledRef.current = false
+      return
+    }
+    if (wasStreaming && !isStreaming) {
+      if (currentTurnIdRef.current && !turnCompletedRef.current) {
+        console.warn(
+          "[ChatPanel] stream ended without data-turn-complete (turnId=" +
+            currentTurnIdRef.current +
+            ", lastSeq=" +
+            turnLastSeqRef.current +
+            "); turn may still be running on the server",
+        )
+        turnStalledRef.current = true
+      }
+    }
+  }, [isStreaming])
+
   const handleStop = useCallback(() => {
     setStoppedMessages([...messagesRef.current])
     stop()
@@ -1943,15 +2014,35 @@ export const ChatPanel = observer(function ChatPanel({
     return () => { configureSubagentStop(null) }
   }, [localAgentUrl, projectId, expoFetch])
 
-  // Idle timeout to force-complete hung streams
+  // Idle timeout to force-complete hung streams.
+  //
+  // The runtime emits `data-tool-progress` heartbeats every 15s during long
+  // tool executions and the API proxy injects keep-alive frames, so a true
+  // idle window of 30 minutes means the runtime really has gone silent.
+  // Anything shorter risks killing legitimate long Anthropic / Opus turns.
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageContentRef = useRef<string>("")
-  const IDLE_TIMEOUT_MS = 600_000
+  const IDLE_TIMEOUT_MS = 1_800_000
 
   useEffect(() => {
+    // Hash everything in the message tree (text, tool input, tool output,
+    // data parts) so any incremental progress event resets the timer, not
+    // only top-level text deltas.
     const currentContent = messages
-      .map((m) => (m as any).content || m.parts?.map((p: any) => p.text || "").join(""))
-      .join("")
+      .map((m) => {
+        const top = (m as any).content
+        if (typeof top === "string" && top.length > 0) return top
+        return (m.parts || [])
+          .map((p: any) => {
+            try {
+              return JSON.stringify(p)
+            } catch {
+              return p.text || p.type || ""
+            }
+          })
+          .join("|")
+      })
+      .join("\n")
 
     if (isStreaming) {
       if (idleTimeoutRef.current) {

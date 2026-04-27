@@ -17,6 +17,12 @@ export {
 } from './useChatTransport'
 
 export {
+  createAutoResumingFetch,
+  defaultBuildResumeUrl,
+  type AutoResumingFetchOptions,
+} from './auto-resuming-fetch'
+
+export {
   useRemoteChatTransportConfig,
   buildRemoteChatApiUrl,
   type RemoteChatTransportOptions,
