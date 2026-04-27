@@ -1,35 +1,80 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * In-memory stream buffer for SSE reconnect support.
+ * In-memory stream buffer + turn ledger for SSE reconnect support.
  *
  * Stores raw SSE bytes keyed by chatSessionId so that a reconnecting client
- * can replay the buffered events and continue receiving live events.
+ * can replay buffered events and continue receiving live events. Every
+ * buffered chunk is tagged with a monotonically increasing `seq` so a client
+ * can resume from the last frame it has already seen via `?fromSeq=N` style
+ * resume.
  *
  * Each server process (agent-runtime pod, API server) creates its own
- * StreamBufferStore singleton — no shared state between processes.
+ * StreamBufferStore singleton — no shared state between processes. For
+ * cross-process durability a higher layer (e.g. a Postgres-backed turn
+ * ledger) would wrap this store; this in-memory variant is the hot cache.
  */
 
 const CLEANUP_INTERVAL_MS = 60_000
 const MAX_BUFFER_AGE_MS = 30 * 60_000
 const COMPLETED_GRACE_MS = 30_000
 
-interface StreamBuffer {
-  chunks: Uint8Array[]
-  subscribers: Set<ReadableStreamDefaultController<Uint8Array>>
-  status: 'active' | 'completed'
-  createdAt: number
-  completedAt: number | null
+export type TurnStatus = 'active' | 'completed' | 'aborted' | 'failed'
+
+export interface TurnTerminal {
+  reason?: string
+  error?: string
 }
 
-/**
- * A writer bound to a specific buffer instance. If the buffer is replaced
- * (e.g. a new stream starts for the same key), writes become no-ops
- * so a stale background reader can't corrupt the new buffer.
- */
+interface BufferedFrame {
+  seq: number
+  chunk: Uint8Array
+}
+
+interface StreamBuffer {
+  turnId: string
+  frames: BufferedFrame[]
+  subscribers: Set<ReadableStreamDefaultController<Uint8Array>>
+  status: TurnStatus
+  terminal: TurnTerminal | null
+  createdAt: number
+  completedAt: number | null
+  lastEventAt: number
+  /** Next seq number to assign to a new chunk. Monotonic, never reset. */
+  nextSeq: number
+}
+
 export interface StreamBufferWriter {
-  append(chunk: Uint8Array): void
-  complete(): void
+  /** Append a raw byte chunk and return the seq assigned to it. */
+  append(chunk: Uint8Array): number
+  /** Mark the turn as cleanly completed. Optional terminal reason. */
+  complete(reason?: string): void
+  /**
+   * Mark the turn as failed (still keeps the buffer around for the grace
+   * window so a reconnecting client can see the terminal state).
+   */
+  fail(error: string): void
+  /** The turnId this writer is bound to. */
+  readonly turnId: string
+  /** Last seq written so far (0 if nothing has been appended). */
+  readonly lastSeq: number
+}
+
+export interface ReplayOptions {
+  /**
+   * Skip frames with seq <= fromSeq. Use 0 (or omit) to replay from the start.
+   */
+  fromSeq?: number
+}
+
+export interface TurnSnapshot {
+  turnId: string
+  status: TurnStatus
+  lastSeq: number
+  terminal: TurnTerminal | null
+  createdAt: number
+  completedAt: number | null
+  lastEventAt: number
 }
 
 export class StreamBufferStore {
@@ -44,29 +89,38 @@ export class StreamBufferStore {
   }
 
   /**
-   * Create (or replace) a buffer for the given key.
-   * Any existing buffer for the same key is completed and discarded.
-   *
-   * Returns a writer bound to this specific buffer instance.
+   * Create (or replace) a buffer for the given key. Any existing active
+   * buffer is completed and discarded. Returns a writer bound to this
+   * specific buffer instance, including the new `turnId`.
    */
-  create(key: string): StreamBufferWriter {
+  create(key: string, opts?: { turnId?: string }): StreamBufferWriter {
     const existing = this.buffers.get(key)
     if (existing && existing.status === 'active') {
-      this.completeBuffer(existing)
+      this.completeBuffer(existing, 'replaced')
     }
+    const now = Date.now()
+    const turnId = opts?.turnId || generateTurnId()
     const buf: StreamBuffer = {
-      chunks: [],
+      turnId,
+      frames: [],
       subscribers: new Set(),
       status: 'active',
-      createdAt: Date.now(),
+      terminal: null,
+      createdAt: now,
       completedAt: null,
+      lastEventAt: now,
+      nextSeq: 1,
     }
     this.buffers.set(key, buf)
 
     return {
+      get turnId() { return buf.turnId },
+      get lastSeq() { return buf.nextSeq - 1 },
       append: (chunk: Uint8Array) => {
-        if (buf.status !== 'active') return
-        buf.chunks.push(chunk)
+        if (buf.status !== 'active') return -1
+        const seq = buf.nextSeq++
+        buf.frames.push({ seq, chunk })
+        buf.lastEventAt = Date.now()
         for (const ctrl of buf.subscribers) {
           try {
             ctrl.enqueue(chunk)
@@ -74,22 +128,27 @@ export class StreamBufferStore {
             buf.subscribers.delete(ctrl)
           }
         }
+        return seq
       },
-      complete: () => {
-        this.completeBuffer(buf)
+      complete: (reason?: string) => {
+        this.completeBuffer(buf, reason)
+      },
+      fail: (error: string) => {
+        this.failBuffer(buf, error)
       },
     }
   }
 
   /**
-   * Append a chunk by key. Useful for simple pass-through transforms
-   * where binding to a specific buffer instance isn't needed.
+   * Append a chunk by key (loose, untyped writer). Returns the seq assigned,
+   * or -1 if the buffer is unknown/inactive.
    */
-  append(key: string, chunk: Uint8Array): void {
+  append(key: string, chunk: Uint8Array): number {
     const buf = this.buffers.get(key)
-    if (!buf || buf.status !== 'active') return
-
-    buf.chunks.push(chunk)
+    if (!buf || buf.status !== 'active') return -1
+    const seq = buf.nextSeq++
+    buf.frames.push({ seq, chunk })
+    buf.lastEventAt = Date.now()
     for (const ctrl of buf.subscribers) {
       try {
         ctrl.enqueue(chunk)
@@ -97,26 +156,25 @@ export class StreamBufferStore {
         buf.subscribers.delete(ctrl)
       }
     }
+    return seq
   }
 
-  /**
-   * Mark a buffer as completed by key.
-   */
-  complete(key: string): void {
+  /** Mark a buffer as completed by key. Optional terminal reason. */
+  complete(key: string, reason?: string): void {
     const buf = this.buffers.get(key)
     if (!buf) return
-    this.completeBuffer(buf)
+    this.completeBuffer(buf, reason)
   }
 
   /**
-   * Abort a stream: complete all subscribers and remove the buffer entirely.
+   * Abort a stream: complete subscribers and remove the buffer entirely.
    * Future resume/replay requests for this key will return null (→ 204).
-   * The bound StreamBufferWriter stays safe (no-ops via closure ref).
    */
   abort(key: string): void {
     const buf = this.buffers.get(key)
     if (!buf) return
-    this.completeBuffer(buf)
+    this.completeBuffer(buf, 'aborted')
+    buf.status = 'aborted'
     this.buffers.delete(key)
   }
 
@@ -124,29 +182,50 @@ export class StreamBufferStore {
     return this.buffers.has(key)
   }
 
+  /** Read-only metadata about a buffered turn. Useful for resume responses. */
+  snapshot(key: string): TurnSnapshot | null {
+    const buf = this.buffers.get(key)
+    if (!buf) return null
+    return {
+      turnId: buf.turnId,
+      status: buf.status,
+      lastSeq: buf.nextSeq - 1,
+      terminal: buf.terminal,
+      createdAt: buf.createdAt,
+      completedAt: buf.completedAt,
+      lastEventAt: buf.lastEventAt,
+    }
+  }
+
   /**
-   * Create a ReadableStream that first replays all buffered chunks,
-   * then subscribes for any further live chunks until the stream completes.
+   * Create a ReadableStream that first replays all buffered chunks past
+   * `opts.fromSeq` (default: 0 → replay everything), then subscribes for
+   * any further live chunks until the stream completes.
    *
    * Returns null if no buffer exists for the key.
    */
-  createReplayStream(key: string): ReadableStream<Uint8Array> | null {
+  createReplayStream(
+    key: string,
+    opts: ReplayOptions = {},
+  ): ReadableStream<Uint8Array> | null {
     const buf = this.buffers.get(key)
     if (!buf) return null
 
+    const fromSeq = Math.max(0, opts.fromSeq ?? 0)
     let subscribedController: ReadableStreamDefaultController<Uint8Array> | null = null
 
     return new ReadableStream<Uint8Array>({
       start(controller) {
-        for (const chunk of buf.chunks) {
+        for (const frame of buf.frames) {
+          if (frame.seq <= fromSeq) continue
           try {
-            controller.enqueue(chunk)
+            controller.enqueue(frame.chunk)
           } catch {
             return
           }
         }
 
-        if (buf.status === 'completed') {
+        if (buf.status !== 'active') {
           try { controller.close() } catch { /* already closed */ }
           return
         }
@@ -166,10 +245,10 @@ export class StreamBufferStore {
   cleanup(): void {
     const now = Date.now()
     for (const [key, buf] of this.buffers) {
-      if (buf.status === 'completed' && buf.completedAt && now - buf.completedAt > COMPLETED_GRACE_MS) {
+      if (buf.status !== 'active' && buf.completedAt && now - buf.completedAt > COMPLETED_GRACE_MS) {
         this.buffers.delete(key)
       } else if (now - buf.createdAt > MAX_BUFFER_AGE_MS && buf.subscribers.size === 0) {
-        this.completeBuffer(buf)
+        this.completeBuffer(buf, 'expired')
         this.buffers.delete(key)
       }
     }
@@ -181,15 +260,29 @@ export class StreamBufferStore {
       this.cleanupTimer = null
     }
     for (const buf of this.buffers.values()) {
-      this.completeBuffer(buf)
+      this.completeBuffer(buf, 'disposed')
     }
     this.buffers.clear()
   }
 
-  private completeBuffer(buf: StreamBuffer): void {
-    if (buf.status === 'completed') return
+  private completeBuffer(buf: StreamBuffer, reason?: string): void {
+    if (buf.status !== 'active') return
     buf.status = 'completed'
+    buf.terminal = { reason }
     buf.completedAt = Date.now()
+    buf.lastEventAt = buf.completedAt
+    for (const ctrl of buf.subscribers) {
+      try { ctrl.close() } catch { /* already closed */ }
+    }
+    buf.subscribers.clear()
+  }
+
+  private failBuffer(buf: StreamBuffer, error: string): void {
+    if (buf.status !== 'active') return
+    buf.status = 'failed'
+    buf.terminal = { error }
+    buf.completedAt = Date.now()
+    buf.lastEventAt = buf.completedAt
     for (const ctrl of buf.subscribers) {
       try { ctrl.close() } catch { /* already closed */ }
     }
@@ -197,9 +290,26 @@ export class StreamBufferStore {
   }
 }
 
+function generateTurnId(): string {
+  // Lightweight random id — we don't need cryptographic strength here, just
+  // uniqueness within the store's lifetime. Fall back to Math.random in
+  // environments without crypto.randomUUID (older bundlers / RN).
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+      return globalThis.crypto.randomUUID()
+    }
+  } catch {
+    /* fall through */
+  }
+  return `turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
 /**
- * TransformStream that copies every chunk into a StreamBufferStore
- * while passing it through unchanged. On flush/cancel, completes the buffer.
+ * TransformStream that copies every chunk into a StreamBufferStore while
+ * passing it through unchanged. On flush/cancel, completes the buffer.
+ *
+ * Note: this convenience helper does NOT propagate seq numbers back to the
+ * caller. Use `store.create(key)` directly if you need the writer's seq.
  */
 export function createBufferingTransform(
   store: StreamBufferStore,

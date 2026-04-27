@@ -21,7 +21,7 @@
 
 import type { AgentTool, AgentEvent, StreamFn } from '@mariozechner/pi-agent-core'
 import { Agent } from '@mariozechner/pi-agent-core'
-import type { Message, Api, ImageContent } from '@mariozechner/pi-ai'
+import type { Message, Api, ImageContent, AssistantMessage } from '@mariozechner/pi-ai'
 import { LoopDetector, type LoopDetectorConfig, type LoopDetectorResult } from './loop-detector'
 import type { ToolContext } from './gateway-tools'
 import {
@@ -391,10 +391,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     signal?.removeEventListener('abort', onAbort)
   }
 
-  const allMessages = agent.state.messages
-  const newMessages = allMessages.slice(history.length)
-  const finalText = extractFinalText(newMessages)
-  const usage = sumUsage(newMessages)
+  let allMessages = agent.state.messages
+  let newMessages = allMessages.slice(history.length)
+  let finalText = extractFinalText(newMessages)
+  let usage = sumUsage(newMessages)
 
   // Detect if the model's output was truncated (max_tokens hit → stopReason='length')
   // without maxIterations being exhausted. Mark as maxIterationsExhausted so the
@@ -434,6 +434,107 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     console.error(`[AgentLoop] Provider error from pi-agent-core: ${coreError}`)
   }
 
+  const lastToolName = toolCalls.length > 0 ? toolCalls[toolCalls.length - 1]?.name : undefined
+  const stoppedByIterationLimit = abortReason === 'max_iterations'
+  const shouldForceFinalText =
+    toolCalls.length > 0 &&
+    lastToolName !== 'ask_user' &&
+    !signal?.aborted &&
+    !loopBreak &&
+    (!finalText.trim() || maxIterationsExhausted || lastStopReason === 'length')
+
+  if (shouldForceFinalText) {
+    const truncatedMidAnswer = lastStopReason === 'length' && finalText.trim().length > 0
+    const finalizationPrompt = truncatedMidAnswer
+      ? [
+          'Your previous reply was cut off because it hit the provider output-token limit.',
+          'Continue your reply from exactly where it stopped, in the same voice and formatting, without restarting or re-introducing what you already wrote.',
+          'Do not call any tools and do not ask the user to type "continue".',
+          'When you reach a natural ending, finish the response so the user has a complete answer.',
+        ].join('\n')
+      : [
+          'Tool use is now closed for this visible turn.',
+          'Do not call any tools. Write the final response to the user now.',
+          'Summarize what was completed, include any important findings or blockers, and be explicit if the task is not fully finished.',
+          'Do not ask the user to type "continue" unless there is a true terminal blocker that requires user input.',
+        ].join('\n')
+
+    if (!stoppedByIterationLimit) {
+      try {
+        const finalizerAgent = new Agent({
+          initialState: {
+            systemPrompt: system,
+            model,
+            thinkingLevel: thinkingLevel === 'off' ? undefined : thinkingLevel,
+            tools: [],
+            messages: [...allMessages],
+          },
+          toolExecution: 'parallel',
+          convertToLlm: defaultConvertToLlm,
+          transformContext: wrappedTransformContext as any,
+          streamFn: options.streamFn,
+          getApiKey: (prov) => {
+            if (apiKey && prov === provider) return apiKey
+            return resolveApiKey(prov)
+          },
+        })
+
+        finalizerAgent.subscribe((event: AgentEvent) => {
+          if (event.type !== 'message_update') return
+          const ame = event.assistantMessageEvent
+          if (ame.type === 'text_delta') {
+            onTextDelta?.(ame.delta)
+          }
+        })
+
+        await finalizerAgent.prompt(finalizationPrompt)
+        const finalizerMessages = finalizerAgent.state.messages.slice(allMessages.length)
+        const assistantMessages = finalizerMessages.filter((m): m is AssistantMessage => m.role === 'assistant')
+        const finalizerText = extractFinalText(assistantMessages)
+        if (finalizerText.trim()) {
+          newMessages = [...newMessages, ...assistantMessages]
+          allMessages = [...allMessages, ...assistantMessages]
+          finalText = finalizerText
+          maxIterationsExhausted = false
+          promptError = undefined
+        }
+      } catch (err: any) {
+        console.warn(`[AgentLoop] Finalization pass failed after ${toolCalls.length} tool calls: ${err?.message || err}`)
+      }
+    } else {
+      console.warn(`[AgentLoop] Iteration limit reached after ${toolCalls.length} tool calls — emitting explicit incomplete-turn fallback`)
+    }
+
+    if (!finalText.trim() || stoppedByIterationLimit) {
+      finalText = buildIncompleteTurnFallback(toolCalls.length, maxIterationsExhausted, coreError || promptError?.message)
+      onTextDelta?.(finalText)
+      const fallbackMessage: AssistantMessage = {
+        role: 'assistant',
+        content: [{ type: 'text', text: finalText }],
+        api: 'anthropic-messages',
+        provider,
+        model: modelId,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: 'stop',
+        timestamp: Date.now(),
+      }
+      newMessages = [...newMessages, fallbackMessage]
+      allMessages = [...allMessages, fallbackMessage]
+      if (promptError && /maximum iteration limit/i.test(promptError.message)) {
+        promptError = undefined
+      }
+    }
+  }
+
+  usage = sumUsage(newMessages)
+
   const result: AgentLoopResult = {
     text: loopBreak
       ? `[LOOP DETECTED] ${loopBreak.pattern || loopBreak.reason}`
@@ -456,6 +557,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   await onAgentEnd?.(result)
 
   return result
+}
+
+function buildIncompleteTurnFallback(toolCallCount: number, maxIterationsExhausted: boolean, error?: string): string {
+  const reason = error
+    ? ` The last model call hit a recoverable provider error: ${error}`
+    : maxIterationsExhausted
+      ? ' The turn reached its internal continuation limit before the model produced a natural final paragraph.'
+      : ''
+  return `I completed ${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'}, but the model did not produce a final answer after tool execution.${reason} I preserved the completed tool results so the next turn can continue from this exact point instead of starting over.`
 }
 
 /**

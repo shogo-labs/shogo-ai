@@ -273,6 +273,111 @@ describe('StreamBufferStore', () => {
     expect(store.has('a')).toBe(false)
     expect(store.has('b')).toBe(false)
   })
+
+  test('writer reports turnId and monotonic seq', () => {
+    store = new StreamBufferStore()
+    const writer = store.create('seq-key')
+    expect(writer.turnId).toBeTruthy()
+    expect(writer.lastSeq).toBe(0)
+
+    const seq1 = writer.append(encode('a'))
+    const seq2 = writer.append(encode('b'))
+    const seq3 = writer.append(encode('c'))
+    expect(seq1).toBe(1)
+    expect(seq2).toBe(2)
+    expect(seq3).toBe(3)
+    expect(writer.lastSeq).toBe(3)
+  })
+
+  test('snapshot returns turn metadata for active and completed turns', () => {
+    store = new StreamBufferStore()
+    const writer = store.create('snap-key', { turnId: 'turn-123' })
+    writer.append(encode('hello'))
+
+    const active = store.snapshot('snap-key')
+    expect(active).not.toBeNull()
+    expect(active!.turnId).toBe('turn-123')
+    expect(active!.status).toBe('active')
+    expect(active!.lastSeq).toBe(1)
+
+    writer.complete('finished')
+
+    const done = store.snapshot('snap-key')
+    expect(done!.status).toBe('completed')
+    expect(done!.terminal?.reason).toBe('finished')
+    expect(done!.completedAt).not.toBeNull()
+  })
+
+  test('snapshot returns null for unknown key', () => {
+    store = new StreamBufferStore()
+    expect(store.snapshot('missing')).toBeNull()
+  })
+
+  test('createReplayStream with fromSeq skips already-seen frames', async () => {
+    store = new StreamBufferStore()
+    const writer = store.create('partial')
+    writer.append(encode('one\n'))   // seq 1
+    writer.append(encode('two\n'))   // seq 2
+    writer.append(encode('three\n')) // seq 3
+    writer.complete()
+
+    // Resume from seq=1 — should only get frames 2 and 3
+    const replay = store.createReplayStream('partial', { fromSeq: 1 })!
+    const text = await collectStream(replay)
+    expect(text).toBe('two\nthree\n')
+  })
+
+  test('createReplayStream with fromSeq beyond lastSeq waits for live frames on active turn', async () => {
+    store = new StreamBufferStore()
+    const writer = store.create('catchup')
+    writer.append(encode('first\n'))  // seq 1
+
+    // Subscriber asks for fromSeq=1 — they're already caught up. They should
+    // see no replay, then live frames as they arrive.
+    const replay = store.createReplayStream('catchup', { fromSeq: 1 })!
+    const reader = replay.getReader()
+
+    writer.append(encode('second\n')) // seq 2
+    const { value: live, done } = await reader.read()
+    expect(done).toBe(false)
+    expect(new TextDecoder().decode(live)).toBe('second\n')
+
+    writer.complete()
+    const tail = await reader.read()
+    expect(tail.done).toBe(true)
+  })
+
+  test('createReplayStream with fromSeq on completed turn closes immediately when caught up', async () => {
+    store = new StreamBufferStore()
+    const writer = store.create('done-catch')
+    writer.append(encode('a'))
+    writer.append(encode('b'))
+    writer.complete()
+
+    const replay = store.createReplayStream('done-catch', { fromSeq: 2 })!
+    const text = await collectStream(replay)
+    expect(text).toBe('')
+  })
+
+  test('writer.fail marks buffer failed and surfaces error in snapshot', () => {
+    store = new StreamBufferStore()
+    const writer = store.create('boom')
+    writer.append(encode('progress'))
+    writer.fail('provider 500')
+
+    const snap = store.snapshot('boom')
+    expect(snap!.status).toBe('failed')
+    expect(snap!.terminal?.error).toBe('provider 500')
+  })
+
+  test('abort marks status aborted before removing buffer', async () => {
+    store = new StreamBufferStore()
+    const writer = store.create('cancel')
+    writer.append(encode('partial'))
+
+    store.abort('cancel')
+    expect(store.snapshot('cancel')).toBeNull()
+  })
 })
 
 describe('createBufferingTransform', () => {
