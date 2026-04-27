@@ -102,7 +102,7 @@ import {
 import { subagentStreamStore } from "../../lib/subagent-stream-store"
 import { teamStore } from "../../lib/team-store"
 import * as ExpoLinking from "expo-linking"
-import { AlertCircle, RefreshCw, X } from "lucide-react-native"
+import { AlertCircle, ArrowDown, RefreshCw, X } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
@@ -529,6 +529,16 @@ const chatMessagesScrollStyles = StyleSheet.create({
     web: CHAT_MESSAGES_SCROLL_WEB,
     default: {},
   }),
+  jumpToLatest: Platform.select({
+    web: { boxShadow: "0 2px 8px rgba(0,0,0,0.15)" } as ViewStyle,
+    default: {
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.15,
+      shadowRadius: 6,
+      elevation: 3,
+    },
+  }),
 })
 
 // ============================================================
@@ -701,6 +711,12 @@ export const ChatPanel = observer(function ChatPanel({
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
+  /**
+   * Show the floating "jump to latest" affordance once the user has scrolled
+   * up roughly a full viewport away from the bottom (ChatGPT-style).
+   */
+  const scrollToBottomVisibilityPx = Math.max(400, windowHeight * 0.8)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -738,9 +754,23 @@ export const ChatPanel = observer(function ChatPanel({
       const fromBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height
       stickToBottomRef.current = fromBottom <= STICK_BOTTOM_PX
+      setShowScrollToBottom((prev) => {
+        const next = fromBottom > scrollToBottomVisibilityPx
+        return prev === next ? prev : next
+      })
     },
-    [isNative]
+    [isNative, scrollToBottomVisibilityPx]
   )
+
+  const handleJumpToLatest = useCallback(() => {
+    if (isNative) {
+      stickToBottomRef.current = true
+    } else {
+      isUserAtBottomRef.current = true
+    }
+    setShowScrollToBottom(false)
+    scrollViewRef.current?.scrollToEnd({ animated: true })
+  }, [isNative])
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -2523,10 +2553,15 @@ export const ChatPanel = observer(function ChatPanel({
   const handleMessagesScrollWeb = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
-      const isAtBottom =
-        contentSize.height - contentOffset.y - layoutMeasurement.height <
-        SCROLL_NEAR_BOTTOM_PX
+      const fromBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height
+      const isAtBottom = fromBottom < SCROLL_NEAR_BOTTOM_PX
       isUserAtBottomRef.current = isAtBottom
+
+      setShowScrollToBottom((prev) => {
+        const next = fromBottom > scrollToBottomVisibilityPx
+        return prev === next ? prev : next
+      })
 
       if (contentOffset.y < LOAD_OLDER_SCROLL_EDGE_PX) {
         if (loadOlderWebDebounceRef.current) {
@@ -2541,7 +2576,7 @@ export const ChatPanel = observer(function ChatPanel({
         loadOlderWebDebounceRef.current = null
       }
     },
-    [handleLoadOlderMessages],
+    [handleLoadOlderMessages, scrollToBottomVisibilityPx],
   )
 
   const hasReceivedPartsRef = useRef(false)
@@ -2689,6 +2724,7 @@ export const ChatPanel = observer(function ChatPanel({
     isUserAtBottomRef.current = true
     stickToBottomRef.current = true
     prevDisplayLengthRef.current = 0
+    setShowScrollToBottom(false)
   }, [currentSessionId])
 
   useEffect(() => {
@@ -3264,6 +3300,7 @@ export const ChatPanel = observer(function ChatPanel({
           keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
         >
           {/* Messages with Turn Grouping */}
+          <View className="flex-1 relative">
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
@@ -3360,6 +3397,26 @@ export const ChatPanel = observer(function ChatPanel({
             )}
 
           </ScrollView>
+
+          {/* Jump to latest message — appears once user has scrolled up */}
+          {showScrollToBottom && (
+            <View
+              pointerEvents="box-none"
+              className="absolute bottom-3 left-0 right-0 items-center"
+            >
+              <Pressable
+                onPress={handleJumpToLatest}
+                accessibilityRole="button"
+                accessibilityLabel="Scroll to latest message"
+                hitSlop={8}
+                className="h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md active:opacity-80"
+                style={chatMessagesScrollStyles.jumpToLatest}
+              >
+                <ArrowDown size={18} className="text-foreground" />
+              </Pressable>
+            </View>
+          )}
+          </View>
 
           {/* Tool Error Banner */}
           {toolErrorBanner && (
