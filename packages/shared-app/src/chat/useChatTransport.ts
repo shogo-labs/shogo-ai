@@ -8,6 +8,7 @@
  */
 
 import { useMemo } from 'react'
+import { createAutoResumingFetch } from './auto-resuming-fetch'
 
 export interface ChatTransportOptions {
   /** API base URL (e.g., "http://localhost:8002" or "" for same-origin) */
@@ -22,6 +23,13 @@ export interface ChatTransportOptions {
   fetch?: typeof globalThis.fetch
   /** Extra headers to include with every request (e.g. Cookie for native auth) */
   headers?: Record<string, string> | (() => Record<string, string>)
+  /**
+   * When true (default) the chat fetch is wrapped with auto-resume so a
+   * mid-turn disconnect transparently reconnects via `?fromSeq=N` instead
+   * of leaving the UI stuck on a half-rendered message. Set to false to
+   * opt out (e.g. for legacy environments without the durable runtime).
+   */
+  durableResume?: boolean
 }
 
 export interface ChatTransportConfig {
@@ -54,15 +62,21 @@ export function useChatTransportConfig({
   credentials,
   fetch: customFetch,
   headers,
+  durableResume = true,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
     if (!projectId && !localAgentUrl) return undefined
 
+    const baseFetch = customFetch ?? globalThis.fetch
+    const fetch = durableResume
+      ? createAutoResumingFetch(baseFetch.bind(globalThis))
+      : customFetch
+
     return {
       api: buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl),
       credentials,
-      fetch: customFetch,
+      fetch,
       headers,
     }
-  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers])
+  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers, durableResume])
 }

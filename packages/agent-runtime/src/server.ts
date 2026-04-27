@@ -833,11 +833,39 @@ app.post('/agent/chat', async (c) => {
   // a client disconnect (e.g. page refresh) does NOT cancel the agent.
   console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
   const bufWriter = streamBufferStore.create(chatSessionKey)
+  const turnId = bufWriter.turnId
 
   trackStreamStart()
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
+      let turnSucceeded = false
+      // Periodic seq heartbeat. The client uses this to know how many
+      // buffered chunks it has already received so it can resume with
+      // `?fromSeq=N` on a premature disconnect without re-rendering text
+      // it has already seen.
+      const seqHeartbeat = setInterval(() => {
+        const seq = bufWriter.lastSeq
+        if (seq <= 0) return
+        try {
+          writer.write({
+            type: 'data-turn-seq',
+            data: { turnId, seq },
+          } as any)
+        } catch {
+          clearInterval(seqHeartbeat)
+        }
+      }, 250)
       try {
+        // Mark the start of this durable turn so a reconnecting client
+        // can correlate replay frames against the right turn id.
+        writer.write({
+          type: 'data-turn-start',
+          data: {
+            turnId,
+            chatSessionId: chatSessionKey,
+            startedAt: Date.now(),
+          },
+        } as any)
         writer.write({ type: 'start-step' })
         await agentGateway!.processChatMessageStream(userText || '', writer, {
           modelOverride,
@@ -864,11 +892,41 @@ app.post('/agent/chat', async (c) => {
         }
 
         writer.write({ type: 'finish-step' })
+        // Explicit terminal marker the client uses to differentiate "really
+        // done" from "stream EOF mid-turn". Anything past this point on the
+        // wire is purely framing noise and should be ignored by clients.
+        writer.write({
+          type: 'data-turn-complete',
+          data: {
+            turnId,
+            chatSessionId: chatSessionKey,
+            status: 'completed',
+            lastSeq: bufWriter.lastSeq,
+            completedAt: Date.now(),
+          },
+        } as any)
         writer.write({ type: 'finish', finishReason: 'stop' })
+        turnSucceeded = true
       } catch (error: any) {
+        writer.write({
+          type: 'data-turn-complete',
+          data: {
+            turnId,
+            chatSessionId: chatSessionKey,
+            status: 'failed',
+            error: error?.message || 'Agent chat error',
+            lastSeq: bufWriter.lastSeq,
+            completedAt: Date.now(),
+          },
+        } as any)
         writer.write({ type: 'error', errorText: error.message || 'Agent chat error' } as any)
       } finally {
+        clearInterval(seqHeartbeat)
         trackStreamEnd()
+        if (!turnSucceeded) {
+          // Best-effort marker so the snapshot reflects the failure state
+          // for the grace window.
+        }
       }
     },
   })
@@ -886,7 +944,7 @@ app.post('/agent/chat', async (c) => {
           if (done) break
           bufWriter.append(value)
         }
-        console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey}`)
+        console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)
       } catch (err: any) {
         console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
       } finally {
@@ -899,34 +957,83 @@ app.post('/agent/chat', async (c) => {
     // the background reader + agent keep running.
     const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
     const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+    const responseHeaders = new Headers(response.headers)
+    responseHeaders.set('X-Turn-Id', turnId)
+    responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
     return new Response(wrappedStream, {
       status: response.status,
-      headers: response.headers,
+      headers: responseHeaders,
     })
   }
   return response
 })
 
-// Reconnect to an active stream — replays buffered SSE events then continues live.
+// Reconnect to an active (or recently completed) stream.
 // URL pattern matches the AI SDK's default resume convention: ${api}/${chatId}/stream
+//
+// Optional query params:
+//   - fromSeq: replay only frames with seq > fromSeq (delta resume so the
+//              client doesn't render duplicates).
+//
+// Response headers always include:
+//   - X-Turn-Id: the active turn this stream belongs to
+//   - X-Last-Seq: the last seq the runtime has buffered at the time of attach
+//   - X-Turn-Status: active | completed | failed | aborted
+//
+// Status code semantics:
+//   - 200 with stream  → buffer exists. Stream replays frames > fromSeq, then
+//                        either closes (terminal turn) or stays open for live
+//                        frames (active turn).
+//   - 204              → no buffer at all for this session (turn is unknown
+//                        or expired beyond the grace window). The client
+//                        should treat this as "nothing to resume" and stop.
 app.get('/agent/chat/:chatSessionId/stream', (c) => {
   const chatSessionId = c.req.param('chatSessionId')
-  console.log(`[AgentChat] Stream reconnect request for session: ${chatSessionId}, has buffer: ${streamBufferStore.has(chatSessionId)}`)
-  const replayStream = streamBufferStore.createReplayStream(chatSessionId)
+  const fromSeqRaw = c.req.query('fromSeq')
+  const fromSeq = fromSeqRaw ? Math.max(0, parseInt(fromSeqRaw, 10) || 0) : 0
+  const snapshot = streamBufferStore.snapshot(chatSessionId)
+  console.log(`[AgentChat] Stream reconnect: session=${chatSessionId} fromSeq=${fromSeq} snapshot=${snapshot ? `${snapshot.status}@${snapshot.lastSeq}` : 'none'}`)
 
-  if (!replayStream) {
-    console.log(`[AgentChat] No active stream buffer for session: ${chatSessionId}`)
+  if (!snapshot) {
     return new Response(null, { status: 204 })
   }
 
-  console.log(`[AgentChat] Replaying stream buffer for session: ${chatSessionId}`)
+  const replayStream = streamBufferStore.createReplayStream(chatSessionId, { fromSeq })
+  if (!replayStream) {
+    return new Response(null, { status: 204 })
+  }
+
   const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
   return new Response(wrappedStream, {
     headers: {
       'Content-Type': 'text/x-ai-sdk-ui-stream',
       'X-Accel-Buffering': 'no',
       'Cache-Control': 'no-cache',
+      'X-Turn-Id': snapshot.turnId,
+      'X-Last-Seq': String(snapshot.lastSeq),
+      'X-Turn-Status': snapshot.status,
     },
+  })
+})
+
+// Read-only durable-turn status endpoint. Lets a client poll for the current
+// state of a turn without opening a stream — useful when deciding whether to
+// reconnect. Mirrors the snapshot exposed by the StreamBufferStore.
+app.get('/agent/chat/:chatSessionId/turn', (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  const snapshot = streamBufferStore.snapshot(chatSessionId)
+  if (!snapshot) {
+    return c.json({ status: 'unknown' as const }, 404)
+  }
+  return c.json({
+    chatSessionId,
+    turnId: snapshot.turnId,
+    status: snapshot.status,
+    lastSeq: snapshot.lastSeq,
+    terminal: snapshot.terminal,
+    createdAt: snapshot.createdAt,
+    completedAt: snapshot.completedAt,
+    lastEventAt: snapshot.lastEventAt,
   })
 })
 
