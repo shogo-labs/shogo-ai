@@ -804,7 +804,7 @@ function WorkspaceSwitcher({
                         || 'free'
                       const isPaid = wsPlanId !== 'free'
                       const label = isPaid
-                        ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
+                        ? getPlanDisplayName(wsPlanId)
                         : 'Free'
                       return (
                         <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
