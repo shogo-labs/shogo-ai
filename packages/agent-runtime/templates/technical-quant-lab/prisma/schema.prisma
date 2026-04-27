@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Technical Quant Lab persistence schema.
+// Surfaces fetch from the auto-generated Prisma + SQLite CRUD API.
+// Do not add .data.json mocks to this template.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model TickerSetup {
+  id        String   @id @default(cuid())
+  ticker            String
+  timeframe         String
+  bias              String
+  currentPosition   String
+  notes             String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("ticker_setups")
+}
+
+model IndicatorSnapshot {
+  id        String   @id @default(cuid())
+  ticker            String
+  trend             String
+  rsi               String
+  macd              String
+  movingAverages    String
+  volumeSignal      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("indicator_snapshots")
+}
+
+model SupportResistanceLevel {
+  id        String   @id @default(cuid())
+  ticker            String
+  levelType         String
+  price             String
+  timeframe         String
+  evidence          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("support_resistance_levels")
+}
+
+model PatternSignal {
+  id        String   @id @default(cuid())
+  ticker            String
+  pattern           String
+  signalType        String
+  confidence        String
+  evidence          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("pattern_signals")
+}
+
+model EventPattern {
+  id        String   @id @default(cuid())
+  ticker            String
+  eventType         String
+  period            String
+  historicalBehavior String
+  edgeSummary       String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("event_patterns")
+}
+
+model OptionsSignal {
+  id        String   @id @default(cuid())
+  ticker            String
+  signal            String
+  expiry            String
+  strikeContext     String
+  interpretation    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("options_signals")
+}
+
+model TradePlan {
+  id        String   @id @default(cuid())
+  ticker            String
+  entryZone         String
+  stopLoss          String
+  profitTarget      String
+  riskReward        String
+  invalidation      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("trade_plans")
+}

@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Equity Research Terminal persistence schema.
+// Surfaces fetch from the auto-generated Prisma + SQLite CRUD API.
+// Do not add .data.json mocks to this template.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model StockWatchlist {
+  id        String   @id @default(cuid())
+  ticker            String
+  company           String
+  sector            String
+  thesis            String
+  status            String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("stock_watchlists")
+}
+
+model StockScreen {
+  id        String   @id @default(cuid())
+  name              String
+  criteria          String
+  topTickers        String
+  riskRating        Int @default(0)
+  notes             String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([name])
+  @@map("stock_screens")
+}
+
+model EquityReport {
+  id        String   @id @default(cuid())
+  ticker            String
+  title             String
+  verdict           String
+  bullCase          String
+  bearCase          String
+  sourceCount       Int @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("equity_reports")
+}
+
+model ValuationModel {
+  id        String   @id @default(cuid())
+  ticker            String
+  method            String
+  fairValueRange    String
+  wacc              String
+  terminalAssumption String
+  keyRisk           String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("valuation_models")
+}
+
+model CompetitiveSet {
+  id        String   @id @default(cuid())
+  sector            String
+  leaderTicker      String
+  peerTickers       String
+  moatSummary       String
+  catalyst          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([sector])
+  @@map("competitive_sets")
+}
+
+model EarningsNote {
+  id        String   @id @default(cuid())
+  ticker            String
+  period            String
+  headline          String
+  takeaways         String
+  openQuestions     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("earnings_notes")
+}
+
+model SourceCitation {
+  id        String   @id @default(cuid())
+  relatedTicker     String
+  sourceTitle       String
+  url               String
+  publisher         String
+  publishedAt       String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("source_citations")
+}

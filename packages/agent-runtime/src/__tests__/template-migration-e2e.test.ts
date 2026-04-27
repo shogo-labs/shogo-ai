@@ -14,6 +14,8 @@ const ALL_TEMPLATE_IDS = [
   'code-quality', 'comms-monitoring', 'engineering-pulse', 'incident-response',
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
   'self-evolving', 'yc-founder-operating-system', 'virtual-engineering-team',
+  'equity-research-terminal', 'portfolio-risk-desk', 'technical-quant-lab',
+  'dividend-income-builder', 'macro-market-briefing',
 ]
 
 const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length
@@ -34,6 +36,11 @@ const TEMPLATES_WITH_CANVAS_SRC = [
 const TEMPLATES_WITH_PRISMA_SCHEMA: Record<string, string[]> = {
   'yc-founder-operating-system': ['Decision', 'Review', 'Priority'],
   'virtual-engineering-team': ['Sprint', 'Artifact', 'SkillDoc'],
+  'equity-research-terminal': ['StockWatchlist', 'StockScreen', 'ValuationModel'],
+  'portfolio-risk-desk': ['Holding', 'RiskScenario', 'AllocationTarget'],
+  'technical-quant-lab': ['TickerSetup', 'IndicatorSnapshot', 'TradePlan'],
+  'dividend-income-builder': ['DividendCandidate', 'IncomeProjection', 'DividendSafetyCheck'],
+  'macro-market-briefing': ['MacroIndicator', 'SectorView', 'ActionPlan'],
 }
 
 let tempRoot: string

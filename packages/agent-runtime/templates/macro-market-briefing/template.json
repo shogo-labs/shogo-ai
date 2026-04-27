@@ -1,0 +1,44 @@
+{
+  "id": "macro-market-briefing",
+  "name": "Macro Market Briefing",
+  "description": "Macro strategy workspace for rates, inflation, GDP, Fed policy, sector rotation, global risks, and portfolio action plans backed by Prisma and SQLite.",
+  "category": "research",
+  "icon": "Globe2",
+  "tags": [
+    "macro",
+    "rates",
+    "inflation",
+    "fed",
+    "sector-rotation",
+    "global-risk",
+    "markets"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "07:00",
+      "timezone": "UTC"
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "notes",
+      "description": "Archive research memos, source citations, and model assumptions"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Send briefings, alerts, and review-ready summaries"
+    }
+  ],
+  "techStack": "react-app"
+}

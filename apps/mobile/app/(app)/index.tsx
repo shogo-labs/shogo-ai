@@ -469,7 +469,7 @@ const HomeScreen = observer(function HomeScreen() {
         template_name: template.name,
       })
 
-      const onboardingMessage = getOnboardingMessage(template.name)
+      const onboardingMessage = getOnboardingMessage(template.name, template.id)
       const hasIntegrations = Array.isArray(template.integrations) && template.integrations.length > 0
       projects.loadAll()
       router.push({
