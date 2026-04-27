@@ -617,10 +617,17 @@ const BUDGET_PROTECTED_TURNS = 3
  * Proportionally shrink old tool results so they don't consume more than
  * TOOL_RESULT_BUDGET_RATIO of the total context budget. Recent turns
  * (within BUDGET_PROTECTED_TURNS) are never touched.
+ *
+ * @param frozenIds — tool_call ids whose prior compaction decision is locked
+ *   (either already replaced or explicitly preserved in a prior call). They
+ *   are excluded from eligibility (never re-compacted) so their content stays
+ *   byte-identical across calls — critical for prompt-cache prefix stability.
+ *   Their chars still count toward the aggregate budget.
  */
 export function applyToolResultBudget(
   messages: Message[],
   contextBudgetChars: number,
+  frozenIds?: ReadonlySet<string>,
 ): Message[] {
   const maxBudget = Math.floor(contextBudgetChars * TOOL_RESULT_BUDGET_RATIO)
 
@@ -633,20 +640,22 @@ export function applyToolResultBudget(
     : 0
 
   const eligibleIndices: number[] = []
-  let totalEligibleChars = 0
+  let totalCharsForBudget = 0
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
     if (msg.role !== 'toolResult' || i >= protectedStart) continue
     const chars = msg.content
       .filter((c): c is TextContent => c.type === 'text')
       .reduce((sum, c) => sum + c.text.length, 0)
-    if (chars > 0) {
-      eligibleIndices.push(i)
-      totalEligibleChars += chars
-    }
+    if (chars === 0) continue
+    // Frozen messages count toward the total budget draw (their content
+    // is part of what the model sees) but aren't eligible to be re-compacted.
+    totalCharsForBudget += chars
+    if (frozenIds?.has((msg as ToolResultMessage).toolCallId)) continue
+    eligibleIndices.push(i)
   }
 
-  if (totalEligibleChars <= maxBudget || eligibleIndices.length === 0) return messages
+  if (totalCharsForBudget <= maxBudget || eligibleIndices.length === 0) return messages
 
   const perResultBudget = Math.floor(maxBudget / eligibleIndices.length)
   const eligibleSet = new Set(eligibleIndices)
@@ -688,6 +697,7 @@ export function applyToolResultBudget(
 export function snipConsumedResults(
   messages: Message[],
   protectedTurns = 3,
+  frozenIds?: ReadonlySet<string>,
 ): Message[] {
   const turnBoundaries: number[] = []
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -700,6 +710,10 @@ export function snipConsumedResults(
   return messages.map((msg, idx) => {
     if (msg.role !== 'toolResult') return msg
     if (idx >= protectedStart) return msg
+    // Frozen: the prior decision for this tool_call_id is locked. Skipping
+    // here guarantees we never re-snip a message whose prior pass chose to
+    // preserve it, which would flip its content mid-session and blow cache.
+    if (frozenIds?.has((msg as ToolResultMessage).toolCallId)) return msg
 
     const hasFollowingAssistant = messages
       .slice(idx + 1)

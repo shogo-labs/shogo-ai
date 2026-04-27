@@ -205,6 +205,16 @@ textarea:focus {
   outline-color: rgb(var(--color-ring)) !important;
 }
 
+/* Chat-style inputs opt out of the orange focus ring. The textarea sits
+   inside an `overflow-hidden` rounded container with sibling chips above
+   it; a 2px outline bleeds upward through the clip and shows as a stray
+   orange horizontal line between the chip row and the text field. */
+input.no-focus-ring:focus,
+textarea.no-focus-ring:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* Expo web: full-height chain so auth hero (flex + CSS background) fills the viewport */
 html,
 body {
@@ -256,4 +266,239 @@ body {
 
 .dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(200, 200, 200, 0.4);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * IDE — live agent edits (Cursor-style per-line diff overlay)
+ *
+ * Three kinds of line decoration applied by agentEditAnimation.ts after a
+ * write from the chat agent lands on disk:
+ *   • .agent-edit-added-line    — brand-new line (green)
+ *   • .agent-edit-modified-line — changed-in-place line (amber)
+ *   • .agent-edit-deleted-zone  — phantom view-zone above the old location
+ *                                 showing the removed text with strikethrough
+ *
+ * Decorations fade softly so they're visible for the ~6s overlay TTL and
+ * then quietly disappear without a hard snap.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@keyframes agent-edit-added-fade {
+  0%   { background-color: rgba(16, 185, 129, 0.30); } /* emerald-500 @ 30% */
+  70%  { background-color: rgba(16, 185, 129, 0.18); }
+  100% { background-color: rgba(16, 185, 129, 0); }
+}
+@keyframes agent-edit-added-gutter-fade {
+  0%   { background-color: #10b981; }
+  70%  { background-color: rgba(16, 185, 129, 0.6); }
+  100% { background-color: transparent; }
+}
+
+@keyframes agent-edit-modified-fade {
+  0%   { background-color: rgba(234, 179, 8, 0.28); }  /* amber-500 @ 28% */
+  70%  { background-color: rgba(234, 179, 8, 0.16); }
+  100% { background-color: rgba(234, 179, 8, 0); }
+}
+@keyframes agent-edit-modified-gutter-fade {
+  0%   { background-color: #eab308; }
+  70%  { background-color: rgba(234, 179, 8, 0.6); }
+  100% { background-color: transparent; }
+}
+
+@keyframes agent-edit-deleted-fade {
+  0%   { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.agent-edit-added-line {
+  animation: agent-edit-added-fade 6s ease-out forwards;
+  will-change: background-color;
+}
+.agent-edit-added-gutter {
+  width: 3px !important;
+  margin-left: 2px;
+  animation: agent-edit-added-gutter-fade 6s ease-out forwards;
+}
+.agent-edit-added-gutter::before {
+  content: "+";
+  display: block;
+  position: absolute;
+  left: 4px;
+  top: 0;
+  color: #10b981;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.agent-edit-modified-line {
+  animation: agent-edit-modified-fade 6s ease-out forwards;
+  will-change: background-color;
+}
+.agent-edit-modified-gutter {
+  width: 3px !important;
+  margin-left: 2px;
+  animation: agent-edit-modified-gutter-fade 6s ease-out forwards;
+}
+.agent-edit-modified-gutter::before {
+  content: "~";
+  display: block;
+  position: absolute;
+  left: 4px;
+  top: 0;
+  color: #eab308;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.agent-edit-deleted-zone {
+  background-color: rgba(239, 68, 68, 0.12); /* red-500 @ 12% */
+  border-left: 3px solid #ef4444;
+  animation: agent-edit-deleted-fade 6s ease-out forwards;
+  will-change: opacity;
+  padding: 0 0 0 8px;
+  overflow: hidden;
+}
+.agent-edit-deleted-line {
+  color: rgba(248, 113, 113, 0.85); /* red-400 */
+  text-decoration: line-through;
+  text-decoration-color: rgba(239, 68, 68, 0.7);
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}
+
+/* Tab pulse while the agent is actively writing to that file */
+@keyframes agent-tab-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
+.agent-tab-pulse-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background-color: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  margin-right: 6px;
+  animation: agent-tab-pulse 1s ease-in-out infinite;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   IDE theme tokens. The Workbench wraps itself in `.shogo-ide` and uses
+   `var(--ide-*)` for all chrome colors (bg, text, borders, hovers, accents).
+   Switching the app between light and dark (`html.dark`) flips the palette
+   below, so the in-app code editor follows the rest of the UI.
+   ────────────────────────────────────────────────────────────────────────── */
+.shogo-ide {
+  /* Dark defaults — matches the VS Code "Dark+" look the IDE started with. */
+  --ide-bg: #1e1e1e;
+  --ide-surface: #252526;
+  --ide-panel: #1a1a1a;
+  --ide-border: #2a2a2a;
+  --ide-border-strong: #3a3a3a;
+  --ide-border-muted: #454545;
+  --ide-hover: #2a2d2e;
+  --ide-hover-subtle: rgba(255, 255, 255, 0.06);
+  --ide-active: #37373d;
+  --ide-active-bg: #094771;
+  --ide-active-ring: #0078d4;
+  --ide-input: #3c3c3c;
+  --ide-input-bg: #1a1a1a;
+  --ide-muted: #858585;
+  --ide-muted-strong: #666666;
+  --ide-text: #cccccc;
+  --ide-text-strong: #ffffff;
+  --ide-primary: #0078d4;
+  --ide-error: #f48771;
+  --ide-warning: #ffb74d;
+  --ide-tab-inactive: #2d2d2d;
+  --ide-tab-inactive-text: #969696;
+  --ide-accent-file-icon: #75beff;
+  --ide-accent-folder: #dcb67a;
+  --ide-highlight-bg: #514b17;
+  --ide-highlight-text: #ffd75e;
+  --ide-selected-bg: #264f78;
+  --ide-conflict-border: rgba(249, 130, 108, 0.6);
+  --ide-conflict-bg: rgba(249, 130, 108, 0.15);
+  --ide-conflict-pill-bg: rgba(249, 130, 108, 0.25);
+  --ide-conflict-text: #f9d7cf;
+  --ide-toggle-knob: #ffffff;
+  --ide-btn-primary-bg: #0e639c;
+  --ide-btn-primary-hover: #1177bb;
+  --ide-btn-secondary-bg: #3a3d41;
+  --ide-btn-secondary-hover: #4a4d51;
+  --ide-danger-hover: #c4314b;
+  --ide-kbd-bg: #2a2a2a;
+  --ide-scrollbar: rgba(255, 255, 255, 0.2);
+
+  color: var(--ide-text);
+  background: var(--ide-bg);
+}
+
+html:not(.dark) .shogo-ide,
+.shogo-ide[data-theme="light"] {
+  --ide-bg: #ffffff;
+  --ide-surface: #f3f3f3;
+  --ide-panel: #ececec;
+  --ide-border: #e5e5e5;
+  --ide-border-strong: #cecece;
+  --ide-border-muted: #cccccc;
+  --ide-hover: #e8e8e8;
+  --ide-hover-subtle: rgba(0, 0, 0, 0.05);
+  --ide-active: #d6ebff;
+  --ide-active-bg: #cce6f7;
+  --ide-active-ring: #0066b8;
+  --ide-input: #ffffff;
+  --ide-input-bg: #ffffff;
+  --ide-muted: #616161;
+  --ide-muted-strong: #9d9d9d;
+  --ide-text: #1f1f1f;
+  --ide-text-strong: #000000;
+  --ide-primary: #0066b8;
+  --ide-error: #e51400;
+  --ide-warning: #b88217;
+  --ide-tab-inactive: #ececec;
+  --ide-tab-inactive-text: #5f5f5f;
+  --ide-accent-file-icon: #316dca;
+  --ide-accent-folder: #d6a558;
+  --ide-highlight-bg: #fff3b0;
+  --ide-highlight-text: #3a2e00;
+  --ide-selected-bg: #add6ff;
+  --ide-conflict-border: rgba(215, 58, 73, 0.45);
+  --ide-conflict-bg: rgba(255, 225, 220, 0.8);
+  --ide-conflict-pill-bg: rgba(215, 58, 73, 0.2);
+  --ide-conflict-text: #7a1f03;
+  --ide-toggle-knob: #ffffff;
+  --ide-btn-primary-bg: #0066b8;
+  --ide-btn-primary-hover: #1177bb;
+  --ide-btn-secondary-bg: #e5e5e5;
+  --ide-btn-secondary-hover: #d0d0d0;
+  --ide-danger-hover: #e51400;
+  --ide-kbd-bg: #e5e5e5;
+  --ide-scrollbar: rgba(0, 0, 0, 0.25);
+}
+
+/* Scrollbars inside the IDE pick up the current palette so the light theme
+   doesn't end up with a dark-on-light scrollbar. */
+.shogo-ide *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.shogo-ide *::-webkit-scrollbar-thumb {
+  background: var(--ide-scrollbar);
+  border-radius: 6px;
+}
+.shogo-ide *::-webkit-scrollbar-track {
+  background: transparent;
 }

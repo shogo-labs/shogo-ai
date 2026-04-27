@@ -9,13 +9,14 @@
  * shows a summary of activity; pressing navigates to the Agents panel.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useSyncExternalStore } from "react"
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { Bot, CheckCircle2, XCircle, ChevronRight, GitFork, Wrench } from "lucide-react-native"
+import { Bot, CheckCircle2, XCircle, ChevronRight, GitFork, Wrench, Square } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import type { ToolCallData } from "../tools/types"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
+import { stopSubagent } from "../../../lib/subagent-stop"
 
 export interface SubagentCardProps {
   tool: ToolCallData
@@ -132,6 +133,23 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
 
   const Icon = fork ? GitFork : Bot
 
+  // Subscribe to the stream store so the model badge / instance id that
+  // arrive via preliminary tool output are picked up without a reload.
+  useSyncExternalStore(
+    subagentStreamStore.subscribe,
+    () => subagentStreamStore.getVersion(),
+    () => subagentStreamStore.getVersion(),
+  )
+  const streamData = subagentStreamStore.get(tool.id)
+  const model = streamData?.model
+  const instanceId = streamData?.instanceId
+
+  const handleStop = useCallback((e: any) => {
+    if (e?.stopPropagation) e.stopPropagation()
+    if (!instanceId) return
+    stopSubagent(instanceId, tool.id)
+  }, [instanceId, tool.id])
+
   return (
     <Pressable
       onPress={handlePress}
@@ -150,10 +168,26 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
           >
             {agentLabel}
           </Text>
+          {model && (
+            <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60" numberOfLines={1}>
+              {model}
+            </Text>
+          )}
           <Text className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-muted/60">
             {fork ? "fork" : agentType}
           </Text>
-          {isRunning && <PulsingDot />}
+          {isRunning && instanceId && (
+            <Pressable
+              onPress={handleStop}
+              accessibilityLabel="Stop subagent"
+              testID={`stop-subagent-${instanceId}`}
+              hitSlop={6}
+              className="h-5 w-5 rounded-full bg-destructive items-center justify-center active:opacity-70"
+            >
+              <Square className="text-destructive-foreground m-auto" size={10} />
+            </Pressable>
+          )}
+          {isRunning && !instanceId && <PulsingDot />}
           {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-muted-foreground" size={14} />}
           {isError && <XCircle className="w-3.5 h-3.5 text-muted-foreground" size={14} />}
         </View>

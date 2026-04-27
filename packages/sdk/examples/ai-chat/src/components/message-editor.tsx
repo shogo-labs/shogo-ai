@@ -93,9 +93,17 @@ export function MessageEditor({
               const index = messages.findIndex((m) => m.id === message.id);
 
               if (index !== -1) {
+                // Preserve non-text parts (file attachments, images, etc.) so
+                // a retry/edit never silently drops the original upload.
+                const nonTextParts = (message.parts ?? []).filter(
+                  (p: any) => p?.type && p.type !== "text"
+                );
                 const updatedMessage: ChatMessage = {
                   ...message,
-                  parts: [{ type: "text", text: draftContent }],
+                  parts: [
+                    { type: "text", text: draftContent },
+                    ...nonTextParts,
+                  ],
                 };
 
                 return [...messages.slice(0, index), updatedMessage];

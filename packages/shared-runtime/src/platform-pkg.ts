@@ -10,6 +10,8 @@
  */
 
 import { execSync as nodeExecSync, spawn, type StdioOptions } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 export interface PkgInstallOptions {
   timeout?: number
@@ -17,6 +19,36 @@ export interface PkgInstallOptions {
   env?: NodeJS.ProcessEnv
   /** Attempt --frozen-lockfile first, fall back to plain install (bun only). */
   frozen?: boolean
+}
+
+/** Error thrown when the Windows Node.js prerequisite is missing. */
+export class NodeMissingError extends Error {
+  readonly code = 'NODE_NOT_INSTALLED' as const
+  constructor() {
+    super(
+      'Shogo Desktop on Windows requires Node.js 20+ to run project sandboxes. ' +
+        'npm.cmd was not found on PATH and is not present at C:\\Program Files\\nodejs\\. ' +
+        'Install Node.js from https://nodejs.org/ (LTS recommended), then restart Shogo.',
+    )
+    this.name = 'NodeMissingError'
+  }
+}
+
+const WINDOWS_NODE_DIR = 'C:\\Program Files\\nodejs'
+
+/**
+ * True if npm.cmd can be located via PATH or the standard Windows install dir.
+ * Cheap — only a single existsSync + PATH walk — so safe to call from hot paths.
+ * Always returns true on non-Windows (bun is used there).
+ */
+export function isNodeAvailableOnWindows(pathEnv: string | undefined = process.env.PATH): boolean {
+  if (process.platform !== 'win32') return true
+  if (existsSync(join(WINDOWS_NODE_DIR, 'npm.cmd'))) return true
+  if (!pathEnv) return false
+  for (const dir of pathEnv.split(';')) {
+    if (dir && existsSync(join(dir, 'npm.cmd'))) return true
+  }
+  return false
 }
 
 export interface PkgExecOptions {
@@ -64,9 +96,14 @@ export class PlatformPackageManager {
     const env = this.spawnEnv(opts?.env)
 
     if (IS_WINDOWS) {
-      nodeExecSync('npm.cmd install --loglevel=error', {
-        cwd, timeout, stdio, env, shell: true,
-      })
+      if (!isNodeAvailableOnWindows(env.PATH)) throw new NodeMissingError()
+      try {
+        nodeExecSync('npm.cmd install --loglevel=error', {
+          cwd, timeout, stdio, env, shell: true,
+        })
+      } catch (err: any) {
+        throw wrapWindowsNpmError(err) ?? err
+      }
     } else {
       const bun = this.bunBinary
       if (opts?.frozen) {
@@ -91,6 +128,10 @@ export class PlatformPackageManager {
     const cmd = IS_WINDOWS ? 'npm.cmd' : this.bunBinary
     const args = IS_WINDOWS ? ['install', '--loglevel=error'] : ['install']
 
+    if (IS_WINDOWS && !isNodeAvailableOnWindows(env.PATH)) {
+      return Promise.reject(new NodeMissingError())
+    }
+
     return new Promise<void>((resolve, reject) => {
       const proc = spawn(cmd, args, {
         cwd,
@@ -109,12 +150,19 @@ export class PlatformPackageManager {
 
       proc.on('exit', (code) => {
         clearTimeout(timer)
-        if (code === 0) resolve()
-        else reject(new Error(`${cmd} install exited with code ${code}\n${stderr}`))
+        if (code === 0) return resolve()
+        // Windows cmd.exe prints "not recognized" when npm.cmd is missing,
+        // even though we preflight above — handle the race where the user
+        // uninstalled Node while Shogo was running.
+        if (IS_WINDOWS && /not recognized as an internal or external command/i.test(stderr)) {
+          return reject(new NodeMissingError())
+        }
+        reject(new Error(`${cmd} install exited with code ${code}\n${stderr}`))
       })
 
-      proc.on('error', (err) => {
+      proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer)
+        if (IS_WINDOWS && err.code === 'ENOENT') return reject(new NodeMissingError())
         reject(err)
       })
     })
@@ -168,6 +216,21 @@ export class PlatformPackageManager {
       env: opts?.env,
     })
   }
+}
+
+/**
+ * Translate the cryptic cmd.exe "not recognized" message emitted when
+ * npm.cmd is missing into a typed NodeMissingError. Returns null if the
+ * error doesn't look like a missing-node problem so the caller can rethrow.
+ */
+function wrapWindowsNpmError(err: any): NodeMissingError | null {
+  if (!IS_WINDOWS) return null
+  const blob = `${err?.stderr?.toString?.() ?? ''}\n${err?.stdout?.toString?.() ?? ''}\n${err?.message ?? ''}`
+  if (/not recognized as an internal or external command/i.test(blob)) {
+    return new NodeMissingError()
+  }
+  if (err?.code === 'ENOENT') return new NodeMissingError()
+  return null
 }
 
 /** Singleton — most consumers just need one. */

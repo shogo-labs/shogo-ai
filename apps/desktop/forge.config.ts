@@ -19,7 +19,7 @@ const extraResourceCandidates = [
   './resources/vm',
   './resources/vm-helper',
   './resources/sherpa-onnx',
-  './resources/shogo-audio',
+  './resources/shogo-sysaudio',
   './resources/seed.db',
   './resources/package.json',
   './prisma',

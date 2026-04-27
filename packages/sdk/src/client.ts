@@ -14,7 +14,31 @@ import {
   getDefaultStorageAdapter,
   type StorageAdapter,
 } from './storage/adapter.js'
+import {
+  createShogoLlmProvider,
+  type ShogoLlmProvider,
+} from './llm/index.js'
+import {
+  DirectTelephonyClient,
+  HostedRuntimeTokenClient,
+  HostedTelephonyClient,
+  type TelephonyClient,
+} from './voice/telephony.js'
 import type { ShogoClientConfig } from './types.js'
+
+export interface ShogoVoiceModule {
+  /**
+   * Telephony client for Twilio + ElevenLabs.
+   *
+   * `null` when the client was constructed without any of:
+   *   - `process.env.RUNTIME_AUTH_SECRET` + `projectId` (pod-native)
+   *   - `shogoApiKey` + `projectId` (Mode B hosted bearer)
+   *   - direct `elevenlabs` + `twilio` credentials (Mode A)
+   *
+   * Call {@link ShogoClient.setShogoApiKey} or recreate the client to enable.
+   */
+  telephony: TelephonyClient | null
+}
 
 /**
  * Shogo Client interface
@@ -31,6 +55,46 @@ export interface ShogoClient<DB = unknown> {
   /** Database - direct pass-through to your Prisma client */
   db: DB
 
+  /**
+   * Vercel AI SDK provider routed through the Shogo Cloud LLM gateway.
+   * `null` until a Shogo API key is configured via `shogoApiKey` in
+   * `createClient()` or {@link ShogoClient.setShogoApiKey}.
+   *
+   * ```ts
+   * import { streamText } from 'ai'
+   * const result = streamText({
+   *   model: shogo.llm!('claude-sonnet-4-5'),
+   *   prompt: 'Hello',
+   * })
+   * ```
+   */
+  llm: ShogoLlmProvider | null
+
+  /**
+   * Voice module — Twilio + ElevenLabs telephony.
+   *
+   * `voice.telephony` resolves to:
+   *   - `HostedRuntimeTokenClient` when `process.env.RUNTIME_AUTH_SECRET` +
+   *     `projectId` are present (pod-native; default inside generated apps),
+   *   - `HostedTelephonyClient` when `shogoApiKey` + `projectId` are
+   *     configured (external-site Mode B),
+   *   - `DirectTelephonyClient` when direct `elevenlabs` + `twilio`
+   *     credentials are passed (Mode A), or
+   *   - `null` otherwise.
+   */
+  voice: ShogoVoiceModule
+
+  /**
+   * Configure (or replace) the Shogo API key used by {@link ShogoClient.llm}.
+   * Pass `null` to clear the provider (e.g. on sign-out). Useful when the key
+   * is fetched asynchronously from secure storage or `platform.getShogoKeyStatus()`.
+   *
+   * Also re-evaluates {@link ShogoClient.voice.telephony}: setting a key when
+   * a `projectId` was originally supplied lights up Mode B; clearing the key
+   * drops back to Mode A (if direct creds were supplied) or `null`.
+   */
+  setShogoApiKey: (key: string | null) => void
+
   /** Internal HTTP client (for advanced use cases) */
   _http: HttpClient
 }
@@ -42,9 +106,15 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   auth: ShogoAuth
   platform: PlatformApi
   db: DB
+  llm: ShogoLlmProvider | null
+  voice: ShogoVoiceModule
   _http: HttpClient
 
+  private shogoCloudUrl: string | undefined
+  private config: ShogoClientConfig<DB>
+
   constructor(config: ShogoClientConfig<DB>) {
+    this.config = config
     // Get or create storage adapter
     const storage: StorageAdapter = config.storage ?? getDefaultStorageAdapter()
 
@@ -66,6 +136,77 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
 
     // Database is a direct pass-through to Prisma
     this.db = config.db
+
+    // LLM gateway: only provisioned when a Shogo API key is present.
+    this.shogoCloudUrl = config.shogoCloudUrl
+    this.llm = config.shogoApiKey
+      ? createShogoLlmProvider({
+          apiKey: config.shogoApiKey,
+          baseUrl: this.shogoCloudUrl,
+        })
+      : null
+
+    this.voice = { telephony: this.buildTelephony(config.shogoApiKey) }
+  }
+
+  private buildTelephony(
+    shogoApiKey: string | undefined | null,
+  ): TelephonyClient | null {
+    const { projectId, elevenlabs, twilio, apiUrl } = this.config
+
+    // Runtime-token mode (pod-native). Checked first because every
+    // Shogo-managed pod already has `RUNTIME_AUTH_SECRET` + `PROJECT_ID`
+    // in env — the developer should not have to also mint an API key.
+    // Server-only: we guard `typeof process` so this code never runs in
+    // a browser bundle (where `process.env.RUNTIME_AUTH_SECRET` would
+    // either be undefined or, worse, inlined by a bundler).
+    const runtimeToken =
+      typeof process !== 'undefined'
+        ? process.env?.RUNTIME_AUTH_SECRET
+        : undefined
+    const hasRuntime = Boolean(runtimeToken && projectId)
+    const hasHosted = Boolean(shogoApiKey && projectId)
+    const hasDirect = Boolean(elevenlabs && twilio)
+
+    if (hasRuntime && hasHosted) {
+      console.warn(
+        '[shogo] createClient received both RUNTIME_AUTH_SECRET env + shogoApiKey; using runtime-token (pod-native). Drop shogoApiKey to silence this warning.',
+      )
+    } else if (hasHosted && hasDirect) {
+      console.warn(
+        '[shogo] createClient received both shogoApiKey + direct elevenlabs/twilio creds; using hosted (Mode B). Drop shogoApiKey to use direct (Mode A).',
+      )
+    }
+
+    if (hasRuntime) {
+      return new HostedRuntimeTokenClient({
+        runtimeToken: runtimeToken as string,
+        projectId: projectId as string,
+        apiUrl,
+      })
+    }
+    if (hasHosted) {
+      return new HostedTelephonyClient({
+        shogoApiKey: shogoApiKey as string,
+        projectId: projectId as string,
+        apiUrl,
+      })
+    }
+    if (hasDirect) {
+      return new DirectTelephonyClient({
+        projectId,
+        elevenlabs: elevenlabs!,
+        twilio: twilio!,
+      })
+    }
+    return null
+  }
+
+  setShogoApiKey(key: string | null): void {
+    this.llm = key
+      ? createShogoLlmProvider({ apiKey: key, baseUrl: this.shogoCloudUrl })
+      : null
+    this.voice = { telephony: this.buildTelephony(key) }
   }
 }
 

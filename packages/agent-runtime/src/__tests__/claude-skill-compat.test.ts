@@ -593,96 +593,10 @@ Old instructions.
     })
   })
 
-  describe('glob', () => {
-    test('finds files matching pattern', async () => {
-      mkdirSync(join(TEST_DIR, 'src'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'src', 'index.ts'), '')
-      writeFileSync(join(TEST_DIR, 'src', 'utils.ts'), '')
-      writeFileSync(join(TEST_DIR, 'readme.md'), '')
-
-      const ctx = createCtx()
-      const result = await exec(ctx, 'glob', { pattern: '**/*.ts' })
-      expect(result.count).toBe(2)
-      expect(result.files).toContain('src/index.ts')
-      expect(result.files).toContain('src/utils.ts')
-    })
-
-    test('respects path parameter', async () => {
-      mkdirSync(join(TEST_DIR, 'a'), { recursive: true })
-      mkdirSync(join(TEST_DIR, 'b'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'a', 'file.ts'), '')
-      writeFileSync(join(TEST_DIR, 'b', 'file.ts'), '')
-
-      const ctx = createCtx()
-      const result = await exec(ctx, 'glob', { pattern: '*.ts', path: 'a' })
-      expect(result.count).toBe(1)
-      expect(result.files).toContain('file.ts')
-    })
-
-    test('returns empty for no matches', async () => {
-      const ctx = createCtx()
-      const result = await exec(ctx, 'glob', { pattern: '**/*.xyz' })
-      expect(result.count).toBe(0)
-    })
-  })
-
-  describe('grep', () => {
-    test('finds pattern in files', async () => {
-      writeFileSync(join(TEST_DIR, 'code.ts'), 'function hello() {\n  return "world";\n}\n')
-      const ctx = createCtx()
-      const result = await exec(ctx, 'grep', { pattern: 'hello', path: 'code.ts' })
-      expect(result.count).toBeGreaterThan(0)
-      expect(result.matches[0].text).toContain('hello')
-    })
-
-    test('returns empty for no matches', async () => {
-      writeFileSync(join(TEST_DIR, 'empty.ts'), 'nothing here')
-      const ctx = createCtx()
-      const result = await exec(ctx, 'grep', { pattern: 'zzzznotfound', path: 'empty.ts' })
-      expect(result.count).toBe(0)
-    })
-  })
-
-  describe('ls', () => {
-    test('lists workspace root', async () => {
-      writeFileSync(join(TEST_DIR, 'a.txt'), '')
-      mkdirSync(join(TEST_DIR, 'subdir'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'subdir', 'b.txt'), '')
-
-      const ctx = createCtx()
-      const result = await exec(ctx, 'ls', {})
-      expect(result.entries.some((e: any) => e.name === 'a.txt')).toBe(true)
-      expect(result.entries.some((e: any) => e.name === 'subdir' && e.type === 'directory')).toBe(true)
-    })
-
-    test('lists subdirectory', async () => {
-      mkdirSync(join(TEST_DIR, 'nested'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'nested', 'file.ts'), '')
-
-      const ctx = createCtx()
-      const result = await exec(ctx, 'ls', { path: 'nested' })
-      expect(result.entries.some((e: any) => e.name === 'file.ts')).toBe(true)
-    })
-
-    test('recursive listing', async () => {
-      mkdirSync(join(TEST_DIR, 'deep', 'nested'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'deep', 'a.ts'), '')
-      writeFileSync(join(TEST_DIR, 'deep', 'nested', 'b.ts'), '')
-
-      const ctx = createCtx()
-      const result = await exec(ctx, 'ls', { path: 'deep', recursive: true })
-      expect(result.entries.some((e: any) => e.name === 'b.ts')).toBe(true)
-    })
-
-    test('skips node_modules', async () => {
-      mkdirSync(join(TEST_DIR, 'node_modules', 'pkg'), { recursive: true })
-      writeFileSync(join(TEST_DIR, 'node_modules', 'pkg', 'index.js'), '')
-
-      const ctx = createCtx()
-      const result = await exec(ctx, 'ls', { recursive: true })
-      expect(result.entries.some((e: any) => e.name === 'node_modules')).toBe(false)
-    })
-  })
+  // Note: standalone `glob`, `grep`, and `ls` tools were consolidated into the unified
+  // `search` (semantic) / `exec` (shell) tool surface. The legacy test blocks were removed
+  // because the behavior they asserted is now owned by those replacement tools, which have
+  // their own dedicated coverage.
 
   describe('todo_write', () => {
     test('stores and returns todos', async () => {
@@ -701,21 +615,23 @@ Old instructions.
   })
 
   describe('ask_user', () => {
-    test('returns questions structure', async () => {
+    test('tool is registered and returns acknowledgment', async () => {
+      // ask_user is an interactive-widget tool: the gateway suppresses the
+      // tool-output-available event and the UI takes over. The execute()
+      // implementation only returns a minimal acknowledgment so the tool-call
+      // has a serialisable result for the transcript.
       const ctx = createCtx()
       const result = await exec(ctx, 'ask_user', {
         questions: [{
-          id: 'q1',
-          prompt: 'Which framework?',
+          header: 'Framework',
+          question: 'Which framework?',
           options: [
-            { id: 'react', label: 'React' },
-            { id: 'vue', label: 'Vue' },
+            { label: 'React', description: 'React 19' },
+            { label: 'Vue', description: 'Vue 3' },
           ],
         }],
       })
-      expect(result.type).toBe('ask_user')
-      expect(result.questions).toHaveLength(1)
-      expect(result.questions[0].options).toHaveLength(2)
+      expect(result.acknowledged).toBe(true)
     })
   })
 
@@ -777,18 +693,17 @@ Old instructions.
       expect(config!.model).toBe('claude-haiku-4-5')
       expect(config!.maxTurns).toBe(5)
       expect(config!.toolNames).toContain('read_file')
-      expect(config!.toolNames).toContain('glob')
+      expect(config!.toolNames).toContain('search')
       expect(config!.toolNames).not.toContain('write_file')
-      expect(config!.toolNames).not.toContain('exec')
     })
 
-    test('general-purpose disallows task and code_agent', () => {
+    test('general-purpose disallows recursive spawning and skill nesting', () => {
       const ctx = createCtx()
       const tools = createTools(ctx)
       const config = getBuiltinSubagentConfig('general-purpose', ctx, tools)
       expect(config).not.toBeNull()
       expect(config!.disallowedTools).toContain('task')
-      expect(config!.disallowedTools).toContain('code_agent')
+      expect(config!.disallowedTools).toContain('skill')
     })
 
     test('unknown agent returns null', () => {
@@ -796,6 +711,30 @@ Old instructions.
       const tools = createTools(ctx)
       const config = getBuiltinSubagentConfig('unknown-type', ctx, tools)
       expect(config).toBeNull()
+    })
+
+    test('browser_qa agent is canvas-first with browser + web + file tools and gpt-5.4-nano model', () => {
+      const ctx = createCtx()
+      const tools = createTools(ctx)
+      const config = getBuiltinSubagentConfig('browser_qa', ctx, tools)
+      expect(config).not.toBeNull()
+      expect(config!.name).toBe('browser_qa')
+      expect(config!.model).toBe('gpt-5.4-nano')
+      expect(config!.provider).toBe('openai')
+      expect(config!.maxTurns).toBeUndefined()
+      expect(config!.toolNames).toEqual(['browser', 'web', 'read_file', 'write_file', 'edit_file'])
+      expect(config!.disallowedTools).toContain('task')
+      expect(config!.disallowedTools).toContain('skill')
+      expect(config!.systemPrompt).toContain('QA engineer')
+      expect(config!.systemPrompt).toContain('timing and UX')
+      expect(config!.systemPrompt).toContain('NEED_URL')
+      // Canvas-first markers
+      expect(config!.systemPrompt).toContain('canvas/src/surfaces/QaRun.data.json')
+      expect(config!.systemPrompt).toContain('canvas/src/surfaces/QaRun.tsx')
+      expect(config!.systemPrompt).toContain('canvas/src/App.tsx')
+      expect(config!.systemPrompt).toContain('live view')
+      // Markdown fallback still required
+      expect(config!.systemPrompt).toContain('.shogo/reports/qa-')
     })
   })
 
@@ -855,14 +794,24 @@ Missing description.
   // -----------------------------------------------------------------------
 
   describe('tool registration', () => {
-    test('all new tools are present in createTools()', () => {
+    test('core developer + interaction tools are present in createTools()', () => {
       const ctx = createCtx()
       const tools = createTools(ctx)
       const names = tools.map(t => t.name)
-      for (const name of ['edit_file', 'glob', 'grep', 'ls', 'todo_write', 'ask_user', 'task', 'skill']) {
+      for (const name of [
+        'read_file',
+        'write_file',
+        'edit_file',
+        'delete_file',
+        'exec',
+        'search',
+        'todo_write',
+        'ask_user',
+        'skill',
+        'agent_spawn',
+      ]) {
         expect(names).toContain(name)
       }
     })
-
   })
 })

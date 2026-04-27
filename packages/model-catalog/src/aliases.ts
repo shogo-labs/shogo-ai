@@ -9,7 +9,7 @@ import type { ModelId, AgentMode } from './models'
 
 export const MODEL_ALIASES: Record<string, ModelId> = {
   // Current-generation Anthropic aliases
-  'claude-opus': 'claude-opus-4-6',
+  'claude-opus': 'claude-opus-4-7',
   'claude-sonnet': 'claude-sonnet-4-6',
   'claude-haiku': 'claude-haiku-4-5-20251001',
   'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
@@ -27,7 +27,7 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // Eval shorthand aliases
   'haiku': 'claude-haiku-4-5-20251001',
   'sonnet': 'claude-sonnet-4-6',
-  'opus': 'claude-opus-4-6',
+  'opus': 'claude-opus-4-7',
   'gpt54mini': 'gpt-5.4-mini',
 }
 

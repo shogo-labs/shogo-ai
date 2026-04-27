@@ -36,8 +36,33 @@ export interface PlatformConfig {
     oauth: boolean
     analytics: boolean
     publishing: boolean
+    marketplace: boolean
+    shogoMode: boolean
+    phoneChannel: boolean
   }
 }
+
+/** Super-admin feature flag overrides. `null` means "use platform default". */
+export interface FeatureFlagOverrides {
+  marketplace: boolean | null
+  shogoMode: boolean | null
+  phoneChannel: boolean | null
+}
+
+/** Partial feature flag patch; omit a key to leave it unchanged; `null` to reset to default. */
+export type FeatureFlagPatch = Partial<{
+  marketplace: boolean | null
+  shogoMode: boolean | null
+  phoneChannel: boolean | null
+}>
+
+/** API keys come in two flavours:
+ * - "user": manually created via the Keys UI or the SHOGO_API_KEY env var.
+ * - "device": minted automatically when a Shogo desktop install signs in to
+ *   Shogo Cloud. Carries device metadata so the cloud UI can surface it as a
+ *   managed device session. Revoking a device key effectively signs the
+ *   device out on its next proxy call. */
+export type ApiKeyKind = 'user' | 'device'
 
 export interface ApiKeyInfo {
   id: string
@@ -47,6 +72,12 @@ export interface ApiKeyInfo {
   expiresAt: string | null
   createdAt: string
   userId: string
+  kind?: ApiKeyKind
+  deviceId?: string | null
+  deviceName?: string | null
+  devicePlatform?: string | null
+  deviceAppVersion?: string | null
+  lastSeenAt?: string | null
   user: { name: string | null; email: string }
 }
 
@@ -59,13 +90,46 @@ export interface ApiKeyCreateResult {
   workspaceId: string
   expiresAt: string | null
   createdAt: string
+  kind?: ApiKeyKind
+  deviceId?: string | null
+  deviceName?: string | null
+  devicePlatform?: string | null
+  deviceAppVersion?: string | null
+  workspace?: { id: string; name: string; slug: string } | null
+}
+
+export interface DeviceInfo {
+  id: string
+  name: string
+  platform: string
+  appVersion: string
 }
 
 export interface ApiKeyValidation {
   valid: boolean
   error?: string
   workspace?: { id: string; name: string; slug: string }
-  user?: { id: string; name: string }
+  user?: { id: string; name: string; email?: string }
+  kind?: ApiKeyKind
+  deviceId?: string | null
+  deviceName?: string | null
+}
+
+export interface CloudLoginStart {
+  ok: boolean
+  state: string
+  authUrl: string
+  cloudUrl: string
+  expiresInMs: number
+}
+
+export interface CloudLoginStatus {
+  signedIn: boolean
+  cloudUrl?: string
+  email?: string | null
+  workspace?: { id?: string; name?: string; slug?: string } | null
+  deviceId?: string | null
+  keyPrefix?: string
 }
 
 export interface ShogoKeyStatus {
@@ -141,16 +205,20 @@ export class PlatformApi {
   // Cloud API Keys (manage keys for Shogo Local → Cloud auth)
   // ===========================================================================
 
-  /** List active API keys for a workspace. */
-  async listApiKeys(workspaceId: string): Promise<ApiKeyInfo[]> {
+  /** List active API keys for a workspace. Pass `kind: 'device'` to fetch
+   * device-session keys for the Devices UI, or `kind: 'user'` for manually
+   * created keys. Omit to list both. */
+  async listApiKeys(workspaceId: string, opts?: { kind?: ApiKeyKind }): Promise<ApiKeyInfo[]> {
+    const query: Record<string, string> = { workspaceId }
+    if (opts?.kind) query.kind = opts.kind
     const res = await this.http.get<{ keys: ApiKeyInfo[] }>(
       '/api/api-keys',
-      { workspaceId },
+      query,
     )
     return res.data?.keys ?? []
   }
 
-  /** Create a new API key. Returns the full plaintext key (shown only once). */
+  /** Create a new "user" API key. Returns the full plaintext key (shown only once). */
   async createApiKey(name: string, workspaceId: string): Promise<ApiKeyCreateResult> {
     const res = await this.http.post<ApiKeyCreateResult>(
       '/api/api-keys',
@@ -159,7 +227,28 @@ export class PlatformApi {
     return res.data!
   }
 
-  /** Revoke (soft-delete) an API key by ID. */
+  /** Mint a device-session API key for the current user's device. Cloud API
+   * deduplicates by (workspaceId, deviceId) — previous device keys for the
+   * same machine are revoked automatically. */
+  async createDeviceApiKey(
+    device: DeviceInfo,
+    opts?: { workspaceId?: string },
+  ): Promise<ApiKeyCreateResult> {
+    const res = await this.http.post<ApiKeyCreateResult>(
+      '/api/api-keys/device',
+      {
+        workspaceId: opts?.workspaceId,
+        deviceId: device.id,
+        deviceName: device.name,
+        devicePlatform: device.platform,
+        deviceAppVersion: device.appVersion,
+      },
+    )
+    return res.data!
+  }
+
+  /** Revoke (soft-delete) an API key by ID. For device keys this is the
+   * "sign out of device" operation. */
   async revokeApiKey(id: string): Promise<void> {
     await this.http.delete(`/api/api-keys/${id}`)
   }
@@ -205,6 +294,59 @@ export class PlatformApi {
     const res = await this.http.request<ShogoKeyConnectResult>(
       '/api/local/shogo-key',
       { method: 'PATCH', body: { cloudUrl } },
+    )
+    return res.data ?? { ok: false }
+  }
+
+  // ===========================================================================
+  // Local: Cloud Login (replacement for the manual connectShogoKey paste flow)
+  // ===========================================================================
+  //
+  // The desktop "Sign in to Shogo Cloud" button uses startCloudLogin to get
+  // an authUrl it hands to the system browser. The browser eventually
+  // redirects to shogo://auth-callback which Electron main catches and
+  // completes via POST /api/local/cloud-login/complete (no separate SDK
+  // method — that step is driven by the Electron IPC layer).
+  //
+  // The legacy connectShogoKey / disconnectShogoKey methods above remain for
+  // CLI / headless contexts that paste a raw shogo_sk_ key.
+
+  /** Start a cloud login flow. Opens the returned authUrl in the system
+   * browser to complete sign-in. */
+  async startCloudLogin(device: DeviceInfo): Promise<CloudLoginStart> {
+    const res = await this.http.post<CloudLoginStart>(
+      '/api/local/cloud-login/start',
+      {
+        deviceId: device.id,
+        deviceName: device.name,
+        devicePlatform: device.platform,
+        deviceAppVersion: device.appVersion,
+      },
+    )
+    return res.data!
+  }
+
+  /** Read the current local-mode cloud login status. */
+  async cloudLoginStatus(): Promise<CloudLoginStatus> {
+    const res = await this.http.get<CloudLoginStatus>('/api/local/cloud-login/status')
+    return res.data ?? { signedIn: false }
+  }
+
+  /** Sign out of Shogo Cloud on this device. Wipes the local key and best-
+   * effort notifies cloud. */
+  async signOutCloud(): Promise<{ ok: boolean; error?: string }> {
+    const res = await this.http.post<{ ok: boolean; error?: string }>(
+      '/api/local/cloud-login/signout',
+      {},
+    )
+    return res.data ?? { ok: false }
+  }
+
+  /** Ping cloud with the stored key to refresh this device's lastSeenAt. */
+  async heartbeatCloudLogin(deviceAppVersion?: string): Promise<{ ok: boolean; revoked?: boolean; error?: string }> {
+    const res = await this.http.post<{ ok: boolean; revoked?: boolean; error?: string }>(
+      '/api/local/cloud-login/heartbeat',
+      deviceAppVersion ? { deviceAppVersion } : {},
     )
     return res.data ?? { ok: false }
   }
@@ -267,6 +409,25 @@ export class PlatformApi {
   /** Set which models the basic/advanced agent modes resolve to and the default mode. Pass null to reset to platform default. */
   async putAgentModelDefaults(overrides: { basic?: string | null; advanced?: string | null; defaultMode?: string | null }): Promise<void> {
     await this.http.request('/api/admin/settings/agent-models', { method: 'PUT', body: overrides })
+  }
+
+  // ===========================================================================
+  // Admin: Feature Flags
+  // ===========================================================================
+
+  /** Read super-admin feature flag overrides. `null` means "use platform default". */
+  async getFeatureFlags(): Promise<FeatureFlagOverrides> {
+    const res = await this.http.get<FeatureFlagOverrides>('/api/admin/settings/features')
+    return res.data ?? { marketplace: null, shogoMode: null, phoneChannel: null }
+  }
+
+  /** Update feature flag overrides. Pass `null` for a flag to reset to platform default. */
+  async putFeatureFlags(patch: FeatureFlagPatch): Promise<{ ok: boolean; flags: FeatureFlagOverrides }> {
+    const res = await this.http.request<{ ok: boolean; flags: FeatureFlagOverrides }>(
+      '/api/admin/settings/features',
+      { method: 'PUT', body: patch },
+    )
+    return res.data ?? { ok: false, flags: { marketplace: null, shogoMode: null, phoneChannel: null } }
   }
 
   // ===========================================================================

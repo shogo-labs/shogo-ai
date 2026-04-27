@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated Project MST Model
  *
@@ -10,8 +9,7 @@
 import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
 // Referenced models (use types.late() to avoid circular imports)
-// WorkspaceModel uses require() inside types.late() to break the
-// workspace ↔ project circular module reference.
+import { WorkspaceModel } from "./workspace.model"
 import { FolderModel } from "./folder.model"
 import { MemberModel } from "./member.model"
 import { FeatureSessionModel } from "./feature-session.model"
@@ -39,14 +37,15 @@ export const ProjectModel = types
     publishedSubdomain: types.optional(types.string, ""),
     publishedAt: types.optional(types.number, 0),
     accessLevel: types.enumeration("AccessLevel", ["anyone", "authenticated", "private"]),
-    category: types.optional(types.string, ""),
+    category: types.maybeNull(types.enumeration("ProjectCategory", ["app", "website", "tool", "game"])),
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
     thumbnailUrl: types.optional(types.string, ""),
     templateId: types.optional(types.string, ""),
-    settings: types.frozen<Record<string, unknown> | null>(null),
+    knativeServiceName: types.optional(types.string, ""),
+    settings: types.optional(types.frozen(), {}),
     lastMessageAt: types.optional(types.number, 0),
-    workspace: types.safeReference(types.late(() => require("./workspace.model").WorkspaceModel)),
+    workspace: types.safeReference(types.late(() => WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
     featureSessions: types.optional(types.array(types.safeReference(types.late(() => FeatureSessionModel))), []),

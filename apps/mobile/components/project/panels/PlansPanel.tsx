@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   View,
   Text,
@@ -29,7 +29,9 @@ import {
   Check,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
-import { API_URL, createHttpClient } from "../../../lib/api"
+import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
+import { agentFetch } from "../../../lib/agent-fetch"
+import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 
@@ -49,27 +51,11 @@ const TIER_LABELS: Record<ModelTier, string> = {
 }
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
 
-interface PlanSummary {
-  filename: string
-  name: string
-  overview: string
-  createdAt: string
-  status: string
-}
-
-interface PlansListResponse {
-  plans: PlanSummary[]
-}
-
-interface PlanDetailResponse {
-  filename: string
-  content: string
-}
-
 interface PlansPanelProps {
   visible: boolean
   projectId: string
   agentUrl?: string | null
+  selectedModel?: string
   onBuildPlan?: (plan: PlanData, modelId: string) => void
 }
 
@@ -115,76 +101,89 @@ function extractTodos(
   return todos
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, onBuildPlan }: PlansPanelProps) {
+export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuildPlan }: PlansPanelProps) {
   const planStream = usePlanStreamSafe()
-  const [plans, setPlans] = useState<PlanSummary[]>([])
+  const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null)
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [buildMode, setBuildMode] = useState<string>(DEFAULT_MODEL_PRO)
+  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const prevSelectedPlanRef = useRef<string | null>(null)
+
+  // Align Build model with chat when opening a plan or switching plans — not when only
+  // `selectedModel` changes while staying on the same plan (preserves Plans-picker override).
+  useEffect(() => {
+    const prev = prevSelectedPlanRef.current
+    prevSelectedPlanRef.current = selectedPlan
+
+    if (!selectedPlan || selectedPlan === "__streaming__") return
+
+    const enteredFromList = !prev && !!selectedPlan
+    const switchedBetweenPlans =
+      !!prev && prev !== "__streaming__" && prev !== selectedPlan
+    const leftStreamingToFile =
+      prev === "__streaming__" && selectedPlan !== "__streaming__"
+
+    if (enteredFromList || switchedBetweenPlans || leftStreamingToFile) {
+      setBuildMode(selectedModel || DEFAULT_MODEL_PRO)
+    }
+  }, [selectedPlan, selectedModel])
 
   const baseUrl = agentUrl || `${API_URL}/api/projects/${projectId}/agent-proxy`
+
+  const agentClient = useMemo(
+    () =>
+      new AgentClient({
+        baseUrl: baseUrl.replace(/\/$/, ""),
+        fetch: agentFetch,
+      }),
+    [baseUrl]
+  )
 
   const fetchPlans = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${baseUrl}/agent/plans`, {
-        credentials: "include",
-      })
-      if (res.ok) {
-        const data: PlansListResponse = await res.json()
-        setPlans(data.plans)
-      }
+      const list = await agentClient.listPlans()
+      setPlans(list)
     } catch (err) {
       console.error("[PlansPanel] Failed to fetch plans:", err)
     } finally {
       setLoading(false)
     }
-  }, [baseUrl])
+  }, [agentClient])
 
   const fetchPlanDetail = useCallback(
     async (filename: string) => {
       setDetailLoading(true)
       try {
-        const res = await fetch(
-          `${baseUrl}/agent/plans/${encodeURIComponent(filename)}`,
-          { credentials: "include" }
-        )
-        if (res.ok) {
-          const data: PlanDetailResponse = await res.json()
-          setPlanContent(data.content)
-        }
+        const data = await agentClient.getPlan(filename)
+        setPlanContent(data.content)
       } catch (err) {
         console.error("[PlansPanel] Failed to fetch plan detail:", err)
       } finally {
         setDetailLoading(false)
       }
     },
-    [baseUrl]
+    [agentClient]
   )
 
   const handleDelete = useCallback(
     async (filename: string) => {
       try {
-        const res = await fetch(
-          `${baseUrl}/agent/plans/${encodeURIComponent(filename)}`,
-          { method: "DELETE", credentials: "include" }
-        )
-        if (res.ok) {
-          setPlans((prev) => prev.filter((p) => p.filename !== filename))
-          if (selectedPlan === filename) {
-            setSelectedPlan(null)
-            setPlanContent(null)
-          }
+        await agentClient.deletePlan(filename)
+        setPlans((prev) => prev.filter((p) => p.filename !== filename))
+        if (selectedPlan === filename) {
+          setSelectedPlan(null)
+          setPlanContent(null)
         }
       } catch (err) {
         console.error("[PlansPanel] Failed to delete plan:", err)
       }
     },
-    [baseUrl, selectedPlan]
+    [agentClient, selectedPlan]
   )
 
   useEffect(() => {

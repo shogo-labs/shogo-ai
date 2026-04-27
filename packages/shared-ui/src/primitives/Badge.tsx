@@ -25,19 +25,14 @@ export interface BadgeProps {
 }
 
 export function Badge({ variant = 'default', className, children }: BadgeProps) {
+  const textClass = cn('text-xs font-semibold', variantTextStyles[variant])
   return (
     <View className={cn(
       'flex-row items-center rounded-full px-2.5 py-0.5',
       variantStyles[variant],
       className,
     )}>
-      {typeof children === 'string' ? (
-        <Text className={cn('text-xs font-semibold', variantTextStyles[variant])}>
-          {children}
-        </Text>
-      ) : (
-        children
-      )}
+      <Text className={textClass}>{children}</Text>
     </View>
   )
 }

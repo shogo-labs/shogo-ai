@@ -7,7 +7,7 @@
  * 1. Generate a proxy token (like knative-project-manager does)
  * 2. List available models (like the UI model picker)
  * 3. Make an OpenAI-compatible chat completion (like ai-chat's getAIModel + streamText)
- * 4. Make an Anthropic-native request (like Claude Code CLI)
+ * 4. Make an Anthropic-native request
  *
  * Requires ANTHROPIC_API_KEY in environment for real API calls.
  * Run: ANTHROPIC_API_KEY=sk-... bun test apps/api/src/__tests__/ai-proxy-e2e.test.ts
@@ -15,8 +15,12 @@
 
 import { describe, test, expect, beforeAll, mock } from 'bun:test'
 import { Hono } from 'hono'
-import { generateProxyToken } from '../lib/ai-proxy-token'
-import { aiProxyRoutes } from '../routes/ai-proxy'
+
+// Run the billing service in local mode so usage-wallet checks are bypassed
+// without needing to stub every model in the mocked Prisma client. The env
+// var is read at module load, so set it before importing anything that
+// transitively loads billing.service.
+process.env.SHOGO_LOCAL_MODE = 'true'
 
 // Mock prisma to avoid database dependency
 mock.module('../lib/prisma', () => ({
@@ -34,8 +38,32 @@ mock.module('../lib/prisma', () => ({
         return args.data
       },
     },
+    usageWallet: {
+      findUnique: async () => ({
+        workspaceId: 'e2e-workspace',
+        monthlyIncludedUsd: 1_000_000,
+        monthlyIncludedAllocationUsd: 1_000_000,
+        dailyIncludedUsd: 1_000_000,
+        dailyUsedThisMonthUsd: 0,
+        overageEnabled: false,
+        overageHardLimitUsd: null,
+        overageAccumulatedUsd: 0,
+        stripeMeteredItemId: null,
+        lastDailyReset: new Date(),
+        lastMonthlyReset: new Date(),
+      }),
+      upsert: async (args: any) => args.create,
+      create: async (args: any) => args.data,
+      update: async (args: any) => args.data,
+    },
+    subscription: {
+      findFirst: async () => null,
+    },
   },
 }))
+
+const { generateProxyToken } = await import('../lib/ai-proxy-token')
+const { aiProxyRoutes } = await import('../routes/ai-proxy')
 
 const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
 
@@ -78,7 +106,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     console.log(`[E2E] Available models (${modelIds.length}):`, modelIds)
 
     // Verify the new current-gen models are present
-    expect(modelIds).toContain('claude-opus-4-6')
+    expect(modelIds).toContain('claude-opus-4-7')
     expect(modelIds).toContain('claude-sonnet-4-5-20250929')
     expect(modelIds).toContain('claude-haiku-4-5-20251001')
 
@@ -235,7 +263,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
   )
 
   // ===========================================================================
-  // Step 4: Anthropic-native pass-through (like Claude Code CLI uses)
+  // Step 4: Anthropic-native pass-through
   // This mirrors ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY (proxy token) flow
   // ===========================================================================
 
@@ -252,7 +280,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': proxyToken, // Claude Code CLI sends the proxy token here
+            'x-api-key': proxyToken, // Anthropic-compatible clients send the proxy token here
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
@@ -325,7 +353,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     }
   }, 30_000)
 
-  test('short alias claude-opus resolves to Opus 4.6', async () => {
+  test('short alias claude-opus resolves to Opus 4.7', async () => {
     const res = await app.fetch(
       new Request('http://localhost/api/ai/v1/chat/completions', {
         method: 'POST',
@@ -334,7 +362,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
           Authorization: `Bearer ${proxyToken}`,
         },
         body: JSON.stringify({
-          model: 'claude-opus', // Should resolve to claude-opus-4-6
+          model: 'claude-opus', // Should resolve to claude-opus-4-7
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 5,
         }),

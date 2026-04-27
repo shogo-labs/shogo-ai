@@ -29,8 +29,8 @@ interface OverviewData {
 
 interface UsageData {
   totalEvents: number
-  totalCreditsConsumed: number
-  byActionType: Record<string, { count: number; totalCredits: number }>
+  totalSpendUsd: number
+  byActionType: Record<string, { count: number; totalSpendUsd: number }>
   dailyUsage: Array<{ date: string; count: number }>
 }
 
@@ -267,16 +267,16 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
             />
           </View>
 
-          {/* Credit usage */}
+          {/* Spend */}
           {usage.data && (
             <View className="border border-border rounded-lg p-3 gap-2">
               <View className="flex-row items-center gap-2">
                 <DollarSign size={14} className="text-muted-foreground" />
-                <Text className="text-xs font-medium text-foreground">Credit Usage</Text>
+                <Text className="text-xs font-medium text-foreground">Spend</Text>
               </View>
               <View className="flex-row items-baseline gap-1">
-                <Text className="text-2xl font-bold text-foreground">{usage.data.totalCreditsConsumed.toFixed(1)}</Text>
-                <Text className="text-xs text-muted-foreground">credits consumed</Text>
+                <Text className="text-2xl font-bold text-foreground">${usage.data.totalSpendUsd.toFixed(2)}</Text>
+                <Text className="text-xs text-muted-foreground">billed</Text>
               </View>
               <Text className="text-xs text-muted-foreground">{usage.data.totalEvents} total events</Text>
             </View>

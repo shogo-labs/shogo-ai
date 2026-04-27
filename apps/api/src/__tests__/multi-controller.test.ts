@@ -36,45 +36,45 @@ describe('Active Controller Tracking', () => {
     _testing.activeControllers.clear()
   })
 
-  test('markControllerActive adds a controller', () => {
-    _testing.markControllerActive('inst-1', 'user-1')
-    const controllers = _testing.getActiveControllers('inst-1')
+  test('markControllerActive adds a controller', async () => {
+    await _testing.markControllerActive('inst-1', 'user-1')
+    const controllers = await _testing.getActiveControllers('inst-1')
     expect(controllers).toHaveLength(1)
     expect(controllers[0].userId).toBe('user-1')
   })
 
-  test('multiple controllers tracked separately', () => {
-    _testing.markControllerActive('inst-1', 'user-1')
-    _testing.markControllerActive('inst-1', 'user-2')
-    const controllers = _testing.getActiveControllers('inst-1')
+  test('multiple controllers tracked separately', async () => {
+    await _testing.markControllerActive('inst-1', 'user-1')
+    await _testing.markControllerActive('inst-1', 'user-2')
+    const controllers = await _testing.getActiveControllers('inst-1')
     expect(controllers).toHaveLength(2)
   })
 
-  test('same user refreshes rather than duplicates', () => {
-    _testing.markControllerActive('inst-1', 'user-1')
-    _testing.markControllerActive('inst-1', 'user-1')
-    const controllers = _testing.getActiveControllers('inst-1')
+  test('same user refreshes rather than duplicates', async () => {
+    await _testing.markControllerActive('inst-1', 'user-1')
+    await _testing.markControllerActive('inst-1', 'user-1')
+    const controllers = await _testing.getActiveControllers('inst-1')
     expect(controllers).toHaveLength(1)
   })
 
-  test('different instances are independent', () => {
-    _testing.markControllerActive('inst-1', 'user-1')
-    _testing.markControllerActive('inst-2', 'user-2')
-    expect(_testing.getActiveControllers('inst-1')).toHaveLength(1)
-    expect(_testing.getActiveControllers('inst-2')).toHaveLength(1)
-    expect(_testing.getActiveControllers('inst-3')).toHaveLength(0)
+  test('different instances are independent', async () => {
+    await _testing.markControllerActive('inst-1', 'user-1')
+    await _testing.markControllerActive('inst-2', 'user-2')
+    expect(await _testing.getActiveControllers('inst-1')).toHaveLength(1)
+    expect(await _testing.getActiveControllers('inst-2')).toHaveLength(1)
+    expect(await _testing.getActiveControllers('inst-3')).toHaveLength(0)
   })
 
-  test('controllers with session IDs tracked separately', () => {
-    _testing.markControllerActive('inst-1', 'user-1', 'session-a')
-    _testing.markControllerActive('inst-1', 'user-1', 'session-b')
-    const controllers = _testing.getActiveControllers('inst-1')
+  test('controllers with session IDs tracked separately', async () => {
+    await _testing.markControllerActive('inst-1', 'user-1', 'session-a')
+    await _testing.markControllerActive('inst-1', 'user-1', 'session-b')
+    const controllers = await _testing.getActiveControllers('inst-1')
     expect(controllers).toHaveLength(2)
     expect(controllers[0].userId).toBe('user-1')
     expect(controllers[1].userId).toBe('user-1')
   })
 
-  test('empty instance returns empty array', () => {
-    expect(_testing.getActiveControllers('nonexistent')).toEqual([])
+  test('empty instance returns empty array', async () => {
+    expect(await _testing.getActiveControllers('nonexistent')).toEqual([])
   })
 })

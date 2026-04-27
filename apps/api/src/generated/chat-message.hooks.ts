@@ -55,15 +55,24 @@ export interface ChatMessageHooks {
  */
 export const chatMessageHooks: ChatMessageHooks = {
   /**
-   * Filter chat messages by sessionId and verify user has access
-   * 
-   * IMPORTANT: We explicitly set include: undefined to prevent Prisma from returning
-   * the session relation as a nested object. The frontend MST model expects session
-   * to be a reference (just an ID), not a full object.
+   * Filter chat messages by sessionId and verify user has access.
+   *
+   * Honored query params (beyond sessionId):
+   *   - `agent` — either "technical" or "voice". When present, the where
+   *              clause is narrowed to rows authored by that agent, so
+   *              the technical ChatPanel and Shogo Mode overlay never
+   *              read each other's rows even though they share a
+   *              ChatSession.
+   *
+   * IMPORTANT: We explicitly set include: undefined to prevent Prisma
+   * from returning the session relation as a nested object. The
+   * frontend MST model expects session to be a reference (just an ID),
+   * not a full object.
    */
   beforeList: async (ctx) => {
     const sessionId = ctx.query.sessionId
     const userId = ctx.userId
+    const agent = ctx.query.agent
 
     if (!sessionId) {
       return {
@@ -71,6 +80,16 @@ export const chatMessageHooks: ChatMessageHooks = {
         error: {
           code: "bad_request",
           message: "sessionId query param required",
+        },
+      }
+    }
+
+    if (agent !== undefined && agent !== "technical" && agent !== "voice") {
+      return {
+        ok: false,
+        error: {
+          code: "bad_request",
+          message: "agent must be 'technical' or 'voice' when present",
         },
       }
     }
@@ -117,10 +136,13 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
+    const where: Record<string, unknown> = { sessionId }
+    if (agent) where.agent = agent
+
     return {
       ok: true,
       data: {
-        where: { sessionId },
+        where,
         // Explicitly no include - MST expects session as ID reference, not nested object
         include: undefined,
         orderBy: { createdAt: 'desc' },

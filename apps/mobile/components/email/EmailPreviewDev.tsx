@@ -63,7 +63,7 @@ const SAMPLE_DATA: Record<string, Record<string, unknown>> = {
     workspaceName: 'Acme Corp',
     planName: 'Pro',
     billingInterval: 'Monthly',
-    creditsTotal: '50,000',
+    includedUsdTotal: '$20.00',
     dashboardUrl: 'https://app.shogo.ai/workspace/acme',
     appName: 'Shogo',
     currentYear: new Date().getFullYear(),

@@ -18,7 +18,13 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const RESOURCES_DIR = path.join(__dirname, '..', 'resources', 'sherpa-onnx')
+
+// Destination can be overridden via SHERPA_DEST_DIR env var (packaged desktop
+// app uses this to write into the user data dir since resourcesPath is read-only).
+// Falls back to apps/desktop/resources/sherpa-onnx during dev.
+const RESOURCES_DIR = process.env.SHERPA_DEST_DIR
+  ? path.resolve(process.env.SHERPA_DEST_DIR)
+  : path.join(__dirname, '..', 'resources', 'sherpa-onnx')
 const VERSION = '1.12.35'
 
 const WHISPER_MODELS = {

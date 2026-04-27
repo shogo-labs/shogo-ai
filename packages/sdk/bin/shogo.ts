@@ -22,6 +22,7 @@ import { resolve, dirname, basename } from 'path'
 import { execSync } from 'child_process'
 import { pkg } from '@shogo/shared-runtime'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
+import { ensureFeatureDeps } from '../src/generators/deps-doctor'
 import { 
   transformSchemaFile, 
   detectSchemaProvider,
@@ -32,6 +33,30 @@ import {
 // Types
 // ============================================================================
 
+/**
+ * Feature flags that toggle generator outputs & dependency wiring
+ * across the pod. Each feature, when enabled, opts the pod into a
+ * set of generated files and (via `deps-doctor`) any runtime deps
+ * those files need.
+ */
+interface ShogoFeatures {
+  /**
+   * Voice feature. `true` enables the zero-config voice path:
+   *   - emits `src/lib/shogo.ts` (shogo-client)
+   *   - emits `src/components/shogo/{VoiceButton,VoiceSphere,PhoneButton}.tsx`
+   *   - ensures `@elevenlabs/react` is in package.json
+   *
+   * Object form reserved for Phase 3 sub-toggles
+   * (e.g. `{ phoneNumber: true }` for Twilio provisioning).
+   */
+  voice?:
+    | boolean
+    | {
+        /** Whether to provision a Twilio phone number on preflight. */
+        phoneNumber?: boolean
+      }
+}
+
 interface ShogoConfig {
   /** Path to Prisma schema file */
   schema: string
@@ -41,6 +66,19 @@ interface ShogoConfig {
   excludeModels?: string[]
   /** Output configurations */
   outputs: OutputConfig[]
+  /**
+   * Feature flags. When a feature is enabled, the CLI:
+   *   1. auto-includes the relevant `generate` kinds in `outputs[0]`
+   *      (so users don't have to wire voice-components by hand), and
+   *   2. runs `deps-doctor` against `package.json` to ensure the
+   *      runtime deps for that feature are present.
+   */
+  features?: ShogoFeatures
+}
+
+/** Voice feature is on when set to `true` or `{ ... }`. */
+function isVoiceEnabled(features?: ShogoFeatures): boolean {
+  return features?.voice === true || (typeof features?.voice === 'object' && features.voice !== null)
 }
 
 // ============================================================================
@@ -179,6 +217,9 @@ Usage:
 
 Commands:
   generate              Generate routes, types, stores, and docs from Prisma schema
+  enable <feature>      Enable a feature in shogo.config.json and re-run codegen
+                          (voice | voice.phoneNumber)
+  dev                   Runtime-token preflight then passthrough to \`bun run dev\`
   db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
   db status             Show current schema provider
 
@@ -290,6 +331,195 @@ function loadConfig(cwd: string): ShogoConfig | null {
   } catch (error) {
     console.error(`Error loading config: ${configPath}`)
     console.error(error instanceof Error ? error.message : error)
+    process.exit(1)
+  }
+}
+
+// ============================================================================
+// `shogo enable <feature>` — flip a feature on in shogo.config.json and
+// re-run codegen / deps-doctor.
+// ============================================================================
+
+/**
+ * Enable a feature in `shogo.config.json`.
+ *
+ * Supported feature keys:
+ *   - `voice`                       → `features.voice = true`
+ *   - `voice.phoneNumber`           → `features.voice = { phoneNumber: true }`
+ *
+ * The command:
+ *   1. Reads (or creates) `shogo.config.json`
+ *   2. Merges the feature into `features.*` (preserving existing sub-flags)
+ *   3. Writes the config back
+ *   4. Execs `shogo generate` so generators + deps-doctor run immediately
+ *
+ * Keeping it a thin wrapper around `generate` means `enable` and `generate`
+ * stay consistent — there's only one code path for producing the pod
+ * layout, no matter how the user toggles features.
+ */
+async function handleEnableCommand() {
+  const feature = positionals[1]
+  const cwd = process.cwd()
+
+  if (!feature || values.help) {
+    console.log(`\nshogo enable <feature>\n\nEnable a Shogo feature in shogo.config.json and re-run codegen.\n\nFeatures:\n  voice                 Enable voice (emits VoiceButton/VoiceSphere/PhoneButton + shogo client)\n  voice.phoneNumber     Enable voice + Twilio phone-number provisioning\n\nExamples:\n  shogo enable voice\n  shogo enable voice.phoneNumber\n`)
+    process.exit(feature ? 0 : 1)
+  }
+
+  const configPath = resolve(cwd, (values.config as string | undefined) ?? 'shogo.config.json')
+  let config: ShogoConfig
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf-8')) as ShogoConfig
+    } catch (err) {
+      console.error(`❌ Failed to parse ${configPath}: ${err instanceof Error ? err.message : err}`)
+      process.exit(1)
+    }
+  } else {
+    // Minimal scaffold: server-only (no models) pointing at the pod's src dir.
+    config = {
+      schema: './prisma/schema.prisma',
+      outputs: [
+        {
+          dir: './src/generated',
+          generate: [],
+          perModel: true,
+        },
+      ],
+    }
+  }
+
+  config.features = config.features ?? {}
+
+  const [head, tail] = feature.split('.') as [string, string | undefined]
+  if (head === 'voice') {
+    if (tail === 'phoneNumber') {
+      const existing = config.features.voice
+      const base = typeof existing === 'object' && existing !== null ? existing : {}
+      config.features.voice = { ...base, phoneNumber: true }
+    } else if (!tail) {
+      // Preserve sub-flags if voice was already an object
+      if (typeof config.features.voice !== 'object' || config.features.voice === null) {
+        config.features.voice = true
+      }
+    } else {
+      console.error(`❌ Unknown voice sub-feature: voice.${tail}`)
+      console.error('   Supported: voice, voice.phoneNumber')
+      process.exit(1)
+    }
+  } else {
+    console.error(`❌ Unknown feature: ${feature}`)
+    console.error('   Supported: voice, voice.phoneNumber')
+    process.exit(1)
+  }
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+  console.log(`✅ Enabled "${feature}" in ${configPath}`)
+  console.log('')
+  console.log('▶️  Running `shogo generate` to wire generators and deps...')
+  console.log('')
+
+  // Exec generate in-process by invoking this same script recursively.
+  // Keeps a single source of truth for the generate pipeline.
+  const selfPath = resolve(import.meta.dir, 'shogo.ts')
+  try {
+    execSync(`bun ${JSON.stringify(selfPath)} generate${values.config ? ` --config ${JSON.stringify(values.config)}` : ''}`, {
+      stdio: 'inherit',
+      cwd,
+    })
+  } catch {
+    process.exit(1)
+  }
+}
+
+// ============================================================================
+// `shogo dev` — preflight against the Shogo API via runtime-token, then
+// fall through to the user's dev script.
+// ============================================================================
+
+/**
+ * Dev preflight.
+ *
+ * Reads `RUNTIME_AUTH_SECRET`, `PROJECT_ID`, `SHOGO_API_URL` from the env
+ * (all three are injected into pods at assign-time). If any are missing,
+ * we skip the preflight — local dev without a warm pool is still valid.
+ *
+ * When the env is present AND `features.voice` is enabled, we:
+ *   1. `GET /api/voice/config/:projectId?projectId=<id>` with `x-runtime-token`
+ *   2. If voice is not yet provisioned (no agent), print a diagnostic
+ *      pointing at the Studio
+ *   3. If `features.voice.phoneNumber` is on but the config reports no
+ *      `phoneNumber`, POST to the Twilio provision route (idempotent)
+ *
+ * After the preflight, `shogo dev` execs `bun run dev` so the command is a
+ * transparent replacement for `bun run dev` in generated pod apps.
+ */
+async function handleDevCommand() {
+  const cwd = process.cwd()
+  const config = loadConfig(cwd)
+
+  const projectId = process.env.PROJECT_ID
+  const runtimeToken = process.env.RUNTIME_AUTH_SECRET
+  const apiUrl = process.env.SHOGO_API_URL ?? 'http://localhost:8002'
+
+  const voiceEnabled = isVoiceEnabled(config?.features)
+  const phoneEnabled =
+    typeof config?.features?.voice === 'object' &&
+    config.features.voice !== null &&
+    config.features.voice.phoneNumber === true
+
+  if (!projectId || !runtimeToken) {
+    console.log('⊘ shogo dev preflight skipped (no PROJECT_ID / RUNTIME_AUTH_SECRET in env).')
+  } else if (voiceEnabled) {
+    const configUrl = `${apiUrl}/api/voice/config/${encodeURIComponent(projectId)}?projectId=${encodeURIComponent(projectId)}`
+    console.log(`🔎 shogo dev preflight: GET ${configUrl}`)
+    try {
+      const res = await fetch(configUrl, {
+        headers: { 'x-runtime-token': runtimeToken },
+      })
+      if (!res.ok) {
+        console.warn(`   ⚠️ Preflight returned ${res.status} ${res.statusText}`)
+        const body = await res.text().catch(() => '')
+        if (body) console.warn(`      ${body.slice(0, 400)}`)
+      } else {
+        const cfg = (await res.json().catch(() => null)) as
+          | { agentId?: string; phoneNumber?: string | null }
+          | null
+        console.log(`   ✓ voice.agentId=${cfg?.agentId ?? '(none)'}`)
+        console.log(`   ✓ voice.phoneNumber=${cfg?.phoneNumber ?? '(none)'}`)
+
+        if (phoneEnabled && !cfg?.phoneNumber) {
+          const provisionUrl = `${apiUrl}/api/voice/twilio/provision-number/${encodeURIComponent(projectId)}?projectId=${encodeURIComponent(projectId)}`
+          console.log(`📞 Provisioning Twilio phone number: POST ${provisionUrl}`)
+          const prov = await fetch(provisionUrl, {
+            method: 'POST',
+            headers: {
+              'x-runtime-token': runtimeToken,
+              'content-type': 'application/json',
+            },
+            body: '{}',
+          })
+          if (!prov.ok) {
+            console.warn(`   ⚠️ Provisioning failed: ${prov.status} ${prov.statusText}`)
+          } else {
+            console.log('   ✓ Phone number provisioned')
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`   ⚠️ Preflight fetch failed: ${err instanceof Error ? err.message : err}`)
+      console.warn('     (is the Shogo API reachable at SHOGO_API_URL?)')
+    }
+  } else {
+    console.log('⊘ shogo dev preflight: voice feature disabled, nothing to check.')
+  }
+
+  // Transparent passthrough to the app's `dev` script.
+  const devScript = positionals[1] ?? 'dev'
+  console.log(`\n▶️  bun run ${devScript}`)
+  try {
+    execSync(`bun run ${devScript}`, { stdio: 'inherit', cwd })
+  } catch {
     process.exit(1)
   }
 }
@@ -419,6 +649,18 @@ async function main() {
     process.exit(0)
   }
 
+  // Handle enable command (flip a feature flag in shogo.config.json)
+  if (command === 'enable') {
+    await handleEnableCommand()
+    process.exit(0)
+  }
+
+  // Handle dev command (runtime-token preflight + passthrough to `bun run dev`)
+  if (command === 'dev') {
+    await handleDevCommand()
+    process.exit(0)
+  }
+
   if (command !== 'generate') {
     console.error(`Unknown command: ${command}`)
     printHelp()
@@ -466,6 +708,24 @@ async function main() {
       ...o,
       dir: resolve(cwd, o.dir),
     }))
+
+    // Auto-inject voice-feature generators when `features.voice` is on
+    // and the user hasn't explicitly listed them. Picks the first
+    // output as the "client" output (where src/ lives). This is what
+    // makes `features.voice: true` a one-flag switch.
+    if (isVoiceEnabled(config.features) && outputs.length > 0) {
+      const first = outputs[0]!
+      if (!first.generate.includes('shogo-client')) {
+        first.generate = [...first.generate, 'shogo-client']
+      }
+      if (!first.generate.includes('voice-components')) {
+        first.generate = [...first.generate, 'voice-components']
+      }
+      // Default: emit components at <first.dir>/components/shogo. Users
+      // who want a different layout should list `voice-components` as
+      // its own `outputs[]` entry with a custom `dir`.
+      first.voiceComponents = first.voiceComponents ?? {}
+    }
   } else if (values.output) {
     // Legacy single-dir mode
     outputDir = resolve(cwd, values.output as string)
@@ -554,6 +814,25 @@ async function main() {
     console.log('')
   }
   
+  // ── Step 2.5: deps-doctor — reconcile feature deps with package.json ──
+  if (config?.features) {
+    const depsReport = ensureFeatureDeps({
+      cwd,
+      features: config.features,
+    })
+    if (depsReport.modified) {
+      console.log('💊 deps-doctor: added feature dependencies to package.json')
+      for (const [name, range] of Object.entries(depsReport.added)) {
+        console.log(`   + ${name}@${range}`)
+      }
+      console.log('   → run `bun install` to materialize the new deps')
+      console.log('')
+    }
+    for (const w of depsReport.warnings) {
+      console.warn(`⚠️  deps-doctor: ${w}`)
+    }
+  }
+
   // ── Step 3: Generate SDK files ─────────────────────────────────────────
   try {
     const options: GenerateOptions = {

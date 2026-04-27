@@ -19,6 +19,8 @@ import { HttpClient } from '@shogo-ai/sdk'
 import {
   createDomainStore,
   resetDomainStore,
+  ChatMessageCollection,
+  type IChatMessageCollection,
   type IDomainStore,
   type ISDKEnvironment,
 } from '@shogo/domain-stores'
@@ -33,6 +35,18 @@ let moduleRemoteConfigRef: { current: RemoteInterceptorConfig } | null = null
 let moduleStore: IDomainStore | null = null
 let moduleFacades: SDKDomainFacades | null = null
 let moduleUserId: string | null = null
+let moduleEnv: ISDKEnvironment | null = null
+
+// Per-session ChatMessageCollection instances, keyed by sessionId.
+// The root-store `chatMessageCollection` is a single bag that gets clobbered
+// whenever any panel calls `loadPage({ sessionId })`, so we hand out scoped
+// collections instead — each session owns its own MST tree and HTTP loads
+// don't step on sibling panels.
+const sessionChatCollections = new Map<string, IChatMessageCollection>()
+
+function clearSessionChatCollections() {
+  sessionChatCollections.clear()
+}
 
 /**
  * Get or create the singleton domain store.
@@ -70,6 +84,7 @@ function getOrCreateStore(
   if (moduleStore !== null && moduleUserId !== userId) {
     moduleUserId = userId
     moduleStore.clearAll()
+    clearSessionChatCollections()
     return { rawHttp: moduleRawHttpClient!, http: moduleProxiedHttpClient!, store: moduleStore, facades: moduleFacades! }
   }
 
@@ -96,6 +111,7 @@ function getOrCreateStore(
     context: userId ? { userId } : undefined,
   }
 
+  moduleEnv = env
   moduleStore = createDomainStore(env)
   moduleFacades = createDomainFacades(moduleStore)
 
@@ -115,7 +131,7 @@ function createDomainFacades(store: IDomainStore) {
     },
     billing: {
       subscriptionCollection: store.subscriptionCollection,
-      creditLedgerCollection: store.creditLedgerCollection,
+      usageWalletCollection: store.usageWalletCollection,
       usageEventCollection: store.usageEventCollection,
       billingAccountCollection: store.billingAccountCollection,
     },
@@ -235,6 +251,7 @@ export function SDKDomainProvider({
       store.chatSessionCollection.clear()
       store.chatMessageCollection.clear()
       store.toolCallLogCollection.clear()
+      clearSessionChatCollections()
       setRemoteError(null)
 
       // 2. Hydrate from new source (snapshot fetch).
@@ -344,7 +361,53 @@ export function resetSDKDomainStore(): void {
   moduleStore = null
   moduleFacades = null
   moduleUserId = null
+  moduleEnv = null
+  clearSessionChatCollections()
   resetDomainStore()
+}
+
+/**
+ * Get (or lazily create) a ChatMessageCollection scoped to a single session.
+ *
+ * The root-store `chatMessageCollection` is a singleton bag. When multiple
+ * ChatPanel instances render for different sessions, each `loadPage({ sessionId })`
+ * clobbers the previous session's data, causing the other panels' derived
+ * `all.filter(sessionId === mine)` to drop to 0 and trigger a flicker.
+ *
+ * Per-session collections own their own MST tree so `loadPage`, `.all`,
+ * `hasMore`, `isLoadingMore`, and `update()` are all isolated. They share the
+ * same HTTP environment as the root store, so remote-proxy routing still works.
+ *
+ * Instances are cached for the lifetime of the user's session. They are
+ * evicted on user change, remote-source switch, and `resetSDKDomainStore()`.
+ */
+export function getChatMessageCollectionForSession(
+  sessionId: string,
+): IChatMessageCollection {
+  let collection = sessionChatCollections.get(sessionId)
+  if (collection) return collection
+  if (!moduleEnv) {
+    throw new Error(
+      '[SDKDomainProvider] SDK environment not initialised. ' +
+        'Call getChatMessageCollectionForSession() only inside an <SDKDomainProvider>.',
+    )
+  }
+  collection = ChatMessageCollection.create({ items: {} }, moduleEnv)
+  sessionChatCollections.set(sessionId, collection)
+  return collection
+}
+
+/**
+ * React hook form of {@link getChatMessageCollectionForSession}. Returns null
+ * when `sessionId` is null/undefined (e.g. no chat is selected yet).
+ */
+export function useChatMessageCollectionForSession(
+  sessionId: string | null | undefined,
+): IChatMessageCollection | null {
+  return useMemo(
+    () => (sessionId ? getChatMessageCollectionForSession(sessionId) : null),
+    [sessionId],
+  )
 }
 
 // Re-export useDomainActions hook (was previously in domain-stores but moved here to avoid circular deps)

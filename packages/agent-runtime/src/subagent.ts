@@ -17,6 +17,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
+import { createBrowserTool } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -86,6 +87,8 @@ export interface SubagentResult {
 
 export interface SubagentStreamCallbacks {
   onStart?: (name: string, description: string, agentId: string) => void
+  /** Fired once the subagent's concrete model id is known (after routing/tier resolution). */
+  onModelResolved?: (model: string) => void
   onEnd?: (name: string) => void
   onTextDelta?: (delta: string) => void
   onThinkingStart?: () => void
@@ -220,6 +223,111 @@ read_file, write_file — save results to the workspace
 - Use short incremental waits with snapshot checks between them
 - Save important findings to workspace files for the parent agent`
 
+export const BROWSER_QA_SUBAGENT_PROMPT = `You are a QA engineer testing a running web app via the browser. Exercise user flows end-to-end, note the timing and UX of everything as you go, and build a live QA Run canvas surface so the user can watch your progress in real time.
+
+**While you are doing this test, note the timing and UX of everything and compile it into a report when you are done.** The canvas IS the report — keep it updated as you work.
+
+## Available Tools
+browser — full browser automation (navigate, snapshot, click, fill, screenshot, console messages, network activity)
+web — HTTP fetch for APIs or health-check endpoints
+read_file, write_file, edit_file — build and update the canvas surface + save artifacts
+
+## Input Contract
+The spawning agent will pass:
+- A target URL (the running app — project preview URL or an explicit URL the user supplied)
+- A list of user flows to test, or simply "smoke test"
+- Optional: credentials, viewport, focus areas
+
+If no URL is provided in the prompt, STOP immediately and return the literal string \`NEED_URL: please provide the URL or preview URL to test\` as your response. Do NOT guess or browse unrelated sites.
+
+## Canvas Surface — the live view
+
+The canvas lives at \`canvas/src/surfaces/\` (TSX components) with sibling \`<Name>.data.json\` files holding live state. The mobile app renders this surface in real time as you edit those files.
+
+**First, check whether \`canvas/src/\` exists in the workspace (use \`read_file\` on \`canvas/src/App.tsx\`):**
+
+- **If canvas exists:** build a QA Run surface.
+- **If canvas does NOT exist (read_file fails):** skip the canvas steps entirely and fall back to the markdown report only. Do not try to bootstrap a full canvas project.
+
+### On start (canvas exists)
+
+1. Write \`canvas/src/surfaces/QaRun.data.json\` with the initial state:
+\`\`\`json
+{
+  "targetUrl": "<url>",
+  "status": "running",
+  "startedAt": "<ISO>",
+  "flows": [{ "name": "<flow>", "status": "pending" }],
+  "steps": [],
+  "issues": [],
+  "errors": [],
+  "latestScreenshot": null,
+  "summary": null,
+  "recommendations": []
+}
+\`\`\`
+2. Write \`canvas/src/surfaces/QaRun.tsx\` — a self-contained React component that imports \`./QaRun.data.json\` and renders the dashboard using the primitives other surfaces use: \`Card\`, \`CardHeader\`, \`CardTitle\`, \`CardContent\` from \`@/components/ui/card\`, \`Badge\` from \`@/components/ui/badge\`. Render sections in this order: header card (target URL + status badge + started-at), Flows card (list with status badges), Timing Table, Issues card (severity-prefixed), Errors card, Latest Screenshot (\`<img src={data.latestScreenshot} />\` when non-null), Summary + Recommendations cards (appear at end).
+3. Append a \`<TabsTrigger value="qa_run">QA Run</TabsTrigger>\` and matching \`<TabsContent>\` to \`canvas/src/App.tsx\` using \`edit_file\` — only if App.tsx exists and uses Tabs.
+
+### On every step
+
+Use \`write_file\` to overwrite \`canvas/src/surfaces/QaRun.data.json\` with the updated state after each meaningful change:
+- Flip the current flow's \`status\` ("pending" → "running" → "pass"/"fail"/"blocked").
+- Append a row to \`steps\`: \`{ "step": N, "action": "...", "ms": 123, "notes": "..." }\`.
+- Append any new issues to \`issues\`: \`{ "severity": "blocker"|"major"|"minor"|"nit", "text": "...", "screenshot": "<path or null>" }\`.
+- Append any console / network errors to \`errors\`: \`{ "step": N, "kind": "console"|"network", "text": "..." }\`.
+- Update \`latestScreenshot\` to the most recent PNG path any time you call \`browser({action:"screenshot"})\`.
+
+Prefer overwriting the whole file with \`write_file\` — it's simpler and avoids edit_file merge risk on structured JSON.
+
+### On end
+
+Update \`QaRun.data.json\` one last time:
+- Flip \`status\` to \`"completed"\` / \`"failed"\` / \`"blocked"\`.
+- Fill in \`summary\` (2-3 sentences: overall verdict, biggest issue, did all flows complete).
+- Fill in \`recommendations\` (ordered list of actionable suggestions).
+
+## Browser Workflow (per flow)
+1. \`navigate\` to the URL — record the navigation start/end timestamps.
+2. \`snapshot\` the page — record how long until interactive content appears and whether a spinner/skeleton was shown.
+3. For each flow in the directive:
+   a. Identify the next element from the snapshot (prefer \`ref\`).
+   b. Record wall-clock ms for each action (click / fill / select) from dispatch to the follow-up snapshot settling.
+   c. Re-snapshot after every state change.
+   d. **\`screenshot\` after every navigate and every meaningful state change** so the canvas Latest Screenshot stays fresh.
+   e. Check console messages and network activity for errors after each step.
+4. After each step, write the updated \`QaRun.data.json\` (when canvas exists). When flows are complete (or blocked), finalize the canvas and save the markdown artifact.
+
+## What to Record Per Step
+- URL after the step
+- Action taken (navigate / click ref=X / fill ref=Y / etc.)
+- Observed duration in ms (dispatch → next stable snapshot)
+- Whether a spinner/skeleton/loading indicator appeared
+- Visible layout shift, jank, or flicker
+- Console errors or warnings emitted during the step
+- Network errors (non-2xx responses, timeouts)
+- Accessibility issues visible in the snapshot (missing labels, heading order, unlabeled buttons, low-contrast placeholders if noted)
+
+## Markdown Artifact (always saved)
+
+Regardless of whether the canvas exists, always save a final markdown artifact to \`.shogo/reports/qa-<ISO-timestamp>.md\` with these sections:
+
+- **Summary** — 2-3 sentences: overall verdict, biggest issue, did all flows complete.
+- **Coverage** — bulleted list of flows attempted and their outcome (pass / fail / blocked).
+- **Timing Table** — markdown table with columns: Step | Action | Duration (ms) | Notes. Include p50/max rows if a step was repeated.
+- **UX Issues** — one bullet per issue prefixed with severity \`[blocker]\`, \`[major]\`, \`[minor]\`, or \`[nit]\`, referencing screenshot paths when relevant.
+- **Console / Network Errors** — raw error lines grouped by step, or "None observed".
+- **Recommendations** — prioritized, actionable suggestions for the main agent / developer.
+
+The \`browser\` tool saves screenshots automatically under \`.shogo/screenshots/<run>/step-N.png\` (relative to the workspace) — use the \`path\` field it returns verbatim when you reference a screenshot from the canvas \`latestScreenshot\` field or from the markdown report. Do not construct screenshot paths yourself.
+
+Return a short final response (≤ 10 lines): canvas surface path if built, markdown report path, overall verdict.
+
+## Stopping Rules
+- Stop and report if you hit a login wall, captcha, payment wall, or any other blocker you cannot resolve with the provided inputs — record it as a \`[blocker]\` UX issue (in the canvas and in the report).
+- Stop and report if the page fails to load after two retries — record network details.
+- Stop once every flow in the directive has a pass/fail/blocked outcome. Don't keep exploring beyond the requested scope.`
+
 export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate images and transcribe audio.
 
 ## Available Tools
@@ -273,7 +381,16 @@ export function getBuiltinSubagentConfig(
         toolNames: ['browser', 'web', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
-        maxTurns: 15,
+      }
+    case 'browser_qa':
+      return {
+        name: 'browser_qa',
+        description: 'Browser-based QA tester — exercises a running app and builds a live QA Run canvas surface as it goes',
+        systemPrompt: BROWSER_QA_SUBAGENT_PROMPT,
+        toolNames: ['browser', 'web', 'read_file', 'write_file', 'edit_file'],
+        disallowedTools: ['task', 'skill'],
+        model: 'gpt-5.4-nano',
+        provider: 'openai',
       }
     case 'integration':
       return {
@@ -452,6 +569,12 @@ export interface SubagentRunOptions {
   forkContext?: ForkContext
   /** Custom stream function for testing — replaces the real LLM call. */
   streamFn?: import('@mariozechner/pi-agent-core').StreamFn
+  /** AgentManager instance id for this run — plumbed into ToolContext.subagentInstanceId
+   *  so tools (e.g. `browser`) can key per-instance resources like the CDP screencast. */
+  instanceId?: string
+  /** AbortSignal for external cancellation. When aborted, the underlying
+   *  agent loop stops after the current LLM call / tool execution completes. */
+  signal?: AbortSignal
 }
 
 /**
@@ -499,6 +622,7 @@ export async function runSubagent(
     fileStateCache: parentCtx.fileStateCache?.clone(),
     renderedSystemPrompt: undefined,
     sessionMessages: undefined,
+    subagentInstanceId: options?.instanceId,
   }
 
   // Ensure working directory exists
@@ -536,6 +660,29 @@ export async function runSubagent(
       }
     } else {
       tools = [...allParentTools]
+    }
+
+    // Build a fresh `browser` tool bound to subCtx so it sees
+    // ctx.subagentInstanceId and can publish CDP screencast frames keyed by
+    // this run's instance id (see screencast-broadcaster.ts). The parent's
+    // browser tool closure captured the parent ctx where subagentInstanceId
+    // is always undefined, which would silently disable the screencast.
+    // Also isolates the browser/page/cdp state per subagent run.
+    const debugScreencast = process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+    if (tools.some(t => t.name === 'browser')) {
+      if (debugScreencast) {
+        console.log(
+          `[screencast] runSubagent rebuilding browser tool instanceId=${options?.instanceId ?? '<none>'} ` +
+          `agent=${config.name}`,
+        )
+      }
+      tools = tools.filter(t => t.name !== 'browser')
+      tools.push(createBrowserTool(subCtx))
+    } else if (debugScreencast) {
+      console.log(
+        `[screencast] runSubagent no browser tool to rebuild instanceId=${options?.instanceId ?? '<none>'} ` +
+        `agent=${config.name}`,
+      )
     }
 
     // Strip orchestration tools from non-fork subagents (no infinite nesting)
@@ -600,6 +747,8 @@ export async function runSubagent(
     model = resolveModelTier(config.modelTier, parentModel)
   }
 
+  try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
+
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
     const runProvider = useAutoRouting ? inferProviderFromModel(runModel, provider) : provider
     const result = await runAgentLoop({
@@ -614,6 +763,7 @@ export async function runSubagent(
       thinkingLevel,
       loopDetection: config.loopDetection,
       streamFn: options?.streamFn,
+      signal: options?.signal,
       onToolCall: callbacks?.onToolCall,
       onTextDelta: callbacks?.onTextDelta,
       onThinkingStart: callbacks?.onThinkingStart,

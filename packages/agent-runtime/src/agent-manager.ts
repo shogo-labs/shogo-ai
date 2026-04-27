@@ -18,6 +18,7 @@ import {
   type SubagentStreamCallbacks,
 } from './subagent'
 import type { ToolContext } from './gateway-tools'
+import { dropChannel as dropScreencastChannel } from './screencast-broadcaster'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -65,6 +66,8 @@ export interface ManagedInstance {
   messages?: Message[]
   /** Rolling window of recent tool calls for progress visibility while running. */
   recentActivity: ActivityEntry[]
+  /** Concrete LLM model id the subagent is running on (set once resolved). */
+  model?: string
 }
 
 export interface AgentTypeInfo {
@@ -221,7 +224,7 @@ export class AgentManager {
   }
 
   listTypes(ctx?: ToolContext, allTools?: AgentTool[]): AgentTypeInfo[] {
-    const builtinNames = ['explore', 'general-purpose']
+    const builtinNames = ['explore', 'general-purpose', 'browser_qa']
     const result: AgentTypeInfo[] = []
 
     for (const bn of builtinNames) {
@@ -290,6 +293,11 @@ export class AgentManager {
     const recentActivity: ActivityEntry[] = []
     const trackingCallbacks: SubagentStreamCallbacks = {
       ...callbacks,
+      onModelResolved: (model) => {
+        const inst = this.instances.get(instanceId)
+        if (inst) inst.model = model
+        callbacks?.onModelResolved?.(model)
+      },
       onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
         const summary = isError
           ? 'ERROR'
@@ -300,7 +308,7 @@ export class AgentManager {
       },
     }
 
-    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history })
+    const promise = runSubagent(config, prompt, parentCtx, allTools, trackingCallbacks, { history: options?.history, instanceId, signal: abortController.signal })
       .then((result) => {
         const inst = this.instances.get(instanceId)
         if (inst) {
@@ -319,6 +327,7 @@ export class AgentManager {
           regEntry.metrics.totalWallTimeMs += wallTime
           this.flushMetrics(type, regEntry.metrics)
         }
+        try { dropScreencastChannel(instanceId) } catch {}
         this.emitCostMetric({
           agentType: type,
           model: config!.model || 'sonnet',
@@ -335,18 +344,23 @@ export class AgentManager {
       })
       .catch((err) => {
         const inst = this.instances.get(instanceId)
+        const wasCancelled = inst?.status === 'cancelled' || abortController.signal.aborted
         if (inst) {
-          inst.status = 'failed'
-          inst.completedAt = Date.now()
-          inst.result = { responseText: err.message, toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+          if (!wasCancelled) inst.status = 'failed'
+          inst.completedAt ??= Date.now()
+          inst.result = {
+            responseText: wasCancelled ? 'Subagent cancelled' : err.message,
+            toolCalls: 0, iterations: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+          }
         }
         const wallTime = Date.now() - startTime
         if (regEntry) {
           regEntry.metrics.totalRuns++
-          regEntry.metrics.failures++
+          if (!wasCancelled) regEntry.metrics.failures++
           regEntry.metrics.totalWallTimeMs += wallTime
           this.flushMetrics(type, regEntry.metrics)
         }
+        try { dropScreencastChannel(instanceId) } catch {}
         this.emitCostMetric({
           agentType: type,
           model: config!.model || 'sonnet',
@@ -386,7 +400,25 @@ export class AgentManager {
     inst.abort.abort()
     inst.status = 'cancelled'
     inst.completedAt = Date.now()
+    try { dropScreencastChannel(id) } catch {}
     return true
+  }
+
+  /**
+   * Cancel every running instance. Returns the ids that were actively
+   * cancelled (already-finished instances are skipped).
+   */
+  cancelAll(): string[] {
+    const cancelled: string[] = []
+    for (const [id, inst] of this.instances) {
+      if (inst.status !== 'running') continue
+      inst.abort.abort()
+      inst.status = 'cancelled'
+      inst.completedAt = Date.now()
+      try { dropScreencastChannel(id) } catch {}
+      cancelled.push(id)
+    }
+    return cancelled
   }
 
   listInstances(): Array<{ id: string; type: string; status: string; startedAt: number; completedAt?: number }> {

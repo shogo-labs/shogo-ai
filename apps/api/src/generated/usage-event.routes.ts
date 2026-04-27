@@ -43,11 +43,13 @@ function getPrisma(): PrismaClient {
  * Build route context from Hono context
  */
 function buildContext(c: any, body?: any) {
+  const auth = c.get("auth")
   return {
     body: body || {},
     params: c.req.param() || {},
     query: Object.fromEntries(new URL(c.req.url).searchParams),
-    userId: c.get("auth")?.userId,
+    userId: auth?.userId,
+    tunnelAuthenticated: !!auth?.tunnelAuthenticated,
     prisma: getPrisma(),
   }
 }

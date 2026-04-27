@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated BillingAccount MST Model
  *
@@ -22,7 +21,6 @@ export const BillingAccountModel = types
     workspaceId: types.string,
     stripeCustomerId: types.optional(types.string, ""),
     taxId: types.optional(types.string, ""),
-    creditsBalance: types.number,
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),

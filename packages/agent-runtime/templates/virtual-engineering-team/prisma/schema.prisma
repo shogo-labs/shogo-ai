@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+//
+// Virtual Engineering Team — persistence schema.
+//
+// All surfaces (Sprint Board, Roles, Skills Registry) read and write through
+// the auto-generated CRUD routes mounted at `/api/<kebab-plural>`. Nothing is
+// ever read from a `.data.json` file — every surface goes through Prisma.
+// Run `bun run generate` after editing to rebuild routes/types.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---- Sprint ------------------------------------------------------------
+
+/// A single product idea being pushed through the 7-stage pipeline.
+/// `stage` is one of: think | plan | build | review | test | ship | reflect.
+/// `status` is one of: active | paused | shipped | archived.
+model Sprint {
+  id        String     @id @default(cuid())
+  idea      String
+  stage     String     @default("think")
+  status    String     @default("active")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  artifacts Artifact[]
+
+  @@index([status, stage])
+  @@map("sprints")
+}
+
+// ---- Artifact ----------------------------------------------------------
+
+/// Every output a role sub-agent produces for a sprint. Markdown only;
+/// structured extras go in the body.
+///
+/// `role`  → one of: host | ceo | eng-mgr | designer | autoplan |
+///           reviewer | second-opinion | qa | investigate | cso |
+///           release | deploy | retro | memory
+/// `kind`  → free-form label, e.g. design-doc | ceo-review | eng-review |
+///           qa-report | security-report | pr | retro | lesson
+model Artifact {
+  id        String   @id @default(cuid())
+  sprintId  String   @map("sprint_id")
+  stage     String
+  role      String
+  kind      String
+  title     String
+  content   String   // markdown body produced by the role
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sprint    Sprint   @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+
+  @@index([sprintId, stage])
+  @@index([role])
+  @@map("artifacts")
+}
+
+// ---- SkillDoc ----------------------------------------------------------
+
+/// Verbatim mirror of every ported gstack SKILL.md. Seeded from the files
+/// under .shogo/skills/gstack-<name>/SKILL.md so the UI has a typed, queryable
+/// view of the role catalog without re-reading the filesystem at runtime.
+///
+/// `body` is the byte-identical upstream content (without the port
+/// frontmatter). `sourceUrl` and `sourceSha` identify the exact upstream
+/// commit the body was ported from.
+model SkillDoc {
+  id         String   @id @default(cuid())
+  name       String   @unique                 // e.g. "office-hours", "qa"
+  role       String                            // "host" | "ceo" | ... | "optional"
+  stage      String                            // "think" ... "reflect" | "optional"
+  sourceUrl  String   @map("source_url")
+  sourceSha  String   @map("source_sha")
+  body       String                            // verbatim SKILL.md body
+  isCore     Boolean  @default(false) @map("is_core")
+  portedAt   String   @map("ported_at")        // ISO date YYYY-MM-DD
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([isCore, stage])
+  @@index([role])
+  @@map("skill_docs")
+}

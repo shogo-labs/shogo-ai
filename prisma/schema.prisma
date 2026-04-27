@@ -125,15 +125,17 @@ model Workspace {
   folders              Folder[]
   subscriptions        Subscription[]
   instanceSubscription InstanceSubscription?
-  creditLedgers        CreditLedger[]
+  usageWallets         UsageWallet[]
   usageEvents          UsageEvent[]
   storageUsage         StorageUsage?
   starredProjects      StarredProject[]
   apiKeys              ApiKey[]
   instances            Instance[]
-  meetings             Meeting[]  agentCostMetrics  AgentCostMetric[]
-  budgetAlerts      BudgetAlert[]
-  modelExperiments  ModelExperiment[]
+  meetings             Meeting[]
+  voiceProjectConfigs  VoiceProjectConfig[]
+  agentCostMetrics     AgentCostMetric[]
+  budgetAlerts         BudgetAlert[]
+  modelExperiments     ModelExperiment[]
 
   @@map("workspaces")
 }
@@ -184,8 +186,9 @@ model Project {
   agentConfig      AgentConfig?
   meetings         Meeting[]
   marketplaceListing  MarketplaceListing?
-  agentCostMetrics   AgentCostMetric[]
-  modelExperiments   ModelExperiment[]
+  agentCostMetrics      AgentCostMetric[]
+  modelExperiments      ModelExperiment[]
+  voiceConfig           VoiceProjectConfig?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -345,7 +348,6 @@ model BillingAccount {
   workspaceId      String
   stripeCustomerId String?
   taxId            String?
-  creditsBalance   Float    @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -462,7 +464,7 @@ enum NotificationType {
 }
 
 // =============================================================================
-// BILLING (Subscriptions & Credits)
+// BILLING (Subscriptions & Usage)
 // =============================================================================
 
 model Subscription {
@@ -499,37 +501,42 @@ enum BillingInterval {
   annual
 }
 
-model CreditLedger {
-  id               String   @id @default(uuid())
-  workspaceId      String   @unique
-  monthlyCredits   Float    @default(0)
-  dailyCredits     Float    @default(0)
-  monthlyAllocation Float   @default(0)
-  dailyCreditsDispensedThisMonth Float @default(0)
-  anniversaryDay   Int
-  lastDailyReset   DateTime
-  lastMonthlyReset DateTime
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+model UsageWallet {
+  id                            String   @id @default(uuid())
+  workspaceId                   String   @unique
+  monthlyIncludedUsd            Float    @default(0)
+  dailyIncludedUsd              Float    @default(0)
+  monthlyIncludedAllocationUsd  Float    @default(0)
+  dailyUsedThisMonthUsd         Float    @default(0)
+  overageEnabled                Boolean  @default(false)
+  overageHardLimitUsd           Float?
+  overageAccumulatedUsd         Float    @default(0)
+  stripeMeteredItemId           String?
+  anniversaryDay                Int
+  lastDailyReset                DateTime
+  lastMonthlyReset              DateTime
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
 
   // Relations
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@map("credit_ledgers")
+  @@map("usage_wallets")
 }
 
 model UsageEvent {
-  id            String       @id @default(uuid())
-  workspaceId   String
-  projectId     String?
-  memberId      String
-  actionType    String
+  id             String      @id @default(uuid())
+  workspaceId    String
+  projectId      String?
+  memberId       String
+  actionType     String
   actionMetadata Json?
-  creditCost    Float
-  creditSource  CreditSource
-  balanceBefore Float
-  balanceAfter  Float
-  createdAt     DateTime     @default(now())
+  rawUsd         Float?
+  billedUsd      Float
+  source         UsageSource
+  balanceBefore  Float
+  balanceAfter   Float
+  createdAt      DateTime    @default(now())
 
   // Relations
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -542,9 +549,10 @@ model UsageEvent {
   @@map("usage_events")
 }
 
-enum CreditSource {
+enum UsageSource {
   daily
   monthly
+  overage
 }
 
 // =============================================================================
@@ -626,12 +634,21 @@ model ChatMessage {
   imageData String?  @db.Text
   parts     String?  @db.Text
   createdAt DateTime @default(now())
+  /// Which agent authored this row:
+  ///   "technical" — the main technical agent (default; preserves legacy rows).
+  ///   "voice"     — the Shogo Mode translator (voice + text). Rows of this
+  ///                 kind belong to the Shogo overlay thread, not the
+  ///                 main ChatPanel thread. `parts` may carry an
+  ///                 envelope describing the sub-kind
+  ///                 (voice / agent-activity / shogo-text).
+  agent     String   @default("technical")
 
   // Relations
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([sessionId, createdAt])
+  @@index([sessionId, agent, createdAt])
   @@map("chat_messages")
 }
 
@@ -1224,7 +1241,7 @@ model AnalyticsDigest {
   totalMessages        Int      @default(0)
   totalSessions        Int      @default(0)
   totalToolCalls       Int      @default(0)
-  totalCreditsUsed     Float    @default(0)
+  totalSpendUsd        Float    @default(0)
 
   templateStats        Json?
   chunksProcessed      Int      @default(1)
@@ -1274,11 +1291,24 @@ model ApiKey {
   createdAt   DateTime  @default(now())
   revokedAt   DateTime?
 
+  // Device session metadata. `kind` is "user" for manually-created keys and
+  // "device" for keys minted via the desktop cloud-login flow. Device keys
+  // carry a stable deviceId so re-logging in from the same machine dedupes
+  // instead of accumulating stale credentials. lastSeenAt is updated by
+  // heartbeats and by validateProxyAuth on every authenticated call.
+  kind             String    @default("user")
+  deviceId         String?
+  deviceName       String?
+  devicePlatform   String?
+  deviceAppVersion String?
+  lastSeenAt       DateTime?
+
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([userId])
+  @@index([workspaceId, deviceId])
   @@map("api_keys")
 }
 
@@ -1696,6 +1726,69 @@ model Meeting {
   @@index([workspaceId])
   @@index([projectId])
   @@map("meetings")
+}
+
+// =============================================================================
+// VOICE / TELEPHONY (Twilio + ElevenLabs)
+// =============================================================================
+//
+// VoiceProjectConfig stores ONLY Shogo-owned resource handles for Mode B
+// (Shogo-hosted) telephony. No user-provided secrets are ever stored. Shogo's
+// ElevenLabs API key and Twilio account credentials live in the API server's
+// env (ELEVENLABS_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) and the
+// corresponding agent / phone-number / phone-registration is provisioned on
+// demand per project and tracked here.
+//
+// Mode A (bring-your-own keys) never touches this table.
+
+model VoiceProjectConfig {
+  id                    String    @id @default(cuid())
+  projectId             String    @unique
+  workspaceId           String
+  elevenlabsAgentId     String?
+  twilioPhoneNumber     String?
+  twilioPhoneSid        String?
+  elevenlabsPhoneId     String?
+  purchasedAt           DateTime?
+  monthlyRateDebitedFor DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("voice_project_configs")
+}
+
+// VoiceCallMeter dedupes webhooks from ElevenLabs (post_call_transcription)
+// and Twilio (statusCallback). First writer wins on (conversationId, callSid);
+// subsequent webhooks are no-ops once `usageEventId` is set.
+
+model VoiceCallMeter {
+  id              String    @id @default(cuid())
+  projectId       String
+  workspaceId     String
+  conversationId  String?   @unique
+  callSid         String?   @unique
+  direction       String
+  durationSeconds Int
+  billedMinutes   Int
+  usageEventId    String?   @unique
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+
+  /// Post-call transcript payload from ElevenLabs (array of turns).
+  /// Populated from the `post_call_transcription` webhook; null for
+  /// Twilio-only deliveries or calls that didn't reach EL.
+  transcript      Json?
+  /// Optional single-sentence summary. EL returns one when enabled.
+  transcriptSummary String?
+
+  @@index([projectId])
+  @@index([workspaceId])
+  @@map("voice_call_meters")
 }
 
 // =============================================================================

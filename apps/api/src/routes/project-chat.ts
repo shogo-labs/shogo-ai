@@ -74,8 +74,8 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
  *   d: (finish_message/finish_step) — JSON with usage
  *
  * We consume the entire tracking stream, count tool calls, and extract the
- * final usage object. Then we charge credits via the billing service and
- * log a `ToolCallLog` entry per tool call.
+ * final usage object. Then we charge marked-up USD via the billing service
+ * and log a `ToolCallLog` entry per tool call.
  */
 async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
@@ -325,14 +325,14 @@ async function trackUsageFromStream(
     `[ProjectChat] 📊 Stream ${streamInterrupted ? 'interrupted' : 'complete'} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
-  // Credit billing is handled by the AI proxy billing session (opened before
+  // Usage billing is handled by the AI proxy billing session (opened before
   // proxying, closed after stream completes in the route handler).
 
-  // Close the billing session — this triggers the actual credit charge
-  // based on total accumulated tokens across all API calls in the agentic loop.
-  const { creditCost } = await closeSession(project.id)
-  if (creditCost > 0) {
-    console.log(`[ProjectChat] 💰 Billing session closed — charged ${creditCost} credits for project ${project.id}`)
+  // Close the billing session — this triggers the actual USD charge based
+  // on total accumulated tokens across all API calls in the agentic loop.
+  const { billedUsd } = await closeSession(project.id)
+  if (billedUsd > 0) {
+    console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }
 
   // Persist assistant message first so we have a messageId for tool call logs.
@@ -352,6 +352,7 @@ async function trackUsageFromStream(
             role: 'assistant',
             content: accumulatedText,
             parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+            agent: 'technical',
           },
         })
         assistantMessageId = message.id
@@ -473,15 +474,31 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       return await getProjectPodUrl(projectId)
     } else if (isVMIsolation()) {
       // Desktop VM: VMWarmPoolController (same claim/assign pattern as K8s).
-      // Do NOT fall back to local RuntimeManager — that creates a split-brain
-      // where the preview renders from the host but the agent runs in the VM.
-      const { getVMProjectUrl } = await import("../lib/vm-warm-pool-controller")
+      // Normally we do NOT fall back to the local RuntimeManager — that would
+      // create a split-brain where the preview renders from the host but the
+      // agent runs in the VM. The one exception is when the warm pool has
+      // permanently disabled itself (3+ boot failures): in that case no VM is
+      // running at all, so falling back to the host runtime is safe and gives
+      // the user a working runtime instead of a cryptic `pod_unavailable`.
+      const vmPool = await import("../lib/vm-warm-pool-controller")
+      const { getVMProjectUrl, VMPoolPermanentlyDisabledError } = vmPool
       const maxRetries = 5
       const retryDelayMs = 3000
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           return await getVMProjectUrl(projectId)
         } catch (err) {
+          if (err instanceof VMPoolPermanentlyDisabledError) {
+            if (runtimeManager) {
+              console.warn(
+                `[ProjectChat] VM warm pool permanently disabled (${err.consecutiveFailures} boot failures); ` +
+                  `falling back to host RuntimeManager for project ${projectId}. ` +
+                  `To silence this warning, set vmIsolation.enabled=false in the desktop config.`,
+              )
+              break
+            }
+            throw err
+          }
           if (attempt === maxRetries) throw err
           console.log(`[ProjectChat] VM not ready (attempt ${attempt}/${maxRetries}), retrying in ${retryDelayMs}ms...`)
           await new Promise(r => setTimeout(r, retryDelayMs))
@@ -558,11 +575,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      if (!await billingService.hasCredits(project.workspaceId)) {
-        chatSpan.setAttribute("error.type", "insufficient_credits")
+      if (!await billingService.hasBalance(project.workspaceId)) {
+        chatSpan.setAttribute("error.type", "usage_limit_reached")
         chatSpan.end()
         return c.json(
-          { error: { code: "insufficient_credits", message: "You've run out of credits. Please upgrade your plan to continue." } },
+          { error: { code: "usage_limit_reached", message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue." } },
           402
         )
       }
@@ -665,7 +682,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.
+      // Guard: if the handler exits without starting a stream (retry
+      // exhaustion, client disconnect, thrown error), the finally block
+      // ensures closeSession runs so we don't leak an open session.
       openSession(projectId, project.workspaceId, billingUserId || 'system')
+      let billingSessionHandedOff = false
+      try {
 
       // Forward headers
       const headers: Record<string, string> = {
@@ -808,14 +830,39 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // This ensures billing/persistence always sees the full
           // stream even if the browser drops the connection early.
           //
-          // NOTE: Uses push-based (start + captured controller) instead of
-          // pull-based tracking stream — Bun's ReadableStream doesn't
-          // re-trigger pull() after a returned Promise resolves, causing
-          // the tracking consumer to hang forever.
+          // Tracking side uses a consumer-pull queue (plain JS array,
+          // no backpressure against the shared upstream bgReader) to
+          // avoid cross-stream coupling that can cause the client SSE
+          // stream to terminate prematurely on long agent turns.
+          //
+          // Bun quirk defense: the tracking stream's pull() loops
+          // internally on a notification Promise instead of relying on
+          // the runtime to re-invoke pull() after a returned Promise
+          // resolves (Bun has historically mis-handled that path and
+          // left the tracking consumer hung). A cancel() handler also
+          // unblocks pull() if the consumer goes away.
           const bgReader = response.body!.getReader()
-          let trackingController: ReadableStreamDefaultController<Uint8Array> | null = null
+          const trackingChunks: Uint8Array[] = []
+          let trackingDone = false
+          let trackingNotify: (() => void) | null = null
+          const trackingWait = () =>
+            new Promise<void>((resolve) => { trackingNotify = resolve })
           const trackingStream = new ReadableStream<Uint8Array>({
-            start(controller) { trackingController = controller },
+            async pull(controller) {
+              while (trackingChunks.length === 0 && !trackingDone) {
+                await trackingWait()
+              }
+              if (trackingChunks.length > 0) {
+                controller.enqueue(trackingChunks.shift()!)
+                return
+              }
+              controller.close()
+            },
+            cancel() {
+              trackingDone = true
+              trackingNotify?.()
+              trackingNotify = null
+            },
           })
 
           let clientEnqueueErrors = 0
@@ -828,7 +875,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                     const { done, value } = await bgReader.read()
                     if (done) break
                     chunkCount++
-                    try { trackingController!.enqueue(value) } catch { /* tracking consumer done */ }
+                    trackingChunks.push(value)
+                    trackingNotify?.()
+                    trackingNotify = null
                     try { controller.enqueue(value) } catch {
                       if (clientEnqueueErrors === 0) {
                         console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)
@@ -841,13 +890,19 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
-                  try { trackingController!.close() } catch { /* already closed */ }
+                  trackingDone = true
+                  trackingNotify?.()
+                  trackingNotify = null
                   try { controller.close() } catch { /* already closed */ }
                 }
               })()
             },
           })
 
+          // trackUsageFromStream takes ownership of billing — it calls
+          // closeSession after the stream finishes. Mark the handoff so
+          // our finally guard doesn't double-close.
+          billingSessionHandedOff = true
           trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           )
@@ -904,6 +959,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         { error: { code: "proxy_error", message: lastError?.message || "Max retries exceeded" } },
         503
       )
+
+      } finally {
+        // Guard: close the billing session if trackUsageFromStream never
+        // took ownership (retry exhaustion, client disconnect, thrown error).
+        // closeSession is idempotent — safe to call even if already closed.
+        if (!billingSessionHandedOff) {
+          closeSession(projectId).catch((err) =>
+            console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
+          )
+        }
+      }
     } catch (error: any) {
       console.error("[ProjectChat] Proxy error:", error)
       chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
@@ -994,6 +1060,37 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       return c.json(result)
     } catch (error: any) {
       console.error("[ProjectChat] Stop error:", error)
+      return c.json({ success: false, error: error.message }, 500)
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/chat/subagents/:instanceId/stop - Cancel a single subagent
+   * Proxies to the project runtime's /agent/subagents/:instanceId/stop endpoint
+   */
+  router.post("/projects/:projectId/chat/subagents/:instanceId/stop", async (c) => {
+    const projectId = c.req.param("projectId")
+    const instanceId = c.req.param("instanceId")
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/subagents/${encodeURIComponent(instanceId)}/stop`,
+        { method: "POST", body: "{}" }
+      )
+
+      const result = await response.json()
+      return c.json(result)
+    } catch (error: any) {
+      console.error("[ProjectChat] Subagent stop error:", error)
       return c.json({ success: false, error: error.message }, 500)
     }
   })

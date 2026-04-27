@@ -3,7 +3,7 @@
 /**
  * AppProfilePage - Mobile (Expo)
  *
- * User profile page showing account info, workspace memberships, and billing/credits.
+ * User profile page showing account info, workspace memberships, and billing/spend.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -200,7 +200,7 @@ export default observer(function ProfilePage() {
         </CardContent>
       </Card>
 
-      {/* Usage & Credits */}
+      {/* Usage & Spend */}
       <UserUsageSection />
     </ScrollView>
   )
@@ -208,7 +208,7 @@ export default observer(function ProfilePage() {
 
 interface UserOverviewData {
   usageEvents: number
-  totalCreditsConsumed: number
+  totalSpendUsd: number
   chatSessions: number
 }
 
@@ -252,7 +252,7 @@ function UserUsageSection() {
       <CardHeader>
         <View className="flex-row items-center gap-2">
           <BarChart3 size={20} className="text-card-foreground" />
-          <CardTitle className="text-lg">Usage & Credits</CardTitle>
+          <CardTitle className="text-lg">Usage & Spend</CardTitle>
         </View>
         <CardDescription>Your usage across all workspaces</CardDescription>
       </CardHeader>
@@ -264,8 +264,8 @@ function UserUsageSection() {
           <StatCard label="Sessions" value={overview.data?.chatSessions} icon={MessageSquare} />
           <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} />
           <StatCard
-            label="Credits Used"
-            value={overview.data?.totalCreditsConsumed !== undefined ? Math.round(overview.data.totalCreditsConsumed * 10) / 10 : undefined}
+            label="Spend"
+            value={overview.data?.totalSpendUsd !== undefined ? `$${overview.data.totalSpendUsd.toFixed(2)}` : undefined}
             icon={CreditCard}
           />
         </View>
@@ -332,7 +332,7 @@ const WorkspaceCard = observer(function WorkspaceCard({
         <View className="pt-3 border-t border-border">
           {subscription ? (
             <View className="gap-3">
-              {/* Plan & Credits Row */}
+              {/* Plan & Usage Row */}
               <View className="flex-row items-center justify-between">
                 <View className="flex-row items-center gap-2">
                   <CreditCard size={16} className="text-muted-foreground" />
@@ -361,24 +361,24 @@ const WorkspaceCard = observer(function WorkspaceCard({
                 </Button>
               </View>
 
-              {/* Credits Display */}
+              {/* Usage Display */}
               {effectiveBalance && (
                 <View className="bg-muted/50 rounded-lg p-3 gap-2">
                   <View className="flex-row items-center justify-between">
                     <View className="flex-row items-center gap-1">
                       <Zap size={16} className="text-yellow-500" />
                       <Text className="text-sm font-medium text-foreground">
-                        Credits
+                        Usage
                       </Text>
                     </View>
                     <Text className="text-sm font-bold text-foreground">
-                      {effectiveBalance.total.toFixed(1)} total
+                      ${effectiveBalance.total.toFixed(2)} left
                     </Text>
                   </View>
                   <View className="flex-row gap-2">
                     <View className="flex-1 items-center p-2 bg-background rounded">
                       <Text className="text-xs font-medium text-foreground">
-                        {effectiveBalance.dailyCredits.toFixed(1)}
+                        ${effectiveBalance.dailyIncludedUsd.toFixed(2)}
                       </Text>
                       <Text className="text-[10px] text-muted-foreground">
                         Daily
@@ -386,7 +386,7 @@ const WorkspaceCard = observer(function WorkspaceCard({
                     </View>
                     <View className="flex-1 items-center p-2 bg-background rounded">
                       <Text className="text-xs font-medium text-foreground">
-                        {effectiveBalance.monthlyCredits.toFixed(1)}
+                        ${effectiveBalance.monthlyIncludedUsd.toFixed(2)}
                       </Text>
                       <Text className="text-[10px] text-muted-foreground">
                         Monthly
@@ -395,7 +395,9 @@ const WorkspaceCard = observer(function WorkspaceCard({
                   </View>
                   <Progress
                     value={
-                      (effectiveBalance.monthlyCredits / 100) * 100
+                      effectiveBalance.monthlyIncludedAllocationUsd > 0
+                        ? Math.min(100, (effectiveBalance.monthlyIncludedUsd / effectiveBalance.monthlyIncludedAllocationUsd) * 100)
+                        : 0
                     }
                     className="h-1.5"
                   />

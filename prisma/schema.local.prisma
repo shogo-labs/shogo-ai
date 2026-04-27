@@ -115,13 +115,14 @@ model Workspace {
   folders              Folder[]
   subscriptions        Subscription[]
   instanceSubscription InstanceSubscription?
-  creditLedgers        CreditLedger[]
+  usageWallets         UsageWallet[]
   usageEvents          UsageEvent[]
   storageUsage         StorageUsage?
   starredProjects      StarredProject[]
   instances            Instance[]
   apiKeys              ApiKey[]
   meetings             Meeting[]
+  voiceProjectConfigs  VoiceProjectConfig[]
   @@map("workspaces")
 }
 
@@ -163,6 +164,7 @@ model Project {
   agentConfig        AgentConfig?
   meetings         Meeting[]
   marketplaceListing MarketplaceListing?
+  voiceConfig        VoiceProjectConfig?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -284,7 +286,6 @@ model BillingAccount {
   workspaceId      String
   stripeCustomerId String?
   taxId            String?
-  creditsBalance   Float    @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -375,7 +376,7 @@ model Notification {
 }
 
 // =============================================================================
-// BILLING (Subscriptions & Credits)
+// BILLING (Subscriptions & Usage)
 // =============================================================================
 
 model Subscription {
@@ -398,21 +399,26 @@ model Subscription {
   @@map("subscriptions")
 }
 
-model CreditLedger {
-  id               String   @id @default(uuid())
-  workspaceId      String   @unique
-  monthlyCredits   Float    @default(0)
-  dailyCredits     Float    @default(0)
-  dailyCreditsDispensedThisMonth Float @default(0)
-  anniversaryDay   Int
-  lastDailyReset   DateTime
-  lastMonthlyReset DateTime
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+model UsageWallet {
+  id                            String   @id @default(uuid())
+  workspaceId                   String   @unique
+  monthlyIncludedUsd            Float    @default(0)
+  dailyIncludedUsd              Float    @default(0)
+  monthlyIncludedAllocationUsd  Float    @default(0)
+  dailyUsedThisMonthUsd         Float    @default(0)
+  overageEnabled                Boolean  @default(false)
+  overageHardLimitUsd           Float?
+  overageAccumulatedUsd         Float    @default(0)
+  stripeMeteredItemId           String?
+  anniversaryDay                Int
+  lastDailyReset                DateTime
+  lastMonthlyReset              DateTime
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@map("credit_ledgers")
+  @@map("usage_wallets")
 }
 
 model UsageEvent {
@@ -422,8 +428,9 @@ model UsageEvent {
   memberId       String
   actionType     String
   actionMetadata String?
-  creditCost     Float
-  creditSource   String
+  rawUsd         Float?
+  billedUsd      Float
+  source         String
   balanceBefore  Float
   balanceAfter   Float
   createdAt      DateTime @default(now())
@@ -510,11 +517,15 @@ model ChatMessage {
   imageData String?
   parts     String?
   createdAt DateTime @default(now())
+  /// Which agent authored this row. "technical" (default, legacy rows) or
+  /// "voice" (Shogo Mode translator overlay thread).
+  agent     String   @default("technical")
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([sessionId, createdAt])
+  @@index([sessionId, agent, createdAt])
   @@map("chat_messages")
 }
 
@@ -960,11 +971,19 @@ model ApiKey {
   createdAt   DateTime  @default(now())
   revokedAt   DateTime?
 
+  kind             String    @default("user")
+  deviceId         String?
+  deviceName       String?
+  devicePlatform   String?
+  deviceAppVersion String?
+  lastSeenAt       DateTime?
+
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([userId])
+  @@index([workspaceId, deviceId])
   @@map("api_keys")
 }
 
@@ -1116,7 +1135,7 @@ model AnalyticsDigest {
   totalMessages        Int      @default(0)
   totalSessions        Int      @default(0)
   totalToolCalls       Int      @default(0)
-  totalCreditsUsed     Float    @default(0)
+  totalSpendUsd        Float    @default(0)
 
   templateStats        String?
   chunksProcessed      Int      @default(1)
@@ -1352,4 +1371,56 @@ model MarketplaceTransaction {
   @@index([status])
   @@index([createdAt])
   @@map("marketplace_transactions")
+}
+
+// =============================================================================
+// VOICE / TELEPHONY (Twilio + ElevenLabs)
+// =============================================================================
+// Mirrors prisma/schema.prisma. See that file for the canonical docs.
+
+model VoiceProjectConfig {
+  id                    String    @id @default(cuid())
+  projectId             String    @unique
+  workspaceId           String
+  elevenlabsAgentId     String?
+  twilioPhoneNumber     String?
+  twilioPhoneSid        String?
+  elevenlabsPhoneId     String?
+  purchasedAt           DateTime?
+  monthlyRateDebitedFor DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("voice_project_configs")
+}
+
+model VoiceCallMeter {
+  id              String    @id @default(cuid())
+  projectId       String
+  workspaceId     String
+  conversationId  String?   @unique
+  callSid         String?   @unique
+  direction       String
+  durationSeconds Int
+  billedMinutes   Int
+  usageEventId    String?   @unique
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+
+  /// Post-call transcript payload from ElevenLabs, serialized as JSON
+  /// (SQLite has no native Json). Populated from the
+  /// `post_call_transcription` webhook; null for Twilio-only deliveries
+  /// or calls that didn't reach EL.
+  transcript      String?
+  /// Optional single-sentence summary. EL returns one when enabled.
+  transcriptSummary String?
+
+  @@index([projectId])
+  @@index([workspaceId])
+  @@map("voice_call_meters")
 }

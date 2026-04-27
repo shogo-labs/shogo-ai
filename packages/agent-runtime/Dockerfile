@@ -3,7 +3,7 @@
 # Unified Runtime Dockerfile
 # =============================================================================
 # Builds on the pre-built base image (Dockerfile.base) which contains system
-# packages, Claude Code CLI, template archives, and MCP servers.
+# packages, template archives, and MCP servers.
 # This layer only adds application source code and bun dependencies.
 #
 # Build: DOCKER_BUILDKIT=1 docker build \
@@ -20,6 +20,15 @@ ARG BASE_IMAGE=shogo-runtime-base:latest
 FROM oven/bun:1.3-debian AS builder
 
 WORKDIR /app
+
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ nodejs npm && \
+    npm install -g node-gyp && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
@@ -52,6 +61,10 @@ COPY packages/model-catalog ./packages/model-catalog
 COPY packages/sdk ./packages/sdk
 COPY templates/runtime-template ./templates/runtime-template
 
+# Build @shogo-ai/sdk — its package.json "exports" resolve to ./dist/*,
+# so agent-runtime's `import '@shogo-ai/sdk/memory'` fails at runtime without this.
+RUN cd packages/sdk && bun install && bun run build
+
 # Pre-install runtime-template dependencies so workspaces get node_modules instantly
 RUN cd templates/runtime-template && bun install
 
@@ -74,6 +87,15 @@ RUN rm -rf packages/*/node_modules apps/*/node_modules
 FROM oven/bun:1.3-debian AS deps
 
 WORKDIR /app
+
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ nodejs npm && \
+    npm install -g node-gyp && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create user matching production uid so node_modules is pre-owned by uid 1001.
 # COPY --from=deps preserves ownership, so no --chown or chown -R needed later.

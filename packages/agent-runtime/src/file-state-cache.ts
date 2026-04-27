@@ -23,6 +23,27 @@ export interface FileReadRecord {
 
 export class FileStateCache {
   private reads = new Map<string, FileReadRecord>()
+  private editedThisTurn = new Set<string>()
+
+  /**
+   * Mark a file as edited/written during the current agent turn.
+   * Read by the read_lints tool to auto-scope diagnostics when no
+   * explicit path is provided. Cleared via resetTurn() at the start
+   * of each top-level runAgentLoop call.
+   */
+  markEditedThisTurn(path: string): void {
+    this.editedThisTurn.add(path)
+  }
+
+  /** Return the list of files edited in the current turn. */
+  getEditedThisTurn(): string[] {
+    return [...this.editedThisTurn]
+  }
+
+  /** Clear the per-turn edit set. Called at the start of each top-level turn. */
+  resetTurn(): void {
+    this.editedThisTurn.clear()
+  }
 
   recordRead(
     path: string,
@@ -113,7 +134,11 @@ export class FileStateCache {
     return lines.join('\n')
   }
 
-  /** Create an independent copy (for sub-agents). */
+  /**
+   * Create an independent copy (for sub-agents).
+   * Intentionally does NOT copy editedThisTurn — each sub-agent's turn
+   * starts with its own empty edit set.
+   */
   clone(): FileStateCache {
     const copy = new FileStateCache()
     for (const [key, value] of this.reads) {
@@ -124,5 +149,6 @@ export class FileStateCache {
 
   clear(): void {
     this.reads.clear()
+    this.editedThisTurn.clear()
   }
 }

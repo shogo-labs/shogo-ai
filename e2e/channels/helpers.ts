@@ -6,7 +6,7 @@
  *                     Local:   http://localhost:6200
  *                     Staging: https://studio-staging.shogo.ai/api/projects/<id>/agent-proxy
  *   AUTH_COOKIE     — Session cookie for authenticated environments (staging/prod)
- *                     e.g. "better-auth.session_token=abc123..."
+ *                     e.g. "shogo.session_token=abc123..."
  *   WEBHOOK_SECRET  — Shared secret for webhook channel auth (if configured)
  *   TEST_TIMEOUT    — Per-test timeout in ms (default: 120000)
  */

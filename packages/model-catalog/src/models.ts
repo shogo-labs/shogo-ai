@@ -38,12 +38,12 @@ export interface ImageModelEntry {
 
 export const MODEL_CATALOG = {
   // Anthropic — current generation
-  'claude-opus-4-6': {
-    id: 'claude-opus-4-6',
+  'claude-opus-4-7': {
+    id: 'claude-opus-4-7',
     provider: 'anthropic',
-    apiModel: 'claude-opus-4-6',
-    displayName: 'Claude Opus 4.6',
-    shortDisplayName: 'Opus 4.6',
+    apiModel: 'claude-opus-4-7',
+    displayName: 'Claude Opus 4.7',
+    shortDisplayName: 'Opus 4.7',
     tier: 'premium',
     family: 'opus',
     generation: 'current',
@@ -76,6 +76,18 @@ export const MODEL_CATALOG = {
   },
 
   // Anthropic — legacy
+  'claude-opus-4-6': {
+    id: 'claude-opus-4-6',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-6',
+    displayName: 'Claude Opus 4.6',
+    shortDisplayName: 'Opus 4.6',
+    tier: 'premium',
+    family: 'opus',
+    generation: 'legacy',
+    billingModel: 'opus',
+    maxOutputTokens: 128_000,
+  },
   'claude-sonnet-4-5-20250929': {
     id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',

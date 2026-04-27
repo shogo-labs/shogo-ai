@@ -1,41 +1,58 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { spawn, type ChildProcess } from 'child_process'
+/**
+ * Thin facade over the cross-platform recording pipeline.
+ *
+ * - Audio capture lives in the renderer (`AudioCaptureManager` using
+ *   `getUserMedia` + `getDisplayMedia` + `AudioWorklet`).
+ * - Main-process file I/O lives in {@link RecordingManager}; on macOS it
+ *   also spawns `shogo-sysaudio` for system audio.
+ * - Meeting detection (process + calendar polling) lives in
+ *   {@link MeetingDetector} — pure Node, no native dependency.
+ *
+ * This module is the glue: it owns the singletons, registers IPC handlers
+ * the preload script talks to, forwards detector events to the renderer,
+ * and starts the localhost HTTP bridge the Bun API uses in headless mode.
+ */
 import { app, ipcMain, BrowserWindow, Notification } from 'electron'
+import type { IpcMainEvent, MessageEvent as ElectronMessageEvent } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { readConfig, writeConfig } from './config'
+import { RecordingManager, type RecordingEvent } from './recording/manager'
+import {
+  MeetingDetector,
+  type MeetingDetectedEvent,
+  type MeetingEndedEvent,
+  type UpcomingMeetingEvent,
+} from './detection/meeting-detector'
+import {
+  startRecordingBridge,
+  stopRecordingBridge,
+  invokeRendererStart,
+  invokeRendererStop,
+} from './recording/bridge'
 
 const IS_DEV = !app.isPackaged
 
-interface RecordingState {
-  id: string
-  process: ChildProcess | null
-  startTime: Date
-  audioPath: string
-  duration: number
-  durationTimer: ReturnType<typeof setInterval> | null
-}
+// ---------------------------------------------------------------------------
+// Singletons
+// ---------------------------------------------------------------------------
 
-let currentRecording: RecordingState | null = null
-let monitorProcess: ChildProcess | null = null
+let manager: RecordingManager | null = null
+let detector: MeetingDetector | null = null
+let durationTimer: ReturnType<typeof setInterval> | null = null
 
-// Meeting detection state machine
-type DetectionState = 'idle' | 'mic_active' | 'detected' | 'recording' | 'maybe_ended'
+// Simple state machine that mirrors the UX we had before — when the mic
+// goes quiet for a while (inferred from the absence of an active
+// meeting-app process), we auto-stop.
+type DetectionState = 'idle' | 'detected' | 'recording' | 'maybe_ended'
 let detectionState: DetectionState = 'idle'
 let autoStopTimer: ReturnType<typeof setTimeout> | null = null
 
-function getAudioHelperPath(): string {
-  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-  if (IS_DEV) {
-    const nativeDir = path.join(__dirname, '..', 'native', 'shogo-audio')
-    // Check release build first (from `make build`), then debug (from `swift build`)
-    const release = path.join(nativeDir, '.build', 'release', 'shogo-audio')
-    if (fs.existsSync(release)) return release
-    return path.join(nativeDir, '.build', 'debug', 'shogo-audio')
-  }
-  return path.join(process.resourcesPath!, 'shogo-audio', `shogo-audio-${arch}`)
-}
+// ---------------------------------------------------------------------------
+// Paths / helpers
+// ---------------------------------------------------------------------------
 
 function getRecordingsDir(): string {
   const dir = path.join(app.getPath('userData'), 'data', 'recordings')
@@ -43,144 +60,188 @@ function getRecordingsDir(): string {
   return dir
 }
 
-function generateRecordingId(): string {
-  const now = new Date()
-  const ts = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
-  return `recording-${ts}`
+function getSysAudioBinaryPath(): string | null {
+  if (process.platform !== 'darwin') return null
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
+  if (IS_DEV) {
+    const nativeDir = path.join(__dirname, '..', 'native', 'shogo-sysaudio')
+    const candidates = [
+      path.join(nativeDir, `shogo-sysaudio-${arch}`),
+      path.join(nativeDir, '.build', 'release', 'shogo-sysaudio'),
+      path.join(nativeDir, '.build', 'debug', 'shogo-sysaudio'),
+    ]
+    for (const p of candidates) if (fs.existsSync(p)) return p
+    return null
+  }
+  const packed = path.join(process.resourcesPath!, 'shogo-sysaudio', `shogo-sysaudio-${arch}`)
+  return fs.existsSync(packed) ? packed : null
 }
 
-function sendToRenderer(channel: string, data: unknown): void {
-  const windows = BrowserWindow.getAllWindows()
-  for (const win of windows) {
+function sendToRenderer(channel: string, data?: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(channel, data)
     }
   }
 }
 
-function spawnAudioHelper(): ChildProcess {
-  const helperPath = getAudioHelperPath()
-  if (!fs.existsSync(helperPath)) {
-    throw new Error(`Audio helper not found at ${helperPath}. Run 'make build' in apps/desktop/native/shogo-audio/`)
+function getManager(): RecordingManager {
+  if (manager) return manager
+  const sysBinary = getSysAudioBinaryPath()
+  if (process.platform === 'darwin' && !sysBinary) {
+    console.warn('[Recording] shogo-sysaudio binary not found — system audio will not be captured')
   }
-
-  const proc = spawn(helperPath, [], {
-    stdio: ['pipe', 'pipe', 'pipe'],
+  manager = new RecordingManager({
+    recordingsDir: getRecordingsDir(),
+    sysAudioBinary: sysBinary,
+    onEvent: handleRecordingEvent,
   })
-
-  proc.stdout?.on('data', (data: Buffer) => {
-    const lines = data.toString().trim().split('\n')
-    for (const line of lines) {
-      try {
-        const event = JSON.parse(line)
-        handleAudioHelperEvent(event)
-      } catch {
-        console.log(`[AudioHelper] ${line}`)
-      }
-    }
-  })
-
-  proc.stderr?.on('data', (data: Buffer) => {
-    console.error(`[AudioHelper] ${data.toString().trim()}`)
-  })
-
-  proc.on('error', (err) => {
-    console.error('[Recording] Audio helper process error:', err)
-  })
-
-  return proc
+  return manager
 }
 
-function handleAudioHelperEvent(event: { type: string; data?: Record<string, unknown> }): void {
-  switch (event.type) {
-    case 'ready':
-      console.log('[Recording] Audio helper ready')
+function handleRecordingEvent(evt: RecordingEvent): void {
+  switch (evt.type) {
+    case 'session-started':
+      console.log(`[Recording] Session ${evt.session.id} started (primary: ${evt.session.primaryPath})`)
+      sendToRenderer('recording-started', { id: evt.session.id, path: evt.session.primaryPath })
       break
-
-    case 'recording_started':
-      console.log('[Recording] Recording started:', event.data?.path)
-      sendToRenderer('recording-started', {
-        id: currentRecording?.id,
-        path: event.data?.path,
+    case 'session-stopped':
+      console.log(
+        `[Recording] Session ${evt.session.id} stopped after ${evt.duration}s ` +
+        `(mic=${evt.micBytes} bytes, system=${evt.systemBytes} bytes, mixed=${evt.mixedCreated})`,
+      )
+      sendToRenderer('recording-stopped', {
+        id: evt.session.id,
+        audioPath: evt.session.primaryPath,
+        duration: evt.duration,
       })
       break
-
-    case 'recording_stopped':
-      console.log('[Recording] Recording stopped:', event.data?.path, 'duration:', event.data?.duration)
+    case 'session-aborted':
+      console.warn(`[Recording] Session ${evt.id} aborted: ${evt.reason}`)
       break
-
-    case 'mic_activated':
-      console.log('[Recording] Mic activated (external app)')
-      if (detectionState === 'idle') {
-        detectionState = 'mic_active'
-      } else if (detectionState === 'maybe_ended' && currentRecording) {
-        // Mic came back during grace period — resume
-        if (autoStopTimer) {
-          clearTimeout(autoStopTimer)
-          autoStopTimer = null
-        }
-        detectionState = 'recording'
-        sendToRenderer('recording-resumed', { id: currentRecording.id })
-      }
+    case 'source-ready':
+      console.log(`[Recording] ${evt.source} source ready: ${evt.sampleRate}Hz x${evt.channels}`)
       break
-
-    case 'mic_deactivated':
-      console.log('[Recording] Mic deactivated')
-      if (detectionState === 'mic_active') {
-        detectionState = 'idle'
-      } else if (detectionState === 'recording' && currentRecording) {
-        detectionState = 'maybe_ended'
-        const config = readConfig()
-        autoStopTimer = setTimeout(() => {
-          if (detectionState === 'maybe_ended' && currentRecording) {
-            console.log('[Recording] Auto-stopping: mic inactive for timeout period')
-            showNotification('Meeting ended', 'Recording stopped automatically.')
-            stopRecording()
-          }
-        }, config.meetings.autoStopSeconds * 1000)
-      }
+    case 'source-error':
+      console.error(`[Recording] ${evt.source} source error: ${evt.message}`)
       break
-
-    case 'meeting_detected':
-      console.log('[Recording] Meeting detected')
-      detectionState = 'detected'
-      handleMeetingDetected()
-      break
-
-    case 'upcoming_meeting':
-      console.log('[Recording] Upcoming meeting:', event.data?.title)
-      sendToRenderer('upcoming-meeting', event.data)
-      break
-
-    case 'calendar_access_granted':
-      console.log('[Recording] Calendar access granted')
-      break
-
-    case 'calendar_access_denied':
-      console.log('[Recording] Calendar access denied:', event.data?.error)
-      break
-
-    case 'monitor_started':
-      console.log('[Recording] Mic monitor started, device:', event.data?.deviceId)
-      break
-
-    case 'error':
-      console.error('[Recording] Audio helper error:', event.data?.message)
-      break
-
-    case 'shutdown':
-      console.log('[Recording] Audio helper shutting down')
+    case 'warning':
+      console.warn(`[Recording] ${evt.message}`)
       break
   }
 }
 
-function handleMeetingDetected(): void {
-  if (currentRecording) return // Already recording
+// ---------------------------------------------------------------------------
+// Public API (imported by main.ts + the HTTP bridge)
+// ---------------------------------------------------------------------------
 
+export async function startRecording(): Promise<{ id: string; audioPath: string }> {
+  const mgr = getManager()
+  if (mgr.isRecording()) throw new Error('Already recording')
+
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+  if (!win) throw new Error('Cannot start recording: no renderer window available')
+
+  const session = await mgr.startSession(process.platform)
+
+  if (durationTimer) clearInterval(durationTimer)
+  durationTimer = setInterval(() => {
+    const status = mgr.status()
+    if (status.isRecording && status.id) {
+      sendToRenderer('recording-duration', { id: status.id, duration: status.duration })
+    }
+  }, 1000)
+
+  detectionState = 'recording'
+
+  return { id: session.id, audioPath: session.primaryPath }
+}
+
+export async function stopRecording(): Promise<{ id: string; audioPath: string; duration: number } | null> {
+  const mgr = getManager()
+  if (!mgr.isRecording()) return null
+
+  if (durationTimer) {
+    clearInterval(durationTimer)
+    durationTimer = null
+  }
+  if (autoStopTimer) {
+    clearTimeout(autoStopTimer)
+    autoStopTimer = null
+  }
+
+  const result = await mgr.stopSession()
+  detectionState = 'idle'
+  return result
+}
+
+export function getRecordingStatus(): {
+  isRecording: boolean
+  id: string | null
+  duration: number
+  audioPath: string | null
+} {
+  const s = getManager().status()
+  return { isRecording: s.isRecording, id: s.id, duration: s.duration, audioPath: s.audioPath }
+}
+
+// ---------------------------------------------------------------------------
+// Detection (replaces the old Swift monitor process)
+// ---------------------------------------------------------------------------
+
+export function startMeetingMonitor(): void {
   const config = readConfig()
+  if (!config.meetings.autoDetect) {
+    console.log('[Recording] Auto-detect disabled, skipping monitor')
+    return
+  }
+  if (detector) return
 
+  detector = new MeetingDetector({ platform: process.platform })
+  detector.on('meeting-detected', (evt: MeetingDetectedEvent) => {
+    console.log(`[Recording] Meeting detected via ${evt.app} (pid ${evt.pid})`)
+    sendToRenderer('meeting-detected', { source: evt.source, app: evt.app })
+    onMeetingDetected(evt.app)
+  })
+  detector.on('meeting-ended', (evt: MeetingEndedEvent) => {
+    console.log(`[Recording] Meeting ended for ${evt.app}`)
+    onMeetingMaybeEnded()
+  })
+  detector.on('upcoming-meeting', (evt: UpcomingMeetingEvent) => {
+    console.log(`[Recording] Upcoming meeting: ${evt.title} in ${evt.minutesUntilStart}m`)
+    sendToRenderer('upcoming-meeting', evt)
+  })
+  detector.on('warning', ({ message }: { message: string }) => {
+    console.warn(`[Recording] Detector warning: ${message}`)
+  })
+
+  detector.start()
+  console.log('[Recording] Meeting detector started (pure Node)')
+}
+
+export function stopMeetingMonitor(): void {
+  if (!detector) return
+  detector.stop()
+  detector = null
+}
+
+function onMeetingDetected(appLabel: string): void {
+  const mgr = getManager()
+  if (mgr.isRecording()) {
+    // Already recording — if we were in the grace window, cancel the auto-stop.
+    if (detectionState === 'maybe_ended' && autoStopTimer) {
+      clearTimeout(autoStopTimer)
+      autoStopTimer = null
+      detectionState = 'recording'
+      sendToRenderer('recording-resumed', { id: mgr.status().id })
+    }
+    return
+  }
+
+  detectionState = 'detected'
+  const config = readConfig()
   if (config.meetings.autoRecord) {
-    showNotification('Recording started', 'A meeting was detected. Recording automatically.')
+    showNotification('Recording started', `${appLabel} meeting detected — recording automatically.`)
     startRecording().catch((err) => {
       console.error('[Recording] Auto-record failed:', err)
     })
@@ -188,15 +249,15 @@ function handleMeetingDetected(): void {
     const confirmCount = config.meetings.autoRecordConfirmCount
     const notification = new Notification({
       title: 'Meeting detected',
-      body: confirmCount >= 2
-        ? 'Start recording? (Tip: enable auto-record in settings)'
-        : 'It looks like you joined a meeting. Start recording?',
+      body:
+        confirmCount >= 2
+          ? `${appLabel} started — start recording? (Tip: enable auto-record in settings)`
+          : `${appLabel} meeting detected. Start recording?`,
       actions: [
         { type: 'button', text: 'Record' },
         { type: 'button', text: 'Ignore' },
       ],
     })
-
     notification.on('action', (_event, index) => {
       if (index === 0) {
         writeConfig({
@@ -212,235 +273,168 @@ function handleMeetingDetected(): void {
         detectionState = 'idle'
       }
     })
-
     notification.on('close', () => {
-      if (detectionState === 'detected') {
-        detectionState = 'idle'
-      }
+      if (detectionState === 'detected') detectionState = 'idle'
     })
-
     notification.show()
   }
 }
 
-function showNotification(title: string, body: string): void {
-  new Notification({ title, body }).show()
-}
-
-export async function startRecording(): Promise<{ id: string; audioPath: string }> {
-  if (currentRecording) {
-    throw new Error('Already recording')
-  }
-
-  const id = generateRecordingId()
-  const audioPath = path.join(getRecordingsDir(), `${id}.wav`)
-
-  const proc = spawnAudioHelper()
-
-  // Wait for "ready" event then send record command
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Audio helper startup timeout')), 10000)
-
-    const onData = (data: Buffer) => {
-      const lines = data.toString().trim().split('\n')
-      for (const line of lines) {
-        try {
-          const event = JSON.parse(line)
-          if (event.type === 'ready') {
-            clearTimeout(timeout)
-            proc.stdout?.off('data', onData)
-            resolve()
-          }
-        } catch {}
-      }
-    }
-
-    proc.stdout?.on('data', onData)
-    proc.on('error', (err) => {
-      clearTimeout(timeout)
-      reject(err)
-    })
-  })
-
-  proc.stdin?.write(`record ${audioPath}\n`)
-
-  const durationTimer = setInterval(() => {
-    if (currentRecording) {
-      currentRecording.duration = Math.floor(
-        (Date.now() - currentRecording.startTime.getTime()) / 1000
-      )
-      sendToRenderer('recording-duration', {
-        id: currentRecording.id,
-        duration: currentRecording.duration,
-      })
-    }
-  }, 1000)
-
-  currentRecording = {
-    id,
-    process: proc,
-    startTime: new Date(),
-    audioPath,
-    duration: 0,
-    durationTimer,
-  }
-
-  detectionState = 'recording'
-  console.log(`[Recording] Started: ${id} -> ${audioPath}`)
-
-  return { id, audioPath }
-}
-
-export async function stopRecording(): Promise<{ id: string; audioPath: string; duration: number } | null> {
-  if (!currentRecording) return null
-
-  const { id, audioPath, durationTimer, process: proc } = currentRecording
-  const duration = currentRecording.duration
-
-  if (durationTimer) clearInterval(durationTimer)
-  if (autoStopTimer) {
-    clearTimeout(autoStopTimer)
-    autoStopTimer = null
-  }
-
-  if (proc && !proc.killed) {
-    proc.stdin?.write('stop\n')
-
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        if (proc && !proc.killed) proc.kill('SIGTERM')
-        resolve()
-      }, 5000)
-
-      proc.stdin?.write('quit\n')
-      proc.on('exit', () => {
-        clearTimeout(timeout)
-        resolve()
-      })
-    })
-  }
-
-  const result = { id, audioPath, duration }
-  currentRecording = null
-  detectionState = 'idle'
-
-  sendToRenderer('recording-stopped', result)
-  console.log(`[Recording] Stopped: ${id}, duration: ${duration}s`)
-
-  return result
-}
-
-export function getRecordingStatus(): {
-  isRecording: boolean
-  id: string | null
-  duration: number
-  audioPath: string | null
-} {
-  if (!currentRecording) {
-    return { isRecording: false, id: null, duration: 0, audioPath: null }
-  }
-  return {
-    isRecording: true,
-    id: currentRecording.id,
-    duration: currentRecording.duration,
-    audioPath: currentRecording.audioPath,
-  }
-}
-
-export function startMeetingMonitor(): void {
+function onMeetingMaybeEnded(): void {
+  const mgr = getManager()
+  if (!mgr.isRecording() || detectionState !== 'recording') return
+  detectionState = 'maybe_ended'
   const config = readConfig()
-  if (!config.meetings.autoDetect) {
-    console.log('[Recording] Auto-detect disabled, skipping monitor')
-    return
-  }
-
-  if (monitorProcess) {
-    console.log('[Recording] Monitor already running')
-    return
-  }
-
-  try {
-    monitorProcess = spawnAudioHelper()
-
-    // Wait for ready, then start monitor
-    const onData = (data: Buffer) => {
-      const lines = data.toString().trim().split('\n')
-      for (const line of lines) {
-        try {
-          const event = JSON.parse(line)
-          if (event.type === 'ready') {
-            monitorProcess?.stdout?.off('data', onData)
-            monitorProcess?.stdin?.write(`monitor ${config.meetings.gracePeriodSeconds}\n`)
-            console.log('[Recording] Meeting monitor started')
-          }
-        } catch {}
-      }
+  autoStopTimer = setTimeout(() => {
+    if (detectionState === 'maybe_ended' && mgr.isRecording()) {
+      console.log('[Recording] Auto-stopping: meeting app no longer running')
+      showNotification('Meeting ended', 'Recording stopped automatically.')
+      stopRecording().catch(() => {})
     }
-
-    monitorProcess.stdout?.on('data', onData)
-
-    monitorProcess.on('exit', (code) => {
-      console.log(`[Recording] Monitor process exited: ${code}`)
-      monitorProcess = null
-    })
-  } catch (err) {
-    console.error('[Recording] Failed to start meeting monitor:', err)
-  }
+  }, config.meetings.autoStopSeconds * 1000)
 }
 
-export function stopMeetingMonitor(): void {
-  if (monitorProcess && !monitorProcess.killed) {
-    monitorProcess.stdin?.write('stop-monitor\n')
-    monitorProcess.stdin?.write('quit\n')
-    monitorProcess = null
-  }
+function showNotification(title: string, body: string): void {
+  try { new Notification({ title, body }).show() } catch { /* fall through — headless */ }
 }
+
+// ---------------------------------------------------------------------------
+// IPC handlers
+// ---------------------------------------------------------------------------
 
 export function registerRecordingIpcHandlers(): void {
+  // Renderer-driven capture lifecycle. The preload script calls these after
+  // it has set up the Web Audio pipeline so main and renderer agree on the
+  // session id used to tag PCM chunks.
+  ipcMain.handle('recording:start-session', async () => {
+    try {
+      const mgr = getManager()
+      if (mgr.isRecording()) return { ok: false, error: 'already recording' }
+      const session = await mgr.startSession(process.platform)
+
+      if (durationTimer) clearInterval(durationTimer)
+      durationTimer = setInterval(() => {
+        const s = mgr.status()
+        if (s.isRecording && s.id) {
+          sendToRenderer('recording-duration', { id: s.id, duration: s.duration })
+        }
+      }, 1000)
+      detectionState = 'recording'
+
+      return {
+        ok: true,
+        id: session.id,
+        audioPath: session.primaryPath,
+        captureSystemAudio: session.captureSystemAudio,
+        platform: session.platform,
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('recording:abort-session', (_event, arg: { sessionId?: string } = {}) => {
+    const mgr = getManager()
+    const status = mgr.status()
+    if (!status.isRecording) return { ok: true }
+    if (arg.sessionId && status.id !== arg.sessionId) return { ok: false, error: 'session id mismatch' }
+    mgr.abortSession(status.id!, 'aborted by renderer')
+    if (durationTimer) { clearInterval(durationTimer); durationTimer = null }
+    detectionState = 'idle'
+    return { ok: true }
+  })
+
+  ipcMain.handle('recording:stop-session', async () => {
+    try {
+      const result = await stopRecording()
+      if (!result) return { ok: false, error: 'not recording' }
+      return { ok: true, ...result }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // PCM chunks arrive via `ipcRenderer.postMessage` (transferable ArrayBuffer)
+  // rather than `send/invoke` so we can move large buffers with zero copies.
+  ipcMain.on('recording:pcm', (event: IpcMainEvent | ElectronMessageEvent, rawData: unknown) => {
+    const data = rawData as {
+      sessionId: string
+      source: 'mic' | 'system'
+      sampleRate: number
+      channels: number
+      bitsPerSample: number
+      frames: number
+      buffer: ArrayBuffer
+    } | undefined
+    if (!data || !(data.buffer instanceof ArrayBuffer)) return
+    const mgr = getManager()
+    mgr.writePcm(data.sessionId, data.source, data.buffer, {
+      sampleRate: data.sampleRate,
+      channels: data.channels,
+      bitsPerSample: data.bitsPerSample,
+      frames: data.frames,
+    })
+    void event // the base IpcMainEvent/MessageEvent type union resolves here — we don't need it
+  })
+
+  ipcMain.on('recording:source-error', (_event, payload: { sessionId?: string; source?: string; message?: string }) => {
+    console.error(`[Recording] renderer reported ${payload.source} error:`, payload.message)
+  })
+  ipcMain.on('recording:source-info', (_event, payload: { message?: string; data?: unknown }) => {
+    if (payload.message) console.log(`[Recording] renderer info: ${payload.message}`, payload.data ?? '')
+  })
+  ipcMain.on('recording:capture-ready', (_event, payload: { sessionId?: string; mic?: unknown; system?: unknown }) => {
+    console.log('[Recording] renderer capture pipeline ready', payload)
+  })
+
+  // Legacy public surface preserved for the React app.
   ipcMain.handle('start-recording', async () => {
-    try {
-      return await startRecording()
-    } catch (err) {
+    try { return await startRecording() } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
   })
-
   ipcMain.handle('stop-recording', async () => {
-    try {
-      return await stopRecording()
-    } catch (err) {
+    try { return await stopRecording() } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
   })
+  ipcMain.handle('get-recording-status', () => getRecordingStatus())
 
-  ipcMain.handle('get-recording-status', () => {
-    return getRecordingStatus()
-  })
-
-  ipcMain.handle('get-meeting-config', () => {
-    return readConfig().meetings
-  })
-
+  ipcMain.handle('get-meeting-config', () => readConfig().meetings)
   ipcMain.handle('set-meeting-config', (_event, config: Partial<import('./config').MeetingConfig>) => {
     const current = readConfig()
     writeConfig({ meetings: { ...current.meetings, ...config } })
-
-    // Restart monitor if auto-detect changed
     if ('autoDetect' in config) {
-      if (config.autoDetect) {
-        startMeetingMonitor()
-      } else {
-        stopMeetingMonitor()
-      }
+      if (config.autoDetect) startMeetingMonitor()
+      else stopMeetingMonitor()
     }
-
     return readConfig().meetings
   })
 }
 
+// ---------------------------------------------------------------------------
+// Bridge lifecycle — used by main.ts to let apps/api drive recording.
+// ---------------------------------------------------------------------------
+
+export async function startRecordingHttpBridge(): Promise<void> {
+  try {
+    await startRecordingBridge({
+      userDataDir: app.getPath('userData'),
+      handlers: {
+        start: async () => invokeRendererStart(),
+        stop: async () => invokeRendererStop(),
+        status: () => getRecordingStatus(),
+      },
+    })
+  } catch (err) {
+    console.warn('[Recording] HTTP bridge failed to start:', err)
+  }
+}
+
 export function cleanupRecording(): void {
-  if (currentRecording) {
+  if (manager?.isRecording()) {
     stopRecording().catch(() => {})
   }
   stopMeetingMonitor()
+  void stopRecordingBridge()
 }

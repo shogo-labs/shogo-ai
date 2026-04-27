@@ -134,11 +134,11 @@ export const CommandPalette = observer(function CommandPalette({
       {
         id: 'settings-billing',
         label: 'Plans & Billing',
-        description: 'Manage subscription and credits',
+        description: 'Manage subscription and usage',
         icon: CreditCard,
         href: '/(app)/billing',
         category: 'settings',
-        keywords: ['billing', 'plans', 'subscription', 'credits', 'upgrade'],
+        keywords: ['billing', 'plans', 'subscription', 'usage', 'upgrade'],
       },
       {
         id: 'settings-profile',
@@ -161,11 +161,11 @@ export const CommandPalette = observer(function CommandPalette({
       !localMode && {
         id: 'settings-analytics',
         label: 'Workspace Analytics',
-        description: 'View usage metrics and credit consumption',
+        description: 'View usage metrics and spend',
         icon: BarChart3,
         href: '/(app)/settings?tab=analytics',
         category: 'settings',
-        keywords: ['analytics', 'usage', 'credits', 'metrics', 'stats'],
+        keywords: ['analytics', 'usage', 'spend', 'metrics', 'stats'],
       },
     ].filter(Boolean) as CommandItem[]
 

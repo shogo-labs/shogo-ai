@@ -48,6 +48,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
+  { href: '/(admin)/general', icon: Settings, label: 'General' },
 ] as const
 
 const AI_NAV_ITEM = { href: '/(admin)/settings' as const, icon: BrainCircuit, label: 'AI' }

@@ -18,7 +18,7 @@
  * Runs in-process (same API server as ai-proxy and project-chat routes).
  */
 
-import { calculateCreditCost, proxyModelToBillingModel } from './credit-cost'
+import { calculateUsageCost, proxyModelToBillingModel } from './usage-cost'
 import * as billingService from '../services/billing.service'
 import { recordAgentCostMetric } from '../services/cost-analytics.service'
 
@@ -119,26 +119,26 @@ export function accumulateUsage(
 }
 
 /**
- * Close a billing session and charge credits based on total accumulated tokens.
- * Returns the credit cost charged (0 if no tokens or session not found).
+ * Close a billing session and charge USD based on total accumulated tokens.
+ * Returns the marked-up USD charged (0 if no tokens or session not found).
  */
 export async function closeSession(
   projectId: string,
-): Promise<{ creditCost: number; totalTokens: number }> {
+): Promise<{ billedUsd: number; rawUsd: number; totalTokens: number }> {
   const session = sessions.get(projectId)
   sessions.delete(projectId)
 
   if (!session) {
-    return { creditCost: 0, totalTokens: 0 }
+    return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
   }
 
   const totalTokens = session.inputTokens + session.cachedInputTokens + session.cacheWriteTokens + session.outputTokens
   if (totalTokens === 0) {
-    return { creditCost: 0, totalTokens: 0 }
+    return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
-  const { credits: creditCost, dollarCost } = calculateCreditCost(
+  const { rawUsd, billedUsd } = calculateUsageCost(
     session.inputTokens, session.outputTokens, billingModel,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
@@ -161,13 +161,14 @@ export async function closeSession(
   })
 
   try {
-    const result = await billingService.consumeCredits(
-      session.workspaceId,
-      session.projectId,
-      session.userId,
-      'chat_message',
-      creditCost,
-      {
+    const result = await billingService.consumeUsage({
+      workspaceId: session.workspaceId,
+      projectId: session.projectId,
+      memberId: session.userId,
+      actionType: 'chat_message',
+      rawUsd,
+      billedUsd,
+      actionMetadata: {
         inputTokens: session.inputTokens,
         cachedInputTokens: session.cachedInputTokens,
         cacheWriteTokens: session.cacheWriteTokens,
@@ -175,22 +176,22 @@ export async function closeSession(
         totalTokens,
         model: session.model,
         billingModel,
-        dollarCost,
+        rawUsd,
         requestCount: session.requestCount,
         durationMs,
-      }
-    )
+      },
+    })
 
     if (result.success) {
       console.log(
-        `[BillingSession] Charged ${creditCost} credits ($${dollarCost.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}) — remaining: ${result.remainingCredits}`
+        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
       )
     } else {
-      console.warn(`[BillingSession] Could not charge credits: ${result.error}`)
+      console.warn(`[BillingSession] Could not charge usage: ${result.error}`)
     }
   } catch (err) {
-    console.error(`[BillingSession] Failed to charge credits for project ${projectId}:`, err)
+    console.error(`[BillingSession] Failed to charge usage for project ${projectId}:`, err)
   }
 
-  return { creditCost, totalTokens }
+  return { billedUsd, rawUsd, totalTokens }
 }

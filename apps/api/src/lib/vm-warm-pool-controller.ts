@@ -56,6 +56,27 @@ export type VMManagerFactory = () => VMManagerInterface
 
 const MAX_CONSECUTIVE_FAILURES = 3
 
+/**
+ * Thrown when `_assignProject` is called but the warm pool has permanently
+ * disabled itself after exceeding `MAX_CONSECUTIVE_FAILURES` VM boot failures.
+ * This is a dedicated type so callers (e.g. project-chat `getProjectUrl`) can
+ * distinguish a permanent capability failure from a transient boot error and,
+ * on the desktop, fall back to the host RuntimeManager path safely — no VM is
+ * ever going to come back up in this session, so the "split-brain" concern
+ * that normally forbids that fallback does not apply.
+ */
+export class VMPoolPermanentlyDisabledError extends Error {
+  readonly code = 'VM_POOL_PERMANENTLY_DISABLED'
+  constructor(public readonly consecutiveFailures: number) {
+    super(
+      `VM warm pool disabled after ${consecutiveFailures} consecutive boot failures. ` +
+        `QEMU/WHPX cannot boot an agent VM on this host. Set vmIsolation.enabled=false ` +
+        `in Shogo config.json to use host execution instead, or inspect the VM boot logs.`,
+    )
+    this.name = 'VMPoolPermanentlyDisabledError'
+  }
+}
+
 export class VMWarmPoolController {
   private available = new Map<string, VMPodInfo>()
   private assigned = new Map<string, VMPodInfo>()
@@ -231,11 +252,15 @@ export class VMWarmPoolController {
     return promise
   }
 
+  /** True once the warm pool has tripped its consecutive-failure kill switch
+   *  and refuses to boot any further VMs for the remainder of this session. */
+  isPermanentlyDisabled(): boolean {
+    return this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES
+  }
+
   private async _assignProject(projectId: string): Promise<string> {
     if (this.consecutiveBootFailures >= MAX_CONSECUTIVE_FAILURES) {
-      throw new Error(
-        `VM warm pool disabled after ${this.consecutiveBootFailures} consecutive boot failures`
-      )
+      throw new VMPoolPermanentlyDisabledError(this.consecutiveBootFailures)
     }
 
     // Evict dead VM if one was assigned previously

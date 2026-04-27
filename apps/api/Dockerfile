@@ -10,6 +10,13 @@ FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
+RUN apk add --no-cache python3 make g++ nodejs npm && \
+    npm install -g node-gyp
+
 # Copy workspace root files
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
@@ -30,6 +37,10 @@ COPY apps/mobile/package.json ./apps/mobile/
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
+
+# Copy patches required by `patchedDependencies` in package.json — bun install
+# fails fast if a referenced .patch file isn't present in the build context.
+COPY patches ./patches
 
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
 COPY prisma ./prisma
@@ -67,6 +78,13 @@ FROM oven/bun:1.3-alpine AS deps
 
 WORKDIR /app
 
+# Native-module build toolchain (better-sqlite3 → node-gyp → python3).
+# Required under QEMU where no prebuilt binary matches the emulated arch
+# and better-sqlite3 has to compile from source. The Bun image ships
+# neither Node.js nor node-gyp, so we install both explicitly.
+RUN apk add --no-cache python3 make g++ nodejs npm && \
+    npm install -g node-gyp
+
 RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
 
 COPY package.json bun.lock ./
@@ -85,6 +103,9 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
+
+# Same patches directory as the builder stage — bun install fails without it.
+COPY patches ./patches
 
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
@@ -140,6 +161,10 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json .
 COPY --chown=appuser:appgroup --from=builder /app/packages/canvas-runtime/package.json ./packages/canvas-runtime/
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
+
+# Same patches as builder/deps stages — bun install --ignore-scripts at line ~189
+# also resolves `patchedDependencies` and fails without these files.
+COPY --chown=appuser:appgroup --from=builder /app/patches ./patches
 
 # Copy prisma schema, config, and migrations for runtime migrations
 COPY --chown=appuser:appgroup --from=builder /app/prisma ./prisma
