@@ -113,7 +113,26 @@ export interface AgentCostMetricData {
   toolCalls: number
   creditCost: number
   wallTimeMs: number
+  /**
+   * Legacy "didn't throw" signal — kept for back-compat only. The recommendation
+   * gate must NOT rely on this alone (boss concern #3). Use the multi-signal
+   * fields below in cost-analytics.service `isQualitySuccess()` instead.
+   */
   success: boolean
+  // -------------------------------------------------------------------------
+  // Phase 2.1 — multi-signal quality fields. All optional so older runtime
+  // versions and the failure path can keep emitting partial data.
+  // -------------------------------------------------------------------------
+  /** Subagent run id (a-<label>-<hex>) — links to transcript + feedback row. */
+  agentRunId?: string
+  /** Run hit the configured maxTurns ceiling without producing a final answer. */
+  hitMaxTurns?: boolean
+  /** Loop detector tripped during this run. */
+  loopDetected?: boolean
+  /** Auto-router escalated to a higher-tier model mid-run. */
+  escalated?: boolean
+  /** Final response was empty / whitespace / "Subagent failed:" prefix. */
+  responseEmpty?: boolean
 }
 
 export type OnAgentCostMetric = (data: AgentCostMetricData) => void
@@ -330,14 +349,21 @@ export class AgentManager {
         try { dropScreencastChannel(instanceId) } catch {}
         this.emitCostMetric({
           agentType: type,
-          model: config!.model || 'sonnet',
+          model: result.effectiveModelId || config!.model || 'sonnet',
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           cachedInputTokens: result.cacheReadTokens,
           toolCalls: result.toolCalls,
           creditCost: 0, // computed by the API server from tokens
           wallTimeMs: wallTime,
+          // Legacy boolean — true means "promise resolved", which is exactly the
+          // behaviour the boss called out. Quality lives in the fields below.
           success: true,
+          agentRunId: result.agentId,
+          hitMaxTurns: !!result.hitMaxTurns,
+          loopDetected: !!result.loopDetected,
+          escalated: !!result.escalated,
+          responseEmpty: !!result.responseEmpty,
         })
         this.cleanupStaleInstances()
         return result
@@ -371,6 +397,15 @@ export class AgentManager {
           creditCost: 0,
           wallTimeMs: wallTime,
           success: false,
+          agentRunId: instanceId,
+          // A thrown error is, by definition, an unsuccessful run. The most
+          // common quality-signal interpretation is "the response was empty"
+          // — the user got nothing back. Other signals stay false so we
+          // don't poison the loop/escalation aggregates with non-evidence.
+          hitMaxTurns: false,
+          loopDetected: false,
+          escalated: false,
+          responseEmpty: true,
         })
         this.cleanupStaleInstances()
         return inst!.result!

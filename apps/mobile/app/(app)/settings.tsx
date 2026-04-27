@@ -2755,6 +2755,23 @@ function WorkspaceCostTab() {
     [http, workspaceId],
   )
 
+  const fetchSubagentOverrides = useCallback(
+    () => api.listSubagentOverrides(http, workspaceId!),
+    [http, workspaceId],
+  )
+
+  const putSubagentOverride = useCallback(
+    (body: { agentType: string; model: string; provider?: string | null; projectId?: string | null }) =>
+      api.upsertSubagentOverride(http, workspaceId!, body),
+    [http, workspaceId],
+  )
+
+  const deleteSubagentOverride = useCallback(
+    (agentType: string, projectId?: string | null) =>
+      api.deleteSubagentOverride(http, workspaceId!, agentType, projectId),
+    [http, workspaceId],
+  )
+
   if (!workspaceId) {
     return (
       <View className="py-12 items-center">
@@ -2768,6 +2785,9 @@ function WorkspaceCostTab() {
       workspaceId={workspaceId}
       fetchCostAnalytics={fetchCostAnalytics}
       postCostAnalytics={postCostAnalytics}
+      fetchSubagentOverrides={fetchSubagentOverrides}
+      putSubagentOverride={putSubagentOverride}
+      deleteSubagentOverride={deleteSubagentOverride}
     />
   )
 }

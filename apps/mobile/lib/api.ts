@@ -277,6 +277,117 @@ export const api = {
     return (res.data as any).data ?? res.data
   },
 
+  // ─── Sub-Agent Model Overrides (Phase 1: boss concern #2) ────
+  // Lets the user override which model a built-in sub-agent uses, so the
+  // optimizer's recommendations are actually applicable in one click.
+
+  async listSubagentOverrides(
+    http: HttpClient,
+    workspaceId: string,
+  ) {
+    return await this.getWorkspaceCostAnalytics<Array<{
+      id: string
+      workspaceId: string
+      projectId: string | null
+      agentType: string
+      model: string
+      provider: string | null
+      updatedBy: string | null
+      createdAt: string
+      updatedAt: string
+    }>>(http, workspaceId, 'subagent-overrides')
+  },
+
+  async upsertSubagentOverride(
+    http: HttpClient,
+    workspaceId: string,
+    body: {
+      agentType: string
+      model: string
+      provider?: string | null
+      projectId?: string | null
+    },
+  ) {
+    const res = await http.post<{ data: any }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/subagent-overrides`,
+      body,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async deleteSubagentOverride(
+    http: HttpClient,
+    workspaceId: string,
+    agentType: string,
+    projectId?: string | null,
+  ) {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+    await http.delete(
+      `/api/workspaces/${workspaceId}/cost-analytics/subagent-overrides/${encodeURIComponent(agentType)}${qs}`,
+    )
+  },
+
+  async submitSubagentFeedback(
+    http: HttpClient,
+    agentRunId: string,
+    feedback: 'up' | 'down' | null,
+  ) {
+    await http.post(`/api/subagent-runs/${encodeURIComponent(agentRunId)}/feedback`, { feedback })
+  },
+
+  // ─── Optimizer in Action (Phase 3.3) ─────────────────────────
+  // Single-shot dataset for the report surface: which overrides have been
+  // applied, what the before/after cost & quality looked like, eval pass-rates
+  // per (agent, model), and any active shadow A/Bs. The "show this to the
+  // boss" view leans on this endpoint.
+
+  async getOptimizerInActionReport(
+    http: HttpClient,
+    workspaceId: string,
+  ) {
+    return await this.getWorkspaceCostAnalytics<{
+      workspaceId: string
+      generatedAt: string
+      overrides: Array<{
+        id: string
+        agentType: string
+        projectId: string | null
+        fromModel: string | null
+        toModel: string
+        appliedAt: string
+        updatedBy: string | null
+        avgCostBefore: number | null
+        avgCostAfter: number | null
+        qualitySuccessBefore: number | null
+        qualitySuccessAfter: number | null
+        runsBefore: number
+        runsAfter: number
+      }>
+      evalScores: Array<{
+        agentType: string
+        model: string
+        suite: string
+        passRate: number
+        totalCases: number
+        capturedAt: string
+      }>
+      experiments: Array<{
+        id: string
+        name: string
+        agentType: string
+        modelA: string
+        modelB: string
+        status: string
+        expectedEndAt: string | null
+        runsA: number
+        runsB: number
+        verdict: 'inconclusive' | 'A' | 'B' | 'tie'
+        reasons: string[]
+      }>
+      monthlySavingsUSD: number
+    }>(http, workspaceId, 'optimizer-in-action')
+  },
+
   // ─── Publish ─────────────────────────────────────────────
 
   async getPublishState(http: HttpClient, projectId: string) {
