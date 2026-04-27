@@ -32,6 +32,9 @@ interface CancelMessage {
 type IncomingMessage = TunnelRequest | CancelMessage | { type: 'ping' } | { type: string }
 
 const DEFAULT_POLL_INTERVAL_S = 60
+const AUTH_FAILURE_BACKOFF_S = 300 // 5 min once we hit AUTH_FAILURE_THRESHOLD consecutive 401/403s
+const AUTH_FAILURE_THRESHOLD = 3
+const AUTH_RECOVERY_SUCCESS_THRESHOLD = AUTH_FAILURE_THRESHOLD
 const WS_IDLE_TIMEOUT_MS = 30 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 25_000
 const BACKOFF_BASE_MS = 1_000
@@ -57,6 +60,8 @@ let stopped = false
 let currentPollInterval = DEFAULT_POLL_INTERVAL_S
 let wsReconnectAttempt = 0
 let lastHeartbeatError: string | null = null
+let consecutiveAuthFailures = 0
+let consecutiveAuthSuccesses = 0
 const activeAbortControllers = new Map<string, AbortController>()
 
 function getReconnectDelay(): number {
@@ -202,11 +207,25 @@ async function heartbeatLoop() {
 
   try {
     const result = await sendHeartbeat()
-    currentPollInterval = result.nextPollIn || DEFAULT_POLL_INTERVAL_S
+    const nextPollIn = result.nextPollIn || DEFAULT_POLL_INTERVAL_S
+    const wasInAuthBackoff = consecutiveAuthFailures >= AUTH_FAILURE_THRESHOLD
+
+    if (wasInAuthBackoff) {
+      consecutiveAuthSuccesses++
+      if (consecutiveAuthSuccesses < AUTH_RECOVERY_SUCCESS_THRESHOLD) {
+        currentPollInterval = AUTH_FAILURE_BACKOFF_S
+        scheduleNextPoll()
+        return
+      }
+    }
+
+    currentPollInterval = nextPollIn
     if (lastHeartbeatError) {
       console.log('[InstanceTunnel] Heartbeat recovered')
       lastHeartbeatError = null
     }
+    consecutiveAuthFailures = 0
+    consecutiveAuthSuccesses = 0
 
     if (result.wsRequested && !ws) {
       console.log('[InstanceTunnel] Cloud requested WebSocket — connecting...')
@@ -214,11 +233,29 @@ async function heartbeatLoop() {
       return
     }
   } catch (err: any) {
+    const isAuthFailure = /HTTP 40[13]\b/.test(err.message || '')
+    if (isAuthFailure) {
+      consecutiveAuthFailures++
+      consecutiveAuthSuccesses = 0
+    } else {
+      consecutiveAuthFailures = 0
+      consecutiveAuthSuccesses = 0
+    }
     if (err.message !== lastHeartbeatError) {
       console.error(`[InstanceTunnel] Heartbeat error: ${err.message}`)
       lastHeartbeatError = err.message
     }
-    currentPollInterval = DEFAULT_POLL_INTERVAL_S
+    if (consecutiveAuthFailures >= AUTH_FAILURE_THRESHOLD) {
+      if (currentPollInterval !== AUTH_FAILURE_BACKOFF_S) {
+        console.warn(
+          `[InstanceTunnel] ${consecutiveAuthFailures} consecutive auth failures \u2014 backing off to ${AUTH_FAILURE_BACKOFF_S}s. ` +
+            `Run \`shogo login\` once you've issued a fresh API key.`
+        )
+      }
+      currentPollInterval = AUTH_FAILURE_BACKOFF_S
+    } else {
+      currentPollInterval = DEFAULT_POLL_INTERVAL_S
+    }
   }
 
   scheduleNextPoll()

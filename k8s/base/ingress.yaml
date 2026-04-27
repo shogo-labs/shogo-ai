@@ -17,7 +17,9 @@ metadata:
     # Increase timeout for long-running agent operations and streaming
     nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "1800"
-    nginx.ingress.kubernetes.io/proxy-body-size: "12m"
+    # Matches MAX_TOTAL_SIZE for project import bundles in
+    # apps/api/src/routes/project-export-import.ts
+    nginx.ingress.kubernetes.io/proxy-body-size: "200m"
 spec:
   ingressClassName: nginx
   rules:

@@ -145,7 +145,7 @@ export default function App() {
 **For a single-feature project**, you can write a simpler App.tsx without tabs. Once the user asks for a second feature, refactor into the tabbed shell and move the first feature into its own component file.
 
 ### Validation Workflow
-After writing or editing files under \`src/\`, **always** call \`read_lints\` to check for TypeScript errors:
+After writing or editing files under \`src/\`, **always** call \`read_lints\` with no arguments to check for TypeScript errors. It auto-scopes to the files you just touched — you do not need to pass a path:
 - If \`read_lints\` returns \`ok: true\` — the code is clean, proceed normally.
 - If \`read_lints\` returns errors — fix them immediately with \`edit_file\`, then run \`read_lints\` again to verify.
 
@@ -154,6 +154,8 @@ After writing or editing files under \`src/\`, **always** call \`read_lints\` to
 **From React code (src/):** Always use relative URLs — \`fetch('/api/items')\`. The app is served behind a proxy that routes \`/api/*\` to the skill server automatically.
 
 **From agent tools (web, exec):** Use the full URL — \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`
+
+**From scripts or server-side code (Node/Bun):** Read the port from \`process.env.SKILL_SERVER_PORT\` (currently \`${SKILL_PORT}\` on this runtime). The port varies per deployment — do NOT hardcode it. Example: \`const port = process.env.SKILL_SERVER_PORT ?? '${SKILL_PORT}'; await fetch(\\\`http://localhost:\${port}/api/items\\\`)\`.
 
 ### Build Systems, Not Reports
 
@@ -198,7 +200,7 @@ model Lead {
 }
 \`\`\`
 
-That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
+That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. In scripts or server-side code, read the port from \`process.env.SKILL_SERVER_PORT\` (currently \`${SKILL_PORT}\` on this runtime) — do not hardcode it, it varies per deployment. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
 
 **CRITICAL — No custom servers:** NEVER create your own HTTP server (Hono, Express, Fastify, etc.). Do NOT write \`server.ts\`, \`server.tsx\`, or any file that imports a server framework and calls \`.listen()\` or \`Bun.serve()\`. The skill server is **always running** at \`http://localhost:${SKILL_PORT}\` with a \`/health\` endpoint — it starts automatically and provides full CRUD on every model once a schema is written. There are three ways to get data into the app:
 1. **Integration Tools SDK** — For external APIs (Meta Ads, Gmail, Slack, etc.), use \`useTools()\` from \`@shogo-ai/sdk/tools\` directly in React code. This proxies through the runtime automatically — no custom server needed.
@@ -641,7 +643,7 @@ Your workspace is a Vite + React app. Build features as components under \`src/c
 - \`@shogo-ai/sdk/tools\` — ToolsClient, useTools (call installed integration tools from code)
 
 ### Validation
-After writing or editing files under \`src/\`, call \`read_lints\` to check for errors and fix immediately.
+After writing or editing files under \`src/\`, call \`read_lints\` with no arguments to check for errors and fix immediately. It auto-scopes to the files you just touched.
 `
 
 // ---------------------------------------------------------------------------

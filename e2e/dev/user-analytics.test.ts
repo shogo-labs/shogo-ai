@@ -123,9 +123,9 @@ test.describe("User Analytics", () => {
     await expect(page.getByText("Upgrade to Business")).toBeVisible()
   })
 
-  // ── Profile: Usage & Credits ────────────────────────────────────────────
+  // ── Profile: Usage & Spend ──────────────────────────────────────────────
 
-  test("profile page shows Usage & Credits section", async () => {
+  test("profile page shows Usage & Spend section", async () => {
     await page.goto("/profile")
     await page.waitForLoadState("networkidle")
 
@@ -133,7 +133,7 @@ test.describe("User Analytics", () => {
     await expect(page.getByText("Account Information")).toBeVisible({
       timeout: 10_000,
     })
-    await expect(page.getByText("Usage & Credits")).toBeVisible({
+    await expect(page.getByText("Usage & Spend")).toBeVisible({
       timeout: 10_000,
     })
   })
@@ -148,7 +148,7 @@ test.describe("User Analytics", () => {
 
     await expect(page.getByText("Sessions")).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText("Usage Events")).toBeVisible()
-    await expect(page.getByText("Credits Used")).toBeVisible()
+    await expect(page.getByText("Spend")).toBeVisible()
   })
 
   test("profile usage shows AI usage table", async () => {
@@ -174,7 +174,7 @@ test.describe("User Analytics", () => {
     expect(response.status).toBe(200)
     expect(response.ok).toBe(true)
     expect(response.data).toHaveProperty("usageEvents")
-    expect(response.data).toHaveProperty("totalCreditsConsumed")
+    expect(response.data).toHaveProperty("totalSpendUsd")
     expect(response.data).toHaveProperty("chatSessions")
   })
 

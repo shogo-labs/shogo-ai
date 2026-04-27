@@ -241,7 +241,7 @@ function isStreamingRequest(method: string, cleanPath: string): boolean {
 
 // ─── WebSocket handler (called from Bun.serve websocket config) ─────────────
 
-export function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
+export async function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
   const { instanceId, workspaceId } = ws.data || {}
   if (!instanceId || !workspaceId) {
     ws.close(4001, 'Missing instance context')
@@ -257,9 +257,28 @@ export function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
   }
   tunnels.set(instanceId, conn)
 
-  registerTunnelOwnership(instanceId).catch((err) => {
+  // Await ownership registration BEFORE marking the instance 'online' in
+  // Postgres. Otherwise another pod seeing the DB row flip to online can
+  // race ahead of the Redis write and 503 with `{ code: 'offline' }`.
+  // The inner whenReady() guard also absorbs the cold-start window where
+  // Redis is still connecting.
+  try {
+    await registerTunnelOwnership(instanceId)
+  } catch (err) {
     console.warn('[RemoteControl] registerTunnelOwnership failed:', (err as Error).message)
-  })
+  }
+
+  // The WS may have closed while we were awaiting Redis (cold start can
+  // add ~200–2000 ms on the first call). If handleInstanceWsClose already
+  // ran and marked the row 'offline', we must NOT flip it back to 'online'
+  // here — that would leave the DB showing an online instance whose
+  // underlying WS is already dead.
+  if (!tunnels.has(instanceId)) {
+    console.warn(
+      `[RemoteControl] Instance ${instanceId} WS closed during registration; skipping online write`,
+    )
+    return
+  }
 
   prisma.instance.update({
     where: { id: instanceId },
@@ -533,6 +552,10 @@ function sendTunnelStreamRequest(
 // ─── REST routes ────────────────────────────────────────────────────────────
 
 export function instanceRoutes() {
+  // Kick off init eagerly. registerTunnelOwnership / getTunnelOwner now
+  // await whenReady() internally, so any WS auth or relay that lands
+  // during this boot window will block briefly instead of silently
+  // no-oping against a null Redis client and returning 503.
   initTunnelRedis().catch((err) => {
     console.error('[RemoteControl] Failed to initialize tunnel Redis:', err.message)
   })
@@ -692,6 +715,50 @@ export function instanceRoutes() {
     })))
 
     return c.json({ instances: withLiveStatus })
+  })
+
+
+  // GET /instances/online — Trimmed list of online instances (for Phase 3 chat environment picker)
+  router.get('/instances/online', async (c) => {
+    const auth = c.get('auth') as any
+    if (!auth?.userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    const workspaceId = c.req.query('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { userId: auth.userId, workspaceId },
+    })
+    if (!member) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+
+    const instances = await prisma.instance.findMany({
+      where: { workspaceId },
+      orderBy: { lastSeenAt: 'desc' },
+    })
+
+    const online = (await Promise.all(
+      instances.map(async (inst) => {
+        const isOnline = tunnels.has(inst.id) || (await isTunnelConnectedAnywhere(inst.id))
+        return isOnline ? inst : null
+      })
+    )).filter((x): x is NonNullable<typeof x> => x !== null)
+
+    return c.json({
+      instances: online.map((inst) => ({
+        id: inst.id,
+        name: inst.name,
+        hostname: inst.hostname,
+        os: inst.os,
+        arch: inst.arch,
+        lastSeenAt: inst.lastSeenAt,
+      })),
+    })
   })
 
   // GET /instances/:id — Instance details

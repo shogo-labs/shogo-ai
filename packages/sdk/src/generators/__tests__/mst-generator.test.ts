@@ -57,7 +57,7 @@ describe('MST Model Generator', () => {
     const result = generateMSTModel(mockWorkspaceModel as any, [mockWorkspaceModel as any])
 
     expect(result.modelName).toBe('Workspace')
-    expect(result.fileName).toBe('workspace.model.ts')
+    expect(result.fileName).toBe('workspace.model.tsx')
     expect(result.code).toContain('export const WorkspaceModel = types')
     expect(result.code).toContain('.model("Workspace"')
     expect(result.code).toContain('id: types.identifier')
@@ -103,7 +103,7 @@ describe('MST Collection Generator', () => {
     const result = generateMSTCollection(mockWorkspaceModel as any)
 
     expect(result.modelName).toBe('Workspace')
-    expect(result.fileName).toBe('workspace.collection.ts')
+    expect(result.fileName).toBe('workspace.collection.tsx')
     expect(result.code).toContain('export const WorkspaceCollection = types')
     expect(result.code).toContain('.model("WorkspaceCollection"')
     expect(result.code).toContain('items: types.map(WorkspaceModel)')
@@ -148,7 +148,7 @@ describe('MST Domain Generator', () => {
   it('should generate domain code with all collections', () => {
     const result = generateMSTDomain([mockWorkspaceModel as any, mockProjectModel as any])
 
-    expect(result.fileName).toBe('domain.ts')
+    expect(result.fileName).toBe('domain.tsx')
     expect(result.code).toContain('export const DomainStore = types')
     expect(result.code).toContain('workspaceCollection: types.optional(WorkspaceCollection')
     expect(result.code).toContain('projectCollection: types.optional(ProjectCollection')

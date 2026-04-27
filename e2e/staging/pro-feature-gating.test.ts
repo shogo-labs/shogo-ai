@@ -43,7 +43,7 @@ test.describe("Pro Feature Gating", () => {
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
-    await expect(page.getByText(/of 205/)).toBeVisible()
+    await expect(page.getByText(/\$[\d.]+ of \$[\d.]+/)).toBeVisible()
   })
 
   // ── Sidebar Gating ───────────────────────────────────────────────

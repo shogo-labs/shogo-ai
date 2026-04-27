@@ -5,7 +5,7 @@
  *
  * Services consumed directly by routes, hooks, and auth:
  * - workspace: Workspace management
- * - billing: Subscriptions and credits
+ * - billing: Subscriptions and usage
  * - git: Local git operations
  * - checkpoint: Project state snapshots and rollback
  * - github: GitHub App integration

@@ -36,6 +36,17 @@ import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
+import {
+  type ContentReplacementState,
+  createContentReplacementState,
+  stableTransformContext,
+} from './stable-compaction'
+import {
+  fingerprintMessages,
+  fingerprintSystem,
+  fingerprintTools,
+  formatPositions,
+} from './prefix-fingerprint'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
@@ -69,6 +80,13 @@ import { buildGuideRegistry, CAPABILITIES_INDEX } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
+import {
+  PREVIEW_SUBDIR,
+  BUILD_LOG_FILE,
+  CONSOLE_LOG_FILE,
+  previewBuildLogPath,
+  previewConsoleLogPath,
+} from './runtime-log-paths'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -263,6 +281,31 @@ export class AgentGateway {
   private lspManager: WorkspaceLSPManager | null = null
   /** Tracks files the agent has read across turns for cache-aware compaction */
   private fileStateCache = new FileStateCache()
+  /**
+   * Per-session compaction-decision state for the per-API-call transformContext.
+   *
+   * pi-agent-core's agent loop re-reads `agent.state.messages` before every LLM
+   * request. Without this state, re-running the three cheap compaction layers
+   * (budget / microcompact / snip) produces different bytes for the same
+   * historical tool_result on each call, which invalidates the prompt cache
+   * prefix and forces a full re-write every request (observed ~3.5x cache-write
+   * amplification in a 6-call turn).
+   *
+   * The state is write-once per tool_call_id, guaranteeing byte-identical
+   * output for any id once it's been "decided". See stable-compaction.ts for
+   * the invariant proof. Reset whenever sessionManager.compact() rewrites the
+   * prefix (the surviving tool_use_ids are a subset, but the summary message
+   * changes the wire prefix upstream of them anyway, so keeping stale state
+   * gains nothing and prune on reset is simpler).
+   */
+  private contentReplacementStates = new Map<string, ContentReplacementState>()
+  /**
+   * Per-session user-turn counter used only by prefix-cache debug logging.
+   * Bumped once on entry to `runTurn`. Paired with a per-turn call counter
+   * (closure-scoped inside runTurn) so log lines read `turn=T call=N`.
+   * Not consulted for correctness; safe to clear or leave stale.
+   */
+  private turnCounters = new Map<string, number>()
   /** Shared index engine for workspace-wide search (code + files) */
   private indexEngine: import('./index-engine').IndexEngine | null = null
   /** Workspace knowledge graph for structural analysis */
@@ -1113,6 +1156,7 @@ export class AgentGateway {
     }
 
     const interactionMode = options?.interactionMode || 'agent'
+    console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
     const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
@@ -1143,6 +1187,10 @@ export class AgentGateway {
       workspaceDir: this.workspaceDir,
       clearHistory: () => {
         this.sessionManager.clearHistory(sessionId)
+        // History wipe = prefix rewrite. Drop per-session compaction state
+        // so fresh decisions are taken against the new (empty) history.
+        this.contentReplacementStates.delete(sessionId)
+        this.turnCounters.delete(sessionId)
       },
       getMessages: () => [...session.messages],
       reloadConfig: () => this.reloadConfig(),
@@ -1225,6 +1273,7 @@ export class AgentGateway {
       this.promptOverrides.delete('mcp_discovery_guide')
     }
 
+    console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
     // Interaction mode system prompt injection
     if (interactionMode === 'plan') {
       const planModePrompt = [
@@ -1323,9 +1372,11 @@ export class AgentGateway {
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
-      canvasFileWatcher: this.config.canvasMode === 'code'
-        ? this.canvasFileWatcher
-        : undefined,
+      // Always provide the watcher so live file events (file.changed /
+      // file.deleted) are broadcast to SSE subscribers (e.g. the IDE tab
+      // for Cursor-style live editing). The watcher is a cheap per-
+      // workspace singleton; no downside to making it always-on.
+      canvasFileWatcher: this.canvasFileWatcher,
       lspManager: this.lspManager ?? undefined,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
@@ -1531,6 +1582,9 @@ export class AgentGateway {
         console.log(
           `${this.logPrefix} Pre-turn autocompact: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
         )
+        // Autocompact rewrites the prefix — drop stable-compaction state so
+        // the new transformContext decisions are taken against the new history.
+        this.contentReplacementStates.delete(sessionId)
         history = this.sessionManager.buildHistory(sessionId)
         history = applyToolResultBudget(history, contextBudgetChars)
         history = microcompact(history).messages
@@ -1680,6 +1734,19 @@ export class AgentGateway {
       }
 
       const maxIterations = parseInt(process.env.AGENT_MAX_ITERATIONS || '200', 10)
+
+      // --- Prefix-cache debug: turn-start snapshot ---
+      // Emits short hashes of the three inputs Anthropic keys its prompt
+      // cache on: tools, system (split stable/dynamic), and history prefix.
+      // Compare across turns: anything that changes here is a cache-break
+      // cause. `stable` changing is the smoking gun for wasted cache.
+      const turnNum = (this.turnCounters.get(sessionId) ?? 0) + 1
+      this.turnCounters.set(sessionId, turnNum)
+      let apiCallNum = 0
+
+      // Reset per-turn edit tracking so read_lints auto-scope starts clean.
+      this.fileStateCache.resetTurn()
+
       const result = await runAgentLoop({
         provider,
         model: modelId,
@@ -1701,11 +1768,30 @@ export class AgentGateway {
           const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
           if (!r) return null
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
+          // LLM autocompact rewrites the prefix — drop per-session replacement
+          // decisions so fresh ones are taken against the new history. Keeping
+          // stale entries is correctness-safe (inert) but wastes memory and
+          // can mis-freeze an id that survived into the summary.
+          this.contentReplacementStates.delete(sessionId)
           let h = this.sessionManager.buildHistory(sessionId)
           h = applyToolResultBudget(h, contextBudgetChars)
           h = microcompact(h).messages
           h = snipConsumedResults(h)
           return h
+        },
+        // Per-API-call transform. This runs before EVERY LLM request inside
+        // the agent loop (every tool-use iteration). The stable wrapper makes
+        // compaction decisions monotone and write-once per tool_call_id so
+        // the prompt-cache prefix stays byte-identical across calls for any
+        // id that's already been decided. See stable-compaction.ts.
+        transformContext: (messages) => {
+          let state = this.contentReplacementStates.get(sessionId)
+          if (!state) {
+            state = createContentReplacementState()
+            this.contentReplacementStates.set(sessionId, state)
+          }
+          const result = stableTransformContext(messages, state, contextBudgetChars)
+          return result.messages
         },
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
@@ -1862,6 +1948,9 @@ export class AgentGateway {
           console.log(
             `${this.logPrefix} Post-turn compaction: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
           )
+          // Prefix rewritten — drop stable-compaction state. Next turn's
+          // transformContext takes fresh decisions against the new history.
+          this.contentReplacementStates.delete(sessionId)
         }
       }
 
@@ -1918,8 +2007,8 @@ export class AgentGateway {
         if (result.error) {
           const msg = result.error.message || 'An unexpected error occurred'
           const isIterationLimit = /maximum iteration limit/i.test(msg)
-          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits/i.test(msg)
-          const isBillingError = /billing|insufficient.credits|upgrade your plan/i.test(msg)
+          const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|insufficient.credits|usage limit/i.test(msg)
+          const isBillingError = /billing|insufficient.credits|usage limit|upgrade your plan|usage.based pricing/i.test(msg)
           console.error(
             `${this.logPrefix} Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
           )
@@ -1928,7 +2017,7 @@ export class AgentGateway {
             const errorText = isIterationLimit
               ? 'I reached my iteration limit before finishing the task. Send a follow-up message like "continue" to pick up where I left off.'
               : isBillingError
-                ? 'Insufficient credits. Please check your plan or AI provider settings.'
+                ? 'Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.'
                 : isProviderError
                   ? `AI provider error: ${msg}`
                   : `I encountered an issue processing your message: ${msg}`
@@ -2238,6 +2327,18 @@ export class AgentGateway {
 
     // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
+    // 7c. Runtime build + console log tails (canvas mode only — Vite preview pipeline)
+    if (activeMode === 'canvas') {
+      const previewUrl = this.buildPreviewUrlContext()
+      if (previewUrl) {
+        pushDynamic('preview-url', previewUrl)
+      }
+      const runtimeLogs = this.buildRuntimeLogsContext()
+      if (runtimeLogs) {
+        pushDynamic('runtime-logs', runtimeLogs)
+      }
+    }
+
     // 8. Agent template context (stable per-project, but read from disk)
     const agentTemplatePath = join(this.workspaceDir, '.template')
     if (existsSync(agentTemplatePath)) {
@@ -2321,6 +2422,138 @@ export class AgentGateway {
     const stableText = stableParts.join('\n\n---\n\n')
     const dynamicText = dynamicParts.join('\n\n---\n\n')
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
+  }
+
+  /**
+   * URL block describing where the running preview app is reachable.
+   *
+   * This exists because the QA subagent contract requires a URL, and the main
+   * agent previously had no reliable way to discover one (it was inventing
+   * paths under .shogo/ and reading `vite.config.ts`, where the template
+   * hardcodes port 5173 — a value that is always overridden at runtime by
+   * whichever launcher spawned the process).
+   *
+   * Two ways this block gets a URL, in priority order:
+   *   1. `PUBLIC_PREVIEW_URL` env var — set by the launcher (knative API or
+   *      local RuntimeManager). This is the authoritative URL the user /
+   *      browser sees. Trust it unconditionally when present.
+   *   2. A built `dist/index.html` under the workspace — indicates the
+   *      standalone agent-runtime is self-serving the app on its own port
+   *      (`process.env.PORT`). Fall back to localhost in that case.
+   *
+   * Intentionally positive-only: do NOT name the hallucinated paths / ports
+   * this replaces. Naming "don't use X" still puts X in the model's working
+   * set.
+   *
+   * Returns null only when neither signal is present — no point telling the
+   * agent about a URL that won't load.
+   */
+  private buildPreviewUrlContext(): string | null {
+    const publicUrl = process.env.PUBLIC_PREVIEW_URL?.trim() || ''
+
+    const runtimePort = parseInt(process.env.PORT || '8080', 10)
+    const internalUrl = `http://localhost:${runtimePort}/`
+
+    // dist/ may live at either workspaceDir/project/dist (k8s layout, where
+    // the project lives in a /project subdir) or workspaceDir/dist (local
+    // RuntimeManager layout, where workspaceDir === projectDir).
+    const hasDist =
+      existsSync(join(this.workspaceDir, 'project', 'dist', 'index.html')) ||
+      existsSync(join(this.workspaceDir, 'dist', 'index.html'))
+
+    if (publicUrl.length === 0 && !hasDist) return null
+
+    const externalUrl = publicUrl.length > 0 ? publicUrl : internalUrl
+    const hasDistinctPublic = publicUrl.length > 0 && publicUrl !== internalUrl
+
+    const lines: string[] = [
+      '## Running App Preview',
+      '',
+      `The user's app is running and reachable at **${externalUrl}**.`,
+    ]
+    if (hasDistinctPublic) {
+      lines.push(`Internal (from inside this runtime): \`${internalUrl}\`.`)
+    }
+    lines.push(
+      '',
+      'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.',
+    )
+    return lines.join('\n')
+  }
+
+  /**
+   * Last lines of `project/.build.log` and `project/.console.log` (Vite/API preview + runtime console).
+   * Used only when canvas mode is active; returns null if both files are missing or empty.
+   */
+  private buildRuntimeLogsContext(): string | null {
+    const LINE_LIMIT = 30
+    const MAX_BLOCK_CHARS = 3000
+    const buildPath = previewBuildLogPath(this.workspaceDir)
+    const consolePath = previewConsoleLogPath(this.workspaceDir)
+
+    let buildTail = ''
+    if (existsSync(buildPath)) {
+      try {
+        const raw = readFileSync(buildPath, 'utf-8')
+        const joined = raw.split(/\r?\n/).slice(-LINE_LIMIT).join('\n').trimEnd()
+        buildTail =
+          joined.length > MAX_BLOCK_CHARS ? joined.slice(-MAX_BLOCK_CHARS) : joined
+      } catch {
+        buildTail = ''
+      }
+    }
+
+    let consoleTail = ''
+    if (existsSync(consolePath)) {
+      try {
+        const raw = readFileSync(consolePath, 'utf-8')
+        const joined = raw.split(/\r?\n/).slice(-LINE_LIMIT).join('\n').trimEnd()
+        consoleTail =
+          joined.length > MAX_BLOCK_CHARS ? joined.slice(-MAX_BLOCK_CHARS) : joined
+      } catch {
+        consoleTail = ''
+      }
+    }
+
+    if (!buildTail && !consoleTail) {
+      return null
+    }
+
+    const buildLogRelative = `${PREVIEW_SUBDIR}/${BUILD_LOG_FILE}`
+    const consoleLogRelative = `${PREVIEW_SUBDIR}/${CONSOLE_LOG_FILE}`
+    const buildLogAbsolute = buildPath
+    const consoleLogAbsolute = consolePath
+
+    const lines: string[] = [
+      '## Runtime Logs (auto-injected, last ~30 lines each)',
+      '',
+      [
+        'These tails are refreshed every turn. Both logs live under the **`project/`** app template directory (same folder as `package.json` for the preview).',
+        `**Build:** \`${buildLogRelative}\` — full path \`${buildLogAbsolute}\`.`,
+        `**Console:** \`${consoleLogRelative}\` — full path \`${consoleLogAbsolute}\`.`,
+        'Use `read_file` with paths relative to the workspace root (e.g. `read_file({ path: \'project/.build.log\' })` and `read_file({ path: \'project/.console.log\' })`).',
+        'Shell `exec` depends on cwd — prefer absolute paths or `cd` into the workspace first.',
+        'The console file is cleared when the preview **starts** or **restarts** (fresh build session).',
+      ].join(' '),
+      '',
+      `### Build log (\`${buildLogRelative}\`)`,
+      `On disk: \`${buildLogAbsolute}\`. Written by the preview pipeline (Vite dev server + template API stdout/stderr). Lines use prefixes such as \`[stdout]\`, \`[stderr]\`, \`[api-stdout]\`. If the last lines show an error, fix it before claiming work is done.`,
+      '',
+      '```',
+      buildTail || '(empty)',
+      '```',
+      '',
+      `### Console log (\`${consoleLogRelative}\`)`,
+      [
+        `On disk: \`${consoleLogAbsolute}\`. Lines include forwarded preview/Vite output and gateway lifecycle events (\`emitLog\`) — same lines the user sees in the mobile app "Logs" tab.`,
+      ].join(' '),
+      '',
+      '```',
+      consoleTail || '(empty)',
+      '```',
+    ]
+
+    return lines.join('\n')
   }
 
   /**
@@ -2447,6 +2680,8 @@ export class AgentGateway {
       lines.push('')
       lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it.`)
       lines.push('')
+      lines.push(`If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`)
+      lines.push('')
       lines.push('To add new models or change the schema, edit `.shogo/server/schema.prisma`.')
       lines.push('Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts`.')
       lines.push('For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `.shogo/server/custom-routes.ts` (it already exists).')
@@ -2477,6 +2712,8 @@ export class AgentGateway {
       }
 
       lines.push('')
+      lines.push(`If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`)
+      lines.push('')
       lines.push(regenGuide)
       return lines.join('\n')
     }
@@ -2490,6 +2727,8 @@ export class AgentGateway {
         genError,
         '```',
         'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
+        '',
+        `If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`,
         '',
         regenGuide,
       ].join('\n')

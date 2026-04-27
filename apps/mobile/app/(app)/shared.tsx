@@ -202,7 +202,10 @@ export default observer(function SharedWithMePage() {
         onPress={() => handleProjectPress(project)}
         className="flex-1 mx-1.5 mb-3 rounded-xl bg-card overflow-hidden border border-border"
       >
-        <View className={cn('aspect-video items-center justify-center', getPlaceholderColor(project.name || ''))}>
+        <View
+          style={{ aspectRatio: 16 / 9 }}
+          className={cn('items-center justify-center', getPlaceholderColor(project.name || ''))}
+        >
           <FolderOpen size={28} className="text-white/30" />
           {/* Shared badge */}
           <View className="absolute top-2 left-2 flex-row items-center bg-black/30 rounded-md px-2 py-0.5">

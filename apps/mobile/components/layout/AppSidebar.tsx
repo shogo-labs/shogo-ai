@@ -88,11 +88,10 @@ import {
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
-  formatCredits,
-  DAILY_CREDITS,
+  formatUsd,
   getPlanDisplayName,
-  getTotalCreditsForPlan,
-  getCreditsCapacityForDisplay,
+  getIncludedUsdForPlan,
+  getIncludedUsdCapacityForDisplay,
 } from '../../lib/billing-config'
 import { api } from '../../lib/api'
 import { trackPurchase } from '../../lib/tracking'
@@ -630,12 +629,12 @@ function WorkspaceSwitcher({
     || 'free'
   const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
   const effectiveBalance = billingData.effectiveBalance
-  const planIdForCredits = resolvedPlanId !== 'free' ? resolvedPlanId : undefined
-  const creditsRemaining =
-    effectiveBalance?.total ?? getTotalCreditsForPlan(planIdForCredits)
-  const creditsTotal = Math.max(
-    getCreditsCapacityForDisplay(planIdForCredits, effectiveBalance?.total, effectiveBalance?.monthlyAllocation),
-    1,
+  const planIdForUsd = resolvedPlanId !== 'free' ? resolvedPlanId : undefined
+  const usdRemaining =
+    effectiveBalance?.total ?? getIncludedUsdForPlan(planIdForUsd)
+  const usdTotal = Math.max(
+    getIncludedUsdCapacityForDisplay(planIdForUsd, effectiveBalance?.total, effectiveBalance?.monthlyIncludedAllocationUsd),
+    0.01,
   )
 
   return (
@@ -723,25 +722,28 @@ function WorkspaceSwitcher({
             bounces={false}
             overScrollMode="never"
           >
-            {/* Credits */}
+            {/* Usage */}
             {showBilling && currentWorkspace && (
               <>
                 <View className="px-4 py-3 gap-2">
                   <View className="flex-row items-center justify-between">
-                    <Text className="text-sm text-muted-foreground">Credits</Text>
+                    <Text className="text-sm text-muted-foreground">Usage</Text>
                     <Text className="text-sm font-medium text-foreground">
-                      {formatCredits(creditsRemaining)} left
+                      {formatUsd(usdRemaining)} left
                     </Text>
                   </View>
                   <View className="h-1.5 rounded-full bg-muted overflow-hidden">
                     <View
                       className="h-full rounded-full bg-primary"
-                      style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
+                      style={{ width: `${Math.min(100, (usdRemaining / usdTotal) * 100)}%` }}
                     />
                   </View>
                   {effectiveBalance && (
                     <Text className="text-xs text-muted-foreground">
-                      Daily: {formatCredits(effectiveBalance.dailyCredits)}{resolvedPlanId !== 'free' ? ` \u00B7 Monthly: ${formatCredits(effectiveBalance.monthlyCredits)}` : ''}
+                      Daily: {formatUsd(effectiveBalance.dailyIncludedUsd)}{resolvedPlanId !== 'free' ? ` \u00B7 Monthly: ${formatUsd(effectiveBalance.monthlyIncludedUsd)}` : ''}
+                      {effectiveBalance.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0
+                        ? ` \u00B7 Overage: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
+                        : ''}
                     </Text>
                   )}
                 </View>
@@ -1368,8 +1370,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-            {/* Marketplace hidden until ready for production */}
-            {false && features.marketplace && (
+            {features.marketplace && (
               <NavItem
                 icon={Store}
                 label="Marketplace"
@@ -1423,7 +1424,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                 <Text className="text-sm font-medium text-foreground">Upgrade to Pro</Text>
                 <Text className="text-xs text-muted-foreground">
                   {billingData.effectiveBalance
-                    ? `${formatCredits(billingData.effectiveBalance.total)} credits left`
+                    ? `${formatUsd(billingData.effectiveBalance.total)} usage left`
                     : 'Unlock more benefits'}
                 </Text>
               </View>

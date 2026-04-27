@@ -230,10 +230,15 @@ describe('File State Cache — tool integration', () => {
     expect(ctx.fileStateCache!.hasBeenRead('data.txt')).toBe(false)
   })
 
-  test('edit_file invalidates fileStateCache entry', async () => {
+  test('edit_file refreshes fileStateCache with post-edit content', async () => {
+    // edit_file does NOT invalidate the cache; it updates it with the
+    // post-edit state via recordEdit so subsequent staleness checks within
+    // the same turn continue to work without forcing a re-read.
     const ctx = createCtx()
-    writeFileSync(join(tmpDir, 'code.ts'), 'const x = 1\nconst y = 2\n')
-    ctx.fileStateCache!.recordRead('code.ts', Date.now(), 2)
+    const filePath = join(tmpDir, 'code.ts')
+    writeFileSync(filePath, 'const x = 1\nconst y = 2\n')
+    const mtime = Math.floor(Date.now())
+    ctx.fileStateCache!.recordRead('code.ts', mtime, 2, undefined, 'const x = 1\nconst y = 2\n')
 
     const tool = getTool(ctx, 'edit_file')
     await tool.execute('t1', {
@@ -242,9 +247,13 @@ describe('File State Cache — tool integration', () => {
       new_string: 'const x = 42',
     })
 
-    expect(ctx.fileStateCache!.hasBeenRead('code.ts')).toBe(false)
-    // Verify the edit actually happened
-    const content = readFileSync(join(tmpDir, 'code.ts'), 'utf-8')
+    // The cache entry should still exist and should now reflect the edited content.
+    expect(ctx.fileStateCache!.hasBeenRead('code.ts')).toBe(true)
+    const record = ctx.fileStateCache!.getRecord('code.ts')
+    expect(record?.content).toContain('const x = 42')
+
+    // Verify the edit actually landed on disk.
+    const content = readFileSync(filePath, 'utf-8')
     expect(content).toContain('const x = 42')
   })
 })
@@ -500,32 +509,33 @@ describe('Prompt Cache Ordering', () => {
     // We can't easily instantiate AgentGateway in a unit test, but we can
     // verify the structural contract: the loadBootstrapContext method should
     // place tool guides and coding guides before AGENTS.md / MEMORY.md content.
-    // We'll test this by reading the gateway source and checking section order.
+    // We test this by reading the gateway source and checking section order.
     const src = readFileSync(
       join(__dirname, '..', 'gateway.ts'),
       'utf-8',
     )
 
-    // Use the actual separator comment (not the description reference)
-    const stableBoundaryIdx = src.indexOf('// ==== PROMPT_CACHE_STABLE_BOUNDARY ====')
-    expect(stableBoundaryIdx).toBeGreaterThan(0)
+    // The STABLE/DYNAMIC zones are delimited by comment markers in the source.
+    const stableZoneIdx = src.indexOf('// ---- STABLE ZONE')
+    const dynamicZoneIdx = src.indexOf('// ---- DYNAMIC ZONE')
+    expect(stableZoneIdx).toBeGreaterThan(0)
+    expect(dynamicZoneIdx).toBeGreaterThan(stableZoneIdx)
 
-    // CODE_AGENT_GENERAL_GUIDE should be in the stable zone (before boundary)
-    const codingGuideIdx = src.indexOf("stableParts.push(CODE_AGENT_GENERAL_GUIDE)")
-    expect(codingGuideIdx).toBeGreaterThan(0)
-    expect(codingGuideIdx).toBeLessThan(stableBoundaryIdx)
+    // CODE_AGENT_GENERAL_GUIDE should live in the stable zone.
+    const codingGuideIdx = src.indexOf("pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)")
+    expect(codingGuideIdx).toBeGreaterThan(stableZoneIdx)
+    expect(codingGuideIdx).toBeLessThan(dynamicZoneIdx)
 
-    // AGENTS.md loading should be in the dynamic zone (after boundary)
-    const agentsMdIdx = src.indexOf("const files = ['AGENTS.md'")
-    expect(agentsMdIdx).toBeGreaterThan(stableBoundaryIdx)
+    // Dynamic workspace content (workspace tree / memory / per-turn sections)
+    // should all live after the dynamic zone marker.
+    const treeIdx = src.indexOf("pushDynamic('workspace-tree'")
+    expect(treeIdx).toBeGreaterThan(dynamicZoneIdx)
 
-    // Memory loading should be in the dynamic zone
-    const memoryIdx = src.indexOf("resolveWorkspaceConfigFilePath(this.workspaceDir, 'MEMORY.md')")
-    expect(memoryIdx).toBeGreaterThan(stableBoundaryIdx)
-
-    // Workspace tree should be in the dynamic zone
-    const treeIdx = src.indexOf("dynamicParts.push(workspaceTree)")
-    expect(treeIdx).toBeGreaterThan(stableBoundaryIdx)
+    // Final assembly keeps stable before dynamic.
+    const stableJoinIdx = src.indexOf('const stableText = stableParts.join')
+    const dynamicJoinIdx = src.indexOf('const dynamicText = dynamicParts.join')
+    expect(stableJoinIdx).toBeGreaterThan(0)
+    expect(dynamicJoinIdx).toBeGreaterThan(stableJoinIdx)
   })
 
   test('stable and dynamic parts are joined in correct order', () => {
@@ -534,7 +544,8 @@ describe('Prompt Cache Ordering', () => {
       'utf-8',
     )
 
-    // The final return should spread stableParts first, then dynamicParts
-    expect(src).toContain('[...stableParts, ...dynamicParts].join')
+    // The final concat should emit the stable prefix before the dynamic suffix,
+    // separated by CACHE_BOUNDARY so Anthropic's prompt cache can reuse the prefix.
+    expect(src).toContain('stableText + CACHE_BOUNDARY + dynamicText')
   })
 })

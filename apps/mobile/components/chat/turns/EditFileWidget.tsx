@@ -88,34 +88,34 @@ export const EditFileWidget = memo(function EditFileWidget({
       {/* Header */}
       <Pressable
         onPress={handleToggle}
-        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-900 dark:bg-gray-950"
+        className="group w-full flex-row items-center gap-1.5 py-1.5 px-2 bg-gray-100 dark:bg-gray-950 border border-gray-200 dark:border-transparent"
       >
         <View className="group-hover:hidden">
           <FileEdit className="w-3 h-3 text-primary" size={12} />
         </View>
         <View className="hidden group-hover:flex">
           {isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronDown className="w-3 h-3 text-gray-800 dark:text-gray-400" size={12} />
           ) : (
-            <ChevronRight className="w-3 h-3 text-gray-500" size={12} />
+            <ChevronRight className="w-3 h-3 text-gray-800 dark:text-gray-400" size={12} />
           )}
         </View>
 
-        <View className="bg-gray-800 rounded px-1 py-0.5">
-          <Text className="text-[8px] font-medium text-gray-400 uppercase tracking-wide">
+        <View className="bg-gray-200 dark:bg-gray-800 rounded px-1 py-0.5">
+          <Text className="text-[8px] font-medium text-gray-800 dark:text-gray-300 uppercase tracking-wide">
             {langLabel}
           </Text>
         </View>
 
-        <Text className="flex-1 font-mono text-[10px] text-gray-300" numberOfLines={1}>
+        <Text className="flex-1 font-mono text-[11px] font-medium text-foreground" numberOfLines={1}>
           {basename}
         </Text>
 
         {(added > 0 || removed > 0) && (
           <Text className="font-mono text-[9px] mr-1">
-            {added > 0 && <Text className="text-emerald-500">+{added}</Text>}
-            {added > 0 && removed > 0 && <Text className="text-gray-600"> </Text>}
-            {removed > 0 && <Text className="text-red-400">-{removed}</Text>}
+            {added > 0 && <Text className="text-emerald-600 dark:text-emerald-500">+{added}</Text>}
+            {added > 0 && removed > 0 && <Text className="text-gray-500 dark:text-gray-600"> </Text>}
+            {removed > 0 && <Text className="text-red-600 dark:text-red-400">-{removed}</Text>}
           </Text>
         )}
 
@@ -132,11 +132,11 @@ export const EditFileWidget = memo(function EditFileWidget({
 
       {/* Expanded diff view */}
       {isExpanded && (
-        <View className="bg-gray-900 dark:bg-gray-950 border-t border-gray-800">
+        <View className="bg-gray-50 dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800">
           {tool.state === "streaming" && !oldString && !newString && (
             <View className="flex-row items-center gap-1.5 px-2 py-2">
               <Loader2 className="w-3 h-3 text-primary" size={12} />
-              <Text className="text-[10px] text-gray-500">Editing…</Text>
+              <Text className="text-[10px] text-gray-800 dark:text-gray-400">Editing…</Text>
             </View>
           )}
 
@@ -146,7 +146,7 @@ export const EditFileWidget = memo(function EditFileWidget({
                 <View
                   key={i}
                   className={cn(
-                    "flex-row min-h-[16px]",
+                    "flex-row min-h-[18px]",
                     line.type === "removed" && "bg-red-500/15",
                     line.type === "added" && "bg-emerald-500/15",
                   )}
@@ -154,10 +154,10 @@ export const EditFileWidget = memo(function EditFileWidget({
                   <View className="w-5 items-center justify-center">
                     <Text
                       className={cn(
-                        "text-[10px] font-mono",
-                        line.type === "removed" && "text-red-400",
-                        line.type === "added" && "text-emerald-400",
-                        line.type === "context" && "text-gray-600",
+                        "text-[11px] font-mono",
+                        line.type === "removed" && "text-red-700 dark:text-red-400",
+                        line.type === "added" && "text-emerald-700 dark:text-emerald-400",
+                        line.type === "context" && "text-gray-700 dark:text-gray-500",
                       )}
                     >
                       {line.type === "removed" ? "-" : line.type === "added" ? "+" : " "}
@@ -165,10 +165,10 @@ export const EditFileWidget = memo(function EditFileWidget({
                   </View>
                   <Text
                     className={cn(
-                      "flex-1 text-[10px] font-mono leading-[16px] px-1",
-                      line.type === "removed" && "text-red-300",
-                      line.type === "added" && "text-emerald-300",
-                      line.type === "context" && "text-gray-400",
+                      "flex-1 text-[11px] font-mono leading-[18px] px-1",
+                      line.type === "removed" && "text-red-800 dark:text-red-300",
+                      line.type === "added" && "text-emerald-800 dark:text-emerald-300",
+                      line.type === "context" && "text-foreground",
                     )}
                     selectable
                   >
@@ -180,8 +180,8 @@ export const EditFileWidget = memo(function EditFileWidget({
           )}
 
           {tool.state === "error" && tool.error && (
-            <View className="bg-red-500/10 px-2 py-1.5 border-t border-gray-800">
-              <Text className="text-[10px] font-mono text-red-400" selectable>
+            <View className="bg-red-500/10 px-2 py-1.5 border-t border-gray-200 dark:border-gray-800">
+              <Text className="text-[10px] font-mono text-red-600 dark:text-red-400" selectable>
                 {tool.error}
               </Text>
             </View>

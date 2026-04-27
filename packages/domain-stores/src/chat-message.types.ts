@@ -16,6 +16,7 @@ export interface ChatMessageType {
   imageData?: string
   parts?: string
   createdAt: Date
+  agent: string
 }
 
 export interface ChatMessageCreateInput {
@@ -24,6 +25,7 @@ export interface ChatMessageCreateInput {
   content: string
   imageData?: string
   parts?: string
+  agent?: string
 }
 
 export interface ChatMessageUpdateInput {
@@ -32,4 +34,5 @@ export interface ChatMessageUpdateInput {
   content?: string
   imageData?: string
   parts?: string
+  agent?: string
 }

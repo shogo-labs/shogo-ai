@@ -4,8 +4,19 @@
  * Thumbnail API Routes
  *
  * Endpoints for managing project thumbnail images.
- * Storage strategy: tries S3 first, falls back to base64 data URL in the DB
- * (so it works locally without MinIO/Docker).
+ *
+ * Storage strategy: the thumbnail is an "artifact" in the Cursor
+ * `cloud-agent-artifacts` sense — a derived visual asset that can be
+ * firewalled independently of the primary data plane. We write it through
+ * the dedicated artifact S3 client/bucket so security teams can block the
+ * `artifacts.*` host without killing chat or tool calls. When artifact env
+ * vars are unset the helpers transparently fall back to the default S3
+ * client + `S3_WORKSPACES_BUCKET`, so existing deployments keep working.
+ *
+ * If S3 isn't reachable at all (local dev with no MinIO, customer with the
+ * artifact host explicitly blocked) we fall back to a base64 data URL
+ * stored in Postgres. This is the "graceful degradation" promised by
+ * docs/my-machines-networking.md's failure-modes table.
  */
 
 import { Hono } from 'hono'
@@ -14,12 +25,12 @@ import { prisma } from '../lib/prisma'
 import { validateOutboundUrl } from '../lib/url-validation'
 
 async function saveThumbnail(projectId: string, pngBuffer: Buffer): Promise<string> {
-  // Try S3 first
   try {
-    const { getS3Client, getPresignedReadUrl } = await import('../lib/s3')
-    const bucket = process.env.S3_WORKSPACES_BUCKET || 'shogo-workspaces'
-    const key = `thumbnails/${projectId}.png`
-    const s3 = getS3Client()
+    const { getArtifactS3Client, getArtifactBucket, buildArtifactKey, getArtifactPresignedReadUrl } =
+      await import('../lib/s3')
+    const bucket = getArtifactBucket()
+    const key = buildArtifactKey('thumbnails', `${projectId}.png`)
+    const s3 = getArtifactS3Client()
 
     await s3.send(new PutObjectCommand({
       Bucket: bucket,
@@ -29,10 +40,9 @@ async function saveThumbnail(projectId: string, pngBuffer: Buffer): Promise<stri
       CacheControl: 'max-age=3600',
     }))
 
-    const url = await getPresignedReadUrl(key, { bucket, expiresIn: 86400 * 7 })
+    const url = await getArtifactPresignedReadUrl(key, { expiresIn: 86400 * 7 })
     return url
   } catch {
-    // S3 unavailable — fall back to base64 data URL stored in DB
     const base64 = pngBuffer.toString('base64')
     return `data:image/png;base64,${base64}`
   }

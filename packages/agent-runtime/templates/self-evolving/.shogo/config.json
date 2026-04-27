@@ -1,10 +1,15 @@
 {
+  "heartbeatInterval": 3600,
+  "heartbeatEnabled": true,
   "activeMode": "canvas",
   "webEnabled": true,
   "browserEnabled": true,
   "shellEnabled": true,
-  "heartbeatEnabled": true,
   "imageGenEnabled": true,
   "memoryEnabled": true,
-  "quickActionsEnabled": true
+  "quickActionsEnabled": true,
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-sonnet-4-6"
+  }
 }

@@ -62,6 +62,8 @@ export function generateTypes(
     '',
   ]
 
+  const enumNames = new Set(enums.map(e => e.name))
+
   // Generate enums
   if (enums.length > 0) {
     lines.push('// ============================================================================')
@@ -82,7 +84,7 @@ export function generateTypes(
   lines.push('')
 
   for (const model of models) {
-    lines.push(...generateModelType(model))
+    lines.push(...generateModelType(model, enumNames))
   }
 
   // Generate input types
@@ -96,9 +98,19 @@ export function generateTypes(
   }
 
   // Generate hook types
-  lines.push(...generateHookTypes(models))
+  lines.push(...generateHookTypes(models, enumNames))
 
   return lines.join('\n')
+}
+
+/**
+ * Resolve the name used for a model's interface. Defaults to `${name}Type`
+ * but falls back to `${name}` when that would collide with an enum of the
+ * same name (e.g. model Notification + enum NotificationType).
+ */
+function resolveModelTypeName(modelName: string, enumNames: Set<string>): string {
+  const candidate = `${modelName}Type`
+  return enumNames.has(candidate) ? modelName : candidate
 }
 
 /**
@@ -141,9 +153,10 @@ function mapPrismaType(field: PrismaField): string {
 /**
  * Generate type for a single model
  */
-function generateModelType(model: PrismaModel): string[] {
+function generateModelType(model: PrismaModel, enumNames: Set<string> = new Set()): string[] {
+  const typeName = resolveModelTypeName(model.name, enumNames)
   const lines: string[] = [
-    `export interface ${model.name}Type {`,
+    `export interface ${typeName} {`,
   ]
 
   // Add all fields
@@ -205,7 +218,7 @@ function generateInputTypes(model: PrismaModel): string[] {
 /**
  * Generate hook types
  */
-function generateHookTypes(models: PrismaModel[]): string[] {
+function generateHookTypes(models: PrismaModel[], enumNames: Set<string> = new Set()): string[] {
   const lines: string[] = [
     '// ============================================================================',
     '// Hook Types',
@@ -247,7 +260,8 @@ function generateHookTypes(models: PrismaModel[]): string[] {
   ]
 
   for (const model of models) {
-    lines.push(`  ${model.name}?: ModelHooks<${model.name}CreateInput, ${model.name}UpdateInput, ${model.name}Type>`)
+    const typeName = resolveModelTypeName(model.name, enumNames)
+    lines.push(`  ${model.name}?: ModelHooks<${model.name}CreateInput, ${model.name}UpdateInput, ${typeName}>`)
   }
 
   lines.push('}')
@@ -284,16 +298,18 @@ export function generateModelTypes(model: PrismaModel, enums: PrismaEnum[] = [],
       .map(f => f.type)
   )
 
+  const emittedEnumNames = new Set<string>()
   if (modelEnumTypes.size > 0) {
     const relevantEnums = enums.filter(e => modelEnumTypes.has(e.name))
     for (const enumDef of relevantEnums) {
       lines.push(`export type ${enumDef.name} = ${enumDef.values.map(v => `'${v.name}'`).join(' | ')}`)
       lines.push('')
+      emittedEnumNames.add(enumDef.name)
     }
   }
 
   // Add model type
-  lines.push(...generateModelType(model))
+  lines.push(...generateModelType(model, emittedEnumNames))
 
   // Add input types
   lines.push(...generateInputTypes(model))

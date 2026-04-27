@@ -244,7 +244,7 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
           border: 'none',
           backgroundColor: 'transparent',
         } as any}
-        allow="clipboard-write"
+        allow="clipboard-write; clipboard-read; microphone; camera; display-capture; autoplay; fullscreen; geolocation; midi; encrypted-media; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
       />
     </View>
   )

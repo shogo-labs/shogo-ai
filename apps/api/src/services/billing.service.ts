@@ -1,14 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Billing Service - Prisma-based billing operations
- * Replaces billingDomain.createStore() for subscriptions, credits, usage
+ * Billing Service — USD usage wallet + Stripe metered overage.
+ *
+ * Replaces the legacy credit-based ledger. Spend is tracked in USD; every
+ * action charges raw provider cost times `MARKUP_MULTIPLIER` (Cursor-style).
+ * Deduction order: daily included -> monthly included -> overage.
+ *
+ * Overage is opt-in per workspace. When enabled, marked-up USD beyond
+ * monthly included accrues to `overageAccumulatedUsd` and is reported to
+ * a Stripe metered subscription item (created lazily on the first overage
+ * event). It is invoiced at period end by Stripe.
  */
 
-import { prisma, CreditSource, SubscriptionStatus, BillingInterval } from '../lib/prisma';
-import { DAILY_CREDITS, MONTHLY_DAILY_CAP, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
+import { prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma';
+import {
+  DAILY_INCLUDED_USD,
+  MONTHLY_DAILY_CAP_USD,
+  PLAN_INCLUDED_USD,
+  getMonthlyIncludedForPlan,
+} from '../config/usage-plans';
+import { getOveragePriceConfig } from '../config/stripe-prices';
+import { USAGE_OVERAGE_METERING_ENABLED } from '../config/feature-flags';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+
+/**
+ * USD source a usage event was charged against. Mirrors the DB enum.
+ */
+export type UsageSource = 'daily' | 'monthly' | 'overage'
 
 /**
  * Get subscription for a workspace
@@ -31,34 +51,36 @@ export async function getSubscriptions(workspaceId: string) {
 }
 
 /**
- * Get credit ledger for a workspace
+ * Get USD usage wallet for a workspace.
+ *
+ * Kept under the legacy name `getCreditLedger` as a thin compat alias below
+ * so external callers don't break during the rollout.
  */
-export async function getCreditLedger(workspaceId: string) {
-  return prisma.creditLedger.findUnique({
+export async function getUsageWallet(workspaceId: string) {
+  return prisma.usageWallet.findUnique({
     where: { workspaceId },
   });
 }
 
+/** @deprecated Use getUsageWallet. */
+export const getCreditLedger = getUsageWallet;
+
 /**
- * Allocate free credits for a new workspace (daily + monthly starter credits)
+ * Allocate free-tier wallet for a new workspace (daily included, no monthly).
  */
-export async function allocateFreeCredits(workspaceId: string) {
+export async function allocateFreeWallet(workspaceId: string) {
   const now = new Date();
 
-  // Check if ledger already exists
-  const existing = await prisma.creditLedger.findUnique({
+  const existing = await prisma.usageWallet.findUnique({
     where: { workspaceId },
   });
+  if (existing) return existing;
 
-  if (existing) {
-    return existing;
-  }
-
-  return prisma.creditLedger.create({
+  return prisma.usageWallet.create({
     data: {
       workspaceId,
-      monthlyCredits: PLAN_CREDITS.free,
-      dailyCredits: DAILY_CREDITS,
+      monthlyIncludedUsd: PLAN_INCLUDED_USD.free,
+      dailyIncludedUsd: DAILY_INCLUDED_USD,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
@@ -66,35 +88,43 @@ export async function allocateFreeCredits(workspaceId: string) {
   });
 }
 
-/**
- * Allocate monthly credits based on subscription plan
- */
-export async function allocateMonthlyCredits(
-  workspaceId: string,
-  planId: string
-) {
-  const monthlyCredits = getMonthlyCreditsForPlan(planId);
+/** @deprecated Use allocateFreeWallet. */
+export const allocateFreeCredits = allocateFreeWallet;
 
+/**
+ * Allocate the monthly included USD for a subscription plan. Resets
+ * accumulated overage so the upcoming period starts clean (the flushed
+ * overage should have already been reported to Stripe by `consumeUsage`).
+ */
+export async function allocateMonthlyIncluded(
+  workspaceId: string,
+  planId: string,
+) {
+  const monthlyIncludedUsd = getMonthlyIncludedForPlan(planId);
   const now = new Date();
 
-  return prisma.creditLedger.upsert({
+  return prisma.usageWallet.upsert({
     where: { workspaceId },
     create: {
       workspaceId,
-      monthlyCredits,
-      monthlyAllocation: monthlyCredits,
-      dailyCredits: DAILY_CREDITS,
+      monthlyIncludedUsd,
+      monthlyIncludedAllocationUsd: monthlyIncludedUsd,
+      dailyIncludedUsd: DAILY_INCLUDED_USD,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
     },
     update: {
-      monthlyCredits,
-      monthlyAllocation: monthlyCredits,
+      monthlyIncludedUsd,
+      monthlyIncludedAllocationUsd: monthlyIncludedUsd,
+      overageAccumulatedUsd: 0,
       lastMonthlyReset: now,
     },
   });
 }
+
+/** @deprecated Use allocateMonthlyIncluded. */
+export const allocateMonthlyCredits = allocateMonthlyIncluded;
 
 /**
  * Check if workspace has an active paid subscription (pro, business, enterprise).
@@ -150,30 +180,43 @@ export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boole
 }
 
 /**
- * Check if workspace has sufficient credits (without deducting).
- * Uses lazy daily reset logic for accurate balance, including the monthly
- * cap on daily credit dispensing (MONTHLY_DAILY_CAP).
+ * Check if workspace has sufficient USD to cover `minimumRequiredUsd`.
+ * Applies the same lazy daily reset logic `consumeUsage` uses, including
+ * the monthly cap on daily dispensing (`MONTHLY_DAILY_CAP_USD`). Overage
+ * is treated as available when it's enabled AND the hard cap allows it.
  */
-export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Promise<boolean> {
+export async function hasBalance(
+  workspaceId: string,
+  minimumRequiredUsd = 0.001,
+): Promise<boolean> {
   if (isLocalMode) return true
 
-  let ledger = await prisma.creditLedger.findUnique({ where: { workspaceId } });
-  if (!ledger) {
-    ledger = await allocateFreeCredits(workspaceId);
+  let wallet = await prisma.usageWallet.findUnique({ where: { workspaceId } });
+  if (!wallet) {
+    wallet = await allocateFreeWallet(workspaceId);
   }
-  if (!ledger) return false;
+  if (!wallet) return false;
 
   const now = new Date();
-  const needsDailyReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
+  const needsDailyReset = now.toDateString() !== new Date(wallet.lastDailyReset).toDateString();
 
-  let daily = ledger.dailyCredits;
+  let daily = wallet.dailyIncludedUsd;
   if (needsDailyReset) {
-    const dispensed = isNewMonth(now, ledger.lastMonthlyReset) ? 0 : ledger.dailyCreditsDispensedThisMonth;
-    daily = dispensed + DAILY_CREDITS <= MONTHLY_DAILY_CAP ? DAILY_CREDITS : 0;
+    const dispensed = isNewMonth(now, wallet.lastMonthlyReset) ? 0 : wallet.dailyUsedThisMonthUsd;
+    daily = dispensed + DAILY_INCLUDED_USD <= MONTHLY_DAILY_CAP_USD ? DAILY_INCLUDED_USD : 0;
   }
 
-  return (daily + ledger.monthlyCredits) >= minimumRequired;
+  const included = daily + wallet.monthlyIncludedUsd;
+  if (included >= minimumRequiredUsd) return true;
+
+  if (!wallet.overageEnabled) return false;
+  if (wallet.overageHardLimitUsd == null) return true;
+  const overageRoom = Math.max(0, wallet.overageHardLimitUsd - wallet.overageAccumulatedUsd);
+  return included + overageRoom >= minimumRequiredUsd;
 }
+
+/** @deprecated Use hasBalance. Legacy credit name. */
+export const hasCredits = hasBalance;
 
 function isNewMonth(now: Date, lastMonthlyReset: Date): boolean {
   return now.getUTCMonth() !== lastMonthlyReset.getUTCMonth() ||
@@ -190,19 +233,40 @@ function isFkConstraintError(err: unknown): boolean {
   return false
 }
 
+export interface ConsumeUsageParams {
+  workspaceId: string
+  projectId: string | null
+  memberId: string
+  actionType: string
+  /** Raw provider cost in USD (no markup). Optional — falls back to billedUsd. */
+  rawUsd?: number
+  /** Marked-up USD to charge the workspace. */
+  billedUsd: number
+  actionMetadata?: Record<string, unknown>
+}
+
+export interface ConsumeUsageResult {
+  success: boolean
+  error?: string
+  /** Remaining included USD after the debit (daily + monthly). */
+  remainingIncludedUsd?: number
+  /** How much of the debit hit overage (USD). */
+  overageChargedUsd?: number
+  /** Source of the deduction. */
+  source?: UsageSource
+}
+
 /**
- * Consume credits for an action.
- * Deduction order: daily → monthly → insufficient.
+ * Consume USD for an action.
+ * Deduction order: daily included -> monthly included -> overage (if enabled).
  * Retries on projectId FK constraint violations (race with project creation).
  */
-export async function consumeCredits(
-  workspaceId: string,
-  projectId: string | null,
-  memberId: string,
-  actionType: string,
-  creditCost: number,
-  actionMetadata?: Record<string, unknown>
-): Promise<{ success: boolean; error?: string; remainingCredits?: number }> {
+export async function consumeUsage(
+  params: ConsumeUsageParams,
+): Promise<ConsumeUsageResult> {
+  const { workspaceId, projectId, memberId, actionType, billedUsd, actionMetadata } = params
+  const rawUsd = params.rawUsd ?? null
+
   if (isLocalMode) {
     try {
       await prisma.usageEvent.create({
@@ -211,8 +275,9 @@ export async function consumeCredits(
           projectId,
           memberId,
           actionType,
-          creditCost: 0,
-          creditSource: 'daily',
+          rawUsd,
+          billedUsd: 0,
+          source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
           actionMetadata: actionMetadata ?? null,
@@ -221,12 +286,19 @@ export async function consumeCredits(
     } catch (e) {
       console.warn('[billing] Failed to record local usage event:', e)
     }
-    return { success: true, remainingCredits: Infinity }
+    return { success: true, remainingIncludedUsd: Infinity, overageChargedUsd: 0, source: 'daily' }
   }
 
   for (let attempt = 0; ; attempt++) {
     try {
-      return await _consumeCreditsTransaction(workspaceId, projectId, memberId, actionType, creditCost, actionMetadata)
+      const result = await _consumeUsageTransaction(params)
+      if (result.success && (result.overageChargedUsd ?? 0) > 0) {
+        // Fire-and-forget metered report. Stripe is eventually-consistent.
+        reportOverageToStripe(workspaceId, result.overageChargedUsd!).catch((err) =>
+          console.error('[billing] failed to report overage to Stripe:', err),
+        )
+      }
+      return result
     } catch (err) {
       if (projectId && isFkConstraintError(err) && attempt < FK_RETRY_DELAYS.length) {
         console.warn(`[billing] Project ${projectId} not found yet, retrying in ${FK_RETRY_DELAYS[attempt]}ms (attempt ${attempt + 1}/${FK_RETRY_DELAYS.length})`)
@@ -238,89 +310,136 @@ export async function consumeCredits(
   }
 }
 
-async function _consumeCreditsTransaction(
+/**
+ * Legacy-compatible positional shim. Prefer `consumeUsage` above.
+ * Treats `creditCost` as a raw credit amount and converts at $0.10/credit
+ * to maintain wire compatibility during the rollout. New callers should
+ * pass `billedUsd` directly via `consumeUsage`.
+ *
+ * @deprecated
+ */
+export async function consumeCredits(
   workspaceId: string,
   projectId: string | null,
   memberId: string,
   actionType: string,
   creditCost: number,
-  actionMetadata?: Record<string, unknown>
+  actionMetadata?: Record<string, unknown>,
 ): Promise<{ success: boolean; error?: string; remainingCredits?: number }> {
+  const billedUsd = creditCost * 0.10
+  const res = await consumeUsage({
+    workspaceId,
+    projectId,
+    memberId,
+    actionType,
+    billedUsd,
+    actionMetadata,
+  })
+  return {
+    success: res.success,
+    error: res.error,
+    remainingCredits: res.remainingIncludedUsd != null ? res.remainingIncludedUsd / 0.10 : undefined,
+  }
+}
+
+async function _consumeUsageTransaction(
+  params: ConsumeUsageParams,
+): Promise<ConsumeUsageResult> {
+  const { workspaceId, projectId, memberId, actionType, billedUsd, actionMetadata } = params
+  const rawUsd = params.rawUsd ?? null
+
   return prisma.$transaction(async (tx) => {
-    // Get current ledger (or lazy-create free tier for new workspaces)
-    let ledger = await tx.creditLedger.findUnique({
+    let wallet = await tx.usageWallet.findUnique({
       where: { workspaceId },
     });
 
-    if (!ledger) {
+    if (!wallet) {
       try {
-        await allocateFreeCredits(workspaceId);
-        ledger = await tx.creditLedger.findUnique({ where: { workspaceId } });
+        await allocateFreeWallet(workspaceId);
+        wallet = await tx.usageWallet.findUnique({ where: { workspaceId } });
       } catch {
         // allocation failed, fall through
       }
-      if (!ledger) {
-        return { success: false, error: 'No credit ledger found for workspace' };
+      if (!wallet) {
+        return { success: false, error: 'No usage wallet found for workspace' };
       }
     }
 
     // Lazy daily + monthly reset
     const now = new Date();
-    const needsDailyReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
-    const needsMonthlyReset = isNewMonth(now, ledger.lastMonthlyReset);
+    const needsDailyReset = now.toDateString() !== new Date(wallet.lastDailyReset).toDateString();
+    const needsMonthlyReset = isNewMonth(now, wallet.lastMonthlyReset);
 
-    let dailyCreditsDispensed = needsMonthlyReset ? 0 : ledger.dailyCreditsDispensedThisMonth;
-    let dailyCredits: number;
+    let dailyUsedThisMonthUsd = needsMonthlyReset ? 0 : wallet.dailyUsedThisMonthUsd;
+    let dailyIncludedUsd: number;
 
     if (needsDailyReset) {
-      if (dailyCreditsDispensed + DAILY_CREDITS <= MONTHLY_DAILY_CAP) {
-        dailyCredits = DAILY_CREDITS;
-        dailyCreditsDispensed += DAILY_CREDITS;
+      if (dailyUsedThisMonthUsd + DAILY_INCLUDED_USD <= MONTHLY_DAILY_CAP_USD) {
+        dailyIncludedUsd = DAILY_INCLUDED_USD;
+        dailyUsedThisMonthUsd += DAILY_INCLUDED_USD;
       } else {
-        dailyCredits = 0;
+        dailyIncludedUsd = 0;
       }
     } else {
-      dailyCredits = ledger.dailyCredits;
+      dailyIncludedUsd = wallet.dailyIncludedUsd;
     }
 
-    let monthlyCredits = ledger.monthlyCredits;
+    let monthlyIncludedUsd = wallet.monthlyIncludedUsd;
+    let overageAccumulatedUsd = needsMonthlyReset ? 0 : wallet.overageAccumulatedUsd;
 
-    // Deduction order: daily → monthly
-    let creditSource: CreditSource;
+    // Deduction order: daily -> monthly -> overage (if enabled).
+    let source: UsageSource;
     let balanceBefore: number;
     let balanceAfter: number;
+    let overageCharged = 0;
 
-    if (dailyCredits >= creditCost) {
-      creditSource = 'daily';
-      balanceBefore = dailyCredits;
-      dailyCredits -= creditCost;
-      balanceAfter = dailyCredits;
-    } else if (monthlyCredits >= creditCost) {
-      creditSource = 'monthly';
-      balanceBefore = monthlyCredits;
-      monthlyCredits -= creditCost;
-      balanceAfter = monthlyCredits;
+    if (dailyIncludedUsd >= billedUsd) {
+      source = 'daily';
+      balanceBefore = dailyIncludedUsd;
+      dailyIncludedUsd -= billedUsd;
+      balanceAfter = dailyIncludedUsd;
+    } else if (monthlyIncludedUsd >= billedUsd) {
+      source = 'monthly';
+      balanceBefore = monthlyIncludedUsd;
+      monthlyIncludedUsd -= billedUsd;
+      balanceAfter = monthlyIncludedUsd;
+    } else if (wallet.overageEnabled) {
+      const overageRoom = wallet.overageHardLimitUsd == null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, wallet.overageHardLimitUsd - overageAccumulatedUsd);
+      if (overageRoom < billedUsd) {
+        return {
+          success: false,
+          error: 'Usage hard limit reached',
+          remainingIncludedUsd: dailyIncludedUsd + monthlyIncludedUsd,
+          source: 'overage',
+        };
+      }
+      source = 'overage';
+      balanceBefore = overageAccumulatedUsd;
+      overageAccumulatedUsd += billedUsd;
+      balanceAfter = overageAccumulatedUsd;
+      overageCharged = billedUsd;
     } else {
       return {
         success: false,
-        error: 'Insufficient credits',
-        remainingCredits: dailyCredits + monthlyCredits,
+        error: 'Usage limit reached',
+        remainingIncludedUsd: dailyIncludedUsd + monthlyIncludedUsd,
       };
     }
 
-    // Update the ledger
-    await tx.creditLedger.update({
+    await tx.usageWallet.update({
       where: { workspaceId },
       data: {
-        dailyCredits,
-        monthlyCredits,
-        dailyCreditsDispensedThisMonth: dailyCreditsDispensed,
+        dailyIncludedUsd,
+        monthlyIncludedUsd,
+        overageAccumulatedUsd,
+        dailyUsedThisMonthUsd,
         ...(needsDailyReset ? { lastDailyReset: now } : {}),
         ...(needsMonthlyReset ? { lastMonthlyReset: now } : {}),
       },
     });
 
-    // Record usage event
     await tx.usageEvent.create({
       data: {
         workspaceId,
@@ -328,8 +447,9 @@ async function _consumeCreditsTransaction(
         memberId,
         actionType,
         actionMetadata: actionMetadata ?? null,
-        creditCost,
-        creditSource,
+        rawUsd,
+        billedUsd,
+        source,
         balanceBefore,
         balanceAfter,
       },
@@ -337,9 +457,103 @@ async function _consumeCreditsTransaction(
 
     return {
       success: true,
-      remainingCredits: dailyCredits + monthlyCredits,
+      remainingIncludedUsd: dailyIncludedUsd + monthlyIncludedUsd,
+      overageChargedUsd: overageCharged,
+      source,
     };
   });
+}
+
+/**
+ * Report marked-up overage in USD to Stripe via the Meter Events API.
+ *
+ * Stripe API versions >= 2025-03-31.basil require metered prices to be backed
+ * by a `billing.meter`; the legacy `subscription_items.create_usage_record`
+ * path no longer accepts new prices. We emit a `billing.meter_event` with the
+ * payload `{ stripe_customer_id, value }` and Stripe routes the volume to
+ * the metered price item attached to the customer's subscription.
+ *
+ * Lazily ensures the metered price item is attached to the active subscription
+ * (and stamps `usageWallet.stripeMeteredItemId` on first attach so we have a
+ * cheap idempotency check).
+ *
+ * Best-effort: logs and swallows errors. The amount stays in
+ * `overageAccumulatedUsd` so a reconciler can retry later.
+ */
+export async function reportOverageToStripe(
+  workspaceId: string,
+  amountUsd: number,
+) {
+  if (amountUsd <= 0) return
+
+  if (!USAGE_OVERAGE_METERING_ENABLED) {
+    // Feature flag off during staged rollout: keep the overage in
+    // `overageAccumulatedUsd` so a later reconciler can flush it.
+    return
+  }
+
+  const stripeKey = process.env.STRIPE_SECRET_KEY
+  if (!stripeKey) {
+    console.warn('[billing] STRIPE_SECRET_KEY unset; skipping overage report')
+    return
+  }
+
+  const sub = await prisma.subscription.findFirst({
+    where: { workspaceId, status: { in: ['active', 'trialing'] } },
+    select: { stripeSubscriptionId: true, stripeCustomerId: true },
+  })
+  if (!sub?.stripeSubscriptionId || !sub.stripeCustomerId) {
+    console.warn(`[billing] no active Stripe subscription/customer for workspace ${workspaceId}; overage not reported`)
+    return
+  }
+
+  const wallet = await prisma.usageWallet.findUnique({
+    where: { workspaceId },
+    select: { stripeMeteredItemId: true },
+  })
+
+  const { default: Stripe } = await import('stripe') as unknown as {
+    default: new (key: string, opts?: unknown) => any
+  }
+  const stripe = new Stripe(stripeKey)
+
+  const cfg = getOveragePriceConfig()
+  let subscriptionItemId = wallet?.stripeMeteredItemId ?? null
+
+  if (!subscriptionItemId) {
+    const stripeSub = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId)
+    const existingItem = stripeSub.items?.data?.find(
+      (it: any) => it.price?.id === cfg.priceId,
+    )
+    if (existingItem) {
+      subscriptionItemId = existingItem.id
+    } else {
+      const created = await stripe.subscriptionItems.create({
+        subscription: sub.stripeSubscriptionId,
+        price: cfg.priceId,
+      })
+      subscriptionItemId = created.id
+    }
+    await prisma.usageWallet.update({
+      where: { workspaceId },
+      data: { stripeMeteredItemId: subscriptionItemId },
+    })
+  }
+
+  const value = Math.max(1, Math.round(amountUsd * cfg.unitsPerDollar))
+  // Idempotency: Stripe dedupes meter events by `identifier` within a 24h
+  // window. Pair workspace + minute + value to absorb retries while still
+  // keeping legitimate distinct events.
+  const identifier = `${workspaceId}-${Math.floor(Date.now() / 60000)}-${value}`
+
+  await stripe.billing.meterEvents.create({
+    event_name: cfg.meterEventName,
+    payload: {
+      stripe_customer_id: sub.stripeCustomerId,
+      value: String(value),
+    },
+    identifier,
+  })
 }
 
 /**
@@ -436,6 +650,32 @@ export async function upsertBillingAccount(
     update: {
       stripeCustomerId: data.stripeCustomerId,
       taxId: data.taxId,
+    },
+  });
+}
+
+/**
+ * Toggle usage-based pricing (overage) and optional hard limit for a workspace.
+ */
+export async function setUsageBasedPricing(
+  workspaceId: string,
+  options: { overageEnabled: boolean; overageHardLimitUsd?: number | null },
+) {
+  return prisma.usageWallet.upsert({
+    where: { workspaceId },
+    create: {
+      workspaceId,
+      monthlyIncludedUsd: 0,
+      dailyIncludedUsd: DAILY_INCLUDED_USD,
+      overageEnabled: options.overageEnabled,
+      overageHardLimitUsd: options.overageHardLimitUsd ?? null,
+      anniversaryDay: new Date().getDate(),
+      lastDailyReset: new Date(),
+      lastMonthlyReset: new Date(),
+    },
+    update: {
+      overageEnabled: options.overageEnabled,
+      overageHardLimitUsd: options.overageHardLimitUsd ?? null,
     },
   });
 }

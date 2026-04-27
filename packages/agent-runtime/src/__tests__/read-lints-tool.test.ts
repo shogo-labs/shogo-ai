@@ -8,6 +8,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
+import { FileStateCache } from '../file-state-cache'
 import type { LSPDiagnostic, WorkspaceLSPManager } from '@shogo/shared-runtime'
 
 // Use realpathSync to resolve /tmp -> /private/tmp on macOS
@@ -42,7 +43,7 @@ function createMockLSPManager(diagnostics: Map<string, LSPDiagnostic[]> = new Ma
   } as unknown as WorkspaceLSPManager
 }
 
-function createCtx(lspManager?: WorkspaceLSPManager): ToolContext {
+function createCtx(lspManager?: WorkspaceLSPManager, fileStateCache?: FileStateCache): ToolContext {
   return {
     workspaceDir: TEST_DIR,
     channels: new Map(),
@@ -55,6 +56,7 @@ function createCtx(lspManager?: WorkspaceLSPManager): ToolContext {
     },
     projectId: 'test',
     lspManager,
+    fileStateCache,
   }
 }
 
@@ -194,5 +196,117 @@ describe('read_lints tool', () => {
     const tool = tools.find(t => t.name === 'read_lints')
     expect(tool).toBeTruthy()
     expect(tool!.description).toContain('TypeScript')
+  })
+
+  // ---------------------------------------------------------------------------
+  // Auto-scope behavior (reads ctx.fileStateCache.getEditedThisTurn())
+  // ---------------------------------------------------------------------------
+
+  test('auto-scope: no path + no edits this turn falls back to all tracked files', async () => {
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/good.ts`, []],
+      [`file://${TEST_DIR}/canvas/bad.ts`, [
+        diag(0, "Cannot find name 'Oops'.", 1, 2304),
+      ]],
+    ])
+    const cache = new FileStateCache() // empty editedThisTurn
+    const ctx = createCtx(createMockLSPManager(diagnostics), cache)
+    const result = await execReadLints(ctx)
+    expect(result.auto_scoped).toBeUndefined()
+    expect(result.ok).toBe(false)
+    expect(result.files).toHaveLength(2)
+  })
+
+  test('auto-scope: no path + one edited file lints only that file', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'touched.ts'), 'var x = Boom', 'utf-8')
+    writeFileSync(join(TEST_DIR, 'canvas', 'untouched.ts'), 'var y = Oops', 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/touched.ts`, [
+        diag(0, "Cannot find name 'Boom'.", 1, 2304),
+      ]],
+      [`file://${TEST_DIR}/canvas/untouched.ts`, [
+        diag(0, "Cannot find name 'Oops'.", 1, 2304),
+      ]],
+    ])
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/touched.ts')
+    const ctx = createCtx(createMockLSPManager(diagnostics), cache)
+    const result = await execReadLints(ctx)
+    expect(result.auto_scoped).toBe(true)
+    expect(result.scoped_to).toEqual(['canvas/touched.ts'])
+    expect(result.ok).toBe(false)
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].path).toBe('canvas/touched.ts')
+    expect(result.files[0].errors[0]).toContain('Boom')
+  })
+
+  test('auto-scope: no path + multiple edited files merges diagnostics', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'a.ts'), 'var x = A', 'utf-8')
+    writeFileSync(join(TEST_DIR, 'canvas', 'b.ts'), 'var y = B', 'utf-8')
+    writeFileSync(join(TEST_DIR, 'canvas', 'skipped.ts'), 'var z = Z', 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/a.ts`, [diag(0, "Cannot find name 'A'.", 1, 2304)]],
+      [`file://${TEST_DIR}/canvas/b.ts`, [diag(0, "Cannot find name 'B'.", 1, 2304)]],
+      [`file://${TEST_DIR}/canvas/skipped.ts`, [diag(0, "Cannot find name 'Z'.", 1, 2304)]],
+    ])
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/a.ts')
+    cache.markEditedThisTurn('canvas/b.ts')
+    const ctx = createCtx(createMockLSPManager(diagnostics), cache)
+    const result = await execReadLints(ctx)
+    expect(result.auto_scoped).toBe(true)
+    expect(result.scoped_to.sort()).toEqual(['canvas/a.ts', 'canvas/b.ts'])
+    expect(result.files).toHaveLength(2)
+    const paths = result.files.map((f: any) => f.path).sort()
+    expect(paths).toEqual(['canvas/a.ts', 'canvas/b.ts'])
+  })
+
+  test('auto-scope: no path + edited file with no diagnostics still reports it as ok', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'clean.ts'), 'var x = 1', 'utf-8')
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/clean.ts')
+    const ctx = createCtx(createMockLSPManager(new Map()), cache)
+    const result = await execReadLints(ctx)
+    expect(result.auto_scoped).toBe(true)
+    expect(result.ok).toBe(true)
+    expect(result.scoped_to).toEqual(['canvas/clean.ts'])
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].path).toBe('canvas/clean.ts')
+    expect(result.files[0].ok).toBe(true)
+    expect(result.files[0].errors).toHaveLength(0)
+  })
+
+  test('explicit path overrides auto-scope', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'edited.ts'), 'var x = E', 'utf-8')
+    writeFileSync(join(TEST_DIR, 'canvas', 'requested.ts'), 'var y = R', 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/edited.ts`, [diag(0, "Cannot find name 'E'.", 1, 2304)]],
+      [`file://${TEST_DIR}/canvas/requested.ts`, [diag(0, "Cannot find name 'R'.", 1, 2304)]],
+    ])
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/edited.ts')
+    const ctx = createCtx(createMockLSPManager(diagnostics), cache)
+    const result = await execReadLints(ctx, { path: 'canvas/requested.ts' })
+    expect(result.auto_scoped).toBeUndefined()
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].path).toBe('canvas/requested.ts')
+  })
+
+  test('resetTurn clears the auto-scope set', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'touched.ts'), 'var x = 1', 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/touched.ts`, []],
+      [`file://${TEST_DIR}/canvas/other.ts`, []],
+    ])
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/touched.ts')
+    expect(cache.getEditedThisTurn()).toEqual(['canvas/touched.ts'])
+
+    cache.resetTurn()
+    expect(cache.getEditedThisTurn()).toEqual([])
+
+    const ctx = createCtx(createMockLSPManager(diagnostics), cache)
+    const result = await execReadLints(ctx)
+    expect(result.auto_scoped).toBeUndefined()
   })
 })

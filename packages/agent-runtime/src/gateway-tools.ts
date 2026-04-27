@@ -12,11 +12,30 @@
 
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
-import { join, resolve, extname, dirname } from 'path'
+import { join, resolve, extname, dirname, relative } from 'path'
 import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, shouldSandbox } from './sandbox-exec'
+import {
+  resolveRunDir as resolveScreenshotRunDir,
+  nextScreenshotPath as nextScreenshotFilePath,
+  sweepLooseScreenshots,
+  trimOldRuns as trimOldScreenshotRuns,
+} from './screenshot-manager'
+
+// All `[screencast]` diagnostic logs are opt-in: set DEBUG_SCREENCAST=1 to
+// enable. The CDP pipeline is stable; these logs are only useful when
+// diagnosing connectivity or propagation problems.
+function screencastDebugEnabled(): boolean {
+  return process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+}
+function scLog(...args: unknown[]): void {
+  if (screencastDebugEnabled()) console.log(...args)
+}
+function scWarn(...args: unknown[]): void {
+  if (screencastDebugEnabled()) console.warn(...args)
+}
 import {
   runSubagent,
   getBuiltinSubagentConfig,
@@ -31,7 +50,7 @@ import {
   applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
   type LineEndingType,
 } from './edit-file-utils'
-import { MemorySearchEngine } from './memory-search'
+import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
@@ -110,6 +129,10 @@ export interface ToolContext {
   guideRegistry?: Map<string, string>
   /** Eval mock functions — propagated to subagents so mocked tools work in delegated calls */
   toolMockFns?: Map<string, (params: Record<string, any>) => any>
+  /** When this tool runs inside a spawned subagent, the AgentManager instance id.
+   *  Used e.g. to key the CDP screencast broadcaster so the mobile LiveBrowserView
+   *  can subscribe to the right running subagent's browser viewport. */
+  subagentInstanceId?: string
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -134,6 +157,18 @@ function isBlockedCommand(command: string): boolean {
 
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   return assertWithinWorkspaceSecure(workspaceDir, filePath)
+}
+
+const LINTABLE_EXTENSION_RE = /\.(ts|tsx|js|jsx|py)$/
+
+/**
+ * Mark a file as edited in the current turn if it has a lintable extension.
+ * Used by write_file/edit_file so read_lints can auto-scope diagnostics.
+ */
+function markEditedIfLintable(ctx: ToolContext, filePath: string): void {
+  if (!ctx.fileStateCache) return
+  if (!LINTABLE_EXTENSION_RE.test(filePath)) return
+  ctx.fileStateCache.markEditedThisTurn(filePath)
 }
 
 function applyPermissionGate(
@@ -265,6 +300,19 @@ function createExecTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const IMAGE_READ_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+  '.heic': 'image/heic',
+  '.ico': 'image/x-icon',
+}
+const MAX_IMAGE_READ_BYTES = 20 * 1024 * 1024
+
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
@@ -272,7 +320,10 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       'Read a file from the agent workspace. Supports partial reads via offset and limit ' +
       'to handle large files without consuming the full context window. ' +
       'When using offset/limit, output includes line numbers in N|content format. ' +
-      'For large files (500+ lines), prefer offset/limit or use grep to find specific sections.',
+      'For large files (500+ lines), prefer offset/limit or use grep to find specific sections. ' +
+      'When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), ' +
+      'the image is returned as multimodal image content for vision-capable models to view or describe; ' +
+      'offset/limit are ignored for images, and images larger than 20 MB are rejected.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -316,6 +367,43 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           })
         }
       } catch { /* proceed to read */ }
+
+      const imageExt = extname(resolved).toLowerCase()
+      const imageMime = IMAGE_READ_MIME[imageExt]
+      if (imageMime) {
+        try {
+          const imgStat = statSync(resolved)
+          if (imgStat.size > MAX_IMAGE_READ_BYTES) {
+            return textResult({
+              error: `Image too large to read: ${filePath} (${imgStat.size} bytes, max ${MAX_IMAGE_READ_BYTES}). ` +
+                'Downscale the image before reading.',
+            })
+          }
+          const buf = readFileSync(resolved)
+          const base64 = buf.toString('base64')
+          const details = {
+            path: filePath,
+            bytes: buf.length,
+            mimeType: imageMime,
+            ...(offset !== undefined || limit !== undefined
+              ? { note: 'offset/limit are ignored for image files.' }
+              : {}),
+          }
+          return {
+            content: [
+              { type: 'image' as const, data: base64, mimeType: imageMime },
+              { type: 'text' as const, text: JSON.stringify(details) },
+            ],
+            details,
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return textResult({
+            error: `Failed to read image file: ${filePath} — ${msg}`,
+          })
+        }
+      }
+
       const fullContent = readFileSync(resolved, 'utf-8')
 
       const totalLineCount = fullContent.split('\n').length
@@ -398,9 +486,10 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         writeFileSync(resolved, content, 'utf-8')
       }
       ctx.fileStateCache?.invalidate(filePath)
+      markEditedIfLintable(ctx, filePath)
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
-      if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+      if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
         const finalContent = append
           ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
           : content
@@ -732,8 +821,9 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
           writeFileSync(resolved, new_string, 'utf-8')
           const newMtime = Math.floor(statSync(resolved).mtimeMs)
           ctx.fileStateCache?.recordEdit(filePath, new_string, newMtime)
+          markEditedIfLintable(ctx, filePath)
           ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-          if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+          if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
             ctx.lspManager.notifyFileChanged(resolved, new_string)
             ctx.lspManager.notifyFileSaved?.(resolved)
           }
@@ -858,9 +948,10 @@ async function commitEdit(
   if (ctx.fileStateCache) {
     ctx.fileStateCache.recordEdit(filePath, updated, newMtime)
   }
+  markEditedIfLintable(ctx, filePath)
 
   ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
-  if (ctx.lspManager && /\.(ts|tsx|js|jsx|py)$/.test(filePath)) {
+  if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
     ctx.lspManager.notifyFileChanged(resolved, updated)
     ctx.lspManager.notifyFileSaved?.(resolved)
   }
@@ -1765,14 +1856,102 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
   })
 }
 
-function createBrowserTool(ctx: ToolContext): AgentTool {
+export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let page: any = null
   let isExtensionMode = false
   let killRelay: (() => void) | null = null
+  let cdpSession: any = null
+  let screencastStarted = false
+  let screencastPageKey: any = null
+  let frameCount = 0
+  // Per-tool-instance counter so screenshot files sort chronologically inside
+  // a run folder (`step-01.png`, `step-02.png`, ...). See screenshot-manager.
+  let screenshotCount = 0
+  let screenshotHousekeepingDone = false
+
+  scLog(
+    `[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`,
+  )
+
+  async function ensureScreencast() {
+    // Only broadcast when this tool is running inside a spawned subagent
+    // (so the mobile LiveBrowserView can subscribe by instance id). Skip
+    // extension mode — we don't own the browser there, and attaching CDP
+    // to a user's real Chrome would be invasive.
+    const instanceId = ctx.subagentInstanceId
+    if (!instanceId) {
+      scLog('[screencast] ensureScreencast bail: no subagentInstanceId on ctx')
+      return
+    }
+    if (isExtensionMode) {
+      scLog(`[screencast] ensureScreencast bail: extension mode instanceId=${instanceId}`)
+      return
+    }
+    if (!page) {
+      scLog(`[screencast] ensureScreencast bail: no page yet instanceId=${instanceId}`)
+      return
+    }
+    // If the page changed (rare — we don't swap pages today), tear down + redo.
+    if (screencastStarted && screencastPageKey === page) return
+    if (screencastStarted && screencastPageKey !== page) {
+      scLog(`[screencast] ensureScreencast page changed; restarting instanceId=${instanceId}`)
+      try { if (cdpSession) await cdpSession.send('Page.stopScreencast') } catch {}
+      try { if (cdpSession) await cdpSession.detach() } catch {}
+      cdpSession = null
+      screencastStarted = false
+    }
+    try {
+      const { publish } = await import('./screencast-broadcaster')
+      cdpSession = await page.context().newCDPSession(page)
+      scLog(`[screencast] CDP session attached instanceId=${instanceId}`)
+      cdpSession.on('Page.screencastFrame', async (e: any) => {
+        frameCount++
+        if (frameCount === 1 || frameCount % 60 === 0) {
+          scLog(
+            `[screencast] CDP frame#${frameCount} instanceId=${instanceId} ` +
+            `size=${e?.metadata?.deviceWidth ?? '?'}x${e?.metadata?.deviceHeight ?? '?'} ` +
+            `dataLen=${(e?.data as string | undefined)?.length ?? 0}`,
+          )
+        }
+        try {
+          publish(instanceId, {
+            jpegBase64: e.data,
+            ts: Date.now(),
+            width: e?.metadata?.deviceWidth ?? 0,
+            height: e?.metadata?.deviceHeight ?? 0,
+          })
+        } catch (err: any) {
+          scWarn(`[screencast] publish threw instanceId=${instanceId}: ${err?.message ?? err}`)
+        }
+        try { await cdpSession.send('Page.screencastFrameAck', { sessionId: e.sessionId }) } catch {}
+      })
+      await cdpSession.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 60,
+        everyNthFrame: 2,
+        maxWidth: 1280,
+        maxHeight: 720,
+      })
+      screencastStarted = true
+      screencastPageKey = page
+      scLog(`[screencast] Page.startScreencast OK instanceId=${instanceId}`)
+    } catch (err: any) {
+      // Screencast is best-effort — if CDP isn't available, the browser tool still works.
+      scWarn(
+        `[screencast] ensureScreencast failed instanceId=${instanceId}: ${err?.message ?? err}`,
+      )
+      try { if (cdpSession) await cdpSession.detach() } catch {}
+      cdpSession = null
+      screencastStarted = false
+    }
+  }
 
   async function ensureBrowser() {
-    if (browser && page) return page
+    if (browser && page) {
+      await ensureScreencast()
+      return page
+    }
     try {
       const pw = await import('playwright-core')
 
@@ -1802,6 +1981,7 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
         })
         page = await browser.newPage()
       }
+      await ensureScreencast()
       return page
     } catch (err: any) {
       cleanupRelay()
@@ -1829,6 +2009,19 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
   }
 
   async function cleanup() {
+    if (screencastStarted && cdpSession) {
+      try { await cdpSession.send('Page.stopScreencast') } catch {}
+      try { await cdpSession.detach() } catch {}
+    }
+    cdpSession = null
+    screencastStarted = false
+    screencastPageKey = null
+    if (ctx.subagentInstanceId) {
+      try {
+        const { dropChannel } = await import('./screencast-broadcaster')
+        dropChannel(ctx.subagentInstanceId)
+      } catch {}
+    }
     if (isExtensionMode) {
       try { if (browser) await browser.close() } catch {}
     } else {
@@ -2056,16 +2249,29 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ content: truncated, url: p.url(), title: await p.title() })
           }
           case 'screenshot': {
-            const filename = `screenshot-${Date.now()}.png`
-            const screenshotPath = join(ctx.workspaceDir, filename)
+            // One-time housekeeping per tool instance: sweep any legacy loose
+            // `screenshot-*.png` files at the workspace root into
+            // `.shogo/screenshots/legacy/`, and trim retention so we don't
+            // accumulate unbounded run folders.
+            if (!screenshotHousekeepingDone) {
+              screenshotHousekeepingDone = true
+              try { sweepLooseScreenshots(ctx.workspaceDir) } catch {}
+              try { trimOldScreenshotRuns(ctx.workspaceDir) } catch {}
+            }
+            screenshotCount += 1
+            const runDir = resolveScreenshotRunDir(ctx.workspaceDir, ctx.subagentInstanceId)
+            const screenshotPath = nextScreenshotFilePath(runDir, screenshotCount)
             const buffer = await p.screenshot({ path: screenshotPath, fullPage: false })
+            // Expose the path as workspace-relative so canvas data + markdown
+            // reports can reference it portably.
+            const relPath = relative(ctx.workspaceDir, screenshotPath)
             const base64 = Buffer.from(buffer).toString('base64')
             return {
               content: [
                 { type: 'image' as const, data: base64, mimeType: 'image/png' },
-                { type: 'text' as const, text: JSON.stringify({ ok: true, path: filename, url: p.url() }) },
+                { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
               ],
-              details: { ok: true, path: filename, url: p.url() },
+              details: { ok: true, path: relPath, url: p.url() },
             }
           }
           case 'evaluate': {
@@ -2728,8 +2934,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const forkDirective = buildForkDirective(prompt)
         const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
 
+        const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
-          const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
           w.write({
             type: 'data-usage',
             data: {
@@ -2754,6 +2960,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
           iterations: result.iterations,
           tokens: { input: result.inputTokens, output: result.outputTokens },
           parts: accumulated?.parts,
+          model: accumulated?.model || subModel,
         })
       }
 
@@ -2782,6 +2989,8 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       if (!spawnResult.ok) return textResult({ error: spawnResult.error })
 
       const instanceId = spawnResult.instanceId
+      scLog(`[screencast] agent_spawn -> instanceId=${instanceId} type=${type}`)
+      spawn?.setInstanceId(instanceId)
 
       if (background) {
         return textResult({ instance_id: instanceId, status: 'running', hint: 'Use agent_status or agent_result to check progress' })
@@ -2819,6 +3028,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         iterations: result.iterations,
         tokens: { input: result.inputTokens, output: result.outputTokens },
         parts: accumulated?.parts,
+        model: accumulated?.model || result.effectiveModelId || inst.model,
       })
     },
   }
@@ -2834,11 +3044,13 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
  * text/tool events. Each sub-agent is scoped to its own spawnToolCallId,
  * so multiple concurrent sub-agents work correctly.
  */
-export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[] } } | undefined {
+export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[]; model: string | null }; setInstanceId: (id: string) => void } | undefined {
   if (!w) return undefined
 
   const parts: any[] = []
   let agentId: string | null = null
+  let instanceId: string | null = null
+  let model: string | null = null
   let lastEmitTime = 0
   let pendingEmit: ReturnType<typeof setTimeout> | null = null
   const THROTTLE_MS = 150
@@ -2859,7 +3071,7 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     w.write({
       type: 'tool-output-available',
       toolCallId: spawnToolCallId,
-      output: { agentId, parts: [...parts] },
+      output: { agentId, instance_id: instanceId, model, parts: [...parts] },
       dynamic: true,
       preliminary: true,
     })
@@ -2868,6 +3080,10 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
   const callbacks: SubagentStreamCallbacks = {
     onStart: (_name: string, _desc: string, id: string) => {
       agentId = id
+    },
+    onModelResolved: (m: string) => {
+      model = m
+      emitPreliminary(true)
     },
     onEnd: (_name: string) => {
       // Flush any pending throttled emit so the last snapshot arrives
@@ -2926,7 +3142,17 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
 
   return {
     callbacks,
-    getAccumulatedOutput: () => ({ agentId, parts: [...parts] }),
+    getAccumulatedOutput: () => ({ agentId, parts: [...parts], model }),
+    setInstanceId: (id: string) => {
+      instanceId = id
+      scLog(
+        `[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` +
+        `instanceId=${id}`,
+      )
+      // Re-emit so subscribers learn the instance id ASAP (they need it to
+      // open the live screencast stream for the running subagent).
+      emitPreliminary(true)
+    },
   }
 }
 
@@ -5014,10 +5240,10 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       'Returns diagnostics from language servers plus any recent canvas runtime errors. ' +
       'Supports .ts, .tsx, .js, .jsx, and .py files. ' +
       'Use after writing or editing code files to catch mistakes. ' +
-      'Omit path to check all open files.',
+      'Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
     label: 'Read Lints',
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Omit to check all tracked files.' })),
+      path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),
     }),
     execute: async (_toolCallId, params) => {
       const lsp = ctx.lspManager
@@ -5033,12 +5259,37 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
 
       const { path: filePath } = params as { path?: string }
 
+      // Determine auto-scope: if no explicit path, and the agent has edited
+      // lintable files this turn, focus diagnostics on those files only.
+      const editedThisTurn = filePath ? [] : (ctx.fileStateCache?.getEditedThisTurn() ?? [])
+      const autoScopedPaths = editedThisTurn.length > 0 ? editedThisTurn : null
+
+      const workspacePrefix = `file://${ctx.workspaceDir}/`
       const targetUri = filePath
         ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}`
         : undefined
 
       await new Promise(resolve => setTimeout(resolve, 1500))
-      const allDiags = await lsp.getDiagnosticsAsync(targetUri)
+
+      let allDiags: Map<string, import('@shogo/shared-runtime').LSPDiagnostic[]>
+      if (autoScopedPaths) {
+        // Query each edited file individually so we don't pay for unrelated open files.
+        allDiags = new Map()
+        for (const rel of autoScopedPaths) {
+          const uri = `file://${assertWithinWorkspace(ctx.workspaceDir, rel)}`
+          const perFile = await lsp.getDiagnosticsAsync(uri)
+          for (const [u, diags] of perFile) {
+            allDiags.set(u, diags)
+          }
+          if (!allDiags.has(uri)) {
+            // Ensure the file shows up even when it has zero diagnostics,
+            // so the agent sees an explicit "ok" for files it just edited.
+            allDiags.set(uri, [])
+          }
+        }
+      } else {
+        allDiags = await lsp.getDiagnosticsAsync(targetUri)
+      }
 
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()
@@ -5047,15 +5298,26 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         : undefined
       if (runtimeErrorEntries.length > 0) clearCanvasRuntimeErrors()
 
+      const scopeMeta = autoScopedPaths
+        ? { auto_scoped: true as const, scoped_to: autoScopedPaths }
+        : {}
+
       if (allDiags.size === 0) {
         if (runtimeErrors) {
-          return textResult({ ok: false, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+          return textResult({ ok: false, ...scopeMeta, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
         }
-        return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
+        return textResult({
+          ok: true,
+          ...scopeMeta,
+          message: filePath
+            ? `No errors in ${filePath}`
+            : autoScopedPaths
+              ? `No errors in files you edited this turn (${autoScopedPaths.join(', ')}).`
+              : 'No errors found.',
+        })
       }
 
       const TS_RETURN_OUTSIDE_FN = 1108
-      const workspacePrefix = `file://${ctx.workspaceDir}/`
       let totalErrors = 0
       const files: Array<{ path: string; ok: boolean; errors: string[] }> = []
 
@@ -5078,14 +5340,23 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
 
       if (files.length === 0) {
         if (runtimeErrors) {
-          return textResult({ ok: false, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
+          return textResult({ ok: false, ...scopeMeta, runtimeErrors, hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.' })
         }
-        return textResult({ ok: true, message: filePath ? `No errors in ${filePath}` : 'No errors found.' })
+        return textResult({
+          ok: true,
+          ...scopeMeta,
+          message: filePath
+            ? `No errors in ${filePath}`
+            : autoScopedPaths
+              ? `No errors in files you edited this turn (${autoScopedPaths.join(', ')}).`
+              : 'No errors found.',
+        })
       }
 
       const allOk = totalErrors === 0 && !runtimeErrors
       return textResult({
         ok: allOk,
+        ...scopeMeta,
         files,
         ...(runtimeErrors ? { runtimeErrors } : {}),
         ...(allOk ? {} : { hint: 'Fix the errors above using edit_file, then run read_lints again to verify.' }),

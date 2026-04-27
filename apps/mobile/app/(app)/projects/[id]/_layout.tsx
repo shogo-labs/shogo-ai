@@ -37,6 +37,7 @@ import {
   useSDKReady,
   useDomainActions,
   useProjectCollection,
+  getChatMessageCollectionForSession,
 } from '@shogo/shared-app/domain'
 import {
   useDynamicAppStream,
@@ -46,8 +47,8 @@ import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
-  getTotalCreditsForPlan,
-  getCreditsCapacityForDisplay,
+  getIncludedUsdForPlan,
+  getIncludedUsdCapacityForDisplay,
   getPlanDisplayName,
 } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
@@ -59,13 +60,19 @@ import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
+import {
+  ChatBridgeProvider,
+  useChatBridge,
+} from '../../../../components/voice-mode/ChatBridgeContext'
+import { ShogoChatPanel } from '../../../../components/voice-mode/ShogoChatPanel'
+import { ShogoModeToggle } from '../../../../components/voice-mode/ShogoModeToggle'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
 import { MODEL_CATALOG } from '@shogo/model-catalog'
 import { agentFetch } from '../../../../lib/agent-fetch'
 import { useActiveInstance } from '../../../../contexts/active-instance'
-import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
+import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { ChatTabBar, type ChatTab } from '../../../../components/chat/ChatTabBar'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
@@ -75,11 +82,11 @@ import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddC
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
 import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
 import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
-import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
   ChannelsPanel,
   FilesBrowserPanel,
+  IDEPanel,
   CapabilitiesPanel,
   MonitorPanel,
   TerminalPanel,
@@ -87,7 +94,7 @@ import {
   AgentsPanel,
   CheckpointsPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw, MessageSquare } from 'lucide-react-native'
+import { RefreshCw, MessageSquare, Sparkles } from 'lucide-react-native'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
@@ -107,7 +114,7 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
+const STANDALONE_PANELS = ['ide', 'files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
@@ -186,13 +193,13 @@ export default observer(function ProjectLayout() {
     ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
 
-  const creditsRemaining =
+  const usdRemaining =
     billingData.effectiveBalance?.total ??
-    getTotalCreditsForPlan(billingData.subscription?.planId)
-  const creditsTotal = getCreditsCapacityForDisplay(
+    getIncludedUsdForPlan(billingData.subscription?.planId)
+  const usdTotal = getIncludedUsdCapacityForDisplay(
     billingData.subscription?.planId,
     billingData.effectiveBalance?.total,
-    billingData.effectiveBalance?.monthlyAllocation,
+    billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
   )
 
   const isStarred = useMemo(() => {
@@ -333,15 +340,15 @@ export default observer(function ProjectLayout() {
   )
 
   useEffect(() => {
-    loadModelPreference().then((stored) => {
+    loadModelPreference(projectId).then((stored) => {
       if (stored) setSelectedModel(stored)
       else if (hasAdvancedModelAccess) setSelectedModel(DEFAULT_MODEL_PRO)
     })
-  }, [hasAdvancedModelAccess])
+  }, [hasAdvancedModelAccess, projectId])
 
   const handleModelChange = useCallback(async (modelId: string) => {
     setSelectedModel(modelId)
-    saveModelPreference(modelId)
+    saveModelPreference(modelId, projectId)
     if (agentUrl) {
       const entry = MODEL_CATALOG[modelId as keyof typeof MODEL_CATALOG]
       if (entry) {
@@ -356,7 +363,7 @@ export default observer(function ProjectLayout() {
         }
       }
     }
-  }, [agentUrl])
+  }, [agentUrl, projectId])
 
   // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
   const dynamicAppStreamUrl = agentUrl
@@ -612,20 +619,38 @@ export default observer(function ProjectLayout() {
 
   const SESSION_PAGE_SIZE = 10
 
-  // Auto-select or create chat session
+  // Tracks which projects we've already seeded via loadPage so we don't
+  // re-fetch the session list on every chatSessionId change. Without this,
+  // each mounted ChatPanel would fall back to its own per-session fetch
+  // (the root cause of the "[ChatPanel] Loading session from API" storm
+  // when a project restores many open tabs).
+  const seededProjectsRef = useRef<Set<string>>(new Set())
+
+  // Seed the chat session collection and, when no session is selected yet,
+  // auto-select or create one. The seed runs once per projectId; the
+  // auto-select/create branch only runs when chatSessionId is still null.
   useEffect(() => {
-    if (!projectId || !store?.chatSessionCollection || chatSessionId) return
+    if (!projectId || !store?.chatSessionCollection) return
 
     let cancelled = false
 
-    const initSession = async () => {
-      try {
-        await store.chatSessionCollection.loadPage(
-          { contextId: projectId },
-          { limit: SESSION_PAGE_SIZE, offset: 0 },
-        )
+    const run = async () => {
+      if (!seededProjectsRef.current.has(projectId)) {
+        try {
+          await store.chatSessionCollection.loadPage(
+            { contextId: projectId },
+            { limit: SESSION_PAGE_SIZE, offset: 0 },
+          )
+          seededProjectsRef.current.add(projectId)
+        } catch (err) {
+          console.error('[ProjectLayout] Failed to seed chat sessions:', err)
+        }
         if (cancelled) return
+      }
 
+      if (chatSessionId) return
+
+      try {
         const existing = store.chatSessionCollection.all.filter(
           (s: any) => s.contextId === projectId,
         )
@@ -654,7 +679,7 @@ export default observer(function ProjectLayout() {
       }
     }
 
-    initSession()
+    run()
     return () => {
       cancelled = true
     }
@@ -904,9 +929,12 @@ export default observer(function ProjectLayout() {
           }
 
           try {
-            await store.chatMessageCollection.loadAll({ sessionId: s.id })
-            const msgs = store.chatMessageCollection.all
-              .filter((m: any) => m.sessionId === s.id && m.role === 'user')
+            // Per-session collection so concurrent loadAll calls don't clobber
+            // each other (and don't clobber an active ChatPanel's messages).
+            const sessionMessages = getChatMessageCollectionForSession(s.id)
+            await sessionMessages.loadAll({ sessionId: s.id, agent: 'technical' })
+            const msgs = sessionMessages.all
+              .filter((m: any) => m.role === 'user')
               .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
             const preview = msgs[0]?.content?.trim()
             names[s.id] = preview
@@ -1003,6 +1031,9 @@ export default observer(function ProjectLayout() {
       try {
         await actions.deleteChatSession(sessionId)
         handleCloseTab(sessionId)
+        // No client-side Shogo teardown needed: voice rows are stored
+        // in chat_messages with agent="voice" and cascade-delete with
+        // the ChatSession on the server.
       } catch (err) {
         console.error('[ProjectLayout] Failed to delete chat session:', err)
       }
@@ -1125,6 +1156,28 @@ export default observer(function ProjectLayout() {
     }
   }, [showNativeNarrowChatFab])
 
+  // Memoized billingData fallback — must be declared before any conditional
+  // return so hook order stays stable across the loading → loaded transition.
+  //
+  // IMPORTANT: `useBillingData()` returns a fresh object on every render, so
+  // memoizing on the whole `billingData` reference would still produce a new
+  // `billingDataResolved` every render and break observer()/memo equality in
+  // every mounted ChatPanel (the root cause of tab-switch + streaming jank).
+  // Depend on the primitive fields ChatPanel actually consumes instead. The
+  // `refetchUsageWallet` callback is wrapped in useCallback([]) inside the
+  // hook, so its identity is already stable across renders.
+  const billingHasActive = features.billing ? billingData.hasActiveSubscription : true
+  const billingHasAdvanced = features.billing ? billingData.hasAdvancedModelAccess : true
+  const billingRefetch = billingData.refetchUsageWallet
+  const billingDataResolved = useMemo(
+    () => ({
+      hasActiveSubscription: billingHasActive,
+      hasAdvancedModelAccess: billingHasAdvanced,
+      refetchUsageWallet: billingRefetch,
+    }),
+    [billingHasActive, billingHasAdvanced, billingRefetch],
+  )
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -1137,8 +1190,6 @@ export default observer(function ProjectLayout() {
       </>
     )
   }
-
-  const billingDataResolved = features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }
 
   const chatPanels = (
     <>
@@ -1218,8 +1269,8 @@ export default observer(function ProjectLayout() {
     hasActiveSubscription: effectiveHasActiveSubscription,
     workspaceName,
     planLabel,
-    creditsRemaining,
-    creditsTotal,
+    usdRemaining,
+    usdTotal,
     ownerName: user?.name || '',
     projectCreatedAt: project.createdAt,
     projectModifiedAt: project.updatedAt,
@@ -1258,6 +1309,7 @@ export default observer(function ProjectLayout() {
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <PlanStreamProvider>
+      <ChatBridgeProvider chatSessionId={chatSessionId}>
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
@@ -1322,27 +1374,8 @@ export default observer(function ProjectLayout() {
                     />
                   </View>
                 )}
-                {!isChatFullscreen && isWide && showChatSessions && (
-                  <View className="shrink-0 border-b border-border bg-background">
-                    <ChatSessionPicker
-                      sessions={chatSessions}
-                      currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => {
-                        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-                        setChatSessionId(sessionId)
-                        setShowChatSessions(false)
-                      }}
-                      onCreate={handleCreateNewSession}
-                      onLoadMore={handleLoadMoreSessions}
-                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                    />
-                  </View>
-                )}
                 {isChatFullscreen ? (
-                  <View className="min-h-0 flex-1 flex-col">
-                    <View className="min-h-0 flex-1">{chatPanels}</View>
-                  </View>
+                  <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                 ) : (
                   <>
                     {isWide && (
@@ -1359,7 +1392,39 @@ export default observer(function ProjectLayout() {
                         onDeleteSession={handleDeleteChatSession}
                       />
                     )}
-                    <View className="min-h-0 flex-1">{chatPanels}</View>
+                    <View className="flex-1 min-h-0 relative">
+                      <View
+                        className="absolute inset-0"
+                        style={isWide && showChatSessions ? { opacity: 0 } : undefined}
+                        pointerEvents={isWide && showChatSessions ? 'none' : 'auto'}
+                      >
+                        <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                      </View>
+                      {isWide && showChatSessions && (
+                        <View className="absolute inset-0 bg-background">
+                          <ChatSessionSidebar
+                            sessions={chatSessions}
+                            currentSessionId={chatSessionId ?? undefined}
+                            onSelect={(sessionId) => {
+                              setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+                              setChatSessionId(sessionId)
+                              setShowChatSessions(false)
+                            }}
+                            onCreate={() => {
+                              void handleCreateNewSession()
+                              setShowChatSessions(false)
+                            }}
+                            onRename={handleRenameChatSession}
+                            onLoadMore={handleLoadMoreSessions}
+                            hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                            isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                            hideHeader
+                            searchOpen={sidebarSearchOpen}
+                            onSearchClose={() => setSidebarSearchOpen(false)}
+                          />
+                        </View>
+                      )}
+                    </View>
                   </>
                 )}
               </View>
@@ -1436,13 +1501,14 @@ export default observer(function ProjectLayout() {
                   : 'none'
               }
             >
+              <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
               <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
-              <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} />
+              <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>
@@ -1470,10 +1536,25 @@ export default observer(function ProjectLayout() {
               />
             </View>
           )}
+
+          {/* Floating Shogo Mode toggle — screen-level bottom-right so it's
+              reachable from every layout (wide split, narrow tabs, chat
+              fullscreen). Web-only for now; native renders a null stub.
+              Hidden entirely when the shogoMode feature flag is off. */}
+          {Platform.OS === 'web' && features.shogoMode && (
+            <View
+              className="absolute bottom-4 right-4 z-40"
+              pointerEvents="box-none"
+            >
+              <ShogoModeToggle />
+            </View>
+          )}
           </View>
+
         </View>
       </EditModeProvider>
     </CanvasThemeProvider>
+    </ChatBridgeProvider>
 
       {Platform.OS === 'web' && (
         <AlertDialog
@@ -1512,6 +1593,61 @@ export default observer(function ProjectLayout() {
     </>
   )
 })
+
+// ---------------------------------------------------------------------------
+// ShogoAwareChatPanels — wraps `{chatPanels}` and overlays `ShogoChatPanel`
+// on top (absolute inset-0) when the user has Shogo Mode enabled. The
+// underlying `ChatPanel` stack stays mounted beneath so its `ChatBridge`
+// registration (send / setMode / assistant emit) stays live — the
+// translator drives those imperatively.
+// ---------------------------------------------------------------------------
+
+function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
+  const { shogoModeActive, shogoPeekActive, setShogoPeekActive } = useChatBridge()
+  const { features } = usePlatformConfig()
+  const showShogo = Platform.OS === 'web' && shogoModeActive && features.shogoMode
+  // "Peek" hides the Shogo overlay without tearing it down, so the voice
+  // session + translator thread keep running while the user interacts
+  // with the real ChatPanel underneath.
+  const hideForPeek = showShogo && shogoPeekActive
+  return (
+    <View className="min-h-0 flex-1 relative">
+      <View
+        className="absolute inset-0"
+        style={showShogo && !hideForPeek ? { opacity: 0 } : undefined}
+        pointerEvents={showShogo && !hideForPeek ? 'none' : 'auto'}
+      >
+        {children}
+      </View>
+      {showShogo && (
+        <View
+          className="absolute inset-0 z-10 bg-background"
+          style={hideForPeek ? { opacity: 0 } : undefined}
+          pointerEvents={hideForPeek ? 'none' : 'auto'}
+        >
+          <ShogoChatPanel />
+        </View>
+      )}
+      {hideForPeek && (
+        <View
+          className="absolute bottom-4 right-4 z-30"
+          pointerEvents="box-none"
+        >
+          <Pressable
+            onPress={() => setShogoPeekActive(false)}
+            className="flex-row items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 shadow-lg"
+            accessibilityLabel="Return to Shogo Mode"
+          >
+            <Sparkles size={12} className="text-primary-foreground" />
+            <Text className="text-[11px] font-semibold text-primary-foreground">
+              Return to Shogo
+            </Text>
+          </Pressable>
+        </View>
+      )}
+    </View>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // ChatPanelResizeHandle — web-only drag handle between chat column and canvas
@@ -1649,7 +1785,6 @@ function TopBarBridge({
             : undefined
         }
         onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
-        canvasThemePicker={canvasActive && canvasThemeSupported ? <CanvasThemePicker /> : undefined}
         canvasThemeSupported={canvasThemeSupported}
       />
       {showAddDialog && effectiveSurfaceId && (

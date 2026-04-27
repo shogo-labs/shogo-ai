@@ -170,12 +170,12 @@ describe('isConcurrencySafe', () => {
     expect(isConcurrencySafe('read_file')).toBe(true)
   })
 
-  test('grep is safe', () => {
-    expect(isConcurrencySafe('grep')).toBe(true)
+  test('search is safe', () => {
+    expect(isConcurrencySafe('search')).toBe(true)
   })
 
-  test('ls is safe', () => {
-    expect(isConcurrencySafe('ls')).toBe(true)
+  test('memory_read is safe', () => {
+    expect(isConcurrencySafe('memory_read')).toBe(true)
   })
 
   test('edit_file is NOT safe', () => {
@@ -190,8 +190,8 @@ describe('isConcurrencySafe', () => {
     expect(isConcurrencySafe('exec')).toBe(false)
   })
 
-  test('task is NOT safe', () => {
-    expect(isConcurrencySafe('task')).toBe(false)
+  test('unknown tools default to NOT safe (treated as mutating)', () => {
+    expect(isConcurrencySafe('definitely_not_a_real_tool')).toBe(false)
   })
 
   test('all registered safe tools return true', () => {
@@ -213,8 +213,8 @@ describe('partitionToolCalls', () => {
   test('all reads form a single concurrent batch', () => {
     const calls = [
       { name: 'read_file', id: '1', input: {} },
-      { name: 'grep', id: '2', input: {} },
-      { name: 'ls', id: '3', input: {} },
+      { name: 'search', id: '2', input: {} },
+      { name: 'memory_read', id: '3', input: {} },
     ]
     const batches = partitionToolCalls(calls)
     expect(batches).toHaveLength(1)

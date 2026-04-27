@@ -1,0 +1,5 @@
+.build/
+Package.resolved
+shogo-sysaudio-arm64
+shogo-sysaudio-amd64
+shogo-sysaudio-universal

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated User MST Model
  *
@@ -23,9 +22,10 @@ export const UserModel = types
     id: types.identifier,
     name: types.optional(types.string, ""),
     email: types.string,
-    emailVerified: types.boolean,
+    emailVerified: types.optional(types.boolean, false),
     image: types.optional(types.string, ""),
     role: types.enumeration("UserRole", ["user", "super_admin"]),
+    onboardingCompleted: types.optional(types.boolean, false),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),

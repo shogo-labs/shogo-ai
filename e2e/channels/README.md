@@ -12,7 +12,7 @@ AGENT_URL=http://localhost:6200 bun run test:channels
 
 # Staging (through the API proxy — requires auth cookie)
 AGENT_URL=https://studio-staging.shogo.ai/api/projects/<PROJECT_ID>/agent-proxy \
-  AUTH_COOKIE="better-auth.session_token=<YOUR_SESSION_TOKEN>" \
+  AUTH_COOKIE="shogo.session_token=<YOUR_SESSION_TOKEN>" \
   bun run test:channels
 
 # Run individual test suites
@@ -94,8 +94,8 @@ endpoints respond correctly, and status is reported accurately.
 
 1. Sign into `https://studio-staging.shogo.ai`
 2. Open browser DevTools → Application → Cookies
-3. Copy the value of `better-auth.session_token`
-4. Pass as `AUTH_COOKIE="better-auth.session_token=<value>"`
+3. Copy the value of `shogo.session_token`
+4. Pass as `AUTH_COOKIE="shogo.session_token=<value>"`
 
 ## Test Design Notes
 

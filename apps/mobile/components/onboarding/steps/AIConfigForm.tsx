@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
   View,
   Text,
@@ -19,10 +19,16 @@ import {
   Zap,
   ArrowRight,
   ChevronDown,
+  LogIn,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi } from '@shogo-ai/sdk'
 import { createHttpClient } from '../../../lib/api'
+
+function hasDesktopBridge(): boolean {
+  if (typeof window === 'undefined') return false
+  return !!(window as any).shogoDesktop?.startCloudLogin
+}
 
 type AIConfigMode = 'shogo-cloud' | 'api-keys' | 'local-llm' | null
 
@@ -42,8 +48,11 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
   const [aiMode, setAiMode] = useState<AIConfigMode>(null)
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
-  const [shogoApiKey, setShogoApiKey] = useState('')
   const [shogoKeyError, setShogoKeyError] = useState('')
+  const [shogoSignedIn, setShogoSignedIn] = useState(false)
+  const [shogoEmail, setShogoEmail] = useState('')
+  const [shogoWorkspace, setShogoWorkspace] = useState('')
+  const [shogoLoginStatus, setShogoLoginStatus] = useState<'idle' | 'connecting'>('idle')
   const [llmBaseUrl, setLlmBaseUrl] = useState('')
   const [basicModel, setBasicModel] = useState('')
   const [advancedModel, setAdvancedModel] = useState('')
@@ -51,6 +60,88 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connected' | 'error'>('idle')
   const [isTesting, setIsTesting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+
+  // If the user already completed the shogo:// deep-link handshake before
+  // landing on this step (e.g. during a re-run of onboarding), pick that up
+  // so we don't force them to sign in again.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const status = await platform.cloudLoginStatus()
+        if (cancelled) return
+        if (status.signedIn) {
+          setShogoSignedIn(true)
+          setShogoEmail(status.email || '')
+          setShogoWorkspace(status.workspace?.name || '')
+        }
+      } catch {
+        // Local API not reachable — onboarding can still proceed with other modes.
+      }
+    })()
+
+    const desktop = (typeof window !== 'undefined' ? (window as any).shogoDesktop : null) as
+      | {
+          onCloudLoginResult?: (
+            cb: (r: { ok: boolean; error?: string; email?: string; workspace?: string }) => void,
+          ) => void
+          removeCloudLoginListener?: () => void
+        }
+      | null
+    desktop?.onCloudLoginResult?.((result) => {
+      if (cancelled) return
+      setShogoLoginStatus('idle')
+      if (result.ok) {
+        setShogoSignedIn(true)
+        setShogoEmail(result.email || '')
+        setShogoWorkspace(result.workspace || '')
+        setShogoKeyError('')
+      } else {
+        setShogoKeyError(result.error || 'Sign-in was cancelled')
+      }
+    })
+
+    return () => {
+      cancelled = true
+      desktop?.removeCloudLoginListener?.()
+    }
+  }, [platform])
+
+  const handleStartShogoLogin = useCallback(async () => {
+    setShogoLoginStatus('connecting')
+    setShogoKeyError('')
+    try {
+      if (hasDesktopBridge()) {
+        const result = await (window as any).shogoDesktop.startCloudLogin()
+        if (!result?.ok) {
+          setShogoLoginStatus('idle')
+          setShogoKeyError(result?.error || 'Could not start sign-in')
+        }
+        return
+      }
+      // Dev/browser fallback: open the authUrl in a new tab. The desktop
+      // bridge is required for the callback itself, so in dev we also poll
+      // local status so the UI picks up a manual key write.
+      const start = await platform.startCloudLogin({
+        id: 'onboarding-dev',
+        name: 'Onboarding (dev)',
+        platform: 'web',
+        appVersion: '0.0.0-dev',
+      })
+      if (!start.ok) {
+        setShogoLoginStatus('idle')
+        setShogoKeyError('Could not start sign-in')
+        return
+      }
+      if (typeof window !== 'undefined') {
+        window.open(start.authUrl, '_blank', 'noopener,noreferrer')
+      }
+      setShogoLoginStatus('idle')
+    } catch (err: any) {
+      setShogoLoginStatus('idle')
+      setShogoKeyError(err?.message || 'Sign-in failed')
+    }
+  }, [platform])
 
   const handleTestConnection = useCallback(async () => {
     if (!llmBaseUrl) return
@@ -76,12 +167,8 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
     setShogoKeyError('')
     try {
       if (aiMode === 'shogo-cloud') {
-        const data = await platform.connectShogoKey(shogoApiKey)
-        if (!data.ok) {
-          setShogoKeyError(data.error || 'Failed to validate key')
-          setIsSaving(false)
-          return
-        }
+        // Cloud login handshake already persisted the device key via the
+        // deep-link callback, so there's nothing to save here — just move on.
       } else if (aiMode === 'api-keys') {
         const body: Record<string, string> = {}
         if (anthropicKey) body.anthropicApiKey = anthropicKey
@@ -100,13 +187,13 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
     } finally {
       setIsSaving(false)
     }
-  }, [aiMode, shogoApiKey, anthropicKey, openaiKey, llmBaseUrl, basicModel, advancedModel, onComplete, platform])
+  }, [aiMode, anthropicKey, openaiKey, llmBaseUrl, basicModel, advancedModel, onComplete, platform])
 
   const isSaveDisabled =
     isSaving ||
     !aiMode ||
     (aiMode === 'api-keys' && !anthropicKey) ||
-    (aiMode === 'shogo-cloud' && !shogoApiKey)
+    (aiMode === 'shogo-cloud' && !shogoSignedIn)
 
   return (
     <View className="gap-4">
@@ -138,16 +225,54 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
       {/* Shogo Cloud form */}
       {aiMode === 'shogo-cloud' && (
         <View className="gap-3 bg-card border border-border rounded-xl p-4">
-          <Text className="text-xs text-muted-foreground leading-4">
-            Enter your Shogo API key from studio.shogo.ai
-          </Text>
-          <FieldInput
-            value={shogoApiKey}
-            onChangeText={setShogoApiKey}
-            placeholder="shogo_sk_..."
-            secureTextEntry
-            autoCapitalize="none"
-          />
+          {shogoSignedIn ? (
+            <View className="flex-row items-center gap-2">
+              <CheckCircle size={16} className="text-green-500" />
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-foreground">
+                  Signed in{shogoEmail ? ` as ${shogoEmail}` : ''}
+                </Text>
+                {shogoWorkspace ? (
+                  <Text className="text-xs text-muted-foreground">
+                    Workspace: {shogoWorkspace}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+          ) : (
+            <>
+              <Text className="text-xs text-muted-foreground leading-4">
+                Sign in with your Shogo Cloud account. Your browser will open to
+                complete the login, then this app will reconnect automatically.
+              </Text>
+              <Pressable
+                onPress={handleStartShogoLogin}
+                disabled={shogoLoginStatus === 'connecting'}
+                className={cn(
+                  'flex-row items-center justify-center gap-2 px-4 py-2.5 rounded-lg',
+                  shogoLoginStatus === 'connecting' ? 'bg-muted' : 'bg-primary',
+                )}
+              >
+                {shogoLoginStatus === 'connecting' ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <LogIn size={14} color="#fff" />
+                )}
+                <Text
+                  className={cn(
+                    'text-sm font-medium',
+                    shogoLoginStatus === 'connecting'
+                      ? 'text-muted-foreground'
+                      : 'text-primary-foreground',
+                  )}
+                >
+                  {shogoLoginStatus === 'connecting'
+                    ? 'Waiting for browser…'
+                    : 'Sign in to Shogo Cloud'}
+                </Text>
+              </Pressable>
+            </>
+          )}
           {shogoKeyError ? (
             <View className="flex-row items-center gap-1.5">
               <AlertTriangle size={14} className="text-destructive" />

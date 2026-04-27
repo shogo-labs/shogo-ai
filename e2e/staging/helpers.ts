@@ -31,59 +31,70 @@ export const STRIPE_CARDS = {
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Signs up a new account at /sign-in, then walks through the full cloud
+ * Signs up a new account at /sign-in, then walks through the cloud chat-style
  * onboarding flow:
  *
- *   welcome → features → templates → get-started → home
+ *   welcome (auto-advance) → features → templates → complete → home
  *
  * Leaves the browser on the home screen with "What's on your mind" visible.
  */
 export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
   // ── Sign up ────────────────────────────────────────────────────────────────
   await page.goto("/sign-in")
-  await page.getByText("Sign Up").click()
+  // Switch to the Sign Up tab. The LoginScreen renders both tabs as
+  // Pressables with role="tab" + accessibilityLabel "Sign Up" / "Sign In".
+  await page.getByRole("tab", { name: "Sign Up" }).click()
   await page.getByPlaceholder("Enter your name").fill(user.name)
   await page.getByPlaceholder("you@example.com").fill(user.email)
-  await page.getByPlaceholder("Create a password").fill(user.password)
-  await page
-    .getByRole("button", { name: "Sign Up" })
-    .or(page.getByText("Sign Up").last())
-    .click()
+  const passwordField = page.getByPlaceholder(/Create a password/)
+  await passwordField.fill(user.password)
+  // The shared-ui <Button> renders as a non-semantic Pressable on web, so
+  // the inner "Sign Up" text is the only stable handle. Click the *last*
+  // "Sign Up" element on the page (tab is first, form CTA is last).
+  await page.getByText("Sign Up", { exact: true }).last().click()
 
-  // ── Onboarding steps ───────────────────────────────────────────────────────
-  // Each step waits for the CTA to appear before clicking so the helper is
-  // safe against any future change that skips onboarding for certain accounts.
+  // Wait for the post-signup redirect away from /sign-in BEFORE matching
+  // any onboarding text. Otherwise selectors like getByText("Continue")
+  // would match the "Continue with Google" CTA that's still visible on the
+  // sign-in page and trigger an OAuth redirect.
+  await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
+    timeout: 30_000,
+  })
 
-  // Step 1 – Welcome: "Get Started"
+  // ── Onboarding (chat-style) ────────────────────────────────────────────────
+  // The cloud flow is rendered by ChatOnboarding with widgets. The welcome
+  // step auto-advances; the rest expose Pressable CTAs that are not real
+  // <button>s, so we match by exact visible text. Each step is wrapped in a
+  // try because future test users may bypass onboarding entirely.
+
+  // Step 1 – Features widget: "Continue" (exact, not "Continue with Google")
   try {
-    await page.getByRole("button", { name: "Get Started" }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: "Get Started" }).click()
-  } catch {
-    // Onboarding not shown — already past welcome step
-  }
-
-  // Step 2 – Features: "Continue"
-  try {
-    await page.getByRole("button", { name: "Continue" }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: "Continue" }).click()
+    await page
+      .getByText("Continue", { exact: true })
+      .first()
+      .waitFor({ timeout: 15_000 })
+    await page.getByText("Continue", { exact: true }).first().click()
   } catch {
     // Already past features step
   }
 
-  // Step 3 – Templates: "Skip & continue"
+  // Step 2 – Templates widget: "Skip" (or "Continue" if a template is preselected)
   try {
-    await page.getByRole("button", { name: /Skip.*continue/i }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: /Skip.*continue/i }).click()
+    const skip = page
+      .getByText("Skip", { exact: true })
+      .or(page.getByText("Continue", { exact: true }))
+    await skip.first().waitFor({ timeout: 15_000 })
+    await skip.first().click()
   } catch {
     // Already past templates step
   }
 
-  // Step 4 – Get Started: "Enter Shogo"
+  // Step 3 – Complete widget: "Enter Shogo"
   try {
-    await page.getByRole("button", { name: "Enter Shogo" }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: "Enter Shogo" }).click()
+    await page.getByText("Enter Shogo", { exact: true }).waitFor({ timeout: 15_000 })
+    await page.getByText("Enter Shogo", { exact: true }).click()
   } catch {
-    // Already past get-started step
+    // Already past complete step
   }
 
   // ── Home screen ────────────────────────────────────────────────────────────
@@ -100,36 +111,36 @@ export async function signUpAndOnboardWithAppTemplate(
   templateDisplayName: string
 ): Promise<void> {
   await page.goto("/sign-in")
-  await page.getByText("Sign Up").click()
+  await page.getByRole("tab", { name: "Sign Up" }).click()
   await page.getByPlaceholder("Enter your name").fill(user.name)
   await page.getByPlaceholder("you@example.com").fill(user.email)
   await page.getByPlaceholder("Create a password").fill(user.password)
-  await page
-    .getByRole("button", { name: "Sign Up" })
-    .or(page.getByText("Sign Up").last())
-    .click()
+  await page.getByText("Sign Up", { exact: true }).last().click()
 
+  await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
+    timeout: 30_000,
+  })
+
+  // Step 1 – Features widget: "Continue" (exact, not "Continue with Google")
   try {
-    await page.getByRole("button", { name: "Get Started" }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: "Get Started" }).click()
+    await page
+      .getByText("Continue", { exact: true })
+      .first()
+      .waitFor({ timeout: 15_000 })
+    await page.getByText("Continue", { exact: true }).first().click()
   } catch {}
 
+  // Step 2 – Templates widget: pick the named template, then "Continue"
   try {
-    await page.getByRole("button", { name: "Continue" }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: "Continue" }).click()
-  } catch {}
-
-  // Templates step: switch to Apps tab, select an app template
-  try {
-    await page.getByRole("button", { name: /Skip.*continue/i }).waitFor({ timeout: 10_000 })
-    await page.getByText("Apps").click()
+    await page.getByText(templateDisplayName).waitFor({ timeout: 15_000 })
     await page.getByText(templateDisplayName).click()
-    await page.getByRole("button", { name: /Continue with template/i }).click()
+    await page.getByText("Continue", { exact: true }).first().click()
   } catch {}
 
+  // Step 3 – Complete widget: "Enter Shogo"
   try {
-    await page.getByRole("button", { name: "Enter Shogo" }).waitFor({ timeout: 10_000 })
-    await page.getByRole("button", { name: "Enter Shogo" }).click()
+    await page.getByText("Enter Shogo", { exact: true }).waitFor({ timeout: 15_000 })
+    await page.getByText("Enter Shogo", { exact: true }).click()
   } catch {}
 
   await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })

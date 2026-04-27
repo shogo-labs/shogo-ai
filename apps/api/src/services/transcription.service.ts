@@ -26,9 +26,15 @@ export interface TranscriptionResult {
 
 function getSherpaDir(): string {
   const candidates = [
+    // Explicit override from desktop local-server (packaged app writable path)
+    process.env.SHOGO_SHERPA_DIR,
+    // Co-located with data dir (packaged desktop default)
+    process.env.SHOGO_DATA_DIR ? join(process.env.SHOGO_DATA_DIR, 'sherpa-onnx') : undefined,
+    // Dev mode: installed under apps/desktop/resources
     resolve(process.cwd(), 'apps', 'desktop', 'resources', 'sherpa-onnx'),
-    join(process.resourcesPath || '', 'sherpa-onnx'),
-  ]
+    // Electron resourcesPath (only set when running inside Electron, not in spawned bun process)
+    join((process as any).resourcesPath || '', 'sherpa-onnx'),
+  ].filter(Boolean) as string[]
   for (const dir of candidates) {
     if (existsSync(join(dir, 'bin', 'sherpa-onnx-offline'))) return dir
   }

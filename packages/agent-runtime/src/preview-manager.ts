@@ -18,18 +18,35 @@ import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'fs'
 import { pkg } from '@shogo/shared-runtime'
+import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
 
 const LOG_PREFIX = 'preview-manager'
-const PREVIEW_PORT = 5173
-const BUILD_LOG = '.build.log'
+
+// The agent runtime serves the built `project/dist/` at the **root** of its own
+// HTTP port (see server.ts `app.get('*', ...)`). So the "preview URL" is literally
+// the runtime's own port — not 5173, not 3001. Those constants historically here
+// were either dead (5173: nothing listens on it) or referred to the template API
+// sidecar (3001), which is a different thing.
 
 export interface PreviewManagerConfig {
   /** Path to the project/ subdirectory (where package.json lives) */
   projectDir: string
-  /** Port for the Hono API process (used by Vite proxy config) */
+  /** Port of the agent runtime itself — this IS the preview port (runtime serves dist/ at root). */
   runtimePort: number
+  /**
+   * Public / externally-reachable URL of the running preview (e.g. in k8s this is the
+   * `preview--{id}.{env}.shogo.ai` subdomain). Falls back to the localhost internal
+   * URL when unset (local dev).
+   */
+  publicUrl?: string
+  /** Clear agent `consoleLogs` buffer when `.console.log` is reset (preview start). */
+  onConsoleLogReset?: () => void
 }
 
+// Template API sidecar port (Hono server.tsx) — NOT the app URL. The app is
+// served by the runtime itself on `runtimePort`, and this sidecar is proxied
+// at `/api/*`. Fixed for now; see the templateApiPort field in
+// `tech-stacks/<stack>/stack.json`.
 const API_SERVER_PORT = 3001
 
 export type PreviewPhase =
@@ -44,6 +61,8 @@ export type PreviewPhase =
 export class PreviewManager {
   private projectDir: string
   private runtimePort: number
+  private publicUrl?: string
+  private onConsoleLogReset?: () => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
   private started = false
@@ -52,6 +71,18 @@ export class PreviewManager {
   constructor(config: PreviewManagerConfig) {
     this.projectDir = config.projectDir
     this.runtimePort = config.runtimePort
+    this.publicUrl = config.publicUrl
+    this.onConsoleLogReset = config.onConsoleLogReset
+  }
+
+  /** URL the agent can hit from inside the pod / local machine. */
+  get internalUrl(): string {
+    return `http://localhost:${this.runtimePort}/`
+  }
+
+  /** URL the end user (or a QA subagent's browser) should navigate to. */
+  get externalUrl(): string {
+    return this.publicUrl && this.publicUrl.length > 0 ? this.publicUrl : this.internalUrl
   }
 
   get isStarted(): boolean {
@@ -79,8 +110,11 @@ export class PreviewManager {
    */
   async start(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
     if (this.started) {
-      return { mode: 'already-running', port: PREVIEW_PORT, timings: {} }
+      return { mode: 'already-running', port: this.runtimePort, timings: {} }
     }
+
+    // Fresh preview session — align console buffer with an empty on-disk log (matches build refresh UX).
+    this.clearRuntimeConsoleLog()
 
     const timings: Record<string, number> = {}
     const projectDir = this.projectDir
@@ -101,11 +135,11 @@ export class PreviewManager {
         console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
       })
 
-      return { mode: 'prebuilt-dist', port: PREVIEW_PORT, timings }
+      return { mode: 'prebuilt-dist', port: this.runtimePort, timings }
     }
 
     await this.runSetupTasks(timings)
-    return { mode: this.apiServerProcess ? 'vite-watch+api' : 'vite-watch', port: PREVIEW_PORT, timings }
+    return { mode: this.apiServerProcess ? 'vite-watch+api' : 'vite-watch', port: this.runtimePort, timings }
   }
 
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
@@ -235,20 +269,52 @@ export class PreviewManager {
    * Get the current preview status.
    * `running` is true when the preview is serveable — either because a pre-built
    * dist/ exists (started=true immediately) or because vite build --watch is live.
+   *
+   * `url` is the canonical URL to give to humans / browsers (external if set,
+   * else localhost). `internalUrl` and `publicUrl` are always populated so
+   * callers can pick the right one for their context (e.g. an in-pod agent
+   * should use `internalUrl`, a QA subagent driving a real browser should use
+   * `publicUrl`/`url`).
+   *
+   * `port` is kept for backwards compatibility with the `/preview/status`
+   * endpoint and equals `runtimePort` (the port the runtime is actually
+   * bound on, which is where dist/ is served from).
    */
-  getStatus(): { running: boolean; port: number | null; projectDir: string; phase: PreviewPhase } {
+  getStatus(): {
+    running: boolean
+    port: number | null
+    url: string | null
+    internalUrl: string | null
+    publicUrl: string | null
+    projectDir: string
+    phase: PreviewPhase
+  } {
     const running = this.started && this._phase === 'ready'
     return {
       running,
-      port: running ? PREVIEW_PORT : null,
+      port: running ? this.runtimePort : null,
+      url: running ? this.externalUrl : null,
+      internalUrl: running ? this.internalUrl : null,
+      publicUrl: running && this.publicUrl ? this.publicUrl : null,
       projectDir: this.projectDir,
       phase: this._phase,
     }
   }
 
+  /** Truncate project `.console.log` and clear the server's in-memory buffer (if wired). */
+  private clearRuntimeConsoleLog(): void {
+    const consolePath = join(this.projectDir, CONSOLE_LOG_FILE)
+    try {
+      writeFileSync(consolePath, '', 'utf-8')
+    } catch (err: any) {
+      console.warn(`[${LOG_PREFIX}] Could not truncate ${CONSOLE_LOG_FILE}:`, err.message)
+    }
+    this.onConsoleLogReset?.()
+  }
+
   private async startBuildWatch(): Promise<void> {
     const projectDir = this.projectDir
-    const buildLogPath = join(projectDir, BUILD_LOG)
+    const buildLogPath = join(projectDir, BUILD_LOG_FILE)
 
     if (!existsSync(join(projectDir, 'node_modules', '.bin', 'vite'))) {
       console.log(`[${LOG_PREFIX}] Vite not found in node_modules — skipping watch`)
@@ -299,7 +365,7 @@ export class PreviewManager {
     const serverFile = join(this.projectDir, 'server.tsx')
     if (!existsSync(serverFile)) return
 
-    const buildLogPath = join(this.projectDir, BUILD_LOG)
+    const buildLogPath = join(this.projectDir, BUILD_LOG_FILE)
     console.log(`[${LOG_PREFIX}] Starting template API server on port ${API_SERVER_PORT}...`)
 
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {

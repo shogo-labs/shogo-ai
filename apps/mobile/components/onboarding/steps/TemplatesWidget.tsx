@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect } from 'react'
+import type { ComponentType } from 'react'
 import { View, Text, Pressable, ActivityIndicator } from 'react-native'
-import { Check, ArrowRight } from 'lucide-react-native'
+import * as LucideIcons from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
 import { safeGetItem } from '../../../lib/safe-storage'
@@ -30,6 +31,16 @@ interface TemplatesWidgetProps {
   onComplete: () => void
   onSelectTemplate: (id: string | null) => void
   selectedTemplate: string | null
+}
+
+/** Dynamic lookup: namespace includes non-icon exports (e.g. Icon) with incompatible props — cast via unknown. */
+const LUCIDE_BY_NAME = LucideIcons as unknown as Record<string, ComponentType<{ size?: number; color?: string }>>
+
+const { Check, ArrowRight } = LucideIcons
+
+function TemplateIcon({ name, color }: { name: string; color: string }) {
+  const Icon = LUCIDE_BY_NAME[name] ?? LucideIcons.Sparkles
+  return <Icon size={18} color={color} />
 }
 
 export function TemplatesWidget({ onComplete, onSelectTemplate, selectedTemplate }: TemplatesWidgetProps) {
@@ -79,7 +90,7 @@ export function TemplatesWidget({ onComplete, onSelectTemplate, selectedTemplate
               className="w-9 h-9 rounded-lg items-center justify-center"
               style={{ backgroundColor: `${color}15` }}
             >
-              <Text style={{ fontSize: 18 }}>{t.icon}</Text>
+              <TemplateIcon name={t.icon} color={color} />
             </View>
             <View className="flex-1">
               <Text className="text-sm font-semibold text-foreground">{t.name}</Text>

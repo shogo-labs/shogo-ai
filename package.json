@@ -18,6 +18,7 @@
     "api:dev": "bun scripts/watch-api.ts",
     "api:start": "bun apps/api/src/server.ts",
     "dev:all": "bun scripts/dev-all.ts",
+    "voice:webhooks": "bun scripts/voice-webhooks.ts",
     "dev:backend": "mkdir -p logs && bun run api:dev 2>&1 | tee logs/api.log",
     "dev:start": "./scripts/docker-dev-start.sh",
     "dev:infra": "./scripts/docker-dev-start.sh --infra",
@@ -54,6 +55,8 @@
     "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
     "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
     "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
+    "test:e2e:shogo-persistence": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/shogo-persistence.test.ts",
+    "test:notetaker:e2e": "npx playwright test --config apps/desktop/e2e/playwright.config.ts",
     "postinstall": "bun scripts/postinstall.ts"
   },
   "devDependencies": {
@@ -89,5 +92,8 @@
     "@react-native-async-storage/async-storage": "^3.0.1",
     "diff": "^8.0.4",
     "prisma-adapter-bun-sqlite": "^0.7.1"
+  },
+  "patchedDependencies": {
+    "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch"
   }
 }

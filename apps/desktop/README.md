@@ -28,7 +28,11 @@ License: `AGPL-3.0-or-later`.
 ## Prerequisites
 
 - **Bun** >= 1.1 (`curl -fsSL https://bun.sh/install | bash`)
-- **Node.js** >= 18 (for Expo CLI and Electron)
+- **Node.js** >= 20 (for Expo CLI, Electron, **and Windows project sandbox
+  dependency installs** — Bun 1.x has a hardlink bug on Windows that produces
+  empty `node_modules`, so `RuntimeManager` shells out to `npm.cmd`. Shogo
+  Desktop on Windows will not be able to run projects without Node.js
+  installed at `C:\Program Files\nodejs\`.)
 - The monorepo dependencies installed: `bun install` from the repo root
 
 ## Quick Start (Electron)

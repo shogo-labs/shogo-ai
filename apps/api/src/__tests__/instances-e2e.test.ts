@@ -71,12 +71,20 @@ const mockPrisma = {
   },
 }
 
+// Run in local mode so the Redis-backed tunnel module short-circuits instead of
+// blocking the test on a live Redis connection. Must be set before importing
+// instances.ts (which transitively imports tunnel-redis).
+process.env.SHOGO_LOCAL_MODE = 'true'
+
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: mock(async (key: string) => {
     if (key === 'shogo_e2e_key') return { workspaceId: 'ws-e2e', userId: 'user-e2e' }
     return null
   }),
+}))
+mock.module('../lib/push-notifications', () => ({
+  sendPushToInstance: mock(async () => {}),
 }))
 
 const testUser = { id: 'user-1', userId: 'user-1', email: 'e2e@test.com', role: 'super_admin' }

@@ -36,6 +36,33 @@ interface FilePart {
   name?: string
 }
 
+function deriveFileLabel(mediaType: string, name?: string): {
+  title: string
+  kindLabel: string
+} {
+  if (name) {
+    const ext = name.includes(".") ? name.split(".").pop()!.toUpperCase() : ""
+    const kindFromMedia = mediaType.includes("json")
+      ? "JSON"
+      : mediaType.includes("markdown")
+      ? "Markdown"
+      : mediaType.includes("pdf")
+      ? "PDF"
+      : mediaType.startsWith("text/")
+      ? "Text"
+      : ext || (mediaType.split("/").pop() || "FILE").toUpperCase()
+    return { title: name, kindLabel: kindFromMedia }
+  }
+  if (mediaType.includes("pdf")) return { title: "PDF document", kindLabel: "PDF" }
+  if (mediaType.includes("json")) return { title: "JSON file", kindLabel: "JSON" }
+  if (mediaType.includes("markdown")) return { title: "Markdown", kindLabel: "Markdown" }
+  if (mediaType.startsWith("text/")) return { title: "Text file", kindLabel: "Text" }
+  return {
+    title: "Attachment",
+    kindLabel: (mediaType.split("/").pop() || "FILE").toUpperCase(),
+  }
+}
+
 export { extractTextContent } from "@shogo/shared-app/chat"
 
 function extractImageParts(message: UIMessage): ImagePart[] {
@@ -71,6 +98,7 @@ function extractFileParts(message: UIMessage): FilePart[] {
     .map((part) => ({
       url: part.url,
       mediaType: part.mediaType || "application/octet-stream",
+      ...(part.name ? { name: part.name } : {}),
     }))
 }
 
@@ -115,19 +143,19 @@ function ImageThumbnail({
 function DocumentThumbnail({
   url,
   mediaType,
+  name,
   index,
 }: {
   url: string
   mediaType: string
+  name?: string
   index: number
 }) {
   const [showModal, setShowModal] = useState(false)
   const [fileContent, setFileContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const label = mediaType.includes("pdf")
-    ? "PDF"
-    : mediaType.split("/").pop()?.toUpperCase() || "FILE"
+  const { title, kindLabel: typeLabel } = deriveFileLabel(mediaType, name)
 
   const isTextLike =
     mediaType.startsWith("text/") ||
@@ -147,15 +175,17 @@ function DocumentThumbnail({
     }
     setLoading(true)
     try {
-      const res = await fetch(url)
-      const contentLength = parseInt(res.headers.get("content-length") || "0", 10)
       const MAX_FILE_BYTES = 1 * 1024 * 1024 // 1 MB
+      const res = await fetch(url)
+      // content-length may be absent for data: URLs — fall through to text check
+      const contentLength = parseInt(res.headers.get("content-length") || "0", 10)
       if (contentLength > MAX_FILE_BYTES) {
         Linking.openURL(url)
         return
       }
       const text = await res.text()
-      setFileContent(text.length > MAX_FILE_BYTES ? text.slice(0, MAX_FILE_BYTES) + "\n\n…[truncated]" : text)
+      const byteSize = new Blob([text]).size
+      setFileContent(byteSize > MAX_FILE_BYTES ? text.slice(0, MAX_FILE_BYTES) + "\n\n…[truncated]" : text)
       setShowModal(true)
     } catch {
       Linking.openURL(url)
@@ -168,22 +198,32 @@ function DocumentThumbnail({
     <>
       <Pressable
         onPress={handlePress}
-        className="flex-row items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2"
-        accessibilityLabel={`File attachment ${index + 1}: ${label}`}
+        className="flex-row items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2.5 min-w-[200px] max-w-full"
+        accessibilityLabel={`File attachment ${index + 1}: ${title}`}
         accessibilityRole="button"
       >
-        <FileText size={16} className="text-muted-foreground" />
-        <Text className="text-xs text-muted-foreground">
-          {loading ? "Loading…" : `${label} · Tap to view`}
-        </Text>
+        <View className="h-9 w-9 items-center justify-center rounded-lg bg-primary/15 flex-shrink-0">
+          <FileText size={18} className="text-primary" />
+        </View>
+        <View className="flex-1 min-w-0">
+          <Text
+            className="text-xs font-medium text-foreground"
+            numberOfLines={1}
+          >
+            {title}
+          </Text>
+          <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+            {loading ? "Loading…" : typeLabel}
+          </Text>
+        </View>
       </Pressable>
       {fileContent !== null && (
         <FileViewerModal
           visible={showModal}
           onClose={() => setShowModal(false)}
           content={fileContent}
-          title={`${label} File`}
-          kind={mediaType.includes("json") ? "json" : "plain"}
+          title={title}
+          kind={mediaType.includes("json") ? "json" : mediaType.includes("markdown") ? "markdown" : "plain"}
         />
       )}
     </>
@@ -199,7 +239,13 @@ export function MessageContent({
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"
-  const isLongText = isUser && content ? analyzeContent(content).isLong : false
+  // Only show the preview card when there's genuinely long typed text and no
+  // file attachments. When file chips are present the text body is just the
+  // typed portion (short) so we always render it inline — matching ChatGPT.
+  const hasAttachments = files.length > 0 || images.length > 0
+  const isLongText = isUser && content && !hasAttachments
+    ? analyzeContent(content).isLong
+    : false
 
   const baseClasses = cn(
     "rounded-md px-3 py-1.5",
@@ -212,15 +258,6 @@ export function MessageContent({
   if (isUser) {
     return (
       <View className={cn(baseClasses, "gap-2")}>
-        {content ? (
-          isLongText ? (
-            <LongTextPreviewCard text={content} title="Your Message" />
-          ) : (
-            <Text className="text-xs text-foreground" selectable>
-              {content}
-            </Text>
-          )
-        ) : null}
         {images.length > 0 && (
           <View className="flex-row flex-wrap gap-2">
             {images.map((img, i) => (
@@ -234,17 +271,27 @@ export function MessageContent({
           </View>
         )}
         {files.length > 0 && (
-          <View className="flex-row flex-wrap gap-2">
+          <View className="flex-col gap-1.5">
             {files.map((file, i) => (
               <DocumentThumbnail
                 key={`${message.id}-file-${i}`}
                 url={file.url}
                 mediaType={file.mediaType}
+                name={file.name}
                 index={i}
               />
             ))}
           </View>
         )}
+        {content ? (
+          isLongText ? (
+            <LongTextPreviewCard text={content} title="Your Message" />
+          ) : (
+            <Text className="text-xs text-foreground" selectable>
+              {content}
+            </Text>
+          )
+        ) : null}
       </View>
     )
   }
@@ -272,12 +319,13 @@ export function MessageContent({
         </View>
       )}
       {files.length > 0 && (
-        <View className="flex-row flex-wrap gap-2">
+        <View className="flex-col gap-1.5">
           {files.map((file, i) => (
             <DocumentThumbnail
               key={`${message.id}-file-${i}`}
               url={file.url}
               mediaType={file.mediaType}
+              name={file.name}
               index={i}
             />
           ))}

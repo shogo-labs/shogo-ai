@@ -28,6 +28,7 @@ import {
   rmSync,
   renameSync,
   cpSync,
+  appendFileSync,
 } from 'fs'
 import {
   createRuntimeApp, traceOperation,
@@ -44,6 +45,7 @@ import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFrame } from './screencast-broadcaster'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
 
@@ -213,6 +215,30 @@ app.get('/ready', (c) => c.json({ ready: true }))
 // Agent Workspace Bootstrap
 // =============================================================================
 
+/**
+ * Move a file or directory from `src` to `dest`, working around a Windows-specific
+ * failure mode: `renameSync` returns `EPERM` when the source tree has any file
+ * handle open (e.g. a Vite file-watcher subscribing to `src/`). POSIX lets the
+ * rename succeed in that case; NTFS does not.
+ *
+ * Falls back to a recursive copy plus a retrying `rmSync`. `rmSync` with
+ * `maxRetries > 0` retries on EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM with a linear
+ * backoff, which gives concurrent watchers time to release their handles.
+ */
+function safeMoveSync(src: string, dest: string): void {
+  try {
+    renameSync(src, dest)
+    return
+  } catch (err: any) {
+    const code = err?.code
+    if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY' && code !== 'EXDEV') {
+      throw err
+    }
+  }
+  cpSync(src, dest, { recursive: true, force: true, errorOnExist: false })
+  rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+}
+
 function ensureWorkspaceFiles(): void {
   const templateMarker = join(WORKSPACE_DIR, '.template')
   const templateIdFromEnv = process.env.TEMPLATE_ID
@@ -245,11 +271,11 @@ function ensureWorkspaceFiles(): void {
     const appFiles = ['package.json', 'bun.lock', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts', 'postcss.config.js', 'components.json', '.gitignore']
     for (const f of appFiles) {
       const src = join(WORKSPACE_DIR, f)
-      if (existsSync(src)) renameSync(src, join(projectDir, f))
+      if (existsSync(src)) safeMoveSync(src, join(projectDir, f))
     }
     for (const d of ['src', 'prisma', 'dist', 'public', 'node_modules']) {
       const src = join(WORKSPACE_DIR, d)
-      if (existsSync(src)) renameSync(src, join(projectDir, d))
+      if (existsSync(src)) safeMoveSync(src, join(projectDir, d))
     }
     seedWorkspaceDefaults(WORKSPACE_DIR)
     logTiming('Migrated legacy APP layout into project/ subdirectory')
@@ -794,6 +820,7 @@ app.post('/agent/chat', async (c) => {
   const modelOverride = (body.agentMode as string | undefined) || undefined
   const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
   const confirmedPlan = body.confirmedPlan || undefined
+  console.log(`[AgentRuntime][chat] received — interactionMode: ${interactionMode ?? '(undefined → defaults to agent)'}, agentMode: ${modelOverride ?? '(none)'}, hasConfirmedPlan: ${!!confirmedPlan}, sessionKey: ${chatSessionKey}, bodyKeys: ${Object.keys(body).join(',')}`)
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -899,6 +926,65 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
       'Content-Type': 'text/x-ai-sdk-ui-stream',
       'X-Accel-Buffering': 'no',
       'Cache-Control': 'no-cache',
+    },
+  })
+})
+
+// Live browser screencast for a running subagent instance.
+// Frames are JPEG-base64, emitted by CDP `Page.startScreencast` from inside
+// `createBrowserTool` whenever a subagent using the `browser` tool is spawned
+// (see screencast-broadcaster.ts). The mobile `LiveBrowserView` subscribes
+// here to render a running subagent's viewport under its card.
+app.get('/agent/subagents/:instanceId/screencast', (c) => {
+  const instanceId = c.req.param('instanceId')
+  const debugScreencast = process.env.DEBUG_SCREENCAST === '1' || process.env.DEBUG_SCREENCAST === 'true'
+  const scLog = (msg: string) => { if (debugScreencast) console.log(msg) }
+  scLog(`[screencast] SSE open instanceId=${instanceId}`)
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder()
+      let closed = false
+      let sentFrames = 0
+      const send = (payload: string) => {
+        if (closed) return
+        try { controller.enqueue(enc.encode(payload)) } catch { closed = true }
+      }
+      // Replay the most recent frame so new subscribers see something immediately.
+      const last = getLastScreencastFrame(instanceId)
+      if (last) {
+        scLog(`[screencast] SSE replay last frame instanceId=${instanceId}`)
+        send(`data: ${JSON.stringify(last)}\n\n`)
+        sentFrames++
+      } else {
+        scLog(`[screencast] SSE no last frame yet instanceId=${instanceId}`)
+      }
+      const unsub = subscribeScreencast(instanceId, (frame) => {
+        sentFrames++
+        if (sentFrames === 1 || sentFrames % 60 === 0) {
+          scLog(`[screencast] SSE send frame#${sentFrames} instanceId=${instanceId}`)
+        }
+        send(`data: ${JSON.stringify(frame)}\n\n`)
+      })
+      const iv = setInterval(() => send(`: keepalive\n\n`), 15_000)
+      const teardown = () => {
+        if (closed) return
+        closed = true
+        clearInterval(iv)
+        try { unsub() } catch {}
+        try { controller.close() } catch {}
+        scLog(
+          `[screencast] SSE close instanceId=${instanceId} sentFrames=${sentFrames}`,
+        )
+      }
+      c.req.raw.signal.addEventListener('abort', teardown)
+    },
+  })
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     },
   })
 })
@@ -1093,10 +1179,23 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = body.chatSessionId || 'chat'
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
+  // Also cancel every running subagent spawned via AgentManager. The main turn
+  // signal does not reach these instances because each has its own AbortController.
+  const cancelledSubagents = agentGateway.agentManager.cancelAll()
+
   // Remove the buffer entirely so resume after stop returns 204 (not a replay)
   streamBufferStore.abort(stopSessionKey)
 
-  return c.json({ stopped: aborted })
+  return c.json({ stopped: aborted, cancelledSubagents })
+})
+
+// Cancel a single running subagent by AgentManager instance id
+app.post('/agent/subagents/:instanceId/stop', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
+  const instanceId = c.req.param('instanceId')
+  if (!instanceId) return c.json({ error: 'Missing instanceId' }, 400)
+  const cancelled = agentGateway.agentManager.cancel(instanceId)
+  return c.json({ cancelled, instanceId })
 })
 
 // ---------------------------------------------------------------------------
@@ -1104,8 +1203,36 @@ app.post('/agent/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager } from './preview-manager'
+import { previewConsoleLogPath } from './runtime-log-paths'
 
 let previewManager: PreviewManager | null = null
+
+/** In-memory mirror of `project/.console.log` for `/console-log` + SSE (same lines as on disk). */
+let consoleLogsRuntimeBuffer: string[] | null = null
+
+function appendRuntimeConsoleLogLine(line: string): void {
+  let buf = consoleLogsRuntimeBuffer
+  if (!buf) {
+    buf = []
+    consoleLogsRuntimeBuffer = buf
+  }
+  buf.push(line)
+  if (buf.length > 1000) buf.splice(0, 500)
+  try {
+    appendFileSync(previewConsoleLogPath(WORKSPACE_DIR), `${line}\n`, 'utf-8')
+  } catch {
+    // `project/` may not exist yet; buffer still holds the line for the UI.
+  }
+}
+
+function clearRuntimeConsoleLogBuffer(): void {
+  if (consoleLogsRuntimeBuffer) consoleLogsRuntimeBuffer.length = 0
+}
+
+function getConsoleLogsBuffer(): string[] {
+  if (!consoleLogsRuntimeBuffer) consoleLogsRuntimeBuffer = []
+  return consoleLogsRuntimeBuffer
+}
 
 function getPreviewManager(): PreviewManager {
   if (!previewManager) {
@@ -1113,6 +1240,11 @@ function getPreviewManager(): PreviewManager {
     previewManager = new PreviewManager({
       projectDir,
       runtimePort: parseInt(process.env.PORT || '8080', 10),
+      // In k8s, the API sets PUBLIC_PREVIEW_URL to the externally-reachable
+      // preview subdomain (preview--{id}.{env}.shogo.ai). Locally it's unset
+      // and PreviewManager falls back to http://localhost:${runtimePort}/.
+      publicUrl: process.env.PUBLIC_PREVIEW_URL,
+      onConsoleLogReset: clearRuntimeConsoleLogBuffer,
     })
   }
   return previewManager
@@ -1634,9 +1766,12 @@ function walkFilesTree(
   return results
 }
 
-// Bundle all workspace files for project export (called by the API server in K8s mode)
+// Bundle all workspace files for project export (called by the API server in K8s mode).
+// `dist/` and `build/` are intentionally NOT excluded here: shipping the built app output
+// lets imports start the preview immediately without waiting for install + vite build.
+// See preview-manager.ts — presence of `project/dist/index.html` marks the preview ready.
 const BUNDLE_EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', '.cache', '.next', 'build', '.turbo', '.expo',
+  'node_modules', '.git', '.cache', '.next', '.turbo', '.expo',
 ])
 const BUNDLE_MAX_FILE_SIZE = 10 * 1024 * 1024
 
@@ -2440,15 +2575,13 @@ app.post('/agent/import', async (c) => {
   return c.json({ ok: true, imported: written.length, files: written })
 })
 
-// Console log for forwarding (matches runtime pattern)
-const consoleLogs: string[] = []
+// Console log for forwarding — mirrored to project/.console.log on disk (see runtime-log-paths.ts).
 const logStreamListeners = new Set<(line: string) => void>()
 
 app.post('/console-log/append', async (c) => {
   const { line } = await c.req.json()
   if (line) {
-    consoleLogs.push(line)
-    if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+    appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {
       try { listener(line) } catch {}
     }
@@ -2457,7 +2590,7 @@ app.post('/console-log/append', async (c) => {
 })
 
 app.get('/console-log', (c) => {
-  return c.json({ logs: consoleLogs })
+  return c.json({ logs: getConsoleLogsBuffer() })
 })
 
 app.get('/agent/logs/stream', (c) => {
@@ -2468,7 +2601,7 @@ app.get('/agent/logs/stream', (c) => {
         try { controller.enqueue(encoder.encode(text + '\n')) } catch {}
       }
 
-      for (const line of consoleLogs.slice(-100)) {
+      for (const line of getConsoleLogsBuffer().slice(-100)) {
         send(line)
       }
 
@@ -2855,8 +2988,10 @@ async function startGateway(): Promise<void> {
   const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
   agentGateway.setLogCallback((line: string) => {
-    consoleLogs.push(line)
-    if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
+    appendRuntimeConsoleLogLine(line)
+    for (const listener of logStreamListeners) {
+      try { listener(line) } catch {}
+    }
   })
 
   if (s3SyncInstance) {

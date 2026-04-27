@@ -110,6 +110,15 @@ export interface AgentImportResult {
   files: string[]
 }
 
+/** One row from `GET /agent/plans` (`.shogo/plans/*.plan.md` frontmatter). */
+export interface AgentPlanSummary {
+  filename: string
+  name: string
+  overview: string
+  createdAt: string
+  status: string
+}
+
 export interface AgentClientConfig {
   baseUrl?: string
   /**

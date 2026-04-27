@@ -76,7 +76,7 @@ export interface StripeWebhookConfig {
       cancelAtPeriodEnd?: boolean
       isNew?: boolean
     }) => Promise<void>
-    allocateMonthlyCredits?: (workspaceId: string) => Promise<void>
+    allocateMonthlyIncluded?: (workspaceId: string, planId?: string) => Promise<void>
   }
 }
 
@@ -150,7 +150,7 @@ export function stripeWebhookHandler(config: StripeWebhookConfig) {
 
 /**
  * Handle subscription.created event
- * Creates subscription and allocates initial credits
+ * Creates subscription and allocates initial monthly included USD.
  */
 async function handleSubscriptionCreated(
   event: WebhookEvent,

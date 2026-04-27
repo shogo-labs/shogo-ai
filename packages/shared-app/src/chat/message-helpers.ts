@@ -32,10 +32,12 @@ export function extractTextContent(message: { parts?: Array<{ type: string; text
 export const ERROR_CODE_MESSAGES: Record<string, string> = {
   pod_unavailable: "We're having trouble starting your project environment. Please try again in a moment.",
   rate_limit_exceeded: "You're sending messages too quickly. Please wait a moment and try again.",
-  insufficient_credits: "You've run out of credits. Please upgrade your plan to continue.",
+  usage_limit_reached: "Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.",
+  insufficient_credits: "Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
+  offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',
 }
 
 /**
@@ -55,6 +57,8 @@ export function isTunnelDisconnectError(message: string): boolean {
   const raw = message
   try {
     const parsed = JSON.parse(raw)
+    // Structured `{ error: { code: 'offline' } }` from /api/instances/:id/p/* proxy
+    if (parsed?.error?.code === 'offline') return true
     const inner = parsed?.error?.message || parsed?.message || ''
     if (TUNNEL_DISCONNECT_PATTERNS.some((p) => p.test(inner))) return true
   } catch {}

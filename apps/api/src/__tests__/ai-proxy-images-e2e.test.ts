@@ -6,7 +6,7 @@
  * Tests the full proxy flow for image generation endpoints:
  * - Auth + model resolution + provider routing for /ai/v1/images/generations
  * - Auth + provider routing for /ai/v1/images/edits
- * - Error paths (missing auth, bad model, missing prompt, no credits)
+ * - Error paths (missing auth, bad model, missing prompt, usage limit reached)
  * - Health check includes image model count
  *
  * Uses real Hono app with mocked prisma/billing. Requires OPENAI_API_KEY
@@ -32,8 +32,8 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../services/billing.service', () => ({
-  hasCredits: async () => true,
-  consumeCredits: async () => ({ success: true }),
+  hasBalance: async () => true,
+  consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
 }))
 
 mock.module('../lib/proxy-billing-session', () => ({

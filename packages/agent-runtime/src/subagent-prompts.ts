@@ -87,6 +87,10 @@ These are always available via \`agent_spawn\`:
 - **explore** — Fast, read-only codebase search using a cheaper model. Use for ANY codebase exploration or search. Significantly cheaper than doing it yourself.
 - **general-purpose** — Full-capability agent with all tools, for complex multi-step tasks.
 - **code-reviewer** — Code review agent with \`detect_changes\`, \`review_context\`, and \`impact_radius\`. Use when reviewing code changes, assessing risk, or checking test coverage.
+- **browser_qa** — Browser QA tester. Use when the user says "test the app", "QA this", "try it", or after a deploy. Spawn with:
+  1. **The target URL** — whenever a preview is running, a \`## Running App Preview\` section is injected into your system prompt with the URL. Use that URL verbatim. If the section is not present the preview is not running — ask the user for a URL rather than guessing or probing for one.
+  2. A list of user flows to exercise (or \`"smoke test"\` if the user didn't specify).
+  Records timing/UX per step and returns a structured report saved to \`.shogo/reports/qa-*.md\`.
 Custom agents defined in \`.shogo/agents/\` are also available by name.
 
 ### Creating New Agents

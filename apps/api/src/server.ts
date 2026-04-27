@@ -42,8 +42,9 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { voiceRoutes } from './routes/voice'
 import { toolsProxyRoutes } from './routes/tools-proxy'
-import { calculateCreditCost } from './lib/credit-cost'
+import { calculateUsageCost } from './lib/usage-cost'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { adminMarketplaceRoutes } from './routes/admin-marketplace'
 import { marketplaceRoutes } from './routes/marketplace'
@@ -55,9 +56,10 @@ import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
+import { localAuthRoutes } from './routes/local-auth'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
-import { checkRedisHealth } from './lib/tunnel-redis'
+import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
@@ -72,7 +74,12 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
-import { authMiddleware, requireAuth, requireProjectAccess } from './middleware/auth'
+import {
+  authMiddleware,
+  requireAuth,
+  requireProjectAccess,
+  isProjectReservedTopLevelPath,
+} from './middleware/auth'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
 
@@ -108,7 +115,7 @@ async function getAuthUserId(c: any): Promise<string | null> {
     try {
       const session = await auth.api.getSession({ headers: c.req.raw.headers })
       if (!session?.user?.id) {
-        const hasCookie = c.req.header('cookie')?.includes('better-auth.session_token')
+        const hasCookie = c.req.header('cookie')?.includes('shogo.session_token')
         if (hasCookie) {
           console.warn('[Auth] Session cookie present but session invalid/expired')
         }
@@ -325,8 +332,11 @@ app.use('*', secureHeaders({
   crossOriginResourcePolicy: 'cross-origin',
 }))
 
-// Global request body size limit (10 MB default)
-app.use('*', bodyLimit({ maxSize: 10 * 1024 * 1024 }))
+// Global request body size limit.
+// Set to 200 MB to match the largest legitimate upload on any route
+// (project import bundles, see MAX_TOTAL_SIZE in routes/project-export-import.ts).
+// Individual routes are responsible for enforcing their own tighter caps.
+app.use('*', bodyLimit({ maxSize: 200 * 1024 * 1024 }))
 
 // =============================================================================
 // Global Error Handling
@@ -407,9 +417,15 @@ app.use('/*', cors({
 
 // CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
-app.use('/api/*', csrf({
+//
+// NOTE: hono's csrf() always rejects form-body POSTs with no Origin header
+// BEFORE our custom origin handler runs (see node_modules/hono/.../csrf/index.js
+// isAllowedOrigin: `if (origin === undefined) return false`). Provider webhooks
+// (Twilio status callbacks in particular) post form-urlencoded bodies with no
+// Origin header and are authenticated by request signature, not CSRF. We skip
+// the csrf middleware entirely for those paths.
+const csrfMiddleware = csrf({
   origin: (origin, c) => {
-    // Webchat widget POST requests come from external websites
     const csrfPath = new URL(c.req.url).pathname
     if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(csrfPath)) {
       return true
@@ -425,7 +441,20 @@ app.use('/api/*', csrf({
     }
     return allowedOrigins.includes(origin)
   },
-}))
+})
+
+app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  // Provider webhooks authenticate by signature, not Origin. Hono's csrf
+  // middleware would reject them for missing Origin on form POSTs.
+  if (
+    path === '/api/voice/elevenlabs/webhook' ||
+    path.startsWith('/api/voice/twilio/status/')
+  ) {
+    return next()
+  }
+  return csrfMiddleware(c, next)
+})
 
 // Rate limiting — applied per-route group for different thresholds.
 // Defaults can be overridden via RATE_LIMIT_*_MAX and RATE_LIMIT_*_WINDOW_MS env vars.
@@ -485,6 +514,15 @@ app.use(
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
     if (path.endsWith('/heartbeat/sync')) return next()
+    // Voice provider webhooks (signature-verified in-handler). These have
+    // to bypass session-cookie / API-key auth entirely because the caller
+    // is ElevenLabs or Twilio — no Shogo credentials are present.
+    if (
+      path === '/api/voice/elevenlabs/webhook' ||
+      path.startsWith('/api/voice/twilio/status/')
+    ) {
+      return next()
+    }
     return requireAuth(c, next)
   }
 )
@@ -497,6 +535,13 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   if (path.endsWith('/heartbeat/sync')) {
     return next()
   }
+  // Reserved top-level endpoints under /api/projects/* (e.g. /import) are
+  // not project-scoped; let them fall through to their real handlers
+  // instead of being 404'd by requireProjectAccess treating the reserved
+  // word as a :projectId.
+  if (isProjectReservedTopLevelPath(path)) {
+    return next()
+  }
   return requireProjectAccess(c, next)
 })
 
@@ -504,21 +549,25 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
-// Health check — includes Redis status for multi-pod deployments
-app.get('/api/health', async (c) => {
+// Health check — includes Redis status for multi-pod deployments.
+// When tunnel-redis is in a degraded state (init completed but publisher
+// is null in non-local mode) we return 503 so Knative/K8s drain this pod
+// out of the LB rotation instead of serving 503s on remote-control.
+const healthHandler = async (c: any) => {
   const redis = await checkRedisHealth()
+  const degraded = isTunnelRedisDegraded()
   if (!redis.healthy) {
     console.warn('[Health] Redis unhealthy:', redis.error)
   }
-  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
-})
-app.get('/health', async (c) => {
-  const redis = await checkRedisHealth()
-  if (!redis.healthy) {
-    console.warn('[Health] Redis unhealthy:', redis.error)
+  const ok = !degraded && redis.healthy
+  const body = {
+    ok,
+    redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
   }
-  return c.json({ ok: true, redis: { healthy: redis.healthy, latencyMs: redis.latencyMs } })
-})
+  return c.json(body, ok ? 200 : 503)
+}
+app.get('/api/health', healthHandler)
+app.get('/health', healthHandler)
 
 // Version endpoint for frontend update detection
 app.get('/api/version', (c) => c.json({
@@ -616,18 +665,40 @@ app.get('/api/config', async (c) => {
     const hasLocalLlm = !!process.env.LOCAL_LLM_BASE_URL
     needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm && !hasShogоApiKey)
   }
+
+  // Defaults (backward-compatible with the previous hardcoded values).
+  const featureDefaults = {
+    billing: !localMode,
+    admin: !localMode,
+    oauth: !localMode,
+    analytics: true,
+    publishing: !localMode,
+    marketplace: true,
+    shogoMode: true,
+    phoneChannel: !localMode,
+  }
+
+  // Super-admin overrides from PlatformSetting (absence = use default).
+  let overrides: Record<string, boolean> = {}
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: ['feature.marketplace', 'feature.shogo_mode', 'feature.phone_channel'] } },
+    })
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      if (row.key === 'feature.marketplace') overrides.marketplace = bool
+      if (row.key === 'feature.shogo_mode') overrides.shogoMode = bool
+      if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
+    }
+  } catch (err) {
+    console.error('[config] Failed to load feature flag overrides:', err)
+  }
+
   return c.json({
     localMode,
     needsSetup,
     shogoKeyConnected: hasShogоApiKey,
-    features: {
-      billing: !localMode,
-      admin: !localMode,
-      oauth: !localMode,
-      analytics: true,
-      publishing: !localMode,
-      marketplace: true,
-    },
+    features: { ...featureDefaults, ...overrides },
   })
 })
 
@@ -999,6 +1070,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({ ok: false, error: err.message }, 500)
     }
   })
+
+  // Cloud-login routes (replacement UX for PUT /api/local/shogo-key). The
+  // legacy PUT handler above is preserved as a CLI / headless escape hatch.
+  app.route('/api', localAuthRoutes())
 
   // ── Local mode: Instance info (how this machine is registered to cloud) ──
 
@@ -1806,14 +1881,21 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     const response = await fetch(targetUrl, requestInit)
     
     // Copy response headers
+    //
+    // We deliberately strip `set-cookie` from the app's responses: the preview
+    // is served on the same origin as Studio, so any cookie the user app sets
+    // would be stored against the Studio origin and would stomp the platform's
+    // session cookie (and vice versa). The SDK uses Bearer tokens in local
+    // storage for auth, so dropping cookies does not break functionality.
+    // See also apps/api/src/auth.ts `advanced.cookiePrefix`.
     const responseHeaders = new Headers()
     response.headers.forEach((value, key) => {
-      // Skip certain headers
-      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-        responseHeaders.set(key, value)
-      }
+      const k = key.toLowerCase()
+      if (k === 'transfer-encoding' || k === 'connection') return
+      if (k === 'set-cookie') return
+      responseHeaders.set(key, value)
     })
-    
+
     // Add CORS headers for preview
     responseHeaders.set('access-control-allow-origin', '*')
     responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -1944,11 +2026,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         continue
       }
 
+      // Strip `set-cookie` for the same reason as the preview proxy above:
+      // responses from the user's runtime must not be able to set cookies on
+      // the Studio origin. Runtime auth uses headers (x-runtime-token /
+      // x-webchat-*), not cookies.
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
-        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
+        const k = key.toLowerCase()
+        if (k === 'transfer-encoding' || k === 'connection') return
+        if (k === 'set-cookie') return
+        responseHeaders.set(key, value)
       })
       const reqOrigin = c.req.header('origin')
       responseHeaders.set('access-control-allow-origin', reqOrigin || '*')
@@ -2419,6 +2506,71 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
     method: 'POST',
     headers: c.req.raw.headers,
     body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
+  })
+  return router.fetch(newReq)
+})
+
+// Execute a free-form shell command (the IDE "$" prompt). Mirrors /exec but
+// forwards arbitrary user input instead of a curated command id.
+app.post('/api/projects/:projectId/terminal/run', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to the project's runtime pod.
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/terminal/run`
+
+      console.log(`[TerminalProxy] Proxying run to ${targetUrl}`)
+
+      const body = await c.req.text()
+
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body,
+        signal: c.req.raw.signal,
+      })
+
+      console.log(`[TerminalProxy] run response status: ${response.status}`)
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[TerminalProxy] Error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to run command' }
+      }, 502)
+    }
+  }
+
+  // Local development: Use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = terminalRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/terminal/run`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
   })
   return router.fetch(newReq)
 })
@@ -3403,8 +3555,9 @@ app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
   const projectId = c.req.param('projectId')
   const token = c.req.header('x-runtime-token')
 
-  const { deriveRuntimeToken } = await import('./lib/runtime-token')
-  if (!token || token !== deriveRuntimeToken(projectId)) {
+  const { verifyRuntimeToken } = await import('./lib/runtime-token')
+  const verified = verifyRuntimeToken(token, projectId)
+  if (!verified.ok || verified.projectId !== projectId) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
@@ -3962,6 +4115,80 @@ app.put('/api/admin/settings/agent-models', async (c) => {
   }
 })
 
+const FEATURE_FLAG_KEYS = {
+  marketplace: 'feature.marketplace',
+  shogoMode: 'feature.shogo_mode',
+  phoneChannel: 'feature.phone_channel',
+} as const
+
+type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
+
+// GET /api/admin/settings/features - Read feature flag overrides (null = use default)
+app.get('/api/admin/settings/features', async (c) => {
+  try {
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: Object.values(FEATURE_FLAG_KEYS) } },
+    })
+    const flags: Record<FeatureFlagName, boolean | null> = {
+      marketplace: null,
+      shogoMode: null,
+      phoneChannel: null,
+    }
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+        if (row.key === key) flags[name] = bool
+      }
+    }
+    return c.json(flags)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/features - Update feature flag overrides. `null`/`""` deletes (= use default).
+app.put('/api/admin/settings/features', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+      if (body[name] === undefined) continue
+      const value = body[name]
+      if (value === null || value === '') {
+        await prisma.platformSetting.deleteMany({ where: { key } })
+      } else if (typeof value === 'boolean') {
+        await prisma.platformSetting.upsert({
+          where: { key },
+          create: { key, value: String(value), updatedBy: userId },
+          update: { value: String(value), updatedBy: userId },
+        })
+      } else {
+        return c.json({ error: `${name} must be a boolean or null` }, 400)
+      }
+    }
+
+    const rows = await prisma.platformSetting.findMany({
+      where: { key: { in: Object.values(FEATURE_FLAG_KEYS) } },
+    })
+    const flags: Record<FeatureFlagName, boolean | null> = {
+      marketplace: null,
+      shogoMode: null,
+      phoneChannel: null,
+    }
+    for (const row of rows) {
+      const bool = row.value === 'true'
+      for (const [name, key] of Object.entries(FEATURE_FLAG_KEYS) as Array<[FeatureFlagName, string]>) {
+        if (row.key === key) flags[name] = bool
+      }
+    }
+    return c.json({ ok: true, flags })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/pods/:projectId - Delete project pod
 app.delete('/api/admin/pods/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -4102,14 +4329,22 @@ Examples:
       name = fallbackGenerateProjectName(prompt)
     }
 
-    // Track credit usage (fire-and-forget, small cost for Haiku)
+    // Track USD usage (fire-and-forget, small cost for Haiku)
     if (workspaceId) {
       const usage = result.usage as any
       const inTok = usage?.inputTokens || usage?.promptTokens || 0
       const outTok = usage?.outputTokens || usage?.completionTokens || 0
       if (inTok + outTok > 0) {
-        const { credits: creditCost } = calculateCreditCost(inTok, outTok, 'haiku')
-        billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok }).catch(() => {})
+        const { rawUsd, billedUsd } = calculateUsageCost(inTok, outTok, 'haiku')
+        billingService.consumeUsage({
+          workspaceId,
+          projectId: null,
+          memberId: authUserId || 'system',
+          actionType: 'project_name_generation',
+          rawUsd,
+          billedUsd,
+          actionMetadata: { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok, rawUsd },
+        }).catch(() => {})
       }
     }
 
@@ -4135,7 +4370,7 @@ Examples:
   }
 })
 
-// Credit cost calculation imported from ./lib/credit-cost
+// Usage cost calculation imported from ./lib/usage-cost
 
 /**
  * AI Chat endpoint — stub pending agent-runtime migration.
@@ -4246,14 +4481,18 @@ app.get('/api/billing/workspace-plan', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
     const sub = await billingService.getSubscription(workspaceId)
-    const ledger = await billingService.getCreditLedger(workspaceId)
+    const wallet = await billingService.getUsageWallet(workspaceId)
     return c.json({
       ok: true,
       planId: sub?.planId ?? 'free',
       status: sub?.status ?? null,
       billingInterval: sub?.billingInterval ?? null,
-      monthlyCredits: ledger?.monthlyCredits ?? 0,
-      dailyCredits: ledger?.dailyCredits ?? 0,
+      monthlyIncludedUsd: wallet?.monthlyIncludedUsd ?? 0,
+      dailyIncludedUsd: wallet?.dailyIncludedUsd ?? 0,
+      monthlyIncludedAllocationUsd: wallet?.monthlyIncludedAllocationUsd ?? 0,
+      overageEnabled: wallet?.overageEnabled ?? false,
+      overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
+      overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
     })
   } catch (error: any) {
     return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
@@ -4289,8 +4528,8 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     const newWorkspaceId = wsResult.workspace.id
     console.log('[Billing] Created paid workspace:', newWorkspaceId, 'for user:', userId)
 
-    // Allocate free credits so the workspace is usable while subscription provisions
-    await billingService.allocateFreeCredits(newWorkspaceId)
+    // Allocate free-tier wallet so the workspace is usable while subscription provisions
+    await billingService.allocateFreeWallet(newWorkspaceId)
 
     const metadata: Record<string, string> = {
       workspaceId: newWorkspaceId,
@@ -4381,13 +4620,46 @@ app.post('/api/billing/verify-checkout', async (c) => {
       cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
     })
 
-    await billingService.allocateMonthlyCredits(workspaceId, planId)
+    await billingService.allocateMonthlyIncluded(workspaceId, planId)
     console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId)
 
     return c.json({ ok: true, workspaceId, planId }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/usage-based-pricing', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({})) as {
+      workspaceId?: string
+      overageEnabled?: boolean
+      overageHardLimitUsd?: number | null
+    }
+    const { workspaceId, overageEnabled, overageHardLimitUsd } = body
+    if (!workspaceId || typeof overageEnabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId or overageEnabled' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const limit = overageHardLimitUsd == null
+      ? null
+      : (typeof overageHardLimitUsd === 'number' && overageHardLimitUsd >= 0 ? overageHardLimitUsd : null)
+    const wallet = await billingService.setUsageBasedPricing(workspaceId, {
+      overageEnabled,
+      overageHardLimitUsd: limit,
+    })
+    return c.json({
+      ok: true,
+      overageEnabled: wallet.overageEnabled,
+      overageHardLimitUsd: wallet.overageHardLimitUsd,
+      overageAccumulatedUsd: wallet.overageAccumulatedUsd,
+    })
+  } catch (error: any) {
+    console.error('[Billing] usage-based-pricing error:', error)
+    return c.json({ error: { code: 'usage_based_pricing_failed', message: error.message } }, 500)
   }
 })
 
@@ -4836,8 +5108,8 @@ app.post('/api/webhooks/stripe', async (c) => {
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
 
-            await billingService.allocateMonthlyCredits(workspaceId, planId)
-            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
+            await billingService.allocateMonthlyIncluded(workspaceId, planId)
+            console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId)
 
             // Send plan-upgraded email to workspace owner
             try {
@@ -4867,18 +5139,31 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null; billing_reason?: string }
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
         if (customerId && invoice.subscription) {
           try {
             const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
             const wsId = sub.metadata?.workspaceId
-            if (wsId) {
+            const planId = sub.metadata?.planId
+            if (wsId && planId) {
+              // Refill monthly included USD on every successful subscription
+              // payment cycle. `subscription_create` already allocates via the
+              // checkout.session.completed handler above, so only refill on
+              // the recurring cycle events.
+              const reason = invoice.billing_reason
+              if (reason === 'subscription_cycle' || reason === 'subscription_update') {
+                try {
+                  await billingService.allocateMonthlyIncluded(wsId, planId)
+                  console.log('[Webhook] Monthly USD refilled for workspace:', wsId, 'plan:', planId, 'reason:', reason)
+                } catch (allocErr: any) {
+                  console.error('[Webhook] Failed to refill monthly included USD:', allocErr.message)
+                }
+              }
               const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
-                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
                 sendPaymentReceiptEmail({
                   to: ownerEmail,
                   workspaceName: workspace!.name,
@@ -4949,6 +5234,11 @@ app.route('/api', aiProxy)
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
 const toolsProxy = toolsProxyRoutes()
 app.route('/api', toolsProxy)
+
+// Shogo Mode / voice translator routes (session-auth'd via authMiddleware
+// above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
+// translator persona for both voice (signed URL) and text (streaming chat).
+app.route('/api', voiceRoutes())
 
 // =============================================================================
 // Domain API routes - For APIPersistence layer
@@ -5093,6 +5383,7 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
     const messages = await prisma.chatMessage.findMany({
       where: {
         role: 'user',
+        agent: 'technical',
         createdAt: { gte: oneYearAgo },
         session: {
           project: { workspaceId: { in: workspaceIds } },
@@ -5815,5 +6106,23 @@ if (isKubernetes()) {
     }, STORAGE_RECALC_INTERVAL)
     console.log('[Storage] Storage recalculation cron started (every 6h)')
   }, 10_000)
+}
+
+// Voice telephony monthly rebill (runs everywhere; the debit itself
+// is a no-op if no VoiceProjectConfig rows exist).
+{
+  ;(async () => {
+    try {
+      const { startVoiceMonthlyRebillCron } = await import(
+        './jobs/voice-monthly-rebill'
+      )
+      startVoiceMonthlyRebillCron()
+    } catch (err: any) {
+      console.error(
+        '[VoiceRebill] failed to schedule monthly rebill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
 }
 

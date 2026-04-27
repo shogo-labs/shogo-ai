@@ -62,8 +62,8 @@ export interface UsageSummaryEntry {
   totalInputTokens: number
   totalOutputTokens: number
   totalTokens: number
-  totalCredits: number
-  totalDollarCost: number
+  totalBilledUsd: number
+  totalRawUsd: number
   avgDurationMs: number
 }
 
@@ -74,8 +74,8 @@ export interface UsageSummaryData {
     totalInputTokens: number
     totalOutputTokens: number
     totalTokens: number
-    totalCredits: number
-    totalDollarCost: number
+    totalBilledUsd: number
+    totalRawUsd: number
     totalToolCalls: number
     uniqueUsers: number
     uniqueModels: number
@@ -93,8 +93,8 @@ export interface UsageLogEntry {
   inputTokens: number
   outputTokens: number
   totalTokens: number
-  creditCost: number
-  dollarCost: number
+  billedUsd: number
+  rawUsd: number
   durationMs: number
   success: boolean
   createdAt: string
@@ -115,9 +115,9 @@ export interface ChatAnalyticsData {
 }
 
 export interface UsageBreakdownData {
-  totalCreditsConsumed: number
+  totalSpendUsd: number
   actionBreakdown: Array<{ action: string; _count: number }>
-  topConsumers?: Array<{ workspaceId: string; _sum: { creditsUsed: number | null } }>
+  topConsumers?: Array<{ workspaceId: string; totalSpendUsd: number }>
 }
 
 // =============================================================================
@@ -226,7 +226,7 @@ export function StatCard({
   subtitle,
 }: {
   label: string
-  value: number | undefined
+  value: number | string | undefined
   icon: React.ComponentType<{ size?: number; className?: string }>
   subtitle?: string
 }) {
@@ -239,7 +239,7 @@ export function StatCard({
         </View>
       </View>
       <Text className="text-xl font-bold text-foreground">
-        {value !== undefined ? value.toLocaleString() : '—'}
+        {value === undefined ? '—' : typeof value === 'number' ? value.toLocaleString() : value}
       </Text>
       {subtitle && (
         <Text className="text-[10px] text-muted-foreground mt-0.5">{subtitle}</Text>
@@ -267,7 +267,7 @@ export function UsageBreakdownSection({ data, loading }: { data: UsageBreakdownD
         <Text className="text-sm font-semibold text-foreground">Usage Breakdown</Text>
         {data && (
           <Text className="text-xs text-muted-foreground">
-            {data.totalCreditsConsumed.toLocaleString()} credits
+            {formatDollarCost(data.totalSpendUsd)} spent
           </Text>
         )}
       </View>
@@ -348,7 +348,7 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
 // Usage Table - Summary + Event Log views
 // =============================================================================
 
-type SortKey = 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalCredits' | 'totalDollarCost'
+type SortKey = 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalBilledUsd' | 'totalRawUsd'
 
 export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData; isLocalMode?: boolean }) {
   const [sortKey, setSortKey] = useState<SortKey>('totalTokens')
@@ -391,9 +391,9 @@ export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData
           <Text className="text-base font-bold text-foreground">{formatNumber(data.totals.totalRequests)}</Text>
         </View>
         <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
-          <Text className="text-[10px] text-muted-foreground mb-0.5">{isLocalMode ? 'Cost' : 'Credits'}</Text>
+          <Text className="text-[10px] text-muted-foreground mb-0.5">{isLocalMode ? 'Raw $' : 'Billed $'}</Text>
           <Text className="text-base font-bold text-foreground">
-            {isLocalMode ? formatDollarCost(data.totals.totalDollarCost) : data.totals.totalCredits.toFixed(1)}
+            {formatDollarCost(isLocalMode ? data.totals.totalRawUsd : data.totals.totalBilledUsd)}
           </Text>
         </View>
       </View>
@@ -417,8 +417,8 @@ export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData
         <Pressable onPress={() => toggleSort('totalTokens')} className="w-16 flex-row items-center justify-end gap-1">
           <Text className="text-[10px] font-medium text-muted-foreground">Tokens</Text>
         </Pressable>
-        <Pressable onPress={() => toggleSort(isLocalMode ? 'totalDollarCost' : 'totalCredits')} className="w-14 flex-row items-center justify-end gap-1">
-          <Text className="text-[10px] font-medium text-muted-foreground">{isLocalMode ? 'Cost' : 'Credits'}</Text>
+        <Pressable onPress={() => toggleSort(isLocalMode ? 'totalRawUsd' : 'totalBilledUsd')} className="w-14 flex-row items-center justify-end gap-1">
+          <Text className="text-[10px] font-medium text-muted-foreground">{isLocalMode ? 'Raw $' : 'Billed $'}</Text>
         </Pressable>
       </View>
 
@@ -465,7 +465,7 @@ export function UsageSummaryView({ data, isLocalMode }: { data: UsageSummaryData
                 {formatNumber(entry.totalTokens)}
               </Text>
               <Text className="w-14 text-right text-[10px] font-mono text-foreground">
-                {isLocalMode ? formatDollarCost(entry.totalDollarCost) : entry.totalCredits.toFixed(1)}
+                {formatDollarCost(isLocalMode ? entry.totalRawUsd : entry.totalBilledUsd)}
               </Text>
             </View>
           ))}
@@ -500,7 +500,7 @@ export function UsageEventLogView({
         <Text className="flex-1 text-[10px] font-medium text-muted-foreground">User</Text>
         <Text className="w-20 text-[10px] font-medium text-muted-foreground">Model</Text>
         <Text className="w-14 text-right text-[10px] font-medium text-muted-foreground">Tokens</Text>
-        <Text className="w-12 text-right text-[10px] font-medium text-muted-foreground">{isLocalMode ? '$' : 'Cr'}</Text>
+        <Text className="w-12 text-right text-[10px] font-medium text-muted-foreground">{isLocalMode ? 'Raw $' : '$'}</Text>
         <View className="w-10 items-end">
           <Clock size={10} className="text-muted-foreground" />
         </View>
@@ -550,7 +550,7 @@ export function UsageEventLogView({
                 {formatNumber(entry.totalTokens)}
               </Text>
               <Text className="w-12 text-right text-[10px] font-mono text-foreground">
-                {isLocalMode ? formatDollarCost(entry.dollarCost) : entry.creditCost.toFixed(1)}
+                {formatDollarCost(isLocalMode ? entry.rawUsd : entry.billedUsd)}
               </Text>
               <Text className="w-10 text-right text-[9px] text-muted-foreground">
                 {formatDuration(entry.durationMs)}
@@ -764,7 +764,7 @@ export interface UserActivityEntry {
   messages: number
   sessions: number
   toolCalls: number
-  creditsUsed: number
+  spendUsd: number
 }
 
 export interface UserActivityData {
@@ -839,7 +839,7 @@ export function UserActivityTable({
         <Text className="flex-1 text-[10px] font-medium text-muted-foreground">Source</Text>
         <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Projects</Text>
         <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Msgs</Text>
-        <Text className="w-16 text-[10px] font-medium text-muted-foreground text-right">Credits</Text>
+        <Text className="w-16 text-[10px] font-medium text-muted-foreground text-right">Spend</Text>
       </View>
 
       {/* Rows */}
@@ -854,7 +854,7 @@ export function UserActivityTable({
           </View>
           <Text className="w-14 text-xs text-foreground text-right">{u.projects}</Text>
           <Text className="w-14 text-xs text-foreground text-right">{u.messages}</Text>
-          <Text className="w-16 text-xs text-foreground text-right">{u.creditsUsed.toFixed(1)}</Text>
+          <Text className="w-16 text-xs text-foreground text-right">{formatDollarCost(u.spendUsd)}</Text>
         </View>
       ))}
 

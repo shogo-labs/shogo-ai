@@ -16,6 +16,8 @@ export {
   useSubscriptionCollection,
   useChatSessionCollection,
   useChatMessageCollection,
+  useChatMessageCollectionForSession,
+  getChatMessageCollectionForSession,
   useIsRemoteSource,
   useRemoteError,
   resetSDKDomainStore,

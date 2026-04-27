@@ -197,6 +197,482 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
 }
 
 // =============================================================================
+// Streaming Resilience — retry + mid-stream error visibility + SSE keepalive
+// =============================================================================
+//
+// These helpers harden the upstream legs that hit Anthropic (or Shogo Cloud,
+// which fronts Anthropic). They are modelled on `@anthropic-ai/sdk` (the
+// library Claude Code CLI uses internally) and fix the failure modes that
+// surface to users as "Claude connection lost":
+//
+//  1. Transient 429 / 5xx / 529 "overloaded_error" / TCP reset on the initial
+//     POST — retried here instead of bubbling to the agent runtime.
+//  2. Mid-stream disconnect where Anthropic's response body aborts after
+//     `message_start` but before `message_stop`. Previously the SSE pipe
+//     closed silently at EOF and the downstream SDK threw an opaque error.
+//     We now inject an Anthropic-shaped `event: error` frame so the SDK
+//     surfaces a typed, actionable error.
+//  3. Opus-specific idle timeouts: Opus pauses tens of seconds during
+//     extended thinking. Intermediate proxies (Cloudflare ~100s, AWS ALB
+//     default 60s, Kubernetes Ingress often 60s) kill idle TCP in that
+//     window. We emit SSE keepalive comments (`: keepalive\n\n`) every
+//     KEEPALIVE_INTERVAL_MS when upstream is silent — parsers ignore
+//     comments but intermediaries see live traffic.
+//
+// Parity notes vs @anthropic-ai/sdk (>= v0.30):
+//   - SDK default `maxRetries`: 2. We use 2 for cloud hops (where upstream
+//     already retries) and 3 for direct Anthropic hops (slightly more
+//     aggressive since we are the only retry layer).
+//   - SDK retries 408/409/429 + all 5xx. We add 425 (Too Early) + 529
+//     (Anthropic Overloaded) which both Claude Code and the Python SDK
+//     treat as retryable.
+//   - SDK: exponential backoff with jitter honoring Retry-After /
+//     Retry-After-Ms. Matching us. Cap at 30s (guard against buggy
+//     upstream wedging a worker).
+//
+// We intentionally DO NOT retry mid-stream: Anthropic's Messages API has no
+// resume-by-event-id semantics, so a silent retry would duplicate tokens.
+// The agent runtime handles turn-level retries safely (same tool_use ids).
+
+/** HTTP status codes that are worth retrying against Anthropic / Shogo Cloud. */
+const ANTHROPIC_RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529])
+
+/** Node/undici network error codes that indicate a retry-able transient fault. */
+const RETRYABLE_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+])
+
+/** How long upstream can be silent before we send a keepalive comment. */
+const KEEPALIVE_INTERVAL_MS = 15_000
+
+/**
+ * Env escape-hatch: set to disable retries in the cloud-forwarding path.
+ * Prevents 3x (local) * 3x (cloud) = 9 attempt amplification when both
+ * layers run this same code. When unset, we use a smaller attempt budget
+ * (2) for cloud hops as a safe default.
+ */
+const SHOGO_CLOUD_DISABLE_LOCAL_RETRY =
+  process.env.SHOGO_CLOUD_DISABLE_LOCAL_RETRY === 'true'
+
+export interface RetryOptions {
+  /**
+   * Max attempts (inclusive of the first try). Defaults: 3 for direct
+   * Anthropic hops, 2 for cloud hops (upstream has its own retries).
+   */
+  maxAttempts?: number
+  /** Base delay for exponential backoff, in ms. Default 500. */
+  baseDelayMs?: number
+  /** Upper bound on a single wait, in ms. Default 8000. */
+  maxDelayMs?: number
+  /** Label used in logs (e.g. "anthropic" or "shogo-cloud"). */
+  label?: string
+  /** AbortSignal — when aborted we stop retrying immediately. */
+  signal?: AbortSignal
+}
+
+export function isRetryableNetworkError(err: any): boolean {
+  if (!err) return false
+  const code = err.code || err.cause?.code
+  if (code && RETRYABLE_ERROR_CODES.has(code)) return true
+  // undici surfaces many network faults as { name: 'TypeError', message: 'fetch failed' }
+  const msg = String(err.message || '')
+  if (/fetch failed|socket hang up|network.*error|terminated/i.test(msg)) return true
+  return false
+}
+
+/**
+ * Parse a `Retry-After` header value (RFC 7231 §7.1.3): integer seconds or
+ * HTTP-date. Result is in milliseconds, capped at 30s.
+ */
+export function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null
+  const asInt = Number(header)
+  if (Number.isFinite(asInt) && asInt >= 0) return Math.min(asInt * 1000, 30_000)
+  const asDate = Date.parse(header)
+  if (Number.isFinite(asDate)) return Math.max(0, Math.min(asDate - Date.now(), 30_000))
+  return null
+}
+
+/**
+ * Parse Anthropic's `Retry-After-Ms` header (milliseconds, integer).
+ * Capped at 30s to avoid wedging a worker on a buggy upstream.
+ */
+export function parseRetryAfterMs(header: string | null): number | null {
+  if (!header) return null
+  const ms = Number(header)
+  if (!Number.isFinite(ms) || ms < 0) return null
+  return Math.min(ms, 30_000)
+}
+
+async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Split-frame-safe terminal-event detector.
+ *
+ * A TCP read can cleave `"type":"message_stop"` across two chunks, so the
+ * caller must scan a rolling tail buffer — not individual chunks. We line-
+ * match against `data:` lines so a value that coincidentally quotes the
+ * string in a text delta cannot false-positive us.
+ */
+export const TERMINAL_EVENT_RE =
+  /(?:^|\n)data:[^\n]*"type"\s*:\s*"(message_stop|error)"/
+
+export function scanForTerminalEvent(buffer: string): boolean {
+  return TERMINAL_EVENT_RE.test(buffer)
+}
+
+/**
+ * Fetch wrapper that retries transient failures before any stream bytes flow.
+ *
+ * Retries are confined to the *connection* phase — once `fetch()` resolves
+ * with a 2xx, we return the Response as-is and let the caller stream the
+ * body. This preserves idempotency: the upstream has not yet emitted any
+ * tokens when we retry, so duplicate-token risk is zero.
+ *
+ * Retries on:
+ *   - Network errors (ECONNRESET, ECONNREFUSED, ETIMEDOUT, EPIPE, "fetch failed")
+ *   - HTTP 408 / 409 / 425 / 429 / 500 / 502 / 503 / 504 / 529
+ *
+ * Does NOT retry on:
+ *   - AbortError caused by the caller's signal (client cancel → surface 499)
+ *   - 4xx responses other than the transient set above
+ *   - Cloud hops when SHOGO_CLOUD_DISABLE_LOCAL_RETRY=true (trust upstream)
+ *
+ * Honors `Retry-After-Ms` (Anthropic-specific) and `Retry-After` response
+ * headers, capped at 30s to avoid wedging a worker on a buggy upstream.
+ */
+export async function fetchAnthropicWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: RetryOptions = {},
+): Promise<Response> {
+  const isCloudHop = opts.label === 'shogo-cloud'
+  const defaultAttempts = isCloudHop
+    ? SHOGO_CLOUD_DISABLE_LOCAL_RETRY ? 1 : 2
+    : 3
+  const maxAttempts = opts.maxAttempts ?? defaultAttempts
+  const baseDelayMs = opts.baseDelayMs ?? 500
+  const maxDelayMs = opts.maxDelayMs ?? 8000
+  const label = opts.label ?? 'anthropic'
+  const signal = opts.signal ?? (init.signal as AbortSignal | undefined)
+
+  let lastError: any = null
+  let lastStatus: number | null = null
+  let lastRetryAfterMs: number | null = null
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
+
+    try {
+      const response = await fetch(url, { ...init, signal })
+
+      // Success or non-retryable client error — return to caller.
+      if (response.ok || !ANTHROPIC_RETRYABLE_STATUS.has(response.status)) {
+        return response
+      }
+
+      // Retryable HTTP status — drain body so we can reuse the connection.
+      lastStatus = response.status
+      // Anthropic returns `retry-after-ms` (integer ms) in addition to the
+      // standard `Retry-After` (seconds or HTTP-date). Prefer the ms one.
+      lastRetryAfterMs =
+        parseRetryAfterMs(response.headers.get('retry-after-ms')) ??
+        parseRetryAfter(response.headers.get('retry-after'))
+      try {
+        lastError = new Error(await response.text())
+      } catch {
+        lastError = new Error(`${label} HTTP ${response.status}`)
+      }
+
+      if (attempt >= maxAttempts) {
+        // Out of attempts — synthesize a Response so the caller can forward
+        // the last error body verbatim (preserves Anthropic's error shape).
+        return new Response(lastError.message, {
+          status: response.status,
+          headers: {
+            'Content-Type':
+              response.headers.get('Content-Type') || 'application/json',
+          },
+        })
+      }
+    } catch (err: any) {
+      // Client-initiated abort must bubble up; never retry it.
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+        throw err
+      }
+      if (!isRetryableNetworkError(err)) {
+        throw err
+      }
+      lastError = err
+      lastStatus = null
+      lastRetryAfterMs = null
+      if (attempt >= maxAttempts) break
+    }
+
+    // Compute backoff: Retry-After wins; otherwise exponential with full jitter.
+    const exp = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs)
+    const jittered = Math.floor(Math.random() * exp)
+    const delay = lastRetryAfterMs ?? jittered
+    console.warn(
+      `[AI Proxy] ${label} transient failure (attempt ${attempt}/${maxAttempts}, ` +
+        `status=${lastStatus ?? 'network'}): retrying in ${delay}ms — ${lastError?.message || lastError?.code || 'unknown'}`,
+    )
+    await sleepWithAbort(delay, signal)
+  }
+
+  // Network error path exhausted without a Response — rethrow the last error.
+  throw lastError ?? new Error(`${label} request failed after ${maxAttempts} attempts`)
+}
+
+/**
+ * Classify a stream error into a typed code for downstream consumers.
+ * The code lets the UI decide whether to auto-retry (retryable) or surface
+ * a fatal message (non-retryable).
+ */
+export type StreamErrorCode =
+  | 'upstream_truncated' // clean EOF without message_stop
+  | 'network_drop'       // ECONNRESET, socket hang up, etc.
+  | 'idle_timeout'       // MAX_IDLE_MS exceeded with no upstream data
+  | 'upstream_error'     // catch-all for other errors
+
+export interface StreamErrorPayload {
+  type: 'error'
+  error: {
+    type: 'stream_error'
+    code: StreamErrorCode
+    retryable: boolean
+    message: string
+    meta: {
+      chunks: number
+      bytes: number
+      durationMs: number
+      idleMs: number
+    }
+  }
+}
+
+function classifyStreamError(err: any): StreamErrorCode {
+  if (!err) return 'upstream_truncated'
+  const msg = String(err?.message ?? '')
+  if (err?.code === 'ETIMEDOUT' || /idle.?timeout/i.test(msg)) return 'idle_timeout'
+  if (/ECONNRESET|socket hang up|terminated|fetch failed/i.test(msg)) return 'network_drop'
+  if (err?.code && RETRYABLE_ERROR_CODES.has(err.code)) return 'network_drop'
+  return 'upstream_error'
+}
+
+/**
+ * Maximum time (ms) the upstream can be silent (no real chunks) before we
+ * abort and inject a retryable error. 120s is well below the 30min fetch
+ * timeout but long enough for Opus extended-thinking pauses (which are
+ * covered by keepalive comments, not this watchdog).
+ */
+const MAX_IDLE_MS = 120_000
+
+export interface StreamWrapOptions {
+  /** Idle ms before emitting a SSE keepalive comment. Default 15000. */
+  keepaliveMs?: number
+  /** Hard idle limit before injecting a retryable error. Default 120000. */
+  maxIdleMs?: number
+  /** How often to check the watchdog condition, in ms. Default 5000. */
+  watchdogIntervalMs?: number
+}
+
+/**
+ * Wrap an upstream SSE body so that (a) mid-stream disconnects surface as
+ * explicit `event: error` frames, and (b) an idle upstream does not cause
+ * intermediate proxies to drop the TCP connection.
+ *
+ * Without (a): when Anthropic's TCP connection drops after `message_start`
+ * but before `message_stop`, the downstream SDK sees a normal end-of-stream
+ * and throws an opaque "connection lost" error. We now inject a structured
+ * error event so the SDK surfaces a typed, actionable error.
+ *
+ * Without (b): Opus streams frequently pause 30–60s during extended
+ * thinking. Cloudflare / AWS ALB / Kubernetes Ingress can kill idle TCP in
+ * that window. A SSE comment line (`: keepalive\n\n`) is ignored by parsers
+ * (per https://html.spec.whatwg.org/multipage/server-sent-events.html) but
+ * keeps the socket hot.
+ *
+ * We track whether a terminal event (`message_stop` or `error`) was observed
+ * in a split-frame-safe rolling buffer, so we only inject synthetic errors
+ * on actual truncation.
+ */
+export function wrapSseForErrorVisibility(
+  upstream: ReadableStream<Uint8Array>,
+  providerLabel: string,
+  options: StreamWrapOptions = {},
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  const keepaliveMs = options.keepaliveMs ?? KEEPALIVE_INTERVAL_MS
+  const maxIdleMs = options.maxIdleMs ?? MAX_IDLE_MS
+  const watchdogIntervalMs = options.watchdogIntervalMs ?? 5_000
+  let tailBuffer = ''
+  let sawTerminalEvent = false
+  let chunkCount = 0
+  let totalBytes = 0
+  const startedAt = Date.now()
+  let lastChunkAt = startedAt
+
+  function buildErrorPayload(
+    code: StreamErrorCode,
+    message: string,
+  ): StreamErrorPayload {
+    return {
+      type: 'error',
+      error: {
+        type: 'stream_error',
+        code,
+        retryable: code !== 'upstream_error',
+        message,
+        meta: {
+          chunks: chunkCount,
+          bytes: totalBytes,
+          durationMs: Date.now() - startedAt,
+          idleMs: Date.now() - lastChunkAt,
+        },
+      },
+    }
+  }
+
+  function emitErrorFrame(
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    payload: StreamErrorPayload,
+  ) {
+    try {
+      controller.enqueue(
+        encoder.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`),
+      )
+    } catch { /* downstream gone */ }
+  }
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = upstream.getReader()
+      let idleWatchdogFired = false
+
+      // Keepalive: emit a SSE comment when upstream is silent so intermediate
+      // proxies see live traffic and refresh their idle timer.
+      const keepaliveTimer = setInterval(() => {
+        const idleFor = Date.now() - lastChunkAt
+        if (idleFor < keepaliveMs) return
+        try {
+          controller.enqueue(encoder.encode(`: keepalive ${idleFor}ms\n\n`))
+        } catch {
+          // Downstream gone or controller closed — nothing to do.
+        }
+      }, keepaliveMs)
+
+      // Watchdog: if upstream produces zero real chunks for MAX_IDLE_MS,
+      // inject a retryable error and cancel. 120s is well beyond any
+      // Opus thinking pause (covered by keepalive), so this catches
+      // genuinely-stuck upstream connections.
+      const watchdogTimer = setInterval(() => {
+        const idle = Date.now() - lastChunkAt
+        if (idle <= maxIdleMs) return
+        idleWatchdogFired = true
+        const payload = buildErrorPayload(
+          'idle_timeout',
+          `No data from ${providerLabel} for ${idle}ms; giving up. Please retry.`,
+        )
+        emitErrorFrame(controller, payload)
+        console.warn(
+          `[AI Proxy] ${providerLabel} idle watchdog fired after ${idle}ms. ` +
+            `chunks=${chunkCount} bytes=${totalBytes} duration=${Date.now() - startedAt}ms.`,
+        )
+        try { reader.cancel('idle timeout') } catch { /* noop */ }
+        try { controller.close() } catch { /* noop */ }
+      }, watchdogIntervalMs)
+
+      try {
+        while (true) {
+          if (idleWatchdogFired) break
+          const { done, value } = await reader.read()
+          if (done) break
+          if (value && value.byteLength > 0) {
+            chunkCount++
+            totalBytes += value.byteLength
+            lastChunkAt = Date.now()
+            const text = decoder.decode(value, { stream: true })
+            tailBuffer = (tailBuffer + text).slice(-8192)
+            if (!sawTerminalEvent && scanForTerminalEvent(tailBuffer)) {
+              sawTerminalEvent = true
+            }
+            controller.enqueue(value)
+          }
+        }
+        // Clean EOF. If we never saw a terminal event (and watchdog didn't
+        // already handle this), synthesize a typed error frame.
+        if (!sawTerminalEvent && !idleWatchdogFired) {
+          const payload = buildErrorPayload(
+            'upstream_truncated',
+            `Upstream ${providerLabel} stream ended without message_stop after ${Date.now() - startedAt}ms (likely network drop; idle ${Date.now() - lastChunkAt}ms before close). The turn may be incomplete; please retry.`,
+          )
+          emitErrorFrame(controller, payload)
+          console.warn(
+            `[AI Proxy] ${providerLabel} stream truncated — injected error frame. ` +
+              `chunks=${chunkCount} bytes=${totalBytes} duration=${payload.error.meta.durationMs}ms idle=${payload.error.meta.idleMs}ms. ` +
+              `Last bytes: ${tailBuffer.slice(-200).replace(/\n/g, '\\n')}`,
+          )
+        }
+        if (!idleWatchdogFired) {
+          try { controller.close() } catch { /* noop */ }
+        }
+      } catch (err: any) {
+        if (idleWatchdogFired) return
+        if (err?.name === 'AbortError') {
+          try { controller.close() } catch { /* noop */ }
+          return
+        }
+        const code = classifyStreamError(err)
+        const payload = buildErrorPayload(
+          code,
+          `Upstream ${providerLabel} stream dropped after ${Date.now() - startedAt}ms (idle ${Date.now() - lastChunkAt}ms): ${err?.message || err?.code || 'unknown network error'}. Please retry.`,
+        )
+        emitErrorFrame(controller, payload)
+        console.warn(
+          `[AI Proxy] ${providerLabel} stream faulted mid-body [${code}]: ${err?.message || err?.code}. ` +
+            `chunks=${chunkCount} bytes=${totalBytes} duration=${payload.error.meta.durationMs}ms idle=${payload.error.meta.idleMs}ms. ` +
+            `Last bytes: ${tailBuffer.slice(-200).replace(/\n/g, '\\n')}`,
+        )
+        try { controller.close() } catch { /* noop */ }
+      } finally {
+        clearInterval(keepaliveTimer)
+        clearInterval(watchdogTimer)
+        try { reader.releaseLock() } catch { /* noop */ }
+      }
+    },
+    cancel(reason) {
+      upstream.cancel(reason).catch(() => { /* noop */ })
+    },
+  })
+}
+
+// =============================================================================
 // Anthropic Proxy
 // =============================================================================
 
@@ -500,16 +976,20 @@ async function proxyAnthropicStream(
     stream: true,
   })
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+  const response = await fetchAnthropicWithRetry(
+    'https://api.anthropic.com/v1/messages',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal,
     },
-    body: JSON.stringify(body),
-    signal,
-  })
+    { label: 'anthropic', signal },
+  )
 
   if (!response.ok) {
     const errorText = await response.text()
@@ -562,19 +1042,11 @@ async function proxyAnthropicStream(
     },
   })
 
-  const reader = response.body!.getReader()
-  const readable = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const { done, value } = await reader.read()
-      if (done) {
-        controller.close()
-        return
-      }
-      controller.enqueue(value)
-    },
-  })
-
-  const transformed = readable.pipeThrough(transformStream)
+  // Wrap upstream with keepalive + mid-stream error visibility before the
+  // OpenAI translator runs, so truncation-related `event: error` frames flow
+  // through `convertAnthropicStreamEvent` and surface as typed errors.
+  const wrapped = wrapSseForErrorVisibility(response.body!, 'anthropic')
+  const transformed = wrapped.pipeThrough(transformStream)
 
   return new Response(transformed, {
     headers: {
@@ -692,6 +1164,34 @@ function convertAnthropicStreamEvent(event: any, id: string, model: string): any
         ],
       }
 
+    // Synthetic `event: error` frames produced by `wrapSseForErrorVisibility`
+    // (or returned verbatim by Anthropic on hard errors). We surface the
+    // structured error payload at the chunk level while keeping
+    // `finish_reason: 'stop'` — strict OpenAI SDKs reject non-standard
+    // finish_reason values, and the `error` field on the chunk is what the
+    // Vercel AI SDK and `@anthropic-ai/sdk` consumers inspect.
+    case 'error': {
+      const msg =
+        event.error?.message ||
+        event.message ||
+        'Upstream stream dropped'
+      const errType = event.error?.type || 'stream_error'
+      return {
+        id,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        error: { type: errType, message: msg },
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: 'stop',
+          },
+        ],
+      }
+    }
+
     default:
       return null
   }
@@ -712,16 +1212,20 @@ async function proxyAnthropicNonStream(
     stream: false,
   })
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+  const response = await fetchAnthropicWithRetry(
+    'https://api.anthropic.com/v1/messages',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal,
     },
-    body: JSON.stringify(body),
-    signal,
-  })
+    { label: 'anthropic', signal },
+  )
 
   if (!response.ok) {
     const errorText = await response.text()
@@ -926,7 +1430,7 @@ function splitSystemBlocksForCaching(parsed: any): void {
 // Billing
 // =============================================================================
 
-import { calculateCreditCost, proxyModelToBillingModel, getModelTier } from '../lib/credit-cost'
+import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing.service'
 import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, hasSession } from '../lib/proxy-billing-session'
@@ -953,6 +1457,11 @@ async function recordUsage(
   // If a billing session is open, accumulate — the session closer will charge
   if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
+    // Per-request cache breakdown — same gate as the agent-runtime cache-debug
+    // logs so a single env flag turns the whole picture on. This is the
+    // authoritative signal for cache health; the agent-runtime fingerprint
+    // tells us WHAT the prefix looked like, this tells us whether Anthropic
+    // actually read the cache for that prefix.
     console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId})`)
     return
   }
@@ -963,28 +1472,29 @@ async function recordUsage(
 
   try {
     const billingModel = proxyModelToBillingModel(model)
-    const { credits: creditCost, dollarCost } = calculateCreditCost(inputTokens, outputTokens, billingModel, cachedInputTokens, cacheWriteTokens)
+    const { rawUsd, billedUsd } = calculateUsageCost(inputTokens, outputTokens, billingModel, cachedInputTokens, cacheWriteTokens)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
     }
 
-    const result = await billingService.consumeCredits(
-      tokenPayload.workspaceId,
-      billingProjectId,
-      billingUserId,
-      'ai_proxy_completion',
-      creditCost,
-      { model, billingModel, dollarCost, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens }
-    )
+    const result = await billingService.consumeUsage({
+      workspaceId: tokenPayload.workspaceId,
+      projectId: billingProjectId,
+      memberId: billingUserId,
+      actionType: 'ai_proxy_completion',
+      rawUsd,
+      billedUsd,
+      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens },
+    })
 
     if (result.success) {
-      console.log(`[AI Proxy] 💰 Charged ${creditCost} credits ($${dollarCost.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
+      console.log(`[AI Proxy] 💰 Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${inputTokens} in, ${cacheWriteTokens} cache-write, ${cachedInputTokens} cache-read, ${outputTokens} out (${totalTokens} total, model: ${billingModel}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
-      console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
+      console.warn(`[AI Proxy] ⚠️ Could not charge usage: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to charge credits:', err)
+    console.error('[AI Proxy] Failed to charge usage:', err)
   }
 }
 
@@ -1156,7 +1666,7 @@ async function generateImageLocal(
   return await response.json() as ImageGenerationResponse
 }
 
-import { calculateImageCreditCost } from '../lib/credit-cost'
+import { calculateImageUsageCost } from '../lib/usage-cost'
 
 async function recordImageUsage(
   tokenPayload: ProxyTokenPayload,
@@ -1166,8 +1676,10 @@ async function recordImageUsage(
   n: number,
 ) {
   try {
-    const creditCost = calculateImageCreditCost(model, quality, size) * n
-    if (creditCost === 0) return
+    const single = calculateImageUsageCost(model, quality, size)
+    const rawUsd = single.rawUsd * n
+    const billedUsd = single.billedUsd * n
+    if (billedUsd === 0) return
 
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
@@ -1176,22 +1688,23 @@ async function recordImageUsage(
       console.log(`[AI Proxy] 🎨 Accumulated image gen for session (project: ${tokenPayload.projectId}, model: ${model})`)
     }
 
-    const result = await billingService.consumeCredits(
-      tokenPayload.workspaceId,
-      tokenPayload.projectId || null,
-      billingUserId,
-      'ai_image_generation',
-      creditCost,
-      { model, quality, size, n }
-    )
+    const result = await billingService.consumeUsage({
+      workspaceId: tokenPayload.workspaceId,
+      projectId: tokenPayload.projectId || null,
+      memberId: billingUserId,
+      actionType: 'ai_image_generation',
+      rawUsd,
+      billedUsd,
+      actionMetadata: { model, quality, size, n, rawUsd },
+    })
 
     if (result.success) {
-      console.log(`[AI Proxy] 🎨 Charged ${creditCost} credits (image gen, model: ${model}) — remaining: ${result.remainingCredits}`)
+      console.log(`[AI Proxy] 🎨 Charged $${billedUsd.toFixed(4)} (image gen, model: ${model}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
-      console.warn(`[AI Proxy] ⚠️ Could not charge image credits: ${result.error}`)
+      console.warn(`[AI Proxy] ⚠️ Could not charge image usage: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to charge image credits:', err)
+    console.error('[AI Proxy] Failed to charge image usage:', err)
   }
 }
 
@@ -1216,7 +1729,14 @@ export function aiProxyRoutes() {
     const token = authHeader.slice(7)
 
     if (token.startsWith('shogo_sk_')) {
-      const resolved = await resolveApiKey(token)
+      // Opportunistically refresh the stored device app version from the
+      // caller's header so the cloud Devices UI reflects upgrades without a
+      // dedicated heartbeat round-trip.
+      const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
+      const resolved = await resolveApiKey(
+        token,
+        deviceAppVersion ? { deviceAppVersion } : undefined,
+      )
       if (!resolved) return null
       return {
         projectId: 'api-key',
@@ -1302,25 +1822,32 @@ export function aiProxyRoutes() {
       }
     }
 
-    const response = await fetch(`${cloudUrl}/api/ai/anthropic/v1/messages`, {
-      method: 'POST',
-      headers: forwardHeaders,
-      body: JSON.stringify(parsed),
-      signal,
-    })
+    const response = await fetchAnthropicWithRetry(
+      `${cloudUrl}/api/ai/anthropic/v1/messages`,
+      {
+        method: 'POST',
+        headers: forwardHeaders,
+        body: JSON.stringify(parsed),
+        signal,
+      },
+      { label: 'shogo-cloud', signal },
+    )
 
     if (isStream) {
       if (!response.body) {
         return c.json({ type: 'error', error: { type: 'api_error', message: 'Cloud proxy returned no stream body' } }, 502)
       }
-      return new Response(response.body, {
-        status: response.status,
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'X-Proxy-Provider': 'shogo-cloud',
+      return new Response(
+        wrapSseForErrorVisibility(response.body, 'shogo-cloud'),
+        {
+          status: response.status,
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'X-Proxy-Provider': 'shogo-cloud',
+          },
         },
-      })
+      )
     }
 
     const data = await response.json()
@@ -1358,14 +1885,14 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check: reject if workspace has no credits (skip in local dev)
-    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+    // Pre-check: reject if workspace has no included USD left (skip in local dev)
+    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
         {
           error: {
-            message: 'Insufficient credits. Please upgrade your plan.',
+            message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.',
             type: 'billing_error',
-            code: 'insufficient_credits',
+            code: 'usage_limit_reached',
           },
         },
         402
@@ -1516,9 +2043,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { error: { message: 'Insufficient credits.', type: 'billing_error', code: 'insufficient_credits' } },
+        { error: { message: 'Usage limit reached.', type: 'billing_error', code: 'usage_limit_reached' } },
         402
       )
     }
@@ -1738,7 +2265,11 @@ export function aiProxyRoutes() {
     }
 
     if (apiKey.startsWith('shogo_sk_')) {
-      const resolved = await resolveApiKey(apiKey)
+      const deviceAppVersion = c.req.header('X-Shogo-Device-App-Version')
+      const resolved = await resolveApiKey(
+        apiKey,
+        deviceAppVersion ? { deviceAppVersion } : undefined,
+      )
       if (!resolved) return null
       return {
         projectId: 'api-key',
@@ -1787,10 +2318,10 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check credits (skip in local dev)
-    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
+    // Pre-check usage balance (skip in local dev)
+    if (!isLocalDev && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { type: 'error', error: { type: 'billing_error', message: 'Insufficient credits. Please upgrade your plan.' } },
+        { type: 'error', error: { type: 'billing_error', message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.' } },
         402
       )
     }
@@ -1803,7 +2334,7 @@ export function aiProxyRoutes() {
       const isStream = !!parsed.stream
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
-      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
+      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
 
       // Enforce model tier: free/basic users can only use economy-tier models
       if (!isLocal && !isLocalDev) {
@@ -1963,12 +2494,16 @@ export function aiProxyRoutes() {
         headers['anthropic-version'] = '2023-06-01'
       }
 
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers,
-        body: forwardBody,
-        signal: c.req.raw.signal,
-      })
+      const response = await fetchAnthropicWithRetry(
+        'https://api.anthropic.com/v1/messages',
+        {
+          method: 'POST',
+          headers,
+          body: forwardBody,
+          signal: c.req.raw.signal,
+        },
+        { label: 'anthropic', signal: c.req.raw.signal },
+      )
 
       if (!response.ok) {
         const errorBody = await response.text()
@@ -2033,13 +2568,21 @@ export function aiProxyRoutes() {
         },
       })
 
-      const trackedBody = response.body!.pipeThrough(tokenTrackingTransform)
+      // Wrap with keepalive + mid-stream error visibility *before* token
+      // tracking, so synthetic error frames are also scanned for usage fields
+      // (they have none — harmless) but kept in the stream for downstream.
+      const wrapped = wrapSseForErrorVisibility(response.body!, 'anthropic')
+      const trackedBody = wrapped.pipeThrough(tokenTrackingTransform)
 
       return new Response(trackedBody, {
         status: response.status,
         headers: responseHeaders,
       })
     } catch (error: any) {
+      // Client cancelled — surface 499 silently, don't log as a server error.
+      if (error?.name === 'AbortError') {
+        return new Response(null, { status: 499 })
+      }
       console.error('[AI Proxy] Anthropic pass-through error:', error.message)
       return c.json(
         { type: 'error', error: { type: 'api_error', message: error.message || 'Proxy error' } },
@@ -2064,16 +2607,20 @@ export function aiProxyRoutes() {
     if (isShogoCloudForwarding()) {
       const cloudUrl = getShogoCloudUrl()
       const body = await c.req.text()
-      const response = await fetch(`${cloudUrl}/api/ai/anthropic/v1/messages/count_tokens`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.SHOGO_API_KEY!,
-          'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
+      const response = await fetchAnthropicWithRetry(
+        `${cloudUrl}/api/ai/anthropic/v1/messages/count_tokens`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.SHOGO_API_KEY!,
+            'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
+          },
+          body,
+          signal: c.req.raw.signal,
         },
-        body,
-        signal: c.req.raw.signal,
-      })
+        { label: 'shogo-cloud', signal: c.req.raw.signal },
+      )
       const responseBody = await response.text()
       return new Response(responseBody, {
         status: response.status,
@@ -2096,12 +2643,16 @@ export function aiProxyRoutes() {
       'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
-      method: 'POST',
-      headers,
-      body,
-      signal: c.req.raw.signal,
-    })
+    const response = await fetchAnthropicWithRetry(
+      'https://api.anthropic.com/v1/messages/count_tokens',
+      {
+        method: 'POST',
+        headers,
+        body,
+        signal: c.req.raw.signal,
+      },
+      { label: 'anthropic', signal: c.req.raw.signal },
+    )
 
     const responseBody = await response.text()
     return new Response(responseBody, {
@@ -2164,9 +2715,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+    if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached' } },
         402
       )
     }
@@ -2250,9 +2801,9 @@ export function aiProxyRoutes() {
       )
     }
 
-    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+    if (!await billingService.hasBalance(tokenPayload.workspaceId)) {
       return c.json(
-        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached' } },
         402
       )
     }
@@ -2352,7 +2903,7 @@ export function aiProxyRoutes() {
     }
 
     const sub = await billingService.getSubscription(tokenPayload.workspaceId)
-    const ledger = await billingService.getCreditLedger(tokenPayload.workspaceId)
+    const wallet = await billingService.getUsageWallet(tokenPayload.workspaceId)
 
     return c.json({
       workspaceId: tokenPayload.workspaceId,
@@ -2363,9 +2914,12 @@ export function aiProxyRoutes() {
         currentPeriodEnd: sub.currentPeriodEnd,
         cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
       } : null,
-      credits: ledger ? {
-        monthlyCredits: ledger.monthlyCredits,
-        dailyCredits: ledger.dailyCredits,
+      usage: wallet ? {
+        monthlyIncludedUsd: wallet.monthlyIncludedUsd,
+        dailyIncludedUsd: wallet.dailyIncludedUsd,
+        overageEnabled: wallet.overageEnabled,
+        overageHardLimitUsd: wallet.overageHardLimitUsd,
+        overageAccumulatedUsd: wallet.overageAccumulatedUsd,
       } : null,
       hasAdvancedModelAccess: isLocalDev || await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId),
     })
@@ -2398,7 +2952,7 @@ export function aiProxyRoutes() {
       cancelAtPeriodEnd: false,
     })
 
-    await billingService.allocateMonthlyCredits(tokenPayload.workspaceId, planId)
+    await billingService.allocateMonthlyIncluded(tokenPayload.workspaceId, planId)
 
     const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
     return c.json({

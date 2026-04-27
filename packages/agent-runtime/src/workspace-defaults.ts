@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSyn
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir } from './template-loader'
+import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir } from './template-loader'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -200,6 +200,15 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
     cpSync(templateSrcDir, join(dir, 'src'), { recursive: true, force: true })
   }
 
+  // Templates that define their own Prisma schema ship a `prisma/` directory
+  // at the template root. It overrides whatever the runtime-template (or a
+  // previous seeding pass) placed at <workspace>/prisma — the auto-generated
+  // CRUD server then picks up the new models on next `bun run generate`.
+  const templatePrismaDir = getTemplatePrismaDir(templateId)
+  if (templatePrismaDir) {
+    cpSync(templatePrismaDir, join(dir, 'prisma'), { recursive: true, force: true })
+  }
+
   writeFileSync(join(dir, '.template'), templateId, 'utf-8')
   return true
 }
@@ -309,7 +318,13 @@ export interface TechStackMeta {
   runtime?: {
     devServer?: string
     buildCommand?: string
-    previewPort?: number
+    /**
+     * Port the stack's template API sidecar (e.g. Hono `server.tsx`) listens on.
+     * Note: this is NOT the URL users hit in a browser — the agent runtime
+     * itself serves the built app at the root of `process.env.PORT`. This
+     * number is only relevant to internal `/api/*` proxying.
+     */
+    templateApiPort?: number
   }
   capabilities?: {
     webEnabled?: boolean

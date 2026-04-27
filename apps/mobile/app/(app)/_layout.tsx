@@ -29,6 +29,7 @@ import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { VMDownloadBanner } from '../../components/VMDownloadBanner'
+import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading, user } = useAuth()
@@ -48,6 +49,7 @@ export default function AppLayout() {
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
+  useNotificationClickRouter()
 
   useEffect(() => {
     if (isAuthenticated && posthog) {

@@ -29,6 +29,7 @@ import {
   ChevronDown,
   type LucideIcon,
 } from "lucide-react-native"
+import { TransportBadge } from "./TransportBadge"
 
 const TRUNCATION_THRESHOLD = 500
 const MAX_DEPTH = 2
@@ -177,6 +178,7 @@ export function ToolCallDisplay({
         <ChevronIcon className="h-3 w-3 text-gray-400 shrink-0" size={12} />
         <Icon className="h-3 w-3 text-gray-400 shrink-0" size={12} />
         <Text className="font-medium text-[10px] font-mono text-foreground">{toolName}</Text>
+        <TransportBadge size="xs" className="shrink-0" />
 
         {isCollapsed && summaryLine && (
           <Text

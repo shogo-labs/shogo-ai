@@ -20,7 +20,7 @@ export const MarkdownText = memo(
         className={cls}
         isAnimating={isStreaming}
         linkSafety={linkSafetyOff}
-        controls={{ code: true }}
+        controls={false}
       >
         {children || ""}
       </Streamdown>

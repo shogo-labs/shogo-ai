@@ -3,11 +3,11 @@
 /**
  * AppBillingPage - Mobile (Expo)
  *
- * Workspace billing and plan management matching staging design:
+ * Workspace billing and plan management:
  * - Current plan card with workspace avatar
- * - Credits remaining card
+ * - Usage remaining card (in USD)
  * - Monthly/Annual billing toggle
- * - Pro / Business / Enterprise plan cards with credit selectors
+ * - Pro / Business / Enterprise plan cards with included-USD selectors
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -48,10 +48,10 @@ import {
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
-  BASE_TIER_CREDITS,
-  getTotalCreditsForPlan,
-  getCreditsCapacityForDisplay,
-  formatCredits,
+  BASE_TIER_INCLUDED_USD,
+  getIncludedUsdForPlan,
+  getIncludedUsdCapacityForDisplay,
+  formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
 } from '../../lib/billing-config'
@@ -88,7 +88,7 @@ export default observer(function BillingPage() {
     effectiveBalance,
     isLoading: isBillingLoading,
     refetchSubscription,
-    refetchCreditLedger,
+    refetchUsageWallet,
   } = useBillingData(currentWorkspace?.id)
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
@@ -108,12 +108,12 @@ export default observer(function BillingPage() {
     return () => { cancelled = true }
   }, [http])
 
-  const creditsRemaining =
-    effectiveBalance?.total ?? getTotalCreditsForPlan(subscription?.planId)
-  const creditsTotal = getCreditsCapacityForDisplay(
+  const usdRemaining =
+    effectiveBalance?.total ?? getIncludedUsdForPlan(subscription?.planId)
+  const usdTotal = getIncludedUsdCapacityForDisplay(
     subscription?.planId,
     effectiveBalance?.total,
-    effectiveBalance?.monthlyAllocation,
+    effectiveBalance?.monthlyIncludedAllocationUsd,
   )
 
   const planName = subscription
@@ -131,12 +131,17 @@ export default observer(function BillingPage() {
     return `~${formatCurrencyPrice(localAmount, regionalPricing.currency)}`
   }, [regionalPricing, billingInterval])
 
-  const handleCheckout = useCallback(async (planType: 'pro' | 'business', credits: number) => {
+  const handleCheckout = useCallback(async (planType: 'pro' | 'business' | 'basic', includedUsd: number) => {
     if (!currentWorkspace?.id) return
     setIsCheckoutLoading(true)
     try {
-      const stripeTierKey = credits >= BASE_TIER_CREDITS ? Math.round(credits / 2) : credits
-      const planId = stripeTierKey === 100 ? planType : `${planType}_${stripeTierKey}`
+      // Stripe plan IDs still use legacy credit suffixes at $0.10/credit parity
+      // (e.g. $20 of usage => `pro_200`). Base tier (first PRO_TIERS entry at $20) uses no suffix.
+      const legacyCredits = Math.round(includedUsd * 10)
+      const stripeTierKey = includedUsd >= BASE_TIER_INCLUDED_USD ? Math.round(legacyCredits / 2) : legacyCredits
+      const planId = planType === 'basic'
+        ? 'basic'
+        : stripeTierKey === 100 ? planType : `${planType}_${stripeTierKey}`
       const isNative = Platform.OS !== 'web'
 
       const redirectBase = isNative
@@ -190,7 +195,7 @@ export default observer(function BillingPage() {
 
               console.log('[Billing] refetching billing data...')
               refetchSubscription()
-              refetchCreditLedger()
+              refetchUsageWallet()
             } catch (parseErr) {
               console.warn('[Billing] error parsing redirect URL:', parseErr)
             }
@@ -202,7 +207,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchCreditLedger])
+  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet])
 
   const handleManageSubscription = useCallback(async () => {
     if (!currentWorkspace?.id) return
@@ -224,7 +229,7 @@ export default observer(function BillingPage() {
           const result = await WebBrowser.openAuthSessionAsync(data.url, scheme)
           console.log('[Billing] portal result:', { type: result.type })
           refetchSubscription()
-          refetchCreditLedger()
+          refetchUsageWallet()
         }
       }
     } catch (e) {
@@ -232,7 +237,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsPortalLoading(false)
     }
-  }, [http, currentWorkspace?.id, refetchSubscription, refetchCreditLedger])
+  }, [http, currentWorkspace?.id, refetchSubscription, refetchUsageWallet])
 
   if (isAuthLoading || isBillingLoading) {
     return (
@@ -286,7 +291,7 @@ export default observer(function BillingPage() {
             Billing
           </Text>
           <Text className="text-sm text-muted-foreground">
-            Manage your subscription plan and credit balance.
+            Manage your subscription plan and usage.
           </Text>
         </View>
       </View>
@@ -324,28 +329,41 @@ export default observer(function BillingPage() {
         </CardContent>
       </Card>
 
-      {/* Credits Display */}
+      {/* Usage Display */}
       <Card className="mb-8">
         <CardContent className="p-4 gap-4">
           <View>
             <Text className="text-sm font-medium text-foreground mb-1">
-              Credits remaining
+              Usage remaining this period
             </Text>
             <Text className="text-2xl font-bold text-foreground">
-              {formatCredits(creditsRemaining)} of {formatCredits(creditsTotal)}
+              {formatUsd(usdRemaining)} of {formatUsd(usdTotal)}
             </Text>
           </View>
           <View className="gap-2">
             <Text className="text-sm font-medium text-foreground">
-              Daily credits used first
+              Daily allowance is used before your monthly pool
             </Text>
             <View className="gap-2">
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  Daily credits reset at midnight UTC
+                  Daily allowance resets at midnight UTC. All usage billed at provider cost + 20%.
                 </Text>
               </View>
+              {effectiveBalance?.overageEnabled && (
+                <View className="flex-row items-center gap-2">
+                  <Info size={16} className="text-muted-foreground" />
+                  <Text className="text-sm text-muted-foreground">
+                    Usage-based pricing enabled{effectiveBalance.overageHardLimitUsd != null
+                      ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
+                      : ''}
+                    {effectiveBalance.overageAccumulatedUsd > 0
+                      ? `. Overage this period: ${formatUsd(effectiveBalance.overageAccumulatedUsd)}`
+                      : ''}
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
         </CardContent>
@@ -409,7 +427,7 @@ export default observer(function BillingPage() {
                 <Text className="text-lg font-semibold text-foreground">Basic</Text>
               </View>
               <Text className="md:min-h-[44px] text-sm text-muted-foreground">
-                More credits with the fast AI model for individuals getting started.
+                More usage with the fast AI model for individuals getting started.
               </Text>
 
               <View className="md:min-h-[100px]">
@@ -431,7 +449,7 @@ export default observer(function BillingPage() {
               <View className="hidden md:block md:min-h-[76px]" />
 
               <Pressable
-                onPress={() => handleCheckout('basic' as any, BASIC_TIER.credits)}
+                onPress={() => handleCheckout('basic', BASIC_TIER.includedUsd)}
                 disabled={isCheckoutLoading}
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
@@ -442,7 +460,7 @@ export default observer(function BillingPage() {
 
               <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {BASIC_TIER.credits} credits / month
+                  {formatUsd(BASIC_TIER.includedUsd)} of usage / month
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -472,7 +490,7 @@ export default observer(function BillingPage() {
                     {regionalPricing
                       ? fmtPrice(
                           billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12),
-                          `pro_${proTier.credits}`
+                          `pro_${Math.round(proTier.includedUsd * 10)}`
                         )
                       : `$${billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12)}`}
                   </Text>
@@ -485,7 +503,7 @@ export default observer(function BillingPage() {
 
               <View className="md:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly credits
+                  Monthly included usage
                 </Text>
                 <TierSelector
                   tiers={PRO_TIERS}
@@ -495,7 +513,7 @@ export default observer(function BillingPage() {
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('pro', proTier.credits)}
+                onPress={() => handleCheckout('pro', proTier.includedUsd)}
                 disabled={isCheckoutLoading}
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
@@ -506,7 +524,7 @@ export default observer(function BillingPage() {
 
               <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {proTier.credits.toLocaleString()} credits / month
+                  {formatUsd(proTier.includedUsd)} of usage / month
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -540,7 +558,7 @@ export default observer(function BillingPage() {
                     {regionalPricing
                       ? fmtPrice(
                           billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12),
-                          `business_${businessTier.credits}`
+                          `business_${Math.round(businessTier.includedUsd * 10)}`
                         )
                       : `$${billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12)}`}
                   </Text>
@@ -553,17 +571,18 @@ export default observer(function BillingPage() {
 
               <View className="md:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly credits
+                  Monthly included usage (per seat)
                 </Text>
                 <TierSelector
                   tiers={BUSINESS_TIERS}
                   selectedIndex={selectedBusinessTier}
                   onSelect={setSelectedBusinessTier}
+                  suffix=" / seat"
                 />
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('business', businessTier.credits)}
+                onPress={() => handleCheckout('business', businessTier.includedUsd)}
                 disabled={isCheckoutLoading}
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
@@ -574,7 +593,7 @@ export default observer(function BillingPage() {
 
               <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {businessTier.credits.toLocaleString()} credits / month
+                  {formatUsd(businessTier.includedUsd)} of usage / seat / month
                 </Text>
                 <FeatureList features={BUSINESS_FEATURES} />
               </View>

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-// @ts-nocheck
 /**
  * Auto-generated Subscription MST Model
  *
@@ -27,7 +26,7 @@ export const SubscriptionModel = types
     billingInterval: types.enumeration("BillingInterval", ["monthly", "annual"]),
     currentPeriodStart: types.number,
     currentPeriodEnd: types.number,
-    cancelAtPeriodEnd: types.boolean,
+    cancelAtPeriodEnd: types.optional(types.boolean, false),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     workspace: types.safeReference(types.late(() => WorkspaceModel)),

@@ -192,19 +192,23 @@ export function generateMSTModel(
   for (const field of scalarFields) {
     const mstType = mapPrismaToMSTType(field, enums)
     const wrappedType = wrapOptional(mstType, field)
-    
+
     // Handle array fields - always use types.optional with [] default
     if (field.isList) {
       lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
     }
-    // Handle DateTime fields with database defaults (e.g., @default(now()))
-    // These should be optional since the server provides the real value
-    else if (field.type === 'DateTime' && field.hasDefaultValue && !field.isId) {
-      lines.push(`    ${field.name}: types.optional(${mstType}, 0),`)
+    // Handle required non-enum scalars that have a database default
+    // (e.g. @default(now()), @default(0), @default("")). The server always
+    // supplies the real value, and optimistic `create()` callers shouldn't
+    // have to populate these fields. Enums are left alone because encoding
+    // their schema-defined default requires DMMF data we don't surface here,
+    // and broadening them to `maybeNull` would force null-checks throughout
+    // consumer code.
+    else if (field.hasDefaultValue && !field.isId && field.kind !== 'enum') {
+      lines.push(`    ${field.name}: types.optional(${mstType}, ${getDefaultValue(field)}),`)
     }
-    // Handle non-array optional fields
+    // Handle non-array optional fields (no default, nullable in DB)
     else if (!field.isRequired && !field.isId) {
-      // For optional enums, use maybeNull instead of optional with undefined
       if (field.kind === 'enum') {
         lines.push(`    ${field.name}: types.maybeNull(${mstType}),`)
       } else {

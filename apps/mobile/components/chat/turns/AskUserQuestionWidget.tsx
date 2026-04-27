@@ -15,12 +15,14 @@ import {
   ChevronRight,
   ChevronDown,
   MessageCircleQuestion,
+  RefreshCw,
 } from "lucide-react-native"
 import {
   type ToolCallData,
   type AskUserQuestionArgs,
   type AskUserQuestionItem,
 } from "../tools/types"
+import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
 
 export interface AskUserQuestionWidgetProps {
   tool: ToolCallData
@@ -232,22 +234,29 @@ export function AskUserQuestionWidget({
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
 
   const isPending = tool.result === undefined
-  const isAnswered = !isPending
 
-  const [isSubmitted, setIsSubmitted] = useState(false)
-  const [submittedResponse, setSubmittedResponse] = useState<string | null>(null)
+  const {
+    selections,
+    setSelections,
+    otherTexts,
+    setOtherTexts,
+    activeTab,
+    setActiveTab,
+    submittedResponse,
+    markSubmitted,
+    needsRetry,
+    answered: effectivelyAnswered,
+    displayResponse: hookDisplayResponse,
+  } = useAskUserQuestionDraft(tool.id, tool.result)
 
-  const effectivelyAnswered = isAnswered || isSubmitted
-  const effectivelyPending = isPending && !isSubmitted
+  // Poll stays interactive whenever the server hasn't resolved it AND we don't
+  // already have a locally-persisted submission. If a previous session died
+  // mid-submit, the Retry button below drives the re-send instead of letting
+  // the user accidentally re-answer.
+  const effectivelyPending = isPending && submittedResponse == null
 
   const [internalExpanded, setInternalExpanded] = useState(isPending)
   const isExpanded = controlledExpanded ?? internalExpanded
-
-  const [selections, setSelections] = useState<Map<number, string[]>>(
-    new Map()
-  )
-  const [otherTexts, setOtherTexts] = useState<Map<number, string>>(new Map())
-  const [activeTab, setActiveTab] = useState(0)
 
   const handleToggle = useCallback(() => {
     if (onToggle) {
@@ -311,16 +320,31 @@ export function AskUserQuestionWidget({
     if (!isValid) return
 
     const response = formatResponse(questions, selections, otherTexts)
-    setIsSubmitted(true)
-    setSubmittedResponse(response)
-    onSubmitResponse(response)
+    // Persist BEFORE firing the network call so a mid-submit app kill still
+    // leaves a recoverable record on disk.
+    void markSubmitted(response).then(() => {
+      onSubmitResponse(response)
+    })
 
     if (!onToggle) {
       setInternalExpanded(false)
     }
-  }, [isValid, questions, selections, otherTexts, onSubmitResponse, onToggle])
+  }, [
+    isValid,
+    questions,
+    selections,
+    otherTexts,
+    onSubmitResponse,
+    onToggle,
+    markSubmitted,
+  ])
 
-  const displayResult = submittedResponse ?? (typeof tool.result === "string" ? tool.result : null)
+  const handleRetry = useCallback(() => {
+    if (!submittedResponse) return
+    onSubmitResponse(submittedResponse)
+  }, [submittedResponse, onSubmitResponse])
+
+  const displayResult = hookDisplayResponse
 
   const summaryText = useMemo(() => {
     if (!effectivelyAnswered) return null
@@ -574,6 +598,29 @@ export function AskUserQuestionWidget({
               <Text className="text-xs text-foreground">
                 {displayResult}
               </Text>
+
+              {/*
+                Mid-submit recovery: we persisted a response locally but the
+                server never reported a result (likely because the app was
+                killed before sendMessage/saveToolOutput completed). Let the
+                user resend without re-answering the whole poll.
+              */}
+              {needsRetry && (
+                <View className="flex-row items-center justify-between mt-1.5 pt-1.5 border-t border-border/30">
+                  <Text className="text-[9px] text-muted-foreground">
+                    Response not yet confirmed by the assistant.
+                  </Text>
+                  <Pressable
+                    onPress={handleRetry}
+                    className="flex-row items-center gap-1 h-6 rounded-md border border-primary/30 bg-primary/5 px-2"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5 text-primary" />
+                    <Text className="text-[10px] font-medium text-primary">
+                      Retry
+                    </Text>
+                  </Pressable>
+                </View>
+              )}
             </View>
           )}
         </View>

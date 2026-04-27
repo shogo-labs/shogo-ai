@@ -818,6 +818,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
           PORT: String(agentPort),
           SKILL_SERVER_PORT: String(agentPort + 1),
+          // Single source of truth for "where is the running app?".
+          // The agent-runtime injects this into its system prompt so QA /
+          // browser-use subagents navigate to the right URL instead of
+          // hallucinating one from `vite.config.ts` (where the template
+          // hardcodes 5173, but the actual port is whatever RuntimeManager
+          // allocated here).
+          PUBLIC_PREVIEW_URL: url,
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
           NODE_ENV: 'development',
         }
@@ -860,7 +867,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         runtimeEnv.WORKSPACE_ID = workspaceId
 
-        // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+        // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId).
+        // Gotchas around rotation / leak response / synthetic userId live in
+        // apps/api/src/lib/runtime-token.md.
         const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
         runtimeEnv.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
         runtimeEnv.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
