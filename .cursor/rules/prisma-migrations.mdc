@@ -1,0 +1,19 @@
+---
+description: After Prisma schema changes, create a migration and commit it with the schema
+globs: prisma/schema.prisma
+alwaysApply: false
+---
+
+# Prisma schema and migrations
+
+When you change `prisma/schema.prisma`:
+
+1. **Generate a migration** (do not leave schema edits without a matching migration under `prisma/migrations/`):
+   - From the repo root: `bun run db:migrate -- --name <short_descriptive_snake_case>`
+   - This runs `prisma migrate dev` and creates a new migration folder.
+
+2. **Commit together**: Include both `prisma/schema.prisma` and the new `prisma/migrations/<timestamp>_<name>/` files in the same change set so CI and other environments stay in sync.
+
+3. Prefer **`migrate dev` / committed SQL** for evolving the tracked schema. Reserve **`db push`** for quick local experiments only, not as a substitute for migrations when the goal is a mergeable schema change.
+
+If a migration cannot be applied interactively in this environment, still add the generated migration SQL to the tree and note any manual deploy step; do not skip the migration file.

@@ -133,6 +133,12 @@ model Workspace {
   instances            Instance[]
   meetings             Meeting[]
   voiceProjectConfigs  VoiceProjectConfig[]
+  agentCostMetrics       AgentCostMetric[]
+  budgetAlerts           BudgetAlert[]
+  modelExperiments       ModelExperiment[]
+  subagentModelOverrides SubagentModelOverride[]
+  agentEvalResults       AgentEvalResult[]
+
   @@map("workspaces")
 }
 
@@ -182,7 +188,10 @@ model Project {
   agentConfig      AgentConfig?
   meetings         Meeting[]
   marketplaceListing  MarketplaceListing?
-  voiceConfig         VoiceProjectConfig?
+  agentCostMetrics       AgentCostMetric[]
+  modelExperiments       ModelExperiment[]
+  subagentModelOverrides SubagentModelOverride[]
+  voiceConfig            VoiceProjectConfig?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1783,4 +1792,192 @@ model VoiceCallMeter {
   @@index([projectId])
   @@index([workspaceId])
   @@map("voice_call_meters")
+}
+
+// =============================================================================
+// AGENT COST ANALYTICS
+// =============================================================================
+
+model AgentCostMetric {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  projectId         String?
+  /// Subagent run id (a-<label>-<hex>) — links to transcript and feedback row.
+  agentRunId        String?  @unique
+  agentType         String
+  model             String
+  inputTokens       Int      @default(0)
+  outputTokens      Int      @default(0)
+  cachedInputTokens Int      @default(0)
+  toolCalls         Int      @default(0)
+  creditCost        Float    @default(0)
+  wallTimeMs        Int      @default(0)
+  /// Legacy field — true when the run promise resolved without throwing. Kept for backwards
+  /// compatibility but DO NOT use as the primary success signal — use the multi-signal
+  /// columns below + userFeedback. See cost-analytics.service `isQualitySuccess()`.
+  success           Boolean  @default(true)
+  /// Run hit the configured maxTurns ceiling without producing a final answer.
+  hitMaxTurns       Boolean  @default(false)
+  /// Loop detector tripped during this run.
+  loopDetected      Boolean  @default(false)
+  /// Auto-router escalated to a higher-tier model mid-run (signal of insufficient capability).
+  escalated         Boolean  @default(false)
+  /// Final response was empty / whitespace / "Subagent failed:" prefix.
+  responseEmpty     Boolean  @default(false)
+  /// User explicit feedback on this run's output: 'up' | 'down' | null (no signal).
+  userFeedback      String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([agentType])
+  @@index([model])
+  @@index([createdAt])
+  @@index([userFeedback])
+  @@map("agent_cost_metrics")
+}
+
+// =============================================================================
+// SUBAGENT MODEL OVERRIDES — user-controlled model per built-in sub-agent type
+// =============================================================================
+// Resolution precedence (highest first):
+//   1. Explicit caller-supplied SubagentConfig.model
+//   2. Project-level override          (workspaceId + projectId + agentType)
+//   3. Workspace-level override        (workspaceId + projectId=NULL + agentType)
+//   4. Built-in default from getBuiltinSubagentConfig()
+// See packages/agent-runtime/src/subagent.ts → resolveSubagentModel().
+
+model SubagentModelOverride {
+  id          String   @id @default(uuid())
+  workspaceId String
+  /// NULL = workspace-default override; non-null = project-specific override.
+  projectId   String?
+  agentType   String
+  model       String
+  provider    String?
+  /// User id of the admin who last set this override (nullable for system applies).
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// One override per (workspace, project?, agentType). Use upsert keyed on this.
+  @@unique([workspaceId, projectId, agentType])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("subagent_model_overrides")
+}
+
+// =============================================================================
+// AGENT EVAL RESULTS — eval-anchored ground truth for recommendations
+// =============================================================================
+// Populated by the nightly eval runner (run-eval --agent-type=<x> --model=<y>).
+// Recommendations cite the latest pass-rate so the user sees why a swap is safe.
+
+model AgentEvalResult {
+  id             String   @id @default(uuid())
+  workspaceId    String?
+  agentType      String
+  model          String
+  provider       String?
+  /// Eval suite identifier — e.g. "test-cases-subagent.ts:explore-suite".
+  suite          String
+  totalCases     Int
+  passedCases    Int
+  /// 0..1 ratio (passedCases / totalCases). Stored separately for fast sorting.
+  passRate       Float
+  avgWallTimeMs  Int      @default(0)
+  avgCreditCost  Float    @default(0)
+  /// Optional commit SHA the eval ran against — for reproducibility.
+  commitSha      String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([agentType, model, createdAt])
+  @@index([workspaceId])
+  @@map("agent_eval_results")
+}
+
+model BudgetAlert {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  name             String
+  creditLimit      Float
+  periodType       String   @default("monthly")
+  enabled          Boolean  @default(true)
+  autoThrottle     Boolean  @default(false)
+  throttleToModel  String?
+  notifyEmail      Boolean  @default(true)
+  lastTriggeredAt  DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("budget_alerts")
+}
+
+model ModelExperiment {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  projectId        String?
+  name             String
+  agentType        String
+  modelA           String
+  modelB           String
+  // 'running' | 'completed' | 'shadow'. `shadow` means traffic is still
+  // split but assignment is hidden from the user — used by the two-week
+  // explore A/B from Phase 3.2.
+  status           String   @default("running")
+  splitPercentage  Int      @default(50)
+  /** Optional expected end date — used by the cron cleanup to auto-complete
+   *  long-running shadow experiments (e.g. the 14-day explore A/B). */
+  expectedEndAt    DateTime?
+  totalRunsA       Int      @default(0)
+  totalRunsB       Int      @default(0)
+  totalCostA       Float    @default(0)
+  totalCostB       Float    @default(0)
+  totalTokensA     Int      @default(0)
+  totalTokensB     Int      @default(0)
+  // Legacy "did the promise resolve" success rate. Kept so old dashboards
+  // don't break; the recommendation gate now relies on the quality signals
+  // below (Phase 2.3).
+  successRateA     Float    @default(0)
+  successRateB     Float    @default(0)
+  avgLatencyMsA    Float    @default(0)
+  avgLatencyMsB    Float    @default(0)
+  // Phase 3.2 — quality-signal counters mirroring AgentCostMetric so the
+  // experiment can call a winner using the same multi-signal gate as the
+  // recommendations path.
+  escalationsA     Int      @default(0)
+  escalationsB     Int      @default(0)
+  loopDetectedA    Int      @default(0)
+  loopDetectedB    Int      @default(0)
+  hitMaxTurnsA     Int      @default(0)
+  hitMaxTurnsB     Int      @default(0)
+  responseEmptyA   Int      @default(0)
+  responseEmptyB   Int      @default(0)
+  thumbsUpA        Int      @default(0)
+  thumbsUpB        Int      @default(0)
+  thumbsDownA      Int      @default(0)
+  thumbsDownB      Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([workspaceId, agentType, status])
+  @@map("model_experiments")
 }

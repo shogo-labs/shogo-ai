@@ -20,6 +20,7 @@
 
 import { calculateUsageCost, proxyModelToBillingModel } from './usage-cost'
 import * as billingService from '../services/billing.service'
+import { recordAgentCostMetric } from '../services/cost-analytics.service'
 
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000 // 10 min safety net
 
@@ -142,6 +143,27 @@ export async function closeSession(
     session.cachedInputTokens, session.cacheWriteTokens,
   )
   const durationMs = Date.now() - session.openedAt
+
+  // Always record cost metrics, even if billing fails (e.g. no subscription/credits).
+  // Fire this first so analytics data is never lost.
+  //
+  // Pass `creditCost: 0` and let `recordAgentCostMetric` recompute from tokens
+  // server-side. We could pass `billedUsd` here, but this path runs before any
+  // markup adjustment is finalized — using the canonical token→cost catalog
+  // keeps analytics consistent with the catalog displayed in the UI.
+  await recordAgentCostMetric({
+    workspaceId: session.workspaceId,
+    projectId: session.projectId,
+    agentType: 'main-chat',
+    model: billingModel,
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    cachedInputTokens: session.cachedInputTokens,
+    toolCalls: session.requestCount,
+    creditCost: 0,
+    wallTimeMs: durationMs,
+    success: true,
+  })
 
   try {
     const result = await billingService.consumeUsage({
