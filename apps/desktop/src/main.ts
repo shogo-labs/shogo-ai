@@ -583,10 +583,54 @@ function registerProtocol(): void {
   })
 }
 
+function isTrustedMediaOrigin(url: string): boolean {
+  if (!url) return false
+  if (url.startsWith('shogo://')) return true
+  if (url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1')) return true
+  if (IS_DEV) {
+    const devUrl = process.env.DESKTOP_DEV_URL
+    if (devUrl && url.startsWith(devUrl)) return true
+  }
+  if (isCloudMode) {
+    try {
+      const cloudUrl = readConfig().cloudUrl
+      if (cloudUrl && url.startsWith(cloudUrl)) return true
+    } catch {
+      // ignore — fall through to deny
+    }
+  }
+  return false
+}
+
 function setupSessionHandlers(): void {
   const apiOrigin = getApiUrl()
   const appOrigin = 'shogo://app'
   const ses = session.defaultSession
+
+  // Allow microphone (and other media) requests only from our own app
+  // origins. Without an explicit handler, Electron's default is to deny
+  // permission requests from non-standard schemes like `shogo://`, which
+  // is why getUserMedia silently fails in the packaged macOS build.
+  ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (permission === 'media') {
+      const requestingUrl = details?.requestingUrl || webContents.getURL()
+      if (isTrustedMediaOrigin(requestingUrl)) {
+        callback(true)
+        return
+      }
+      console.warn(`[Desktop] denying ${permission} request from untrusted origin: ${requestingUrl}`)
+      callback(false)
+      return
+    }
+    callback(false)
+  })
+
+  ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    if (permission === 'media') {
+      return isTrustedMediaOrigin(requestingOrigin)
+    }
+    return false
+  })
 
   ses.webRequest.onBeforeSendHeaders(
     { urls: [`${apiOrigin}/*`] },
