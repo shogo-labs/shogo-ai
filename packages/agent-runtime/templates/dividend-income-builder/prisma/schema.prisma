@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Dividend Income Builder persistence schema.
+// Surfaces fetch from the auto-generated Prisma + SQLite CRUD API.
+// Do not add .data.json mocks to this template.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model DividendCandidate {
+  id        String   @id @default(cuid())
+  ticker            String
+  company           String
+  sector            String
+  yieldText         String
+  safetyScore       Int @default(0)
+  growthStreak      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("dividend_candidates")
+}
+
+model DividendPortfolio {
+  id        String   @id @default(cuid())
+  name              String
+  capitalAmount     String
+  incomeGoal        String
+  accountType       String
+  riskProfile       String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([name])
+  @@map("dividend_portfolios")
+}
+
+model IncomeProjection {
+  id        String   @id @default(cuid())
+  period            String
+  expectedIncome    String
+  targetIncome      String
+  gap               String
+  assumptions       String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([period])
+  @@map("income_projections")
+}
+
+model DividendSafetyCheck {
+  id        String   @id @default(cuid())
+  ticker            String
+  payoutRatio       String
+  debtNote          String
+  coverageNote      String
+  riskFlag          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("dividend_safety_checks")
+}
+
+model ReinvestmentScenario {
+  id        String   @id @default(cuid())
+  name              String
+  horizonYears      Int @default(0)
+  startingCapital   String
+  assumedGrowth     String
+  projectedIncome   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([name])
+  @@map("reinvestment_scenarios")
+}
+
+model TaxNote {
+  id        String   @id @default(cuid())
+  accountType       String
+  dividendType      String
+  summary           String
+  questionForAdvisor String
+  updatedAtText     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("tax_notes")
+}
