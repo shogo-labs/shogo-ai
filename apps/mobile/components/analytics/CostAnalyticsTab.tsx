@@ -13,7 +13,6 @@ import {
   Text,
   Pressable,
   ActivityIndicator,
-  TextInput,
   ScrollView,
 } from 'react-native'
 import {
@@ -31,9 +30,7 @@ import {
   XCircle,
   ChevronDown,
   ChevronUp,
-  Plus,
-  Trash2,
-  ArrowRightLeft,
+  Settings as SettingsIcon,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -45,7 +42,12 @@ import {
   getModelTextColor,
   getModelDisplayName,
 } from './SharedAnalytics'
-import { Card, CardContent, Button, Badge, Separator } from '@shogo/shared-ui/primitives'
+import { Card, CardContent, Separator } from '@shogo/shared-ui/primitives'
+import { SubAgentModelsSection } from './SubAgentModelsSection'
+import { OptimizerInActionSection, type OptimizerInActionData } from './OptimizerInActionSection'
+import { RecommendationsSection, type CostRecommendation } from './RecommendationsSection'
+import { BudgetSection, type BudgetAlertItem, type BudgetStatus } from './BudgetSection'
+import { ExperimentsSection, type ExperimentItem } from './ExperimentsSection'
 
 // =============================================================================
 // Types
@@ -81,17 +83,6 @@ interface BreakdownData {
   }
 }
 
-interface CostRecommendation {
-  agentType: string
-  currentModel: string
-  recommendedModel: string
-  reason: string
-  estimatedSavingsPercent: number
-  estimatedMonthlySavings: number
-  confidence: 'high' | 'medium' | 'low'
-  currentMonthlyCost: number
-}
-
 interface CostTrendPoint {
   date: string
   totalCost: number
@@ -109,59 +100,48 @@ interface TrendsData {
   }
 }
 
-interface BudgetAlertItem {
+interface SubagentOverrideRecord {
   id: string
-  name: string
-  creditLimit: number
-  periodType: string
-  enabled: boolean
-  autoThrottle: boolean
-  throttleToModel: string | null
-  lastTriggeredAt: string | null
-}
-
-interface BudgetStatus {
-  breached: Array<{
-    alert: { id: string; name: string; creditLimit: number; autoThrottle: boolean; throttleToModel: string | null }
-    currentSpend: number
-    percentUsed: number
-  }>
-  throttleModel: string | null
-}
-
-interface ExperimentItem {
-  id: string
-  name: string
+  workspaceId: string
+  projectId: string | null
   agentType: string
-  modelA: string
-  modelB: string
-  status: string
-  splitPercentage: number
-  totalRunsA: number
-  totalRunsB: number
-  totalCostA: number
-  totalCostB: number
-  successRateA: number
-  successRateB: number
-  avgLatencyMsA: number
-  avgLatencyMsB: number
+  model: string
+  provider: string | null
+  updatedBy: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 interface CostAnalyticsTabProps {
   workspaceId: string
   fetchCostAnalytics: <T>(endpoint: string, params?: Record<string, string>) => Promise<T>
   postCostAnalytics: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>
+  /**
+   * Phase 1 (boss concern #2): Sub-agent model override CRUD plumbed from the
+   * settings page. Optional so consumers that don't yet wire it up degrade
+   * gracefully (the Sub-Agents tab and Apply buttons just stay hidden).
+   */
+  fetchSubagentOverrides?: () => Promise<SubagentOverrideRecord[] | null>
+  putSubagentOverride?: (body: {
+    agentType: string
+    model: string
+    provider?: string | null
+    projectId?: string | null
+  }) => Promise<unknown>
+  deleteSubagentOverride?: (agentType: string, projectId?: string | null) => Promise<unknown>
 }
 
 // =============================================================================
 // Sub-sections
 // =============================================================================
 
-type Section = 'breakdown' | 'recommendations' | 'budget' | 'trends' | 'experiments'
+type Section = 'breakdown' | 'recommendations' | 'subagents' | 'inaction' | 'budget' | 'trends' | 'experiments'
 
 const SECTION_CONFIG: Array<{ id: Section; label: string; icon: React.ElementType }> = [
   { id: 'breakdown', label: 'Agents', icon: Cpu },
   { id: 'recommendations', label: 'Optimize', icon: Lightbulb },
+  { id: 'subagents', label: 'Sub-Agents', icon: SettingsIcon },
+  { id: 'inaction', label: 'In Action', icon: TrendingUp },
   { id: 'trends', label: 'Trends', icon: TrendingUp },
   { id: 'budget', label: 'Budgets', icon: Bell },
   { id: 'experiments', label: 'A/B Tests', icon: FlaskConical },
@@ -175,6 +155,9 @@ export function CostAnalyticsTab({
   workspaceId,
   fetchCostAnalytics,
   postCostAnalytics,
+  fetchSubagentOverrides,
+  putSubagentOverride,
+  deleteSubagentOverride,
 }: CostAnalyticsTabProps) {
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [activeSection, setActiveSection] = useState<Section>('breakdown')
@@ -185,34 +168,139 @@ export function CostAnalyticsTab({
   const [budgetAlerts, setBudgetAlerts] = useState<{ data: BudgetAlertItem[] | null; loading: boolean }>({ data: null, loading: true })
   const [budgetStatus, setBudgetStatus] = useState<{ data: BudgetStatus | null; loading: boolean }>({ data: null, loading: true })
   const [experiments, setExperiments] = useState<{ data: ExperimentItem[] | null; loading: boolean }>({ data: null, loading: true })
+  // Phase 3.3 — "Optimizer in Action" report. Loaded lazily when the tab is
+  // first opened so the rest of the dashboard isn't slowed by the heavier
+  // before/after aggregations.
+  const [inAction, setInAction] = useState<{
+    data: OptimizerInActionData | null
+    loading: boolean
+    error: string | null
+  }>({ data: null, loading: false, error: null })
 
-  const loadAll = useCallback(async () => {
-    const p = { period }
+  const overridesAvailable = !!(fetchSubagentOverrides && putSubagentOverride && deleteSubagentOverride)
+
+  // Phase 4.3 — drop the unsupported Sub-Agents tab when overrides aren't wired
+  // up by the parent, so the tab strip never has dead options.
+  const visibleSections = overridesAvailable
+    ? SECTION_CONFIG
+    : SECTION_CONFIG.filter(s => s.id !== 'subagents')
+
+  // Phase 4.3 — per-section loaders. Each section only fetches the data it
+  // actually renders and only when it becomes active. The summary cards still
+  // need breakdown + budgetStatus + trends, so those three are loaded eagerly
+  // on mount and re-loaded when the period changes.
+  const loadBreakdown = useCallback(async () => {
     setBreakdown(s => ({ ...s, loading: true }))
-    setRecommendations(s => ({ ...s, loading: true }))
-    setTrends(s => ({ ...s, loading: true }))
-    setBudgetAlerts(s => ({ ...s, loading: true }))
-    setBudgetStatus(s => ({ ...s, loading: true }))
-    setExperiments(s => ({ ...s, loading: true }))
-
-    const [bd, rec, tr, ba, bs, exp] = await Promise.all([
-      fetchCostAnalytics<BreakdownData>('agent-breakdown', p).catch(() => null),
-      fetchCostAnalytics<CostRecommendation[]>('recommendations', p).catch(() => null),
-      fetchCostAnalytics<TrendsData>('trends', p).catch(() => null),
-      fetchCostAnalytics<BudgetAlertItem[]>('budget-alerts').catch(() => null),
-      fetchCostAnalytics<BudgetStatus>('budget-status').catch(() => null),
-      fetchCostAnalytics<ExperimentItem[]>('experiments').catch(() => null),
-    ])
-
-    setBreakdown({ data: bd, loading: false })
-    setRecommendations({ data: rec, loading: false })
-    setTrends({ data: tr, loading: false })
-    setBudgetAlerts({ data: ba, loading: false })
-    setBudgetStatus({ data: bs, loading: false })
-    setExperiments({ data: exp, loading: false })
+    const data = await fetchCostAnalytics<BreakdownData>('agent-breakdown', { period }).catch(() => null)
+    setBreakdown({ data, loading: false })
   }, [fetchCostAnalytics, period])
 
-  useEffect(() => { loadAll() }, [loadAll])
+  const loadRecommendations = useCallback(async () => {
+    setRecommendations(s => ({ ...s, loading: true }))
+    const data = await fetchCostAnalytics<CostRecommendation[]>('recommendations', { period }).catch(() => null)
+    setRecommendations({ data, loading: false })
+  }, [fetchCostAnalytics, period])
+
+  const loadTrends = useCallback(async () => {
+    setTrends(s => ({ ...s, loading: true }))
+    const data = await fetchCostAnalytics<TrendsData>('trends', { period }).catch(() => null)
+    setTrends({ data, loading: false })
+  }, [fetchCostAnalytics, period])
+
+  const loadBudget = useCallback(async () => {
+    setBudgetAlerts(s => ({ ...s, loading: true }))
+    setBudgetStatus(s => ({ ...s, loading: true }))
+    const [ba, bs] = await Promise.all([
+      fetchCostAnalytics<BudgetAlertItem[]>('budget-alerts').catch(() => null),
+      fetchCostAnalytics<BudgetStatus>('budget-status').catch(() => null),
+    ])
+    setBudgetAlerts({ data: ba, loading: false })
+    setBudgetStatus({ data: bs, loading: false })
+  }, [fetchCostAnalytics])
+
+  const loadExperiments = useCallback(async () => {
+    setExperiments(s => ({ ...s, loading: true }))
+    const data = await fetchCostAnalytics<ExperimentItem[]>('experiments').catch(() => null)
+    setExperiments({ data, loading: false })
+  }, [fetchCostAnalytics])
+
+  const loadInAction = useCallback(async () => {
+    setInAction(s => ({ ...s, loading: true, error: null }))
+    try {
+      const data = await fetchCostAnalytics<OptimizerInActionData>('optimizer-in-action')
+      setInAction({ data, loading: false, error: null })
+    } catch (err: any) {
+      setInAction({ data: null, loading: false, error: err?.message ?? 'Failed to load' })
+    }
+  }, [fetchCostAnalytics])
+
+  // Eager loaders — feed the always-visible summary cards + period selector.
+  // Budget status feeds the throttle banner that appears regardless of tab.
+  useEffect(() => {
+    loadBreakdown()
+    loadTrends()
+    loadBudget()
+  }, [loadBreakdown, loadTrends, loadBudget])
+
+  // Lazy loaders — fire only when the tab becomes active and we don't already
+  // have data. Keyed on (activeSection, period) so a period change while a
+  // tab is open re-loads it; opening a new tab loads it on first activation.
+  useEffect(() => {
+    switch (activeSection) {
+      case 'recommendations':
+        if (!recommendations.data && !recommendations.loading) loadRecommendations()
+        break
+      case 'experiments':
+        if (!experiments.data && !experiments.loading) loadExperiments()
+        break
+      case 'inaction':
+        if (!inAction.data && !inAction.loading) loadInAction()
+        break
+      // 'breakdown', 'trends', 'budget' are eagerly loaded above.
+      // 'subagents' fetches via SubAgentModelsSection.
+    }
+  }, [
+    activeSection,
+    recommendations.data, recommendations.loading, loadRecommendations,
+    experiments.data, experiments.loading, loadExperiments,
+    inAction.data, inAction.loading, loadInAction,
+  ])
+
+  // Period changes invalidate cached lazy data — clear so the next activation
+  // reloads against the new window.
+  useEffect(() => {
+    setRecommendations({ data: null, loading: false })
+  }, [period])
+
+  // Composite refresh used by sub-components that mutate state (apply
+  // recommendation, create experiment, …). Reloads everything we already
+  // have plus refreshes the lazy tabs by clearing them.
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadBreakdown(), loadTrends(), loadBudget()])
+    if (recommendations.data) await loadRecommendations()
+    if (experiments.data) await loadExperiments()
+    setInAction({ data: null, loading: false, error: null })
+  }, [
+    loadBreakdown, loadTrends, loadBudget, loadRecommendations, loadExperiments,
+    recommendations.data, experiments.data,
+  ])
+  // Back-compat alias for legacy call sites that already use `loadAll`.
+  const loadAll = refreshAll
+
+  // Phase 1.3 — applying a recommendation upserts the workspace override so the
+  // very next sub-agent spawn picks it up. Refresh the recommendation list after
+  // so the row falls off (the gate now sees the user already opted in).
+  const handleApplyRecommendation = useCallback(async (rec: CostRecommendation) => {
+    if (!putSubagentOverride) return
+    await putSubagentOverride({
+      agentType: rec.agentType,
+      model: rec.recommendedModel,
+      projectId: null,
+    })
+    await loadAll()
+    // Refresh the "In Action" report so the boss sees the override land.
+    setInAction({ data: null, loading: false, error: null })
+  }, [putSubagentOverride, loadAll])
 
   return (
     <View className="gap-4">
@@ -229,14 +317,37 @@ export function CostAnalyticsTab({
       <SummaryCards data={breakdown.data} budgetStatus={budgetStatus.data} trends={trends.data} />
 
       {/* Section Tabs */}
-      <SectionTabs active={activeSection} onChange={setActiveSection} />
+      <SectionTabs active={activeSection} onChange={setActiveSection} sections={visibleSections} />
 
       {/* Active Section */}
       {activeSection === 'breakdown' && (
         <AgentBreakdownSection data={breakdown.data} loading={breakdown.loading} />
       )}
       {activeSection === 'recommendations' && (
-        <RecommendationsSection data={recommendations.data} loading={recommendations.loading} />
+        <RecommendationsSection
+          data={recommendations.data}
+          loading={recommendations.loading}
+          onApply={overridesAvailable ? handleApplyRecommendation : undefined}
+        />
+      )}
+      {activeSection === 'subagents' && overridesAvailable && (
+        <SubAgentModelsSection
+          workspaceId={workspaceId}
+          fetchOverrides={fetchSubagentOverrides!}
+          putOverride={putSubagentOverride!}
+          deleteOverride={deleteSubagentOverride!}
+          onChange={() => {
+            loadAll()
+            setInAction({ data: null, loading: false, error: null })
+          }}
+        />
+      )}
+      {activeSection === 'inaction' && (
+        <OptimizerInActionSection
+          data={inAction.data}
+          isLoading={inAction.loading}
+          error={inAction.error}
+        />
       )}
       {activeSection === 'trends' && (
         <TrendsSection data={trends.data} loading={trends.loading} />
@@ -342,11 +453,19 @@ function MiniCard({
 // Section Tabs
 // =============================================================================
 
-function SectionTabs({ active, onChange }: { active: Section; onChange: (s: Section) => void }) {
+function SectionTabs({
+  active,
+  onChange,
+  sections = SECTION_CONFIG,
+}: {
+  active: Section
+  onChange: (s: Section) => void
+  sections?: typeof SECTION_CONFIG
+}) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       <View className="flex-row gap-1 bg-muted rounded-lg p-0.5">
-        {SECTION_CONFIG.map(({ id, label, icon: Icon }) => {
+        {sections.map(({ id, label, icon: Icon }) => {
           const isActive = active === id
           return (
             <Pressable
@@ -500,104 +619,8 @@ function MetricPill({
 }
 
 // =============================================================================
-// 2. AI Recommendations
+// 2. AI Recommendations — moved to ./RecommendationsSection.tsx (Phase 4.3 split)
 // =============================================================================
-
-function RecommendationsSection({ data, loading }: { data: CostRecommendation[] | null; loading: boolean }) {
-  if (loading) return <LoadingCard />
-
-  const recs = data ?? []
-
-  if (recs.length === 0) {
-    return (
-      <Card>
-        <CardContent className="p-6 items-center">
-          <Lightbulb size={24} className="text-muted-foreground mb-2" />
-          <Text className="text-sm font-medium text-foreground mb-1">No recommendations yet</Text>
-          <Text className="text-xs text-muted-foreground text-center max-w-[280px]">
-            Once agents have enough usage data (5+ runs), optimization recommendations will appear here.
-          </Text>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  return (
-    <View className="gap-2">
-      {recs.map((rec, i) => {
-        const isSavings = rec.estimatedSavingsPercent > 0
-        return (
-          <Card key={i}>
-            <CardContent className="p-3">
-              <View className="flex-row items-start gap-2">
-                <View className={cn(
-                  'h-8 w-8 rounded-lg items-center justify-center mt-0.5',
-                  isSavings ? 'bg-green-500/10' : 'bg-amber-500/10',
-                )}>
-                  {isSavings ? (
-                    <TrendingDown size={14} className="text-green-400" />
-                  ) : (
-                    <TrendingUp size={14} className="text-amber-400" />
-                  )}
-                </View>
-                <View className="flex-1">
-                  <View className="flex-row items-center gap-2 mb-1">
-                    <Text className="text-sm font-semibold text-foreground">{rec.agentType}</Text>
-                    <View className={cn(
-                      'px-1.5 py-0.5 rounded',
-                      rec.confidence === 'high' ? 'bg-green-500/15' : rec.confidence === 'medium' ? 'bg-amber-500/15' : 'bg-muted',
-                    )}>
-                      <Text className={cn(
-                        'text-[9px] font-medium',
-                        rec.confidence === 'high' ? 'text-green-400' : rec.confidence === 'medium' ? 'text-amber-400' : 'text-muted-foreground',
-                      )}>
-                        {rec.confidence} confidence
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* Model switch visual */}
-                  {rec.currentModel !== rec.recommendedModel && (
-                    <View className="flex-row items-center gap-1.5 mb-2">
-                      <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(rec.currentModel))}>
-                        <Text className={cn('text-[10px] font-medium', getModelTextColor(rec.currentModel))}>
-                          {getModelDisplayName(rec.currentModel)}
-                        </Text>
-                      </View>
-                      <ArrowRightLeft size={10} className="text-muted-foreground" />
-                      <View className={cn('px-1.5 py-0.5 rounded border', getModelColor(rec.recommendedModel))}>
-                        <Text className={cn('text-[10px] font-medium', getModelTextColor(rec.recommendedModel))}>
-                          {getModelDisplayName(rec.recommendedModel)}
-                        </Text>
-                      </View>
-                      {isSavings && (
-                        <Text className="text-[10px] font-bold text-green-400 ml-1">
-                          Save ~{rec.estimatedSavingsPercent}%
-                        </Text>
-                      )}
-                    </View>
-                  )}
-
-                  <Text className="text-xs text-muted-foreground leading-4">{rec.reason}</Text>
-
-                  {rec.estimatedMonthlySavings !== 0 && (
-                    <Text className={cn(
-                      'text-[10px] font-medium mt-1',
-                      isSavings ? 'text-green-400' : 'text-amber-400',
-                    )}>
-                      {isSavings ? '↓' : '↑'} Est. {Math.abs(rec.estimatedMonthlySavings)} cr/month
-                      {rec.currentMonthlyCost > 0 ? ` (current: ${rec.currentMonthlyCost} cr/mo)` : ''}
-                    </Text>
-                  )}
-                </View>
-              </View>
-            </CardContent>
-          </Card>
-        )
-      })}
-    </View>
-  )
-}
 
 // =============================================================================
 // 3. Cost Trends
@@ -684,409 +707,11 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
 // 4. Budget Alerts
 // =============================================================================
 
-function BudgetSection({
-  alerts,
-  status,
-  loading,
-  onRefresh,
-  postCostAnalytics,
-}: {
-  alerts: BudgetAlertItem[] | null
-  status: BudgetStatus | null
-  loading: boolean
-  onRefresh: () => void
-  postCostAnalytics: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>
-}) {
-  const [showCreate, setShowCreate] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newLimit, setNewLimit] = useState('')
-  const [creating, setCreating] = useState(false)
-
-  if (loading) return <LoadingCard />
-
-  const handleCreate = async () => {
-    const limit = parseFloat(newLimit)
-    if (!newName.trim() || isNaN(limit) || limit <= 0) return
-    setCreating(true)
-    try {
-      await postCostAnalytics('budget-alerts', { name: newName.trim(), creditLimit: limit })
-      setNewName('')
-      setNewLimit('')
-      setShowCreate(false)
-      onRefresh()
-    } catch { /* handled */ }
-    setCreating(false)
-  }
-
-  return (
-    <View className="gap-3">
-      {/* Active throttle warning */}
-      {status?.throttleModel && (
-        <Card>
-          <CardContent className="p-3 bg-amber-500/5 border-amber-500/20">
-            <View className="flex-row items-center gap-2">
-              <Bell size={14} className="text-amber-400" />
-              <Text className="text-xs font-medium text-amber-400">
-                Auto-throttle active — model limited to {getModelDisplayName(status.throttleModel)}
-              </Text>
-            </View>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Alert list */}
-      {(alerts ?? []).length === 0 ? (
-        <Card>
-          <CardContent className="p-6 items-center">
-            <Bell size={24} className="text-muted-foreground mb-2" />
-            <Text className="text-sm font-medium text-foreground mb-1">No budget alerts</Text>
-            <Text className="text-xs text-muted-foreground text-center max-w-[280px] mb-3">
-              Set spending limits and get notified when costs approach thresholds. Optionally auto-throttle to cheaper models.
-            </Text>
-            <Button variant="outline" onPress={() => setShowCreate(true)}>
-              <View className="flex-row items-center gap-1.5">
-                <Plus size={12} className="text-foreground" />
-                <Text className="text-sm font-medium text-foreground">Create Alert</Text>
-              </View>
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          {(alerts ?? []).map(alert => {
-            const breachInfo = status?.breached.find(b => b.alert.id === alert.id)
-            const isBreached = breachInfo && breachInfo.percentUsed >= 100
-            const isWarning = breachInfo && breachInfo.percentUsed >= 80 && !isBreached
-
-            return (
-              <Card key={alert.id}>
-                <CardContent className={cn(
-                  'p-3',
-                  isBreached ? 'border-red-500/30' : isWarning ? 'border-amber-500/30' : '',
-                )}>
-                  <View className="flex-row items-center justify-between mb-2">
-                    <View className="flex-row items-center gap-2">
-                      <Bell size={14} className={isBreached ? 'text-red-400' : isWarning ? 'text-amber-400' : 'text-muted-foreground'} />
-                      <Text className="text-sm font-semibold text-foreground">{alert.name}</Text>
-                    </View>
-                    <View className={cn(
-                      'px-1.5 py-0.5 rounded',
-                      alert.enabled ? 'bg-green-500/15' : 'bg-muted',
-                    )}>
-                      <Text className={cn('text-[9px] font-medium', alert.enabled ? 'text-green-400' : 'text-muted-foreground')}>
-                        {alert.enabled ? 'Active' : 'Disabled'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View className="flex-row items-baseline gap-1 mb-1">
-                    <Text className="text-lg font-bold text-foreground">
-                      {breachInfo ? breachInfo.currentSpend.toFixed(1) : '0'}
-                    </Text>
-                    <Text className="text-xs text-muted-foreground">
-                      / {alert.creditLimit} cr ({alert.periodType})
-                    </Text>
-                  </View>
-
-                  {/* Progress bar */}
-                  <View className="h-2 bg-muted rounded-full overflow-hidden mb-2">
-                    <View
-                      className={cn(
-                        'h-full rounded-full',
-                        isBreached ? 'bg-red-500' : isWarning ? 'bg-amber-500' : 'bg-primary',
-                      )}
-                      style={{ width: `${Math.min(breachInfo?.percentUsed ?? 0, 100)}%` }}
-                    />
-                  </View>
-
-                  <View className="flex-row items-center gap-3">
-                    {alert.autoThrottle && (
-                      <Text className="text-[10px] text-muted-foreground">
-                        Auto-throttle to {alert.throttleToModel ? getModelDisplayName(alert.throttleToModel) : 'economy'}
-                      </Text>
-                    )}
-                  </View>
-                </CardContent>
-              </Card>
-            )
-          })}
-
-          <Button variant="outline" onPress={() => setShowCreate(true)}>
-            <View className="flex-row items-center gap-1.5">
-              <Plus size={12} className="text-foreground" />
-              <Text className="text-sm font-medium text-foreground">Add Alert</Text>
-            </View>
-          </Button>
-        </>
-      )}
-
-      {/* Create form */}
-      {showCreate && (
-        <Card>
-          <CardContent className="p-3 gap-3">
-            <Text className="text-sm font-semibold text-foreground">New Budget Alert</Text>
-            <TextInput
-              className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
-              placeholder="Alert name (e.g. Monthly spend cap)"
-              placeholderTextColor="#888"
-              value={newName}
-              onChangeText={setNewName}
-            />
-            <TextInput
-              className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
-              placeholder="Credit limit (e.g. 500)"
-              placeholderTextColor="#888"
-              value={newLimit}
-              onChangeText={setNewLimit}
-              keyboardType="numeric"
-            />
-            <View className="flex-row gap-2">
-              <Button variant="outline" onPress={() => setShowCreate(false)} className="flex-1">
-                <Text className="text-sm font-medium text-foreground">Cancel</Text>
-              </Button>
-              <Button onPress={handleCreate} disabled={creating} className="flex-1">
-                <Text className="text-sm font-medium text-primary-foreground">
-                  {creating ? 'Creating...' : 'Create'}
-                </Text>
-              </Button>
-            </View>
-          </CardContent>
-        </Card>
-      )}
-    </View>
-  )
-}
+// 4. Budget — moved to ./BudgetSection.tsx (Phase 4.3 split)
 
 // =============================================================================
-// 5. A/B Experiments
+// 5. A/B Experiments — moved to ./ExperimentsSection.tsx (Phase 4.3 split)
 // =============================================================================
-
-function ExperimentsSection({
-  data,
-  loading,
-  onRefresh,
-  postCostAnalytics,
-}: {
-  data: ExperimentItem[] | null
-  loading: boolean
-  onRefresh: () => void
-  postCostAnalytics: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>
-}) {
-  const [showCreate, setShowCreate] = useState(false)
-  const [formName, setFormName] = useState('')
-  const [formAgent, setFormAgent] = useState('')
-  const [formModelA, setFormModelA] = useState('')
-  const [formModelB, setFormModelB] = useState('')
-  const [creating, setCreating] = useState(false)
-
-  if (loading) return <LoadingCard />
-
-  const handleCreate = async () => {
-    if (!formName.trim() || !formAgent.trim() || !formModelA.trim() || !formModelB.trim()) return
-    setCreating(true)
-    try {
-      await postCostAnalytics('experiments', {
-        name: formName.trim(),
-        agentType: formAgent.trim(),
-        modelA: formModelA.trim(),
-        modelB: formModelB.trim(),
-      })
-      setFormName('')
-      setFormAgent('')
-      setFormModelA('')
-      setFormModelB('')
-      setShowCreate(false)
-      onRefresh()
-    } catch { /* handled */ }
-    setCreating(false)
-  }
-
-  const handleStop = async (id: string) => {
-    try {
-      await postCostAnalytics(`experiments/${id}/stop`, {})
-      onRefresh()
-    } catch { /* handled */ }
-  }
-
-  const experiments = data ?? []
-
-  return (
-    <View className="gap-3">
-      {experiments.length === 0 && !showCreate ? (
-        <Card>
-          <CardContent className="p-6 items-center">
-            <FlaskConical size={24} className="text-muted-foreground mb-2" />
-            <Text className="text-sm font-medium text-foreground mb-1">No experiments</Text>
-            <Text className="text-xs text-muted-foreground text-center max-w-[280px] mb-3">
-              A/B test different models on the same agent type. Compare cost, quality, and latency side by side.
-            </Text>
-            <Button variant="outline" onPress={() => setShowCreate(true)}>
-              <View className="flex-row items-center gap-1.5">
-                <Plus size={12} className="text-foreground" />
-                <Text className="text-sm font-medium text-foreground">New Experiment</Text>
-              </View>
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          {experiments.map((exp) => {
-            const isRunning = exp.status === 'running'
-            const totalRuns = exp.totalRunsA + exp.totalRunsB
-            const totalCost = exp.totalCostA + exp.totalCostB
-            const costPerRunA = exp.totalRunsA > 0 ? (exp.totalCostA / exp.totalRunsA) : 0
-            const costPerRunB = exp.totalRunsB > 0 ? (exp.totalCostB / exp.totalRunsB) : 0
-
-            return (
-              <Card key={exp.id}>
-                <CardContent className="p-3">
-                  <View className="flex-row items-center justify-between mb-2">
-                    <View className="flex-row items-center gap-2">
-                      <FlaskConical size={14} className={isRunning ? 'text-primary' : 'text-muted-foreground'} />
-                      <Text className="text-sm font-semibold text-foreground">{exp.name}</Text>
-                    </View>
-                    <View className={cn(
-                      'px-1.5 py-0.5 rounded',
-                      isRunning ? 'bg-green-500/15' : 'bg-muted',
-                    )}>
-                      <Text className={cn('text-[9px] font-medium', isRunning ? 'text-green-400' : 'text-muted-foreground')}>
-                        {exp.status}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <Text className="text-[10px] text-muted-foreground mb-2">
-                    Agent: {exp.agentType} · {totalRuns} total runs · {totalCost.toFixed(1)} credits
-                  </Text>
-
-                  {/* Side-by-side comparison */}
-                  <View className="flex-row gap-2">
-                    <ExperimentVariantCard
-                      label="Model A"
-                      model={exp.modelA}
-                      runs={exp.totalRunsA}
-                      cost={exp.totalCostA}
-                      costPerRun={costPerRunA}
-                      successRate={exp.successRateA}
-                      latency={exp.avgLatencyMsA}
-                    />
-                    <ExperimentVariantCard
-                      label="Model B"
-                      model={exp.modelB}
-                      runs={exp.totalRunsB}
-                      cost={exp.totalCostB}
-                      costPerRun={costPerRunB}
-                      successRate={exp.successRateB}
-                      latency={exp.avgLatencyMsB}
-                    />
-                  </View>
-
-                  {isRunning && (
-                    <Button variant="outline" onPress={() => handleStop(exp.id)} className="mt-2">
-                      <Text className="text-xs font-medium text-foreground">Stop Experiment</Text>
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
-            )
-          })}
-
-          <Button variant="outline" onPress={() => setShowCreate(true)}>
-            <View className="flex-row items-center gap-1.5">
-              <Plus size={12} className="text-foreground" />
-              <Text className="text-sm font-medium text-foreground">New Experiment</Text>
-            </View>
-          </Button>
-        </>
-      )}
-
-      {/* Create form */}
-      {showCreate && (
-        <Card>
-          <CardContent className="p-3 gap-3">
-            <Text className="text-sm font-semibold text-foreground">New A/B Experiment</Text>
-            <TextInput
-              className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
-              placeholder="Experiment name"
-              placeholderTextColor="#888"
-              value={formName}
-              onChangeText={setFormName}
-            />
-            <TextInput
-              className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
-              placeholder="Agent type (e.g. explore, general-purpose)"
-              placeholderTextColor="#888"
-              value={formAgent}
-              onChangeText={setFormAgent}
-            />
-            <View className="flex-row gap-2">
-              <TextInput
-                className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground flex-1"
-                placeholder="Model A (e.g. opus)"
-                placeholderTextColor="#888"
-                value={formModelA}
-                onChangeText={setFormModelA}
-              />
-              <TextInput
-                className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground flex-1"
-                placeholder="Model B (e.g. sonnet)"
-                placeholderTextColor="#888"
-                value={formModelB}
-                onChangeText={setFormModelB}
-              />
-            </View>
-            <View className="flex-row gap-2">
-              <Button variant="outline" onPress={() => setShowCreate(false)} className="flex-1">
-                <Text className="text-sm font-medium text-foreground">Cancel</Text>
-              </Button>
-              <Button onPress={handleCreate} disabled={creating} className="flex-1">
-                <Text className="text-sm font-medium text-primary-foreground">
-                  {creating ? 'Creating...' : 'Create'}
-                </Text>
-              </Button>
-            </View>
-          </CardContent>
-        </Card>
-      )}
-    </View>
-  )
-}
-
-function ExperimentVariantCard({
-  label,
-  model,
-  runs,
-  cost,
-  costPerRun,
-  successRate,
-  latency,
-}: {
-  label: string
-  model: string
-  runs: number
-  cost: number
-  costPerRun: number
-  successRate: number
-  latency: number
-}) {
-  return (
-    <View className="flex-1 rounded-lg border border-border bg-muted/30 p-2">
-      <Text className="text-[9px] font-medium text-muted-foreground mb-1">{label}</Text>
-      <View className={cn('px-1.5 py-0.5 rounded border self-start mb-1.5', getModelColor(model))}>
-        <Text className={cn('text-[10px] font-medium', getModelTextColor(model))}>
-          {getModelDisplayName(model)}
-        </Text>
-      </View>
-      <View className="gap-0.5">
-        <Text className="text-[10px] text-foreground">{runs} runs</Text>
-        <Text className="text-[10px] text-foreground">{cost.toFixed(1)} cr total</Text>
-        <Text className="text-[10px] text-foreground">{costPerRun.toFixed(2)} cr/run</Text>
-        <Text className="text-[10px] text-foreground">{successRate.toFixed(1)}% success</Text>
-        <Text className="text-[10px] text-foreground">{formatDuration(latency)} avg</Text>
-      </View>
-    </View>
-  )
-}
 
 // =============================================================================
 // Shared Loading

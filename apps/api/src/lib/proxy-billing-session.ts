@@ -146,6 +146,11 @@ export async function closeSession(
 
   // Always record cost metrics, even if billing fails (e.g. no subscription/credits).
   // Fire this first so analytics data is never lost.
+  //
+  // Pass `creditCost: 0` and let `recordAgentCostMetric` recompute from tokens
+  // server-side. We could pass `billedUsd` here, but this path runs before any
+  // markup adjustment is finalized — using the canonical token→cost catalog
+  // keeps analytics consistent with the catalog displayed in the UI.
   await recordAgentCostMetric({
     workspaceId: session.workspaceId,
     projectId: session.projectId,
@@ -155,7 +160,7 @@ export async function closeSession(
     outputTokens: session.outputTokens,
     cachedInputTokens: session.cachedInputTokens,
     toolCalls: session.requestCount,
-    creditCost,
+    creditCost: 0,
     wallTimeMs: durationMs,
     success: true,
   })
