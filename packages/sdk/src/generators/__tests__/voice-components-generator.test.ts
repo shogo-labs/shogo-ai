@@ -74,4 +74,35 @@ describe('generateVoiceComponents', () => {
     expect(idx!.code).toContain("export { VoiceSphere")
     expect(idx!.code).toContain("export { PhoneButton")
   })
+
+  test('index.ts re-exports ShogoVoiceProvider from the SDK', () => {
+    // Generated pods need a `<ConversationProvider>` ancestor for
+    // `useShogoVoice` to work — we surface it as `ShogoVoiceProvider`
+    // so consumers don't import from `@elevenlabs/react` directly.
+    const idx = generateVoiceComponents().find((f) => f.fileName === 'index.ts')
+    expect(idx).toBeDefined()
+    expect(idx!.code).toContain(
+      "export { ShogoVoiceProvider, type ShogoVoiceProviderProps } from '@shogo-ai/sdk/voice/react'",
+    )
+  })
+
+  test('index.ts re-exports ShogoVoiceProvider from custom sdkReactImport', () => {
+    const files = generateVoiceComponents({ sdkReactImport: '~/local/voice-react' })
+    const idx = files.find((f) => f.fileName === 'index.ts')
+    expect(idx).toBeDefined()
+    expect(idx!.code).toContain(
+      "export { ShogoVoiceProvider, type ShogoVoiceProviderProps } from '~/local/voice-react'",
+    )
+  })
+
+  test('index.ts shows ShogoVoiceProvider setup in its docblock', () => {
+    const idx = generateVoiceComponents().find((f) => f.fileName === 'index.ts')
+    expect(idx).toBeDefined()
+    // The docblock walks consumers through the one-time root wrap so a
+    // generated pod's `VoiceButton` doesn't immediately throw the
+    // "useRegisterCallbacks must be used within a ConversationProvider"
+    // error after a fresh `shogo generate`.
+    expect(idx!.code).toContain('ShogoVoiceProvider')
+    expect(idx!.code).toContain('<ShogoVoiceProvider>')
+  })
 })

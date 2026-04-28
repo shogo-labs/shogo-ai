@@ -723,7 +723,22 @@ app.get('/api/voice/audio-tags',   (c) => voice.audioTags(c.req.raw))
 
 ### React hook
 
+`@elevenlabs/react` ≥ 1.1 requires every `useConversation` caller (which
+includes `useVoiceConversation` and `useShogoVoice`) to live under a
+`<ConversationProvider>`. The SDK re-exports that as `ShogoVoiceProvider`
+so your app never has to import from `@elevenlabs/react` directly:
+
 ```tsx
+// Wrap once at the root of your app (App.tsx / layout.tsx / etc.).
+import { ShogoVoiceProvider } from '@shogo-ai/sdk/voice/react'
+
+export default function Root({ children }: { children: React.ReactNode }) {
+  return <ShogoVoiceProvider>{children}</ShogoVoiceProvider>
+}
+```
+
+```tsx
+// Anywhere under that provider:
 import { useVoiceConversation } from '@shogo-ai/sdk/voice/react'
 
 export function VoiceButton({ characterName }: { characterName: string }) {
@@ -738,6 +753,13 @@ export function VoiceButton({ characterName }: { characterName: string }) {
   )
 }
 ```
+
+Without the provider you'll see:
+
+> `useRegisterCallbacks must be used within a ConversationProvider`
+
+One provider per app is enough — sibling components share the same
+underlying convai session context.
 
 The hook takes care of:
 

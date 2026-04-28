@@ -118,7 +118,7 @@
     "@aws-sdk/client-ses": ">=3.0.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/adapter-libsql": "",
-    "@elevenlabs/react": ">=1.0.0",
+    "@elevenlabs/react": ">=1.1.0",
     "react": ">=18.0.0",
     "better-sqlite3": ">=11.0.0",
     "three": ">=0.160.0"

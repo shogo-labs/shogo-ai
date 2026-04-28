@@ -14,25 +14,50 @@
  *     auth server-side.
  *   - `fetchCredentials: 'same-origin'`
  *
- * Drop in anywhere: `const voice = useShogoVoice()` works inside a
- * generated pod app with no arguments.
+ * Provider requirement
+ * --------------------
+ * `@elevenlabs/react` ≥ 1.1 requires every `useConversation` caller —
+ * which includes this hook — to live under a `<ConversationProvider>`
+ * ancestor. The SDK re-exports that provider as `<ShogoVoiceProvider>`
+ * so consumer apps don't have to import from `@elevenlabs/react`
+ * directly. Without the provider you'll get:
+ *
+ *     useRegisterCallbacks must be used within a ConversationProvider
+ *
+ * Mount the provider once near the root of your app (NOT around each
+ * component individually — sibling voice components only share session
+ * state when they live under the same provider, so mounting separate
+ * providers around `<VoiceButton>` and `<VoiceSphere>` will give them
+ * disconnected sessions and the sphere will never visualize the
+ * button's audio).
  *
  * For third-party / external embeds (not pod-native), keep using
  * `useVoiceConversation({ shogoApiKey, projectId })` — the bearer path
  * is the correct choice when same-origin fetch can't reach the Shogo
- * API directly.
+ * API directly. The provider requirement is the same.
  *
- * @example Drop-in VoiceButton
+ * @example Minimum viable usage
  * ```tsx
- * import { useShogoVoice } from '@shogo-ai/sdk/voice/react'
+ * import {
+ *   ShogoVoiceProvider,
+ *   useShogoVoice,
+ * } from '@shogo-ai/sdk/voice/react'
  *
- * export function VoiceButton() {
+ * function VoiceButton() {
  *   const { start, end, status } = useShogoVoice()
  *   const active = status === 'connected' || status === 'connecting'
  *   return (
  *     <button onClick={active ? end : start}>
  *       {active ? 'End call' : 'Talk to Shogo'}
  *     </button>
+ *   )
+ * }
+ *
+ * export default function App() {
+ *   return (
+ *     <ShogoVoiceProvider>
+ *       <VoiceButton />
+ *     </ShogoVoiceProvider>
  *   )
  * }
  * ```
