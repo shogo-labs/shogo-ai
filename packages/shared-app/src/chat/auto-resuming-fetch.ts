@@ -44,9 +44,9 @@ export interface AutoResumingFetchOptions {
 }
 
 const DEFAULT_OPTIONS: Required<Omit<AutoResumingFetchOptions, 'buildResumeUrl' | 'logger'>> = {
-  maxResumeAttempts: 30,
-  initialBackoffMs: 1_000,
-  maxBackoffMs: 15_000,
+  maxResumeAttempts: 8,
+  initialBackoffMs: 500,
+  maxBackoffMs: 5_000,
 }
 
 const TURN_HEADER = {
@@ -154,9 +154,6 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
     turnId,
   } = opts
 
-  let cancelledFlag = false
-  let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
-
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       let lastSeq = 0
@@ -165,8 +162,6 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       let resumeAttempts = 0
       const decoder = new TextDecoder()
       let parseBuf = ''
-
-      const checkCancelled = () => cancelled || cancelledFlag
 
       const log = (msg: string) => {
         if (logger) logger.log(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
@@ -217,10 +212,9 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
 
       const pumpBody = async (body: ReadableStream<Uint8Array>): Promise<{ bytes: number }> => {
         const reader = body.getReader()
-        currentReader = reader
         let bytes = 0
         try {
-          while (!checkCancelled()) {
+          while (!cancelled) {
             const { done, value } = await reader.read()
             if (done) return { bytes }
             if (!value) continue
@@ -229,12 +223,12 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             try {
               controller.enqueue(value)
             } catch {
+              // Downstream consumer (AI SDK) cancelled — stop pumping.
               cancelled = true
               return { bytes }
             }
           }
         } finally {
-          if (currentReader === reader) currentReader = null
           try { reader.releaseLock() } catch { /* noop */ }
         }
         return { bytes }
@@ -245,20 +239,17 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       try {
         await pumpBody(initialBody)
 
-        let consecutiveNoProgress = 0
-        const MAX_CONSECUTIVE_NO_PROGRESS = 10
-
-        while (!turnCompleted && !checkCancelled() && resumeAttempts < maxResumeAttempts) {
+        while (!turnCompleted && !cancelled && resumeAttempts < maxResumeAttempts) {
           resumeAttempts++
           const backoff = Math.min(
-            initialBackoffMs * Math.pow(2, Math.min(resumeAttempts - 1, 6)),
+            initialBackoffMs * Math.pow(2, resumeAttempts - 1),
             maxBackoffMs,
           )
           warn(
             `stream EOF without turn-complete; reconnecting fromSeq=${lastSeq} (attempt ${resumeAttempts}/${maxResumeAttempts}, backoff ${backoff}ms)`,
           )
           await sleep(backoff)
-          if (checkCancelled()) break
+          if (cancelled) break
 
           let resumeRes: Response
           try {
@@ -270,17 +261,14 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           }
 
           if (resumeRes.status === 204 || !resumeRes.body) {
-            consecutiveNoProgress++
-            if (consecutiveNoProgress >= MAX_CONSECUTIVE_NO_PROGRESS) {
-              log(`resume returned ${resumeRes.status} ${consecutiveNoProgress} times — turn no longer buffered, stopping`)
-              break
-            }
-            log(`resume returned ${resumeRes.status} — turn may not be buffered yet, will retry (${consecutiveNoProgress}/${MAX_CONSECUTIVE_NO_PROGRESS})`)
-            continue
+            log(`resume returned ${resumeRes.status} — turn no longer buffered, stopping`)
+            break
           }
 
-          consecutiveNoProgress = 0
-
+          // Confirm we're still talking about the same turn. If the
+          // server has rotated to a new turnId on the same session, we
+          // would corrupt the AI SDK accumulator by appending the new
+          // turn's bytes onto the old one — bail out instead.
           const resumeTurnId = resumeRes.headers.get(TURN_HEADER.TURN_ID)
           if (resumeTurnId && resumeTurnId !== turnId) {
             warn(`resume returned a different turnId (${resumeTurnId}); stopping`)
@@ -288,13 +276,14 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             break
           }
 
+          // Only reset the attempt counter if the resume actually
+          // delivered bytes — otherwise an endless loop of empty 200s
+          // would never surface as "stalled".
           const { bytes } = await pumpBody(resumeRes.body)
-          if (bytes > 0) {
-            resumeAttempts = 0
-          }
+          if (bytes > 0) resumeAttempts = 0
         }
 
-        if (!turnCompleted && !checkCancelled()) {
+        if (!turnCompleted && !cancelled) {
           warn(`gave up after ${resumeAttempts} resume attempts; closing stream`)
         }
       } catch (err: any) {
@@ -306,8 +295,10 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       }
     },
     cancel() {
-      cancelledFlag = true
-      try { currentReader?.cancel() } catch { /* noop */ }
+      // Downstream cancelled (e.g. AI SDK got an error or user-stop).
+      // The async loop above checks `cancelled` and exits its read loop;
+      // we don't have direct access to it here, but pump will notice the
+      // controller refusing further enqueues and stop on the next chunk.
     },
   })
 }

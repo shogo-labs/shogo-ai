@@ -1869,7 +1869,7 @@ export class AgentGateway {
                 clearInterval(timer)
                 toolHeartbeatTimers.delete(toolCallId)
               }
-            }, 10_000)
+            }, 15_000)
             toolHeartbeatTimers.set(toolCallId, timer)
           }
           streamedToolCalls.delete(toolCallId)

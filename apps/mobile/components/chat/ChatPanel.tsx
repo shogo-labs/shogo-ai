@@ -1956,21 +1956,13 @@ export const ChatPanel = observer(function ChatPanel({
   // transient disconnects, so reaching this state means it gave up after
   // exhausting its retry budget — the turn may still be running on the
   // server while the UI looks "done".
-  //
-  // When a stall is detected, poll the /turn endpoint to check if the turn
-  // is still active on the server. If it is, the user can reload to resume.
   const prevIsStreamingForTurnRef = useRef(false)
   const turnStalledRef = useRef(false)
-  const turnPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   useEffect(() => {
     const wasStreaming = prevIsStreamingForTurnRef.current
     prevIsStreamingForTurnRef.current = isStreaming
     if (isStreaming && !wasStreaming) {
       turnStalledRef.current = false
-      if (turnPollTimerRef.current) {
-        clearInterval(turnPollTimerRef.current)
-        turnPollTimerRef.current = null
-      }
       return
     }
     if (wasStreaming && !isStreaming) {
@@ -1980,74 +1972,9 @@ export const ChatPanel = observer(function ChatPanel({
             currentTurnIdRef.current +
             ", lastSeq=" +
             turnLastSeqRef.current +
-            "); polling server to check if turn is still active",
+            "); turn may still be running on the server",
         )
         turnStalledRef.current = true
-
-        const sessionId = currentSessionId
-        const turnId = currentTurnIdRef.current
-        if (sessionId && projectId) {
-          setReconnecting(true)
-          const pollStartedAt = Date.now()
-          const MAX_POLL_MS = 45 * 60_000
-          const POLL_INTERVAL = 10_000
-          const doPoll = async () => {
-            if (Date.now() - pollStartedAt > MAX_POLL_MS || turnCompletedRef.current) {
-              if (turnPollTimerRef.current) {
-                clearInterval(turnPollTimerRef.current)
-                turnPollTimerRef.current = null
-              }
-              setReconnecting(false)
-              return
-            }
-            try {
-              const baseUrl = localAgentUrl || API_URL
-              const fetchFn = expoFetch || fetch
-              const headers = nativeHeaders?.() ?? {}
-              const resp = await fetchFn(
-                `${baseUrl}/projects/${projectId}/chat/${sessionId}/turn`,
-                {
-                  method: 'GET',
-                  headers,
-                },
-              )
-              if (resp.ok) {
-                const data = await resp.json()
-                if (data.status === 'completed' || data.status === 'failed') {
-                  console.log(`[ChatPanel] Turn ${turnId} finished on server (${data.status}), refreshing messages`)
-                  turnCompletedRef.current = true
-                  turnStalledRef.current = false
-                  if (turnPollTimerRef.current) {
-                    clearInterval(turnPollTimerRef.current)
-                    turnPollTimerRef.current = null
-                  }
-                  setReconnecting(false)
-                  onFilesChanged?.([])
-                } else if (data.status === 'active') {
-                  console.log(`[ChatPanel] Turn ${turnId} still active (seq=${data.lastSeq}), waiting...`)
-                }
-              } else if (resp.status === 404 || resp.status === 204) {
-                console.log(`[ChatPanel] Turn ${turnId} no longer tracked on server, treating as complete`)
-                turnStalledRef.current = false
-                if (turnPollTimerRef.current) {
-                  clearInterval(turnPollTimerRef.current)
-                  turnPollTimerRef.current = null
-                }
-                setReconnecting(false)
-              }
-            } catch (err: any) {
-              console.warn(`[ChatPanel] Turn poll failed: ${err?.message || err}`)
-            }
-          }
-          doPoll()
-          turnPollTimerRef.current = setInterval(doPoll, POLL_INTERVAL)
-        }
-      }
-    }
-    return () => {
-      if (turnPollTimerRef.current) {
-        clearInterval(turnPollTimerRef.current)
-        turnPollTimerRef.current = null
       }
     }
   }, [isStreaming])
@@ -2089,11 +2016,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Idle timeout to force-complete hung streams.
   //
-  // The runtime emits `data-tool-progress` heartbeats every 10s during long
+  // The runtime emits `data-tool-progress` heartbeats every 15s during long
   // tool executions and the API proxy injects keep-alive frames, so a true
-  // idle window of 30 minutes is only fatal when there is no active durable
-  // turn. If the turn is still open, extend the timer and let /turn polling
-  // decide completion instead of sending stop() prematurely.
+  // idle window of 30 minutes means the runtime really has gone silent.
   // Anything shorter risks killing legitimate long Anthropic / Opus turns.
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageContentRef = useRef<string>("")
@@ -2128,20 +2053,12 @@ export const ChatPanel = observer(function ChatPanel({
         lastMessageContentRef.current = currentContent
       }
 
-      const scheduleIdleTimeout = () => {
-        idleTimeoutRef.current = setTimeout(() => {
-          if (isStreaming) {
-            if (currentTurnIdRef.current && !turnCompletedRef.current) {
-              console.warn("[ChatPanel] Stream idle timeout while durable turn is active - extending instead of forcing stop()")
-              scheduleIdleTimeout()
-              return
-            }
-            console.warn("[ChatPanel] Stream idle timeout with no active durable turn - forcing stop()")
-            handleStop()
-          }
-        }, IDLE_TIMEOUT_MS)
-      }
-      scheduleIdleTimeout()
+      idleTimeoutRef.current = setTimeout(() => {
+        if (isStreaming) {
+          console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
+          handleStop()
+        }
+      }, IDLE_TIMEOUT_MS)
     } else {
       if (idleTimeoutRef.current) {
         clearTimeout(idleTimeoutRef.current)
