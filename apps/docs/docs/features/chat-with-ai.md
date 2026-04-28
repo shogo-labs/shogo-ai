@@ -14,7 +14,7 @@ The chat panel is how you build and configure your agent in Shogo. Type what you
 2. **The AI processes your request** and configures your agent accordingly.
 3. **You iterate** — ask for adjustments, add more capabilities, or refine behavior.
 
-Credits are consumed per token based on the AI model used — simpler requests cost less than complex ones. See [Plans and Credits](../getting-started/plans-and-credits) for details.
+Usage is metered per token based on the AI model used — simpler requests cost less than complex ones, and every request bills at provider cost + 20%. See [Plans and Pricing](../getting-started/plans-and-pricing) for details.
 
 ## What the AI can do
 

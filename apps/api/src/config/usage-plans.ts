@@ -3,24 +3,64 @@
 /**
  * Central Usage Plan Configuration
  *
- * Single source of truth for USD usage allocations per plan (Cursor-style).
- * Used by: billing.service.ts (backend allocation), webhook (monthly refills)
+ * Single source of truth for USD usage allocations per plan. The plan ladder
+ * is flat and per-seat, modeled on Cursor.com:
+ *
+ *   - Basic    $8/mo   single user, $5 of usage included
+ *   - Pro      $20/seat/mo, $20 of usage included per seat
+ *   - Business $40/seat/mo, $40 of usage included per seat
+ *
+ * Used by: billing.service.ts (backend allocation), webhook (monthly refills).
  *
  * All values are in USD. LLM / voice / image usage is metered at the raw
  * provider cost plus `MARKUP_MULTIPLIER` (see `usage-cost.ts`).
  */
 
-/** Daily included USD that refills every day on the free tier. */
+/** Daily included USD that refills every day on every plan. */
 export const DAILY_INCLUDED_USD = 0.50
 
 /** Monthly cap on dispensed daily USD (free tier). */
 export const MONTHLY_DAILY_CAP_USD = 3.00
 
 /**
- * Base plan monthly included USD.
- * Legacy tier suffixes (e.g. `pro_200`, `business_1200`) encode a credit
- * count; we convert to USD at $0.10/credit for parity with prior pricing.
+ * Included USD per *seat* per month. Basic is single-user (always 1 seat).
+ * Free is 0 (only the daily allowance applies).
  */
+export const SEAT_INCLUDED_USD = {
+  free: 0,
+  basic: 5,
+  pro: 20,
+  business: 40,
+  enterprise: 2000,
+} as const
+
+export type PlanId = keyof typeof SEAT_INCLUDED_USD
+
+/**
+ * Compute the monthly included USD for a (plan, seats) tuple.
+ *
+ * Backwards-compat: legacy tier ids (e.g. `pro_200`, `business_1200`) encode
+ * a credit count and are translated at $0.10/credit. Used only by the
+ * migration script and by webhook handlers that may still see legacy ids on
+ * grandfathered subscriptions.
+ */
+export function getMonthlyIncludedForPlan(planId: string, seats: number = 1): number {
+  const safeSeats = Math.max(1, Math.floor(seats || 1))
+  if (planId in SEAT_INCLUDED_USD) {
+    const base = SEAT_INCLUDED_USD[planId as PlanId]
+    // Basic and free are single-user, ignore seats.
+    if (planId === 'free' || planId === 'basic') return base
+    return base * safeSeats
+  }
+
+  // Legacy tier id support: `pro_200` -> $20 included, `business_1200` -> $120.
+  const m = planId.match(/^(basic|pro|business)_(\d+)$/)
+  if (m) return parseInt(m[2], 10) * 0.10
+
+  return 0
+}
+
+/** @deprecated Use `SEAT_INCLUDED_USD` and `getMonthlyIncludedForPlan(plan, seats)`. */
 export const PLAN_INCLUDED_USD = {
   free: 0,
   basic: 5,
@@ -28,20 +68,6 @@ export const PLAN_INCLUDED_USD = {
   business: 20,
   enterprise: 2000,
 } as const
-
-export type PlanId = keyof typeof PLAN_INCLUDED_USD
-
-/**
- * Parse a planId (e.g. "pro", "pro_800", "business_1200") and return the
- * monthly included USD amount. Tier suffixes use legacy credit numbers
- * converted at $0.10/credit.
- */
-export function getMonthlyIncludedForPlan(planId: string): number {
-  const parts = planId.split('_')
-  const tierCredits = parts.length > 1 ? parseInt(parts[1], 10) : NaN
-  if (!isNaN(tierCredits)) return tierCredits * 0.10
-  return PLAN_INCLUDED_USD[parts[0] as PlanId] ?? PLAN_INCLUDED_USD.free
-}
 
 /**
  * Voice / telephony raw provider rates (Mode B only). All values are USD.

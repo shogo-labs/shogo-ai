@@ -101,7 +101,7 @@ When something does need attention, the agent sends the alert text to your conne
 
 ## Cost awareness
 
-Heartbeats run full agent turns — they consume credits. A few guidelines:
+Heartbeats run full agent turns — they consume included usage. A few guidelines:
 
 - **Longer intervals cost less.** Every tick consumes tokens. Going from 15-minute to 30-minute intervals roughly halves heartbeat costs.
 - **Shorter HEARTBEAT.md costs less.** More items = more context = more tokens per tick.

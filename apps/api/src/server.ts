@@ -4471,7 +4471,7 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceId, planId, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const { workspaceId, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -4481,18 +4481,23 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
-    // Get price ID from config (supports tiered pricing: pro, pro_200, business_1200, etc.)
+    if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
+      return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
+    }
+    // Basic is single-user, always 1 seat. Pro/Business default to 1, can be more.
+    const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+
     const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
 
     if (!priceId) {
       return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
     }
 
-    // Build metadata
     const metadata: Record<string, string> = {
       workspaceId,
       planId,
       billingInterval,
+      seats: String(seats),
     }
 
     // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
@@ -4502,11 +4507,9 @@ app.post('/api/billing/checkout', async (c) => {
     const cancelUrl = clientCancelUrl
       || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
-    // Create Stripe checkout session (no payment_method_types — let Stripe
-    // determine available methods, required for Adaptive Pricing)
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: [{ price: priceId, quantity: seats }],
       success_url: successUrl,
       cancel_url: cancelUrl,
       metadata,
@@ -4556,6 +4559,7 @@ app.get('/api/billing/workspace-plan', async (c) => {
       planId: sub?.planId ?? 'free',
       status: sub?.status ?? null,
       billingInterval: sub?.billingInterval ?? null,
+      seats: (sub as any)?.seats ?? 1,
       monthlyIncludedUsd: wallet?.monthlyIncludedUsd ?? 0,
       dailyIncludedUsd: wallet?.dailyIncludedUsd ?? 0,
       monthlyIncludedAllocationUsd: wallet?.monthlyIncludedAllocationUsd ?? 0,
@@ -4581,11 +4585,16 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceName, planId, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const { workspaceName, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceName || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval' } }, 400)
     }
+
+    if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
+      return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
+    }
+    const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
     const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
     if (!priceId) {
@@ -4604,6 +4613,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       workspaceId: newWorkspaceId,
       planId,
       billingInterval,
+      seats: String(seats),
     }
 
     // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
@@ -4618,7 +4628,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: [{ price: priceId, quantity: seats }],
       success_url: successUrl,
       cancel_url: cancelUrl,
       metadata,
@@ -4650,10 +4660,11 @@ app.post('/api/billing/verify-checkout', async (c) => {
       return c.json({ error: { code: 'not_paid', message: 'Checkout session not paid' } }, 400)
     }
 
-    const { workspaceId, planId, billingInterval } = session.metadata || {}
+    const { workspaceId, planId, billingInterval, seats: seatsRaw } = session.metadata || {}
     if (!workspaceId || !planId || !billingInterval || !session.subscription || !session.customer) {
       return c.json({ error: { code: 'invalid_session', message: 'Missing metadata in session' } }, 400)
     }
+    const seats = Math.max(1, Math.floor(Number(seatsRaw) || 1))
 
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
@@ -4661,7 +4672,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
 
     const existing = await billingService.getSubscription(workspaceId)
     if (existing?.stripeSubscriptionId === (session.subscription as string)) {
-      return c.json({ ok: true, workspaceId, planId, alreadyProvisioned: true }, 200)
+      return c.json({ ok: true, workspaceId, planId, seats, alreadyProvisioned: true }, 200)
     }
 
     const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
@@ -4682,6 +4693,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
       stripeCustomerId: session.customer as string,
       workspaceId,
       planId,
+      seats,
       status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
       billingInterval: billingInterval as 'monthly' | 'annual',
       currentPeriodStart: new Date(currentPeriodStart),
@@ -4689,10 +4701,10 @@ app.post('/api/billing/verify-checkout', async (c) => {
       cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
     })
 
-    await billingService.allocateMonthlyIncluded(workspaceId, planId)
-    console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId)
+    await billingService.allocateMonthlyIncluded(workspaceId, planId, seats)
+    console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId, 'seats:', seats)
 
-    return c.json({ ok: true, workspaceId, planId }, 200)
+    return c.json({ ok: true, workspaceId, planId, seats }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
@@ -5086,7 +5098,10 @@ app.post('/api/webhooks/stripe', async (c) => {
     switch (event.type) {
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
-        const subscription = event.data.object as Stripe.Subscription
+        const subscription = event.data.object as Stripe.Subscription & {
+          current_period_start?: number
+          current_period_end?: number
+        }
         console.log('[Webhook] Subscription event:', {
           type: event.type,
           subscriptionId: subscription.id,
@@ -5094,6 +5109,60 @@ app.post('/api/webhooks/stripe', async (c) => {
           customerId: subscription.customer,
           metadata: subscription.metadata,
         })
+
+        // Plan-changes & seat-quantity changes show up here. We re-sync the
+        // local Subscription row + UsageWallet when this is a Shogo plan
+        // subscription (identified by metadata.workspaceId + planId).
+        const wsId = subscription.metadata?.workspaceId
+        const metaPlanId = subscription.metadata?.planId
+        if (wsId && metaPlanId && metaPlanId !== 'instance' && metaPlanId !== 'capacity') {
+          try {
+            const item = subscription.items?.data?.[0]
+            const quantity = Math.max(1, Math.floor(item?.quantity ?? 1))
+            const billingInterval = (subscription.metadata?.billingInterval as 'monthly' | 'annual') || 'monthly'
+            const now = Date.now()
+            const currentPeriodStart = subscription.current_period_start
+              ? subscription.current_period_start * 1000
+              : (subscription.billing_cycle_anchor || subscription.start_date) * 1000 || now
+            const currentPeriodEnd = subscription.current_period_end
+              ? subscription.current_period_end * 1000
+              : now + (30 * 24 * 60 * 60 * 1000)
+
+            await billingService.syncFromStripe({
+              stripeSubscriptionId: subscription.id,
+              stripeCustomerId: subscription.customer as string,
+              workspaceId: wsId,
+              planId: metaPlanId,
+              seats: quantity,
+              status: subscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
+              billingInterval,
+              currentPeriodStart: new Date(currentPeriodStart),
+              currentPeriodEnd: new Date(currentPeriodEnd),
+              cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
+            })
+
+            // Recompute the wallet's monthly included USD when seats / plan
+            // changed mid-cycle. `allocateMonthlyIncluded` resets overage; for
+            // mid-cycle quantity changes we want to preserve overage, so we
+            // call it only on `created` (provisioning) — `updated` skips the
+            // reset and only updates the included totals.
+            if (event.type === 'customer.subscription.created') {
+              await billingService.allocateMonthlyIncluded(wsId, metaPlanId, quantity)
+            } else {
+              const includedUsd = (await import('./config/usage-plans')).getMonthlyIncludedForPlan(metaPlanId, quantity)
+              await prisma.usageWallet.updateMany({
+                where: { workspaceId: wsId },
+                data: {
+                  monthlyIncludedUsd: includedUsd,
+                  monthlyIncludedAllocationUsd: includedUsd,
+                },
+              })
+            }
+            console.log('[Webhook] Synced subscription:', { wsId, plan: metaPlanId, seats: quantity })
+          } catch (err: any) {
+            console.error('[Webhook] Failed to sync subscription event:', err.message)
+          }
+        }
         break
       }
       case 'checkout.session.completed': {
@@ -5149,13 +5218,14 @@ app.post('/api/webhooks/stripe', async (c) => {
         }
 
         // Workspace is already created by the checkout endpoint; webhook only provisions the subscription
-        const { workspaceId, planId, billingInterval } = session.metadata || {}
+        const { workspaceId, planId, billingInterval, seats: seatsRaw } = session.metadata || {}
         if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
           try {
             const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
               current_period_start?: number
               current_period_end?: number
             }
+            const checkoutSeats = Math.max(1, Math.floor(Number(seatsRaw) || stripeSubscription.items?.data?.[0]?.quantity || 1))
 
             const now = Date.now()
             const currentPeriodStart = stripeSubscription.current_period_start
@@ -5170,6 +5240,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               stripeCustomerId: session.customer as string,
               workspaceId,
               planId,
+              seats: checkoutSeats,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
@@ -5177,8 +5248,8 @@ app.post('/api/webhooks/stripe', async (c) => {
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
 
-            await billingService.allocateMonthlyIncluded(workspaceId, planId)
-            console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId)
+            await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats)
+            console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
 
             // Send plan-upgraded email to workspace owner
             try {
@@ -5190,11 +5261,14 @@ app.post('/api/webhooks/stripe', async (c) => {
               if (ownerEmail) {
                 const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
                 const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                const includedUsd = (await import('./config/usage-plans')).getMonthlyIncludedForPlan(planId, checkoutSeats)
                 sendPlanUpgradedEmail({
                   to: ownerEmail,
                   workspaceName: workspace!.name,
                   planName: planLabel,
                   billingInterval: billingInterval === 'annual' ? 'Annual' : 'Monthly',
+                  seats: checkoutSeats,
+                  includedUsdTotal: `$${includedUsd}`,
                   dashboardUrl: `${baseUrl}/billing`,
                 }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
               }
@@ -5223,8 +5297,9 @@ app.post('/api/webhooks/stripe', async (c) => {
               const reason = invoice.billing_reason
               if (reason === 'subscription_cycle' || reason === 'subscription_update') {
                 try {
-                  await billingService.allocateMonthlyIncluded(wsId, planId)
-                  console.log('[Webhook] Monthly USD refilled for workspace:', wsId, 'plan:', planId, 'reason:', reason)
+                  const cycleSeats = Math.max(1, Math.floor(sub.items?.data?.[0]?.quantity ?? 1))
+                  await billingService.allocateMonthlyIncluded(wsId, planId, cycleSeats)
+                  console.log('[Webhook] Monthly USD refilled for workspace:', wsId, 'plan:', planId, 'seats:', cycleSeats, 'reason:', reason)
                 } catch (allocErr: any) {
                   console.error('[Webhook] Failed to refill monthly included USD:', allocErr.message)
                 }

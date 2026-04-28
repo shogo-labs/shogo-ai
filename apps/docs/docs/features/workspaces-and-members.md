@@ -14,7 +14,7 @@ A workspace is a shared space for your agents. Think of it like a team folder:
 
 - All your agents live inside a workspace
 - You can invite team members to collaborate
-- Billing and credits are managed at the workspace level
+- Billing and usage are managed at the workspace level
 - You can belong to multiple workspaces (e.g., one for your company, one for personal agents)
 
 ## Creating a workspace
@@ -67,20 +67,21 @@ From the **People** tab in Settings, you can:
 
 Go to **Settings** in the sidebar. Settings are organized into tabs:
 
-- **Workspace** — Rename your workspace, set default credit limits
+- **Workspace** — Rename your workspace, set default per-member spending limits
 - **People** — Manage members and invitations
 - **Account** — Profile and preferences
-- **Billing** — View and manage your plan and credits
+- **Billing** — View and manage your plan, seats, and usage
 
 ## How billing works with workspaces
 
-Credits and subscriptions are tied to the workspace, not to individual users. This means:
+Usage and subscriptions are tied to the workspace, not to individual users. This means:
 
-- All members of a workspace share the workspace's credit pool
-- The workspace owner manages the billing plan
-- Upgrading the plan gives more credits to the entire workspace
+- All members of a workspace share the workspace's monthly included usage pool
+- The workspace owner manages the billing plan and seat count
+- Adding seats (Pro / Business) increases the included usage proportionally
+- Upgrading the plan gives more included usage and unlocks new features
 
-See [Plans and Credits](../getting-started/plans-and-credits) for pricing details.
+See [Plans and Pricing](../getting-started/plans-and-pricing) for details.
 
 ## FAQ
 
@@ -94,4 +95,4 @@ Currently, agents belong to the workspace they were created in.
 You'll lose access to that workspace's agents. Your personal data and other workspaces are not affected.
 
 **Who pays for the workspace?**
-The workspace owner manages billing. All members benefit from the workspace's credit pool.
+The workspace owner manages billing. All members benefit from the workspace's included usage pool.

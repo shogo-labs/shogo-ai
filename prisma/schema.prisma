@@ -4,7 +4,7 @@
 // This schema consolidates all domains:
 // - studio-core: Workspace, Project, Member, etc.
 // - platform-features: FeatureSession, Requirements, Tasks, etc.
-// - billing: Subscription, Credits, Usage
+// - billing: Subscription, UsageWallet, UsageEvent
 // - studio-chat: ChatSession, ChatMessage, ToolCallLog
 // - component-builder: ComponentDefinition, Registry, Bindings
 // - better-auth: User, Session, Account, Verification
@@ -468,6 +468,8 @@ model Subscription {
   stripeSubscriptionId String            @unique
   stripeCustomerId    String
   planId              String
+  // Number of paying seats. Basic is always 1; Pro/Business are per-seat.
+  seats               Int                @default(1)
   status              SubscriptionStatus
   billingInterval     BillingInterval
   currentPeriodStart  DateTime

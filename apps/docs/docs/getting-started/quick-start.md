@@ -15,7 +15,7 @@ Create your first AI agent in Shogo in just a few minutes. This guide walks you 
 3. You'll be taken to your dashboard.
 
 :::tip Free to start
-Shogo's free plan gives you 5 credits per day (up to 30 per month) — enough to explore and build your first agent.
+Shogo's free plan gives you $0.50 of AI usage per day (up to $3 per month) — enough to explore and build your first agent. No credit card required.
 :::
 
 ## Step 2: Create a workspace
@@ -64,7 +64,7 @@ The chat panel is where you shape your agent. Type messages describing what you 
 
 > "Track my daily habits: exercise, reading, and meditation. Send me a morning check-in."
 
-Credits are consumed per token based on the AI model used — simpler requests cost less than complex ones. The chat input shows an estimated cost before you send. The AI will configure your agent's identity, skills, memory, and integrations based on your instructions.
+Usage is metered per token based on the AI model used — simpler requests cost less than complex ones. Every request bills at the provider's raw cost plus a flat 20% markup. The chat input shows an estimated cost before you send. The AI will configure your agent's identity, skills, memory, and integrations based on your instructions.
 
 ## Step 5: Connect tools and channels
 

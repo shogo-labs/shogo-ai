@@ -125,7 +125,7 @@ SQLite database and never leave your machine.
 | Database            | PostgreSQL                 | SQLite (via bun:sqlite)         |
 | File storage        | S3 / MinIO                 | Local filesystem                |
 | Auth                | Better Auth + Google OAuth | Better Auth (email/password)    |
-| Billing / Credits   | Stripe integration         | Disabled — bring your own keys  |
+| Billing / Usage     | Stripe integration         | Disabled — bring your own keys  |
 | Agent runtime       | Kubernetes / Knative pods  | Local child process             |
 | Prisma schema       | `prisma/schema.prisma`     | `prisma/schema.local.prisma`    |
 

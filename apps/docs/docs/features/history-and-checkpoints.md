@@ -61,8 +61,8 @@ No. All changes are saved in your history. Even if you revert, the changes you "
 **How far back can I go?**
 You can go back to any point in your project's history, all the way to the initial creation.
 
-**Do checkpoints cost credits?**
-No. Creating and restoring checkpoints is free.
+**Do checkpoints cost anything?**
+No. Creating and restoring checkpoints is free — it doesn't burn included usage or trigger AI calls.
 
 **Can team members see the history?**
 Yes. History is shared across your workspace. All members with access to the project can view the history and checkpoints.

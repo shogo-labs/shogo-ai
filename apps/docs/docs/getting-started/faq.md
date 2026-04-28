@@ -22,7 +22,7 @@ You can build agents that monitor GitHub repos, triage support tickets, research
 
 ### Is Shogo free?
 
-Yes, there is a free plan that gives you 5 credits per day (up to 30/month). Paid plans are available for users who need more credits. See [Plans and Credits](./plans-and-credits) for details.
+Yes — the free plan includes $0.50 of AI usage per day (up to $3/month). Paid plans are available when you need more (Basic $8/mo, Pro $20/seat/mo, Business $40/seat/mo). See [Plans and Pricing](./plans-and-pricing) for details.
 
 ## Building agents
 
@@ -92,13 +92,13 @@ Yes. You can share agents within your workspace. Use the sharing settings to con
 
 ## Account and billing
 
-### How do credits work?
+### How does usage work?
 
-Credits are consumed per token based on the AI model used, not a flat rate per message. Simpler interactions cost fewer credits than complex ones. The chat input shows an estimated cost before you send. See [Plans and Credits](./plans-and-credits) for details.
+Every request — LLM tokens, image generation, voice minutes — is billed at the AI provider's raw cost plus a flat 20% markup. There are no credits and no unit conversions: simpler interactions cost less than complex ones, and the chat input shows an estimated dollar cost before you send. See [Plans and Pricing](./plans-and-pricing) for details.
 
-### What happens when I run out of credits?
+### What happens when I run out of included usage?
 
-You won't be able to send messages to the AI until your credits reset or you upgrade your plan. Your existing agents continue running (heartbeat and channel processing are not affected).
+You won't be able to send paid messages to the AI until your daily / monthly included pool resets, or until you upgrade or enable usage-based overage. Your existing agents continue running (heartbeat and channel processing are not affected).
 
 ### How do I change my plan?
 

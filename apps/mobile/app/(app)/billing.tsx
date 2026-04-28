@@ -41,21 +41,19 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
-  BASIC_TIER,
+  PLAN_PRICING,
   BASIC_FEATURES,
-  PRO_TIERS,
-  BUSINESS_TIERS,
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
-  BASE_TIER_INCLUDED_USD,
+  SEAT_INCLUDED_USD,
   getIncludedUsdForPlan,
   getIncludedUsdCapacityForDisplay,
   formatUsd,
   formatCurrencyPrice,
   getPlanDisplayName,
 } from '../../lib/billing-config'
-import { TierSelector } from '../../components/billing/TierSelector'
+import { SeatCounter } from '../../components/billing/SeatCounter'
 import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
@@ -92,8 +90,8 @@ export default observer(function BillingPage() {
   } = useBillingData(currentWorkspace?.id)
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
-  const [selectedProTier, setSelectedProTier] = useState(0)
-  const [selectedBusinessTier, setSelectedBusinessTier] = useState(4)
+  const [proSeats, setProSeats] = useState(1)
+  const [businessSeats, setBusinessSeats] = useState(1)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [isPortalLoading, setIsPortalLoading] = useState(false)
   const [regionalPricing, setRegionalPricing] = useState<RegionalPricingResponse | null>(null)
@@ -108,10 +106,12 @@ export default observer(function BillingPage() {
     return () => { cancelled = true }
   }, [http])
 
+  const subSeats = (subscription as { seats?: number } | null)?.seats ?? 1
   const usdRemaining =
-    effectiveBalance?.total ?? getIncludedUsdForPlan(subscription?.planId)
+    effectiveBalance?.total ?? getIncludedUsdForPlan(subscription?.planId, subSeats)
   const usdTotal = getIncludedUsdCapacityForDisplay(
     subscription?.planId,
+    subSeats,
     effectiveBalance?.total,
     effectiveBalance?.monthlyIncludedAllocationUsd,
   )
@@ -120,8 +120,9 @@ export default observer(function BillingPage() {
     ? `${getPlanDisplayName(subscription.planId)} Plan`
     : 'Free Plan'
 
-  const proTier = PRO_TIERS[selectedProTier]
-  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+  const proPricing = PLAN_PRICING.pro
+  const businessPricing = PLAN_PRICING.business
+  const basicPricing = PLAN_PRICING.basic
 
   const fmtPrice = useCallback((usdAmount: number, planKey?: string) => {
     if (!regionalPricing || !planKey) return `$${usdAmount}`
@@ -131,28 +132,24 @@ export default observer(function BillingPage() {
     return `~${formatCurrencyPrice(localAmount, regionalPricing.currency)}`
   }, [regionalPricing, billingInterval])
 
-  const handleCheckout = useCallback(async (planType: 'pro' | 'business' | 'basic', includedUsd: number) => {
+  const handleCheckout = useCallback(async (planType: 'pro' | 'business' | 'basic', seats: number) => {
     if (!currentWorkspace?.id) return
     setIsCheckoutLoading(true)
     try {
-      // Stripe plan IDs still use legacy credit suffixes at $0.10/credit parity
-      // (e.g. $20 of usage => `pro_200`). Base tier (first PRO_TIERS entry at $20) uses no suffix.
-      const legacyCredits = Math.round(includedUsd * 10)
-      const stripeTierKey = includedUsd >= BASE_TIER_INCLUDED_USD ? Math.round(legacyCredits / 2) : legacyCredits
-      const planId = planType === 'basic'
-        ? 'basic'
-        : stripeTierKey === 100 ? planType : `${planType}_${stripeTierKey}`
+      const planId = planType
+      const safeSeats = planType === 'basic' ? 1 : Math.max(1, Math.floor(seats || 1))
       const isNative = Platform.OS !== 'web'
 
       const redirectBase = isNative
         ? ExpoLinking.createURL('billing')
         : (typeof window !== 'undefined' ? window.location.origin : undefined)
-      console.log('[Billing] checkout start', { planId, billingInterval, isNative, redirectBase })
-      trackInitiateCheckout({ planId, billingInterval, workspaceId: currentWorkspace.id })
+      console.log('[Billing] checkout start', { planId, seats: safeSeats, billingInterval, isNative, redirectBase })
+      trackInitiateCheckout({ planId, billingInterval, seats: safeSeats, workspaceId: currentWorkspace.id })
 
       const data = await api.createCheckoutSession(http, {
         workspaceId: currentWorkspace.id,
         planId,
+        seats: safeSeats,
         billingInterval,
         userEmail: user?.email,
         referralId: getRewardfulReferral(),
@@ -186,7 +183,7 @@ export default observer(function BillingPage() {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[Billing] verify result:', verifyResult)
                   if (checkout === 'success') {
-                    trackPurchase({ planId: verifyResult.planId, billingInterval, workspaceId: currentWorkspace?.id, sessionId })
+                    trackPurchase({ planId: verifyResult.planId, billingInterval, seats: (verifyResult as { seats?: number }).seats ?? safeSeats, workspaceId: currentWorkspace?.id, sessionId })
                   }
                 } catch (verifyErr) {
                   console.warn('[Billing] verify failed (webhook will handle):', verifyErr)
@@ -348,7 +345,7 @@ export default observer(function BillingPage() {
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  Daily allowance resets at midnight UTC. All usage billed at provider cost + 20%.
+                  All usage is billed at the AI provider's raw cost plus a flat 20% markup. Pro and Business include $20/$40 of monthly usage per seat. No credits, no unit conversions. Daily allowance resets at midnight UTC.
                 </Text>
               </View>
               {effectiveBalance?.overageEnabled && (
@@ -434,14 +431,14 @@ export default observer(function BillingPage() {
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
                     {regionalPricing
-                      ? fmtPrice(billingInterval === 'monthly' ? BASIC_TIER.monthly : Math.round(BASIC_TIER.annual / 12), 'basic')
-                      : `$${billingInterval === 'monthly' ? BASIC_TIER.monthly : Math.round(BASIC_TIER.annual / 12)}`}
+                      ? fmtPrice(billingInterval === 'monthly' ? basicPricing.monthly : Math.round(basicPricing.annual / 12), 'basic')
+                      : `$${billingInterval === 'monthly' ? basicPricing.monthly : Math.round(basicPricing.annual / 12)}`}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 {billingInterval === 'annual' && !regionalPricing && (
                   <Text className="text-sm text-muted-foreground">
-                    ${BASIC_TIER.annual}/year (save ~17%)
+                    ${basicPricing.annual}/year (save ~17%)
                   </Text>
                 )}
               </View>
@@ -449,7 +446,7 @@ export default observer(function BillingPage() {
               <View className="hidden md:block md:min-h-[76px]" />
 
               <Pressable
-                onPress={() => handleCheckout('basic', BASIC_TIER.includedUsd)}
+                onPress={() => handleCheckout('basic', 1)}
                 disabled={isCheckoutLoading}
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
@@ -460,7 +457,7 @@ export default observer(function BillingPage() {
 
               <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(BASIC_TIER.includedUsd)} of usage / month
+                  {formatUsd(SEAT_INCLUDED_USD.basic)} of usage / month
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -489,31 +486,33 @@ export default observer(function BillingPage() {
                   <Text className="text-4xl font-bold text-foreground">
                     {regionalPricing
                       ? fmtPrice(
-                          billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12),
-                          `pro_${Math.round(proTier.includedUsd * 10)}`
+                          billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats),
+                          'pro'
                         )
-                      : `$${billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12)}`}
+                      : `$${billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats)}`}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  shared across unlimited users
+                  ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
                 </Text>
               </View>
 
               <View className="md:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly included usage
+                  Seats
                 </Text>
-                <TierSelector
-                  tiers={PRO_TIERS}
-                  selectedIndex={selectedProTier}
-                  onSelect={setSelectedProTier}
+                <SeatCounter
+                  value={proSeats}
+                  onChange={setProSeats}
+                  min={1}
+                  max={500}
+                  label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
                 />
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('pro', proTier.includedUsd)}
+                onPress={() => handleCheckout('pro', proSeats)}
                 disabled={isCheckoutLoading}
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
@@ -524,7 +523,7 @@ export default observer(function BillingPage() {
 
               <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(proTier.includedUsd)} of usage / month
+                  {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -557,32 +556,33 @@ export default observer(function BillingPage() {
                   <Text className="text-4xl font-bold text-foreground">
                     {regionalPricing
                       ? fmtPrice(
-                          billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12),
-                          `business_${Math.round(businessTier.includedUsd * 10)}`
+                          billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats),
+                          'business'
                         )
-                      : `$${billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12)}`}
+                      : `$${billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats)}`}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  shared across unlimited users
+                  ${businessPricing.monthly}/seat × {businessSeats} seat{businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage
                 </Text>
               </View>
 
               <View className="md:min-h-[76px]">
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly included usage (per seat)
+                  Seats
                 </Text>
-                <TierSelector
-                  tiers={BUSINESS_TIERS}
-                  selectedIndex={selectedBusinessTier}
-                  onSelect={setSelectedBusinessTier}
-                  suffix=" / seat"
+                <SeatCounter
+                  value={businessSeats}
+                  onChange={setBusinessSeats}
+                  min={1}
+                  max={500}
+                  label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
                 />
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('business', businessTier.includedUsd)}
+                onPress={() => handleCheckout('business', businessSeats)}
                 disabled={isCheckoutLoading}
                 className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
               >
@@ -593,7 +593,7 @@ export default observer(function BillingPage() {
 
               <View className="md:flex-1 gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(businessTier.includedUsd)} of usage / seat / month
+                  {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
                 </Text>
                 <FeatureList features={BUSINESS_FEATURES} />
               </View>

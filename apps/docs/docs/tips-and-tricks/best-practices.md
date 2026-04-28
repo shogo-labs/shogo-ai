@@ -6,7 +6,7 @@ slug: /tips-and-tricks/best-practices
 
 # Best Practices
 
-These tips will help you get the best results from Shogo, save credits, and build agents more effectively.
+These tips will help you get the best results from Shogo, keep usage low, and build agents more effectively.
 
 ## 1. Plan before you prompt
 
@@ -51,7 +51,7 @@ After each AI response, check that the configuration matches your expectations:
 - Verify integrations are connected
 - Look at the canvas dashboard to confirm the layout
 
-Catching issues early saves credits and prevents compounding problems.
+Catching issues early saves usage and prevents compounding problems.
 
 ## 5. Use checkpoints wisely
 
@@ -74,7 +74,7 @@ Vague prompts lead to vague results. Compare:
 
 See the [Prompting Guide](../prompting/basics) for more techniques.
 
-## 7. Save credits with combined requests
+## 7. Save usage with combined requests
 
 If you have several small related changes, combine them into one message:
 
@@ -86,7 +86,7 @@ If you have several small related changes, combine them into one message:
 **Send one message:**
 > "Change the heartbeat to every 10 minutes, add the staging branch to CI monitoring, and set quiet hours to 11pm-6am."
 
-This uses fewer credits than three separate messages.
+This uses less usage than three separate messages.
 
 ## 8. Revert early, not late
 

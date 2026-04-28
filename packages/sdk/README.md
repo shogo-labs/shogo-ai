@@ -656,7 +656,8 @@ Pass `null` to clear the provider (e.g. on sign-out).
   economy-tier models (e.g. `claude-haiku-4-5`, `gpt-5.4-nano`); Pro+
   unlocks the rest. Tier-gated calls return `403 model_tier_restricted`
   which the AI SDK surfaces as an `APICallError`.
-- Insufficient credits return `402 insufficient_credits`.
+- Insufficient included usage returns `402 insufficient_credits` (legacy
+  error key, kept for backwards compatibility).
 - For Anthropic-native features (extended thinking, prompt caching,
   native `tool_use` blocks), call `POST /api/ai/anthropic/v1/messages`
   on the cloud directly with your Shogo key as `x-api-key`; the
@@ -830,7 +831,7 @@ Same method surface in both modes — only the constructor differs.
 
 Shogo's API server owns the ElevenLabs + Twilio accounts, lazily
 provisions a per-project EL agent + Twilio number on demand, and bills
-the workspace's credit ledger.
+the workspace's USD usage wallet.
 
 ```ts
 import { createClient } from '@shogo-ai/sdk'
@@ -895,7 +896,7 @@ wins with a runtime warning. Drop `shogoApiKey` to force Mode A.
 ### Billing (Mode B)
 
 All voice activity flows through the same `UsageEvent` /
-`CreditLedger` path AI calls already use. Four action types:
+`UsageWallet` path AI calls already use. Four action types:
 
 - `voice_minutes_inbound` — per-call, minute-billed (rounds up).
 - `voice_minutes_outbound` — per-call, minute-billed (rounds up).
@@ -903,8 +904,8 @@ All voice activity flows through the same `UsageEvent` /
 - `voice_number_monthly` — recurring, debited nightly by the
   `voice-monthly-rebill` cron.
 
-Rates live in `apps/api/src/config/credit-plans.ts` under
-`VOICE_RATES` and can be overridden per plan via
+Rates live in `apps/api/src/config/usage-plans.ts` under
+`VOICE_RAW_USD` and can be overridden per plan via
 `PLAN_VOICE_RATE_OVERRIDES`. The effective rate is recorded on every
 `UsageEvent.actionMetadata` for auditability.
 

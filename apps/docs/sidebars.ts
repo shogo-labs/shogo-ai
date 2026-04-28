@@ -9,7 +9,7 @@ const sidebars: SidebarsConfig = {
       items: [
         "getting-started/welcome",
         "getting-started/quick-start",
-        "getting-started/plans-and-credits",
+        "getting-started/plans-and-pricing",
         "getting-started/showcase",
         "getting-started/faq",
       ],
