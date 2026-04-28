@@ -1988,12 +1988,11 @@ export const ChatPanel = observer(function ChatPanel({
         const turnId = currentTurnIdRef.current
         if (sessionId && projectId) {
           setReconnecting(true)
-          let pollCount = 0
-          const MAX_POLLS = 120
-          const POLL_INTERVAL = 5_000
+          const pollStartedAt = Date.now()
+          const MAX_POLL_MS = 45 * 60_000
+          const POLL_INTERVAL = 10_000
           const doPoll = async () => {
-            pollCount++
-            if (pollCount > MAX_POLLS || turnCompletedRef.current) {
+            if (Date.now() - pollStartedAt > MAX_POLL_MS || turnCompletedRef.current) {
               if (turnPollTimerRef.current) {
                 clearInterval(turnPollTimerRef.current)
                 turnPollTimerRef.current = null
@@ -2004,12 +2003,12 @@ export const ChatPanel = observer(function ChatPanel({
             try {
               const baseUrl = localAgentUrl || API_URL
               const fetchFn = expoFetch || fetch
-              const cookie = authClient.getCookie()
+              const headers = nativeHeaders?.() ?? {}
               const resp = await fetchFn(
                 `${baseUrl}/projects/${projectId}/chat/${sessionId}/turn`,
                 {
                   method: 'GET',
-                  headers: cookie ? { Cookie: cookie } : {},
+                  headers,
                 },
               )
               if (resp.ok) {
@@ -2090,9 +2089,11 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Idle timeout to force-complete hung streams.
   //
-  // The runtime emits `data-tool-progress` heartbeats every 15s during long
+  // The runtime emits `data-tool-progress` heartbeats every 10s during long
   // tool executions and the API proxy injects keep-alive frames, so a true
-  // idle window of 30 minutes means the runtime really has gone silent.
+  // idle window of 30 minutes is only fatal when there is no active durable
+  // turn. If the turn is still open, extend the timer and let /turn polling
+  // decide completion instead of sending stop() prematurely.
   // Anything shorter risks killing legitimate long Anthropic / Opus turns.
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastMessageContentRef = useRef<string>("")
@@ -2127,12 +2128,20 @@ export const ChatPanel = observer(function ChatPanel({
         lastMessageContentRef.current = currentContent
       }
 
-      idleTimeoutRef.current = setTimeout(() => {
-        if (isStreaming) {
-          console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
-          handleStop()
-        }
-      }, IDLE_TIMEOUT_MS)
+      const scheduleIdleTimeout = () => {
+        idleTimeoutRef.current = setTimeout(() => {
+          if (isStreaming) {
+            if (currentTurnIdRef.current && !turnCompletedRef.current) {
+              console.warn("[ChatPanel] Stream idle timeout while durable turn is active - extending instead of forcing stop()")
+              scheduleIdleTimeout()
+              return
+            }
+            console.warn("[ChatPanel] Stream idle timeout with no active durable turn - forcing stop()")
+            handleStop()
+          }
+        }, IDLE_TIMEOUT_MS)
+      }
+      scheduleIdleTimeout()
     } else {
       if (idleTimeoutRef.current) {
         clearTimeout(idleTimeoutRef.current)

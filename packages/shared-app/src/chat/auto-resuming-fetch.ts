@@ -155,6 +155,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
   } = opts
 
   let cancelledFlag = false
+  let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -216,6 +217,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
 
       const pumpBody = async (body: ReadableStream<Uint8Array>): Promise<{ bytes: number }> => {
         const reader = body.getReader()
+        currentReader = reader
         let bytes = 0
         try {
           while (!checkCancelled()) {
@@ -232,6 +234,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             }
           }
         } finally {
+          if (currentReader === reader) currentReader = null
           try { reader.releaseLock() } catch { /* noop */ }
         }
         return { bytes }
@@ -242,9 +245,6 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       try {
         await pumpBody(initialBody)
 
-        // Track the last seq before we entered the resume loop so we can
-        // detect forward progress even across 204 gaps.
-        let seqAtLoopStart = lastSeq
         let consecutiveNoProgress = 0
         const MAX_CONSECUTIVE_NO_PROGRESS = 10
 
@@ -291,7 +291,6 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           const { bytes } = await pumpBody(resumeRes.body)
           if (bytes > 0) {
             resumeAttempts = 0
-            seqAtLoopStart = lastSeq
           }
         }
 
@@ -308,6 +307,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
     },
     cancel() {
       cancelledFlag = true
+      try { currentReader?.cancel() } catch { /* noop */ }
     },
   })
 }
