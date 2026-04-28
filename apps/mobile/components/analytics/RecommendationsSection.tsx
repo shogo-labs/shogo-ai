@@ -18,7 +18,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
-import { getModelColor, getModelDisplayName, getModelTextColor } from './SharedAnalytics'
+import { formatDollarCost, getModelColor, getModelDisplayName, getModelTextColor } from './SharedAnalytics'
 
 export interface CostRecommendation {
   agentType: string
@@ -75,7 +75,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
           <Lightbulb size={24} className="text-muted-foreground mb-2" />
           <Text className="text-sm font-medium text-foreground mb-1">No recommendations yet</Text>
           <Text className="text-xs text-muted-foreground text-center max-w-[280px]">
-            Once agents have enough usage data (5+ runs), optimization recommendations will appear here.
+            Once an agent/model pair has enough usage data (20+ runs), optimization recommendations will appear here.
           </Text>
         </CardContent>
       </Card>
@@ -200,8 +200,8 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                       'text-[10px] font-medium mt-1',
                       isSavings ? 'text-green-400' : 'text-amber-400',
                     )}>
-                      {isSavings ? '↓' : '↑'} Est. {Math.abs(rec.estimatedMonthlySavings)} cr/month
-                      {rec.currentMonthlyCost > 0 ? ` (current: ${rec.currentMonthlyCost} cr/mo)` : ''}
+                      {isSavings ? '↓' : '↑'} Est. {formatDollarCost(Math.abs(rec.estimatedMonthlySavings))}/month
+                      {rec.currentMonthlyCost > 0 ? ` (current: ${formatDollarCost(rec.currentMonthlyCost)}/mo)` : ''}
                     </Text>
                   )}
 

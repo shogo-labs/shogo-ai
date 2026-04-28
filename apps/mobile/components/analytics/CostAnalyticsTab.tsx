@@ -38,6 +38,7 @@ import {
   PeriodSelector,
   formatNumber,
   formatDuration,
+  formatDollarCost,
   getModelColor,
   getModelTextColor,
   getModelDisplayName,
@@ -401,7 +402,7 @@ function SummaryCards({
     <View className="flex-row flex-wrap gap-2">
       <MiniCard
         label="Total Cost"
-        value={`${totalCost.toFixed(1)} cr`}
+        value={formatDollarCost(totalCost)}
         icon={DollarSign}
         color="text-orange-400"
       />
@@ -413,13 +414,13 @@ function SummaryCards({
       />
       <MiniCard
         label="Avg Cost/Run"
-        value={`${avgCost} cr`}
+        value={formatDollarCost(avgCost)}
         icon={Zap}
         color="text-emerald-400"
       />
       <MiniCard
         label="Forecast"
-        value={forecast ? `${forecast.nextMonth} cr/mo` : '—'}
+        value={forecast ? `${formatDollarCost(forecast.nextMonth)}/mo` : '—'}
         icon={forecast?.trend === 'increasing' ? TrendingUp : forecast?.trend === 'decreasing' ? TrendingDown : Minus}
         color={forecast?.trend === 'increasing' ? 'text-red-400' : forecast?.trend === 'decreasing' ? 'text-green-400' : 'text-muted-foreground'}
         subtitle={forecast ? `${forecast.percentChange > 0 ? '+' : ''}${forecast.percentChange}%` : undefined}
@@ -555,9 +556,9 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                   </View>
                   <View className="items-end">
                     <Text className="text-sm font-bold text-foreground">
-                      {entry.totalCreditCost.toFixed(1)} cr
+                      {formatDollarCost(entry.totalCreditCost)}
                     </Text>
-                    <Text className="text-[10px] text-muted-foreground">{costPercent}% of total</Text>
+                    <Text className="text-[10px] text-muted-foreground">{costPercent}% of period cost</Text>
                   </View>
                   {isExpanded ? (
                     <ChevronUp size={14} className="text-muted-foreground ml-2" />
@@ -567,6 +568,9 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                 </View>
 
                 {/* Cost bar */}
+                <Text className="mt-2 text-[9px] text-muted-foreground">
+                  Relative share of selected period spend
+                </Text>
                 <View className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
                   <View
                     className="h-full bg-primary rounded-full"
@@ -581,7 +585,7 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                       <MetricPill icon={CheckCircle2} label="Quality" value={`${qualitySuccessRate}%`} color="text-green-400" />
                       <MetricPill icon={XCircle} label="Failures" value={String(failures)} color="text-red-400" />
                       <MetricPill icon={Clock} label="Avg Latency" value={formatDuration(entry.avgLatencyMs)} color="text-blue-400" />
-                      <MetricPill icon={DollarSign} label="Avg Cost" value={`${entry.avgCostPerRun} cr`} color="text-orange-400" />
+                      <MetricPill icon={DollarSign} label="Avg Cost" value={formatDollarCost(entry.avgCostPerRun)} color="text-orange-400" />
                       <MetricPill icon={Zap} label="Tool Calls" value={formatNumber(entry.totalToolCalls)} color="text-purple-400" />
                     </View>
                     {(entry.loopDetected || entry.hitMaxTurns || entry.escalated || entry.responseEmpty) ? (
@@ -663,6 +667,7 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
   }
 
   const maxCost = Math.max(...trends.map(t => t.totalCost), 1)
+  const maxCostLabel = formatDollarCost(maxCost)
 
   return (
     <View className="gap-3">
@@ -679,7 +684,7 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
             )}
             <Text className="text-sm font-semibold text-foreground">Next Month Forecast</Text>
           </View>
-          <Text className="text-2xl font-bold text-foreground">{forecast.nextMonth} credits</Text>
+          <Text className="text-2xl font-bold text-foreground">{formatDollarCost(forecast.nextMonth)}</Text>
           <Text className={cn(
             'text-xs mt-0.5',
             forecast.trend === 'increasing' ? 'text-red-400' : forecast.trend === 'decreasing' ? 'text-green-400' : 'text-muted-foreground',
@@ -693,7 +698,12 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
       {/* Daily cost bars */}
       <Card>
         <CardContent className="p-3">
-          <Text className="text-sm font-semibold text-foreground mb-3">Daily Costs</Text>
+          <View className="mb-3">
+            <Text className="text-sm font-semibold text-foreground">Daily Costs</Text>
+            <Text className="text-[10px] text-muted-foreground">
+              Bars are relative to the highest day in this period ({maxCostLabel}).
+            </Text>
+          </View>
           <View className="gap-1">
             {trends.slice(-14).map((point) => {
               const barWidth = Math.max((point.totalCost / maxCost) * 100, 2)
@@ -708,7 +718,7 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
                     />
                   </View>
                   <Text className="text-[9px] font-medium text-foreground w-14 text-right">
-                    {point.totalCost.toFixed(1)} cr
+                    {formatDollarCost(point.totalCost)}
                   </Text>
                 </View>
               )

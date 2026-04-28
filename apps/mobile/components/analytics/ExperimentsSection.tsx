@@ -13,11 +13,12 @@
  */
 
 import { useState } from 'react'
-import { View, Text, TextInput, ActivityIndicator } from 'react-native'
+import { View, Text, TextInput, ActivityIndicator, Pressable } from 'react-native'
 import { FlaskConical, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
 import {
+  formatDollarCost,
   formatDuration,
   getModelColor,
   getModelDisplayName,
@@ -48,6 +49,26 @@ interface ExperimentsSectionProps {
   onRefresh: () => void
   postCostAnalytics: <T>(endpoint: string, body: Record<string, unknown>) => Promise<T>
 }
+
+const SUPPORTED_AGENT_TYPES = [
+  'explore',
+  'general-purpose',
+  'code-reviewer',
+  'browser',
+  'browser_qa',
+  'integration',
+  'channel',
+  'media',
+  'devops',
+] as const
+
+const MODEL_OPTIONS = [
+  'claude-haiku-4-5',
+  'claude-sonnet-4-6',
+  'claude-opus-4-7',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+] as const
 
 export function ExperimentsSection({
   data,
@@ -110,7 +131,7 @@ export function ExperimentsSection({
             <FlaskConical size={24} className="text-muted-foreground mb-2" />
             <Text className="text-sm font-medium text-foreground mb-1">No experiments</Text>
             <Text className="text-xs text-muted-foreground text-center max-w-[280px] mb-3">
-              A/B test different models on the same agent type. Compare cost, quality, and latency side by side.
+              A/B test different models on the same built-in subagent. Only future matching subagent runs are counted.
             </Text>
             <Button variant="outline" onPress={() => setShowCreate(true)}>
               <View className="flex-row items-center gap-1.5">
@@ -123,7 +144,7 @@ export function ExperimentsSection({
       ) : (
         <>
           {experiments.map((exp) => {
-            const isRunning = exp.status === 'running'
+            const isRunning = exp.status === 'running' || exp.status === 'shadow'
             const totalRuns = exp.totalRunsA + exp.totalRunsB
             const totalCost = exp.totalCostA + exp.totalCostB
             const costPerRunA = exp.totalRunsA > 0 ? (exp.totalCostA / exp.totalRunsA) : 0
@@ -148,8 +169,13 @@ export function ExperimentsSection({
                   </View>
 
                   <Text className="text-[10px] text-muted-foreground mb-2">
-                    Agent: {exp.agentType} · {totalRuns} total runs · {totalCost.toFixed(1)} credits
+                    Agent: {exp.agentType} · {totalRuns} total runs · {formatDollarCost(totalCost)}
                   </Text>
+                  {totalRuns === 0 && (
+                    <Text className="text-[10px] text-muted-foreground mb-2">
+                      No matching subagent runs recorded yet. Main chat runs do not count, and completed experiments no longer collect results.
+                    </Text>
+                  )}
 
                   <View className="flex-row gap-2">
                     <ExperimentVariantCard
@@ -195,6 +221,9 @@ export function ExperimentsSection({
         <Card>
           <CardContent className="p-3 gap-3">
             <Text className="text-sm font-semibold text-foreground">New A/B Experiment</Text>
+            <Text className="text-[10px] text-muted-foreground">
+              Experiments route future built-in subagent runs only. Main chat model routing is not affected.
+            </Text>
             <TextInput
               className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
               placeholder="Experiment name"
@@ -209,22 +238,38 @@ export function ExperimentsSection({
               value={formAgent}
               onChangeText={setFormAgent}
             />
+            <OptionRow
+              values={SUPPORTED_AGENT_TYPES}
+              selected={formAgent}
+              onSelect={setFormAgent}
+              formatLabel={(value) => value}
+            />
             <View className="flex-row gap-2">
               <TextInput
                 className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground flex-1"
-                placeholder="Model A (e.g. opus)"
+                placeholder="Model A (e.g. claude-haiku-4-5)"
                 placeholderTextColor="#888"
                 value={formModelA}
                 onChangeText={setFormModelA}
               />
               <TextInput
                 className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground flex-1"
-                placeholder="Model B (e.g. sonnet)"
+                placeholder="Model B (e.g. claude-sonnet-4-6)"
                 placeholderTextColor="#888"
                 value={formModelB}
                 onChangeText={setFormModelB}
               />
             </View>
+            <OptionRow
+              values={MODEL_OPTIONS}
+              selected={formModelA}
+              onSelect={setFormModelA}
+            />
+            <OptionRow
+              values={MODEL_OPTIONS}
+              selected={formModelB}
+              onSelect={setFormModelB}
+            />
             <View className="flex-row gap-2">
               <Button variant="outline" onPress={() => setShowCreate(false)} className="flex-1">
                 <Text className="text-sm font-medium text-foreground">Cancel</Text>
@@ -238,6 +283,40 @@ export function ExperimentsSection({
           </CardContent>
         </Card>
       )}
+    </View>
+  )
+}
+
+function OptionRow({
+  values,
+  selected,
+  onSelect,
+  formatLabel = getModelDisplayName,
+}: {
+  values: readonly string[]
+  selected: string
+  onSelect: (value: string) => void
+  formatLabel?: (value: string) => string
+}) {
+  return (
+    <View className="flex-row flex-wrap gap-1">
+      {values.map(value => {
+        const isSelected = selected === value
+        return (
+          <Pressable
+            key={value}
+            onPress={() => onSelect(value)}
+            className={cn(
+              'px-2 py-1 rounded-md border',
+              isSelected ? 'bg-primary/10 border-primary/40' : 'bg-muted/30 border-border',
+            )}
+          >
+            <Text className={cn('text-[10px]', isSelected ? 'text-primary' : 'text-muted-foreground')}>
+              {formatLabel(value)}
+            </Text>
+          </Pressable>
+        )
+      })}
     </View>
   )
 }
@@ -269,8 +348,8 @@ function ExperimentVariantCard({
       </View>
       <View className="gap-0.5">
         <Text className="text-[10px] text-foreground">{runs} runs</Text>
-        <Text className="text-[10px] text-foreground">{cost.toFixed(1)} cr total</Text>
-        <Text className="text-[10px] text-foreground">{costPerRun.toFixed(2)} cr/run</Text>
+        <Text className="text-[10px] text-foreground">{formatDollarCost(cost)} total</Text>
+        <Text className="text-[10px] text-foreground">{formatDollarCost(costPerRun)}/run</Text>
         <Text className="text-[10px] text-foreground">{successRate.toFixed(1)}% success</Text>
         <Text className="text-[10px] text-foreground">{formatDuration(latency)} avg</Text>
       </View>
