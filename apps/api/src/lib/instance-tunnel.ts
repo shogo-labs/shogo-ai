@@ -31,6 +31,40 @@ interface CancelMessage {
 
 type IncomingMessage = TunnelRequest | CancelMessage | { type: 'ping' } | { type: string }
 
+type TunnelWebSocketInit = {
+  headers: Record<string, string>
+}
+
+type TunnelWebSocketConstructor = new (url: string, init: TunnelWebSocketInit) => WebSocket
+
+type RuntimeWithBunWebSocketHeaders = typeof globalThis & {
+  Bun?: unknown
+  process?: {
+    versions?: {
+      bun?: string
+    }
+  }
+}
+
+type HeartbeatResponse = {
+  instanceId?: string
+  nextPollIn: number
+  wsRequested: boolean
+  wsUrl?: string
+}
+
+export class TunnelWebSocketHeaderSupportError extends Error {
+  code = 'TUNNEL_WS_HEADERS_UNSUPPORTED' as const
+
+  constructor() {
+    super(
+      'Tunnel WebSocket auth requires Bun WebSocket header support. ' +
+        'This runtime does not advertise Bun, so Authorization headers may be dropped.'
+    )
+    this.name = 'TunnelWebSocketHeaderSupportError'
+  }
+}
+
 const DEFAULT_POLL_INTERVAL_S = 60
 const AUTH_FAILURE_BACKOFF_S = 300 // 5 min once we hit AUTH_FAILURE_THRESHOLD consecutive 401/403s
 const AUTH_FAILURE_THRESHOLD = 3
@@ -126,6 +160,25 @@ function getCloudUrl(): string {
   return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
 }
 
+function supportsWebSocketConstructorHeaders(
+  runtime: RuntimeWithBunWebSocketHeaders = globalThis as RuntimeWithBunWebSocketHeaders,
+): boolean {
+  return typeof runtime.Bun !== 'undefined' || typeof runtime.process?.versions?.bun === 'string'
+}
+
+function createTunnelWebSocket(
+  url: string,
+  init: TunnelWebSocketInit,
+  runtime: RuntimeWithBunWebSocketHeaders = globalThis as RuntimeWithBunWebSocketHeaders,
+): WebSocket {
+  if (!supportsWebSocketConstructorHeaders(runtime)) {
+    throw new TunnelWebSocketHeaderSupportError()
+  }
+
+  const WebSocketCtor = WebSocket as unknown as TunnelWebSocketConstructor
+  return new WebSocketCtor(url, init)
+}
+
 /**
  * Resolve the base URL to use for the on-demand tunnel WebSocket.
  *
@@ -185,7 +238,7 @@ async function collectMetadata(): Promise<Record<string, unknown>> {
 
 // ─── HTTP Heartbeat Loop ────────────────────────────────────────────────────
 
-async function sendHeartbeat(): Promise<{ nextPollIn: number; wsRequested: boolean; wsUrl?: string }> {
+async function sendHeartbeat(): Promise<HeartbeatResponse> {
   const cloudUrl = getCloudUrl()
   const key = process.env.SHOGO_API_KEY!
   const metadata = await collectMetadata()
@@ -209,7 +262,7 @@ async function sendHeartbeat(): Promise<{ nextPollIn: number; wsRequested: boole
     throw new Error(`Heartbeat failed: HTTP ${resp.status}`)
   }
 
-  const data = await resp.json() as { nextPollIn: number; wsRequested: boolean; wsUrl?: string }
+  const data = await resp.json() as HeartbeatResponse
 
   // Cache the server-published tunnel WS URL so connectWs() picks it up
   // without a second round-trip. Treat empty / falsy as "no override".
@@ -445,8 +498,7 @@ function connectWs() {
 
   let socket: WebSocket
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    socket = new (WebSocket as any)(url, wsInit) as WebSocket
+    socket = createTunnelWebSocket(url, wsInit)
   } catch (err: any) {
     console.error(`[InstanceTunnel] WebSocket creation failed: ${err.message}`)
     ws = null
@@ -572,6 +624,8 @@ export const _testing = {
   connectWs,
   cleanupWs,
   getCloudUrl,
+  supportsWebSocketConstructorHeaders,
+  createTunnelWebSocket,
   getWsBaseUrl,
   buildWsUrl,
   getReconnectDelay,
