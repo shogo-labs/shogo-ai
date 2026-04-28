@@ -954,7 +954,23 @@ export interface SecurityPrefs {
   approvalTimeoutSeconds?: number
 }
 
-export function getOnboardingMessage(templateName: string): string {
+const TEMPLATE_ONBOARDING_MESSAGES: Record<string, string> = {
+  'equity-research-terminal':
+    'The "Equity Research Terminal" template has been installed. Start by asking me for the stock, sector, or watchlist I want analyzed, plus my time horizon and risk tolerance. Explain that you can run stock screening, DCF valuation, competitive landscape, and earnings-note workflows, and that you will only use sourced or user-provided market data.',
+  'portfolio-risk-desk':
+    'The "Portfolio Risk Desk" template has been installed. Start portfolio discovery: ask me for my holdings with approximate weights, total portfolio value, time horizon, risk tolerance, account type, and my biggest concern. Explain that you can assess concentration, stress tests, correlations, liquidity, and rebalance ideas, but will not give trade instructions without confirmation.',
+  'technical-quant-lab':
+    'The "Technical Quant Lab" template has been installed. Ask me for the ticker, current position if any, timeframe, and whether I want a technical setup, quant pattern scan, options-signal review, or trade-plan draft. Make clear that signals are hypotheses and must be backed by current/user-provided data.',
+  'dividend-income-builder':
+    'The "Dividend Income Builder" template has been installed. Ask me for my investment amount, monthly income goal, account type, tax bracket if relevant, risk tolerance, and preferred sectors. Explain that you can build dividend candidate lists, safety checks, income projections, and DRIP scenarios from sourced or user-provided data.',
+  'macro-market-briefing':
+    'The "Macro Market Briefing" template has been installed. Ask me for my current holdings or sectors, geographic focus, time horizon, and biggest macro concern. Explain that you can brief rates, inflation, Fed policy, GDP, USD, employment, global risks, sector rotation, and portfolio impact using cited sources.',
+}
+
+export function getOnboardingMessage(templateName: string, templateId?: string): string {
+  if (templateId && TEMPLATE_ONBOARDING_MESSAGES[templateId]) {
+    return TEMPLATE_ONBOARDING_MESSAGES[templateId]
+  }
   return `The "${templateName}" template has been installed. Give me a short summary of what's ready and how to customize it or connect tools. Be concise — a few bullet points max, no walls of text.`
 }
 

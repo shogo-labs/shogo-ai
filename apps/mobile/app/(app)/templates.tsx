@@ -125,7 +125,7 @@ export default observer(function TemplatesPage() {
             template_id: template.id,
             template_name: template.name,
           })
-          const onboardingMessage = getOnboardingMessage(template.name)
+          const onboardingMessage = getOnboardingMessage(template.name, template.id)
           const hasIntegrations = template.integrations && template.integrations.length > 0
           router.push({
             pathname: '/(app)/projects/[id]',

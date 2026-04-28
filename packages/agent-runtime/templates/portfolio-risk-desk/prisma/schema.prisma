@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Portfolio Risk Desk persistence schema.
+// Surfaces fetch from the auto-generated Prisma + SQLite CRUD API.
+// Do not add .data.json mocks to this template.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Holding {
+  id        String   @id @default(cuid())
+  ticker            String
+  name              String
+  weight            String
+  sector            String
+  liquidityRating   String
+  riskNote          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("holdings")
+}
+
+model PortfolioSnapshot {
+  id        String   @id @default(cuid())
+  asOfDate          String
+  totalValue        String
+  cashWeight        String
+  topRisk           String
+  notes             String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([asOfDate])
+  @@map("portfolio_snapshots")
+}
+
+model RiskScenario {
+  id        String   @id @default(cuid())
+  name              String
+  probability       String
+  estimatedDrawdown String
+  affectedHoldings  String
+  mitigation        String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([name])
+  @@map("risk_scenarios")
+}
+
+model CorrelationObservation {
+  id        String   @id @default(cuid())
+  holdingA          String
+  holdingB          String
+  correlation       String
+  period            String
+  interpretation    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([period])
+  @@map("correlation_observations")
+}
+
+model AllocationTarget {
+  id        String   @id @default(cuid())
+  assetClass        String
+  targetWeight      String
+  currentWeight     String
+  rationale         String
+  benchmark         String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("allocation_targets")
+}
+
+model RebalanceAction {
+  id        String   @id @default(cuid())
+  action            String
+  ticker            String
+  targetWeight      String
+  reason            String
+  status            String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([ticker])
+  @@map("rebalance_actions")
+}
+
+model MacroAssumption {
+  id        String   @id @default(cuid())
+  driver            String
+  baseCase          String
+  portfolioImpact   String
+  confidence        String
+  reviewDate        String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("macro_assumptions")
+}

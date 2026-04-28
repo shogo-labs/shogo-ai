@@ -110,6 +110,35 @@ describe('runAgentLoop', () => {
     expect(result.toolCalls.length).toBeGreaterThanOrEqual(1)
   })
 
+  test('emits an explicit final response when the iteration cap stops after tools', async () => {
+    const tracker = new MockToolTracker()
+    const tool = tracker.createTool('read_file', 'Read a file', { content: 'file contents' })
+
+    const mockStream = createMockStreamFn([
+      buildToolUseResponse([{ name: 'read_file', arguments: { path: 'test.txt' }, id: 'toolu_1' }]),
+      buildToolUseResponse([{ name: 'read_file', arguments: { path: 'test.txt' }, id: 'toolu_2' }]),
+    ])
+
+    const streamedText: string[] = []
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Read test.txt',
+      tools: [tool],
+      streamFn: mockStream,
+      maxIterations: 1,
+      onTextDelta: (delta) => streamedText.push(delta),
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toContain('I completed')
+    expect(result.text).toContain('tool call')
+    expect(result.toolCalls).toHaveLength(1)
+    expect(tracker.calls).toHaveLength(1)
+    expect(streamedText.join('')).toContain('I completed')
+  })
+
   test('handles tool execution errors gracefully', async () => {
     const { Type } = await import('@sinclair/typebox')
     const errorTool: import('@mariozechner/pi-agent-core').AgentTool = {

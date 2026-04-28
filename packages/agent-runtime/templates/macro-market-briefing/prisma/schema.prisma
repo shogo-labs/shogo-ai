@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Macro Market Briefing persistence schema.
+// Surfaces fetch from the auto-generated Prisma + SQLite CRUD API.
+// Do not add .data.json mocks to this template.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model MacroIndicator {
+  id        String   @id @default(cuid())
+  name              String
+  latestReading     String
+  trend             String
+  source            String
+  marketImplication String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([name])
+  @@map("macro_indicators")
+}
+
+model PolicyOutlook {
+  id        String   @id @default(cuid())
+  institution       String
+  baseCase          String
+  nextMeeting       String
+  ratePath          String
+  riskToView        String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("policy_outlooks")
+}
+
+model SectorView {
+  id        String   @id @default(cuid())
+  sector            String
+  stance            String
+  cycleRationale    String
+  benefitsFrom      String
+  watchItem         String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([sector])
+  @@map("sector_views")
+}
+
+model GlobalRisk {
+  id        String   @id @default(cuid())
+  name              String
+  region            String
+  probability       String
+  marketChannel     String
+  timeline          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([name])
+  @@map("global_risks")
+}
+
+model PortfolioImpact {
+  id        String   @id @default(cuid())
+  holdingOrSector   String
+  macroDriver       String
+  impact            String
+  action            String
+  confidence        String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("portfolio_impacts")
+}
+
+model ActionPlan {
+  id        String   @id @default(cuid())
+  action            String
+  trigger           String
+  timeframe         String
+  owner             String
+  status            String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([status])
+  @@map("action_plans")
+}
+
+model Briefing {
+  id        String   @id @default(cuid())
+  title             String
+  summary           String
+  keyRisks          String
+  recommendedActions String
+  asOfDate          String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([asOfDate])
+  @@map("briefings")
+}
