@@ -1457,7 +1457,6 @@ model AgentCostMetric {
   loopDetected      Boolean  @default(false)
   escalated         Boolean  @default(false)
   responseEmpty     Boolean  @default(false)
-  userFeedback      String?
   metadata          String?
   createdAt         DateTime @default(now())
 
@@ -1469,7 +1468,6 @@ model AgentCostMetric {
   @@index([agentType])
   @@index([model])
   @@index([createdAt])
-  @@index([userFeedback])
   @@map("agent_cost_metrics")
 }
 
@@ -1565,10 +1563,6 @@ model ModelExperiment {
   hitMaxTurnsB    Int       @default(0)
   responseEmptyA  Int       @default(0)
   responseEmptyB  Int       @default(0)
-  thumbsUpA       Int       @default(0)
-  thumbsUpB       Int       @default(0)
-  thumbsDownA     Int       @default(0)
-  thumbsDownB     Int       @default(0)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

@@ -126,13 +126,10 @@ ALTER TABLE "agent_cost_metrics"
   ADD COLUMN IF NOT EXISTS "hitMaxTurns" BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS "loopDetected" BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS "escalated" BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS "responseEmpty" BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS "userFeedback" TEXT;
+  ADD COLUMN IF NOT EXISTS "responseEmpty" BOOLEAN NOT NULL DEFAULT false;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "agent_cost_metrics_agentRunId_key"
   ON "agent_cost_metrics"("agentRunId");
-CREATE INDEX IF NOT EXISTS "agent_cost_metrics_userFeedback_idx"
-  ON "agent_cost_metrics"("userFeedback");
 
 -- Subagent model overrides ------------------------------------------------------
 CREATE TABLE IF NOT EXISTS "subagent_model_overrides" (

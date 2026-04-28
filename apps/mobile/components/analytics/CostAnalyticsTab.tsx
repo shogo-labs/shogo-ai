@@ -59,8 +59,6 @@ interface AgentBreakdownEntry {
   totalRuns: number
   promiseSuccesses?: number
   qualitySuccesses?: number
-  thumbsUp?: number
-  thumbsDown?: number
   hitMaxTurns?: number
   loopDetected?: number
   escalated?: number
@@ -586,13 +584,12 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                       <MetricPill icon={DollarSign} label="Avg Cost" value={`${entry.avgCostPerRun} cr`} color="text-orange-400" />
                       <MetricPill icon={Zap} label="Tool Calls" value={formatNumber(entry.totalToolCalls)} color="text-purple-400" />
                     </View>
-                    {(entry.loopDetected || entry.hitMaxTurns || entry.escalated || entry.responseEmpty || entry.thumbsDown) ? (
+                    {(entry.loopDetected || entry.hitMaxTurns || entry.escalated || entry.responseEmpty) ? (
                       <View className="flex-row flex-wrap gap-x-3 gap-y-1 mt-2">
                         {entry.loopDetected ? <Text className="text-[10px] text-muted-foreground">Loops: {entry.loopDetected}</Text> : null}
                         {entry.hitMaxTurns ? <Text className="text-[10px] text-muted-foreground">Max-turns: {entry.hitMaxTurns}</Text> : null}
                         {entry.escalated ? <Text className="text-[10px] text-muted-foreground">Escalations: {entry.escalated}</Text> : null}
                         {entry.responseEmpty ? <Text className="text-[10px] text-muted-foreground">Empty: {entry.responseEmpty}</Text> : null}
-                        {entry.thumbsDown ? <Text className="text-[10px] text-muted-foreground">Thumbs-down: {entry.thumbsDown}</Text> : null}
                       </View>
                     ) : null}
                     <Separator className="my-2" />

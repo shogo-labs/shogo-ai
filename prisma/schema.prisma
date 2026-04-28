@@ -1802,7 +1802,7 @@ model AgentCostMetric {
   id                String   @id @default(uuid())
   workspaceId       String
   projectId         String?
-  /// Subagent run id (a-<label>-<hex>) — links to transcript and feedback row.
+  /// Subagent run id (a-<label>-<hex>) — links runtime traces to cost metrics.
   agentRunId        String?  @unique
   agentType         String
   model             String
@@ -1814,7 +1814,7 @@ model AgentCostMetric {
   wallTimeMs        Int      @default(0)
   /// Legacy field — true when the run promise resolved without throwing. Kept for backwards
   /// compatibility but DO NOT use as the primary success signal — use the multi-signal
-  /// columns below + userFeedback. See cost-analytics.service `isQualitySuccess()`.
+  /// columns below. See cost-analytics.service.
   success           Boolean  @default(true)
   /// Run hit the configured maxTurns ceiling without producing a final answer.
   hitMaxTurns       Boolean  @default(false)
@@ -1824,8 +1824,6 @@ model AgentCostMetric {
   escalated         Boolean  @default(false)
   /// Final response was empty / whitespace / "Subagent failed:" prefix.
   responseEmpty     Boolean  @default(false)
-  /// User explicit feedback on this run's output: 'up' | 'down' | null (no signal).
-  userFeedback      String?
   metadata          Json?
   createdAt         DateTime @default(now())
 
@@ -1837,7 +1835,6 @@ model AgentCostMetric {
   @@index([agentType])
   @@index([model])
   @@index([createdAt])
-  @@index([userFeedback])
   @@map("agent_cost_metrics")
 }
 
@@ -1966,10 +1963,6 @@ model ModelExperiment {
   hitMaxTurnsB     Int      @default(0)
   responseEmptyA   Int      @default(0)
   responseEmptyB   Int      @default(0)
-  thumbsUpA        Int      @default(0)
-  thumbsUpB        Int      @default(0)
-  thumbsDownA      Int      @default(0)
-  thumbsDownB      Int      @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

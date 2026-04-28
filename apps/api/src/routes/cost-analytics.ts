@@ -449,36 +449,5 @@ export function costAnalyticsRoutes(): Hono {
     }
   })
 
-  // --------------------------------------------------------------------------
-  // Subagent Run Feedback — Phase 2.2 (boss concern #3: define success)
-  // --------------------------------------------------------------------------
-
-  router.post('/subagent-runs/:agentRunId/feedback', async (c) => {
-    try {
-      const agentRunId = c.req.param('agentRunId')
-      const auth = c.get('auth')
-      if (!auth?.userId) {
-        return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-      }
-      const body = await c.req.json().catch(() => null) as {
-        feedback?: 'up' | 'down' | null
-      } | null
-      if (!body || (body.feedback !== 'up' && body.feedback !== 'down' && body.feedback !== null)) {
-        return c.json({
-          error: { code: 'bad_request', message: "feedback must be 'up', 'down', or null" },
-        }, 400)
-      }
-      const result = await costAnalytics.recordSubagentFeedback(agentRunId, body.feedback)
-      if (!result) {
-        return c.json({
-          error: { code: 'not_found', message: 'No metric row matches that agentRunId' },
-        }, 404)
-      }
-      return c.json({ ok: true })
-    } catch (error: any) {
-      return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
-    }
-  })
-
   return router
 }

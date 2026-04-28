@@ -116,14 +116,14 @@ export interface AgentCostMetricData {
   /**
    * Legacy "didn't throw" signal — kept for back-compat only. The recommendation
    * gate must NOT rely on this alone (boss concern #3). Use the multi-signal
-   * fields below in cost-analytics.service `isQualitySuccess()` instead.
+   * fields below in cost-analytics.service instead.
    */
   success: boolean
   // -------------------------------------------------------------------------
   // Phase 2.1 — multi-signal quality fields. All optional so older runtime
   // versions and the failure path can keep emitting partial data.
   // -------------------------------------------------------------------------
-  /** Subagent run id (a-<label>-<hex>) — links to transcript + feedback row. */
+  /** Subagent run id (a-<label>-<hex>) — links runtime traces to cost metrics. */
   agentRunId?: string
   /** Run hit the configured maxTurns ceiling without producing a final answer. */
   hitMaxTurns?: boolean

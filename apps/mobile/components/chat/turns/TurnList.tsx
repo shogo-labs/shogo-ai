@@ -23,12 +23,6 @@ export interface TurnListProps {
   recentTools?: RecentTool[]
   subagentToolCalls?: ToolCallData[]
   className?: string
-  /**
-   * Phase 2.2 — collects 👍/👎 feedback for completed sub-agent runs.
-   * Forwarded down to the TurnGroup → SubagentPanel for the *latest* turn only
-   * (older turns are kept lean per the memo predicate below).
-   */
-  onSubagentFeedback?: (agentRunId: string, feedback: "up" | "down" | null) => Promise<void>
 }
 
 const EMPTY_SUBAGENTS: SubagentProgress[] = []
@@ -51,7 +45,6 @@ export const TurnList = memo(
     recentTools = EMPTY_RECENT_TOOLS,
     subagentToolCalls,
     className,
-    onSubagentFeedback,
   }: TurnListProps) {
     const turns = useTurnGrouping(messages, isStreaming, subagentToolCalls)
 
@@ -64,7 +57,6 @@ export const TurnList = memo(
             phase={phase}
             activeSubagents={index === turns.length - 1 ? activeSubagents : EMPTY_SUBAGENTS}
             recentTools={index === turns.length - 1 ? recentTools : EMPTY_RECENT_TOOLS}
-            onSubagentFeedback={onSubagentFeedback}
           />
         ))}
       </View>
@@ -77,8 +69,7 @@ export const TurnList = memo(
     prev.activeSubagents === next.activeSubagents &&
     prev.recentTools === next.recentTools &&
     prev.subagentToolCalls === next.subagentToolCalls &&
-    prev.className === next.className &&
-    prev.onSubagentFeedback === next.onSubagentFeedback,
+    prev.className === next.className,
 )
 
 export default TurnList

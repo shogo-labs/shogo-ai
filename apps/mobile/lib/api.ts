@@ -327,14 +327,6 @@ export const api = {
     )
   },
 
-  async submitSubagentFeedback(
-    http: HttpClient,
-    agentRunId: string,
-    feedback: 'up' | 'down' | null,
-  ) {
-    await http.post(`/api/subagent-runs/${encodeURIComponent(agentRunId)}/feedback`, { feedback })
-  },
-
   // ─── Optimizer in Action (Phase 3.3) ─────────────────────────
   // Single-shot dataset for the report surface: which overrides have been
   // applied, what the before/after cost & quality looked like, eval pass-rates
