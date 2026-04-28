@@ -91,6 +91,17 @@ describe('Instance Tunnel Client', () => {
     delete process.env.SHOGO_TUNNEL_WS_URL
   })
 
+  test('fails loudly when runtime does not advertise WebSocket header support', async () => {
+    const mod = await import('../instance-tunnel')
+    const nonBunRuntime = {}
+    expect(mod._testing.supportsWebSocketConstructorHeaders(nonBunRuntime as any)).toBe(false)
+    expect(() =>
+      mod._testing.createTunnelWebSocket('wss://tunnel.test.shogo.ai/api/instances/ws', {
+        headers: { Authorization: 'Bearer shogo_test_key' },
+      }, nonBunRuntime as any),
+    ).toThrow(mod.TunnelWebSocketHeaderSupportError)
+  })
+
   test('cloud-published wsUrl from heartbeat overrides the cloud-derived base', async () => {
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response(JSON.stringify({
@@ -107,7 +118,7 @@ describe('Instance Tunnel Client', () => {
     const mod = await import('../instance-tunnel')
     mod._testing.serverPublishedWsUrl = null
     await mod._testing.sendHeartbeat()
-    expect(mod._testing.serverPublishedWsUrl).toBe('wss://tunnel.test.shogo.ai')
+    expect(mod._testing.serverPublishedWsUrl as string | null).toBe('wss://tunnel.test.shogo.ai')
     expect(mod._testing.buildWsUrl()).toBe('wss://tunnel.test.shogo.ai/api/instances/ws')
   })
 

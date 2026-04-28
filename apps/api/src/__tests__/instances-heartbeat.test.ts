@@ -47,12 +47,16 @@ const mockPrisma = {
 // instances.ts (which transitively imports tunnel-redis).
 process.env.SHOGO_LOCAL_MODE = 'true'
 
+const mockResolveApiKey = mock(async (key: string) => {
+  if (key === 'shogo_valid_key' || key === 'shogo_bearer_key' || key === 'shogo_x_api_key' || key === 'shogo_legacy_key') {
+    return { workspaceId: 'ws-1', userId: 'user-1' }
+  }
+  return null
+})
+
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 mock.module('../routes/api-keys', () => ({
-  resolveApiKey: mock(async (key: string) => {
-    if (key === 'shogo_valid_key') return { workspaceId: 'ws-1', userId: 'user-1' }
-    return null
-  }),
+  resolveApiKey: mockResolveApiKey,
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(async () => {}),
@@ -63,7 +67,7 @@ let currentUser: any = adminUser
 
 // ─── Import after mocks ─────────────────────────────────────────────────────
 
-const { instanceRoutes, _testing } = await import('../routes/instances')
+const { instanceRoutes, authenticateInstanceWs, _testing } = await import('../routes/instances')
 
 function createTestApp() {
   const app = new Hono()
@@ -178,6 +182,113 @@ describe('POST /api/instances/heartbeat', () => {
     const data = await res.json()
     expect(data.wsRequested).toBe(false)
     expect(data.nextPollIn).toBe(_testing.POLL_INTERVAL_IDLE_S)
+  })
+})
+
+describe('authenticateInstanceWs', () => {
+  beforeEach(() => {
+    mockPrisma.instance.upsert.mockReset()
+    mockPrisma.instance.upsert.mockImplementation(() =>
+      Promise.resolve({ ...mockInstance }),
+    )
+    mockResolveApiKey.mockReset()
+    mockResolveApiKey.mockImplementation(async (key: string) => {
+      if (key === 'shogo_valid_key' || key === 'shogo_bearer_key' || key === 'shogo_x_api_key' || key === 'shogo_legacy_key') {
+        return { workspaceId: 'ws-1', userId: 'user-1' }
+      }
+      return null
+    })
+  })
+
+  test('prefers Authorization bearer over x-api-key and legacy query key', async () => {
+    const result = await authenticateInstanceWs(new Request(
+      'https://tunnel.test.shogo.ai/api/instances/ws?key=shogo_legacy_key&hostname=query-host',
+      {
+        headers: {
+          authorization: 'Bearer shogo_bearer_key',
+          'x-api-key': 'shogo_x_api_key',
+        },
+      },
+    ))
+
+    expect(result).toEqual({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    expect(mockResolveApiKey).toHaveBeenCalledTimes(1)
+    expect(mockResolveApiKey).toHaveBeenCalledWith('shogo_bearer_key')
+  })
+
+  test('prefers x-api-key over legacy query key when bearer is absent', async () => {
+    await authenticateInstanceWs(new Request(
+      'https://tunnel.test.shogo.ai/api/instances/ws?key=shogo_legacy_key&hostname=query-host',
+      {
+        headers: {
+          'x-api-key': 'shogo_x_api_key',
+        },
+      },
+    ))
+
+    expect(mockResolveApiKey).toHaveBeenCalledTimes(1)
+    expect(mockResolveApiKey).toHaveBeenCalledWith('shogo_x_api_key')
+  })
+
+  test('legacy query key emits one warning per upgrade', async () => {
+    const originalWarn = console.warn
+    const warn = mock(() => {})
+    console.warn = warn as any
+
+    try {
+      await authenticateInstanceWs(new Request(
+        'https://tunnel.test.shogo.ai/api/instances/ws?key=shogo_legacy_key&hostname=query-host',
+      ))
+    } finally {
+      console.warn = originalWarn
+    }
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain('legacy ?key= query param')
+  })
+
+  test('header identity overrides query identity in instance upsert', async () => {
+    await authenticateInstanceWs(new Request(
+      'https://tunnel.test.shogo.ai/api/instances/ws?hostname=query-host&name=Query%20Name&os=linux&arch=x64',
+      {
+        headers: {
+          authorization: 'Bearer shogo_valid_key',
+          'x-shogo-hostname': 'header-host',
+          'x-shogo-name': 'Header Name',
+          'x-shogo-os': 'darwin',
+          'x-shogo-arch': 'arm64',
+        },
+      },
+    ))
+
+    expect(mockPrisma.instance.upsert).toHaveBeenCalledTimes(1)
+    const args = mockPrisma.instance.upsert.mock.calls[0][0] as any
+    expect(args.where.workspaceId_hostname).toEqual({
+      workspaceId: 'ws-1',
+      hostname: 'header-host',
+    })
+    expect(args.update).toMatchObject({
+      name: 'Header Name',
+      os: 'darwin',
+      arch: 'arm64',
+    })
+    expect(args.create).toMatchObject({
+      workspaceId: 'ws-1',
+      hostname: 'header-host',
+      name: 'Header Name',
+      os: 'darwin',
+      arch: 'arm64',
+    })
+  })
+
+  test('missing key returns null without resolving key or touching DB', async () => {
+    const result = await authenticateInstanceWs(new Request(
+      'https://tunnel.test.shogo.ai/api/instances/ws?hostname=query-host',
+    ))
+
+    expect(result).toBeNull()
+    expect(mockResolveApiKey).not.toHaveBeenCalled()
+    expect(mockPrisma.instance.upsert).not.toHaveBeenCalled()
   })
 })
 
