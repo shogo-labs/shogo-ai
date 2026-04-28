@@ -20,7 +20,12 @@
  */
 
 import { prisma, Prisma } from '../lib/prisma'
-import { MODEL_DOLLAR_COSTS, type ModelName } from '../lib/usage-cost'
+import {
+  MODEL_DOLLAR_COSTS,
+  calculateDollarCost,
+  proxyModelToBillingModel,
+  type ModelName,
+} from '../lib/usage-cost'
 
 // ============================================================================
 // Types
@@ -129,14 +134,32 @@ function periodToDays(period: CostPeriod): number {
 const MODEL_QUALITY_TIER: Record<string, number> = {
   'gpt-5.4-nano': 1,
   haiku: 2,
+  'claude-haiku': 2,
+  'claude-haiku-4-5': 2,
+  'claude-haiku-4-5-20251001': 2,
   'gpt-5.4-mini': 2,
   sonnet: 3,
+  'claude-sonnet': 3,
+  'claude-sonnet-4-6': 3,
   opus: 4,
+  'claude-opus': 4,
+  'claude-opus-4-7': 4,
 }
 
 function getModelCostPerMillionOutput(model: string): number {
-  const costs = MODEL_DOLLAR_COSTS[model as ModelName]
+  const billingModel = proxyModelToBillingModel(model)
+  const costs = MODEL_DOLLAR_COSTS[billingModel as ModelName]
   return costs?.outputPerMillion ?? MODEL_DOLLAR_COSTS.sonnet.outputPerMillion
+}
+
+function recommendationCandidatesForTier(tier: number): string[] {
+  switch (tier) {
+    case 1: return ['gpt-5.4-nano']
+    case 2: return ['claude-haiku-4-5']
+    case 3: return ['claude-sonnet-4-6']
+    case 4: return ['claude-opus-4-7']
+    default: return []
+  }
 }
 
 // ============================================================================
@@ -181,6 +204,7 @@ export async function getAgentCostBreakdown(
     agentType: string
     model: string
     promiseSuccesses: bigint
+    qualitySuccesses: bigint
     thumbsUp: bigint
     thumbsDown: bigint
     hitMaxTurns: bigint
@@ -192,6 +216,14 @@ export async function getAgentCostBreakdown(
       "agentType",
       "model",
       COUNT(*) FILTER (WHERE "success" = true)            AS "promiseSuccesses",
+      COUNT(*) FILTER (
+        WHERE "success" = true
+          AND "hitMaxTurns" = false
+          AND "loopDetected" = false
+          AND "escalated" = false
+          AND "responseEmpty" = false
+          AND COALESCE("userFeedback", '') <> 'down'
+      )                                                   AS "qualitySuccesses",
       COUNT(*) FILTER (WHERE "userFeedback" = 'up')       AS "thumbsUp",
       COUNT(*) FILTER (WHERE "userFeedback" = 'down')     AS "thumbsDown",
       COUNT(*) FILTER (WHERE "hitMaxTurns" = true)        AS "hitMaxTurns",
@@ -212,21 +244,13 @@ export async function getAgentCostBreakdown(
     const totalRuns = g._count._all
     const f = flagsMap.get(flagsKey(g.agentType, g.model))
     const promiseSuccesses = Number(f?.promiseSuccesses ?? 0)
+    const qualitySuccesses = Number(f?.qualitySuccesses ?? 0)
     const thumbsUp = Number(f?.thumbsUp ?? 0)
     const thumbsDown = Number(f?.thumbsDown ?? 0)
     const hitMaxTurns = Number(f?.hitMaxTurns ?? 0)
     const loopDetected = Number(f?.loopDetected ?? 0)
     const escalated = Number(f?.escalated ?? 0)
     const responseEmpty = Number(f?.responseEmpty ?? 0)
-
-    // Quality successes: promise resolved AND none of the bad signals tripped
-    // AND the user didn't thumbs-down. We approximate by subtracting bad signals
-    // from `promiseSuccesses` — a strict server-side conjunction would need
-    // another raw query; the approximation is a tight upper bound on bad runs
-    // (each bad signal could overlap on the same run, so this is a lower bound
-    // on quality successes — which is the safe direction for recommendations).
-    const badRuns = Math.max(hitMaxTurns, loopDetected, escalated, responseEmpty, thumbsDown)
-    const qualitySuccesses = Math.max(0, promiseSuccesses - badRuns)
 
     const totalInputTokens = g._sum.inputTokens ?? 0
     const totalOutputTokens = g._sum.outputTokens ?? 0
@@ -329,9 +353,7 @@ export async function getCostRecommendations(
           || entry.thumbsUpRate >= RECOMMENDATION_THRESHOLDS.thumbsUpRateForDowngrade)
 
     if (downgradeGateOk && currentTier >= 3) {
-      const candidates = Object.entries(MODEL_QUALITY_TIER)
-        .filter(([, tier]) => tier === currentTier - 1)
-        .map(([model]) => model)
+      const candidates = recommendationCandidatesForTier(currentTier - 1)
 
       for (const candidate of candidates) {
         const candidateOutputCost = getModelCostPerMillionOutput(candidate)
@@ -361,9 +383,7 @@ export async function getCostRecommendations(
     // Upgrade signal — too many bad runs.
     if (entry.qualitySuccessRate < RECOMMENDATION_THRESHOLDS.qualitySuccessRateForUpgrade
         && currentTier < 4) {
-      const candidates = Object.entries(MODEL_QUALITY_TIER)
-        .filter(([, tier]) => tier === currentTier + 1)
-        .map(([model]) => model)
+      const candidates = recommendationCandidatesForTier(currentTier + 1)
 
       for (const candidate of candidates) {
         recommendations.push({
@@ -1491,11 +1511,60 @@ export async function recordSubagentFeedback(
 ): Promise<{ ok: true } | null> {
   const metric = await prisma.agentCostMetric.findUnique({ where: { agentRunId } })
   if (!metric) return null
+  const previousFeedback =
+    metric.userFeedback === 'up' || metric.userFeedback === 'down'
+      ? metric.userFeedback
+      : null
   await prisma.agentCostMetric.update({
     where: { agentRunId },
     data: { userFeedback: feedback },
   })
+  await adjustExperimentFeedbackCounters(
+    metric.workspaceId,
+    metric.agentType,
+    metric.model,
+    previousFeedback,
+    feedback,
+  )
   return { ok: true }
+}
+
+async function adjustExperimentFeedbackCounters(
+  workspaceId: string,
+  agentType: string,
+  model: string,
+  previousFeedback: 'up' | 'down' | null,
+  nextFeedback: 'up' | 'down' | null,
+): Promise<void> {
+  if (previousFeedback === nextFeedback) return
+  const upDelta = (nextFeedback === 'up' ? 1 : 0) - (previousFeedback === 'up' ? 1 : 0)
+  const downDelta = (nextFeedback === 'down' ? 1 : 0) - (previousFeedback === 'down' ? 1 : 0)
+  if (upDelta === 0 && downDelta === 0) return
+
+  await prisma.$executeRaw(Prisma.sql`
+    UPDATE "model_experiments" SET
+      "thumbsUpA" = CASE
+        WHEN "modelA" = ${model} THEN GREATEST(0, "thumbsUpA" + ${upDelta})
+        ELSE "thumbsUpA"
+      END,
+      "thumbsDownA" = CASE
+        WHEN "modelA" = ${model} THEN GREATEST(0, "thumbsDownA" + ${downDelta})
+        ELSE "thumbsDownA"
+      END,
+      "thumbsUpB" = CASE
+        WHEN "modelB" = ${model} THEN GREATEST(0, "thumbsUpB" + ${upDelta})
+        ELSE "thumbsUpB"
+      END,
+      "thumbsDownB" = CASE
+        WHEN "modelB" = ${model} THEN GREATEST(0, "thumbsDownB" + ${downDelta})
+        ELSE "thumbsDownB"
+      END,
+      "updatedAt" = NOW()
+    WHERE "workspaceId" = ${workspaceId}
+      AND "agentType" = ${agentType}
+      AND "status" IN ('running', 'shadow')
+      AND ("modelA" = ${model} OR "modelB" = ${model})
+  `)
 }
 
 // ============================================================================
@@ -1618,9 +1687,5 @@ function serverComputeCreditCost(
   outputTokens: number,
   cachedInputTokens: number,
 ): number {
-  const costs = MODEL_DOLLAR_COSTS[model as ModelName] ?? MODEL_DOLLAR_COSTS.sonnet
-  const inputCost = ((inputTokens - cachedInputTokens) * costs.inputPerMillion) / 1_000_000
-  const cachedCost = (cachedInputTokens * (costs.cachedInputPerMillion ?? costs.inputPerMillion)) / 1_000_000
-  const outputCost = (outputTokens * costs.outputPerMillion) / 1_000_000
-  return Math.max(0, inputCost + cachedCost + outputCost)
+  return Math.max(0, calculateDollarCost(model, inputTokens, outputTokens, cachedInputTokens, 0))
 }

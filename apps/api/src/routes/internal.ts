@@ -39,11 +39,12 @@ async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
     if (identity) return true
   }
 
-  if (process.env.SHOGO_LOCAL_MODE === 'true' && projectId) {
+  if (process.env.SHOGO_LOCAL_MODE === 'true') {
     const runtimeToken = c.req.header('x-runtime-token')
     if (runtimeToken) {
-      const { deriveRuntimeToken } = await import('../lib/runtime-token')
-      return runtimeToken === deriveRuntimeToken(projectId)
+      const { verifyRuntimeToken } = await import('../lib/runtime-token')
+      const verified = verifyRuntimeToken(runtimeToken, projectId)
+      return verified.ok && (!projectId || verified.projectId === projectId)
     }
   }
 
