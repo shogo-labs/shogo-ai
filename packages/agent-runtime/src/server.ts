@@ -39,6 +39,7 @@ import {
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
+import { SkillServerManager } from './skill-server-manager'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -2953,6 +2954,65 @@ app.post('/agent/canvas/action', async (c) => {
 })
 
 // =============================================================================
+// Canvas iframe bridge — served live, injected into every workspace HTML
+// response. See packages/agent-runtime/static/canvas-bridge.js for the
+// contract (update toast, theme sync, capability detection, error reporting,
+// canvas-ready handshake). Updates here propagate to every running project on
+// next page load — no template re-seed, no per-project rebuild.
+// =============================================================================
+
+const CANVAS_BRIDGE_URL = '/agent/canvas/bridge.js'
+const CANVAS_BRIDGE_SCRIPT_TAG = `<script src="${CANVAS_BRIDGE_URL}" defer></script>`
+const CANVAS_BRIDGE_PATH = join(__dirname, '..', 'static', 'canvas-bridge.js')
+
+function loadCanvasBridgeSource(): string {
+  try {
+    return readFileSync(CANVAS_BRIDGE_PATH, 'utf-8')
+  } catch (err) {
+    console.warn(`[canvas-bridge] Failed to load ${CANVAS_BRIDGE_PATH}:`, (err as Error).message)
+    // Empty IIFE keeps the route honest (returns 200 with valid JS) even when
+    // the bridge file is missing — the canvas just won't show update toasts.
+    return '/* canvas-bridge.js missing */ (function () {})();\n'
+  }
+}
+
+const CANVAS_BRIDGE_SOURCE = loadCanvasBridgeSource()
+
+app.get(CANVAS_BRIDGE_URL, () => {
+  return new Response(CANVAS_BRIDGE_SOURCE, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  })
+})
+
+/**
+ * Insert the bridge `<script>` tag into a workspace HTML response. The bridge
+ * is the iframe-side counterpart of the agent runtime: it owns the update
+ * toast, the theme bridge, capability detection, and error forwarding. By
+ * injecting at request time we avoid baking those concerns into the user's
+ * `src/main.tsx`, which means runtime changes to the bridge propagate to
+ * every existing project on the next page load.
+ *
+ * Idempotent: skips if the script tag is already present (e.g. some future
+ * template ships it directly).
+ */
+function injectCanvasBridge(html: string): string {
+  if (html.indexOf(CANVAS_BRIDGE_URL) !== -1) return html
+  const lower = html.toLowerCase()
+  const bodyClose = lower.lastIndexOf('</body>')
+  if (bodyClose !== -1) {
+    return html.slice(0, bodyClose) + CANVAS_BRIDGE_SCRIPT_TAG + html.slice(bodyClose)
+  }
+  const htmlClose = lower.lastIndexOf('</html>')
+  if (htmlClose !== -1) {
+    return html.slice(0, htmlClose) + CANVAS_BRIDGE_SCRIPT_TAG + html.slice(htmlClose)
+  }
+  return html + CANVAS_BRIDGE_SCRIPT_TAG
+}
+
+// =============================================================================
 // Static File Serving — workspace Vite build output (dist/) at root
 // =============================================================================
 
@@ -2981,10 +3041,16 @@ app.get('*', (c) => {
   if (existsSync(filePath) && statSync(filePath).isFile()) {
     const ext = extname(filePath).toLowerCase()
     const mime = STATIC_MIME[ext] || 'application/octet-stream'
+    if (ext === '.html') {
+      const html = injectCanvasBridge(readFileSync(filePath, 'utf-8'))
+      return new Response(html, {
+        headers: { 'Content-Type': mime, 'Cache-Control': 'no-cache' },
+      })
+    }
     return new Response(readFileSync(filePath), {
       headers: {
         'Content-Type': mime,
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+        'Cache-Control': 'public, max-age=31536000, immutable',
       },
     })
   }
@@ -2992,7 +3058,8 @@ app.get('*', (c) => {
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
-    return new Response(readFileSync(indexPath), {
+    const html = injectCanvasBridge(readFileSync(indexPath, 'utf-8'))
+    return new Response(html, {
       headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
     })
   }
@@ -3246,9 +3313,25 @@ if (state.isPoolMode && !state.poolAssigned) {
   ensureWorkspaceFiles()
   ensureWorkspaceDeps(WORKSPACE_DIR).then(() => {
     workspaceStatus.depsInstalled = true
-    logTiming('Pool mode: workspace pre-seeded, ready for assignment')
+    logTiming('Pool mode: workspace deps pre-seeded')
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
+  })
+
+  // Pre-warm the skill-server's node_modules in parallel with the workspace
+  // deps copy. This moves the ~270 MB / ~9 s sync cpSync that the gateway
+  // would otherwise do on first /pool/assign into the warm-pod boot phase,
+  // shaving it off the user-perceived assignment latency. Runs in a
+  // microtask so it doesn't block the bind on :8080 any longer than it
+  // already takes — the cpSync is still synchronous, but it's now executed
+  // while the pod is unclaimed, not while a user is waiting.
+  queueMicrotask(() => {
+    try {
+      const copied = SkillServerManager.prewarmDeps(WORKSPACE_DIR)
+      if (copied) logTiming('Pool mode: skill-server deps pre-warmed')
+    } catch (err: any) {
+      console.error('[agent-runtime] Pool skill-server pre-warm failed:', err?.message ?? err)
+    }
   })
 } else {
   // Runs for both normal (non-pool) startup AND self-assigned cold-start pods.

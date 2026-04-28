@@ -334,7 +334,7 @@ export function ConnectToolWidget({
         )}
       >
         {status === "connecting" ? (
-          <Loader2 size={14} className="text-primary-foreground" />
+          <Loader2 size={14} className="text-primary-foreground animate-spin" />
         ) : (
           <ExternalLink size={14} className="text-primary-foreground" />
         )}

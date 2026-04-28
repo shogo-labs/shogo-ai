@@ -101,7 +101,7 @@ export function ToolCallGroup({
         <TransportBadge size="xs" className="mr-1" />
 
         {hasStreaming ? (
-          <Loader2 className="w-3 h-3 text-primary" />
+          <Loader2 className="w-3 h-3 text-primary animate-spin" />
         ) : hasErrors ? (
           <XCircle className="w-3 h-3 text-red-500" />
         ) : allSuccess ? (

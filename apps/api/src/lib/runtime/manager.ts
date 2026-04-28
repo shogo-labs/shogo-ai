@@ -367,12 +367,105 @@ export default defineConfig({
     writeFileSync(join(projectDir, 'src/main.tsx'), `import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { ShogoErrorBoundary } from './ShogoErrorBoundary'
+
+if (typeof window !== 'undefined' && window.parent !== window) {
+  const reportErrorToParent = (error: string, phase = 'runtime') => {
+    try {
+      window.parent.postMessage({ type: 'canvas-error', phase, error }, '*')
+    } catch {}
+  }
+  window.addEventListener('error', (e) => {
+    reportErrorToParent(\`\${e.message}\\n\${e.error?.stack ?? ''}\`.trim())
+  })
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason as { message?: string; stack?: string } | string | undefined
+    const text = typeof r === 'string'
+      ? r
+      : \`\${r?.message ?? String(r)}\\n\${r?.stack ?? ''}\`.trim()
+    reportErrorToParent(text)
+  })
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <ShogoErrorBoundary>
+      <App />
+    </ShogoErrorBoundary>
   </React.StrictMode>,
 )
+`)
+
+    // src/ShogoErrorBoundary.tsx
+    writeFileSync(join(projectDir, 'src/ShogoErrorBoundary.tsx'), `import { Component, type ErrorInfo, type ReactNode } from 'react'
+
+interface Props { children: ReactNode }
+interface State { hasError: boolean; error: Error | null; showDetails: boolean }
+
+function reportToParent(error: string, phase = 'runtime') {
+  if (typeof window === 'undefined' || window.parent === window) return
+  try {
+    window.parent.postMessage({ type: 'canvas-error', phase, error }, '*')
+  } catch {}
+}
+
+export class ShogoErrorBoundary extends Component<Props, State> {
+  state: State = { hasError: false, error: null, showDetails: false }
+
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    const stack = error.stack ?? ''
+    const componentStack = info.componentStack ?? ''
+    reportToParent(\`\${error.message}\\n\${stack}\\n\${componentStack}\`.trim())
+    console.error('[ShogoErrorBoundary]', error, info)
+  }
+
+  handleRetry = () => this.setState({ hasError: false, error: null, showDetails: false })
+  handleReload = () => window.location.reload()
+  toggleDetails = () => this.setState((s) => ({ showDetails: !s.showDetails }))
+
+  render() {
+    if (!this.state.hasError) return this.props.children
+
+    const err = this.state.error
+    const message = err?.message ?? 'Unknown error'
+    const stack = err?.stack ?? ''
+
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: 'var(--background, #fafafa)', color: 'var(--foreground, #111)', boxSizing: 'border-box' }}>
+        <div style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border, #e5e5e5)', borderRadius: 16, padding: 24, background: 'var(--card, #fff)', boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <div aria-hidden style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(245, 158, 11, 0.12)', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 700 }}>!</div>
+            <h1 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Something went wrong</h1>
+          </div>
+          <p style={{ fontSize: 14, lineHeight: 1.5, color: 'var(--muted-foreground, #666)', margin: '0 0 16px 0' }}>
+            The app crashed while rendering. You can try again, or reload the page. Shogo has been notified.
+          </p>
+          <div style={{ fontSize: 13, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', padding: '10px 12px', borderRadius: 8, background: 'var(--muted, #f4f4f5)', color: 'var(--foreground, #111)', marginBottom: 12, wordBreak: 'break-word' }}>
+            {message}
+          </div>
+          {stack && (
+            <>
+              <button type="button" onClick={this.toggleDetails} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: 'var(--muted-foreground, #666)', cursor: 'pointer', marginBottom: 12, textDecoration: 'underline' }}>
+                {this.state.showDetails ? 'Hide details' : 'Show details'}
+              </button>
+              {this.state.showDetails && (
+                <pre style={{ fontSize: 11.5, lineHeight: 1.4, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', padding: 12, borderRadius: 8, background: 'var(--muted, #f4f4f5)', color: 'var(--foreground, #111)', margin: '0 0 16px 0', overflow: 'auto', maxHeight: 240, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{stack}</pre>
+              )}
+            </>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={this.handleRetry} style={{ flex: 1, cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, fontWeight: 600, padding: '10px 16px', borderRadius: 10, border: 'none', background: 'var(--primary, #111)', color: 'var(--primary-foreground, #fff)' }}>Try again</button>
+            <button type="button" onClick={this.handleReload} style={{ flex: 1, cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, fontWeight: 600, padding: '10px 16px', borderRadius: 10, border: '1px solid var(--border, #e5e5e5)', background: 'transparent', color: 'var(--foreground, #111)' }}>Reload</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+}
 `)
 
     // src/App.tsx

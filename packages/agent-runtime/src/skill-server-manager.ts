@@ -504,6 +504,33 @@ export class SkillServerManager {
     console.log(`[${LOG_PREFIX}] Dependencies installed`)
   }
 
+  /**
+   * Pre-copy the skill-server template `node_modules` into a workspace's
+   * `.shogo/server/` directory. Used by warm-pool pods at boot so the heavy
+   * (~270 MB / ~9 s) sync `cpSync` is paid before a project claims the pod
+   * rather than during the user's first chat.
+   *
+   * Idempotent: returns early when `node_modules` already exists or when the
+   * baked-in template is missing (e.g. local dev). Synchronous because
+   * `cpSync` is the only API that copies recursive trees in Node/Bun without
+   * spawning a subprocess.
+   */
+  static prewarmDeps(workspaceDir: string): boolean {
+    const serverDir = join(workspaceDir, '.shogo', 'server')
+    const nodeModules = join(serverDir, 'node_modules')
+    if (existsSync(nodeModules)) return false
+
+    const templateModules = join(SKILL_SERVER_TEMPLATE, 'node_modules')
+    if (!existsSync(templateModules)) return false
+
+    mkdirSync(serverDir, { recursive: true })
+    const start = Date.now()
+    console.log(`[${LOG_PREFIX}] Pre-warming dependencies for warm pool pod...`)
+    cpSync(templateModules, nodeModules, { recursive: true })
+    console.log(`[${LOG_PREFIX}] Pre-warmed dependencies in ${Date.now() - start}ms`)
+    return true
+  }
+
   private runShogoGenerate(): void {
     const cliPath = this.resolveSdkCli()
     const start = Date.now()

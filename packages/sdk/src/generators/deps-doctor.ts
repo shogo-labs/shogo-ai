@@ -43,8 +43,13 @@ export interface DepsDoctorFeatures {
  */
 export const FEATURE_DEPS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   voice: {
-    '@elevenlabs/react': '^0.10.0',
-    '@elevenlabs/client': '^0.10.0',
+    // 1.1+ is required because `useConversation` now lives behind
+    // `<ConversationProvider>` (which the SDK surfaces as
+    // `<ShogoVoiceProvider>`). Older 0.x versions don't ship the
+    // provider symbol and would crash the generated `VoiceButton` /
+    // `VoiceSphere` at mount time.
+    '@elevenlabs/react': '^1.1.1',
+    '@elevenlabs/client': '^1.1.1',
   },
 }
 

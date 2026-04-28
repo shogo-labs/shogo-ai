@@ -656,13 +656,31 @@ export class AgentGateway {
 
     // Start canvas build manager for Vite builds (fire-and-forget)
     if (this.config.canvasMode === 'code') {
+      // Self-heal: ensure src/main.tsx matches the canonical slim version.
+      // Older workspaces baked the iframe bridge (toast / theme / SSE / error
+      // forwarding) into main.tsx; that's now served live from
+      // /agent/canvas/bridge.js, so the user-bundled file should only render
+      // <App />. If it has drifted, rewrite it before kicking off the build.
+      let needsRebuild = false
+      try {
+        const { migrateRuntimeTemplate } = require('./canvas-bridge-migration')
+        const result = migrateRuntimeTemplate(this.workspaceDir)
+        if (result.rewrote) needsRebuild = true
+      } catch (err) {
+        console.warn(`${this.logPrefix} Canvas bridge migration failed (non-fatal):`, (err as Error).message)
+      }
+
       const watcher = this.canvasFileWatcher
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
         onBuildComplete: () => watcher.broadcastReload(),
         onBuildError: (err) => console.error(`${this.logPrefix} Canvas build error:`, err),
       })
       watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
-      this.canvasBuildManager.start().catch(err => {
+      this.canvasBuildManager.start().then(() => {
+        // If the migration rewrote main.tsx, queue a rebuild so the slim
+        // version replaces the stale dist/ output.
+        if (needsRebuild) this.canvasBuildManager?.triggerRebuild()
+      }).catch(err => {
         console.warn(`${this.logPrefix} Canvas build manager startup failed (non-fatal):`, err.message)
       })
     }

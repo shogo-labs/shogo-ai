@@ -14,6 +14,7 @@ import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname, relative } from 'path'
 import { execSync } from 'child_process'
+import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, shouldSandbox } from './sandbox-exec'
@@ -157,6 +158,21 @@ function isBlockedCommand(command: string): boolean {
 
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   return assertWithinWorkspaceSecure(workspaceDir, filePath)
+}
+
+/**
+ * Block mutations to Shogo-managed files when the project is in canvas-code
+ * mode. In every other mode (chat, app, json-canvas, etc.) the gate is a
+ * no-op — agents can edit any file freely. See protected-files.ts for the
+ * full rationale and the canonical list of locked paths.
+ *
+ * Returns a rejection AgentToolResult to bail out of the calling tool, or
+ * null if the write is allowed to proceed.
+ */
+function rejectIfProtected(ctx: ToolContext, resolved: string): AgentToolResult<any> | null {
+  if (ctx.config?.canvasMode !== 'code') return null
+  if (!isProtectedFile(ctx.workspaceDir, resolved)) return null
+  return textResult({ error: PROTECTED_FILE_REJECTION })
 }
 
 const LINTABLE_EXTENSION_RE = /\.(ts|tsx|js|jsx|py)$/
@@ -487,6 +503,8 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         append?: boolean
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const protectedRejection = rejectIfProtected(ctx, resolved)
+      if (protectedRejection) return protectedRejection
       const dir = dirname(resolved)
       if (dir && dir !== resolved) mkdirSync(dir, { recursive: true })
 
@@ -818,6 +836,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'old_string and new_string must differ' })
       }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const protectedRejection = rejectIfProtected(ctx, resolved)
+      if (protectedRejection) return protectedRejection
 
       // Jupyter notebook redirect
       if (filePath.endsWith('.ipynb')) {
@@ -4042,6 +4062,8 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
       if (!resolved.startsWith(resolve(filesDir))) {
         return textResult({ error: 'Path outside files directory' })
       }
+      const protectedRejection = rejectIfProtected(ctx, resolved)
+      if (protectedRejection) return protectedRejection
       if (!existsSync(resolved)) {
         return textResult({ error: `File not found: ${filePath}` })
       }
