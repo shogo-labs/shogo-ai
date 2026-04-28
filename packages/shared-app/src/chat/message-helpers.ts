@@ -33,6 +33,10 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   pod_unavailable: "We're having trouble starting your project environment. Please try again in a moment.",
   rate_limit_exceeded: "You're sending messages too quickly. Please wait a moment and try again.",
   usage_limit_reached: "Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.",
+  // `insufficient_credits` is kept as a legacy alias of `usage_limit_reached`
+  // so older clients (mobile builds shipped before the Cursor-style per-seat
+  // migration) still render a friendly message when the API surfaces the old
+  // error code. New code should emit `usage_limit_reached`.
   insufficient_credits: "Usage limit reached. Enable usage-based pricing, upgrade your plan, or check your AI provider settings.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',

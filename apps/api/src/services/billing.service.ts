@@ -3,8 +3,11 @@
 /**
  * Billing Service — USD usage wallet + Stripe metered overage.
  *
- * Replaces the legacy credit-based ledger. Spend is tracked in USD; every
- * action charges raw provider cost times `MARKUP_MULTIPLIER` (Cursor-style).
+ * The product sells flat per-seat plans modeled on Cursor.com:
+ *   - Basic    $8/mo   single user, $5 of usage included
+ *   - Pro      $20/seat/mo, $20 of usage included per seat
+ *   - Business $40/seat/mo, $40 of usage included per seat
+ * Every action charges `provider_raw_cost * MARKUP_MULTIPLIER` (1.20).
  * Deduction order: daily included -> monthly included -> overage.
  *
  * Overage is opt-in per workspace. When enabled, marked-up USD beyond
@@ -21,8 +24,6 @@ import {
   getMonthlyIncludedForPlan,
 } from '../config/usage-plans';
 import { getOveragePriceConfig } from '../config/stripe-prices';
-import { USAGE_OVERAGE_METERING_ENABLED } from '../config/feature-flags';
-
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
@@ -52,18 +53,12 @@ export async function getSubscriptions(workspaceId: string) {
 
 /**
  * Get USD usage wallet for a workspace.
- *
- * Kept under the legacy name `getCreditLedger` as a thin compat alias below
- * so external callers don't break during the rollout.
  */
 export async function getUsageWallet(workspaceId: string) {
   return prisma.usageWallet.findUnique({
     where: { workspaceId },
   });
 }
-
-/** @deprecated Use getUsageWallet. */
-export const getCreditLedger = getUsageWallet;
 
 /**
  * Allocate free-tier wallet for a new workspace (daily included, no monthly).
@@ -88,19 +83,20 @@ export async function allocateFreeWallet(workspaceId: string) {
   });
 }
 
-/** @deprecated Use allocateFreeWallet. */
-export const allocateFreeCredits = allocateFreeWallet;
 
 /**
- * Allocate the monthly included USD for a subscription plan. Resets
- * accumulated overage so the upcoming period starts clean (the flushed
- * overage should have already been reported to Stripe by `consumeUsage`).
+ * Allocate the monthly included USD for a subscription plan and seat count.
+ * `seats` is the number of paying seats on the subscription (Pro/Business
+ * are per-seat plans; Basic is always 1). Resets accumulated overage so the
+ * upcoming period starts clean (any flushed overage should have already
+ * been reported to Stripe by `consumeUsage`).
  */
 export async function allocateMonthlyIncluded(
   workspaceId: string,
   planId: string,
+  seats: number = 1,
 ) {
-  const monthlyIncludedUsd = getMonthlyIncludedForPlan(planId);
+  const monthlyIncludedUsd = getMonthlyIncludedForPlan(planId, seats);
   const now = new Date();
 
   return prisma.usageWallet.upsert({
@@ -122,9 +118,6 @@ export async function allocateMonthlyIncluded(
     },
   });
 }
-
-/** @deprecated Use allocateMonthlyIncluded. */
-export const allocateMonthlyCredits = allocateMonthlyIncluded;
 
 /**
  * Check if workspace has an active paid subscription (pro, business, enterprise).
@@ -215,8 +208,6 @@ export async function hasBalance(
   return included + overageRoom >= minimumRequiredUsd;
 }
 
-/** @deprecated Use hasBalance. Legacy credit name. */
-export const hasCredits = hasBalance;
 
 function isNewMonth(now: Date, lastMonthlyReset: Date): boolean {
   return now.getUTCMonth() !== lastMonthlyReset.getUTCMonth() ||
@@ -486,12 +477,6 @@ export async function reportOverageToStripe(
 ) {
   if (amountUsd <= 0) return
 
-  if (!USAGE_OVERAGE_METERING_ENABLED) {
-    // Feature flag off during staged rollout: keep the overage in
-    // `overageAccumulatedUsd` so a later reconciler can flush it.
-    return
-  }
-
   const stripeKey = process.env.STRIPE_SECRET_KEY
   if (!stripeKey) {
     console.warn('[billing] STRIPE_SECRET_KEY unset; skipping overage report')
@@ -565,12 +550,15 @@ export async function syncFromStripe(data: {
   stripeCustomerId: string;
   workspaceId: string;
   planId: string;
+  /** Number of paying seats. Defaults to 1. Basic is always 1. */
+  seats?: number;
   status: SubscriptionStatus;
   billingInterval: BillingInterval;
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
   cancelAtPeriodEnd?: boolean;
 }) {
+  const seats = Math.max(1, Math.floor(data.seats ?? 1));
   return prisma.subscription.upsert({
     where: { workspaceId: data.workspaceId },
     create: {
@@ -578,6 +566,7 @@ export async function syncFromStripe(data: {
       stripeSubscriptionId: data.stripeSubscriptionId,
       stripeCustomerId: data.stripeCustomerId,
       planId: data.planId,
+      seats,
       status: data.status,
       billingInterval: data.billingInterval,
       currentPeriodStart: data.currentPeriodStart,
@@ -588,6 +577,7 @@ export async function syncFromStripe(data: {
       stripeSubscriptionId: data.stripeSubscriptionId,
       stripeCustomerId: data.stripeCustomerId,
       planId: data.planId,
+      seats,
       status: data.status,
       billingInterval: data.billingInterval,
       currentPeriodStart: data.currentPeriodStart,

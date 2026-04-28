@@ -32,6 +32,14 @@ const config: Config = {
             from: "/",
             to: "/getting-started/welcome",
           },
+          {
+            from: "/getting-started/plans-and-credits",
+            to: "/getting-started/plans-and-pricing",
+          },
+          {
+            from: "/getting-started/plans-and-usage",
+            to: "/getting-started/plans-and-pricing",
+          },
         ],
       },
     ],
@@ -119,7 +127,7 @@ const config: Config = {
           items: [
             { label: "Website", href: "https://shogo.ai" },
             { label: "App", href: "https://studio.shogo.ai" },
-            { label: "Plans & Pricing", to: "/getting-started/plans-and-credits" },
+            { label: "Plans & Pricing", to: "/getting-started/plans-and-pricing" },
             { label: "FAQ", to: "/getting-started/faq" },
           ],
         },

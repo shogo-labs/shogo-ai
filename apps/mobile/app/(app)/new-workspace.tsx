@@ -3,9 +3,9 @@
 /**
  * NewWorkspacePage - Create a paid workspace
  *
- * Reuses the billing page layout with plan cards, usage tier selectors,
- * and monthly/annual toggle. Adds a workspace name input at the top.
- * On checkout, creates the workspace + Stripe subscription.
+ * Reuses the billing page layout with plan cards, a per-seat counter, and a
+ * monthly/annual toggle. Adds a workspace name input at the top. On
+ * checkout, creates the workspace + Stripe subscription.
  */
 
 import { useState, useCallback } from 'react'
@@ -33,15 +33,14 @@ import { api } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
 import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import {
-  PRO_TIERS,
-  BUSINESS_TIERS,
+  PLAN_PRICING,
+  SEAT_INCLUDED_USD,
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
-  BASE_TIER_INCLUDED_USD,
   formatUsd,
 } from '../../lib/billing-config'
-import { TierSelector } from '../../components/billing/TierSelector'
+import { SeatCounter } from '../../components/billing/SeatCounter'
 import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
@@ -57,33 +56,33 @@ export default function NewWorkspacePage() {
 
   const [workspaceName, setWorkspaceName] = useState('')
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
-  const [selectedProTier, setSelectedProTier] = useState(0)
-  const [selectedBusinessTier, setSelectedBusinessTier] = useState(0)
+  const [proSeats, setProSeats] = useState(1)
+  const [businessSeats, setBusinessSeats] = useState(1)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const proTier = PRO_TIERS[selectedProTier]
-  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+  const proPricing = PLAN_PRICING.pro
+  const businessPricing = PLAN_PRICING.business
 
-  const handleCheckout = useCallback(async (planType: 'pro' | 'business', includedUsd: number) => {
+  const handleCheckout = useCallback(async (planType: 'pro' | 'business', seats: number) => {
     if (!workspaceName.trim() || !user?.id) return
     setIsCheckoutLoading(true)
     setError(null)
     try {
-      const legacyCredits = Math.round(includedUsd * 10)
-      const stripeTierKey = includedUsd >= BASE_TIER_INCLUDED_USD ? Math.round(legacyCredits / 2) : legacyCredits
-      const planId = stripeTierKey === 100 ? planType : `${planType}_${stripeTierKey}`
+      const planId = planType
+      const safeSeats = Math.max(1, Math.floor(seats || 1))
       const isNative = Platform.OS !== 'web'
 
       const redirectBase = isNative
         ? ExpoLinking.createURL('checkout-return')
         : (typeof window !== 'undefined' ? window.location.origin : undefined)
-      console.log('[NewWorkspace] checkout start', { planId, billingInterval, isNative, redirectBase })
-      trackInitiateCheckout({ planId, billingInterval, workspaceId: 'new' })
+      console.log('[NewWorkspace] checkout start', { planId, seats: safeSeats, billingInterval, isNative, redirectBase })
+      trackInitiateCheckout({ planId, billingInterval, seats: safeSeats, workspaceId: 'new' })
 
       const data = await api.createWorkspaceCheckout(http, {
         workspaceName: workspaceName.trim(),
         planId,
+        seats: safeSeats,
         billingInterval,
         userId: user.id,
         userEmail: user.email ?? undefined,
@@ -118,7 +117,13 @@ export default function NewWorkspacePage() {
                 try {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[NewWorkspace] verify result:', verifyResult)
-                  trackPurchase({ planId: verifyResult.planId, billingInterval, workspaceId: verifyResult.workspaceId ?? wsId ?? undefined, sessionId })
+                  trackPurchase({
+                    planId: verifyResult.planId,
+                    billingInterval,
+                    seats: (verifyResult as { seats?: number }).seats ?? safeSeats,
+                    workspaceId: verifyResult.workspaceId ?? wsId ?? undefined,
+                    sessionId,
+                  })
                 } catch (verifyErr) {
                   console.warn('[NewWorkspace] verify failed (webhook will handle):', verifyErr)
                 }
@@ -243,28 +248,30 @@ export default function NewWorkspacePage() {
               <View>
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12)}
+                    ${billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats)}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  shared across unlimited users
+                  ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
                 </Text>
               </View>
 
               <View>
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly included usage
+                  Seats
                 </Text>
-                <TierSelector
-                  tiers={PRO_TIERS}
-                  selectedIndex={selectedProTier}
-                  onSelect={setSelectedProTier}
+                <SeatCounter
+                  value={proSeats}
+                  onChange={setProSeats}
+                  min={1}
+                  max={500}
+                  label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
                 />
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('pro', proTier.includedUsd)}
+                onPress={() => handleCheckout('pro', proSeats)}
                 disabled={isCheckoutLoading || !nameValid}
                 className={cn(
                   'w-full items-center justify-center py-3 rounded-md',
@@ -281,7 +288,7 @@ export default function NewWorkspacePage() {
 
               <View className="gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(proTier.includedUsd)} of usage / month
+                  {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
                 </Text>
                 <Text className="text-sm text-muted-foreground">
                   All features in Free, plus:
@@ -312,29 +319,30 @@ export default function NewWorkspacePage() {
               <View>
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12)}
+                    ${billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats)}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
                 <Text className="text-sm text-muted-foreground">
-                  shared across unlimited users
+                  ${businessPricing.monthly}/seat × {businessSeats} seat{businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage
                 </Text>
               </View>
 
               <View>
                 <Text className="text-sm font-medium text-foreground mb-2">
-                  Monthly included usage (per seat)
+                  Seats
                 </Text>
-                <TierSelector
-                  tiers={BUSINESS_TIERS}
-                  selectedIndex={selectedBusinessTier}
-                  onSelect={setSelectedBusinessTier}
-                  suffix=" / seat"
+                <SeatCounter
+                  value={businessSeats}
+                  onChange={setBusinessSeats}
+                  min={1}
+                  max={500}
+                  label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
                 />
               </View>
 
               <Pressable
-                onPress={() => handleCheckout('business', businessTier.includedUsd)}
+                onPress={() => handleCheckout('business', businessSeats)}
                 disabled={isCheckoutLoading || !nameValid}
                 className={cn(
                   'w-full items-center justify-center py-3 rounded-md',
@@ -351,7 +359,7 @@ export default function NewWorkspacePage() {
 
               <View className="gap-2">
                 <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(businessTier.includedUsd)} of usage / seat / month
+                  {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
                 </Text>
                 <FeatureList features={BUSINESS_FEATURES} />
               </View>

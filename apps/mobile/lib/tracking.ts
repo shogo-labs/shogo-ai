@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
-import { PRO_TIERS, BUSINESS_TIERS, type PriceTier } from './billing-config'
+import { PLAN_PRICING } from './billing-config'
 
 declare global {
   interface Window {
@@ -48,28 +48,32 @@ export function trackLogin(method: 'email' | 'google') {
   gtag('event', 'login', { method })
 }
 
-export function lookupPlanValue(planId: string, billingInterval: string): number | undefined {
+/**
+ * Look up the per-subscription dollar value for analytics.
+ * For per-seat plans (Pro/Business), pass `seats` to get the total cost.
+ */
+export function lookupPlanValue(
+  planId: string,
+  billingInterval: string,
+  seats: number = 1,
+): number | undefined {
   const isAnnual = billingInterval === 'annual'
-  const match = planId.match(/^(pro|business)(?:_(\d+))?$/)
-  if (!match) return undefined
-
-  const planType = match[1] as 'pro' | 'business'
-  const legacyCredits = match[2] ? parseInt(match[2], 10) : 100
-  const includedUsd = legacyCredits / 10
-  const tiers: PriceTier[] = planType === 'pro' ? PRO_TIERS : BUSINESS_TIERS
-  const tier = tiers.find((t) => t.includedUsd === includedUsd)
-  if (!tier) return undefined
-
-  return isAnnual ? tier.annual : tier.monthly
+  const base = planId.split('_')[0]
+  if (base !== 'basic' && base !== 'pro' && base !== 'business') return undefined
+  const pricing = PLAN_PRICING[base as 'basic' | 'pro' | 'business']
+  const safeSeats = pricing.perSeat ? Math.max(1, Math.floor(seats || 1)) : 1
+  const unit = isAnnual ? pricing.annual : pricing.monthly
+  return unit * safeSeats
 }
 
 export function trackInitiateCheckout(params: {
   planId: string
   billingInterval: string
+  seats?: number
   value?: number
   workspaceId?: string
 }) {
-  const value = params.value ?? lookupPlanValue(params.planId, params.billingInterval)
+  const value = params.value ?? lookupPlanValue(params.planId, params.billingInterval, params.seats)
   const eventId = generateEventId('checkout')
 
   fbq('track', 'InitiateCheckout', {
@@ -98,13 +102,14 @@ export function trackInitiateCheckout(params: {
 export function trackPurchase(params: {
   planId?: string
   billingInterval?: string
+  seats?: number
   value?: number
   workspaceId?: string
   sessionId?: string
 }) {
   const value = params.value ??
     (params.planId && params.billingInterval
-      ? lookupPlanValue(params.planId, params.billingInterval)
+      ? lookupPlanValue(params.planId, params.billingInterval, params.seats)
       : undefined)
   const eventId = params.sessionId ?? generateEventId('purchase')
 

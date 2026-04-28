@@ -64,18 +64,25 @@ export function createHttpClient(baseUrl?: string): HttpClient {
 export interface CheckoutParams {
   workspaceId: string
   planId: string
+  /** Seat count. Basic = 1, Pro/Business >= 1. Defaults to 1 when omitted. */
+  seats?: number
   billingInterval: 'monthly' | 'annual'
   userEmail?: string
   referralId?: string
+  successUrl?: string
+  cancelUrl?: string
 }
 
 export interface WorkspaceCheckoutParams {
   workspaceName: string
   planId: string
+  seats?: number
   billingInterval: 'monthly' | 'annual'
   userId: string
   userEmail?: string
   referralId?: string
+  successUrl?: string
+  cancelUrl?: string
 }
 
 export interface RegionalCurrencyInfo {
@@ -143,7 +150,7 @@ export const api = {
   },
 
   async verifyCheckout(http: HttpClient, sessionId: string) {
-    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string }>('/api/billing/verify-checkout', { sessionId })
+    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string; seats?: number }>('/api/billing/verify-checkout', { sessionId })
     return res.data
   },
 

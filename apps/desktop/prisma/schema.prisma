@@ -368,6 +368,8 @@ model Subscription {
   stripeSubscriptionId String   @unique
   stripeCustomerId     String
   planId               String
+  // Number of paying seats. Basic is always 1; Pro/Business are per-seat.
+  seats                Int      @default(1)
   status               String
   billingInterval      String
   currentPeriodStart   DateTime

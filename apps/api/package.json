@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "cd ../.. && bun scripts/watch-api.ts",
     "start": "bun --env-file=../../.env.local src/entry.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "stripe:sync-copy": "bun --env-file=../../.env.local scripts/update-stripe-product-copy.ts",
+    "stripe:migrate-tiers": "bun --env-file=../../.env.local scripts/migrate-tier-subscriptions.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.37",

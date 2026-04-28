@@ -91,12 +91,12 @@ For complex capabilities, lay out the plan first:
 
 Then work through each step in order, verifying as you go.
 
-## Credit-efficient prompting
+## Usage-efficient prompting
 
-Since credits are based on token usage, longer and more complex interactions cost more:
+Since billing is per-token, longer and more complex interactions cost more:
 
 - **Combine related small changes** — "Change the heartbeat to every 10 minutes, add the staging branch to CI monitoring, and update quiet hours to 11pm-6am" is more efficient than three separate messages.
-- **Be clear the first time** — Spending a moment thinking about your prompt saves credits on back-and-forth corrections.
+- **Be clear the first time** — Spending a moment thinking about your prompt saves usage on back-and-forth corrections.
 - **Use follow-ups wisely** — "Also add..." is often more efficient than describing the whole configuration again.
 
 ## Summary

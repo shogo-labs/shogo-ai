@@ -3,11 +3,10 @@
 /**
  * Unit tests for the USD billing service.
  *
- * Focuses on the new `hasBalance`, `consumeUsage`, and `reportOverageToStripe`
+ * Focuses on the `hasBalance`, `consumeUsage`, and `reportOverageToStripe`
  * code paths — daily -> monthly -> overage deduction order, the lazy daily /
  * monthly reset logic, overage gating + hard-cap enforcement, and the Stripe
- * metered overage reporting (behind the `USAGE_OVERAGE_METERING_ENABLED`
- * feature flag).
+ * metered overage reporting.
  *
  * Prisma is mocked in-memory; Stripe is injected via a synthetic `stripe`
  * module mock so we can assert usage-record + subscription-item creation
@@ -17,12 +16,6 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
-
-// ─── Feature flag mock (metering ON for this suite) ────────────────────
-mock.module('../config/feature-flags', () => ({
-  USAGE_BASED_BILLING_ENABLED: true,
-  USAGE_OVERAGE_METERING_ENABLED: true,
-}))
 
 // ─── Prisma mock ───────────────────────────────────────────────────────
 type Wallet = {
@@ -381,14 +374,10 @@ describe('consumeUsage', () => {
 })
 
 // =============================================================================
-// reportOverageToStripe — feature flag + idempotency
+// reportOverageToStripe — idempotency
 // =============================================================================
 
 describe('reportOverageToStripe', () => {
-  // The `USAGE_OVERAGE_METERING_ENABLED` flag is resolved from env at
-  // feature-flags module-load time, so staging rollout coverage lives in
-  // the feature-flags unit tests. The tests below assume metering ON.
-
   test('no-ops for zero or negative amounts', async () => {
     await billing.reportOverageToStripe('ws1', 0)
     await billing.reportOverageToStripe('ws1', -5)
