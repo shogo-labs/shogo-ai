@@ -558,6 +558,11 @@ export function costAnalyticsRoutes(): Hono {
           error: { code: 'bad_request', message: 'agentType and model are required' },
         }, 400)
       }
+      if (body.agentType === 'main-chat') {
+        return c.json({
+          error: { code: 'bad_request', message: 'main-chat recommendations cannot be applied as sub-agent overrides' },
+        }, 400)
+      }
       const data = await costAnalytics.upsertSubagentOverride(workspaceId, {
         agentType: body.agentType,
         model: body.model,

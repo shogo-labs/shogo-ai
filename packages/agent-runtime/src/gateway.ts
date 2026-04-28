@@ -272,6 +272,11 @@ export class AgentGateway {
     contextWindowTokens: number
     estimatedContextTokens: number
     model: string
+    success: boolean
+    hitMaxTurns: boolean
+    loopDetected: boolean
+    escalated: boolean
+    responseEmpty: boolean
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -2023,6 +2028,7 @@ export class AgentGateway {
       // Store usage for callers (server.ts includes it in the `finish` event)
       const estimatedContextTokens = this.sessionManager.estimateTokens(session)
       const effectiveModel = result.effectiveModelId || modelId
+      const responseEmpty = !result.text || result.text.trim().length === 0
       this._lastTurnUsage = {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
@@ -2033,6 +2039,11 @@ export class AgentGateway {
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
         model: effectiveModel,
+        success: !result.error && !result.maxIterationsExhausted && !result.loopBreak && !responseEmpty,
+        hitMaxTurns: !!result.maxIterationsExhausted,
+        loopDetected: !!result.loopBreak,
+        escalated: false,
+        responseEmpty,
       }
 
       // UI notifications below may throw if the client disconnected (stop).

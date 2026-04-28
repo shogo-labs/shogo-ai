@@ -1184,6 +1184,9 @@ export async function upsertSubagentOverride(
 ) {
   const overrides = subagentOverrideDelegate()
   if (!overrides) throw new Error('Sub-agent model overrides are not available in this local database yet')
+  if (data.agentType === 'main-chat') {
+    throw new Error('main-chat model recommendations cannot be applied as sub-agent overrides')
+  }
 
   // Prisma's compound-unique upsert refuses `projectId: null` in TS types, so we
   // do a manual find-or-create-or-update gated by the underlying NULLS NOT
