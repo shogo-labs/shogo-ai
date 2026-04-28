@@ -30,7 +30,25 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { statSync } from 'node:fs'
 import { relative, resolve as resolvePath } from 'node:path'
 
-const BUILDABLE_PREFIXES = ['src/', 'index.html', 'vite.config', 'tsconfig', 'postcss'] as const
+// Files whose changes should trigger a rebuild. Covers both Vite layouts
+// (src/, vite.config.ts, postcss.config.js) and Metro/Expo layouts
+// (app/ for expo-router routes, app.json for runtime config, babel.config.js,
+// metro.config.js). Unknown extensions are ignored to keep noisy writes
+// (.DS_Store, swp files, etc.) from triggering builds.
+const BUILDABLE_PREFIXES = [
+  // Vite + shared
+  'src/',
+  'index.html',
+  'vite.config',
+  'tsconfig',
+  'postcss',
+  // Expo / Metro
+  'app/',
+  'app.json',
+  'babel.config',
+  'metro.config',
+  'expo-router',
+] as const
 const BUILDABLE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.html', '.json'] as const
 
 function isBuildableFile(relativePath: string): boolean {

@@ -308,10 +308,14 @@ function ensureWorkspaceFiles(): void {
   }
 
   // Seed runtime-template (Vite + React + Tailwind + shadcn/ui) if not already present
-  // and the tech stack is a JS/Node-based stack (or react-app specifically).
-  // For non-JS stacks like python-data, we skip the runtime template.
-  const jsStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
-  if (!techStackId || jsStacks.has(techStackId)) {
+  // and the tech stack is a Vite-based stack. Other stacks bring their own
+  // bundler / project layout via their own starter/ directory:
+  //   - python-data       → Jupyter, no JS template
+  //   - expo-app          → Metro + Expo Router
+  //   - expo-three        → Metro + @react-three/fiber/native
+  //   - unity-game        → .NET / Unity, no JS template
+  const viteStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
+  if (!techStackId || viteStacks.has(techStackId)) {
     const seeded = seedRuntimeTemplate(WORKSPACE_DIR)
     workspaceStatus.templateSeeded = seeded || existsSync(join(WORKSPACE_DIR, 'package.json'))
   } else {
@@ -1341,17 +1345,40 @@ function getConsoleLogsBuffer(): string[] {
   return consoleLogsRuntimeBuffer
 }
 
+/**
+ * Mirror of `/console-log/append`'s body: write to the disk log + in-memory
+ * buffer, then fan out to any SSE subscribers. Exposed in-process so
+ * PreviewManager can forward Metro/Expo output without going over HTTP
+ * to itself (which would also bypass `logStreamListeners`).
+ *
+ * Defined here rather than next to the route handler so it's hoisted
+ * above `getPreviewManager()` — `logStreamListeners` is declared further
+ * down the file, but TDZ doesn't apply to top-level `let` references
+ * inside a function called only at runtime.
+ */
+function recordConsoleLogLine(line: string, _stream: 'stdout' | 'stderr'): void {
+  if (!line) return
+  appendRuntimeConsoleLogLine(line)
+  for (const listener of logStreamListeners) {
+    try { listener(line) } catch {}
+  }
+}
+
 function getPreviewManager(): PreviewManager {
   if (!previewManager) {
-    const projectDir = join(WORKSPACE_DIR, 'project')
     previewManager = new PreviewManager({
-      projectDir,
+      // Pass the workspace root, not the legacy `project/` subdir. The
+      // PreviewManager derives the bundler cwd from this — see
+      // `resolveBundlerCwd()`. For Vite stacks that resolves to
+      // `<workspace>/project/`; for Expo it resolves to `<workspace>/`.
+      workspaceDir: WORKSPACE_DIR,
       runtimePort: parseInt(process.env.PORT || '8080', 10),
       // In k8s, the API sets PUBLIC_PREVIEW_URL to the externally-reachable
       // preview subdomain (preview--{id}.{env}.shogo.ai). Locally it's unset
       // and PreviewManager falls back to http://localhost:${runtimePort}/.
       publicUrl: process.env.PUBLIC_PREVIEW_URL,
       onConsoleLogReset: clearRuntimeConsoleLogBuffer,
+      onLogLine: recordConsoleLogLine,
     })
   }
   return previewManager
@@ -1391,6 +1418,29 @@ app.post('/preview/stop', (c) => {
   const pm = getPreviewManager()
   pm.stop()
   return c.json({ ok: true })
+})
+
+/**
+ * Metro / Expo device-preview metadata.
+ *
+ * The runtime never proxies raw Metro traffic. In **local mode** the
+ * runtime spawns `expo start --tunnel` and Expo's own tunnel server hands
+ * the phone a public `exp://...exp.direct/...` URL — Studio just renders
+ * that as a QR. In **cloud mode** we don't run Metro at all; this
+ * endpoint returns `deviceMode: 'cloud-todo'` so Studio can render an
+ * "on-device preview not yet available in cloud" hint.
+ *
+ * Returned shape (see PreviewManager.getDevicePreview):
+ *   - devServer:   'metro' | 'vite' | 'none'
+ *   - deviceMode:  'cloud-todo' | 'local-tunnel' | 'not-applicable'
+ *   - metroUrl:    `exp://...` URL the phone scans (local-tunnel only)
+ *   - publicUrl:   alias of metroUrl, kept for older Studio clients
+ *   - message:     human-readable status / nudge
+ *   - docs:        optional doc URL for the cloud-todo case
+ */
+app.get('/preview/metro', (c) => {
+  const pm = getPreviewManager()
+  return c.json(pm.getDevicePreview())
 })
 
 // ---------------------------------------------------------------------------
@@ -2686,13 +2736,8 @@ app.post('/agent/import', async (c) => {
 const logStreamListeners = new Set<(line: string) => void>()
 
 app.post('/console-log/append', async (c) => {
-  const { line } = await c.req.json()
-  if (line) {
-    appendRuntimeConsoleLogLine(line)
-    for (const listener of logStreamListeners) {
-      try { listener(line) } catch {}
-    }
-  }
+  const { line, stream } = await c.req.json()
+  if (line) recordConsoleLogLine(line, stream === 'stderr' ? 'stderr' : 'stdout')
   return c.json({ ok: true })
 })
 
@@ -3046,15 +3091,20 @@ async function initializeEssentials(): Promise<void> {
 
   logTiming('Essentials complete')
 
-  // Auto-start preview server if an app project was restored from S3.
-  // This handles the case where a warm pool pod is re-assigned after eviction
-  // and the project files are already present from S3 sync.
-  const projectDir = join(WORKSPACE_DIR, 'project')
-  if (existsSync(join(projectDir, 'package.json'))) {
+  // Auto-start preview server if an app project was restored from S3 or
+  // freshly seeded from a tech-stack starter. We accept either a
+  // `<workspace>/project/package.json` (legacy Vite layout) or a workspace-
+  // root `package.json` (Expo / React Native stacks place it there). The
+  // PreviewManager itself owns the cwd disambiguation via `resolveBundlerCwd`.
+  const legacyProjectDir = join(WORKSPACE_DIR, 'project')
+  const hasLegacyPkg = existsSync(join(legacyProjectDir, 'package.json'))
+  const hasRootPkg = existsSync(join(WORKSPACE_DIR, 'package.json'))
+  if (hasLegacyPkg || hasRootPkg) {
     const pm = getPreviewManager()
     const status = pm.getStatus()
     if (!status.running) {
-      logTiming('Detected app project restored from S3 — auto-starting preview')
+      const where = hasLegacyPkg ? 'project/' : 'workspace root'
+      logTiming(`Detected app project (${where}) — auto-starting preview`)
       pm.start().catch((err: any) => {
         console.error('[agent-runtime] Auto-start preview failed:', err.message)
       })

@@ -73,10 +73,35 @@ Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/s
 - \`bun run dev\`, \`bun run build\`, \`bun run start\`
 - \`npm run dev\`, \`npm run build\`
 - \`npx vite\`, \`bunx vite\`
+- \`expo start\`, \`npx expo start\`, any Metro / React Native bundler
 - \`kill\`, \`pkill\` on server processes
 
 The watch process handles builds automatically. If it appears stuck, use:
 \`exec({ command: 'curl -s -X POST http://localhost:$RUNTIME_PORT/preview/rebuild' })\`
+
+### exec timeout: long-lived servers don't belong here
+
+\`exec\` has a 5-minute hard timeout. Anything that would not exit on its own
+(dev servers, file watchers, Metro, Expo, REPLs, \`tail -f\`) must NOT be
+launched via \`exec\` — it will block then get killed. The runtime's
+PreviewManager owns long-lived processes. If the user asks you to "run"
+their app, do NOT \`exec npx expo start\`; point them at the preview URL or
+trigger a rebuild instead.
+
+### Mobile (Expo / React Native) preview
+
+For \`expo-app\` / \`expo-three\` projects:
+- The runtime always builds a **web preview** with \`expo export -p web\` and
+  serves \`dist/\` in the iframe (uses react-native-web). This is what
+  appears in Studio's preview pane.
+- **On-device preview** (scan a QR with Expo Go on a real phone) is
+  **only available in Shogo Local Mode** today. There the runtime spawns
+  \`expo start --tunnel\` and the captured \`exp://...exp.direct/...\` URL
+  is exposed via \`/preview/metro\`. In cloud projects, the same endpoint
+  returns \`deviceMode: "cloud-todo"\` — do NOT try to work around this by
+  running \`expo start\` yourself.
+- If the user asks "why can't I see this on my phone in cloud?", direct
+  them to install Shogo Local Mode rather than promising a cloud QR code.
 
 ### Server / Client Code Separation
 - Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the **BROWSER**.
@@ -379,10 +404,18 @@ Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/s
 - \`bun run dev\`, \`bun run build\`, \`bun run start\`
 - \`npm run dev\`, \`npm run build\`
 - \`npx vite\`, \`bunx vite\`
+- \`expo start\`, \`npx expo start\`, any Metro / React Native bundler
 - \`kill\`, \`pkill\` on server processes
 
 The watch process handles builds automatically. If it appears stuck, use:
 \`exec({ command: 'curl -s -X POST http://localhost:$RUNTIME_PORT/preview/rebuild' })\`
+
+### exec timeout: long-lived servers don't belong here
+
+\`exec\` has a 5-minute hard timeout. Anything that would not exit on its own
+(dev servers, file watchers, Metro, Expo, REPLs, \`tail -f\`) must NOT be
+launched via \`exec\`. The runtime's PreviewManager owns long-lived processes
+and starts them automatically.
 
 ### Server / Client Code Separation
 - Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the **BROWSER**.

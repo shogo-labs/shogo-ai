@@ -84,5 +84,36 @@ RUN cd /app/mcp-packages && \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
 USER root
 
-RUN mkdir -p /app/workspace /app/workspace/project /app/.schemas /app/.claude && \
-    chown -R appuser:appgroup /app/workspace /app/.schemas /app/.claude
+RUN mkdir -p /app/workspace /app/workspace/project /app/.schemas /app/.claude \
+      /app/.npm /app/.bun /app/.cache /app/.config /app/.local && \
+    chown -R appuser:appgroup /app/workspace /app/.schemas /app/.claude \
+      /app/.npm /app/.bun /app/.cache /app/.config /app/.local
+
+# Cache locations writable by appuser (uid 1001). Without these, npm/bun
+# inherit the root-owned /root/.npm and fail with EACCES on first install.
+ENV NPM_CONFIG_CACHE=/app/.npm \
+    BUN_INSTALL_CACHE_DIR=/app/.bun/cache \
+    XDG_CACHE_HOME=/app/.cache \
+    XDG_CONFIG_HOME=/app/.config \
+    XDG_DATA_HOME=/app/.local/share
+
+# Pre-warm Bun's content-addressed cache with the Expo + React Native
+# dependency tree. Without this, the first per-project `bun install` for a
+# mobile project fetches ~250MB of tarballs cold (~90s on a fresh pod).
+# After the prewarm, project installs re-resolve against their own
+# package.json but reuse the cached tarballs, so installs are effectively
+# offline and complete in ~10s.
+#
+# The cache is purely additive — even if a project pins different versions
+# than the prewarm template, unchanged tarballs are still hits. Staleness
+# only costs the delta. The prewarm template is the expo-three starter
+# because it's a superset of expo-app's deps (three.js + expo deps).
+#
+# This block runs as appuser so /app/.bun/cache ends up uid 1001 owned.
+COPY --chown=appuser:appgroup packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
+     /tmp/expo-prewarm/package.json
+USER appuser
+RUN cd /tmp/expo-prewarm && \
+    bun install --no-save --no-progress && \
+    rm -rf /tmp/expo-prewarm
+USER root

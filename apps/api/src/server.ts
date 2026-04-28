@@ -1463,6 +1463,76 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
   }
 })
 
+/**
+ * Metro / Expo device preview metadata.
+ *
+ * Studio's mobile preview pane fetches this to render the QR + `exp://`
+ * link the user opens in Expo Go. The shape mirrors what the runtime pod
+ * returns from `/preview/metro`, with one tweak: when running in K8s we
+ * substitute the cloud-hosted public preview hostname into the device
+ * URL so the phone connects to the tunneled endpoint, not localhost.
+ */
+app.get('/api/projects/:projectId/preview/metro', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  // Cloud: device preview is intentionally not yet implemented in cloud
+  // pods (DEVICE_PREVIEW_CLOUD_TODO). The runtime returns the cloud-todo
+  // shape verbatim — we just forward it.
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const response = await fetch(`${podUrl}/preview/metro`, { method: 'GET' })
+      if (!response.ok) {
+        return c.json({ error: 'Metro metadata fetch failed' }, response.status as any)
+      }
+      return c.json(await response.json())
+    } catch (err: any) {
+      // Pod not reachable: still surface the cloud-todo shape so Studio
+      // can render its hint instead of a generic 502.
+      return c.json({
+        devServer: 'metro',
+        deviceMode: 'cloud-todo',
+        metroUrl: null,
+        metroPort: null,
+        publicUrl: null,
+        message: 'Cloud device preview is not yet supported. Use Shogo Local Mode for on-device preview.',
+        docs: 'https://docs.shogo.ai/local-mode/device-preview',
+        _detail: err?.message,
+      })
+    }
+  }
+
+  // Local dev: forward to the in-process agent-runtime via its agentPort.
+  // The runtime, when in localMode, is running `expo start --tunnel` and
+  // will return the captured `exp://...exp.direct/...` URL.
+  try {
+    const manager = getRuntimeManager()
+    const runtime = manager.status(projectId)
+    if (!runtime?.agentPort) {
+      return c.json({
+        devServer: 'unknown',
+        deviceMode: 'not-applicable',
+        metroUrl: null,
+        metroPort: null,
+        publicUrl: null,
+        message:
+          'Project runtime is not running locally — start the project to enable device preview.',
+        docs: null,
+      })
+    }
+    const response = await fetch(`http://localhost:${runtime.agentPort}/preview/metro`, {
+      method: 'GET',
+    })
+    if (!response.ok) {
+      return c.json({ error: 'Metro metadata fetch failed' }, response.status as any)
+    }
+    return c.json(await response.json())
+  } catch (err: any) {
+    return c.json({ error: 'Metro metadata fetch failed', detail: err?.message }, 502)
+  }
+})
+
 // Restart project runtime (useful after template copy or file changes)
 // In Kubernetes, this triggers a rebuild in the runtime pod
 app.post('/api/projects/:projectId/runtime/restart', async (c) => {

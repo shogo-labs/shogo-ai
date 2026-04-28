@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Shogo Expo App",
+    "slug": "shogo-expo-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "shogoexpoapp",
+    "userInterfaceStyle": "automatic",
+    "ios": { "supportsTablet": true },
+    "android": { "adaptiveIcon": { "backgroundColor": "#0b0b0f" } },
+    "web": { "bundler": "metro", "output": "static" },
+    "plugins": ["expo-router"],
+    "experiments": { "typedRoutes": true }
+  }
+}

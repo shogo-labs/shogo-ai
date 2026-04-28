@@ -193,13 +193,43 @@ export function loadWorkspaceEnv(workspaceDir: string): Record<string, string> {
   }
 }
 
-const DEFAULT_SANDBOX: SandboxConfig = {
-  enabled: process.env.SANDBOX_EXEC_ENABLED === 'true' || !!process.env.KUBERNETES_SERVICE_HOST,
-  mode: 'non-main',
-  image: process.env.SANDBOX_IMAGE || 'ubuntu:22.04',
-  networkEnabled: false,
-  memoryLimit: '256m',
-  cpuLimit: '0.5',
+// Probe `docker` once per process. The previous heuristic
+// (SANDBOX_EXEC_ENABLED || KUBERNETES_SERVICE_HOST) blindly assumed a
+// docker binary was on PATH, which is false on the agent-runtime pod
+// itself: it ships Bun + Node, not Docker. When the probe fails we
+// disable sandboxing so the exec tool falls back to in-process exec
+// instead of returning the cryptic `/bin/sh: 1: docker: not found`.
+let _dockerAvailable: boolean | undefined
+function isDockerAvailable(): boolean {
+  if (_dockerAvailable !== undefined) return _dockerAvailable
+  try {
+    execSync('docker version --format "{{.Server.Version}}"', {
+      timeout: 2_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    _dockerAvailable = true
+  } catch {
+    _dockerAvailable = false
+    if (process.env.SANDBOX_EXEC_ENABLED === 'true' || process.env.KUBERNETES_SERVICE_HOST) {
+      console.warn(
+        '[sandbox-exec] SANDBOX_EXEC_ENABLED/KUBERNETES_SERVICE_HOST set but `docker` not on PATH. ' +
+          'Falling back to in-process exec. Set SANDBOX_EXEC_ENABLED=false to silence this warning.',
+      )
+    }
+  }
+  return _dockerAvailable
+}
+
+function defaultSandboxConfig(): SandboxConfig {
+  const requested = process.env.SANDBOX_EXEC_ENABLED === 'true' || !!process.env.KUBERNETES_SERVICE_HOST
+  return {
+    enabled: requested && isDockerAvailable(),
+    mode: 'non-main',
+    image: process.env.SANDBOX_IMAGE || 'ubuntu:22.04',
+    networkEnabled: false,
+    memoryLimit: '256m',
+    cpuLimit: '0.5',
+  }
 }
 
 export interface SandboxExecOptions {
@@ -231,7 +261,7 @@ export function stripRuntimeVars(env: Record<string, string | undefined>): typeo
 }
 
 export function shouldSandbox(opts: SandboxExecOptions): boolean {
-  const config = { ...DEFAULT_SANDBOX, ...opts.sandboxConfig }
+  const config = { ...defaultSandboxConfig(), ...opts.sandboxConfig }
   if (!config.enabled) return false
 
   if (config.mode === 'all') return true
@@ -251,7 +281,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
     return nativeExec(opts.command, opts.workspaceDir, opts.timeout)
   }
 
-  const config = { ...DEFAULT_SANDBOX, ...opts.sandboxConfig }
+  const config = { ...defaultSandboxConfig(), ...opts.sandboxConfig }
 
   const dockerArgs = [
     'docker', 'run', '--rm',

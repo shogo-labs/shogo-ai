@@ -955,8 +955,16 @@ export class KnativeProjectManager {
     const { prisma } = await import('./prisma')
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { templateId: true, name: true, workspaceId: true },
+      select: { templateId: true, name: true, workspaceId: true, settings: true },
     })
+    const projectTechStackId = (() => {
+      const s = projectRecord?.settings as { techStackId?: string } | null | undefined
+      return s?.techStackId ?? null
+    })()
+    // Single unified runtime image. The base image pre-warms Bun's tarball
+    // cache with the Expo + RN dependency tree, so mobile and web projects
+    // share the same pod image (see Dockerfile.base). Per-stack pod sizing
+    // is handled separately in instance-sizes.ts.
     const runtimeImage = RUNTIME_CONFIG.image()
     const runtimeComponent = RUNTIME_CONFIG.componentLabel
     const workDir = RUNTIME_CONFIG.workDir
@@ -1107,6 +1115,7 @@ export class KnativeProjectManager {
 
     // Resolve instance size for this workspace to determine resource allocation
     const { buildProjectResourceOverrides } = await import('../services/instance.service')
+    const { applyTechStackFloor, getMobileDiskSizeLimit, isMobileTechStack } = await import('../config/instance-sizes')
     const workspaceId = projectRecord?.workspaceId
     let sizeOverrides: ReturnType<typeof buildProjectResourceOverrides> | null = null
     if (workspaceId) {
@@ -1115,10 +1124,20 @@ export class KnativeProjectManager {
         select: { instanceSize: true },
       })
       if (workspace) {
-        sizeOverrides = buildProjectResourceOverrides(
-          workspaceId,
+        // Expo / RN stacks are too heavy for `micro`. Bump to the mobile
+        // floor (currently `small`) regardless of the workspace tier so
+        // users on the free tier can actually run their app.
+        const effectiveSize = applyTechStackFloor(
           workspace.instanceSize as InstanceSizeName,
+          projectTechStackId,
         )
+        sizeOverrides = buildProjectResourceOverrides(workspaceId, effectiveSize)
+        if (isMobileTechStack(projectTechStackId)) {
+          sizeOverrides = {
+            ...sizeOverrides,
+            diskSizeLimit: getMobileDiskSizeLimit(effectiveSize),
+          }
+        }
       }
     }
 

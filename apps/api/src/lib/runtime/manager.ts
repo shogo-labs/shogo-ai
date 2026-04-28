@@ -11,7 +11,7 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { pkg } from '@shogo/shared-runtime'
+import { pkg, isMobileTechStack, stackSeedsItself } from '@shogo/shared-runtime'
 import type {
   IRuntimeManager,
   IProjectRuntime,
@@ -391,8 +391,16 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
   /**
    * Ensure project directory exists with Vite setup.
+   *
+   * `techStackId` (when provided) lets non-Vite stacks (Expo, Python, Unity)
+   * opt out of the bundled React+Vite template copy. For those stacks the
+   * directory is created empty here; the agent-runtime child process then
+   * runs `seedTechStack(techStackId)` and lays down the correct starter.
    */
-  private async ensureProjectDirectory(projectId: string): Promise<string> {
+  private async ensureProjectDirectory(
+    projectId: string,
+    techStackId?: string,
+  ): Promise<string> {
     const workspacesDir = resolve(this.config.workspacesDir || process.cwd())
     const projectDir = join(workspacesDir, projectId)
     const workspaceTemplateDir = join(workspacesDir, this.config.templateDir || '_template')
@@ -409,6 +417,31 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock') && !src.endsWith('bun.lockb')
 
     const needsSeed = !existsSync(projectDir) || !existsSync(join(projectDir, 'package.json'))
+
+    // Stacks owned by agent-runtime's `seedTechStack` rather than the
+    // bundled Vite template. Driven by `seedsOwnTemplate` in the shared
+    // tech-stack registry so this list stays in sync with stack.json
+    // (validated at agent-runtime boot via `validateTechStackRegistry()`).
+    const stackHandlesOwnSeed = stackSeedsItself(techStackId)
+
+    if (needsSeed && stackHandlesOwnSeed) {
+      // Make the empty directory and bail. The agent-runtime will populate
+      // it via `seedTechStack(techStackId)` on first start. Critically we
+      // do NOT install dependencies here: there's no package.json yet, and
+      // running install would fail. Instead, install happens later inside
+      // PreviewManager / the agent-runtime once the stack has been seeded.
+      if (!existsSync(projectDir)) {
+        console.log(
+          `[RuntimeManager] Creating empty project directory for ${projectId} (stack=${techStackId} — agent-runtime will seed)`,
+        )
+        mkdirSync(projectDir, { recursive: true })
+      } else {
+        console.log(
+          `[RuntimeManager] Skipping bundled-template seed for ${projectId} (stack=${techStackId})`,
+        )
+      }
+      return projectDir
+    }
 
     if (needsSeed) {
       const isBare = existsSync(projectDir) && !existsSync(join(projectDir, 'package.json'))
@@ -613,8 +646,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   private async doStart(projectId: string): Promise<IProjectRuntime> {
     const projectInfo = await this.getProjectInfo(projectId)
 
-    // Ensure project directory exists with dependencies
-    const projectDir = await this.ensureProjectDirectory(projectId)
+    // Ensure project directory exists with dependencies. We pass techStackId
+    // through so non-Vite stacks (Expo / Python / Unity) skip the bundled
+    // React+Vite template copy and let the agent-runtime's seedTechStack do
+    // the right thing. Without this, an expo-three project ends up with a
+    // Frankenstein workspace (Vite package.json + Expo `app/`/`metro.config.js`).
+    const projectDir = await this.ensureProjectDirectory(projectId, projectInfo.techStackId)
 
     // Allocate ports (async to check for stale processes)
     const port = await this.allocatePortAsync()
@@ -652,155 +689,106 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
       }
 
-      // [EXPO DISABLED] Detect if this is an Expo project
-      // let isExpoProject = false
-      // try {
-      //   const pkgJsonPath = join(projectDir, 'package.json')
-      //   if (existsSync(pkgJsonPath)) {
-      //     const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
-      //     isExpoProject = !!(pkgJson.dependencies?.expo || pkgJson.devDependencies?.expo)
-      //   }
-      // } catch {
-      // }
-
-      // [EXPO DISABLED] Expo branch commented out -- only Vite dev server path remains
-      // if (isExpoProject) {
-      //   console.log(`[RuntimeManager] Installing dependencies for Expo project ${projectId}...`)
-      //   const installProc = spawn('bun', ['install'], {
-      //     cwd: projectDir,
-      //     stdio: ['ignore', 'pipe', 'pipe'],
-      //     env: viteEnv,
-      //   })
+      // Detect Expo / RN projects. For these we skip the Vite spawn
+      // entirely — the agent-runtime PreviewManager (started below) owns
+      // Metro and `expo export -p web`. Running Vite alongside Metro
+      // would fight over ports and the project has no `vite.config.ts`
+      // anyway. The runtime serves the static `dist/` produced by
+      // `expo export` at the agent port.
       //
-      //   await new Promise<void>((resolve, reject) => {
-      //     installProc.on('exit', (code) => {
-      //       if (code === 0) {
-      //         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
-      //         resolve()
-      //       } else {
-      //         reject(new Error(`bun install failed with code ${code}`))
-      //       }
-      //     })
-      //     installProc.on('error', reject)
-      //     installProc.stderr?.on('data', (data) => {
-      //       console.error(`[RuntimeManager] bun install stderr: ${data.toString()}`)
-      //     })
-      //   })
-      //
-      //   console.log(`[RuntimeManager] Setting up database for ${projectId}...`)
-      //   const prismaGenProc = spawn('bunx', ['prisma', 'generate'], {
-      //     cwd: projectDir,
-      //     stdio: ['ignore', 'pipe', 'pipe'],
-      //     env: viteEnv,
-      //   })
-      //   await new Promise<void>((resolve) => {
-      //     prismaGenProc.on('exit', () => resolve())
-      //     prismaGenProc.on('error', () => resolve())
-      //   })
-      //
-      //   const prismaPushProc = spawn('bunx', ['prisma', 'db', 'push', '--accept-data-loss'], {
-      //     cwd: projectDir,
-      //     stdio: ['ignore', 'pipe', 'pipe'],
-      //     env: viteEnv,
-      //   })
-      //   await new Promise<void>((resolve) => {
-      //     prismaPushProc.on('exit', () => resolve())
-      //     prismaPushProc.on('error', () => resolve())
-      //   })
-      //
-      //   console.log(`[RuntimeManager] Building Expo project ${projectId}...`)
-      //   const buildProc = spawn('bun', ['run', 'build'], {
-      //     cwd: projectDir,
-      //     stdio: ['ignore', 'pipe', 'pipe'],
-      //     env: viteEnv,
-      //   })
-      //
-      //   await new Promise<void>((resolve, reject) => {
-      //     buildProc.on('exit', (code) => {
-      //       if (code === 0) {
-      //         console.log(`[RuntimeManager] Expo build completed for ${projectId}`)
-      //         resolve()
-      //       } else {
-      //         reject(new Error(`Expo build failed with code ${code}`))
-      //       }
-      //     })
-      //     buildProc.on('error', reject)
-      //     buildProc.stderr?.on('data', (data) => {
-      //       console.error(`[RuntimeManager] Expo build stderr: ${data.toString()}`)
-      //     })
-      //   })
-      //
-      //   console.log(`[RuntimeManager] Starting Expo Hono server for ${projectId} on port ${port}`)
-      //   proc = spawn('bun', ['run', 'start'], {
-      //     cwd: projectDir,
-      //     stdio: ['ignore', 'pipe', 'pipe'],
-      //     detached: false,
-      //     env: { ...viteEnv, PORT: String(port) },
-      //   })
-      // } else {
+      // Detection is registry-driven (not package.json sniffing): on a
+      // freshly created mobile project the workspace is empty until
+      // agent-runtime's seedTechStack runs, so package.json doesn't
+      // exist yet at this point. Falling back to a sniff would
+      // incorrectly spawn Vite for the very projects we don't want it
+      // for.
+      const isExpoProject =
+        isMobileTechStack(projectInfo.techStackId) ||
+        (() => {
+          try {
+            const pkgJsonPath = join(projectDir, 'package.json')
+            if (existsSync(pkgJsonPath)) {
+              const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+              return !!(pkgJson.dependencies?.expo || pkgJson.devDependencies?.expo)
+            }
+          } catch { /* fall through */ }
+          return false
+        })()
 
-      // Run Vite dev server
-      // Resolve vite binary directly from node_modules to avoid Windows .bin/ issue
-      // (Bun on Windows may not create .bin/ shims, causing "command not found: vite")
-      let proc: ReturnType<typeof spawn>
-      const viteBin = join(projectDir, 'node_modules', 'vite', 'bin', 'vite.js')
-      const devArgs = existsSync(viteBin)
-        ? [viteBin, '--port', String(port), '--host', '0.0.0.0']
-        : ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
-      proc = spawn(pkg.bunBinary, devArgs, {
-        cwd: projectDir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-        env: viteEnv,
-      })
-      // }
+      let proc: ReturnType<typeof spawn> | null = null
 
-      runtime.process = proc
+      if (isExpoProject) {
+        console.log(
+          `[RuntimeManager] Detected Expo project ${projectId} — skipping Vite. ` +
+          `agent-runtime PreviewManager will run Metro + expo export -p web.`,
+        )
+        // Hold the project port even though we don't spawn Vite, so the
+        // existing /preview proxy keeps routing to the agent port. The
+        // agent-runtime serves dist/ at runtimePort.
+      } else {
+        // Run Vite dev server
+        // Resolve vite binary directly from node_modules to avoid Windows .bin/ issue
+        // (Bun on Windows may not create .bin/ shims, causing "command not found: vite")
+        const viteBin = join(projectDir, 'node_modules', 'vite', 'bin', 'vite.js')
+        const devArgs = existsSync(viteBin)
+          ? [viteBin, '--port', String(port), '--host', '0.0.0.0']
+          : ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
+        proc = spawn(pkg.bunBinary, devArgs, {
+          cwd: projectDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+          env: viteEnv,
+        })
+      }
 
-      proc.on('error', (err) => {
-        console.error(`[RuntimeManager] Vite process error for ${projectId}:`, err)
-        runtime.status = 'error'
-      })
+      if (proc) {
+        runtime.process = proc
 
-      proc.on('exit', (code, signal) => {
-        console.log(`[RuntimeManager] Vite process exited for ${projectId}: code=${code}, signal=${signal}`)
-        if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
-          runtime.status = 'stopped'
-        }
-        this.releasePort(port)
-      })
+        proc.on('error', (err) => {
+          console.error(`[RuntimeManager] Vite process error for ${projectId}:`, err)
+          runtime.status = 'error'
+        })
 
-      proc.stdout?.on('data', (data) => {
-        const output = data.toString()
-        if (output.includes('Local:') || output.includes('ready in')) {
-          console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
-        }
-        // Forward Vite output to the agent server's console log for the Server tab
-        for (const line of output.split('\n')) {
-          if (line.trim()) {
-            fetch(`http://localhost:${agentPort}/console-log/append`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
-            }).catch(() => {}) // Ignore if agent isn't ready yet
+        proc.on('exit', (code, signal) => {
+          console.log(`[RuntimeManager] Vite process exited for ${projectId}: code=${code}, signal=${signal}`)
+          if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
+            runtime.status = 'stopped'
           }
-        }
-      })
+          this.releasePort(port)
+        })
 
-      proc.stderr?.on('data', (data) => {
-        const output = data.toString()
-        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
-        // Forward Vite stderr to the agent server's console log for the Server tab
-        for (const line of output.split('\n')) {
-          if (line.trim()) {
-            fetch(`http://localhost:${agentPort}/console-log/append`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
-            }).catch(() => {}) // Ignore if agent isn't ready yet
+        proc.stdout?.on('data', (data) => {
+          const output = data.toString()
+          if (output.includes('Local:') || output.includes('ready in')) {
+            console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
           }
-        }
-      })
+          // Forward Vite output to the agent server's console log for the Server tab
+          for (const line of output.split('\n')) {
+            if (line.trim()) {
+              fetch(`http://localhost:${agentPort}/console-log/append`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
+              }).catch(() => {}) // Ignore if agent isn't ready yet
+            }
+          }
+        })
+
+        proc.stderr?.on('data', (data) => {
+          const output = data.toString()
+          console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
+          // Forward Vite stderr to the agent server's console log for the Server tab
+          for (const line of output.split('\n')) {
+            if (line.trim()) {
+              fetch(`http://localhost:${agentPort}/console-log/append`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
+              }).catch(() => {}) // Ignore if agent isn't ready yet
+            }
+          }
+        })
+      }
 
       // Spawn unified runtime server for local development
       const runtimeServerPath = RUNTIME_SERVER

@@ -1,0 +1,22 @@
+{
+  "id": "expo-three",
+  "name": "Expo + Three.js (3D mobile games)",
+  "description": "Build 3D mobile games with Expo + React Native + @react-three/fiber/native + expo-gl. Includes a twin-stick controller scaffold, instanced-mesh patterns for mobs/projectiles, and an FPS overlay. Web preview falls back to @react-three/fiber via react-native-web.",
+  "tags": ["expo", "react-native", "threejs", "3d", "games", "gamedev", "expo-gl", "mobile"],
+  "target": "mobile",
+  "seedsOwnTemplate": true,
+  "runtime": {
+    "devServer": "metro",
+    "buildCommand": "expo export --platform web --output-dir dist",
+    "templateApiPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": false
+  }
+}

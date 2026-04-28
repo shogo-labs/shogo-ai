@@ -241,7 +241,17 @@ function createExecTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Blocked command: ${command}` })
       }
 
-      const currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir
+      let currentCwd = ctx.shellState?.getCwd() || ctx.workspaceDir
+      // Defend against the persisted cwd having been deleted (e.g. agent did
+      // `rm -rf game/` while inside it). Without this, the wrapping `cd` below
+      // silently no-ops via `|| true` and the next command runs in the wrong
+      // dir, producing confusing errors like `cd: can't cd to game`.
+      let cwdReset = false
+      if (!existsSync(currentCwd)) {
+        currentCwd = ctx.workspaceDir
+        cwdReset = true
+        ctx.shellState?.setCwd(currentCwd)
+      }
       const cwdMarker = `.shogo-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`
       const cwdFileHost = join(ctx.workspaceDir, cwdMarker)
 
@@ -295,6 +305,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         stderr: result.stderr ? truncateExecOutput(result.stderr) : undefined,
         durationMs,
         sandboxed: result.sandboxed || undefined,
+        cwdReset: cwdReset || undefined,
       })
     },
   }

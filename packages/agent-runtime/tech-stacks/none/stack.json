@@ -3,6 +3,8 @@
   "name": "None",
   "description": "No preset tech stack. The agent has full freedom to choose tools, languages, and frameworks.",
   "tags": ["blank", "custom"],
+  "target": "none",
+  "seedsOwnTemplate": true,
   "capabilities": {
     "webEnabled": true,
     "browserEnabled": false,

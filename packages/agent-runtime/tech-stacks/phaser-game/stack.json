@@ -3,6 +3,7 @@
   "name": "Phaser 2D Game Builder",
   "description": "Build 2D browser games with Phaser 3 and Vite. Includes scene management, arcade physics, sprites, tilemaps, and input handling.",
   "tags": ["2d", "games", "phaser", "sprites", "physics", "vite"],
+  "target": "web",
   "runtime": {
     "devServer": "vite",
     "buildCommand": "vite build --watch",

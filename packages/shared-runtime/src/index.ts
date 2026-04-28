@@ -74,6 +74,16 @@ export {
 } from './runtime-types'
 
 export {
+  TECH_STACK_REGISTRY,
+  getStackEntry,
+  isMobileTechStack,
+  usesMetroBundler,
+  stackSeedsItself,
+  type StackTarget,
+  type StackRegistryEntry,
+} from './tech-stack-registry'
+
+export {
   TSLanguageServer,
   LSPServerManager,
   lspManager,
