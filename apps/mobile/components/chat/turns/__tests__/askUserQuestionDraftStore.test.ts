@@ -243,6 +243,40 @@ describe("mid-submit survival (fixes Bug B)", () => {
   })
 })
 
+describe("null toolResult treated as not-answered (fixes cold-hydration bug)", () => {
+  // Older persisted dynamic-tool parts wrote `output: null` for ask_user
+  // because the gateway never emits tool-output-available for it. After a
+  // cold hydration, JSON.parse turns that into a real `null` (not
+  // `undefined`), which previously made the widget render as already
+  // answered. deriveSubmissionStatus must treat `null` and `undefined`
+  // identically.
+  test("null toolResult + no draft = unanswered, no retry", () => {
+    const status = deriveSubmissionStatus(null, null)
+    expect(status.answered).toBe(false)
+    expect(status.needsRetry).toBe(false)
+    expect(status.displayResponse).toBeNull()
+  })
+
+  test("null toolResult + locally submitted draft = answered with retry", () => {
+    const draft: DraftState = {
+      ...emptyDraft(),
+      submittedResponse: "Approve",
+      submittedAt: 1_700_000_000_000,
+    }
+    const status = deriveSubmissionStatus(null, draft)
+    expect(status.answered).toBe(true)
+    expect(status.needsRetry).toBe(true)
+    expect(status.displayResponse).toBe("Approve")
+  })
+
+  test("null toolResult + empty draft = unanswered", () => {
+    const status = deriveSubmissionStatus(null, emptyDraft())
+    expect(status.answered).toBe(false)
+    expect(status.needsRetry).toBe(false)
+    expect(status.displayResponse).toBeNull()
+  })
+})
+
 describe("cross-id isolation", () => {
   test("stale draft from a different toolCallId is ignored", async () => {
     await saveDraft(storage, "tc_other", {

@@ -176,14 +176,17 @@ export function deriveSubmissionStatus(
   needsRetry: boolean
   displayResponse: string | null
 } {
-  const serverAnswered = toolResult !== undefined
+  // `null` is treated the same as `undefined`: the gateway suppresses
+  // `tool-output-available` for `ask_user`, but legacy persisted parts may
+  // have `output: null` baked in. Either way, the server has not actually
+  // produced a result yet, so the widget should stay interactive.
+  const serverAnswered = toolResult != null
   const locallySubmitted = draft?.submittedResponse != null
 
-  const displayResponse = serverAnswered
-    ? typeof toolResult === "string"
+  const displayResponse =
+    typeof toolResult === "string"
       ? toolResult
-      : null
-    : (draft?.submittedResponse ?? null)
+      : (draft?.submittedResponse ?? null)
 
   return {
     answered: serverAnswered || locallySubmitted,
