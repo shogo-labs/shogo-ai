@@ -9,6 +9,7 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - api-service.yaml
+  - api-tunnel-ingress.yaml
   - web-service.yaml
   - docs-service.yaml
 

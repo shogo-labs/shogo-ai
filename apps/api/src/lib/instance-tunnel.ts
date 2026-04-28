@@ -62,6 +62,13 @@ let wsReconnectAttempt = 0
 let lastHeartbeatError: string | null = null
 let consecutiveAuthFailures = 0
 let consecutiveAuthSuccesses = 0
+// Public WS endpoint published by the cloud `heartbeat` response.
+// In staging / prod this is a non-DomainMapping host
+// (`wss://tunnel.staging.shogo.ai` / `wss://tunnel.shogo.ai`) that
+// supports WebSocket Upgrade end-to-end. When the cloud doesn't supply
+// a value (older API or self-hosted), we fall back to deriving it from
+// SHOGO_CLOUD_URL.
+let serverPublishedWsUrl: string | null = null
 const activeAbortControllers = new Map<string, AbortController>()
 
 function getReconnectDelay(): number {
@@ -119,16 +126,30 @@ function getCloudUrl(): string {
   return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
 }
 
-function buildWsUrl(): string {
-  const cloudUrl = getCloudUrl()
-  const wsBase = cloudUrl.replace(/^http/, 'ws')
-  const key = process.env.SHOGO_API_KEY!
-  const hn = osHostname()
-  const os = platform()
-  const arch = osArch()
-  const name = process.env.SHOGO_INSTANCE_NAME || hn
+/**
+ * Resolve the base URL to use for the on-demand tunnel WebSocket.
+ *
+ * Priority:
+ *   1. `SHOGO_TUNNEL_WS_URL` env (explicit override; for ops / debugging)
+ *   2. `wsUrl` field from the most recent heartbeat response (the
+ *      canonical signal from the cloud — points at a non-DomainMapping
+ *      host like `wss://tunnel.staging.shogo.ai`)
+ *   3. Derived from `SHOGO_CLOUD_URL` (legacy / self-hosted path; this
+ *      is what currently fails on Knative DomainMapping clusters and
+ *      is the reason this fallback exists at all)
+ */
+function getWsBaseUrl(): string {
+  const explicit = (process.env.SHOGO_TUNNEL_WS_URL || '').trim()
+  if (explicit) return explicit.replace(/\/$/, '')
+  if (serverPublishedWsUrl) return serverPublishedWsUrl.replace(/\/$/, '')
+  return getCloudUrl().replace(/^http/, 'ws')
+}
 
-  return `${wsBase}/api/instances/ws?key=${encodeURIComponent(key)}&hostname=${encodeURIComponent(hn)}&os=${encodeURIComponent(os)}&arch=${encodeURIComponent(arch)}&name=${encodeURIComponent(name)}`
+function buildWsUrl(): string {
+  // Path-only URL — credentials and identity now travel as request
+  // headers (see connectWs), so they do NOT end up in Cloudflare /
+  // Kourier access logs.
+  return `${getWsBaseUrl()}/api/instances/ws`
 }
 
 async function collectMetadata(): Promise<Record<string, unknown>> {
@@ -164,7 +185,7 @@ async function collectMetadata(): Promise<Record<string, unknown>> {
 
 // ─── HTTP Heartbeat Loop ────────────────────────────────────────────────────
 
-async function sendHeartbeat(): Promise<{ nextPollIn: number; wsRequested: boolean }> {
+async function sendHeartbeat(): Promise<{ nextPollIn: number; wsRequested: boolean; wsUrl?: string }> {
   const cloudUrl = getCloudUrl()
   const key = process.env.SHOGO_API_KEY!
   const metadata = await collectMetadata()
@@ -188,7 +209,18 @@ async function sendHeartbeat(): Promise<{ nextPollIn: number; wsRequested: boole
     throw new Error(`Heartbeat failed: HTTP ${resp.status}`)
   }
 
-  return resp.json()
+  const data = await resp.json() as { nextPollIn: number; wsRequested: boolean; wsUrl?: string }
+
+  // Cache the server-published tunnel WS URL so connectWs() picks it up
+  // without a second round-trip. Treat empty / falsy as "no override".
+  if (typeof data.wsUrl === 'string' && data.wsUrl.length > 0) {
+    if (data.wsUrl !== serverPublishedWsUrl) {
+      console.log(`[InstanceTunnel] Cloud advertised tunnel WS URL: ${data.wsUrl}`)
+    }
+    serverPublishedWsUrl = data.wsUrl
+  }
+
+  return data
 }
 
 function scheduleNextPoll(intervalS?: number) {
@@ -385,16 +417,43 @@ function connectWs() {
   if (stopped || ws) return
 
   const url = buildWsUrl()
-  console.log(`[InstanceTunnel] Opening WebSocket to ${url.replace(/key=[^&]+/, 'key=***')}`)
+  const key = process.env.SHOGO_API_KEY!
+  const hn = osHostname()
+  const os = platform()
+  const arch = osArch()
+  const name = process.env.SHOGO_INSTANCE_NAME || hn
 
+  console.log(`[InstanceTunnel] Opening WebSocket to ${url} (hostname=${hn})`)
+
+  // Bun's WebSocket constructor accepts a `headers` option; this lets us
+  // ship the API key and identity in request headers rather than the
+  // query string, so Cloudflare / Kourier access logs never capture
+  // the secret.
+  //
+  // The fallback `key=` query path on the server side stays in place
+  // for older desktops that don't run on Bun yet; once everyone is
+  // migrated we can drop it.
+  const wsInit = {
+    headers: {
+      'Authorization': `Bearer ${key}`,
+      'x-shogo-hostname': hn,
+      'x-shogo-name': name,
+      'x-shogo-os': os,
+      'x-shogo-arch': arch,
+    },
+  }
+
+  let socket: WebSocket
   try {
-    ws = new WebSocket(url)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    socket = new (WebSocket as any)(url, wsInit) as WebSocket
   } catch (err: any) {
     console.error(`[InstanceTunnel] WebSocket creation failed: ${err.message}`)
     ws = null
     scheduleNextPoll(5)
     return
   }
+  ws = socket
 
   ws.onopen = () => {
     console.log('[InstanceTunnel] WebSocket connected — session active')
@@ -513,6 +572,7 @@ export const _testing = {
   connectWs,
   cleanupWs,
   getCloudUrl,
+  getWsBaseUrl,
   buildWsUrl,
   getReconnectDelay,
   DEFAULT_POLL_INTERVAL_S,
@@ -525,4 +585,6 @@ export const _testing = {
   set wsReconnectAttempt(v: number) { wsReconnectAttempt = v },
   get ws() { return ws },
   get stopped() { return stopped },
+  get serverPublishedWsUrl() { return serverPublishedWsUrl },
+  set serverPublishedWsUrl(v: string | null) { serverPublishedWsUrl = v },
 }

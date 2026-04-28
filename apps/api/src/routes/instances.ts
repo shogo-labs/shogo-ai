@@ -369,6 +369,31 @@ export function handleInstanceWsClose(ws: WebSocket & { data?: any }) {
 }
 
 /**
+ * Read the tunnel API key out of a WebSocket upgrade request.
+ *
+ * Preferred order (header-only — keeps secrets out of access logs and
+ * Cloudflare logging):
+ *   1. `Authorization: Bearer <key>`
+ *   2. `x-api-key: <key>`
+ *
+ * Legacy fallback for older desktop builds:
+ *   3. `?key=<key>` query parameter
+ *
+ * The legacy path is deprecated; once all deployed desktops have rolled
+ * to the new tunnel client we can drop the query-string branch.
+ */
+function extractInstanceWsKey(url: URL, headers: Headers): { key: string; legacy: boolean } {
+  const auth = headers.get('authorization') || ''
+  const bearer = auth.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
+  if (bearer) return { key: bearer, legacy: false }
+  const xKey = headers.get('x-api-key')
+  if (xKey) return { key: xKey, legacy: false }
+  const queryKey = url.searchParams.get('key')
+  if (queryKey) return { key: queryKey, legacy: true }
+  return { key: '', legacy: false }
+}
+
+/**
  * Authenticate a WebSocket upgrade request.
  * Returns { instanceId, workspaceId } or null.
  */
@@ -377,30 +402,40 @@ export async function authenticateInstanceWs(
 ): Promise<{ instanceId: string; workspaceId: string } | null> {
   try {
     const url = new URL(req.url)
-    const key = url.searchParams.get('key') || req.headers.get('x-api-key') || ''
+    const { key, legacy } = extractInstanceWsKey(url, req.headers)
     if (!key) return null
 
     const resolved = await resolveApiKey(key)
     if (!resolved) return null
 
-  const hostname = url.searchParams.get('hostname') || 'unknown'
-  const name = url.searchParams.get('name') || hostname
-  const os = url.searchParams.get('os') || null
-  const arch = url.searchParams.get('arch') || null
+    if (legacy) {
+      console.warn('[RemoteControl] WS auth used legacy ?key= query param — desktop should upgrade to header-based auth')
+    }
 
-  const instance = await prisma.instance.upsert({
-    where: { workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname } },
-    update: { name, os, arch, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
-    create: {
-      workspaceId: resolved.workspaceId,
-      name,
-      hostname,
-      os,
-      arch,
-      status: 'online',
-      lastSeenAt: new Date(),
-    },
-  })
+    // Identity (used to upsert the Instance row) — read from headers
+    // first, fall back to query for legacy clients.
+    const headerHostname = req.headers.get('x-shogo-hostname')
+    const hostname = headerHostname || url.searchParams.get('hostname') || 'unknown'
+    const headerName = req.headers.get('x-shogo-name')
+    const name = headerName || url.searchParams.get('name') || hostname
+    const headerOs = req.headers.get('x-shogo-os')
+    const os = headerOs || url.searchParams.get('os') || null
+    const headerArch = req.headers.get('x-shogo-arch')
+    const arch = headerArch || url.searchParams.get('arch') || null
+
+    const instance = await prisma.instance.upsert({
+      where: { workspaceId_hostname: { workspaceId: resolved.workspaceId, hostname } },
+      update: { name, os, arch, status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
+      create: {
+        workspaceId: resolved.workspaceId,
+        name,
+        hostname,
+        os,
+        arch,
+        status: 'online',
+        lastSeenAt: new Date(),
+      },
+    })
 
     return { instanceId: instance.id, workspaceId: resolved.workspaceId }
   } catch (err) {
@@ -617,11 +652,20 @@ export function instanceRoutes() {
     const nextPollIn = await computeNextPollIn(instance.id, resolved.workspaceId, instance.wsRequestedAt)
     const hasTunnel = tunnels.has(instance.id) || await isTunnelConnectedAnywhere(instance.id)
 
+    // Where the desktop should open its on-demand WebSocket. In staging
+    // / production this points at a non-DomainMapping host
+    // (`tunnel.staging.shogo.ai` / `tunnel.shogo.ai`) that bypasses the
+    // Knative DomainMapping rewriteHost loopback that breaks the WS
+    // Upgrade handshake. When unset, the desktop falls back to deriving
+    // the URL from its existing cloud URL (the dev / self-hosted path).
+    const tunnelWsUrl = (process.env.SHOGO_TUNNEL_WS_URL || '').trim() || undefined
+
     return c.json({
       instanceId: instance.id,
       nextPollIn,
       wsRequested,
       tunnelStatus: hasTunnel ? 'connected' : 'polling',
+      wsUrl: tunnelWsUrl,
     })
   })
 
