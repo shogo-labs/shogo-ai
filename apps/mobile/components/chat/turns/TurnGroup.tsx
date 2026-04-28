@@ -28,8 +28,6 @@ export interface TurnGroupProps {
   recentTools?: RecentTool[]
   showToolTimeline?: boolean
   className?: string
-  /** Phase 2.2 — forwards user feedback (👍/👎) on completed sub-agent runs. */
-  onSubagentFeedback?: (agentRunId: string, feedback: "up" | "down" | null) => Promise<void>
 }
 
 function CopyButton({ text, className }: { text: string; className?: string }) {
@@ -107,7 +105,6 @@ export const TurnGroup = memo(
     recentTools = [],
     showToolTimeline = false,
     className,
-    onSubagentFeedback,
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "")
 
@@ -143,7 +140,6 @@ export const TurnGroup = memo(
           subagents={activeSubagents}
           recentTools={recentTools}
           defaultExpanded
-          onSubmitFeedback={onSubagentFeedback}
         />
       )}
 

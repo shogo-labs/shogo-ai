@@ -11,7 +11,6 @@
  * Multi-signal "success" gating (Phase 2.3):
  *   A run only counts as a *quality* success when ALL of:
  *     - run promise resolved (legacy `success` column = true)
- *     - userFeedback !== 'down'
  *     - hitMaxTurns = false
  *     - loopDetected = false
  *     - escalated   = false
@@ -47,9 +46,6 @@ interface AgentBreakdownEntry {
   promiseSuccesses: number
   /** Multi-signal quality successes (see file header). The number used in recommendations. */
   qualitySuccesses: number
-  /** Number of runs with userFeedback = 'up' (ignoring null/no signal). */
-  thumbsUp: number
-  thumbsDown: number
   hitMaxTurns: number
   loopDetected: number
   escalated: number
@@ -64,8 +60,6 @@ interface AgentBreakdownEntry {
   avgLatencyMs: number
   /** Multi-signal quality success rate (0..100). Use this for gating. */
   qualitySuccessRate: number
-  /** Thumbs-up rate among feedback-bearing runs (0..100, NaN→0 when no feedback). */
-  thumbsUpRate: number
   /** Escalation rate (0..100). */
   escalationRate: number
   /** Legacy success rate from the `success` column — DO NOT use for gating. */
@@ -85,7 +79,6 @@ interface CostRecommendation {
   evidence: {
     runs: number
     qualitySuccessRate: number
-    thumbsUpRate: number | null
     escalationRate: number
     loopTrips: number
     maxTurnHits: number
@@ -205,8 +198,6 @@ export async function getAgentCostBreakdown(
     model: string
     promiseSuccesses: bigint
     qualitySuccesses: bigint
-    thumbsUp: bigint
-    thumbsDown: bigint
     hitMaxTurns: bigint
     loopDetected: bigint
     escalated: bigint
@@ -222,10 +213,7 @@ export async function getAgentCostBreakdown(
           AND "loopDetected" = false
           AND "escalated" = false
           AND "responseEmpty" = false
-          AND COALESCE("userFeedback", '') <> 'down'
       )                                                   AS "qualitySuccesses",
-      COUNT(*) FILTER (WHERE "userFeedback" = 'up')       AS "thumbsUp",
-      COUNT(*) FILTER (WHERE "userFeedback" = 'down')     AS "thumbsDown",
       COUNT(*) FILTER (WHERE "hitMaxTurns" = true)        AS "hitMaxTurns",
       COUNT(*) FILTER (WHERE "loopDetected" = true)       AS "loopDetected",
       COUNT(*) FILTER (WHERE "escalated" = true)          AS "escalated",
@@ -245,8 +233,6 @@ export async function getAgentCostBreakdown(
     const f = flagsMap.get(flagsKey(g.agentType, g.model))
     const promiseSuccesses = Number(f?.promiseSuccesses ?? 0)
     const qualitySuccesses = Number(f?.qualitySuccesses ?? 0)
-    const thumbsUp = Number(f?.thumbsUp ?? 0)
-    const thumbsDown = Number(f?.thumbsDown ?? 0)
     const hitMaxTurns = Number(f?.hitMaxTurns ?? 0)
     const loopDetected = Number(f?.loopDetected ?? 0)
     const escalated = Number(f?.escalated ?? 0)
@@ -259,15 +245,12 @@ export async function getAgentCostBreakdown(
     const totalCreditCost = g._sum.creditCost ?? 0
     const totalWallTimeMs = g._sum.wallTimeMs ?? 0
 
-    const totalFeedback = thumbsUp + thumbsDown
     return {
       agentType: g.agentType,
       model: g.model,
       totalRuns,
       promiseSuccesses,
       qualitySuccesses,
-      thumbsUp,
-      thumbsDown,
       hitMaxTurns,
       loopDetected,
       escalated,
@@ -281,7 +264,6 @@ export async function getAgentCostBreakdown(
       avgCostPerRun: totalRuns > 0 ? Math.round((totalCreditCost / totalRuns) * 100) / 100 : 0,
       avgLatencyMs: totalRuns > 0 ? Math.round(totalWallTimeMs / totalRuns) : 0,
       qualitySuccessRate: totalRuns > 0 ? Math.round((qualitySuccesses / totalRuns) * 1000) / 10 : 0,
-      thumbsUpRate: totalFeedback > 0 ? Math.round((thumbsUp / totalFeedback) * 1000) / 10 : 0,
       escalationRate: totalRuns > 0 ? Math.round((escalated / totalRuns) * 1000) / 10 : 0,
       successRate: totalRuns > 0 ? Math.round((promiseSuccesses / totalRuns) * 1000) / 10 : 0,
     }
@@ -309,8 +291,6 @@ const RECOMMENDATION_THRESHOLDS = {
   minRuns: 20,
   /** Quality success rate must be at least this to consider a downgrade. */
   qualitySuccessRateForDowngrade: 85,
-  /** Thumbs-up rate must be at least this (when we have feedback) to downgrade. */
-  thumbsUpRateForDowngrade: 75,
   /** Escalation rate must be below this to downgrade. */
   maxEscalationRateForDowngrade: 10,
   /** Quality success rate below this triggers an upgrade recommendation. */
@@ -336,21 +316,17 @@ export async function getCostRecommendations(
     const evidenceBase = {
       runs: entry.totalRuns,
       qualitySuccessRate: entry.qualitySuccessRate,
-      thumbsUpRate: (entry.thumbsUp + entry.thumbsDown) > 0 ? entry.thumbsUpRate : null,
       escalationRate: entry.escalationRate,
       loopTrips: entry.loopDetected,
       maxTurnHits: entry.hitMaxTurns,
     }
 
-    // Multi-signal downgrade gate: quality OK AND no escalations AND no loop trips
-    // AND (no feedback OR positive feedback). Replaces the old single `successRate`
-    // check that fired on `success: true` (which was always true).
+    // Multi-signal downgrade gate. Replaces the old single `successRate` check
+    // that fired on `success: true` (which was always true).
     const downgradeGateOk =
       entry.qualitySuccessRate >= RECOMMENDATION_THRESHOLDS.qualitySuccessRateForDowngrade
       && entry.escalationRate < RECOMMENDATION_THRESHOLDS.maxEscalationRateForDowngrade
       && entry.loopDetected === 0
-      && (entry.thumbsUp + entry.thumbsDown === 0
-          || entry.thumbsUpRate >= RECOMMENDATION_THRESHOLDS.thumbsUpRateForDowngrade)
 
     if (downgradeGateOk && currentTier >= 3) {
       const candidates = recommendationCandidatesForTier(currentTier - 1)
@@ -425,7 +401,6 @@ function deriveConfidence(
   evalAnchor: { passRate: number } | null,
 ): 'high' | 'medium' | 'low' {
   if (evalAnchor && evalAnchor.passRate >= 0.85 && entry.totalRuns >= 50) return 'high'
-  if (entry.totalRuns >= 50 && (entry.thumbsUp + entry.thumbsDown) >= 10) return 'high'
   if (entry.totalRuns >= 20) return 'medium'
   return 'low'
 }
@@ -439,8 +414,6 @@ function buildDowngradeReason(
     `${entry.totalRuns} runs`,
     `${entry.qualitySuccessRate}% quality success`,
   ]
-  const totalFeedback = entry.thumbsUp + entry.thumbsDown
-  if (totalFeedback > 0) parts.push(`${entry.thumbsUpRate}% thumbs-up (${totalFeedback} signals)`)
   if (entry.escalated > 0) parts.push(`${entry.escalated} escalations`)
   else parts.push('0 escalations')
   if (entry.loopDetected > 0) parts.push(`${entry.loopDetected} loop trips`)
@@ -918,7 +891,6 @@ export interface ExperimentRunResult {
   loopDetected?: boolean
   escalated?: boolean
   responseEmpty?: boolean
-  userFeedback?: 'up' | 'down' | null
 }
 
 export async function recordExperimentResult(
@@ -932,8 +904,6 @@ export async function recordExperimentResult(
   const incLoop  = result.loopDetected  ? 1 : 0
   const incMax   = result.hitMaxTurns   ? 1 : 0
   const incEmpty = result.responseEmpty ? 1 : 0
-  const incUp    = result.userFeedback === 'up'   ? 1 : 0
-  const incDown  = result.userFeedback === 'down' ? 1 : 0
 
   if (variant === 'A') {
     await prisma.$executeRaw(Prisma.sql`
@@ -947,8 +917,6 @@ export async function recordExperimentResult(
         "loopDetectedA"  = "loopDetectedA"  + ${incLoop},
         "hitMaxTurnsA"   = "hitMaxTurnsA"   + ${incMax},
         "responseEmptyA" = "responseEmptyA" + ${incEmpty},
-        "thumbsUpA"      = "thumbsUpA"      + ${incUp},
-        "thumbsDownA"    = "thumbsDownA"    + ${incDown},
         "updatedAt"      = NOW()
       WHERE "id" = ${experimentId} AND "status" IN ('running', 'shadow')
     `)
@@ -964,8 +932,6 @@ export async function recordExperimentResult(
         "loopDetectedB"  = "loopDetectedB"  + ${incLoop},
         "hitMaxTurnsB"   = "hitMaxTurnsB"   + ${incMax},
         "responseEmptyB" = "responseEmptyB" + ${incEmpty},
-        "thumbsUpB"      = "thumbsUpB"      + ${incUp},
-        "thumbsDownB"    = "thumbsDownB"    + ${incDown},
         "updatedAt"      = NOW()
       WHERE "id" = ${experimentId} AND "status" IN ('running', 'shadow')
     `)
@@ -979,7 +945,6 @@ export async function recordExperimentResult(
  *
  *   winner = 'B' iff
  *     totalRunsA + totalRunsB ≥ MIN_RUNS &&
- *     thumbsUpRateB ≥ thumbsUpRateA - 5 &&
  *     escalationRateB ≤ escalationRateA + 2 &&
  *     loopRateB ≤ loopRateA &&
  *     hitMaxTurnsRateB ≤ hitMaxTurnsRateA &&
@@ -999,7 +964,6 @@ export async function summarizeExperiment(experimentId: string, workspaceId: str
     runs: exp.totalRunsA,
     cost: exp.totalCostA,
     successRate: exp.successRateA,
-    thumbsUpRate: safe(exp.thumbsUpA, exp.thumbsUpA + exp.thumbsDownA),
     escalationRate: safe(exp.escalationsA, exp.totalRunsA),
     loopRate: safe(exp.loopDetectedA, exp.totalRunsA),
     hitMaxRate: safe(exp.hitMaxTurnsA, exp.totalRunsA),
@@ -1011,7 +975,6 @@ export async function summarizeExperiment(experimentId: string, workspaceId: str
     runs: exp.totalRunsB,
     cost: exp.totalCostB,
     successRate: exp.successRateB,
-    thumbsUpRate: safe(exp.thumbsUpB, exp.thumbsUpB + exp.thumbsDownB),
     escalationRate: safe(exp.escalationsB, exp.totalRunsB),
     loopRate: safe(exp.loopDetectedB, exp.totalRunsB),
     hitMaxRate: safe(exp.hitMaxTurnsB, exp.totalRunsB),
@@ -1029,12 +992,10 @@ export async function summarizeExperiment(experimentId: string, workspaceId: str
     reasons.push(`Only ${totalRuns} of ${MIN_RUNS} required runs collected.`)
   } else {
     const qualityCloseEnough =
-      b.thumbsUpRate >= a.thumbsUpRate - 5 &&
       b.escalationRate <= a.escalationRate + 2 &&
       b.loopRate <= a.loopRate &&
       b.hitMaxRate <= a.hitMaxRate
     const qualityWorse =
-      b.thumbsUpRate < a.thumbsUpRate - 5 ||
       b.escalationRate > a.escalationRate + 2 ||
       b.loopRate > a.loopRate + 2
 
@@ -1364,7 +1325,6 @@ export async function getOptimizerInActionReport(
           loopDetected: true,
           escalated: true,
           responseEmpty: true,
-          userFeedback: true,
         },
         take: 5_000,
       }),
@@ -1381,7 +1341,6 @@ export async function getOptimizerInActionReport(
           loopDetected: true,
           escalated: true,
           responseEmpty: true,
-          userFeedback: true,
         },
         take: 5_000,
       }),
@@ -1394,8 +1353,7 @@ export async function getOptimizerInActionReport(
         !r.hitMaxTurns &&
         !r.loopDetected &&
         !r.escalated &&
-        !r.responseEmpty &&
-        r.userFeedback !== 'down',
+        !r.responseEmpty,
       ).length
       return Math.round((ok / rows.length) * 1000) / 10  // one decimal
     }
@@ -1497,78 +1455,7 @@ export async function getOptimizerInActionReport(
 }
 
 // ============================================================================
-// 8. Subagent Run Feedback (Phase 2.2)
-// ============================================================================
-
-/**
- * Apply user thumbs-up/down feedback to the AgentCostMetric row that matches
- * an `agentRunId`. Returns null if no metric row was found (e.g. CLI-mode run
- * that didn't emit a metric).
- */
-export async function recordSubagentFeedback(
-  agentRunId: string,
-  feedback: 'up' | 'down' | null,
-): Promise<{ ok: true } | null> {
-  const metric = await prisma.agentCostMetric.findUnique({ where: { agentRunId } })
-  if (!metric) return null
-  const previousFeedback =
-    metric.userFeedback === 'up' || metric.userFeedback === 'down'
-      ? metric.userFeedback
-      : null
-  await prisma.agentCostMetric.update({
-    where: { agentRunId },
-    data: { userFeedback: feedback },
-  })
-  await adjustExperimentFeedbackCounters(
-    metric.workspaceId,
-    metric.agentType,
-    metric.model,
-    previousFeedback,
-    feedback,
-  )
-  return { ok: true }
-}
-
-async function adjustExperimentFeedbackCounters(
-  workspaceId: string,
-  agentType: string,
-  model: string,
-  previousFeedback: 'up' | 'down' | null,
-  nextFeedback: 'up' | 'down' | null,
-): Promise<void> {
-  if (previousFeedback === nextFeedback) return
-  const upDelta = (nextFeedback === 'up' ? 1 : 0) - (previousFeedback === 'up' ? 1 : 0)
-  const downDelta = (nextFeedback === 'down' ? 1 : 0) - (previousFeedback === 'down' ? 1 : 0)
-  if (upDelta === 0 && downDelta === 0) return
-
-  await prisma.$executeRaw(Prisma.sql`
-    UPDATE "model_experiments" SET
-      "thumbsUpA" = CASE
-        WHEN "modelA" = ${model} THEN GREATEST(0, "thumbsUpA" + ${upDelta})
-        ELSE "thumbsUpA"
-      END,
-      "thumbsDownA" = CASE
-        WHEN "modelA" = ${model} THEN GREATEST(0, "thumbsDownA" + ${downDelta})
-        ELSE "thumbsDownA"
-      END,
-      "thumbsUpB" = CASE
-        WHEN "modelB" = ${model} THEN GREATEST(0, "thumbsUpB" + ${upDelta})
-        ELSE "thumbsUpB"
-      END,
-      "thumbsDownB" = CASE
-        WHEN "modelB" = ${model} THEN GREATEST(0, "thumbsDownB" + ${downDelta})
-        ELSE "thumbsDownB"
-      END,
-      "updatedAt" = NOW()
-    WHERE "workspaceId" = ${workspaceId}
-      AND "agentType" = ${agentType}
-      AND "status" IN ('running', 'shadow')
-      AND ("modelA" = ${model} OR "modelB" = ${model})
-  `)
-}
-
-// ============================================================================
-// 9. Record Agent Cost Metric (called from agent-manager / proxy)
+// 8. Record Agent Cost Metric (called from agent-manager / proxy)
 // ----------------------------------------------------------------------------
 // Now accepts the multi-signal quality columns (Phase 2.1). Server-side
 // recomputes creditCost when the caller passes 0, so subagent runs get real
@@ -1651,21 +1538,6 @@ async function maybeRecordExperimentRun(
         : null
   if (!variant) return
 
-  // Look up any feedback the user has already left for this run (the metric
-  // arrives before feedback in most cases, but if it doesn't we still credit
-  // the experiment correctly).
-  let userFeedback: 'up' | 'down' | null = null
-  if (data.agentRunId) {
-    const m = await prisma.agentCostMetric.findFirst({
-      where: { agentRunId: data.agentRunId },
-      select: { userFeedback: true },
-      orderBy: { createdAt: 'desc' },
-    })
-    if (m?.userFeedback === 'up' || m?.userFeedback === 'down') {
-      userFeedback = m.userFeedback
-    }
-  }
-
   await recordExperimentResult(exp.id, variant, {
     creditCost,
     tokens: data.inputTokens + data.outputTokens,
@@ -1675,7 +1547,6 @@ async function maybeRecordExperimentRun(
     loopDetected: data.loopDetected ?? false,
     escalated: data.escalated ?? false,
     responseEmpty: data.responseEmpty ?? false,
-    userFeedback,
   })
 }
 

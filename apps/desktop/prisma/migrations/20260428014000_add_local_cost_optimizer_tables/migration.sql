@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS "agent_cost_metrics" (
   "loopDetected" BOOLEAN NOT NULL DEFAULT false,
   "escalated" BOOLEAN NOT NULL DEFAULT false,
   "responseEmpty" BOOLEAN NOT NULL DEFAULT false,
-  "userFeedback" TEXT,
   "metadata" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "agent_cost_metrics_workspaceId_fkey"
@@ -44,8 +43,6 @@ CREATE INDEX IF NOT EXISTS "agent_cost_metrics_model_idx"
   ON "agent_cost_metrics"("model");
 CREATE INDEX IF NOT EXISTS "agent_cost_metrics_createdAt_idx"
   ON "agent_cost_metrics"("createdAt");
-CREATE INDEX IF NOT EXISTS "agent_cost_metrics_userFeedback_idx"
-  ON "agent_cost_metrics"("userFeedback");
 
 CREATE TABLE IF NOT EXISTS "subagent_model_overrides" (
   "id" TEXT NOT NULL PRIMARY KEY,
@@ -151,10 +148,6 @@ CREATE TABLE IF NOT EXISTS "model_experiments" (
   "hitMaxTurnsB" INTEGER NOT NULL DEFAULT 0,
   "responseEmptyA" INTEGER NOT NULL DEFAULT 0,
   "responseEmptyB" INTEGER NOT NULL DEFAULT 0,
-  "thumbsUpA" INTEGER NOT NULL DEFAULT 0,
-  "thumbsUpB" INTEGER NOT NULL DEFAULT 0,
-  "thumbsDownA" INTEGER NOT NULL DEFAULT 0,
-  "thumbsDownB" INTEGER NOT NULL DEFAULT 0,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "model_experiments_workspaceId_fkey"

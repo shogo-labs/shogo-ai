@@ -1948,21 +1948,6 @@ export const ChatPanel = observer(function ChatPanel({
     [recentTools],
   )
 
-  // Phase 2.2 — collect 👍/👎 feedback on completed sub-agent runs and forward
-  // to the API. The handler is stable across renders so memoised TurnList
-  // doesn't bail out unnecessarily.
-  const handleSubagentFeedback = useCallback(
-    async (agentRunId: string, feedback: "up" | "down" | null) => {
-      try {
-        const http = createHttpClient()
-        await api.submitSubagentFeedback(http, agentRunId, feedback)
-      } catch (err) {
-        console.warn("[ChatPanel] Failed to submit subagent feedback:", err)
-      }
-    },
-    [],
-  )
-
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
 
@@ -3345,7 +3330,6 @@ export const ChatPanel = observer(function ChatPanel({
                 activeSubagents={activeSubagentsList}
                 recentTools={recentToolsList}
                 subagentToolCalls={accumulatedSubagentTools}
-                onSubagentFeedback={handleSubagentFeedback}
               />
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
               <View className="flex-col items-center justify-center flex-1 gap-3">
@@ -3365,7 +3349,6 @@ export const ChatPanel = observer(function ChatPanel({
                     subagents={activeSubagentsList}
                     recentTools={recentToolsList}
                     defaultExpanded
-                    onSubmitFeedback={handleSubagentFeedback}
                   />
                 )}
                 <View className="flex-row items-center gap-1 p-2">

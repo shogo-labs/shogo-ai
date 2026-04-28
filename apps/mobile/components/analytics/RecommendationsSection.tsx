@@ -33,7 +33,6 @@ export interface CostRecommendation {
   evidence?: {
     runs: number
     qualitySuccessRate: number
-    thumbsUpRate: number | null
     escalationRate: number
     loopTrips: number
     maxTurnHits: number
@@ -169,14 +168,6 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                           good={rec.evidence.qualitySuccessRate >= 85}
                           bad={rec.evidence.qualitySuccessRate < 60}
                         />
-                        {rec.evidence.thumbsUpRate !== null && (
-                          <EvidenceChip
-                            label="thumbs-up"
-                            value={`${rec.evidence.thumbsUpRate}%`}
-                            good={rec.evidence.thumbsUpRate >= 75}
-                            bad={rec.evidence.thumbsUpRate < 50}
-                          />
-                        )}
                         <EvidenceChip
                           label="escalations"
                           value={`${rec.evidence.escalationRate}%`}

@@ -7,10 +7,10 @@
  * Shows expandable stats for subagent execution.
  */
 
-import { useState, useCallback } from "react"
+import { useState } from "react"
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { ChevronDown, ChevronUp, Bot, ThumbsUp, ThumbsDown } from "lucide-react-native"
+import { ChevronDown, ChevronUp, Bot } from "lucide-react-native"
 import { SubagentStats, type RecentTool } from "./SubagentStats"
 
 export interface SubagentProgress {
@@ -26,12 +26,6 @@ export interface SubagentPanelProps {
   recentTools: RecentTool[]
   defaultExpanded?: boolean
   className?: string
-  /**
-   * Phase 2.2 — when provided, completed sub-agent runs render a 👍/👎 control
-   * that calls back here with the user's verdict. The host is responsible for
-   * POSTing to /api/subagent-runs/:id/feedback (see api.submitSubagentFeedback).
-   */
-  onSubmitFeedback?: (agentRunId: string, feedback: "up" | "down" | null) => Promise<void>
 }
 
 export function SubagentPanel({
@@ -39,32 +33,10 @@ export function SubagentPanel({
   recentTools,
   defaultExpanded = true,
   className,
-  onSubmitFeedback,
 }: SubagentPanelProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded)
-  // agentId → user's verdict; tracked locally so the UI flips immediately even
-  // before the network round-trip resolves.
-  const [feedback, setFeedback] = useState<Record<string, "up" | "down" | null>>({})
 
   const runningCount = subagents.filter((s) => s.status === "running").length
-
-  const handleFeedback = useCallback(
-    async (agentId: string, verdict: "up" | "down") => {
-      const current = feedback[agentId]
-      // Tap-to-toggle: clicking the same button again clears the feedback so
-      // users can recover from accidental clicks without leaving a wrong signal
-      // in the data set.
-      const next = current === verdict ? null : verdict
-      setFeedback((prev) => ({ ...prev, [agentId]: next }))
-      try {
-        await onSubmitFeedback?.(agentId, next)
-      } catch {
-        // Roll back on failure so the UI matches what's persisted.
-        setFeedback((prev) => ({ ...prev, [agentId]: current ?? null }))
-      }
-    },
-    [feedback, onSubmitFeedback],
-  )
 
   if (subagents.length === 0) {
     return null
@@ -145,25 +117,6 @@ export function SubagentPanel({
                   {!isRunning && (
                     <Text className="text-xs text-gray-400">(complete)</Text>
                   )}
-
-                  {/* Feedback controls — only show after the run completes and
-                      only when the host wired up onSubmitFeedback. The verdict
-                      is persisted on AgentCostMetric.userFeedback and used by
-                      the recommendation gate (Phase 2.3). */}
-                  {!isRunning && onSubmitFeedback && (
-                    <View className="flex-row items-center gap-1 ml-auto">
-                      <FeedbackButton
-                        verdict="up"
-                        active={feedback[subagent.agentId] === "up"}
-                        onPress={() => handleFeedback(subagent.agentId, "up")}
-                      />
-                      <FeedbackButton
-                        verdict="down"
-                        active={feedback[subagent.agentId] === "down"}
-                        onPress={() => handleFeedback(subagent.agentId, "down")}
-                      />
-                    </View>
-                  )}
                 </View>
 
                 <SubagentStats
@@ -178,38 +131,6 @@ export function SubagentPanel({
         </View>
       )}
     </View>
-  )
-}
-
-function FeedbackButton({
-  verdict,
-  active,
-  onPress,
-}: {
-  verdict: "up" | "down"
-  active: boolean
-  onPress: () => void
-}) {
-  const Icon = verdict === "up" ? ThumbsUp : ThumbsDown
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      className={cn(
-        "w-6 h-6 items-center justify-center rounded",
-        active && verdict === "up" && "bg-green-500/15",
-        active && verdict === "down" && "bg-red-500/15",
-      )}
-    >
-      <Icon
-        size={12}
-        className={cn(
-          active && verdict === "up" && "text-green-500",
-          active && verdict === "down" && "text-red-400",
-          !active && "text-gray-400",
-        )}
-      />
-    </Pressable>
   )
 }
 
