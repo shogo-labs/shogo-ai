@@ -57,8 +57,14 @@ interface AgentBreakdownEntry {
   agentType: string
   model: string
   totalRuns: number
-  successes: number
-  failures: number
+  promiseSuccesses?: number
+  qualitySuccesses?: number
+  thumbsUp?: number
+  thumbsDown?: number
+  hitMaxTurns?: number
+  loopDetected?: number
+  escalated?: number
+  responseEmpty?: number
   totalInputTokens: number
   totalOutputTokens: number
   totalCachedInputTokens: number
@@ -67,6 +73,8 @@ interface AgentBreakdownEntry {
   totalWallTimeMs: number
   avgCostPerRun: number
   avgLatencyMs: number
+  qualitySuccessRate?: number
+  escalationRate?: number
   successRate: number
 }
 
@@ -514,6 +522,9 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
       {entries.map((entry, i) => {
         const key = `${entry.agentType}::${entry.model}`
         const isExpanded = expanded === key
+        const promiseSuccesses = entry.promiseSuccesses ?? Math.round((entry.successRate / 100) * entry.totalRuns)
+        const failures = Math.max(0, entry.totalRuns - promiseSuccesses)
+        const qualitySuccessRate = entry.qualitySuccessRate ?? entry.successRate
         const costPercent = data!.totals.totalCreditCost > 0
           ? Math.round((entry.totalCreditCost / data!.totals.totalCreditCost) * 100)
           : 0
@@ -569,12 +580,21 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                 {isExpanded && (
                   <View className="mt-3 pt-3 border-t border-border">
                     <View className="flex-row flex-wrap gap-x-4 gap-y-2">
-                      <MetricPill icon={CheckCircle2} label="Success" value={`${entry.successRate}%`} color="text-green-400" />
-                      <MetricPill icon={XCircle} label="Failures" value={String(entry.failures)} color="text-red-400" />
+                      <MetricPill icon={CheckCircle2} label="Quality" value={`${qualitySuccessRate}%`} color="text-green-400" />
+                      <MetricPill icon={XCircle} label="Failures" value={String(failures)} color="text-red-400" />
                       <MetricPill icon={Clock} label="Avg Latency" value={formatDuration(entry.avgLatencyMs)} color="text-blue-400" />
                       <MetricPill icon={DollarSign} label="Avg Cost" value={`${entry.avgCostPerRun} cr`} color="text-orange-400" />
                       <MetricPill icon={Zap} label="Tool Calls" value={formatNumber(entry.totalToolCalls)} color="text-purple-400" />
                     </View>
+                    {(entry.loopDetected || entry.hitMaxTurns || entry.escalated || entry.responseEmpty || entry.thumbsDown) ? (
+                      <View className="flex-row flex-wrap gap-x-3 gap-y-1 mt-2">
+                        {entry.loopDetected ? <Text className="text-[10px] text-muted-foreground">Loops: {entry.loopDetected}</Text> : null}
+                        {entry.hitMaxTurns ? <Text className="text-[10px] text-muted-foreground">Max-turns: {entry.hitMaxTurns}</Text> : null}
+                        {entry.escalated ? <Text className="text-[10px] text-muted-foreground">Escalations: {entry.escalated}</Text> : null}
+                        {entry.responseEmpty ? <Text className="text-[10px] text-muted-foreground">Empty: {entry.responseEmpty}</Text> : null}
+                        {entry.thumbsDown ? <Text className="text-[10px] text-muted-foreground">Thumbs-down: {entry.thumbsDown}</Text> : null}
+                      </View>
+                    ) : null}
                     <Separator className="my-2" />
                     <View className="flex-row justify-between">
                       <Text className="text-[10px] text-muted-foreground">

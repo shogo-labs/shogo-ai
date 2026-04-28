@@ -38,12 +38,12 @@ const BUILTIN_SUBAGENTS: readonly BuiltinSubagent[] = [
   {
     agentType: 'explore',
     description: 'Read-only codebase exploration. Highest spawn volume.',
-    defaultModel: 'haiku',
+    defaultModel: 'claude-haiku-4-5',
   },
   {
     agentType: 'general-purpose',
     description: 'Generic helper for non-specialised tasks.',
-    defaultModel: 'sonnet',
+    defaultModel: 'claude-sonnet-4-6',
   },
   {
     agentType: 'browser_qa',
@@ -65,11 +65,11 @@ interface ModelChoice {
 }
 
 const MODEL_CATALOG: readonly ModelChoice[] = [
-  { model: 'gpt-5.4-nano', costPer1M: 0.4,  tier: 'fast'     },
-  { model: 'haiku',        costPer1M: 1.25, tier: 'fast'     },
-  { model: 'gpt-5.4-mini', costPer1M: 1.6,  tier: 'balanced' },
-  { model: 'sonnet',       costPer1M: 15,   tier: 'balanced' },
-  { model: 'opus',         costPer1M: 75,   tier: 'premium'  },
+  { model: 'gpt-5.4-nano', costPer1M: 1.25, tier: 'fast'     },
+  { model: 'claude-haiku-4-5', costPer1M: 5.0, tier: 'fast'     },
+  { model: 'gpt-5.4-mini', costPer1M: 4.4,  tier: 'balanced' },
+  { model: 'claude-sonnet-4-6', costPer1M: 15,   tier: 'balanced' },
+  { model: 'claude-opus-4-7', costPer1M: 25,   tier: 'premium'  },
 ] as const
 
 // ============================================================================
@@ -95,7 +95,7 @@ export interface SubAgentModelsSectionProps {
    * workspace's full override list.
    */
   fetchOverrides: () => Promise<SubagentOverride[] | null>
-  /** PUT — upsert a single override. */
+  /** POST — upsert a single override. */
   putOverride: (body: {
     agentType: string
     model: string
@@ -330,6 +330,11 @@ export function SubAgentModelsSection({
 }
 
 function costFor(model: string): string {
-  const entry = MODEL_CATALOG.find(c => c.model === model)
+  const normalized =
+    model === 'haiku' ? 'claude-haiku-4-5'
+      : model === 'sonnet' ? 'claude-sonnet-4-6'
+        : model === 'opus' ? 'claude-opus-4-7'
+          : model
+  const entry = MODEL_CATALOG.find(c => c.model === normalized)
   return entry ? entry.costPer1M.toFixed(2) : '—'
 }

@@ -681,14 +681,18 @@ export async function resolveSubagentModel(
   experimentVariant?: 'A' | 'B'
 }> {
   if (configModel) {
-    return { model: configModel, provider: configProvider ?? builtinProvider, source: 'explicit' }
+    return {
+      model: configModel,
+      provider: configProvider ?? inferProviderFromModel(configModel, builtinProvider),
+      source: 'explicit',
+    }
   }
   if (workspaceId) {
     const hit = await fetchSubagentOverrideFromApi(agentType, workspaceId, projectId, bucketKey)
     if (hit.override) {
       return {
         model: hit.override.model,
-        provider: hit.override.provider ?? builtinProvider ?? configProvider,
+        provider: hit.override.provider ?? inferProviderFromModel(hit.override.model, builtinProvider ?? configProvider),
         source: hit.override.source,
       }
     }
@@ -697,14 +701,14 @@ export async function resolveSubagentModel(
       // bucket assignment so the experiment actually gets traffic.
       return {
         model: hit.experiment.model,
-        provider: configProvider ?? builtinProvider,
+        provider: inferProviderFromModel(hit.experiment.model, configProvider ?? builtinProvider),
         source: 'experiment',
         experimentId: hit.experiment.experimentId,
         experimentVariant: hit.experiment.variant,
       }
     }
   }
-  return { model: builtinModel, provider: builtinProvider ?? configProvider, source: 'builtin' }
+  return { model: builtinModel, provider: inferProviderFromModel(builtinModel, builtinProvider ?? configProvider), source: 'builtin' }
 }
 
 // ---------------------------------------------------------------------------
@@ -893,7 +897,10 @@ export async function runSubagent(
   // caller hasn't explicitly set `config.model` AND the parent isn't asking
   // for a tier shorthand AND auto-routing is off. This mirrors the precedence
   // documented on `resolveSubagentModel`.
-  const isBuiltin = !!getBuiltinSubagentConfig(config.name, parentCtx, allParentTools)
+  const builtinConfig = getBuiltinSubagentConfig(config.name, parentCtx, allParentTools)
+  const isBuiltin = !!builtinConfig
+  const hasExplicitModel =
+    !!config.model && (!isBuiltin || config.model !== builtinConfig?.model)
   let resolvedOverride: {
     model: string
     provider: string | undefined
@@ -901,7 +908,7 @@ export async function runSubagent(
     experimentId?: string
     experimentVariant?: 'A' | 'B'
   } | null = null
-  if (isBuiltin && !config.model && !config.modelTier && !parentCtx.autoRouting) {
+  if (isBuiltin && !hasExplicitModel && !config.modelTier && !parentCtx.autoRouting) {
     try {
       const workspaceId = process.env.WORKSPACE_ID || null
       const projectId = parentCtx.projectId || null
@@ -918,8 +925,8 @@ export async function runSubagent(
         projectId,
         undefined,
         config.provider,
-        config.model || parentCtx.effectiveModel || parentCtx.config.model.name,
-        config.provider,
+        builtinConfig?.model || parentCtx.effectiveModel || parentCtx.config.model.name,
+        builtinConfig?.provider || config.provider,
         bucketKey,
       )
       if (resolvedOverride.source !== 'builtin') {
@@ -936,6 +943,7 @@ export async function runSubagent(
   }
 
   const parentModel = resolvedOverride?.model
+    || (hasExplicitModel ? config.model : undefined)
     || config.model
     || parentCtx.effectiveModel
     || parentCtx.config.model.name
