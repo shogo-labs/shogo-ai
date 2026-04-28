@@ -1808,7 +1808,7 @@ export class WarmPoolController {
             },
           },
           spec: {
-            timeoutSeconds: 1800,
+            timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
             containers: [
