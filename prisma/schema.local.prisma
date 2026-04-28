@@ -129,6 +129,7 @@ model Workspace {
   modelExperiments       ModelExperiment[]
   subagentModelOverrides SubagentModelOverride[]
   agentEvalResults       AgentEvalResult[]
+  agentEvalSets          AgentEvalSet[]
 
   @@map("workspaces")
 }
@@ -175,6 +176,7 @@ model Project {
   agentCostMetrics       AgentCostMetric[]
   modelExperiments       ModelExperiment[]
   subagentModelOverrides SubagentModelOverride[]
+  agentEvalSets          AgentEvalSet[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -1512,6 +1514,27 @@ model AgentEvalResult {
   @@index([agentType, model, createdAt])
   @@index([workspaceId])
   @@map("agent_eval_results")
+}
+
+model AgentEvalSet {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String?
+  agentType   String
+  name        String
+  description String?
+  examples    String
+  enabled     Boolean  @default(true)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, agentType])
+  @@index([workspaceId, projectId])
+  @@map("agent_eval_sets")
 }
 
 model BudgetAlert {

@@ -82,12 +82,16 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
     )
   }
 
+  const recommendationKey = (rec: CostRecommendation) =>
+    `${rec.agentType}:${rec.currentModel}:${rec.recommendedModel}`
+
   const handleApply = async (rec: CostRecommendation) => {
     if (!onApply) return
-    setApplying(rec.agentType)
+    const key = recommendationKey(rec)
+    setApplying(key)
     try {
       await onApply(rec)
-      setApplied(prev => new Set(prev).add(rec.agentType))
+      setApplied(prev => new Set(prev).add(key))
     } catch {
       /* error toast handled upstream */
     } finally {
@@ -99,8 +103,9 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
     <View className="gap-2">
       {recs.map((rec, i) => {
         const isSavings = rec.estimatedSavingsPercent > 0
-        const isApplying = applying === rec.agentType
-        const wasApplied = applied.has(rec.agentType)
+        const recKey = recommendationKey(rec)
+        const isApplying = applying === recKey
+        const wasApplied = applied.has(recKey)
         const canApply = !!onApply && rec.currentModel !== rec.recommendedModel
         return (
           <Card key={i}>
@@ -189,7 +194,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                       </View>
                       {rec.evidence.evalAnchor && (
                         <Text className="text-[9px] text-muted-foreground mt-1">
-                          Eval anchor: <Text className="font-medium text-foreground">{rec.evidence.evalAnchor.model}</Text> passes <Text className="font-medium text-foreground">{Math.round(rec.evidence.evalAnchor.passRate * 100)}%</Text> of <Text className="font-medium">{rec.evidence.evalAnchor.suite}</Text>
+                          Eval anchor: <Text className="font-medium text-foreground">{rec.evidence.evalAnchor.model}</Text> · <Text className="font-medium text-foreground">{Math.round(rec.evidence.evalAnchor.passRate * 100)}%</Text> pass · <Text className="font-medium">{rec.evidence.evalAnchor.suite}</Text>
                         </Text>
                       )}
                     </View>
@@ -224,7 +229,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                           )}>
                             {wasApplied
                               ? `Applied · ${rec.agentType} → ${getModelDisplayName(rec.recommendedModel)}`
-                              : isApplying ? 'Applying…' : `Apply: use ${getModelDisplayName(rec.recommendedModel)} for ${rec.agentType}`}
+                              : isApplying ? 'Applying…' : `Set workspace default for ${rec.agentType} to ${getModelDisplayName(rec.recommendedModel)}`}
                           </Text>
                         </View>
                       </Button>

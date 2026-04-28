@@ -5,10 +5,11 @@
  *
  * Lists every built-in sub-agent type alongside its current effective model,
  * a dropdown of supported alternatives with cost-per-1M output tokens, and
- * a Reset action that drops the override back to the built-in default.
+ * a Reset action that drops the override back to the built-in default. Custom
+ * agent overrides created from recommendations are listed below the built-ins.
  *
  * Resolution order surfaced to the user:
- *   project-override  >  workspace-override  >  built-in default
+ *   project-override  >  workspace-override  >  built-in/custom default
  *
  * Override changes take effect on the next sub-agent spawn (the runtime caches
  * resolutions for ~30s — see resolveSubagentModel in agent-runtime/subagent.ts).
@@ -185,8 +186,9 @@ export function SubAgentModelsSection({
       <View>
         <Text className="text-sm font-semibold text-foreground mb-1">Sub-Agent Models</Text>
         <Text className="text-[11px] text-muted-foreground leading-4">
-          Override which model each built-in sub-agent uses. Recommendations
-          from the Optimize tab post here. Changes take effect on the next spawn.
+          Override which model each sub-agent uses. Built-ins can be edited here;
+          custom agents appear after an Optimize recommendation is applied. Changes
+          take effect on the next spawn.
         </Text>
       </View>
 
@@ -303,7 +305,7 @@ export function SubAgentModelsSection({
 
       {(overrides ?? []).filter(o => !BUILTIN_SUBAGENTS.some(b => b.agentType === o.agentType)).length > 0 && (
         <View className="mt-1">
-          <Text className="text-[11px] font-medium text-muted-foreground mb-1.5">Custom agents with overrides</Text>
+          <Text className="text-[11px] font-medium text-muted-foreground mb-1.5">Custom agent types with model overrides</Text>
           {(overrides ?? [])
             .filter(o => !BUILTIN_SUBAGENTS.some(b => b.agentType === o.agentType))
             .map((o) => (

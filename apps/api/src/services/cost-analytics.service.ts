@@ -477,11 +477,24 @@ async function getEvalAnchor(
   workspaceId?: string,
 ): Promise<{ suite: string; passRate: number; model: string } | null> {
   try {
+    // Workspace-authored custom agent evals should win over global anchors with
+    // the same free-form agentType. This avoids cross-workspace name collisions
+    // such as two teams both creating a "reviewer" agent.
+    const workspaceRow = workspaceId ? await prisma.agentEvalResult.findFirst({
+      where: {
+        workspaceId,
+        agentType,
+        model,
+      },
+      orderBy: { createdAt: 'desc' },
+    }) : null
+    if (workspaceRow) return { suite: workspaceRow.suite, passRate: workspaceRow.passRate, model }
+
     const evalRow = await prisma.agentEvalResult.findFirst({
       where: {
         agentType,
         model,
-        OR: [{ workspaceId: null }, ...(workspaceId ? [{ workspaceId }] : [])],
+        workspaceId: null,
       },
       orderBy: { createdAt: 'desc' },
     })
@@ -1100,6 +1113,10 @@ function subagentOverrideDelegate() {
   return (prisma as any).subagentModelOverride as typeof prisma.subagentModelOverride | undefined
 }
 
+function agentEvalSetDelegate() {
+  return (prisma as any).agentEvalSet
+}
+
 export interface ResolvedSubagentModel {
   model: string
   provider: string | null
@@ -1108,12 +1125,12 @@ export interface ResolvedSubagentModel {
 }
 
 /**
- * Resolve the effective model for a built-in sub-agent given workspace +
- * optional project. Resolution order:
+ * Resolve the effective model for a sub-agent given workspace + optional
+ * project. Resolution order:
  *
  *   1. project-level override   (workspaceId, projectId, agentType)
  *   2. workspace-level override (workspaceId, projectId=NULL, agentType)
- *   3. null  → caller falls back to the built-in default
+ *   3. null  → caller falls back to the built-in/custom default
  */
 export async function resolveSubagentModelOverride(
   workspaceId: string,
@@ -1213,8 +1230,88 @@ export async function deleteSubagentOverride(
 }
 
 // ============================================================================
-// 7. Agent Eval Results (Phase 3.1 — eval-anchored ground truth)
+// 7. Agent Eval Sets + Results (Phase 2 custom-agent recommendation source)
 // ============================================================================
+
+export async function listAgentEvalSets(opts: {
+  workspaceId: string
+  agentType?: string
+  projectId?: string | null
+  enabled?: boolean
+}) {
+  const evalSets = agentEvalSetDelegate()
+  if (!evalSets) return []
+
+  try {
+    return await evalSets.findMany({
+      where: {
+        workspaceId: opts.workspaceId,
+        ...(opts.agentType ? { agentType: opts.agentType } : {}),
+        ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
+        ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
+      },
+      orderBy: [{ agentType: 'asc' }, { updatedAt: 'desc' }],
+    })
+  } catch (error) {
+    if (isAnalyticsTableUnavailable(error)) return []
+    throw error
+  }
+}
+
+export async function upsertAgentEvalSet(
+  workspaceId: string,
+  data: {
+    id?: string
+    agentType: string
+    name: string
+    description?: string | null
+    examples: unknown
+    enabled?: boolean
+    projectId?: string | null
+    createdBy?: string | null
+  },
+) {
+  const evalSets = agentEvalSetDelegate()
+  if (!evalSets) throw new Error('Agent eval sets are not available in this database yet')
+
+  const payload = {
+    workspaceId,
+    projectId: data.projectId ?? null,
+    agentType: data.agentType.trim(),
+    name: data.name.trim(),
+    description: data.description?.trim() || null,
+    examples: data.examples as Prisma.InputJsonValue,
+    enabled: data.enabled ?? true,
+    createdBy: data.createdBy ?? null,
+  }
+
+  if (data.id) {
+    const existing = await evalSets.findFirst({ where: { id: data.id, workspaceId } })
+    if (!existing) return null
+    return evalSets.update({
+      where: { id: existing.id },
+      data: {
+        projectId: payload.projectId,
+        agentType: payload.agentType,
+        name: payload.name,
+        description: payload.description,
+        examples: payload.examples,
+        enabled: payload.enabled,
+      },
+    })
+  }
+
+  return evalSets.create({ data: payload })
+}
+
+export async function deleteAgentEvalSet(workspaceId: string, id: string) {
+  const evalSets = agentEvalSetDelegate()
+  if (!evalSets) return null
+
+  const existing = await evalSets.findFirst({ where: { id, workspaceId } })
+  if (!existing) return null
+  return evalSets.delete({ where: { id: existing.id } })
+}
 
 export async function recordAgentEvalResult(data: {
   workspaceId?: string | null

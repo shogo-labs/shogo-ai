@@ -139,7 +139,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
             <Wand2 size={32} className="text-muted-foreground" />
             <Text className="text-foreground font-semibold mt-3">No optimizations applied yet</Text>
             <Text className="text-muted-foreground text-sm mt-1 text-center">
-              Apply a recommendation from the Recommendations tab to see before/after data here.
+              Apply a recommendation from the Optimize tab to see before/after data here.
             </Text>
           </View>
         </CardContent>
