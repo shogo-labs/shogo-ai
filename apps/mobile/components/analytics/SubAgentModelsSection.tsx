@@ -117,14 +117,19 @@ export function SubAgentModelsSection({
 }: SubAgentModelsSectionProps) {
   const [overrides, setOverrides] = useState<SubagentOverride[] | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [pendingAgentType, setPendingAgentType] = useState<string | null>(null)
   const [openDropdown, setOpenDropdown] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const data = await fetchOverrides()
       setOverrides(data)
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to load sub-agent overrides')
+      setOverrides(null)
     } finally {
       setLoading(false)
     }
@@ -137,10 +142,13 @@ export function SubAgentModelsSection({
 
   const handleApply = useCallback(async (agentType: string, model: string) => {
     setPendingAgentType(agentType)
+    setError(null)
     try {
       await putOverride({ agentType, model, projectId: null })
       await load()
       onChange?.()
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to apply sub-agent override')
     } finally {
       setPendingAgentType(null)
       setOpenDropdown(null)
@@ -149,10 +157,13 @@ export function SubAgentModelsSection({
 
   const handleReset = useCallback(async (agentType: string) => {
     setPendingAgentType(agentType)
+    setError(null)
     try {
       await deleteOverride(agentType, null)
       await load()
       onChange?.()
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to reset sub-agent override')
     } finally {
       setPendingAgentType(null)
     }
@@ -178,6 +189,14 @@ export function SubAgentModelsSection({
           from the Optimize tab post here. Changes take effect on the next spawn.
         </Text>
       </View>
+
+      {error && (
+        <Card>
+          <CardContent className="p-3">
+            <Text className="text-xs text-red-400">{error}</Text>
+          </CardContent>
+        </Card>
+      )}
 
       {BUILTIN_SUBAGENTS.map((agent) => {
         const override = overrideFor(agent.agentType)
