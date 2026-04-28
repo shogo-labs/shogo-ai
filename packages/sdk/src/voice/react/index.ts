@@ -19,6 +19,11 @@ export {
 } from './useShogoVoice.js'
 
 export {
+  ShogoVoiceProvider,
+  type ShogoVoiceProviderProps,
+} from './ShogoVoiceProvider.js'
+
+export {
   OrganicSphere,
   type OrganicSphereProps,
 } from './OrganicSphere.js'

@@ -18,12 +18,20 @@
  *     PhoneButton.tsx     — initiates an outbound Twilio call from a
  *                           project-provisioned number (requires
  *                           `features.voice.phoneNumber` provisioned).
- *     index.ts            — re-exports all three.
+ *     index.ts            — re-exports the three components above
+ *                           and the SDK's `ShogoVoiceProvider`, which
+ *                           the consumer app must mount once near
+ *                           its root for the voice hook to work.
  *
  * Every component uses `useShogoVoice()` from `@shogo-ai/sdk/voice/react`
  * which, in a generated pod, auto-detects `RUNTIME_AUTH_SECRET` +
  * `PROJECT_ID` and talks to the pod's local `/api/voice/signed-url`
  * proxy (wired by `createVoiceHandlers()` in `server.tsx`).
+ *
+ * `@elevenlabs/react` ≥ 1.1 requires a `<ConversationProvider>` above
+ * every `useConversation` caller. We surface that as
+ * `<ShogoVoiceProvider>` (a thin re-export) so generated pods don't
+ * have to import from `@elevenlabs/react` directly.
  *
  * All files use `skipIfExists: true` — they're scaffolds, not
  * regenerated code. Users are expected to restyle / customize them
@@ -66,10 +74,33 @@ function voiceButtonCode(sdkReactImport: string): string {
 /**
  * VoiceButton — click-to-talk Shogo voice widget.
  *
- * Zero-config in a generated pod: the underlying \`useShogoVoice()\`
- * auto-detects \`RUNTIME_AUTH_SECRET\` + \`PROJECT_ID\` (injected by the
- * runtime) and talks to the pod's \`/api/voice/signed-url\` route,
- * which proxies through the Shogo API with an \`x-runtime-token\`.
+ * REQUIRES <ShogoVoiceProvider> ABOVE IT IN THE TREE
+ * --------------------------------------------------
+ * This component calls \`useShogoVoice()\`, which delegates to
+ * \`@elevenlabs/react\`'s \`useConversation\` (≥ 1.1). The provider
+ * owns the convai session context, and a missing provider throws:
+ *
+ *     useRegisterCallbacks must be used within a ConversationProvider
+ *
+ * Wrap your app once near the root and you're set:
+ *
+ *     // App.tsx / layout.tsx / etc.
+ *     import { ShogoVoiceProvider } from '@/components/shogo'
+ *
+ *     export default function Root({ children }) {
+ *       return <ShogoVoiceProvider>{children}</ShogoVoiceProvider>
+ *     }
+ *
+ * Don't wrap each voice component individually — \`<VoiceButton>\` and
+ * \`<VoiceSphere>\` only share session state when they live under the
+ * SAME provider, so a per-component wrap will give the sphere a
+ * separate (disconnected) session and break the visualizer.
+ *
+ * Otherwise zero-config in a generated pod: the underlying
+ * \`useShogoVoice()\` auto-detects \`RUNTIME_AUTH_SECRET\` +
+ * \`PROJECT_ID\` (injected by the runtime) and talks to the pod's
+ * \`/api/voice/signed-url\` route, which proxies through the Shogo
+ * API with an \`x-runtime-token\`.
  *
  * Customize freely — this file is NOT regenerated after the first
  * \`shogo generate\` run.
@@ -132,6 +163,16 @@ function voiceSphereCode(sdkReactImport: string): string {
  * is speaking. Drives its animation off of the \`isSpeaking\` flag from
  * \`useShogoVoice()\`, so it mirrors the actual audio stream rather
  * than a guess based on time.
+ *
+ * REQUIRES <ShogoVoiceProvider> ABOVE IT IN THE TREE
+ * --------------------------------------------------
+ * Same provider requirement as \`<VoiceButton>\` — the underlying
+ * \`useShogoVoice()\` hook needs a \`@elevenlabs/react\`
+ * \`<ConversationProvider>\` ancestor (re-exported as
+ * \`<ShogoVoiceProvider>\`). Mount one provider at the app root and
+ * place the sphere and button under it together so they share a
+ * single voice session; per-component providers give isolated
+ * sessions and the sphere will never see the button's audio.
  *
  * Customize freely — this file is NOT regenerated after the first
  * \`shogo generate\` run.
@@ -249,12 +290,20 @@ export default PhoneButton
 `
 }
 
-function indexCode(): string {
+function indexCode(sdkReactImport: string): string {
   return `${HEADER}
 /**
  * Shogo voice components — drop-in UI for the pod-native voice flow.
  *
- * Usage (in your app):
+ * Setup (one-time, near the root of your app):
+ *
+ *     import { ShogoVoiceProvider } from '@/components/shogo'
+ *
+ *     export default function Root({ children }) {
+ *       return <ShogoVoiceProvider>{children}</ShogoVoiceProvider>
+ *     }
+ *
+ * Usage (anywhere under that provider):
  *
  *     import { VoiceButton, VoiceSphere } from '@/components/shogo'
  *
@@ -267,9 +316,17 @@ function indexCode(): string {
  *       )
  *     }
  *
+ * Why the provider? \`@elevenlabs/react\` ≥ 1.1 requires every
+ * \`useConversation\` caller (which includes \`useShogoVoice\`,
+ * \`useVoiceConversation\`, \`VoiceButton\`, and \`VoiceSphere\`) to live
+ * under a \`<ConversationProvider>\`. \`<ShogoVoiceProvider>\` is a
+ * thin re-export that keeps that import owned by the SDK rather than
+ * leaking into every consumer file.
+ *
  * Customize freely — this file is NOT regenerated after the first
  * \`shogo generate\` run.
  */
+export { ShogoVoiceProvider, type ShogoVoiceProviderProps } from '${sdkReactImport}'
 export { VoiceButton, type VoiceButtonProps } from './VoiceButton'
 export { VoiceSphere, type VoiceSphereProps } from './VoiceSphere'
 export { PhoneButton, type PhoneButtonProps } from './PhoneButton'
@@ -303,7 +360,7 @@ export function generateVoiceComponents(
     },
     {
       fileName: 'index.ts',
-      code: indexCode(),
+      code: indexCode(sdk),
       skipIfExists: true,
     },
   ]
