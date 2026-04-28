@@ -233,7 +233,11 @@ export function AskUserQuestionWidget({
 }: AskUserQuestionWidgetProps) {
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
 
-  const isPending = tool.result === undefined
+  // Treat both `undefined` (live stream: gateway suppresses tool-output-available)
+  // and `null` (legacy persisted parts that wrote `output: null`) as "not yet
+  // answered". Prevents the widget from rendering as already-answered after a
+  // cold hydration of an unanswered ask_user.
+  const isPending = tool.result == null
 
   const {
     selections,

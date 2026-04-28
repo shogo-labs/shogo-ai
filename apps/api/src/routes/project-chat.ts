@@ -236,13 +236,24 @@ async function trackUsageFromStream(
 
           currentTextPart = null
           currentReasoningPart = null
-          const part = {
+          // NOTE: do NOT set `output` here. Some tools (notably `ask_user`)
+          // intentionally never emit `tool-output-available`; baking
+          // `output: null` + `state: 'output-available'` into the persisted
+          // part makes the widget render as already-answered after a cold
+          // hydration, since `null !== undefined`.
+          const part: {
+            type: 'dynamic-tool'
+            toolCallId: string
+            toolName: string
+            input: any
+            state: string
+            output?: any
+          } = {
             type: 'dynamic-tool',
             toolCallId,
             toolName: data.toolName || toolCallMap.get(toolCallId)?.toolName || 'unknown',
             input: data.input || {},
-            output: null as any,
-            state: 'output-available',
+            state: 'input-available',
           }
           orderedParts.push(part)
           toolPartIndex.set(toolCallId, part)
@@ -259,6 +270,7 @@ async function trackUsageFromStream(
           const part = toolPartIndex.get(toolCallId)
           if (part) {
             part.output = data.output ?? { success: true }
+            part.state = 'output-available'
           }
         }
 
