@@ -163,11 +163,11 @@ export function CostAnalyticsTab({
   const [activeSection, setActiveSection] = useState<Section>('breakdown')
 
   const [breakdown, setBreakdown] = useState<{ data: BreakdownData | null; loading: boolean }>({ data: null, loading: true })
-  const [recommendations, setRecommendations] = useState<{ data: CostRecommendation[] | null; loading: boolean }>({ data: null, loading: true })
+  const [recommendations, setRecommendations] = useState<{ data: CostRecommendation[] | null; loading: boolean }>({ data: null, loading: false })
   const [trends, setTrends] = useState<{ data: TrendsData | null; loading: boolean }>({ data: null, loading: true })
   const [budgetAlerts, setBudgetAlerts] = useState<{ data: BudgetAlertItem[] | null; loading: boolean }>({ data: null, loading: true })
   const [budgetStatus, setBudgetStatus] = useState<{ data: BudgetStatus | null; loading: boolean }>({ data: null, loading: true })
-  const [experiments, setExperiments] = useState<{ data: ExperimentItem[] | null; loading: boolean }>({ data: null, loading: true })
+  const [experiments, setExperiments] = useState<{ data: ExperimentItem[] | null; loading: boolean }>({ data: null, loading: false })
   // Phase 3.3 — "Optimizer in Action" report. Loaded lazily when the tab is
   // first opened so the rest of the dashboard isn't slowed by the heavier
   // before/after aggregations.

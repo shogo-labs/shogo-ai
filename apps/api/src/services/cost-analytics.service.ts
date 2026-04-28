@@ -812,10 +812,15 @@ export async function createShadowExperiment(
 }
 
 export async function getExperiments(workspaceId: string) {
-  return prisma.modelExperiment.findMany({
-    where: { workspaceId },
-    orderBy: { createdAt: 'desc' },
-  })
+  try {
+    return await prisma.modelExperiment.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'desc' },
+    })
+  } catch (error) {
+    if (isAnalyticsTableUnavailable(error)) return []
+    throw error
+  }
 }
 
 export async function getExperiment(id: string, workspaceId: string) {
@@ -1046,6 +1051,21 @@ export async function summarizeExperiment(experimentId: string, workspaceId: str
 //    (Phase 1 — answers boss concern #2)
 // ============================================================================
 
+function isAnalyticsTableUnavailable(error: unknown): boolean {
+  const code = (error as any)?.code
+  const message = String((error as any)?.message ?? '')
+  return (
+    code === 'P2021' ||
+    code === 'P2022' ||
+    message.includes('does not exist') ||
+    message.includes('no such table')
+  )
+}
+
+function subagentOverrideDelegate() {
+  return (prisma as any).subagentModelOverride as typeof prisma.subagentModelOverride | undefined
+}
+
 export interface ResolvedSubagentModel {
   model: string
   provider: string | null
@@ -1066,15 +1086,18 @@ export async function resolveSubagentModelOverride(
   agentType: string,
   projectId?: string | null,
 ): Promise<ResolvedSubagentModel | null> {
+  const overrides = subagentOverrideDelegate()
+  if (!overrides) return null
+
   if (projectId) {
-    const projectOverride = await prisma.subagentModelOverride.findFirst({
+    const projectOverride = await overrides.findFirst({
       where: { workspaceId, projectId, agentType },
     })
     if (projectOverride) {
       return { model: projectOverride.model, provider: projectOverride.provider, source: 'project' }
     }
   }
-  const wsOverride = await prisma.subagentModelOverride.findFirst({
+  const wsOverride = await overrides.findFirst({
     where: { workspaceId, projectId: null, agentType },
   })
   if (wsOverride) {
@@ -1084,10 +1107,18 @@ export async function resolveSubagentModelOverride(
 }
 
 export async function listSubagentOverrides(workspaceId: string) {
-  return prisma.subagentModelOverride.findMany({
-    where: { workspaceId },
-    orderBy: [{ projectId: 'asc' }, { agentType: 'asc' }],
-  })
+  const overrides = subagentOverrideDelegate()
+  if (!overrides) return []
+
+  try {
+    return await overrides.findMany({
+      where: { workspaceId },
+      orderBy: [{ projectId: 'asc' }, { agentType: 'asc' }],
+    })
+  } catch (error) {
+    if (isAnalyticsTableUnavailable(error)) return []
+    throw error
+  }
 }
 
 export async function upsertSubagentOverride(
@@ -1100,15 +1131,18 @@ export async function upsertSubagentOverride(
     updatedBy?: string | null
   },
 ) {
+  const overrides = subagentOverrideDelegate()
+  if (!overrides) throw new Error('Sub-agent model overrides are not available in this local database yet')
+
   // Prisma's compound-unique upsert refuses `projectId: null` in TS types, so we
   // do a manual find-or-create-or-update gated by the underlying NULLS NOT
   // DISTINCT unique index (defined in the migration).
   const projectId = data.projectId ?? null
-  const existing = await prisma.subagentModelOverride.findFirst({
+  const existing = await overrides.findFirst({
     where: { workspaceId, projectId, agentType: data.agentType },
   })
   if (existing) {
-    return prisma.subagentModelOverride.update({
+    return overrides.update({
       where: { id: existing.id },
       data: {
         model: data.model,
@@ -1117,7 +1151,7 @@ export async function upsertSubagentOverride(
       },
     })
   }
-  return prisma.subagentModelOverride.create({
+  return overrides.create({
     data: {
       workspaceId,
       projectId,
@@ -1134,11 +1168,14 @@ export async function deleteSubagentOverride(
   agentType: string,
   projectId?: string | null,
 ) {
-  const target = await prisma.subagentModelOverride.findFirst({
+  const overrides = subagentOverrideDelegate()
+  if (!overrides) return null
+
+  const target = await overrides.findFirst({
     where: { workspaceId, projectId: projectId ?? null, agentType },
   })
   if (!target) return null
-  return prisma.subagentModelOverride.delete({ where: { id: target.id } })
+  return overrides.delete({ where: { id: target.id } })
 }
 
 // ============================================================================
@@ -1256,10 +1293,7 @@ export interface OptimizerInActionReport {
 export async function getOptimizerInActionReport(
   workspaceId: string,
 ): Promise<OptimizerInActionReport> {
-  const overrideRows = await prisma.subagentModelOverride.findMany({
-    where: { workspaceId },
-    orderBy: { updatedAt: 'desc' },
-  })
+  const overrideRows = await listSubagentOverrides(workspaceId)
 
   // Build before/after windows per override using the override's updatedAt
   // as the cut point. We use a 30-day window on either side.
@@ -1378,6 +1412,9 @@ export async function getOptimizerInActionReport(
     where: { OR: [{ workspaceId: null }, { workspaceId }] },
     orderBy: { createdAt: 'desc' },
     take: 200,
+  }).catch((error) => {
+    if (isAnalyticsTableUnavailable(error)) return []
+    throw error
   })
   const seenEval = new Set<string>()
   const evalScores: OptimizerInActionReport['evalScores'] = []
@@ -1407,6 +1444,9 @@ export async function getOptimizerInActionReport(
     },
     orderBy: { updatedAt: 'desc' },
     take: 20,
+  }).catch((error) => {
+    if (isAnalyticsTableUnavailable(error)) return []
+    throw error
   })
   const experiments: OptimizerInActionReport['experiments'] = []
   for (const exp of experimentRows) {
