@@ -45,10 +45,6 @@ export interface ProjectChatRoutesConfig {
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-const AGENT_TURN_STALE_AFTER_MS = parseInt(
-  process.env.AGENT_TURN_STALE_AFTER_MS || String(2 * 60 * 60_000),
-  10,
-)
 
 export const FILE_MODIFYING_TOOLS = new Set([
   'write_file', 'edit_file', 'delete_file',
@@ -85,7 +81,6 @@ async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
   requestBody: any,
   project: { id: string; workspaceId: string },
-  opts?: { turnId?: string },
 ) {
   const decoder = new TextDecoder()
   const reader = stream.getReader()
@@ -115,12 +110,6 @@ async function trackUsageFromStream(
   let currentReasoningPart: { type: 'reasoning'; text: string; durationMs?: number } | null = null
   let reasoningStartedAt: number | null = null
   let streamInterrupted = false
-  let turnCompleteReceived = false
-  let turnCompleteStatus: string | null = null
-  let turnCompleteError: string | null = null
-  let streamTurnId: string | null = opts?.turnId || null
-  let turnLastSeq = 0
-  let startPersistPromise: Promise<unknown> | null = null
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
@@ -285,47 +274,6 @@ async function trackUsageFromStream(
           }
         }
 
-        // Track durable turn lifecycle markers
-        if (type === 'data-turn-start') {
-          const d = data.data ?? data
-          const receivedTurnId = d.turnId || opts?.turnId
-          if (receivedTurnId) {
-            streamTurnId = receivedTurnId
-            const chatSessionId = requestBody?.chatSessionId
-            if (chatSessionId && !startPersistPromise) {
-              startPersistPromise = prisma.agentTurn.upsert({
-                where: { turnId: receivedTurnId },
-                create: {
-                  chatSessionId,
-                  projectId: project.id,
-                  turnId: receivedTurnId,
-                  status: 'active',
-                  startedAt: new Date(),
-                },
-                update: { status: 'active' },
-              }).catch((err: any) => {
-                console.warn(`[ProjectChat] Failed to upsert AgentTurn (start): ${err?.message}`)
-              })
-              await startPersistPromise
-            }
-          }
-        }
-        if (type === 'data-turn-seq') {
-          const seq = data.data?.seq ?? data.seq
-          if (typeof seq === 'number' && seq > turnLastSeq) {
-            turnLastSeq = seq
-          }
-        }
-        if (type === 'data-turn-complete') {
-          const d = data.data ?? data
-          turnCompleteReceived = true
-          turnCompleteStatus = d.status || 'completed'
-          turnCompleteError = d.error || null
-          if (typeof d.lastSeq === 'number' && d.lastSeq > turnLastSeq) {
-            turnLastSeq = d.lastSeq
-          }
-        }
-
         // Track usage from finish events or dedicated usage events
         if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
           // Custom data-usage event from runtime puts data in `data` field
@@ -385,13 +333,8 @@ async function trackUsageFromStream(
 
   const toolCallCount = toolCallMap.size
 
-  const turnState = turnCompleteReceived
-    ? `complete (turn-status=${turnCompleteStatus})`
-    : streamInterrupted
-      ? 'interrupted'
-      : 'eof-without-turn-complete'
   console.log(
-    `[ProjectChat] 📊 Stream ${turnState} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
+    `[ProjectChat] 📊 Stream ${streamInterrupted ? 'interrupted' : 'complete'} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
   // Usage billing is handled by the AI proxy billing session (opened before
@@ -425,8 +368,7 @@ async function trackUsageFromStream(
           },
         })
         assistantMessageId = message.id
-        const partialTag = !turnCompleteReceived ? ', PARTIAL — turn not confirmed complete' : ''
-        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`)
+        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
 
         prisma.project.update({
           where: { id: project.id },
@@ -436,43 +378,6 @@ async function trackUsageFromStream(
     } catch (err) {
       console.error("[ProjectChat] Failed to persist assistant message:", err)
     }
-  }
-
-  // Update durable AgentTurn record with final status and linked messageId
-  const resolvedTurnId = streamTurnId || opts?.turnId
-  if (resolvedTurnId && chatSessionId) {
-    await startPersistPromise
-    const dbStatus = turnCompleteReceived
-      ? (turnCompleteStatus === 'failed' ? 'failed' : 'completed')
-      : streamInterrupted
-        ? 'aborted'
-        : 'active'
-    prisma.agentTurn.upsert({
-      where: { turnId: resolvedTurnId },
-      create: {
-        chatSessionId,
-        projectId: project.id,
-        turnId: resolvedTurnId,
-        status: dbStatus as any,
-        completedAt: dbStatus === 'active' ? undefined : new Date(),
-        lastSeq: turnLastSeq,
-        messageId: assistantMessageId,
-        error: dbStatus === 'failed' || dbStatus === 'aborted'
-          ? (turnCompleteError || (streamInterrupted ? 'Stream interrupted before turn completion' : undefined))
-          : undefined,
-      },
-      update: {
-        status: dbStatus as any,
-        completedAt: dbStatus === 'active' ? undefined : new Date(),
-        lastSeq: turnLastSeq,
-        messageId: assistantMessageId,
-        error: dbStatus === 'failed' || dbStatus === 'aborted'
-          ? (turnCompleteError || (streamInterrupted ? 'Stream interrupted before turn completion' : undefined))
-          : undefined,
-      },
-    }).catch((err: any) => {
-      console.warn(`[ProjectChat] Failed to update AgentTurn (complete): ${err?.message}`)
-    })
   }
 
   // Log tool calls with real args, results, duration, and the correct messageId
@@ -997,7 +902,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                 } catch {
                   clearInterval(proxyKeepalive)
                 }
-              }, 10_000)
+              }, 15_000)
               ;(async () => {
                 try {
                   let chunkCount = 0
@@ -1034,8 +939,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // closeSession after the stream finishes. Mark the handoff so
           // our finally guard doesn't double-close.
           billingSessionHandedOff = true
-          const streamTurnId = response.headers.get('X-Turn-Id') || undefined
-          trackUsageFromStream(trackingStream, parsedBody, project, { turnId: streamTurnId }).catch((err) =>
+          trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           )
 
@@ -1235,53 +1139,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      // Try runtime in-memory buffer first (fast path)
-      try {
-        const response = await fetchFromRuntime(
-          projectId,
-          `/agent/chat/${chatSessionId}/turn`,
-          { method: "GET" },
-        )
-        if (response.status !== 404) {
-          const data = await response.json()
-          return c.json(data, response.status as any)
-        }
-      } catch {
-        // Runtime unreachable — fall through to DB
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/chat/${chatSessionId}/turn`,
+        { method: "GET" },
+      )
+
+      if (response.status === 404) {
+        return c.json({ status: "unknown" as const }, 404)
       }
 
-      // Fallback: check DB-backed AgentTurn record
-      let dbTurn = await prisma.agentTurn.findFirst({
-        where: { chatSessionId },
-        orderBy: { startedAt: 'desc' },
-      })
-      if (dbTurn) {
-        if (
-          dbTurn.status === 'active' &&
-          Date.now() - dbTurn.startedAt.getTime() > AGENT_TURN_STALE_AFTER_MS
-        ) {
-          dbTurn = await prisma.agentTurn.update({
-            where: { turnId: dbTurn.turnId },
-            data: {
-              status: 'failed',
-              completedAt: new Date(),
-              error: `Turn marked failed after ${Math.round(AGENT_TURN_STALE_AFTER_MS / 60_000)} minutes without runtime activity`,
-            },
-          })
-        }
-        return c.json({
-          turnId: dbTurn.turnId,
-          status: dbTurn.status,
-          lastSeq: dbTurn.lastSeq,
-          terminal: dbTurn.error ? { error: dbTurn.error } : null,
-          createdAt: dbTurn.startedAt.getTime(),
-          completedAt: dbTurn.completedAt?.getTime() ?? null,
-          lastEventAt: dbTurn.completedAt?.getTime() ?? dbTurn.startedAt.getTime(),
-          source: 'db',
-        })
-      }
-
-      return c.json({ status: "unknown" as const }, 404)
+      const data = await response.json()
+      return c.json(data, response.status as any)
     } catch (err: any) {
       console.warn(`[ProjectChat] turn snapshot proxy error for ${projectId}/${chatSessionId}:`, err?.message || err)
       return c.json({ status: "unknown" as const }, 404)

@@ -26,10 +26,3 @@ data:
   certs-secret-name: kourier-tls
   certs-secret-namespace: kourier-system
   drain-time-seconds: "15"
-  # Envoy stream_idle_timeout: max time a stream connection can be idle
-  # (no data flowing in either direction) before Envoy closes it.
-  # Default is 300s (5 min) which kills long-running chat streams during
-  # tool calls or LLM thinking pauses. Healthy chat streams send keepalive
-  # comments every 10s, so 15 minutes is enough headroom without keeping
-  # truly idle/dead streams around for too long.
-  stream-idle-timeout: "900"
