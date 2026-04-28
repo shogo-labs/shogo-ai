@@ -84,12 +84,19 @@ spec:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "5"
         # ─── Long-lived WebSocket support for desktop tunnel ───────────────
-        # Without these, Knative's activator / autoscaler can terminate
-        # pods holding active desktop WS sessions, causing intermittent
-        # "instance offline" 503s even when Redis is healthy.
+        # The desktop tunnel WebSocket no longer flows through the
+        # Knative DomainMapping path (see api-tunnel-ingress.yaml — it
+        # uses a label-selector Service that bypasses the
+        # `rewriteHost` + ExternalName loopback that breaks WS Upgrade).
+        # The remaining annotations make sure pods that are mid-WS-session
+        # are not yanked under us when an autoscaler or revision rollout
+        # decides to recycle them.
         #
-        # target-burst-capacity=-1  keep the activator on the data path so
-        #                           WS upgrades survive scale transitions
+        # target-burst-capacity=-1  keep the activator on the HTTP data
+        #                           path so heartbeat HTTP/2 traffic
+        #                           survives scale transitions cleanly
+        #                           (the tunnel WS bypasses the activator
+        #                           entirely via api-tunnel-direct → 8012)
         # scale-down-delay=5m       don't reap pods immediately on idle;
         #                           gives desktops time to reconnect gracefully
         # window=60s                standard smoothing
@@ -145,6 +152,13 @@ spec:
               value: "https://studio.staging.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.staging.shogo.ai"
+            # Public hostname the desktop should use for the on-demand
+            # tunnel WebSocket. Routed by api-tunnel-ingress.yaml directly
+            # to the api revision pod (no DomainMapping → no broken WS
+            # Upgrade hop). Heartbeat traffic stays on
+            # SHOGO_PUBLIC_API_URL above.
+            - name: SHOGO_TUNNEL_WS_URL
+              value: "wss://tunnel.staging.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-staging-system:6379"
             - name: DATABASE_URL
