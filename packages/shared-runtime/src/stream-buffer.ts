@@ -16,8 +16,14 @@
  */
 
 const CLEANUP_INTERVAL_MS = 60_000
-const MAX_BUFFER_AGE_MS = 30 * 60_000
-const COMPLETED_GRACE_MS = 30_000
+const MAX_BUFFER_AGE_MS = parseInt(
+  (typeof process !== 'undefined' && process.env?.STREAM_BUFFER_MAX_AGE_MS) || String(90 * 60_000),
+  10,
+)
+const COMPLETED_GRACE_MS = parseInt(
+  (typeof process !== 'undefined' && process.env?.STREAM_BUFFER_COMPLETED_GRACE_MS) || String(2 * 60_000),
+  10,
+)
 
 export type TurnStatus = 'active' | 'completed' | 'aborted' | 'failed'
 
