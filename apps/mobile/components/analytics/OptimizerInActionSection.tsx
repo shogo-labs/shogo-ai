@@ -83,6 +83,12 @@ function formatPercent(value: number | null | undefined): string {
 
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 0) {
+    const daysUntil = Math.ceil(Math.abs(ms) / (24 * 60 * 60 * 1000))
+    if (daysUntil < 1) return 'today'
+    if (daysUntil < 30) return `in ${daysUntil}d`
+    return `in ${Math.ceil(daysUntil / 30)}mo`
+  }
   const days = Math.floor(ms / (24 * 60 * 60 * 1000))
   if (days < 1) return 'today'
   if (days < 30) return `${days}d ago`
@@ -114,7 +120,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
   if (error) {
     return (
       <Card>
-        <CardContent>
+        <CardContent className="p-3">
           <Text className="text-destructive text-sm">Failed to load: {error}</Text>
         </CardContent>
       </Card>
@@ -128,7 +134,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
   if (!hasContent) {
     return (
       <Card>
-        <CardContent>
+        <CardContent className="p-6">
           <View className="py-6 items-center">
             <Wand2 size={32} className="text-muted-foreground" />
             <Text className="text-foreground font-semibold mt-3">No optimizations applied yet</Text>
@@ -145,7 +151,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
     <View className="gap-4">
       {/* ── Headline ──────────────────────────────────────────── */}
       <Card>
-        <CardContent>
+        <CardContent className="p-3">
           <View className="flex-row items-center gap-3">
             <TrendingDown size={28} className="text-emerald-500" />
             <View className="flex-1">
@@ -176,7 +182,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
               : null
             return (
               <Card key={ov.id}>
-                <CardContent>
+                <CardContent className="p-3">
                   <View className="flex-row items-start justify-between">
                     <View className="flex-1">
                       <Text className="text-foreground font-medium">{ov.agentType}</Text>
@@ -228,7 +234,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
           </View>
           {data.experiments.map((exp) => (
             <Card key={exp.id}>
-              <CardContent>
+              <CardContent className="p-3">
                 <View className="flex-row items-start justify-between">
                   <View className="flex-1">
                     <Text className="text-foreground font-medium">{exp.name}</Text>
@@ -254,6 +260,11 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
                     {exp.reasons.join(' ')}
                   </Text>
                 )}
+                {exp.runsA + exp.runsB === 0 && (
+                  <Text className="text-muted-foreground text-xs mt-2">
+                    Waiting for future matching built-in subagent runs. Main chat runs are not counted in A/B tests.
+                  </Text>
+                )}
               </CardContent>
             </Card>
           ))}
@@ -269,7 +280,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
           </View>
           {Array.from(evalsByAgent.entries()).map(([agentType, rows]) => (
             <Card key={agentType}>
-              <CardContent>
+              <CardContent className="p-3">
                 <Text className="text-foreground font-medium">{agentType}</Text>
                 <View className="mt-2 gap-1">
                   {rows.map((r) => (

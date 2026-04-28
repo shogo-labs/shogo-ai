@@ -25,6 +25,7 @@ import {
   proxyModelToBillingModel,
   type ModelName,
 } from '../lib/usage-cost'
+import { resolveModelId } from '@shogo/model-catalog'
 
 // ============================================================================
 // Types
@@ -137,6 +138,49 @@ const MODEL_QUALITY_TIER: Record<string, number> = {
   opus: 4,
   'claude-opus': 4,
   'claude-opus-4-7': 4,
+}
+
+const SUPPORTED_EXPERIMENT_AGENT_TYPES = new Set([
+  'explore',
+  'general-purpose',
+  'code-reviewer',
+  'browser',
+  'browser_qa',
+  'integration',
+  'channel',
+  'media',
+  'devops',
+])
+
+function normalizeExperimentAgentType(agentType: string): string {
+  const normalized = agentType.trim().toLowerCase().replace(/\s+/g, '-').replace(/_/g, '-')
+  const aliases: Record<string, string> = {
+    general: 'general-purpose',
+    generalpurpose: 'general-purpose',
+    'general-purpose': 'general-purpose',
+    browserqa: 'browser_qa',
+    'browser-qa': 'browser_qa',
+    reviewer: 'code-reviewer',
+    'code-review': 'code-reviewer',
+  }
+  const resolved = aliases[normalized] ?? normalized
+  if (!SUPPORTED_EXPERIMENT_AGENT_TYPES.has(resolved)) {
+    throw new Error(`Unsupported experiment agentType '${agentType}'. Use a built-in subagent: ${Array.from(SUPPORTED_EXPERIMENT_AGENT_TYPES).join(', ')}.`)
+  }
+  return resolved
+}
+
+function normalizeExperimentModel(model: string): string {
+  const normalized = model.trim().toLowerCase().replace(/\s+/g, '-')
+  const aliases: Record<string, string> = {
+    'opus-4.7': 'claude-opus-4-7',
+    'claude-opus-4.7': 'claude-opus-4-7',
+    'sonnet-4.6': 'claude-sonnet-4-6',
+    'claude-sonnet-4.6': 'claude-sonnet-4-6',
+    'haiku-4.5': 'claude-haiku-4-5',
+    'claude-haiku-4.5': 'claude-haiku-4-5',
+  }
+  return resolveModelId(aliases[normalized] ?? normalized)
 }
 
 function getModelCostPerMillionOutput(model: string): number {
@@ -527,22 +571,20 @@ export async function deleteBudgetAlert(id: string, workspaceId: string) {
  * `lastTriggeredAt < periodStart` re-arms alerts for each new billing period
  * (Phase 4.2 fix for the stuck-trigger bug from PR review).
  */
-export async function checkBudgetAlerts(workspaceId: string): Promise<Array<{
+export type BudgetAlertUsage = {
   alert: { id: string; name: string; creditLimit: number; autoThrottle: boolean; throttleToModel: string | null }
   currentSpend: number
   percentUsed: number
-}>> {
+}
+
+export async function getBudgetAlertUsage(workspaceId: string): Promise<BudgetAlertUsage[]> {
   const alerts = await prisma.budgetAlert.findMany({
     where: { workspaceId, enabled: true },
   })
 
   if (alerts.length === 0) return []
 
-  const breached: Array<{
-    alert: { id: string; name: string; creditLimit: number; autoThrottle: boolean; throttleToModel: string | null }
-    currentSpend: number
-    percentUsed: number
-  }> = []
+  const usage: BudgetAlertUsage[] = []
 
   for (const alert of alerts) {
     const periodStart = getPeriodStart(alert.periodType)
@@ -554,20 +596,20 @@ export async function checkBudgetAlerts(workspaceId: string): Promise<Array<{
 
     const currentSpend = result._sum.creditCost ?? 0
     const percentUsed = Math.round((currentSpend / alert.creditLimit) * 1000) / 10
+    const item = {
+      alert: {
+        id: alert.id,
+        name: alert.name,
+        creditLimit: alert.creditLimit,
+        autoThrottle: alert.autoThrottle,
+        throttleToModel: alert.throttleToModel,
+      },
+      currentSpend: Math.round(currentSpend * 100) / 100,
+      percentUsed,
+    }
+    usage.push(item)
 
     if (percentUsed >= 80) {
-      breached.push({
-        alert: {
-          id: alert.id,
-          name: alert.name,
-          creditLimit: alert.creditLimit,
-          autoThrottle: alert.autoThrottle,
-          throttleToModel: alert.throttleToModel,
-        },
-        currentSpend: Math.round(currentSpend * 100) / 100,
-        percentUsed,
-      })
-
       // Re-arm per period: trigger when crossed and we haven't already
       // triggered *within the current period*.
       const shouldTrigger =
@@ -582,7 +624,12 @@ export async function checkBudgetAlerts(workspaceId: string): Promise<Array<{
     }
   }
 
-  return breached
+  return usage
+}
+
+export async function checkBudgetAlerts(workspaceId: string): Promise<BudgetAlertUsage[]> {
+  const usage = await getBudgetAlertUsage(workspaceId)
+  return usage.filter(item => item.percentUsed >= 80)
 }
 
 /**
@@ -757,6 +804,12 @@ export async function createExperiment(
     status?: 'running' | 'shadow'
   },
 ) {
+  const agentType = normalizeExperimentAgentType(data.agentType)
+  const modelA = normalizeExperimentModel(data.modelA)
+  const modelB = normalizeExperimentModel(data.modelB)
+  if (modelA === modelB) {
+    throw new Error('modelA and modelB must be different models.')
+  }
   const expectedEndAt = data.durationDays
     ? new Date(Date.now() + data.durationDays * 24 * 60 * 60 * 1000)
     : null
@@ -765,9 +818,9 @@ export async function createExperiment(
       workspaceId,
       projectId: data.projectId ?? null,
       name: data.name,
-      agentType: data.agentType,
-      modelA: data.modelA,
-      modelB: data.modelB,
+      agentType,
+      modelA,
+      modelB,
       splitPercentage: data.splitPercentage ?? 50,
       status: data.status ?? 'running',
       expectedEndAt,
@@ -1532,9 +1585,10 @@ async function maybeRecordExperimentRun(
 ): Promise<void> {
   const exp = await getActiveExperimentForAgent(data.workspaceId, data.agentType)
   if (!exp) return
+  const actualModel = normalizeExperimentModel(data.model)
   const variant: 'A' | 'B' | null =
-    data.model === exp.modelA ? 'A'
-      : data.model === exp.modelB ? 'B'
+    actualModel === normalizeExperimentModel(exp.modelA) ? 'A'
+      : actualModel === normalizeExperimentModel(exp.modelB) ? 'B'
         : null
   if (!variant) return
 

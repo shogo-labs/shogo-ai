@@ -16,7 +16,7 @@ import { View, Text, TextInput } from 'react-native'
 import { Bell, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
-import { getModelDisplayName } from './SharedAnalytics'
+import { formatDollarCost, getModelDisplayName } from './SharedAnalytics'
 
 export interface BudgetAlertItem {
   id: string
@@ -30,6 +30,11 @@ export interface BudgetAlertItem {
 }
 
 export interface BudgetStatus {
+  usage?: Array<{
+    alert: { id: string; name: string; creditLimit: number; autoThrottle: boolean; throttleToModel: string | null }
+    currentSpend: number
+    percentUsed: number
+  }>
   breached: Array<{
     alert: { id: string; name: string; creditLimit: number; autoThrottle: boolean; throttleToModel: string | null }
     currentSpend: number
@@ -116,9 +121,9 @@ export function BudgetSection({
       ) : (
         <>
           {(alerts ?? []).map(alert => {
-            const breachInfo = status?.breached.find(b => b.alert.id === alert.id)
-            const isBreached = breachInfo && breachInfo.percentUsed >= 100
-            const isWarning = breachInfo && breachInfo.percentUsed >= 80 && !isBreached
+            const usageInfo = (status?.usage ?? status?.breached ?? []).find(b => b.alert.id === alert.id)
+            const isBreached = usageInfo && usageInfo.percentUsed >= 100
+            const isWarning = usageInfo && usageInfo.percentUsed >= 80 && !isBreached
 
             return (
               <Card key={alert.id}>
@@ -143,10 +148,10 @@ export function BudgetSection({
 
                   <View className="flex-row items-baseline gap-1 mb-1">
                     <Text className="text-lg font-bold text-foreground">
-                      {breachInfo ? breachInfo.currentSpend.toFixed(1) : '0'}
+                      {formatDollarCost(usageInfo?.currentSpend ?? 0)}
                     </Text>
                     <Text className="text-xs text-muted-foreground">
-                      / {alert.creditLimit} cr ({alert.periodType})
+                      / {formatDollarCost(alert.creditLimit)} ({alert.periodType})
                     </Text>
                   </View>
 
@@ -156,7 +161,7 @@ export function BudgetSection({
                         'h-full rounded-full',
                         isBreached ? 'bg-red-500' : isWarning ? 'bg-amber-500' : 'bg-primary',
                       )}
-                      style={{ width: `${Math.min(breachInfo?.percentUsed ?? 0, 100)}%` }}
+                      style={{ width: `${Math.min(usageInfo?.percentUsed ?? 0, 100)}%` }}
                     />
                   </View>
 
@@ -194,7 +199,7 @@ export function BudgetSection({
             />
             <TextInput
               className="h-9 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
-              placeholder="Credit limit (e.g. 500)"
+              placeholder="USD limit (e.g. 25)"
               placeholderTextColor="#888"
               value={newLimit}
               onChangeText={setNewLimit}

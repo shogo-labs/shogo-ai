@@ -55,6 +55,12 @@ function parsePeriod(c: Context): { period: CostPeriod } | { error: Response } {
   return { period: raw }
 }
 
+function isExperimentInputError(error: unknown): boolean {
+  const message = String((error as any)?.message ?? '')
+  return message.startsWith('Unsupported experiment agentType') ||
+    message === 'modelA and modelB must be different models.'
+}
+
 // ============================================================================
 // Routes
 // ============================================================================
@@ -223,10 +229,11 @@ export function costAnalyticsRoutes(): Hono {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
-      const breached = await costAnalytics.checkBudgetAlerts(workspaceId)
+      const usage = await costAnalytics.getBudgetAlertUsage(workspaceId)
+      const breached = usage.filter(item => item.percentUsed >= 80)
       const throttleModel = costAnalytics.deriveActiveThrottleModel(breached)
 
-      return c.json({ ok: true, data: { breached, throttleModel } })
+      return c.json({ ok: true, data: { usage, breached, throttleModel } })
     } catch (error: any) {
       return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
     }
@@ -271,7 +278,10 @@ export function costAnalyticsRoutes(): Hono {
       const data = await costAnalytics.createExperiment(workspaceId, body)
       return c.json({ ok: true, data }, 201)
     } catch (error: any) {
-      return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
+      const badRequest = isExperimentInputError(error)
+      return c.json({
+        error: { code: badRequest ? 'bad_request' : 'cost_analytics_failed', message: error.message },
+      }, badRequest ? 400 : 500)
     }
   })
 
@@ -334,7 +344,10 @@ export function costAnalyticsRoutes(): Hono {
       const data = await costAnalytics.createShadowExperiment(workspaceId, body)
       return c.json({ ok: true, data }, 201)
     } catch (error: any) {
-      return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
+      const badRequest = isExperimentInputError(error)
+      return c.json({
+        error: { code: badRequest ? 'bad_request' : 'cost_analytics_failed', message: error.message },
+      }, badRequest ? 400 : 500)
     }
   })
 
