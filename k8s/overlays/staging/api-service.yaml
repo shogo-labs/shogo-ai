@@ -102,6 +102,8 @@ spec:
       # run 30+ minutes; the previous 1800s limit caused premature stream
       # termination. The runtime sends keepalive comments every 10s so
       # truly dead connections are still detected by intermediate proxies.
+      # Requires knative-serving/config-defaults max-revision-timeout-seconds
+      # to be at least 3600 (see k8s/knative/config-defaults.yaml).
       timeoutSeconds: 3600
       serviceAccountName: api-service-account
       containers:
@@ -304,6 +306,8 @@ spec:
               value: "true"
             - name: PROMOTED_POD_IDLE_TIMEOUT_MS
               value: "1800000"
+            - name: AGENT_TURN_STALE_AFTER_MS
+              value: "7200000"
             - name: LOAD_TEST_SECRET
               valueFrom:
                 secretKeyRef:
