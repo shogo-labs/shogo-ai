@@ -1,0 +1,89 @@
+# =============================================================================
+# Desktop Tunnel WebSocket Ingress — Staging
+# =============================================================================
+# Why this exists:
+#
+# Knative DomainMapping (e.g. studio.staging.shogo.ai → studio ksvc)
+# implements its underlying KIngress as a `rewriteHost` + ExternalName
+# loopback through `kourier-internal`. That extra Envoy→Envoy hop is wired
+# with HTTP/2 cleartext on the upstream cluster and does not enable
+# `extended-CONNECT` (RFC 8441), so it silently drops `Upgrade: websocket`
+# requests with `503 UC` after ~1s. Plain HTTP through the same path
+# works fine, which is why the desktop heartbeat is healthy while the
+# remote-control WebSocket upgrade gets stuck in "standby".
+#
+# Workaround: this manifest creates a non-DomainMapping public route
+# specifically for the desktop tunnel WS endpoint (`tunnel.staging.shogo.ai`).
+# It points a Knative Ingress (KIngress) directly at a regular ClusterIP
+# Service whose label-selector tracks the live api ksvc revision pods on
+# their queue-proxy port. There is no `rewriteHost` and no ExternalName
+# loopback, so Kourier produces a normal Envoy upstream cluster that
+# happily passes the WS Upgrade.
+#
+# Routing chain after this is applied:
+#   Cloudflare (TLS, *.staging.shogo.ai cert)
+#     → OCI LoadBalancer (kourier:80/443)
+#     → Kourier external listener
+#     → Knative Ingress `api-tunnel`     (no DomainMapping, no rewriteHost)
+#     → Service `api-tunnel-direct`      (selector: serving.knative.dev/service=api)
+#     → api revision Pod  port 8012      (queue-proxy, then user container)
+#
+# The Service's label selector is on `serving.knative.dev/service=api`, not
+# on a specific revision name. Knative scales old revisions to zero, so in
+# steady state the Service's endpoints contain only pods of the current
+# ready revision. No external controller is needed to keep this in sync
+# with `kn service apply`.
+#
+# Heartbeat traffic (HTTP) continues to flow through the existing
+# studio.staging.shogo.ai DomainMapping unchanged — only the WS path is
+# moved.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-tunnel-direct
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: instance-tunnel
+    environment: staging
+spec:
+  type: ClusterIP
+  # Match every running api revision pod via the standard Knative service
+  # label. With min-scale=1 + scale-to-zero on older revisions, the
+  # endpoint set converges on the latest ready revision automatically.
+  selector:
+    serving.knative.dev/service: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012  # queue-proxy ingress port (preserves Knative concurrency tracking)
+      protocol: TCP
+---
+apiVersion: networking.internal.knative.dev/v1alpha1
+kind: Ingress
+metadata:
+  name: api-tunnel
+  namespace: shogo-staging-system
+  annotations:
+    networking.knative.dev/ingress.class: kourier.ingress.networking.knative.dev
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: instance-tunnel
+    environment: staging
+spec:
+  httpOption: Enabled
+  rules:
+    - hosts:
+        - tunnel.staging.shogo.ai
+      visibility: ExternalIP
+      http:
+        paths:
+          # Single direct split — no rewriteHost — so Kourier emits a normal
+          # Envoy upstream cluster that handles WebSocket Upgrade.
+          - splits:
+              - serviceName: api-tunnel-direct
+                serviceNamespace: shogo-staging-system
+                servicePort: 80
+                percent: 100

@@ -71,14 +71,44 @@ describe('Instance Tunnel Client', () => {
     expect(mod._testing.getCloudUrl()).toBe('https://studio.shogo.ai')
   })
 
-  test('buildWsUrl converts http to ws and includes params', async () => {
+  test('buildWsUrl converts http to ws and is path-only (no secrets in query)', async () => {
     const mod = await import('../instance-tunnel')
     const url = mod._testing.buildWsUrl()
-    expect(url).toMatch(/^wss:\/\/studio\.test\.shogo\.ai\/api\/instances\/ws\?/)
-    expect(url).toContain('key=shogo_test_key')
-    expect(url).toContain('hostname=')
-    expect(url).toContain('os=')
-    expect(url).toContain('arch=')
+    expect(url).toBe('wss://studio.test.shogo.ai/api/instances/ws')
+    // Credentials must NOT live in the URL (Cloudflare / Kourier access
+    // logs would capture them). They travel as request headers in
+    // connectWs().
+    expect(url).not.toContain('key=')
+    expect(url).not.toContain('hostname=')
+    expect(url).not.toContain('os=')
+  })
+
+  test('SHOGO_TUNNEL_WS_URL env overrides the cloud-derived base', async () => {
+    process.env.SHOGO_TUNNEL_WS_URL = 'wss://tunnel.test.shogo.ai'
+    const mod = await import('../instance-tunnel')
+    expect(mod._testing.buildWsUrl()).toBe('wss://tunnel.test.shogo.ai/api/instances/ws')
+    expect(mod._testing.getWsBaseUrl()).toBe('wss://tunnel.test.shogo.ai')
+    delete process.env.SHOGO_TUNNEL_WS_URL
+  })
+
+  test('cloud-published wsUrl from heartbeat overrides the cloud-derived base', async () => {
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({
+        instanceId: 'inst-1',
+        nextPollIn: 60,
+        wsRequested: false,
+        wsUrl: 'wss://tunnel.test.shogo.ai',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    )
+
+    const mod = await import('../instance-tunnel')
+    mod._testing.serverPublishedWsUrl = null
+    await mod._testing.sendHeartbeat()
+    expect(mod._testing.serverPublishedWsUrl).toBe('wss://tunnel.test.shogo.ai')
+    expect(mod._testing.buildWsUrl()).toBe('wss://tunnel.test.shogo.ai/api/instances/ws')
   })
 
   test('sendHeartbeat calls fetch with correct URL and headers', async () => {
