@@ -327,6 +327,64 @@ export const api = {
     )
   },
 
+  // ─── Agent Eval Sets (Phase 2: custom sub-agent recommendations) ────
+  // Workspace-authored examples that let custom agent types get eval-backed
+  // cost recommendations instead of relying on built-in eval suites only.
+
+  async listAgentEvalSets(
+    http: HttpClient,
+    workspaceId: string,
+    params?: { agentType?: string; projectId?: string | null; enabled?: boolean },
+  ) {
+    const query: Record<string, string> = {}
+    if (params?.agentType) query.agentType = params.agentType
+    if (params?.projectId !== undefined && params.projectId !== null) query.projectId = params.projectId
+    if (params?.enabled !== undefined) query.enabled = String(params.enabled)
+    return await this.getWorkspaceCostAnalytics<Array<{
+      id: string
+      workspaceId: string
+      projectId: string | null
+      agentType: string
+      name: string
+      description: string | null
+      examples: unknown
+      enabled: boolean
+      createdBy: string | null
+      createdAt: string
+      updatedAt: string
+    }>>(http, workspaceId, 'agent-eval-sets', query)
+  },
+
+  async upsertAgentEvalSet(
+    http: HttpClient,
+    workspaceId: string,
+    body: {
+      id?: string
+      agentType: string
+      name: string
+      description?: string | null
+      examples: unknown[]
+      enabled?: boolean
+      projectId?: string | null
+    },
+  ) {
+    const res = await http.post<{ data: any }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/agent-eval-sets`,
+      body,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async deleteAgentEvalSet(
+    http: HttpClient,
+    workspaceId: string,
+    id: string,
+  ) {
+    await http.delete(
+      `/api/workspaces/${workspaceId}/cost-analytics/agent-eval-sets/${encodeURIComponent(id)}`,
+    )
+  },
+
   // ─── Optimizer in Action (Phase 3.3) ─────────────────────────
   // Single-shot dataset for the report surface: which overrides have been
   // applied, what the before/after cost & quality looked like, eval pass-rates

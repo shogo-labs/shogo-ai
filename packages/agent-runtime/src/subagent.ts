@@ -17,7 +17,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool } from './gateway-tools'
+import { createBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -564,7 +564,9 @@ export function resolveModelTier(tier: ModelTierName | undefined, parentModel: s
 //      reads them via an authenticated HTTP call to the API server because
 //      the runtime sub-process has no direct DB access.
 //
-//   4. Built-in default from `getBuiltinSubagentConfig()` (e.g. explore→haiku).
+//   4. Built-in/custom default. Built-ins use `getBuiltinSubagentConfig()`
+//      (e.g. explore→haiku); custom agents fall back to their registered
+//      default tier or the parent model.
 //
 // In CLI / desktop mode there's no API server reachable, so the HTTP fetch
 // silently returns null and the built-in default wins. That's fine — overrides
@@ -886,21 +888,23 @@ export async function runSubagent(
         execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
           const result = mockFn(params)
           if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
-          return { type: 'text' as const, value: typeof result === 'string' ? result : JSON.stringify(result) }
+          return textResult(result)
         },
       }
     })
   }
 
-  // Sub-agent override resolver — checks (project, workspace) overrides
-  // before falling back to the built-in default. Only consulted when the
-  // caller hasn't explicitly set `config.model` AND the parent isn't asking
-  // for a tier shorthand AND auto-routing is off. This mirrors the precedence
-  // documented on `resolveSubagentModel`.
+  // Sub-agent override resolver — checks (project, workspace) overrides before
+  // falling back to the built-in/custom default. Only consulted when the caller
+  // hasn't explicitly set `config.model` AND the parent isn't asking for a
+  // concrete tier shorthand AND auto-routing is off. `agent_create` defaults to
+  // modelTier="default"; that is not an explicit model choice and should still
+  // allow one-click Apply recommendations to take effect for custom agents.
   const builtinConfig = getBuiltinSubagentConfig(config.name, parentCtx, allParentTools)
   const isBuiltin = !!builtinConfig
   const hasExplicitModel =
     !!config.model && (!isBuiltin || config.model !== builtinConfig?.model)
+  const hasExplicitTier = !!config.modelTier && config.modelTier !== 'default'
   let resolvedOverride: {
     model: string
     provider: string | undefined
@@ -908,7 +912,7 @@ export async function runSubagent(
     experimentId?: string
     experimentVariant?: 'A' | 'B'
   } | null = null
-  if (isBuiltin && !hasExplicitModel && !config.modelTier && !parentCtx.autoRouting) {
+  if (!hasExplicitModel && !hasExplicitTier && !parentCtx.autoRouting) {
     try {
       const workspaceId = process.env.WORKSPACE_ID || null
       const projectId = parentCtx.projectId || null
@@ -925,7 +929,7 @@ export async function runSubagent(
         projectId,
         undefined,
         config.provider,
-        builtinConfig?.model || parentCtx.effectiveModel || parentCtx.config.model.name,
+        builtinConfig?.model || resolveModelTier(config.modelTier, parentCtx.effectiveModel || parentCtx.config.model.name),
         builtinConfig?.provider || config.provider,
         bucketKey,
       )

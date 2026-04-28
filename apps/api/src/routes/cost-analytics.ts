@@ -394,6 +394,131 @@ export function costAnalyticsRoutes(): Hono {
   })
 
   // --------------------------------------------------------------------------
+  // Agent Eval Sets — Phase 2 custom sub-agent recommendation source
+  //
+  // Eval results and overrides already key by a free-form agentType. Eval sets
+  // provide the workspace-authored examples required before custom agent
+  // recommendations can cite eval-backed confidence.
+  // --------------------------------------------------------------------------
+
+  router.get('/workspaces/:workspaceId/cost-analytics/agent-eval-sets', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const data = await costAnalytics.listAgentEvalSets({
+        workspaceId,
+        agentType: url.searchParams.get('agentType') || undefined,
+        projectId: url.searchParams.has('projectId') ? url.searchParams.get('projectId') : undefined,
+        enabled: url.searchParams.has('enabled') ? url.searchParams.get('enabled') === 'true' : undefined,
+      })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.post('/workspaces/:workspaceId/cost-analytics/agent-eval-sets', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
+      }
+
+      const body = await c.req.json().catch(() => null) as {
+        id?: string
+        agentType?: string
+        name?: string
+        description?: string | null
+        examples?: unknown
+        enabled?: boolean
+        projectId?: string | null
+      } | null
+      const agentType = typeof body?.agentType === 'string' ? body.agentType.trim() : ''
+      const name = typeof body?.name === 'string' ? body.name.trim() : ''
+      const description =
+        body?.description === undefined || body.description === null
+          ? null
+          : typeof body.description === 'string'
+            ? body.description
+            : undefined
+      const enabled =
+        body?.enabled === undefined
+          ? true
+          : typeof body.enabled === 'boolean'
+            ? body.enabled
+            : undefined
+      const projectId =
+        body?.projectId === undefined || body.projectId === null
+          ? null
+          : typeof body.projectId === 'string'
+            ? body.projectId
+            : undefined
+      const id = body?.id === undefined
+        ? undefined
+        : typeof body.id === 'string'
+          ? body.id
+          : null
+
+      if (!body || !agentType || !name || description === undefined || enabled === undefined || projectId === undefined || id === null) {
+        return c.json({
+          error: { code: 'bad_request', message: 'Invalid eval set body' },
+        }, 400)
+      }
+      if (!Array.isArray(body.examples) || body.examples.length === 0) {
+        return c.json({
+          error: { code: 'bad_request', message: 'examples must be a non-empty array' },
+        }, 400)
+      }
+      if (projectId) {
+        const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId } })
+        if (!project) {
+          return c.json({
+            error: { code: 'bad_request', message: 'projectId must belong to this workspace' },
+          }, 400)
+        }
+      }
+
+      const data = await costAnalytics.upsertAgentEvalSet(workspaceId, {
+        id,
+        agentType,
+        name,
+        description,
+        examples: body.examples,
+        enabled,
+        projectId,
+        createdBy: auth.userId ?? null,
+      })
+      if (!data) return c.json({ error: { code: 'not_found', message: 'Eval set not found' } }, 404)
+      return c.json({ ok: true, data }, body.id ? 200 : 201)
+    } catch (error: any) {
+      return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.delete('/workspaces/:workspaceId/cost-analytics/agent-eval-sets/:id', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const id = c.req.param('id')
+      const auth = c.get('auth')
+      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+        return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
+      }
+
+      const deleted = await costAnalytics.deleteAgentEvalSet(workspaceId, id)
+      if (!deleted) return c.json({ error: { code: 'not_found', message: 'Eval set not found' } }, 404)
+      return c.json({ ok: true })
+    } catch (error: any) {
+      return c.json({ error: { code: 'cost_analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
   // Subagent Model Overrides — Phase 1 (boss concern #2)
   //
   // Read-access for any workspace member, write-access for admins only. The

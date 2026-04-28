@@ -16,6 +16,7 @@
  * Usage:
  *   bun run src/evals/bench-explore-models.ts \
  *     --models haiku,sonnet,gpt-5.4-nano \
+ *     --agent-type explore \
  *     --suite test-cases-subagent.ts:explore-suite \
  *     --api-url http://localhost:3000 \
  *     [--workspace-id <id>] [--workers 2]
@@ -26,6 +27,7 @@
  */
 
 import { spawn } from 'child_process'
+import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { subagentEvals } from './test-cases-subagent'
 import type { AgentEval } from './types'
@@ -45,12 +47,18 @@ function getArg(name: string, fallback?: string): string | undefined {
 
 const modelsArg = getArg('models', 'haiku,sonnet,gpt-5.4-nano')!
 const candidateModels = modelsArg.split(',').map(s => s.trim()).filter(Boolean)
-const suiteName = getArg('suite', 'test-cases-subagent.ts:explore-suite')!
+const agentType = getArg('agent-type', 'explore')!.trim()
+const suiteName = getArg('suite', `test-cases-subagent.ts:${agentType}-suite`)!
+const evalSetFile = getArg('eval-set-file')
 const apiUrl = getArg('api-url', process.env.SHOGO_API_URL || 'http://localhost:3000')!
 const workspaceId = getArg('workspace-id') ?? null
 const dryRun = args.includes('--dry-run')
 const verbose = args.includes('--verbose') || args.includes('-v')
 const commitSha = process.env.GITHUB_SHA || process.env.COMMIT_SHA || null
+if (!agentType) {
+  console.error('[bench-explore] --agent-type must be a non-empty string.')
+  process.exit(2)
+}
 
 // ---------------------------------------------------------------------------
 // Pick the explore-flavoured cases — anything in subagentEvals whose id starts
@@ -58,6 +66,14 @@ const commitSha = process.env.GITHUB_SHA || process.env.COMMIT_SHA || null
 // explore subagent type. Centralised here so adding a case keeps the bench
 // honest without touching this script.
 // ---------------------------------------------------------------------------
+
+interface EvalSetExample {
+  id?: string
+  name?: string
+  input?: string
+  prompt?: string
+  expectedText?: string
+}
 
 function isExploreCase(ev: AgentEval): boolean {
   if (ev.id.startsWith('subagent-explore-')) return true
@@ -67,15 +83,69 @@ function isExploreCase(ev: AgentEval): boolean {
   )
 }
 
-const exploreCases = subagentEvals.filter(isExploreCase)
-if (exploreCases.length === 0) {
-  console.error('[bench-explore] No explore-flavoured eval cases found. Bailing.')
+function loadEvalSetCases(path: string): AgentEval[] {
+  const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown
+  const examples = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object' && Array.isArray((raw as any).examples)
+      ? (raw as any).examples
+      : null
+  if (!examples) {
+    throw new Error('--eval-set-file must contain an array or an object with an examples array')
+  }
+
+  return (examples as EvalSetExample[]).map((example, idx) => {
+    const input = typeof example.input === 'string'
+      ? example.input
+      : typeof example.prompt === 'string'
+        ? example.prompt
+        : ''
+    if (!input.trim()) throw new Error(`Eval-set example ${idx + 1} is missing input/prompt`)
+    const expectedText = typeof example.expectedText === 'string' ? example.expectedText.trim() : ''
+    return {
+      id: example.id || `custom-${agentType}-${idx + 1}`,
+      name: example.name || `${agentType} eval example ${idx + 1}`,
+      category: 'subagent',
+      level: 2,
+      input,
+      maxScore: expectedText ? 3 : 2,
+      validationCriteria: [
+        {
+          id: 'spawned-custom-agent',
+          description: `Used the ${agentType} sub-agent`,
+          points: 1,
+          validate: (r: any) => r.toolCalls.some((tc: any) => tc.name === 'agent_spawn' && tc.input?.type === agentType),
+        },
+        {
+          id: 'non-empty-result',
+          description: 'Returned a non-empty answer',
+          points: 1,
+          validate: (r: any) => String(r.responseText || '').trim().length > 0,
+        },
+        ...(expectedText ? [{
+          id: 'expected-text',
+          description: `Response includes "${expectedText}"`,
+          points: 1,
+          validate: (r: any) => String(r.responseText || '').toLowerCase().includes(expectedText.toLowerCase()),
+        }] : []),
+      ],
+    } satisfies AgentEval
+  })
+}
+
+const evalCases = evalSetFile ? loadEvalSetCases(evalSetFile) : subagentEvals.filter(isExploreCase)
+if (agentType !== 'explore' && !evalSetFile) {
+  console.error('[bench-explore] --eval-set-file is required when --agent-type is not "explore" to avoid posting explore-suite data under a custom name.')
+  process.exit(2)
+}
+if (evalCases.length === 0) {
+  console.error('[bench-explore] No eval cases found. Bailing.')
   process.exit(2)
 }
 
 console.log(
-  `[bench-explore] Suite "${suiteName}" — ${exploreCases.length} cases × ` +
-    `${candidateModels.length} models = ${exploreCases.length * candidateModels.length} runs`,
+  `[bench-explore] Suite "${suiteName}" for agentType="${agentType}" — ${evalCases.length} cases × ` +
+    `${candidateModels.length} models = ${evalCases.length * candidateModels.length} runs`,
 )
 
 // ---------------------------------------------------------------------------
@@ -90,6 +160,16 @@ interface CaseRunOutcome {
   creditCost: number
 }
 
+function buildEvalMessage(ev: AgentEval): string {
+  if (agentType === 'explore') return ev.input
+  return [
+    `Use the ${agentType} sub-agent to handle this task.`,
+    'Return the sub-agent result directly and do not substitute a built-in agent unless the requested type is unavailable.',
+    '',
+    ev.input,
+  ].join('\n')
+}
+
 async function runCase(model: string, ev: AgentEval): Promise<CaseRunOutcome> {
   const start = Date.now()
   // Shell out so this script keeps its single-purpose nature and we don't
@@ -99,7 +179,7 @@ async function runCase(model: string, ev: AgentEval): Promise<CaseRunOutcome> {
     [
       'run',
       resolve(__dirname, 'run-single-eval.ts'),
-      '--message', ev.input,
+      '--message', buildEvalMessage(ev),
       '--model', model,
       '--timeout', '180000',
       ...(verbose ? ['--verbose'] : []),
@@ -171,7 +251,7 @@ interface ModelSummary {
 async function benchModel(model: string): Promise<ModelSummary> {
   console.log(`\n[bench-explore] === ${model} ===`)
   const outcomes: CaseRunOutcome[] = []
-  for (const ev of exploreCases) {
+  for (const ev of evalCases) {
     const o = await runCase(model, ev)
     outcomes.push(o)
     console.log(
@@ -198,7 +278,7 @@ async function postResult(s: ModelSummary): Promise<void> {
   }
   const body = {
     workspaceId,
-    agentType: 'explore',
+    agentType,
     model: s.model,
     suite: suiteName,
     totalCases: s.totalCases,
@@ -206,7 +286,12 @@ async function postResult(s: ModelSummary): Promise<void> {
     avgWallTimeMs: s.avgWallTimeMs,
     avgCreditCost: s.avgCreditCost,
     commitSha,
-    metadata: { tool: 'bench-explore-models', candidateModels },
+    metadata: {
+      tool: 'bench-explore-models',
+      candidateModels,
+      sourceSuite: evalSetFile || 'test-cases-subagent.ts:explore-suite',
+      customAgentType: agentType !== 'explore',
+    },
   }
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }

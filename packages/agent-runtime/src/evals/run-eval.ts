@@ -123,6 +123,11 @@ const noPipelineFlag = args.includes('--no-pipeline')
 const runIdArg = getArg(args, 'run-id')
 const callbackUrlArg = getArg(args, 'callback-url')
 const callbackSecret = process.env.EVAL_CALLBACK_SECRET || 'dev-eval-secret'
+const recordAgentEvalFlag = args.includes('--record-agent-eval')
+const evalAgentTypeArg = getArg(args, 'agent-type')
+const evalSuiteArg = getArg(args, 'suite', `run-eval.ts:${trackArg}`)
+const evalApiUrlArg = getArg(args, 'api-url', process.env.SHOGO_API_URL || callbackUrlArg)
+const evalWorkspaceIdArg = getArg(args, 'workspace-id') ?? null
 
 const useCallback = !!(runIdArg && callbackUrlArg)
 
@@ -153,6 +158,35 @@ async function postCallbackSafe(path: string, body: any, timeoutMs = 30_000): Pr
     await postCallback(path, body, timeoutMs)
   } catch (err: any) {
     console.warn(`[callback] Failed to POST ${path}: ${err.message}`)
+  }
+}
+
+async function postAgentEvalResult(body: {
+  workspaceId: string | null
+  agentType: string
+  model: string
+  suite: string
+  totalCases: number
+  passedCases: number
+  avgWallTimeMs: number
+  avgCreditCost: number
+  metadata: Record<string, unknown>
+}): Promise<void> {
+  if (!evalApiUrlArg) throw new Error('--api-url or SHOGO_API_URL is required with --record-agent-eval')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (process.env.RUNTIME_AUTH_SECRET) {
+    headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
+  } else if (callbackSecret) {
+    headers['Authorization'] = `Bearer ${callbackSecret}`
+  }
+
+  const res = await fetch(`${evalApiUrlArg}/api/internal/agent-eval-results`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => res.statusText)}`)
   }
 }
 
@@ -1491,6 +1525,37 @@ async function main() {
   console.log('')
   console.log(`Results: ${summaryPath}`)
   console.log(`Logs:    ${join(runDir, 'logs')}`)
+
+  if (recordAgentEvalFlag) {
+    if (!evalAgentTypeArg?.trim()) {
+      console.warn('[agent-eval-results] Skipping persistence: --agent-type is required with --record-agent-eval.')
+    } else {
+      try {
+        await postAgentEvalResult({
+          workspaceId: evalWorkspaceIdArg,
+          agentType: evalAgentTypeArg.trim(),
+          model: MODEL_MAP[modelArg] || modelArg,
+          suite: evalSuiteArg!,
+          totalCases: results.length,
+          passedCases: passed,
+          avgWallTimeMs: results.length > 0
+            ? Math.round(results.reduce((sum, r) => sum + r.timing.durationMs, 0) / results.length)
+            : 0,
+          avgCreditCost: results.length > 0 ? totalCost / results.length : 0,
+          metadata: {
+            tool: 'run-eval',
+            track: trackArg,
+            filter: filterArg ?? null,
+            tags: tagsArg ?? null,
+            outputPath: summaryPath,
+          },
+        })
+        console.log(`[agent-eval-results] persisted ${evalAgentTypeArg.trim()} / ${MODEL_MAP[modelArg] || modelArg}`)
+      } catch (err: any) {
+        console.warn(`[agent-eval-results] Failed to persist eval anchor: ${err.message}`)
+      }
+    }
+  }
 
   if (useCallback) {
     try {
