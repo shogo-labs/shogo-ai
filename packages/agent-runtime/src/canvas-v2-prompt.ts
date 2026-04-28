@@ -22,7 +22,12 @@ Your workspace is a standard **Vite + React + TypeScript + Tailwind CSS** app. W
 \`\`\`
 src/
   App.tsx              ← Navigation shell (tabs across features)
-  main.tsx             ← Entry point (renders App)
+  main.tsx             ← Entry point. Managed by Shogo — DO NOT edit.
+                          Only renders <App />. The canvas iframe bridge
+                          (update toast, theme sync, error forwarding) is
+                          injected by the runtime, not bundled here.
+                          write_file / edit_file / delete_file will reject
+                          changes to this path.
   index.css            ← Tailwind + theme variables
   components/
     ui/                ← Pre-installed shadcn/ui components

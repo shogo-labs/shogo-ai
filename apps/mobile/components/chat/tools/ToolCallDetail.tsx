@@ -75,7 +75,7 @@ export function ToolCallDetail({ tool, opacity = 1, className }: ToolCallDetailP
       <StateIcon
         className={cn(
           "w-3.5 h-3.5 shrink-0",
-          tool.state === "streaming" && "text-primary",
+          tool.state === "streaming" && "text-primary animate-spin",
           tool.state === "success" && "text-green-500",
           tool.state === "error" && "text-red-500"
         )}

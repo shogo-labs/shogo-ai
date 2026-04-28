@@ -208,17 +208,28 @@ export function Terminal({
     }
   }, [apiBase, projectId]);
 
+  // Load presets when the panel becomes visible for a project. We bail on
+  // *any* prior attempt — success, in-flight, or error — so we don't tight-
+  // loop the API. The error case is the load-bearing one: in staging the
+  // proxy legitimately returns 503 ("service_starting") while the runtime
+  // pod cold-starts, and without this guard the effect re-fires on every
+  // setLoading(false) → setLoadError() pair, hammering the endpoint until
+  // the pod comes up. Users recover via the "Retry" button in the menu
+  // (wired to loadCommands directly).
+  const loadAttemptedRef = useRef(false);
   useEffect(() => {
     if (!visible) return;
     if (!projectId) return;
-    if (Object.keys(commands).length > 0 || loading) return;
+    if (loadAttemptedRef.current) return;
+    if (loading) return;
+    loadAttemptedRef.current = true;
     void loadCommands();
-  }, [visible, projectId, commands, loading, loadCommands]);
+  }, [visible, projectId, loading, loadCommands]);
 
+  // Reset the attempt flag whenever the project changes so we re-fetch
+  // for the new project (and only once).
   useEffect(() => {
-    if (!projectId) return;
-    void loadCommands();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    loadAttemptedRef.current = false;
   }, [projectId]);
 
   useEffect(() => {

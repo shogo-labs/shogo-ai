@@ -124,7 +124,13 @@ function TodoItemRow({ todo }: { todo: TodoItem; index: number }) {
         todo.status === "cancelled" && "opacity-50"
       )}
     >
-      <StatusIcon className={cn("w-3.5 h-3.5 mt-0.5", colorClass)} />
+      <StatusIcon
+        className={cn(
+          "w-3.5 h-3.5 mt-0.5",
+          colorClass,
+          todo.status === "in_progress" && "animate-spin",
+        )}
+      />
 
       <Text
         className={cn(
@@ -294,7 +300,7 @@ export function TodoWidget({
         {allComplete ? (
           <CheckCircle2 className="w-3 h-3 text-green-500" />
         ) : hasInProgress ? (
-          <Loader2 className="w-3 h-3 text-primary" />
+          <Loader2 className="w-3 h-3 text-primary animate-spin" />
         ) : null}
       </Pressable>
 

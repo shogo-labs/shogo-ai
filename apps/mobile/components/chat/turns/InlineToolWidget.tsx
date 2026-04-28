@@ -144,7 +144,7 @@ export function InlineToolWidget({
           <StateIcon
             className={cn(
               "w-3 h-3",
-              tool.state === "streaming" && "text-muted-foreground/60",
+              tool.state === "streaming" && "text-muted-foreground/60 animate-spin",
               tool.state === "success" && "text-muted-foreground/60",
               tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
             )}

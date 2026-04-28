@@ -805,7 +805,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
                 {isLoading ? (
                   <View className="h-5 w-5 rounded-full items-center justify-center bg-primary opacity-50">
-                    <Loader2 className="h-3 w-3 text-primary-foreground" size={12} />
+                    <Loader2 className="h-3 w-3 text-primary-foreground animate-spin" size={12} />
                   </View>
                 ) : (value.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
                   <Pressable

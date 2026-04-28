@@ -75,8 +75,11 @@ import {
 } from 'react-native'
 import { Text } from '@/components/ui/text'
 import { Eye, Keyboard, Mic, MicOff, Send, Square, X } from 'lucide-react-native'
-import { ConversationProvider } from '@elevenlabs/react'
-import { OrganicParticles, useVoiceConversation } from '@shogo-ai/sdk/voice/react'
+import {
+  OrganicParticles,
+  ShogoVoiceProvider,
+  useVoiceConversation,
+} from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
 import { useChatBridge } from './ChatBridgeContext'
 import { createBridgeClientTools } from './bridgeClientTools'
@@ -139,14 +142,16 @@ function rowToTranscriptEntry(row: ShogoMessageRow): TranscriptEntry | null {
 /**
  * Outer shell. `@elevenlabs/react` ≥ 1.1 requires every `useConversation`
  * caller to live under a `<ConversationProvider>` — the provider owns the
- * underlying convai session context. We mount it here so the rest of the
- * panel (which uses `useVoiceConversation` under the hood) can work.
+ * underlying convai session context. The SDK re-exports it as
+ * `<ShogoVoiceProvider>` so consumers don't have to import directly
+ * from `@elevenlabs/react`. We mount it here so the rest of the panel
+ * (which uses `useVoiceConversation` under the hood) can work.
  */
 export function ShogoChatPanel(props: ShogoChatPanelProps) {
   return (
-    <ConversationProvider>
+    <ShogoVoiceProvider>
       <ShogoChatPanelInner {...props} />
-    </ConversationProvider>
+    </ShogoVoiceProvider>
   )
 }
 
