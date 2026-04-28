@@ -26,6 +26,11 @@ const SPINNER_COLOR: Record<string, string> = {
   'standup-automation': '#f59e0b',
   'yc-founder-operating-system': '#f97316',
   'virtual-engineering-team': '#14b8a6',
+  'equity-research-terminal': '#2563eb',
+  'portfolio-risk-desk': '#f97316',
+  'technical-quant-lab': '#8b5cf6',
+  'dividend-income-builder': '#22c55e',
+  'macro-market-briefing': '#0ea5e9',
 }
 
 const POPULAR_IDS = new Set([
@@ -576,6 +581,135 @@ function AgentTemplatePreview({
               </Text>
               <Text className={cn(muted, 'text-amber-600 dark:text-amber-400 font-semibold')}>3</Text>
             </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'equity-research-terminal':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Equity Screener</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20">
+              <Text className="text-[8px] font-semibold text-blue-700 dark:text-blue-300">4 rows</Text>
+            </View>
+          </View>
+          <PreviewRow className="bg-blue-50 dark:bg-blue-500/10">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Example · moat review
+                </Text>
+                <Text className={muted}>Valuation memo · user inputs</Text>
+              </View>
+              <Text className={cn(muted, 'font-semibold text-blue-700 dark:text-blue-300')}>Review</Text>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center justify-between">
+              <Text className={fsN} numberOfLines={1}>
+                Earnings notes
+              </Text>
+              <Text className={cn(muted, 'font-semibold')}>12 sources</Text>
+            </View>
+          </PreviewRow>
+          <View className={cn('rounded-sm overflow-hidden', box, compact ? 'h-1' : 'h-1.5')}>
+            <View className="h-full w-[74%] rounded-sm bg-blue-500" />
+          </View>
+        </View>
+      )
+    case 'portfolio-risk-desk':
+      return (
+        <View>
+          <Text className={h}>Risk Heatmap</Text>
+          {[
+            { label: 'Tech concentration', value: '31%', color: 'bg-orange-100 dark:bg-orange-500/20', text: 'text-orange-700 dark:text-orange-300' },
+            { label: 'Rate sensitivity', value: 'Med', color: box, text: 'text-slate-700 dark:text-slate-300' },
+            { label: 'Recession drawdown', value: '-18%', color: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-300' },
+          ].map((row) => (
+            <PreviewRow key={row.label} className={row.color}>
+              <View className="flex-row items-center justify-between">
+                <Text className={fsN} numberOfLines={1}>
+                  {row.label}
+                </Text>
+                <Text className={cn('text-[9px] font-bold', row.text)}>{row.value}</Text>
+              </View>
+            </PreviewRow>
+          ))}
+        </View>
+      )
+    case 'technical-quant-lab':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Signal Setup</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-500/20">
+              <Text className="text-[8px] font-semibold text-violet-700 dark:text-violet-300">R/R 2.8</Text>
+            </View>
+          </View>
+          <View className="flex-row gap-1 mb-2 items-end">
+            <View className="flex-1 h-5 rounded-sm bg-violet-100 dark:bg-violet-500/20" />
+            <View className="flex-1 h-8 rounded-sm bg-violet-200 dark:bg-violet-500/35" />
+            <View className="flex-1 h-4 rounded-sm bg-violet-100 dark:bg-violet-500/20" />
+            <View className="flex-1 h-10 rounded-sm bg-green-100 dark:bg-green-500/25" />
+            <View className="flex-1 h-6 rounded-sm bg-violet-100 dark:bg-violet-500/20" />
+          </View>
+          <PreviewRow className={box}>
+            <Text className={fs} numberOfLines={1}>
+              AAPL · RSI 54 · MACD turning
+            </Text>
+            <Text className={muted}>Entry 182-185 · stop 176</Text>
+          </PreviewRow>
+        </View>
+      )
+    case 'dividend-income-builder':
+      return (
+        <View>
+          <Text className={cn(h, 'mb-1')}>Income Projection</Text>
+          <Text
+            className={cn(
+              'font-bold text-slate-900 dark:text-white/90 mb-2',
+              compact ? 'text-lg' : 'text-xl',
+            )}
+          >
+            $1,240/mo
+          </Text>
+          <PreviewRow className="bg-green-50 dark:bg-green-500/10">
+            <View className="flex-row justify-between">
+              <Text className={fsN} numberOfLines={1}>
+                Safety score
+              </Text>
+              <Text className={cn(muted, 'text-green-700 dark:text-green-300 font-semibold')}>8.4/10</Text>
+            </View>
+          </PreviewRow>
+          <View className={cn('rounded-sm mb-1 overflow-hidden', box, compact ? 'h-1' : 'h-1.5')}>
+            <View className="h-full w-[62%] rounded-sm bg-green-500" />
+          </View>
+          <Text className={muted}>DRIP compounding · 10 years</Text>
+        </View>
+      )
+    case 'macro-market-briefing':
+      return (
+        <View>
+          <Text className={h}>Macro Brief</Text>
+          <View className="flex-row gap-2 mb-2">
+            {[
+              ['Rates', 'Hold'],
+              ['CPI', 'Cool'],
+              ['USD', 'Firm'],
+            ].map(([metric, status]) => (
+              <View key={metric} className={cn('flex-1 items-center py-1 rounded-md', box)}>
+                <Text className={cn(compact ? 'text-[9px]' : 'text-[10px]', 'font-bold text-slate-900 dark:text-white/90')}>
+                  {metric}
+                </Text>
+                <Text className={muted}>{status}</Text>
+              </View>
+            ))}
+          </View>
+          <PreviewRow className="bg-sky-50 dark:bg-sky-500/10">
+            <Text className={fs} numberOfLines={1}>
+              Overweight quality defensives
+            </Text>
+            <Text className={muted}>Fed path · 6-12 month view</Text>
           </PreviewRow>
         </View>
       )

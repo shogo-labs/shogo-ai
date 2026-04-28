@@ -251,6 +251,36 @@ spec:
                   name: api-secrets
                   key: GOOGLE_API_KEY
                   optional: true
+            - name: ELEVENLABS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ELEVENLABS_API_KEY
+                  optional: true
+            - name: ELEVENLABS_VOICE_MODE_AGENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ELEVENLABS_VOICE_MODE_AGENT_ID
+                  optional: true
+            - name: ELEVENLABS_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ELEVENLABS_WEBHOOK_SECRET
+                  optional: true
+            - name: TWILIO_ACCOUNT_SID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: TWILIO_ACCOUNT_SID
+                  optional: true
+            - name: TWILIO_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: TWILIO_AUTH_TOKEN
+                  optional: true
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
             - name: OTEL_SERVICE_NAME

@@ -115,7 +115,9 @@ export function useAskUserQuestionDraft(
   // Once the server confirms a result, drop the local draft — no point
   // keeping it around, and it would shadow a future ask_user with the same
   // (highly unlikely) reused id. Also rearms the hook for any fresh state.
-  const serverAnswered = toolResult !== undefined
+  // Treat `null` the same as `undefined` (legacy persisted parts that wrote
+  // `output: null` are not actually answered).
+  const serverAnswered = toolResult != null
   useEffect(() => {
     if (!hydrated) return
     if (!serverAnswered) return

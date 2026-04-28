@@ -111,7 +111,7 @@ async function trackUsageFromStream(
   let reasoningStartedAt: number | null = null
   let streamInterrupted = false
 
-  const PER_CHUNK_IDLE_TIMEOUT_MS = 600_000
+  const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
   try {
     while (true) {
@@ -236,13 +236,24 @@ async function trackUsageFromStream(
 
           currentTextPart = null
           currentReasoningPart = null
-          const part = {
+          // NOTE: do NOT set `output` here. Some tools (notably `ask_user`)
+          // intentionally never emit `tool-output-available`; baking
+          // `output: null` + `state: 'output-available'` into the persisted
+          // part makes the widget render as already-answered after a cold
+          // hydration, since `null !== undefined`.
+          const part: {
+            type: 'dynamic-tool'
+            toolCallId: string
+            toolName: string
+            input: any
+            state: string
+            output?: any
+          } = {
             type: 'dynamic-tool',
             toolCallId,
             toolName: data.toolName || toolCallMap.get(toolCallId)?.toolName || 'unknown',
             input: data.input || {},
-            output: null as any,
-            state: 'output-available',
+            state: 'input-available',
           }
           orderedParts.push(part)
           toolPartIndex.set(toolCallId, part)
@@ -259,6 +270,7 @@ async function trackUsageFromStream(
           const part = toolPartIndex.get(toolCallId)
           if (part) {
             part.output = data.output ?? { success: true }
+            part.state = 'output-available'
           }
         }
 
@@ -718,12 +730,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Retry configuration for transient errors during cold starts.
       // Uses exponential backoff: 500ms, 1s, 2s, 4s, 4s... (capped at 4s)
-      // Max 30 retries (~45 seconds total) with explicit 30min fetch timeout
+      // Max 30 retries (~45 seconds total) with an explicit long-turn fetch timeout.
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const FETCH_TIMEOUT_MS = 1_800_000
+      const FETCH_TIMEOUT_MS = parseInt(process.env.CHAT_UPSTREAM_FETCH_TIMEOUT_MS || '14400000', 10)
       let lastError: Error | null = null
+      let consecutiveConnectionErrors = 0
+      // Threshold for forcing a runtime restart when the same URL keeps
+      // refusing connections (likely the runtime process died but the
+      // RuntimeManager hasn't observed it yet via health checks).
+      const FORCE_RUNTIME_RESTART_AFTER = 3
 
       // Do NOT include clientSignal in fetchSignal. A client disconnect
       // (e.g. page refresh) must NOT abort the upstream fetch — the runtime
@@ -748,6 +765,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             body,
             signal: fetchSignal,
           })
+
+          // The TCP connection succeeded — reset the connection-error
+          // streak even if the runtime returns a non-2xx status code.
+          consecutiveConnectionErrors = 0
 
           // Check for errors
           if (!response.ok) {
@@ -822,6 +843,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           responseHeaders.set("Access-Control-Allow-Origin", "*")
           responseHeaders.set("Access-Control-Allow-Methods", "POST, OPTIONS")
           responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id")
+          // Expose turn-ledger headers so the browser can read them
+          // (cross-origin response headers default to hidden in fetch).
+          responseHeaders.set(
+            "Access-Control-Expose-Headers",
+            "X-Turn-Id, X-Chat-Session-Id, X-Last-Seq, X-Turn-Status",
+          )
 
           // Instead of tee() (which stops pulling when the client
           // branch is cancelled on browser disconnect), we read the
@@ -868,6 +895,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           let clientEnqueueErrors = 0
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
+              const keepaliveChunk = new TextEncoder().encode(': proxy-keep-alive\n\n')
+              const proxyKeepalive = setInterval(() => {
+                try {
+                  controller.enqueue(keepaliveChunk)
+                } catch {
+                  clearInterval(proxyKeepalive)
+                }
+              }, 15_000)
               ;(async () => {
                 try {
                   let chunkCount = 0
@@ -890,6 +925,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
+                  clearInterval(proxyKeepalive)
                   trackingDone = true
                   trackingNotify?.()
                   trackingNotify = null
@@ -941,7 +977,38 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
           if ((isTransientError || isAbortError) && attempt < MAX_RETRIES) {
             const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
-            console.log(`[ProjectChat] Connection error, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES}):`, fetchError.message || fetchError.code)
+
+            if (isTransientError) {
+              consecutiveConnectionErrors++
+              // If the runtime process died on a stale local port, the existing
+              // podUrl will keep refusing connections forever. Re-resolve the
+              // URL so we pick up any port change RuntimeManager / warm pool /
+              // Knative may have made. After repeated refusals, force a fresh
+              // start so we stop hammering a dead runtime.
+              try {
+                if (runtimeManager && consecutiveConnectionErrors >= FORCE_RUNTIME_RESTART_AFTER) {
+                  console.warn(`[ProjectChat] ${consecutiveConnectionErrors} consecutive connection errors against ${podUrl} — forcing runtime restart for ${projectId}`)
+                  const fresh = await runtimeManager.restart(projectId)
+                  const agentPort = fresh.agentPort || (fresh.port + 1000)
+                  const runtimeHost = new URL(fresh.url).hostname
+                  podUrl = `http://${runtimeHost}:${agentPort}`
+                  consecutiveConnectionErrors = 0
+                } else {
+                  const refreshed = await getProjectUrl(projectId)
+                  if (refreshed && refreshed !== podUrl) {
+                    console.log(`[ProjectChat] Runtime URL changed mid-retry: ${podUrl} -> ${refreshed}`)
+                    podUrl = refreshed
+                    consecutiveConnectionErrors = 0
+                  }
+                }
+              } catch (rerouteErr: any) {
+                console.warn(`[ProjectChat] Failed to refresh runtime URL after connection error: ${rerouteErr?.message || rerouteErr}`)
+              }
+            } else {
+              consecutiveConnectionErrors = 0
+            }
+
+            console.log(`[ProjectChat] Connection error, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES}) against ${podUrl}:`, fetchError.message || fetchError.code)
             await new Promise(resolve => setTimeout(resolve, delay))
             continue
           }
@@ -987,11 +1054,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    * GET /projects/:projectId/chat/:chatSessionId/stream - Resume active stream
    *
    * Matches the AI SDK's default resume URL pattern: ${api}/${chatId}/stream
-   * Returns 204 when no active stream exists, or pipes the replay stream.
+   *
+   * Optional query: ?fromSeq=N — replay only frames the runtime emitted after
+   * sequence N. Combined with the runtime's `data-turn-start` /
+   * `data-turn-complete` markers, this gives a client a delta resume so it
+   * can attach mid-turn without re-rendering already-displayed text.
+   *
+   * Status codes:
+   *   - 200 — replay stream (live or terminal frames). Headers expose
+   *           `X-Turn-Id`, `X-Last-Seq`, `X-Turn-Status`.
+   *   - 204 — no buffered turn for this session at all.
    */
   router.get("/projects/:projectId/chat/:chatSessionId/stream", async (c) => {
     const projectId = c.req.param("projectId")
     const chatSessionId = c.req.param("chatSessionId")
+    const fromSeq = c.req.query("fromSeq")
 
     try {
       const project = await validateProject(projectId)
@@ -1002,9 +1079,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
+      const runtimePath = fromSeq !== undefined && fromSeq !== ""
+        ? `/agent/chat/${chatSessionId}/stream?fromSeq=${encodeURIComponent(fromSeq)}`
+        : `/agent/chat/${chatSessionId}/stream`
+
       const response = await fetchFromRuntime(
         projectId,
-        `/agent/chat/${chatSessionId}/stream`,
+        runtimePath,
         { method: "GET" },
       )
 
@@ -1020,6 +1101,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           }
         })
         responseHeaders.set("Access-Control-Allow-Origin", "*")
+        responseHeaders.set(
+          "Access-Control-Expose-Headers",
+          "X-Turn-Id, X-Last-Seq, X-Turn-Status",
+        )
         responseHeaders.set("X-Accel-Buffering", "no")
         return new Response(response.body, {
           status: response.status,
@@ -1028,8 +1113,47 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       return new Response(null, { status: 204 })
-    } catch {
+    } catch (err: any) {
+      console.warn(`[ProjectChat] resume proxy error for ${projectId}/${chatSessionId}:`, err?.message || err)
       return new Response(null, { status: 204 })
+    }
+  })
+
+  /**
+   * GET /projects/:projectId/chat/:chatSessionId/turn - Read-only durable turn snapshot
+   *
+   * Lets a client poll for the current state of a turn (status, lastSeq,
+   * turnId, terminal reason) without opening a streaming connection. The
+   * client can then decide whether to call /stream?fromSeq=N to resume.
+   */
+  router.get("/projects/:projectId/chat/:chatSessionId/turn", async (c) => {
+    const projectId = c.req.param("projectId")
+    const chatSessionId = c.req.param("chatSessionId")
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      const response = await fetchFromRuntime(
+        projectId,
+        `/agent/chat/${chatSessionId}/turn`,
+        { method: "GET" },
+      )
+
+      if (response.status === 404) {
+        return c.json({ status: "unknown" as const }, 404)
+      }
+
+      const data = await response.json()
+      return c.json(data, response.status as any)
+    } catch (err: any) {
+      console.warn(`[ProjectChat] turn snapshot proxy error for ${projectId}/${chatSessionId}:`, err?.message || err)
+      return c.json({ status: "unknown" as const }, 404)
     }
   })
 

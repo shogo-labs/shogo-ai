@@ -38,6 +38,12 @@ const config: ForgeConfig = {
     name: 'Shogo',
     ...(hasIcon ? { icon: './resources/icon' } : {}),
     asar: true,
+    // macOS privacy strings. Without NSMicrophoneUsageDescription, the
+    // packaged .app silently fails getUserMedia({ audio: true }) instead
+    // of triggering the system microphone prompt.
+    extendInfo: {
+      NSMicrophoneUsageDescription: 'Shogo needs microphone access to record audio for note-taking and transcription.',
+    },
     // Signing and notarization are handled by explicit workflow steps
     // rather than @electron/osx-sign (which has integration bugs with @electron/packager 18.x).
     ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
