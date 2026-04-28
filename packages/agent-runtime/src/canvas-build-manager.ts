@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * CanvasBuildManager — Runs `vite build` in the workspace on file changes.
+ * CanvasBuildManager — Runs `bun run build` in the workspace on file changes.
  *
- * The workspace is a standard Vite + React app (from runtime-template).
- * We just run `bun run build` in the workspace directory, then notify
- * subscribers (SSE) to trigger an iframe reload.
+ * Stack-aware: works for any first-party stack whose package.json exposes a
+ * `build` script and whose bundler binary is in `node_modules/.bin/`.
+ *
+ * Concretely today:
+ *   - Vite stacks (`react-app`, `threejs-game`, `phaser-game`) — `vite build`
+ *     produces `dist/`.
+ *   - Metro stacks (`expo-app`, `expo-three`) — `expo export --platform web
+ *     --output-dir dist` produces `dist/` containing the react-native-web
+ *     rendering of the app.
+ *
+ * In both cases we just run `bun run build` and let package.json drive the
+ * actual command. The only thing this manager checks is that *some* known
+ * bundler binary is present, so we don't fire `bun run build` against a
+ * fresh workspace where nothing has installed yet.
  *
  * Builds are debounced so rapid file writes don't cause build storms.
  */
@@ -16,6 +27,14 @@ import { existsSync } from 'fs'
 
 const BUILD_DEBOUNCE_MS = 500
 const LOG_PREFIX = '[CanvasBuildManager]'
+
+/**
+ * Bundler binaries we know how to drive via `bun run build`. The first one
+ * we find under `node_modules/.bin/` is enough to consider the workspace
+ * buildable. Order doesn't matter — they're not exclusive (an Expo app
+ * could in principle have vite for a tooling sidecar).
+ */
+const KNOWN_BUNDLER_BINS = ['vite', 'expo'] as const
 
 export interface CanvasBuildCallbacks {
   onBuildComplete: () => void
@@ -65,6 +84,12 @@ export class CanvasBuildManager {
     return this.outDir
   }
 
+  /** True if we can find a bundler binary under `node_modules/.bin/`. */
+  private hasBundlerBin(): boolean {
+    const binDir = join(this.workspaceDir, 'node_modules', '.bin')
+    return KNOWN_BUNDLER_BINS.some((b) => existsSync(join(binDir, b)))
+  }
+
   private async runBuild(): Promise<void> {
     if (this.building) {
       this.pendingBuild = true
@@ -74,7 +99,7 @@ export class CanvasBuildManager {
     if (!existsSync(join(this.workspaceDir, 'package.json'))) {
       return
     }
-    if (!existsSync(join(this.workspaceDir, 'node_modules', '.bin', 'vite'))) {
+    if (!this.hasBundlerBin()) {
       return
     }
 

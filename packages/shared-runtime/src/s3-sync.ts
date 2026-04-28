@@ -122,7 +122,20 @@ export class S3Sync {
       endpoint: config.endpoint || process.env.S3_ENDPOINT,
       region: config.region || process.env.S3_REGION || 'us-east-1',
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
-      // Exclude patterns - these won't be included in archives
+      // Exclude patterns - these won't be included in archives.
+      //
+      // Notes on coverage:
+      //   - `node_modules` at any depth is already filtered by the
+      //     `excludeDirs` arg passed to listLocalFiles() during archive
+      //     creation (see uploadProjectArchive). Listing here as a
+      //     belt-and-braces glob, but the dir-name filter is what
+      //     actually gates inclusion.
+      //   - Expo / Metro stash a large amount of build state under
+      //     `.expo/` (manifest cache, prebuild artifacts) and Metro's
+      //     own bundle cache under `.metro-cache/`. These are
+      //     reproducible from `node_modules` + source, so excluding them
+      //     matches our treatment of `dist/` and avoids ballooning the
+      //     project archive on RN projects.
       exclude: config.exclude || [
         '.DS_Store',
         '*.log',
@@ -132,6 +145,9 @@ export class S3Sync {
         '.bun',
         '.npm',
         '.cache',
+        '.expo',
+        '.metro-cache',
+        '.expo-shared',
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
@@ -616,8 +632,15 @@ export class S3Sync {
     const startTime = Date.now()
     const tempArchive = join('/tmp', `project-${this.config.prefix}-src-upload.tar.gz`)
 
-    // List all files EXCLUDING node_modules
-    const filesToInclude = await this.listLocalFiles(undefined, ['node_modules'])
+    // List all files EXCLUDING node_modules + Expo/Metro caches.
+    // Keep this in sync with the `exclude` glob list above; both gates
+    // need to filter the same families of generated/cache directories.
+    const filesToInclude = await this.listLocalFiles(undefined, [
+      'node_modules',
+      '.expo',
+      '.metro-cache',
+      '.expo-shared',
+    ])
 
     if (filesToInclude.length === 0) {
       console.log(`[S3Sync] No project files to include after filtering`)

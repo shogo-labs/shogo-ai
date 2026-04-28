@@ -60,6 +60,27 @@ You explain what you're about to do, then do it. You prefer showing over telling
   'TOOLS.md': `# Tools
 
 Notes about available tools and conventions for this agent.
+
+## exec vs. long-lived dev servers
+
+The \`exec\` tool is for **finite** shell commands (installs, builds, tests,
+typechecks). It is wrapped in a 5-minute timeout and returns only when the
+command exits.
+
+**Do NOT** use \`exec\` to start long-running processes — Vite dev servers,
+\`expo start\` / Metro, \`bun run server.tsx\`, watchers, REPLs, etc. They will
+either:
+
+1. block until the 5-minute timeout fires and then get killed, or
+2. appear to "hang" the agent for the user.
+
+Long-lived dev servers are owned by the runtime's PreviewManager. They start
+automatically when the workspace is seeded and surface their URL via the
+preview tool. If you need to restart them, use the dedicated preview/dev
+controls — never \`exec npx vite\` or \`exec npx expo start\`.
+
+Rule of thumb: if the command would not exit on its own within ~30s, it does
+not belong in \`exec\`.
 `,
   'MEMORY.md': `# Memory
 
@@ -315,6 +336,24 @@ export interface TechStackMeta {
   name: string
   description: string
   tags: string[]
+  /**
+   * Platform this stack ultimately runs on. Drives instance sizing,
+   * disk overlays, and runtime image selection. Mirrored in
+   * `@shogo/shared-runtime`'s `TECH_STACK_REGISTRY` so apps/api (which
+   * doesn't bundle the tech-stacks directory) can answer the same
+   * question without reading stack.json.
+   *
+   * Source of truth on disk; the registry is validated against this
+   * field at agent-runtime boot — see `assertRegistryMatchesDisk()`.
+   */
+  target?: 'mobile' | 'web' | 'data' | 'native' | 'none'
+  /**
+   * Whether the agent-runtime's `seedTechStack(id)` is responsible for laying
+   * down this stack's initial files (vs. apps/api copying the bundled Vite
+   * template). Mirrored into the registry; `validateTechStackRegistry()`
+   * checks the two stay in sync.
+   */
+  seedsOwnTemplate?: boolean
   runtime?: {
     devServer?: string
     buildCommand?: string
@@ -360,6 +399,54 @@ export function listTechStacks(): TechStackMeta[] {
     }
   }
   return stacks
+}
+
+/**
+ * Verify every stack.json on disk has a matching entry in
+ * `@shogo/shared-runtime`'s `TECH_STACK_REGISTRY` and that the `target`
+ * field agrees. Run at agent-runtime boot — drift here means apps/api
+ * (which only sees the registry) will size pods incorrectly for the
+ * stack.
+ *
+ * Returns the list of mismatches so the caller can decide whether to
+ * warn or hard-fail. We default to warning, since a missing registry
+ * entry shouldn't take the runtime down for an unrelated bundling bug.
+ */
+export function validateTechStackRegistry(
+  registry: Record<string, { target: string; seedsOwnTemplate?: boolean }>,
+): Array<{ stackId: string; reason: string }> {
+  const mismatches: Array<{ stackId: string; reason: string }> = []
+  const onDisk = listTechStacks()
+  const seenOnDisk = new Set<string>()
+  for (const meta of onDisk) {
+    seenOnDisk.add(meta.id)
+    const reg = registry[meta.id]
+    if (!reg) {
+      mismatches.push({ stackId: meta.id, reason: 'missing from TECH_STACK_REGISTRY' })
+      continue
+    }
+    if (meta.target && reg.target !== meta.target) {
+      mismatches.push({
+        stackId: meta.id,
+        reason: `target mismatch: stack.json="${meta.target}" registry="${reg.target}"`,
+      })
+    }
+    // Both fields default-falsy when omitted, so compare normalised booleans.
+    const diskSeeds = !!meta.seedsOwnTemplate
+    const regSeeds = !!reg.seedsOwnTemplate
+    if (diskSeeds !== regSeeds) {
+      mismatches.push({
+        stackId: meta.id,
+        reason: `seedsOwnTemplate mismatch: stack.json=${diskSeeds} registry=${regSeeds}`,
+      })
+    }
+  }
+  for (const id of Object.keys(registry)) {
+    if (!seenOnDisk.has(id)) {
+      mismatches.push({ stackId: id, reason: 'registry entry has no stack.json on disk' })
+    }
+  }
+  return mismatches
 }
 
 /**
@@ -511,10 +598,30 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   }
 
   // Fast path: copy pre-installed node_modules from the image template.
+  // The template is a React+Vite project so this is only useful for
+  // workspaces whose package.json actually depends on Vite. Mobile stacks
+  // (Expo / RN) and Python stacks have completely different dependency
+  // graphs — copying the Vite template into them produces a Frankenstein
+  // node_modules where `expo` is missing and PreviewManager later has to
+  // re-run install anyway. Detect the mismatch and fall through to the
+  // proper install path.
+  const workspacePkgUsesVite = (() => {
+    try {
+      const pkgPath = join(dir, 'package.json')
+      if (!existsSync(pkgPath)) return false
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+      const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
+      // We treat "vite" or any framework that depends on vite (e.g.
+      // @vitejs/plugin-react) as a signal the workspace will use the
+      // shared template.
+      return !!(deps.vite || deps['@vitejs/plugin-react'])
+    } catch { return false }
+  })()
   const templatePath = getRuntimeTemplatePath()
   const templateModules = templatePath ? join(templatePath, 'node_modules') : null
   const templatePlatform = templatePath ? readPlatformMarker(templatePath) : null
-  const templateUsable = templateModules
+  const templateUsable = workspacePkgUsesVite
+    && templateModules
     && existsSync(join(templateModules, '.bin', 'vite'))
     && (!templatePlatform || templatePlatform === PLATFORM_TAG)
   if (templateUsable) {
@@ -529,6 +636,10 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
     } catch (err: any) {
       console.warn(`[workspace-defaults] Failed to copy template node_modules: ${err.message}`)
     }
+  } else if (templateModules && !workspacePkgUsesVite) {
+    console.log(
+      '[workspace-defaults] Workspace package.json does not depend on vite — skipping template copy, will run install',
+    )
   }
 
   console.log('[workspace-defaults] Installing workspace dependencies...')

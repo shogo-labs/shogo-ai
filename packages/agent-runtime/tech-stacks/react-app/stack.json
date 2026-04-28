@@ -3,6 +3,7 @@
   "name": "React App",
   "description": "Build apps with Vite + React + TypeScript + Tailwind CSS + shadcn/ui. Includes a skill server backend with Prisma + SQLite for persistent data.",
   "tags": ["react", "vite", "tailwind", "shadcn", "typescript", "fullstack"],
+  "target": "web",
   "runtime": {
     "devServer": "vite",
     "buildCommand": "vite build --watch",

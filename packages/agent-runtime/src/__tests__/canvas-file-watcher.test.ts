@@ -88,6 +88,39 @@ describe('onFileChanged', () => {
     expect(rebuildCalled).toBe(true)
   })
 
+  // --- Expo / Metro layout ---------------------------------------------------
+
+  test('calls onRebuild for Expo app/*.tsx (expo-router routes)', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileChanged('app/index.tsx', join(tmpDir, 'app', 'index.tsx'))
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('calls onRebuild for Expo app.json', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let rebuildCalled = false
+    watcher.setOnRebuild(() => { rebuildCalled = true })
+
+    watcher.onFileChanged('app.json', join(tmpDir, 'app.json'))
+
+    expect(rebuildCalled).toBe(true)
+  })
+
+  test('calls onRebuild for babel.config.js / metro.config.js', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    let calls = 0
+    watcher.setOnRebuild(() => { calls++ })
+
+    watcher.onFileChanged('babel.config.js', join(tmpDir, 'babel.config.js'))
+    watcher.onFileChanged('metro.config.js', join(tmpDir, 'metro.config.js'))
+
+    expect(calls).toBe(2)
+  })
+
   test('ignores non-buildable paths', () => {
     const watcher = new CanvasFileWatcher(tmpDir)
     let rebuildCalled = false

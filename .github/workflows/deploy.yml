@@ -207,8 +207,11 @@ jobs:
 
           BASE_DOCKERFILE=$(has_match '^packages/agent-runtime/Dockerfile\.base')
           SDK_EXAMPLES=$(has_match '^packages/sdk/examples/')
+          # Dockerfile.base pre-warms Bun's tarball cache from the expo-three
+          # starter package.json. Bumping its deps invalidates the prewarm.
+          EXPO_PREWARM=$(has_match '^packages/agent-runtime/tech-stacks/expo-three/starter/package\.json')
           RUNTIME_BASE_CHANGED=false
-          if [ "$BASE_DOCKERFILE" = "true" ] || [ "$SDK_EXAMPLES" = "true" ]; then
+          if [ "$BASE_DOCKERFILE" = "true" ] || [ "$SDK_EXAMPLES" = "true" ] || [ "$EXPO_PREWARM" = "true" ]; then
             RUNTIME_BASE_CHANGED=true
           fi
 

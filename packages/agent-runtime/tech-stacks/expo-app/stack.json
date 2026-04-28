@@ -1,0 +1,22 @@
+{
+  "id": "expo-app",
+  "name": "Expo (React Native)",
+  "description": "Build cross-platform mobile apps with Expo + React Native + TypeScript. Metro bundler is supervised by the runtime; web preview is rendered via react-native-web. Real-device preview is exposed via an Expo tunnel + QR.",
+  "tags": ["expo", "react-native", "mobile", "ios", "android", "metro", "typescript"],
+  "target": "mobile",
+  "seedsOwnTemplate": true,
+  "runtime": {
+    "devServer": "metro",
+    "buildCommand": "expo export --platform web --output-dir dist",
+    "templateApiPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": false
+  }
+}

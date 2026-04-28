@@ -5,6 +5,11 @@
  *
  * Single unified runtime configuration. All projects use the same
  * runtime image with mode switching (canvas / app / none).
+ *
+ * The base image pre-warms Bun's tarball cache with the Expo + RN
+ * dependency tree (see Dockerfile.base), so mobile projects no longer
+ * need a separate image variant. Per-stack pod sizing is still
+ * orthogonal — see `apps/api/src/config/instance-sizes.ts`.
  */
 
 export interface RuntimeTypeConfig {

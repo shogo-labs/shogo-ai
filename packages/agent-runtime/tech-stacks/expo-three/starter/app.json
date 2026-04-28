@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Shogo 3D Game",
+    "slug": "shogo-expo-three",
+    "version": "1.0.0",
+    "orientation": "landscape",
+    "scheme": "shogoexpothree",
+    "userInterfaceStyle": "dark",
+    "ios": { "supportsTablet": true, "requireFullScreen": true },
+    "android": { "adaptiveIcon": { "backgroundColor": "#05060b" } },
+    "web": { "bundler": "metro", "output": "static" },
+    "plugins": ["expo-router"],
+    "experiments": { "typedRoutes": true }
+  }
+}
