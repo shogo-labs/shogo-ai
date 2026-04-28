@@ -97,13 +97,14 @@ spec:
         autoscaling.knative.dev/scale-down-delay: "5m"
         autoscaling.knative.dev/window: "60s"
     spec:
-      # Max time a single request (inc. WS) can stay open. 1800s = 30 min.
-      # Desktops reconnect well before this on their own heartbeat cycle,
-      # so there's no benefit to going higher — and going higher (3600)
-      # risks being silently clamped by the cluster-level
-      # `max-request-timeout-seconds` in knative-serving/config-defaults.
-      # Keeping this within safe Knative defaults avoids that dependency.
-      timeoutSeconds: 1800
+      # Max time a single request (inc. WS + chat stream) can stay open.
+      # 3600s = 1 hour. Long agent turns with many tool calls can easily
+      # run 30+ minutes; the previous 1800s limit caused premature stream
+      # termination. The runtime sends keepalive comments every 10s so
+      # truly dead connections are still detected by intermediate proxies.
+      # Requires knative-serving/config-defaults max-revision-timeout-seconds
+      # to be at least 3600 (see k8s/knative/config-defaults.yaml).
+      timeoutSeconds: 3600
       serviceAccountName: api-service-account
       containers:
         - name: api
@@ -304,7 +305,9 @@ spec:
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             - name: PROMOTED_POD_IDLE_TIMEOUT_MS
-              value: "600000"
+              value: "1800000"
+            - name: AGENT_TURN_STALE_AFTER_MS
+              value: "7200000"
             - name: LOAD_TEST_SECRET
               valueFrom:
                 secretKeyRef:

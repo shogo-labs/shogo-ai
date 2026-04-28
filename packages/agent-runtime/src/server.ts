@@ -960,7 +960,7 @@ app.post('/agent/chat', async (c) => {
     // If this client disconnects, only the replay subscriber is removed;
     // the background reader + agent keep running.
     const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
-    const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+    const wrappedStream = wrapStreamWithKeepalive(replayStream, 10_000)
     const responseHeaders = new Headers(response.headers)
     responseHeaders.set('X-Turn-Id', turnId)
     responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
@@ -1007,7 +1007,7 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
     return new Response(null, { status: 204 })
   }
 
-  const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+  const wrappedStream = wrapStreamWithKeepalive(replayStream, 10_000)
   return new Response(wrappedStream, {
     headers: {
       'Content-Type': 'text/x-ai-sdk-ui-stream',

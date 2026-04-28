@@ -183,6 +183,7 @@ model Project {
   meetings         Meeting[]
   marketplaceListing  MarketplaceListing?
   voiceConfig         VoiceProjectConfig?
+  agentTurns          AgentTurn[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -609,6 +610,7 @@ model ChatSession {
   project         Project?       @relation(fields: [contextId], references: [id], onDelete: Cascade)
   messages        ChatMessage[]
   toolCallLogs    ToolCallLog[]
+  agentTurns      AgentTurn[]
 
   @@index([contextType, contextId])
   @@map("chat_sessions")
@@ -649,6 +651,42 @@ model ChatMessage {
 enum ChatRole {
   user
   assistant
+}
+
+// =============================================================================
+// AGENT TURNS — Durable turn lifecycle tracking
+// =============================================================================
+// Persists the lifecycle of each chat turn so that a reconnecting client or
+// a replacement runtime pod can determine whether a turn is still in progress,
+// completed, or failed — even if the original in-memory stream buffer was lost.
+
+model AgentTurn {
+  id             String          @id @default(uuid())
+  chatSessionId  String
+  projectId      String
+  turnId         String          @unique
+  status         AgentTurnStatus @default(active)
+  lastSeq        Int             @default(0)
+  startedAt      DateTime        @default(now())
+  completedAt    DateTime?
+  error          String?         @db.Text
+  messageId      String?
+
+  session        ChatSession     @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([chatSessionId])
+  @@index([projectId])
+  @@index([turnId])
+  @@index([chatSessionId, status])
+  @@map("agent_turns")
+}
+
+enum AgentTurnStatus {
+  active
+  completed
+  failed
+  aborted
 }
 
 model ToolCallLog {

@@ -1808,7 +1808,9 @@ export class WarmPoolController {
             },
           },
           spec: {
-            timeoutSeconds: 1800,
+            // Requires knative-serving/config-defaults max-revision-timeout-seconds
+            // to be at least this value; see k8s/knative/config-defaults.yaml.
+            timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
             containers: [
