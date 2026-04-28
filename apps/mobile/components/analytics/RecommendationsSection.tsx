@@ -106,7 +106,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
         const recKey = recommendationKey(rec)
         const isApplying = applying === recKey
         const wasApplied = applied.has(recKey)
-        const canApply = !!onApply && rec.currentModel !== rec.recommendedModel
+        const canApply = !!onApply && rec.agentType !== 'main-chat' && rec.currentModel !== rec.recommendedModel
         return (
           <Card key={i}>
             <CardContent className="p-3">
