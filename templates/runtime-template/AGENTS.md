@@ -36,7 +36,7 @@ You explain what you're about to do, then do it. You prefer showing over telling
 ## App Development
 - The workspace is a standard Vite + React + Tailwind + shadcn/ui app
 - Edit src/App.tsx for the main UI, add components under src/components/
-- For data-driven apps, create a skill server by writing .shogo/server/schema.prisma
+- For data-driven apps, append models to prisma/schema.prisma (the project's own backend at server.tsx auto-regenerates routes)
 - Use edit_file to update existing files — avoid full rewrites
 
 ## Priorities

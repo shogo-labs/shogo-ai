@@ -3400,8 +3400,40 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     default: { servers: [] },
   },
   tool_install: {
-    type: 'static',
-    response: { ok: true, installed: true, message: 'Tool installed and ready to use.' },
+    type: 'pattern',
+    patterns: [
+      {
+        match: { name: 'github' },
+        response: {
+          ok: true,
+          installed: true,
+          integration: 'github',
+          tools: ['GITHUB_LIST_REPOS', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_REPO'],
+          message: 'Installed github with 3 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'googlecalendar' },
+        response: {
+          ok: true,
+          installed: true,
+          integration: 'googlecalendar',
+          tools: ['GOOGLECALENDAR_FIND_EVENTS', 'GOOGLECALENDAR_CREATE_EVENT'],
+          message: 'Installed googlecalendar with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'calendar' },
+        response: {
+          ok: true,
+          installed: true,
+          integration: 'googlecalendar',
+          tools: ['GOOGLECALENDAR_FIND_EVENTS', 'GOOGLECALENDAR_CREATE_EVENT'],
+          message: 'Installed googlecalendar with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+    ],
+    default: { ok: true, installed: true, message: 'Tool installed and ready to use.' },
   },
   mcp_install: {
     type: 'static',
@@ -3410,6 +3442,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
   GITHUB_LIST_REPOS: {
     type: 'static',
     description: 'List repositories for Pixel & Co.',
+    hidden: true,
     response: {
       repos: [
         { name: 'pixelco-website', description: 'Company marketing site', language: 'TypeScript', updatedAt: '2026-03-30', openIssues: 3 },
@@ -3422,6 +3455,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
   },
   GITHUB_LIST_PULL_REQUESTS: {
     type: 'pattern',
+    hidden: true,
     patterns: [
       { match: { repo: 'acme' }, response: { pullRequests: [
         { number: 142, title: 'fix: checkout page 500 error on invalid coupon', author: 'james-dev', state: 'open', base: 'main', additions: 23, deletions: 8, changedFiles: 2, createdAt: '2026-04-01T09:00:00Z' },
@@ -3431,9 +3465,16 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     ],
     default: { pullRequests: [], total: 0 },
   },
+  GITHUB_GET_REPO: {
+    type: 'static',
+    description: 'Get repository details for Pixel & Co.',
+    hidden: true,
+    response: { name: 'acme-ecommerce', language: 'TypeScript', openIssues: 7, defaultBranch: 'main' },
+  },
   GOOGLECALENDAR_FIND_EVENTS: {
     type: 'static',
     description: 'Find events on Google Calendar.',
+    hidden: true,
     response: {
       events: [
         { id: 'evt-1', summary: 'Acme Corp - Sprint Review', start: '2026-04-02T10:00:00', end: '2026-04-02T11:00:00', attendees: ['maya@pixelandco.com', 'john@acmecorp.com'] },
@@ -3441,6 +3482,12 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
         { id: 'evt-3', summary: 'New Lead Call - Luxe Candles', start: '2026-04-02T14:00:00', end: '2026-04-02T14:45:00', attendees: ['maya@pixelandco.com', 'rachel@luxecandles.com'] },
       ],
     },
+  },
+  GOOGLECALENDAR_CREATE_EVENT: {
+    type: 'static',
+    description: 'Create a Google Calendar event.',
+    hidden: true,
+    response: { ok: true, eventId: 'evt-created-1', htmlLink: 'https://calendar.google.com/mock/event' },
   },
   task: {
     type: 'static',

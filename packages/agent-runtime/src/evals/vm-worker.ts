@@ -167,6 +167,13 @@ export async function startVMWorker(
   const vmEnv: Record<string, string> = {
     PROJECT_ID: name,
     AGENT_MODEL: config.model,
+    // Pin the project API server to the same port the VM forwards
+    // (host:4100+id → guest:4100 — see VM_DEFAULTS.guestSkillPort in
+    // apps/desktop/src/vm/types.ts).  PreviewManager reads this to
+    // override its default of 3001 when running inside the VM.
+    API_SERVER_PORT: '4100',
+    // Legacy alias retained for any not-yet-rebundled code that still
+    // looks for SKILL_SERVER_PORT; harmless when ignored.
     SKILL_SERVER_PORT: '4100',
     ...config.envOverrides,
   }

@@ -169,7 +169,7 @@ model TechDebt {
 function phase3Workspace(): Record<string, string> {
   return {
     ...phase2Workspace(),
-    '.shogo/server/schema.prisma': PRISMA_SCHEMA_PHASE2,
+    'prisma/schema.prisma': PRISMA_SCHEMA_PHASE2,
   }
 }
 

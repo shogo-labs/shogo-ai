@@ -91,7 +91,7 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
       },
       {
         id: 'created-prisma-schema',
-        description: 'Created a Prisma schema file (.shogo/server/schema.prisma)',
+        description: 'Created a Prisma schema file (prisma/schema.prisma)',
         points: 25,
         phase: 'execution',
         validate: (r) => wroteSchemaFile(r),

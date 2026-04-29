@@ -15,9 +15,9 @@
  * missing or unrecognised value falls back to Vite for backwards compat.
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
-import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'fs'
+import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
 import { createServer } from 'net'
 import { createHash } from 'crypto'
 import { pkg } from '@shogo/shared-runtime'
@@ -75,11 +75,31 @@ export interface PreviewManagerConfig {
   localMode?: boolean
 }
 
-// Template API sidecar port (Hono server.tsx) — NOT the app URL. The app is
-// served by the runtime itself on `runtimePort`, and this sidecar is proxied
-// at `/api/*`. Fixed for now; see the templateApiPort field in
+// API sidecar port (Hono `server.tsx`) — NOT the app URL. The app is served
+// by the runtime itself on `runtimePort`, and this sidecar is proxied at
+// `/api/*`. Fixed for now; see the templateApiPort field in
 // `tech-stacks/<stack>/stack.json`.
-const API_SERVER_PORT = 3001
+//
+// This is the *single* backend for any app the agent builds: editing the
+// project's root `prisma/schema.prisma` triggers regenerate + restart of
+// this server. There is no longer a parallel "skill server" on a different
+// port; PreviewManager owns the whole pipeline. See migrations/skill-server-to-root.ts
+// for the one-shot migration that retires `.shogo/server/` on workspace boot.
+// Port the project's API server (`server.tsx`) listens on. Honors
+// `API_SERVER_PORT` so the VM/Docker harness can pin a known port (the
+// VM forwards host:4100 → guest:4100, the docker eval-worker maps
+// host:4100+id → container:3001 etc.). Falls back to 3001 — matching
+// the runtime template's package.json scripts and SDK examples — when
+// no override is provided.
+const API_SERVER_PORT = (() => {
+  const raw = process.env.API_SERVER_PORT
+  const n = raw ? parseInt(raw, 10) : NaN
+  return Number.isFinite(n) && n > 0 ? n : 3001
+})()
+
+const SCHEMA_DEBOUNCE_MS = 1500
+const HEALTH_CHECK_RETRIES = 10
+const HEALTH_CHECK_INTERVAL_MS = 500
 
 // Default starting port for Metro when running via `expo start --tunnel`.
 // Expo's historic default is 8081, but during `bun dev:all` the studio's own
@@ -151,6 +171,8 @@ export type PreviewPhase =
   | 'starting-api'
   | 'ready'
 
+export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'restarting' | 'crashed' | 'stopped'
+
 export class PreviewManager {
   private workspaceDir: string
   private runtimePort: number
@@ -161,6 +183,12 @@ export class PreviewManager {
   private metroProcess: ChildProcess | null = null
   private metroUrl: string | null = null
   private metroPort: number | null = null
+  private schemaWatcher: FSWatcher | null = null
+  private schemaTimer: ReturnType<typeof setTimeout> | null = null
+  private apiPhase: ApiServerPhase = 'idle'
+  private regenerating = false
+  private pendingSchemaChange = false
+  private lastGenerateError: string | null = null
   /**
    * `true` if `@expo/ngrok` was found at the time the last Metro tunnel
    * spawn was attempted. `null` means we haven't tried yet (no metro
@@ -284,6 +312,308 @@ export class PreviewManager {
 
   get apiServerPort(): number | null {
     return this.apiServerProcess && !this.apiServerProcess.killed ? API_SERVER_PORT : null
+  }
+
+  /**
+   * Phase of the project's API sidecar (root `server.tsx`). Mirrors the
+   * legacy `SkillServerManager.phase` getter so callers (gateway prompts,
+   * eval runtime checks) can render a single signal regardless of which
+   * pipeline produced the server.
+   */
+  get apiServerPhase(): ApiServerPhase {
+    return this.apiPhase
+  }
+
+  /** Last error from `bunx shogo generate`, or null on success. */
+  get apiLastGenerateError(): string | null {
+    return this.lastGenerateError
+  }
+
+  /**
+   * URL the agent uses to talk to the API sidecar from inside the pod
+   * (i.e. for tools like `web`). The sidecar listens on
+   * `localhost:API_SERVER_PORT`; the runtime then proxies `/api/*` to
+   * the same port — both are valid origins.
+   */
+  get apiServerUrl(): string {
+    return `http://localhost:${API_SERVER_PORT}`
+  }
+
+  /** Quick health check against `<apiServerUrl>/health`. */
+  async isApiHealthy(): Promise<boolean> {
+    if (!this.apiServerPort) return false
+    try {
+      const resp = await fetch(`${this.apiServerUrl}/health`, { signal: AbortSignal.timeout(2000) })
+      return resp.ok
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * List of API route paths currently registered, derived from the
+   * SDK-generated `src/generated/routes/index.{ts,tsx}` (or fallback
+   * locations the SDK has used historically).  Returns [] when no
+   * routes have been generated yet.
+   */
+  getActiveRoutes(): string[] {
+    const cwd = this.bundlerCwd
+    const candidates = [
+      join(cwd, 'src', 'generated', 'routes', 'index.tsx'),
+      join(cwd, 'src', 'generated', 'routes', 'index.ts'),
+      join(cwd, 'src', 'generated', 'index.tsx'),
+      join(cwd, 'src', 'generated', 'index.ts'),
+    ]
+    const found = candidates.find(existsSync)
+    if (!found) return []
+    try {
+      const content = readFileSync(found, 'utf-8')
+      const paths: string[] = []
+      for (const m of content.matchAll(/app\.route\(\s*["']\/([^"']+)["']/g)) {
+        paths.push(m[1])
+      }
+      // The SDK's createAllRoutes also exports a manifest — fall back
+      // to scanning for `routesByModel` style entries if the regex
+      // produced nothing.
+      if (paths.length === 0) {
+        for (const m of content.matchAll(/createRoutes['"]?\s*:\s*\(\)\s*=>\s*create(\w+)Routes/g)) {
+          paths.push(m[1].toLowerCase() + 's')
+        }
+      }
+      return paths
+    } catch {
+      return []
+    }
+  }
+
+  /** List of model names parsed from root `prisma/schema.prisma`. */
+  getSchemaModels(): string[] {
+    const schemaPath = join(this.bundlerCwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) return []
+    try {
+      const content = readFileSync(schemaPath, 'utf-8')
+      const models: string[] = []
+      for (const m of content.matchAll(/^model\s+(\w+)\s*\{/gm)) {
+        models.push(m[1])
+      }
+      return models
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Force a full regenerate + restart cycle and block until the API
+   * server is healthy with the latest schema.  Called by the eval
+   * harness and the agent's `server_sync` tool to eliminate timing
+   * races with the file watcher.
+   */
+  async sync(): Promise<{ ok: boolean; phase: ApiServerPhase; error?: string }> {
+    const cwd = this.bundlerCwd
+    const schemaPath = join(cwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) {
+      return { ok: false, phase: this.apiPhase, error: 'prisma/schema.prisma not found' }
+    }
+
+    this.stopSchemaWatcher()
+    if (this.schemaTimer) {
+      clearTimeout(this.schemaTimer)
+      this.schemaTimer = null
+    }
+    this.pendingSchemaChange = false
+
+    console.log(`[${LOG_PREFIX}] sync() — stopping API server, regenerating, then restarting...`)
+    this.regenerating = true
+    await this.killApiServer()
+
+    const ok = await this.runShogoGenerate()
+    if (ok) {
+      const timings: Record<string, number> = {}
+      await this.runPrismaIfNeeded(timings)
+      await this.startApiServer()
+    }
+    this.regenerating = false
+    this.startSchemaWatcher()
+
+    return ok
+      ? { ok: this.apiPhase === 'healthy', phase: this.apiPhase }
+      : { ok: false, phase: this.apiPhase, error: this.lastGenerateError ?? 'generation failed' }
+  }
+
+  /**
+   * Run `bunx shogo generate` at the project root. Picks up new models
+   * from `prisma/schema.prisma` and regenerates `src/generated/routes/`,
+   * `src/lib/db.ts`, `server.tsx` (skipped if it already exists), etc.
+   *
+   * Returns false on any failure; the error message is exposed via
+   * `apiLastGenerateError` for the caller to surface to the agent.
+   */
+  private async runShogoGenerate(): Promise<boolean> {
+    const cwd = this.bundlerCwd
+    if (!existsSync(join(cwd, 'package.json'))) return false
+
+    this.apiPhase = 'generating'
+    this.lastGenerateError = null
+    const start = Date.now()
+    console.log(`[${LOG_PREFIX}] Running bunx shogo generate at ${cwd}...`)
+
+    return await new Promise<boolean>((resolveResult) => {
+      // Use async spawn rather than execSync. The runtime's startup path
+      // already drives a vite watcher, an LSP server, and the agent
+      // gateway concurrently — blocking the event loop with execSync
+      // starves their stdio pipes and frequently deadlocks `bunx shogo`'s
+      // own child processes (notably `prisma generate`, which speaks to
+      // the parent through pipes). spawn + 'ignore' for stdin sidesteps
+      // both issues and matches the manual `bunx shogo generate` shape.
+      const proc = spawn(pkg.bunBinary, ['x', 'shogo', 'generate'], {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          DATABASE_URL: `file:${join(cwd, 'prisma', 'dev.db')}`,
+          // Hint to non-TTY child processes (Prisma's spinner library,
+          // chalk, etc.) so they don't waste cycles on TTY queries.
+          CI: '1',
+        },
+      })
+
+      let stdout = ''
+      let stderr = ''
+      proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+      const TIMEOUT_MS = 120_000
+      const timer = setTimeout(() => {
+        try { proc.kill('SIGKILL') } catch {}
+      }, TIMEOUT_MS)
+
+      proc.on('error', (err) => {
+        clearTimeout(timer)
+        const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+        this.lastGenerateError = err.message
+        console.error(`[${LOG_PREFIX}] shogo generate spawn error after ${elapsed}s: ${err.message}`)
+        this.apiPhase = 'crashed'
+        resolveResult(false)
+      })
+
+      proc.on('close', (code) => {
+        clearTimeout(timer)
+        const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+        if (code === 0) {
+          console.log(`[${LOG_PREFIX}] shogo generate complete (${elapsed}s)`)
+          if (stdout.trim()) console.log(`[${LOG_PREFIX}] generate stdout: ${stdout.trim().slice(0, 500)}`)
+          resolveResult(true)
+        } else {
+          this.lastGenerateError = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || `exit code ${code}`
+          console.error(`[${LOG_PREFIX}] shogo generate failed after ${elapsed}s (exit=${code})`)
+          if (stdout.trim()) console.error(`[${LOG_PREFIX}] generate stdout: ${stdout.trim().slice(0, 500)}`)
+          if (stderr.trim()) console.error(`[${LOG_PREFIX}] generate stderr: ${stderr.trim().slice(0, 500)}`)
+          this.apiPhase = 'crashed'
+          resolveResult(false)
+        }
+      })
+    })
+  }
+
+  /**
+   * Watch `prisma/schema.prisma` for changes. When the agent edits the
+   * schema, debounce briefly, then run `shogo generate` and restart the
+   * API server.
+   *
+   * Uses `fs.watch` on the parent directory because `prisma/` may not
+   * exist when the watcher first starts (older workspaces, fresh
+   * clones). The handler ignores events for unrelated files.
+   */
+  private startSchemaWatcher(): void {
+    const cwd = this.bundlerCwd
+    const prismaDir = join(cwd, 'prisma')
+    if (!existsSync(prismaDir)) {
+      try {
+        mkdirSync(prismaDir, { recursive: true })
+      } catch {
+        return
+      }
+    }
+
+    if (this.schemaWatcher) return
+
+    try {
+      this.schemaWatcher = watch(prismaDir, (_event, filename) => {
+        if (filename !== 'schema.prisma') return
+        if (this.regenerating) {
+          this.pendingSchemaChange = true
+          return
+        }
+
+        if (this.schemaTimer) clearTimeout(this.schemaTimer)
+        this.schemaTimer = setTimeout(() => {
+          this.schemaTimer = null
+          void this.handleSchemaChange()
+        }, SCHEMA_DEBOUNCE_MS)
+      })
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Failed to watch ${prismaDir}: ${err.message}`)
+    }
+  }
+
+  private stopSchemaWatcher(): void {
+    if (this.schemaWatcher) {
+      this.schemaWatcher.close()
+      this.schemaWatcher = null
+    }
+  }
+
+  private async handleSchemaChange(): Promise<void> {
+    const cwd = this.bundlerCwd
+    const schemaPath = join(cwd, 'prisma', 'schema.prisma')
+    if (!existsSync(schemaPath)) return
+
+    const content = readFileSync(schemaPath, 'utf-8')
+    if (!/^model\s+\w+/m.test(content)) {
+      console.log(`[${LOG_PREFIX}] schema.prisma changed but has no models yet, skipping...`)
+      return
+    }
+
+    console.log(`[${LOG_PREFIX}] schema.prisma changed, regenerating...`)
+    this.regenerating = true
+    this.pendingSchemaChange = false
+    await this.killApiServer()
+
+    const ok = await this.runShogoGenerate()
+    if (ok) {
+      const timings: Record<string, number> = {}
+      await this.runPrismaIfNeeded(timings)
+      await this.startApiServer()
+    }
+    this.regenerating = false
+
+    if (this.pendingSchemaChange) {
+      console.log(`[${LOG_PREFIX}] Schema changed during regeneration, re-running...`)
+      await this.handleSchemaChange()
+    }
+  }
+
+  private async killApiServer(): Promise<void> {
+    const proc = this.apiServerProcess
+    if (!proc || proc.killed) {
+      this.apiServerProcess = null
+      return
+    }
+
+    return new Promise<void>((resolve) => {
+      const force = setTimeout(() => {
+        if (!proc.killed) proc.kill('SIGKILL')
+        resolve()
+      }, 5000)
+
+      proc.once('exit', () => {
+        clearTimeout(force)
+        resolve()
+      })
+
+      proc.kill('SIGTERM')
+      this.apiServerProcess = null
+    })
   }
 
   /**
@@ -567,8 +897,13 @@ export class PreviewManager {
    * Stop the preview server and kill the bundler process.
    */
   stop(): void {
+    this.stopSchemaWatcher()
+    if (this.schemaTimer) {
+      clearTimeout(this.schemaTimer)
+      this.schemaTimer = null
+    }
     if (this.apiServerProcess) {
-      console.log(`[${LOG_PREFIX}] Stopping template API server...`)
+      console.log(`[${LOG_PREFIX}] Stopping API server...`)
       this.apiServerProcess.kill('SIGTERM')
       this.apiServerProcess = null
     }
@@ -585,6 +920,7 @@ export class PreviewManager {
     }
     this.started = false
     this._phase = 'idle'
+    this.apiPhase = 'stopped'
   }
 
   /**
@@ -670,7 +1006,6 @@ export class PreviewManager {
         ...process.env,
         NODE_ENV: 'development',
         VITE_RUNTIME_PORT: String(this.runtimePort),
-        VITE_SKILL_SERVER_PORT: process.env.SKILL_SERVER_PORT || '4100',
       },
     })
 
@@ -704,10 +1039,36 @@ export class PreviewManager {
   private async startApiServer(): Promise<void> {
     const cwd = this.bundlerCwd
     const serverFile = join(cwd, 'server.tsx')
-    if (!existsSync(serverFile)) return
+    if (!existsSync(serverFile)) {
+      this.apiPhase = 'idle'
+      return
+    }
+
+    // Make sure SDK-generated routes exist before spawning the server.
+    // The runtime template's server.tsx imports `./src/generated/routes`
+    // unconditionally; if `shogo generate` has never been run for this
+    // workspace the import resolves to nothing and the server crashes
+    // immediately with "Cannot find module". The template ships a partial
+    // `src/generated/prisma/` only — check specifically for the routes
+    // entrypoint and fall back to a one-shot generate.  Generate-on-first-
+    // boot is cheap (~1s) and idempotent — re-runs after a model change
+    // happen through {@link sync} via the schema watcher.
+    const routesDir = join(cwd, 'src', 'generated', 'routes')
+    const routesIndexTsx = join(routesDir, 'index.tsx')
+    const routesIndexTs = join(routesDir, 'index.ts')
+    if (!existsSync(routesIndexTsx) && !existsSync(routesIndexTs)) {
+      const ok = await this.runShogoGenerate()
+      if (!ok) {
+        console.warn(
+          `[${LOG_PREFIX}] Initial shogo generate failed — server.tsx will likely crash. ` +
+            `Last error: ${this.lastGenerateError ?? 'unknown'}`,
+        )
+      }
+    }
 
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
-    console.log(`[${LOG_PREFIX}] Starting template API server on port ${API_SERVER_PORT}...`)
+    console.log(`[${LOG_PREFIX}] Starting API server on port ${API_SERVER_PORT}...`)
+    this.apiPhase = 'starting'
 
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {
       cwd,
@@ -732,11 +1093,44 @@ export class PreviewManager {
     })
 
     proc.on('exit', (code, signal) => {
-      console.log(`[${LOG_PREFIX}] Template API server exited (code=${code}, signal=${signal})`)
+      console.log(`[${LOG_PREFIX}] API server exited (code=${code}, signal=${signal})`)
       if (this.apiServerProcess === proc) this.apiServerProcess = null
+      // Don't downgrade an `idle`/`stopped` phase set by `stop()`.
+      if (this.apiPhase === 'starting' || this.apiPhase === 'healthy') {
+        this.apiPhase = 'crashed'
+      }
     })
 
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    // Poll /health up to HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS
+    // before declaring the server healthy. Falls back to a fixed delay
+    // (matches old behaviour) when the health endpoint never appears.
+    let healthy = false
+    for (let i = 0; i < HEALTH_CHECK_RETRIES; i++) {
+      await new Promise((r) => setTimeout(r, HEALTH_CHECK_INTERVAL_MS))
+      if (proc.killed || this.apiServerProcess !== proc) break
+      try {
+        const resp = await fetch(`${this.apiServerUrl}/health`, { signal: AbortSignal.timeout(2000) })
+        if (resp.ok) {
+          healthy = true
+          break
+        }
+      } catch {
+        // not ready yet
+      }
+    }
+
+    if (healthy) {
+      this.apiPhase = 'healthy'
+      console.log(`[${LOG_PREFIX}] API server healthy on port ${API_SERVER_PORT}`)
+    } else if (this.apiServerProcess === proc && !proc.killed) {
+      // Process is up but /health never responded — treat as best-effort
+      // running. The caller can still proxy to it (if templates omit
+      // /health entirely, prior behaviour was the same fixed-delay return).
+      this.apiPhase = 'healthy'
+      console.warn(`[${LOG_PREFIX}] API server started but /health never returned 2xx — proceeding anyway`)
+    }
+
+    this.startSchemaWatcher()
   }
 
   /**

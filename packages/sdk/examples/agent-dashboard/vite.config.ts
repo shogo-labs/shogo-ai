@@ -3,7 +3,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tsConfigPaths from 'vite-tsconfig-paths'
 
-const skillServerPort = process.env.VITE_SKILL_SERVER_PORT || '3001'
+const apiServerPort = process.env.VITE_API_SERVER_PORT || process.env.VITE_SKILL_SERVER_PORT || '3001'
 
 export default defineConfig({
   server: {
@@ -12,7 +12,7 @@ export default defineConfig({
     cors: true,
     proxy: {
       '/api': {
-        target: `http://localhost:${skillServerPort}`,
+        target: `http://localhost:${apiServerPort}`,
         changeOrigin: true,
       },
       '/agent': {

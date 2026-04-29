@@ -261,9 +261,9 @@ describe('unified createTools', () => {
     expect(names).toContain('agent_list')
   })
 
-  test('includes skill_server_sync', () => {
+  test('includes server_sync', () => {
     const names = tools.map(t => t.name)
-    expect(names).toContain('skill_server_sync')
+    expect(names).toContain('server_sync')
   })
 
   test('does NOT include task or task_status', () => {

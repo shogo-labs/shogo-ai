@@ -199,7 +199,7 @@ export async function transformSchemaFile(options: TransformOptions): Promise<Tr
       console.log('Running prisma generate...')
     }
     try {
-      execSync('bunx prisma generate', {
+      execSync('bun x prisma generate', {
         cwd: schemaDir,
         env,
         stdio: verbose ? 'inherit' : 'pipe',
@@ -215,7 +215,7 @@ export async function transformSchemaFile(options: TransformOptions): Promise<Tr
       console.log('Running prisma db push...')
     }
     try {
-      execSync('bunx prisma db push', {
+      execSync('bun x prisma db push', {
         cwd: schemaDir,
         env,
         stdio: verbose ? 'inherit' : 'pipe',

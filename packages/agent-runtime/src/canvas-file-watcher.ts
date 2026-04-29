@@ -64,7 +64,11 @@ function isBuildableFile(relativePath: string): boolean {
 const IGNORED_PATH_PREFIXES = [
   'node_modules',
   '.git',
-  '.shogo/server/generated',
+  '.shogo/server', // legacy skill-server path — retained so any leftover
+                   // pre-migration files don't trigger rebuilds. The
+                   // migration deletes the directory but old snapshots
+                   // (`.shogo/server.migrated-<ts>/`) are also under
+                   // `.shogo/`, which we ignore wholesale next:
   '.shogo/cache',
   'dist',
   'build',
@@ -72,6 +76,7 @@ const IGNORED_PATH_PREFIXES = [
   '.turbo',
   '.cache',
   'src/generated',
+  'prisma/dev.db',
 ]
 
 function shouldIgnore(relativePath: string): boolean {

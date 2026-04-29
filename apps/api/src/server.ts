@@ -1747,7 +1747,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
     // Canvas iframe loads directly from the runtime (not through the proxy)
-    // so fetch('/api/...') resolves same-origin to the skill server.
+    // so fetch('/api/...') resolves same-origin to the project's API server.
     // In production this is the preview subdomain; locally it's the direct runtime port.
     const canvasBaseUrl = previewMode === 'subdomain'
       ? getPreviewUrl(projectId)
