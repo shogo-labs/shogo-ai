@@ -17,8 +17,8 @@ import {
  *   1. Dropdown renders all 3 modes with descriptions
  *   2. Ask mode sends a message without tool calls
  *   3. Plan mode triggers plan creation with restricted tools
- *   4. Plan card confirm triggers agent execution
- *   5. Plans panel shows saved plans
+ *   4. Plan card opens the saved plan artifact
+ *   5. Build triggers agent execution
  *   6. Agent mode restores full capabilities
  *
  * Run: STAGING_URL=https://your-staging-host npx playwright test --config e2e/playwright.config.ts interaction-modes
@@ -97,26 +97,31 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     )
     await waitForAgentResponse(page, 180_000)
 
-    // A plan card should appear with a "Confirm & Execute" button
-    const confirmButton = page.getByText("Confirm & Execute")
-    await expect(confirmButton).toBeVisible({ timeout: 30_000 })
+    // A plan card should appear with Cursor-like Build and plan-file actions
+    await expect(page.getByText("Build Plan")).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText("Open Plan")).toBeVisible({ timeout: 30_000 })
   })
 
-  test("confirm triggers agent execution", async () => {
-    const confirmButton = page.getByText("Confirm & Execute")
-    await confirmButton.click()
+  test("plan card opens saved plan artifact", async () => {
+    await page.getByText("Open Plan").click()
+    await expect(page.getByText("Plans")).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText(/^Build$/)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/hello\.txt|Hello World/i).first()).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("Build triggers agent execution in Agent mode", async () => {
+    await page.getByText(/^Build$/).click()
 
     // The interaction mode should switch back to Agent
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
     await expect(trigger).toContainText("Agent", { timeout: 10_000 })
+    await expect(page.getByText("Execute the confirmed plan.")).toBeVisible({ timeout: 10_000 })
 
-    // Wait for the agent to process the confirmed plan
+    // Wait for the agent to process the built plan
     await waitForAgentResponse(page, 180_000)
 
-    // Verify the plan was confirmed (the "Plan confirmed" indicator should replace the button)
-    await expect(page.getByText("Plan confirmed")).toBeVisible({ timeout: 5_000 }).catch(() => {
-      // The confirm button should at least be gone
-    })
+    // Verify the execution turn produced a visible result tied to the approved plan
+    await expect(page.locator("body")).toContainText(/hello\.txt|Hello World|created|added/i, { timeout: 30_000 })
   })
 
   test("Plans panel shows saved plans", async () => {

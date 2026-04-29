@@ -5100,6 +5100,26 @@ function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
 // Plan Mode: create_plan tool
 // ---------------------------------------------------------------------------
 
+function normalizePlanFilepath(filepath: string): string | null {
+  const normalized = filepath.replace(/^\/+/, '').replace(/\\/g, '/')
+  const filename = normalized.split('/').pop() ?? ''
+  if (!/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename)) return null
+  return `.shogo/plans/${filename}`
+}
+
+function parsePlanTodosFromFrontmatter(fm: string): Array<{ id: string; content: string }> {
+  const todos: Array<{ id: string; content: string }> = []
+  const todoBlocks = fm.split(/\n  - id: /).slice(1)
+  for (const block of todoBlocks) {
+    const idMatch = block.match(/^(\S+)/)
+    const contentMatch = block.match(/content:\s*"?([^"\n]*)"?/)
+    if (idMatch && contentMatch) {
+      todos.push({ id: idMatch[1], content: contentMatch[1] })
+    }
+  }
+  return todos
+}
+
 function createCreatePlanTool(ctx: ToolContext): AgentTool {
   return {
     name: 'create_plan',
@@ -5156,6 +5176,7 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
             plan: params.plan,
             todos: params.todos,
             filepath: `.shogo/plans/${filename}`,
+            toolCallId: _id,
           },
         })
       }
@@ -5195,15 +5216,23 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         plan?: string
         todos?: Array<{ id: string; content: string }>
       }
-      const resolved = join(ctx.workspaceDir, params.filepath)
+      const planFilepath = normalizePlanFilepath(params.filepath)
+      if (!planFilepath) {
+        return textResult(`Error: Invalid plan filepath ${params.filepath}`)
+      }
+      const plansDir = resolve(ctx.workspaceDir, '.shogo', 'plans')
+      const resolved = resolve(ctx.workspaceDir, planFilepath)
+      if (!resolved.startsWith(`${plansDir}/`) && resolved !== plansDir) {
+        return textResult(`Error: Plan filepath must stay within .shogo/plans/`)
+      }
       if (!existsSync(resolved)) {
-        return textResult(`Error: Plan file not found at ${params.filepath}`)
+        return textResult(`Error: Plan file not found at ${planFilepath}`)
       }
 
       const existing = readFileSync(resolved, 'utf-8')
       const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/)
       if (!fmMatch) {
-        return textResult(`Error: Could not parse frontmatter in ${params.filepath}`)
+        return textResult(`Error: Could not parse frontmatter in ${planFilepath}`)
       }
 
       const fm = fmMatch[1]
@@ -5248,16 +5277,17 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         ctx.uiWriter.write({
           type: 'data-plan-update',
           data: {
-            filepath: params.filepath,
+            filepath: planFilepath,
             name: updatedName,
             overview: updatedOverview,
             plan: updatedBody,
-            todos: params.todos,
+            todos: params.todos ?? parsePlanTodosFromFrontmatter(fm),
+            toolCallId: _id,
           },
         })
       }
 
-      return textResult(`Plan "${updatedName}" updated at ${params.filepath}`)
+      return textResult(`Plan "${updatedName}" updated at ${planFilepath}`)
     },
   }
 }

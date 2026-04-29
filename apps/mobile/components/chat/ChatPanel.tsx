@@ -218,6 +218,8 @@ export interface ChatPanelProps {
   onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
   buildPlanRequest?: { plan: PlanData; modelId: string; nonce: number } | null
+  /** Opens the saved plan artifact in the Plans panel. */
+  onOpenPlan?: (filepath?: string | null) => void
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
@@ -549,6 +551,22 @@ export function clearChatPanelMessageCache(): void {
   sessionMessageCache.clear()
 }
 
+function normalizePlanFilepath(filepath?: string | null): string | undefined {
+  if (!filepath) return undefined
+  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
+  const filename = normalized.split("/").pop()
+  if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename)) return undefined
+  return `.shogo/plans/${filename}`
+}
+
+function normalizePlanData(plan: PlanData): PlanData {
+  return {
+    ...plan,
+    todos: plan.todos ?? [],
+    filepath: normalizePlanFilepath(plan.filepath),
+  }
+}
+
 // ============================================================
 // Component
 // ============================================================
@@ -593,6 +611,7 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
   buildPlanRequest,
+  onOpenPlan,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   isActive = true,
@@ -842,8 +861,16 @@ export const ChatPanel = observer(function ChatPanel({
   const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
   const confirmedPlanRef = useRef<PlanData | null>(null)
   const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
+  const pendingPlanRef = useRef<PlanData | null>(null)
 
   const planStream = usePlanStreamSafe()
+
+  useEffect(() => {
+    pendingPlanRef.current = null
+    setPendingPlan(null)
+    setConfirmedPlan(null)
+    confirmedPlanRef.current = null
+  }, [currentSessionId])
 
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
@@ -1453,15 +1480,36 @@ export const ChatPanel = observer(function ChatPanel({
       if ((dataPart as any).type === "data-plan") {
         const planData = (dataPart as any).data
         if (planData) {
-          setPendingPlan(planData)
-          if (planData.filepath) {
-            planStream?.setStreamingPlanFilepath(planData.filepath)
+          const normalizedPlan = normalizePlanData(planData)
+          pendingPlanRef.current = normalizedPlan
+          setPendingPlan(normalizedPlan)
+          planStream?.setStreamingPlan(normalizedPlan)
+          if (normalizedPlan.filepath) {
+            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
           planStream?.notifyPlanCreated()
         }
       }
 
       if ((dataPart as any).type === "data-plan-update") {
+        const planData = (dataPart as any).data
+        if (planData) {
+          const previousPlan = pendingPlanRef.current
+          const normalizedPlan = normalizePlanData({
+            name: planData.name ?? previousPlan?.name ?? "Plan",
+            overview: planData.overview ?? previousPlan?.overview ?? "",
+            plan: planData.plan ?? previousPlan?.plan ?? "",
+            todos: planData.todos ?? previousPlan?.todos ?? [],
+            filepath: planData.filepath ?? previousPlan?.filepath,
+            toolCallId: planData.toolCallId ?? previousPlan?.toolCallId,
+          })
+          pendingPlanRef.current = normalizedPlan
+          setPendingPlan(normalizedPlan)
+          planStream?.setStreamingPlan(normalizedPlan)
+          if (normalizedPlan.filepath) {
+            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
+          }
+        }
         planStream?.notifyPlanCreated()
       }
 
@@ -2574,13 +2622,16 @@ export const ChatPanel = observer(function ChatPanel({
         ? planTool.toolInvocation?.args
         : planTool.input ?? planTool.args
     if (!args) return
-    setPendingPlan({
+    const restoredPlan = normalizePlanData({
       name: args.name ?? "Plan",
       overview: args.overview ?? "",
       plan: args.plan ?? "",
       todos: args.todos ?? [],
       filepath: args.filepath,
+      toolCallId: planTool.id ?? planTool.toolCallId,
     })
+    pendingPlanRef.current = restoredPlan
+    setPendingPlan(restoredPlan)
   }, [isInitialLoadComplete, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effect 2: Sync MobX → AI SDK state when data arrives.
@@ -2663,20 +2714,24 @@ export const ChatPanel = observer(function ChatPanel({
         ? planPart.toolInvocation?.args
         : planPart.input ?? planPart.args
     if (!args?.name) return null
-    return {
+    return normalizePlanData({
       name: args.name,
       overview: args.overview ?? "",
       plan: args.plan ?? "",
       todos: args.todos ?? [],
-    }
+      filepath: args.filepath,
+      toolCallId: planPart.id ?? planPart.toolCallId,
+    })
   }, [isStreaming, messages])
 
   useEffect(() => {
     planStream?.setStreamingPlan(derivedStreamingPlan)
     if (derivedStreamingPlan) {
+      planStream?.setStreamingPlanFilepath(derivedStreamingPlan.filepath ?? null)
+    } else if (!isStreaming) {
       planStream?.setStreamingPlanFilepath(null)
     }
-  }, [derivedStreamingPlan, planStream])
+  }, [derivedStreamingPlan, isStreaming, planStream])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
@@ -2825,9 +2880,9 @@ export const ChatPanel = observer(function ChatPanel({
         }
         const planToSend = confirmedPlanRef.current
         if (planToSend) {
-          bodyExtra.confirmedPlan = planToSend
+          bodyExtra.confirmedPlan = normalizePlanData(planToSend)
+          bodyExtra.interactionMode = "agent"
           confirmedPlanRef.current = null
-          setConfirmedPlan(null)
         }
         console.log("[ChatPanel][send] bodyExtra — interactionMode:", bodyExtra.interactionMode, "agentMode:", bodyExtra.agentMode, "hasConfirmedPlan:", !!bodyExtra.confirmedPlan, "text:", trimmedContent.slice(0, 80))
         await sendMessage(messagePayload, { body: bodyExtra })
@@ -2864,7 +2919,7 @@ export const ChatPanel = observer(function ChatPanel({
     [sendMessageInternal],
   )
   const bridgeSetMode = useCallback(
-    (mode: "agent" | "plan") => {
+    (mode: InteractionMode) => {
       handleInteractionModeChange(mode)
     },
     [handleInteractionModeChange],
@@ -2999,10 +3054,13 @@ export const ChatPanel = observer(function ChatPanel({
   // Plan confirmation: switch to Agent mode and execute.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleConfirmPlan = useCallback(() => {
-    if (!pendingPlan) return
-    confirmedPlanRef.current = pendingPlan
-    setConfirmedPlan(pendingPlan)
+  const handleConfirmPlan = useCallback((plan?: PlanData | null) => {
+    const selectedPlan = plan ?? pendingPlanRef.current
+    if (!selectedPlan) return
+    const planToBuild = normalizePlanData(selectedPlan)
+    confirmedPlanRef.current = planToBuild
+    setConfirmedPlan(planToBuild)
+    pendingPlanRef.current = null
     setPendingPlan(null)
     console.log("[ChatPanel][confirm-plan] BEFORE mode change — stateMode:", interactionMode, "refMode:", interactionModeRef.current, "selectedModel:", selectedModel)
     handleInteractionModeChange("agent")
@@ -3012,7 +3070,7 @@ export const ChatPanel = observer(function ChatPanel({
     confirmDismissTimerRef.current = setTimeout(() => {
       setConfirmedPlan(null)
     }, 4000)
-  }, [pendingPlan, handleSendMessage, handleInteractionModeChange])
+  }, [handleSendMessage, handleInteractionModeChange])
 
   // Build from Plans panel: execute a saved plan with selected model
   const lastBuildNonceRef = useRef<number>(0)
@@ -3020,8 +3078,10 @@ export const ChatPanel = observer(function ChatPanel({
     if (!buildPlanRequest || buildPlanRequest.nonce === lastBuildNonceRef.current) return
     lastBuildNonceRef.current = buildPlanRequest.nonce
     const { plan, modelId: requestedMode } = buildPlanRequest
-    confirmedPlanRef.current = plan
-    setConfirmedPlan(plan)
+    const planToBuild = normalizePlanData(plan)
+    confirmedPlanRef.current = planToBuild
+    setConfirmedPlan(planToBuild)
+    pendingPlanRef.current = null
     setPendingPlan(null)
     handleInteractionModeChange("agent")
     handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
@@ -3211,7 +3271,11 @@ export const ChatPanel = observer(function ChatPanel({
     agentUrl: resolvedAgentUrl,
     addToolOutput: (params) => addToolOutput(params as any),
     saveToolOutput: handleSaveToolOutput,
+    buildPlan: pendingPlan ? handleConfirmPlan : null,
     confirmPlan: pendingPlan ? handleConfirmPlan : null,
+    pendingPlan,
+    confirmedPlan,
+    openPlan: onOpenPlan,
   }
 
   const handleCompactSubmit = useCallback(

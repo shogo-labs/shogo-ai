@@ -126,6 +126,7 @@ export const INTERACTION_MODES: InteractionModeConfig[] = [
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
+const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
 
 interface AttachedFile {
   id: string
@@ -255,6 +256,13 @@ export function ChatInput({
     },
     [onInteractionModeChange]
   )
+
+  const cycleInteractionMode = useCallback(() => {
+    if (disabled || isStreaming) return
+    const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode)
+    const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length
+    handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex])
+  }, [disabled, handleInteractionModeChange, interactionMode, isStreaming])
 
   const currentInteractionConfig = useMemo(
     () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
@@ -798,6 +806,11 @@ export function ChatInput({
           onChangeText={handleChangeText}
           onSubmitEditing={handleSubmit}
           onKeyPress={(e: any) => {
+            if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
+              e.preventDefault()
+              cycleInteractionMode()
+              return
+            }
             if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
               e.preventDefault()
               handleSubmit()
