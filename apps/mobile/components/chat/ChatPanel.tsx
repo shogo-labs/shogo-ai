@@ -74,6 +74,7 @@ import {
   DEFAULT_MODEL_FREE,
   type InteractionMode,
   type FileAttachment,
+  type RestoreDraftRequest,
 } from "./ChatInput"
 import {
   PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS,
@@ -142,6 +143,45 @@ type PendingPlanModeSuggestionSubmission = {
   content: string
   files?: FileAttachment[]
   perMsgModel?: string
+}
+
+type OptimisticUserInput = {
+  sessionId: string
+  content: string
+  files?: FileAttachment[]
+}
+
+function buildOptimisticUserMessage(input: OptimisticUserInput, id = "optimistic-user-pending"): UIMessage {
+  const parts: any[] = []
+  const text = input.content.trim()
+
+  if (text) {
+    parts.push({ type: "text", text })
+  }
+
+  for (const file of input.files ?? []) {
+    parts.push({
+      type: "file",
+      mediaType: file.type || "application/octet-stream",
+      url: file.dataUrl,
+      ...(file.name ? { name: file.name } : {}),
+    })
+  }
+
+  return {
+    id,
+    role: "user",
+    parts,
+  } as unknown as UIMessage
+}
+
+function hasMatchingUserMessage(messages: UIMessage[], input: OptimisticUserInput): boolean {
+  const text = input.content.trim()
+  return messages.some((message) => {
+    if (message.role !== "user") return false
+    if (text && extractTextContent(message).trim() === text) return true
+    return !text && (input.files?.length ?? 0) > 0
+  })
 }
 
 interface SubagentProgress {
@@ -848,6 +888,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [pendingPlanModeSuggestion, setPendingPlanModeSuggestion] =
     useState<PendingPlanModeSuggestionSubmission | null>(null)
+  const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
   const [planModeSuggestionSecondsLeft, setPlanModeSuggestionSecondsLeft] = useState(
     PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS
   )
@@ -1939,6 +1980,7 @@ export const ChatPanel = observer(function ChatPanel({
     errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
+  const [optimisticUserInput, setOptimisticUserInput] = useState<OptimisticUserInput | null>(null)
 
   // Permission approval state (local mode security)
   const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
@@ -1961,10 +2003,28 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages.length, pendingInitialMessage])
 
+  useEffect(() => {
+    if (!optimisticUserInput) return
+    if (optimisticUserInput.sessionId !== currentSessionId) {
+      setOptimisticUserInput(null)
+      return
+    }
+    if (hasMatchingUserMessage(messages, optimisticUserInput)) {
+      setOptimisticUserInput(null)
+    }
+  }, [currentSessionId, messages, optimisticUserInput])
+
   const displayMessages = useMemo((): UIMessage[] => {
     const effectiveMessages = stoppedMessages ?? messages
+    const currentOptimisticInput =
+      optimisticUserInput?.sessionId === currentSessionId ? optimisticUserInput : null
+    const shouldPrependOptimisticUser =
+      currentOptimisticInput && !hasMatchingUserMessage(effectiveMessages, currentOptimisticInput)
+
     if (effectiveMessages.length > 0) {
-      return effectiveMessages
+      return shouldPrependOptimisticUser
+        ? [buildOptimisticUserMessage(currentOptimisticInput), ...effectiveMessages]
+        : effectiveMessages
     }
 
     if (isStreaming || isSendingMessageRef.current) {
@@ -1972,7 +2032,11 @@ export const ChatPanel = observer(function ChatPanel({
       // user bubble) so the conversation doesn't vanish during the brief gap
       // before the AI SDK populates its internal state.
       const fallback = lastNonEmptyMessagesRef.current
-      const lastInput = lastUserInputRef.current
+      const lastInput =
+        currentOptimisticInput ??
+        (currentSessionId && lastUserInputRef.current
+          ? { sessionId: currentSessionId, ...lastUserInputRef.current }
+          : null)
       const lastFallbackMsg = fallback[fallback.length - 1]
       const needsOptimisticUser =
         lastInput?.content && (!lastFallbackMsg || lastFallbackMsg.role !== "user")
@@ -1980,11 +2044,7 @@ export const ChatPanel = observer(function ChatPanel({
       if (needsOptimisticUser) {
         return [
           ...fallback,
-          {
-            id: "optimistic-user-pending",
-            role: "user",
-            parts: [{ type: "text", text: lastInput!.content }],
-          } as unknown as UIMessage,
+          buildOptimisticUserMessage(lastInput),
         ]
       }
       return fallback
@@ -2001,7 +2061,7 @@ export const ChatPanel = observer(function ChatPanel({
       ]
     }
     return []
-  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage, isStreaming])
+  }, [currentSessionId, messages, stoppedMessages, pendingInitialMessage, initialMessage, optimisticUserInput, isStreaming])
 
   // Stable references for memo'd downstream components (TurnList / SubagentPanel).
   // Previously these were `Array.from(Map.values())` inline, which allocated on
@@ -2832,6 +2892,7 @@ export const ChatPanel = observer(function ChatPanel({
         stickToBottomRef.current = true
       }
       lastUserInputRef.current = { content: trimmedContent, files: fileArray }
+      setOptimisticUserInput({ sessionId: currentSessionId, content: trimmedContent, files: fileArray })
 
       const parts: Array<
         { type: "text"; text: string } | { type: "file"; mediaType: string; url: string; name?: string }
@@ -3006,6 +3067,7 @@ export const ChatPanel = observer(function ChatPanel({
       setMessageQueue([])
       isProcessingQueueRef.current = false
     }
+    setOptimisticUserInput(null)
     lastNonEmptyMessagesRef.current = []
   }, [currentSessionId])
 
@@ -3083,6 +3145,11 @@ export const ChatPanel = observer(function ChatPanel({
       pendingPlanModeSuggestionRef.current = null
       setPendingPlanModeSuggestion(null)
       setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: "",
+        files: [],
+      })
 
       handleInteractionModeChange(targetMode)
 
@@ -3091,12 +3158,32 @@ export const ChatPanel = observer(function ChatPanel({
     [clearPlanModeSuggestionTimers, handleInteractionModeChange, handleSendMessage]
   )
 
+  const handleEditPlanModePrompt = useCallback(() => {
+    const pending = pendingPlanModeSuggestionRef.current
+    if (!pending) return
+
+    clearPlanModeSuggestionTimers()
+    pendingPlanModeSuggestionRef.current = null
+    setPendingPlanModeSuggestion(null)
+    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+    setRestoreDraftRequest({
+      nonce: Date.now(),
+      content: pending.content,
+      files: pending.files,
+    })
+  }, [clearPlanModeSuggestionTimers])
+
   const startPlanModeSuggestion = useCallback(
     (submission: PendingPlanModeSuggestionSubmission) => {
       clearPlanModeSuggestionTimers()
       pendingPlanModeSuggestionRef.current = submission
       setPendingPlanModeSuggestion(submission)
       setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: submission.content,
+        files: submission.files,
+      })
 
       planModeSuggestionIntervalRef.current = setInterval(() => {
         setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
@@ -3742,6 +3829,7 @@ export const ChatPanel = observer(function ChatPanel({
             {pendingPlanModeSuggestion && (
               <PlanModeSuggestion
                 secondsLeft={planModeSuggestionSecondsLeft}
+                onEditPrompt={handleEditPlanModePrompt}
                 onContinueInAgent={() => handleResolvePlanModeSuggestion("agent")}
                 onSwitchToPlan={() => handleResolvePlanModeSuggestion("plan")}
               />
@@ -3775,6 +3863,8 @@ export const ChatPanel = observer(function ChatPanel({
               contextUsage={contextUsage}
               quickActions={quickActions}
               onQuickActionClick={(prompt) => handleSendMessage(prompt)}
+              restoreDraftRequest={restoreDraftRequest}
+              dimWhenDisabled={!pendingPlanModeSuggestion}
             />
           </View>
         </KeyboardAvoidingView>

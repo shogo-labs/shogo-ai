@@ -94,7 +94,7 @@ interface AttachedFile {
 }
 
 export interface CompactChatInputProps {
-  onSubmit: (prompt: string, files?: FileAttachment[]) => void
+  onSubmit: (prompt: string, files?: FileAttachment[]) => void | false
   disabled?: boolean
   isLoading?: boolean
   placeholder?: string
@@ -107,6 +107,8 @@ export interface CompactChatInputProps {
   onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
+  /** When false, disabled state does not dim the composer (e.g. plan-mode suggestion keeps draft readable). */
+  dimWhenDisabled?: boolean
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -125,6 +127,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onModelChange,
       isPro = false,
       onUpgradeClick,
+      dimWhenDisabled = true,
     },
     ref
   ) {
@@ -392,7 +395,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       ]
       const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
 
-      onSubmit(trimmedContent, fileData)
+      const submitResult = onSubmit(trimmedContent, fileData)
+      if (submitResult === false) {
+        return
+      }
       setValue("")
       setPendingFiles([])
       setFileError(null)
@@ -551,7 +557,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             className={cn(
               "min-h-[80px] max-h-[200px] w-full",
               "px-4 pt-4 text-xs text-foreground",
-              disabled && "opacity-50",
+              disabled && dimWhenDisabled && "opacity-50",
               Platform.OS === "web" && "outline-none no-focus-ring"
             )}
             textAlignVertical="top"
