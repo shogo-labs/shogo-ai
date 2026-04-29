@@ -41,12 +41,14 @@ export function createBridgeClientTools(bridge: ChatBridgeApi): BridgeClientTool
     set_mode: (params) => {
       const raw =
         typeof params.mode === 'string' ? params.mode.trim().toLowerCase() : ''
-      if (raw !== 'agent' && raw !== 'plan') {
-        return `Error: mode must be "agent" or "plan" (got ${JSON.stringify(params.mode)}).`
+      if (raw !== 'agent' && raw !== 'plan' && raw !== 'ask') {
+        return `Error: mode must be "agent", "plan", or "ask" (got ${JSON.stringify(params.mode)}).`
       }
       const mode = raw as ChatInteractionMode
       bridge.setMode(mode)
-      return mode === 'plan' ? 'Switched to plan mode.' : 'Switched to agent mode.'
+      if (mode === 'plan') return 'Switched to plan mode.'
+      if (mode === 'ask') return 'Switched to ask mode.'
+      return 'Switched to agent mode.'
     },
   }
 }
