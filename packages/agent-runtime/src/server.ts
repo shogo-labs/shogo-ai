@@ -40,6 +40,7 @@ import {
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
 import { SkillServerManager } from './skill-server-manager'
+import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -95,7 +96,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   workDir: WORKSPACE_DIR,
   runtimeType: 'unified',
   internalPaths: ['/agent/heartbeat/trigger'],
-  authPrefixes: ['/agent', '/pool'],
+  authPrefixes: ['/agent', '/pool', '/terminal'],
   async onAssign(projectId, envVars) {
     const hostWorkspacesRoot = '/host-workspaces'
     const sentinelPath = '/tmp/shogo-current-project'
@@ -428,6 +429,11 @@ WebChatAdapter.registerRoutes(app, () => {
 })
 
 // /health, /ready, /pool/activity, /pool/assign are provided by createRuntimeApp()
+
+// Cloud API proxies /api/projects/:id/terminal/* to this runtime-local mount.
+// Register before the static app fallback so POST /terminal/run cannot fall
+// through to a generic 404 and GET /terminal/commands cannot return index.html.
+app.route('/', runtimeTerminalRoutes({ workspaceDir: WORKSPACE_DIR }))
 
 // Agent status (detailed)
 app.get('/agent/status', (c) => {
