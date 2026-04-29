@@ -381,6 +381,7 @@ export function getBuiltinSubagentConfig(
         toolNames: ['browser', 'web', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
         model: 'claude-haiku-4-5',
+        maxTurns: 200,
       }
     case 'browser_qa':
       return {
@@ -391,6 +392,7 @@ export function getBuiltinSubagentConfig(
         disallowedTools: ['task', 'skill'],
         model: 'gpt-5.4-nano',
         provider: 'openai',
+        maxTurns: 200,
       }
     case 'integration':
       return {
