@@ -126,6 +126,7 @@ export const INTERACTION_MODES: InteractionModeConfig[] = [
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
+const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
 
 interface AttachedFile {
   id: string
@@ -141,6 +142,16 @@ export interface FileAttachment {
   type: string
 }
 
+export type RestoreDraftRequest = {
+  nonce: number
+  content: string
+  files?: FileAttachment[]
+}
+
+function estimateDataUrlSize(dataUrl: string): number {
+  const base64 = dataUrl.includes(",") ? dataUrl.split(",").pop() || "" : dataUrl
+  return Math.max(0, Math.floor((base64.length * 3) / 4))
+}
 
 interface SkillOption {
   name: string
@@ -174,6 +185,8 @@ export interface ChatInputProps {
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
+  restoreDraftRequest?: RestoreDraftRequest | null
+  dimWhenDisabled?: boolean
 }
 
 export function ChatInput({
@@ -194,6 +207,8 @@ export function ChatInput({
   contextUsage,
   quickActions = [],
   onQuickActionClick,
+  restoreDraftRequest,
+  dimWhenDisabled = true,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
@@ -256,6 +271,13 @@ export function ChatInput({
     [onInteractionModeChange]
   )
 
+  const cycleInteractionMode = useCallback(() => {
+    if (disabled || isStreaming) return
+    const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode)
+    const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length
+    handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex])
+  }, [disabled, handleInteractionModeChange, interactionMode, isStreaming])
+
   const currentInteractionConfig = useMemo(
     () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
     [interactionMode]
@@ -269,6 +291,28 @@ export function ChatInput({
   // chip).
   const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
   const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
+  const lastRestoredDraftNonceRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!restoreDraftRequest) return
+    if (restoreDraftRequest.nonce === lastRestoredDraftNonceRef.current) return
+
+    lastRestoredDraftNonceRef.current = restoreDraftRequest.nonce
+    setInputValue(restoreDraftRequest.content)
+    setPendingFiles(
+      (restoreDraftRequest.files ?? []).map((file, index) => ({
+        id: `restored-${restoreDraftRequest.nonce}-${index}`,
+        dataUrl: file.dataUrl,
+        name: file.name,
+        type: file.type,
+        size: estimateDataUrlSize(file.dataUrl),
+      }))
+    )
+    setPastedTexts([])
+    setViewingPastedId(null)
+    setFileError(null)
+    setTimeout(() => textInputRef.current?.focus(), 0)
+  }, [restoreDraftRequest])
 
   const addPastedText = useCallback((content: string) => {
     const info = analyzeContent(content)
@@ -798,6 +842,11 @@ export function ChatInput({
           onChangeText={handleChangeText}
           onSubmitEditing={handleSubmit}
           onKeyPress={(e: any) => {
+            if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
+              e.preventDefault()
+              cycleInteractionMode()
+              return
+            }
             if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
               e.preventDefault()
               handleSubmit()
@@ -813,7 +862,7 @@ export function ChatInput({
             "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
             "px-4 pt-4 text-xs text-foreground",
-            disabled && "opacity-50",
+            disabled && dimWhenDisabled && "opacity-50",
             Platform.OS === "web" && "outline-none no-focus-ring"
           )}
           textAlignVertical="top"

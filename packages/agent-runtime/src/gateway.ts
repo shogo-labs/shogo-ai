@@ -1106,7 +1106,7 @@ export class AgentGateway {
       fileParts?: FilePart[]
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
-      confirmedPlan?: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
+      confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       chatSessionId?: string
     },
   ): Promise<void> {
@@ -1144,12 +1144,13 @@ export class AgentGateway {
     // If a confirmed plan is present, prepend it as context to the user's message
     if (options?.confirmedPlan) {
       const cp = options.confirmedPlan
-      const todoList = cp.todos.map(t => `- [ ] ${t.content}`).join('\n')
+      const todoList = (cp.todos ?? []).map(t => `- [ ] ${t.content}`).join('\n')
       const planContext = [
         'The user has confirmed the following plan. Execute it step by step:',
         '',
         `## ${cp.name}`,
         cp.overview,
+        cp.filepath ? `Saved plan: ${cp.filepath}` : '',
         '',
         cp.plan,
         '',
@@ -1174,7 +1175,7 @@ export class AgentGateway {
       activeSkill = result.activeSkill
     }
 
-    const interactionMode = options?.interactionMode || 'agent'
+    const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
     const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
@@ -1298,10 +1299,11 @@ export class AgentGateway {
       const planModePrompt = [
         '## PLAN MODE ACTIVE',
         '',
-        'Plan mode is active. You MUST NOT make any edits, run commands, write files, or otherwise make changes. This supersedes all other instructions.',
+        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
+        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
         '',
         'Your job:',
-        '1. Research the user\'s request using read-only tools (read_file, grep, glob, web, etc.)',
+        '1. Research the user\'s request using read-only tools (read_file, search, web, etc.)',
         '2. If you need more information, ask clarifying questions using ask_user',
         '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
         '4. If there are multiple valid approaches, ask the user which they prefer',
