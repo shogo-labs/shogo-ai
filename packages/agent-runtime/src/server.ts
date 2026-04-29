@@ -85,7 +85,18 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
-const workspaceStatus = {
+const workspaceStatus: {
+  templateSeeded: boolean
+  depsInstalled: boolean
+  serverMigrated?: {
+    snapshotPath: string | null
+    notesPath: string | null
+    at: string | null
+    mergedModels: string[]
+    renamedModels: Array<{ from: string; to: string; reason: string }>
+    customRoutesNeedReview: boolean
+  }
+} = {
   templateSeeded: false,
   depsInstalled: false,
 }
@@ -321,6 +332,35 @@ function ensureWorkspaceFiles(): void {
     workspaceStatus.templateSeeded = seeded || existsSync(join(WORKSPACE_DIR, 'package.json'))
   } else {
     workspaceStatus.templateSeeded = true
+  }
+
+  // One-shot migration: any workspace that still has `.shogo/server/` from
+  // the legacy skill-server era is folded into root `prisma/schema.prisma`
+  // + `server.tsx` here, before PreviewManager spins up the API server. The
+  // migration is idempotent and silent on fresh workspaces.
+  try {
+    // require() (not dynamic import) so this stays synchronous —
+    // ensureWorkspaceFiles() is called from sync code paths (boot +
+    // /agent/seed handler) and the migration must finish before
+    // PreviewManager looks at the schema.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { migrateSkillServerToRoot } = require('./migrations/skill-server-to-root') as typeof import('./migrations/skill-server-to-root')
+    const result = migrateSkillServerToRoot(WORKSPACE_DIR)
+    if (result.migrated) {
+      workspaceStatus.serverMigrated = {
+        snapshotPath: result.snapshotPath ?? null,
+        notesPath: result.notesPath ?? null,
+        at: result.at ?? null,
+        mergedModels: result.mergedModels ?? [],
+        renamedModels: result.renamedModels ?? [],
+        customRoutesNeedReview: !!result.customRoutesNeedReview,
+      }
+      logTiming('Skill-server -> root migration complete')
+    } else if (result.error) {
+      console.error('[agent-runtime] Skill-server migration failed:', result.error)
+    }
+  } catch (err: any) {
+    console.error('[agent-runtime] Skill-server migration import failed:', err.message)
   }
 }
 
@@ -2779,14 +2819,31 @@ app.get('/agent/logs/stream', (c) => {
 
 
 // =============================================================================
-// Skill Server control (used by eval harness to force-sync before runtime checks)
+// API Server control (used by eval harness to force-sync before runtime checks).
+//
+// Legacy aliases: `/agent/skill-server/*` paths still work — both forward
+// to the same handlers — so existing eval workers keep functioning during
+// the rollout.
 // =============================================================================
 
+app.get('/agent/api-server/status', (c) => {
+  if (!agentGateway) return c.json({ phase: 'unknown' })
+  return c.json({ phase: agentGateway.getSkillServerPhase() })
+})
 app.get('/agent/skill-server/status', (c) => {
   if (!agentGateway) return c.json({ phase: 'unknown' })
   return c.json({ phase: agentGateway.getSkillServerPhase() })
 })
 
+app.post('/agent/api-server/sync', async (c) => {
+  if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
+  try {
+    const result = await agentGateway.syncSkillServer()
+    return c.json(result)
+  } catch (err: any) {
+    return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
+  }
+})
 app.post('/agent/skill-server/sync', async (c) => {
   if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
   try {
@@ -2798,8 +2855,10 @@ app.post('/agent/skill-server/sync', async (c) => {
 })
 
 // =============================================================================
-// Runtime checks (used by eval harness in K8s mode — runs checks locally where
-// workspace files and skill server are colocated)
+// Runtime checks (used by eval harness in any isolation mode — K8s pod
+// or VM — where the workspace files and API server are colocated inside
+// the worker. Local/Docker workers run the checks directly against the
+// host's bind-mounted workspace dir instead.)
 // =============================================================================
 
 app.post('/agent/runtime-checks', async (c) => {
@@ -2821,11 +2880,16 @@ app.post('/agent/runtime-checks', async (c) => {
 })
 
 // =============================================================================
-// Template API Proxy (forward /api/* to the template's Hono server)
+// API Proxy — forward /api/* to the project's Hono `server.tsx`.
+//
+// PreviewManager owns the single API server (root `server.tsx` on port
+// 3001). The legacy "skill server" on a separate port has been retired;
+// see `migrations/skill-server-to-root.ts` for the one-shot migration of
+// existing workspaces.
 // =============================================================================
 
 app.all('/api/*', async (c) => {
-  const port = agentGateway?.getSkillServerPort() ?? getPreviewManager().apiServerPort
+  const port = getPreviewManager().apiServerPort
   if (!port) return c.notFound()
 
   const url = new URL(c.req.url)
@@ -2845,7 +2909,7 @@ app.all('/api/*', async (c) => {
     })
   } catch (err: any) {
     console.error(`[api-proxy] Failed to proxy ${c.req.method} ${url.pathname}:`, err.message)
-    return c.json({ error: 'Template API server not responding' }, 502)
+    return c.json({ error: 'API server not responding' }, 502)
   }
 })
 
@@ -3211,6 +3275,9 @@ async function startGateway(): Promise<void> {
 
   const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
+  // Wire the runtime's API-server-owning PreviewManager into the gateway
+  // so prompt builders and tools can query/sync the project's backend.
+  agentGateway.attachApiServer(getPreviewManager())
   agentGateway.setLogCallback((line: string) => {
     appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {

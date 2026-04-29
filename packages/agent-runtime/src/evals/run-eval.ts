@@ -157,8 +157,16 @@ async function postCallbackSafe(path: string, body: any, timeoutMs = 30_000): Pr
 }
 
 const BASE_PORT = 6400
+// Host-side base port for direct access to the in-container API server.
+// Each worker reserves SKILL_SERVER_BASE_PORT + worker.id on the host,
+// which Docker forwards to the container's API server. The constant name
+// is kept for compat with eval workers that still exec `/agent/skill-server/*`
+// callbacks; runtime-checks accepts both `apiServerPort` and the legacy
+// `skillServerPort` alias.
 const SKILL_SERVER_BASE_PORT = 4100
-const CONTAINER_SKILL_PORT = 4100
+// In-container port the project's API server (`server.tsx`) listens on.
+// PreviewManager spawns the server with PORT=3001 — see preview-manager.ts.
+const CONTAINER_SKILL_PORT = 3001
 
 function getWorkerBaseUrl(worker: DockerWorker): string {
   if (k8sFlag) return getK8sWorkerUrl(worker)
@@ -792,7 +800,15 @@ async function runEvalOnWorker(
       }
 
       let runtimeResults: RuntimeCheckResults | null = null
-      if (k8sFlag) {
+      // For workers where the workspace lives behind isolation (k8s
+      // pod, VM overlay), run the checks **inside** the worker via
+      // the agent-runtime's `/agent/runtime-checks` HTTP endpoint.
+      // The host's `worker.dir` is just the seed surface; node_modules
+      // / src/generated / @prisma/client only exist inside the
+      // container/VM, so on-host filesystem checks would always
+      // report "missing" and pollute the result with false positives.
+      const useRemoteChecks = k8sFlag || vmFlag
+      if (useRemoteChecks) {
         try {
           const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
             method: 'POST',
@@ -807,11 +823,17 @@ async function runEvalOnWorker(
           console.warn(`      [runtime] Remote runtime checks error: ${err.message}`)
         }
       } else {
-        const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
-        const canvasExpected = (localFlag || vmFlag) ? hostSkillPort : CONTAINER_SKILL_PORT
+        // Docker forwards `SKILL_SERVER_BASE_PORT + id` on the host to the
+        // container's API server (3001). For --local, we run a single
+        // worker per host process and PreviewManager listens on 3001
+        // directly — no port mapping. The eval suite asserts canvas calls
+        // hit /api/* (relative paths), so canvasExpectedPort is the same
+        // port runtime-checks itself probes against.
+        const hostSkillPort = localFlag ? CONTAINER_SKILL_PORT : SKILL_SERVER_BASE_PORT + worker.id
+        const canvasExpected = vmFlag ? SKILL_SERVER_BASE_PORT + worker.id : CONTAINER_SKILL_PORT
         runtimeResults = await runRuntimeChecks({
           workspaceDir: worker.dir,
-          skillServerPort: hostSkillPort,
+          apiServerPort: hostSkillPort,
           canvasExpectedPort: canvasExpected,
           evalId: ev.id,
           verbose: verboseFlag,
@@ -903,10 +925,10 @@ async function runEvalOnWorker(
         result.passed = result.percentage >= 70 && result.triggeredAntiPatterns.length === 0
 
         if (runtimeResults.serverHealthy === false) {
-          result.runtimeWarnings.push('Skill server health check failed')
+          result.runtimeWarnings.push('API server health check failed')
         }
         if (runtimeResults.canvasPortCorrect === false) {
-          result.runtimeWarnings.push('Canvas references wrong skill server port')
+          result.runtimeWarnings.push('Canvas references wrong API server port')
         }
         if (runtimeResults.canvasCompiles === false) {
           const errCount = runtimeResults.canvasCompileErrors.length

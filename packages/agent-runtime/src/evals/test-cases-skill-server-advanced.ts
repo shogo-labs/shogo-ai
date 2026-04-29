@@ -772,25 +772,37 @@ const BRIEFING_EVAL: AgentEval = {
 // Shared anti-pattern helpers for custom server detection
 // ---------------------------------------------------------------------------
 
-/** True if the agent wrote .shogo/server/custom-routes.ts (the approved convention). */
+/**
+ * True if the agent edited the project's root `server.tsx` (the approved
+ * convention for custom routes after the skill-server unification).
+ *
+ * Historically the convention was `.shogo/server/custom-routes.ts`. That
+ * path no longer exists — custom routes live alongside generated ones in
+ * the root `server.tsx`, which is regenerated in-place by `shogo generate`.
+ */
 function wroteCustomRoutes(r: EvalResult): boolean {
   return r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .some(t => {
       const path = String((t.input as any).path ?? '').toLowerCase()
-      return /\.shogo\/server\/custom-routes\.tsx?$/.test(path) || path === 'custom-routes.ts' || path === 'custom-routes.tsx'
+      return path === 'server.tsx' || path.endsWith('/server.tsx') || path.endsWith('\\server.tsx')
     })
 }
 
-/** Content of the custom-routes file (if written). */
+/** Content of the root server.tsx written/edited by the agent. */
 function customRoutesCode(r: EvalResult): string {
   return r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => {
       const path = String((t.input as any).path ?? '').toLowerCase()
-      return /custom-routes\.tsx?$/.test(path)
+      return path === 'server.tsx' || path.endsWith('/server.tsx') || path.endsWith('\\server.tsx')
     })
-    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
+    .map(t => {
+      const input = t.input as any
+      return String(
+        input.content ?? input.new_str ?? input.new_string ?? input.code_edit ?? input.replace ?? '',
+      )
+    })
     .join('\n')
     .toLowerCase()
 }
@@ -1134,7 +1146,7 @@ const CUSTOM_ROUTES_PROXY_EVAL: AgentEval = {
   validationCriteria: [
     {
       id: 'edited-custom-routes',
-      description: 'Edited .shogo/server/custom-routes.ts (not created a new server)',
+      description: 'Edited the project server.tsx (not created a new server)',
       points: 6,
       phase: 'execution',
       validate: (r) => wroteCustomRoutes(r),

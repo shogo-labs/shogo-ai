@@ -5,7 +5,7 @@
  *
  * Tests the agent's ability to build fully-connected apps using:
  * - write_file/edit_file/delete_file for src/ React (TSX) code
- * - .shogo/server/schema.prisma for Prisma-backed REST backend
+ * - prisma/schema.prisma for the project's Prisma-backed REST backend
  * - fetch() in canvas code to connect frontend to skill server
  *
  * These run against a REAL agent-runtime server — the agent decides what
@@ -150,22 +150,25 @@ function canvasCodeJson(r: EvalResult): string {
 // Full-stack validation helpers
 // ---------------------------------------------------------------------------
 
-/** True if write_file was called targeting .shogo/server/schema.prisma */
+/** True if write_file or edit_file was called targeting *prisma/schema.prisma. */
 function wroteSkillServerSchema(r: EvalResult): boolean {
   return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
+    if (t.name !== 'write_file' && t.name !== 'edit_file') return false
     const path = String((t.input as any).path ?? '')
     return path.includes('schema.prisma')
   })
 }
 
-/** True if the schema.prisma content contains the given model name */
+/** True if a write/edit to schema.prisma referenced the given model name */
 function schemaContainsModel(r: EvalResult, modelName: string): boolean {
   return r.toolCalls
-    .filter(t => t.name === 'write_file')
+    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
     .some(t => {
-      const content = String((t.input as any).content ?? '')
+      const input = t.input as any
+      const content = String(
+        input.content ?? input.new_str ?? input.new_string ?? input.code_edit ?? input.replace ?? '',
+      )
       return content.includes(`model ${modelName}`)
     })
 }
@@ -438,7 +441,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'wrote-schema',
-        description: 'Wrote .shogo/server/schema.prisma with Lead model',
+        description: 'Wrote prisma/schema.prisma with Lead model',
         points: 15,
         phase: 'intention',
         validate: (r) => wroteSkillServerSchema(r) && schemaContainsModel(r, 'Lead'),

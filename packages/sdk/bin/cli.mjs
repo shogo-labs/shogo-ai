@@ -63,10 +63,15 @@ if (!existsSync(schemaPath)) {
 
 console.log('[shogo] Running code generation...')
 
-// Step 1: prisma generate
+// Step 1: prisma generate.
+// We invoke prisma via `bun x …` rather than `bunx …` because some
+// minimal install targets (Linux VM images, bare server containers,
+// pre-1.2 manual installs) ship `bun` without the companion `bunx`
+// symlink. `bun x` is bun's built-in equivalent and only requires
+// `bun` itself to be on PATH.
 try {
   console.log('[shogo] Step 1/2: prisma generate')
-  execSync('bunx --bun prisma generate', { cwd, stdio: 'inherit' })
+  execSync('bun x --bun prisma generate', { cwd, stdio: 'inherit' })
 } catch (err) {
   console.error('[shogo] prisma generate failed')
   process.exit(1)
@@ -89,7 +94,7 @@ if (existsSync(generateScript)) {
   if (process.env.DATABASE_URL) {
     try {
       console.log('[shogo] Step 2/2: prisma db push')
-      execSync('bunx --bun prisma db push --accept-data-loss', { cwd, stdio: 'inherit' })
+      execSync('bun x --bun prisma db push --accept-data-loss', { cwd, stdio: 'inherit' })
     } catch (err) {
       console.error('[shogo] prisma db push failed (database may not be ready)')
       // Don't exit - generation still succeeded

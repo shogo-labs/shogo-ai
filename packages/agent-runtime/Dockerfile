@@ -65,14 +65,11 @@ COPY templates/runtime-template ./templates/runtime-template
 # so agent-runtime's `import '@shogo-ai/sdk/memory'` fails at runtime without this.
 RUN cd packages/sdk && bun install && bun run build
 
-# Pre-install runtime-template dependencies so workspaces get node_modules instantly
+# Pre-install runtime-template dependencies so workspaces get node_modules instantly.
+# This is the **single** template the runtime now seeds — the legacy
+# `templates/skill-server/` install was retired alongside the unified
+# server architecture (see migrations/skill-server-to-root.ts).
 RUN cd templates/runtime-template && bun install
-
-# Pre-install skill server dependencies so schema regeneration doesn't need network
-RUN mkdir -p templates/skill-server && \
-    printf '{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}' \
-      > templates/skill-server/package.json && \
-    cd templates/skill-server && bun install
 
 # Fetch external Claude Code skills from skill-registry.json
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
@@ -142,7 +139,6 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packa
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog
 COPY --chown=appuser:appgroup --from=builder /app/packages/sdk ./packages/sdk
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
-COPY --chown=appuser:appgroup --from=builder /app/templates/skill-server ./templates/skill-server
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./

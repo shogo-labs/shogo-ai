@@ -592,8 +592,13 @@ async function maybeSchemaSync(
   const customRoutesResult = await maybeCustomRoutesSync(ctx, filePath, resolved, baseResult)
   if (customRoutesResult) return customRoutesResult
 
-  const isSchemaWrite = filePath === '.shogo/server/schema.prisma' ||
-    resolved.endsWith('.shogo/server/schema.prisma')
+  // Watch the project's root Prisma schema. The legacy `.shogo/server/`
+  // path is migrated into root paths on workspace boot — see
+  // `migrations/skill-server-to-root.ts`.
+  const isSchemaWrite =
+    filePath === 'prisma/schema.prisma' ||
+    resolved.endsWith('/prisma/schema.prisma') ||
+    resolved.endsWith('\\prisma\\schema.prisma')
   if (!isSchemaWrite) return null
 
   const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
@@ -608,7 +613,7 @@ async function maybeSchemaSync(
 
     const result: Record<string, unknown> = {
       ...baseResult,
-      skillServer: {
+      apiServer: {
         synced: syncResult.ok,
         phase: syncResult.phase,
         activeRoutes: activeRoutePaths,
@@ -618,8 +623,8 @@ async function maybeSchemaSync(
 
     if (orphaned.length > 0) {
       const unique = [...new Map(orphaned.map(o => [`${o.route}::${o.file}`, o])).values()]
-      ;(result.skillServer as Record<string, unknown>).orphanedFetches = unique
-      ;(result.skillServer as Record<string, unknown>).warning =
+      ;(result.apiServer as Record<string, unknown>).orphanedFetches = unique
+      ;(result.apiServer as Record<string, unknown>).warning =
         `Your schema is missing models for ${new Set(unique.map(o => o.route)).size} route(s) that your UI code fetches. ` +
         `These fetch calls will fail at runtime. Either add the missing models to the schema or remove the fetch calls.`
     }
@@ -628,7 +633,7 @@ async function maybeSchemaSync(
   } catch (err: any) {
     return {
       ...baseResult,
-      skillServer: {
+      apiServer: {
         synced: false,
         error: err.message,
         hint: 'Schema saved but regeneration failed. Check the schema for errors.',
@@ -643,28 +648,30 @@ async function maybeCustomRoutesSync(
   _resolved: string,
   baseResult: Record<string, unknown>,
 ): Promise<Record<string, unknown> | null> {
-  const isCustomRoutesWrite =
-    /\.shogo\/server\/custom-routes\.tsx?$/.test(filePath)
-  if (!isCustomRoutesWrite || !ctx.skillServerManager) return null
+  // Custom routes now live in `server.tsx` at the project root. PreviewManager
+  // already restarts the server on file change, so the tool only needs to
+  // surface a friendly status hint when the agent edits server.tsx.
+  const isServerEdit = filePath === 'server.tsx' || filePath.endsWith('/server.tsx')
+  if (!isServerEdit || !ctx.skillServerManager) return null
 
   try {
     await ctx.skillServerManager.restart()
     return {
       ...baseResult,
-      skillServer: {
-        customRoutesMounted: true,
+      apiServer: {
+        serverRestarted: true,
         phase: ctx.skillServerManager.phase,
         url: ctx.skillServerManager.url,
-        hint: 'Custom routes are now live. They are mounted at /api/ alongside CRUD routes.',
+        hint: 'server.tsx changes will be picked up on the next request. CRUD routes mounted by createAllRoutes() keep working.',
       },
     }
   } catch (err: any) {
     return {
       ...baseResult,
-      skillServer: {
-        customRoutesMounted: false,
+      apiServer: {
+        serverRestarted: false,
         error: err.message,
-        hint: 'Custom routes file saved but server restart failed.',
+        hint: 'server.tsx saved but restart failed.',
       },
     }
   }
@@ -693,21 +700,21 @@ function maybeValidateQuickActions(
 }
 
 // ---------------------------------------------------------------------------
-// Skill Server Sync Tool
+// Server Sync Tool
 // ---------------------------------------------------------------------------
 
-function createSkillServerSyncTool(ctx: ToolContext): AgentTool {
+function createServerSyncTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'skill_server_sync',
+    name: 'server_sync',
     description:
-      'Force the skill server to regenerate routes from schema.prisma and restart. ' +
+      "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. " +
       'Use this when routes are returning 404 after a schema change, or to verify the server is healthy. ' +
       'Returns the current phase and list of active API routes.',
-    label: 'Skill Server Sync',
+    label: 'Server Sync',
     parameters: Type.Object({}),
     execute: async () => {
       if (!ctx.skillServerManager) {
-        return textResult({ ok: false, error: 'Skill server manager not available' })
+        return textResult({ ok: false, error: 'API server provider not attached' })
       }
 
       try {
@@ -3672,7 +3679,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createChannelDisconnectTool(ctx),
     createChannelListTool(ctx),
     createReadLintsTool(ctx),
-    createSkillServerSyncTool(ctx),
+    createServerSyncTool(ctx),
     createToolSearchTool(ctx),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
@@ -4009,7 +4016,7 @@ export const ALL_TOOL_NAMES = [
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
   'heartbeat_configure', 'heartbeat_status',
-  'read_lints', 'skill_server_sync',
+  'read_lints', 'server_sync',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
   'transcribe_audio',

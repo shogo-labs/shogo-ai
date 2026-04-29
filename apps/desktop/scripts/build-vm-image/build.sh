@@ -137,7 +137,11 @@ runcmd:
     cp bun-extract/${BUN_PKG}/bun /usr/local/bin/bun
     chmod 755 /usr/local/bin/bun
     rm -rf bun-dl.zip bun-extract
-    for alias in node npx npm; do
+    # Include `bunx` — bun's own installer creates this symlink, but our
+    # bare-tarball install only drops `bun`, so explicitly alias it here
+    # so packages that shell out to `bunx` (e.g. published @shogo-ai/sdk
+    # CLI) keep working.
+    for alias in node npx npm bunx; do
       ln -sf /usr/local/bin/bun /usr/local/bin/$alias
     done
     echo "bun ready: $(/usr/local/bin/bun --version)"
@@ -160,12 +164,10 @@ runcmd:
     /usr/local/bin/bun add prisma @prisma/client @prisma/prisma-schema-wasm @prisma/internals @prisma/fetch-engine
     echo "shogo.js deps installed at /opt/shogo/node_modules"
   
-  # Pre-install skill-server template with Linux-native Prisma (matches Docker Dockerfile)
-  - |
-    mkdir -p /app/templates/skill-server
-    printf '{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}' \
-      > /app/templates/skill-server/package.json
-    cd /app/templates/skill-server && /usr/local/bin/bun install
+  # NOTE: The legacy `templates/skill-server/` pre-install was retired
+  # alongside the unified server architecture. The runtime-template now
+  # owns the entire backend (server.tsx + prisma) — see Phase 5 of the
+  # skill-server unification plan.
   
   # Extract runtime-template from seed ISO (tarball created at build time from repo)
   - |

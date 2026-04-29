@@ -313,7 +313,7 @@ function stopWorker(w: Worker) {
 // ---------------------------------------------------------------------------
 
 function prepWorkspace(worker: Worker, exercise: Exercise) {
-  const safeDirs = ['canvas', 'files', '.shogo/server']
+  const safeDirs = ['canvas', 'files', 'src', 'prisma', '.shogo']
   for (const sub of safeDirs) {
     const p = join(worker.dir, sub)
     try { if (existsSync(p)) rmSync(p, { recursive: true, force: true }) } catch {}

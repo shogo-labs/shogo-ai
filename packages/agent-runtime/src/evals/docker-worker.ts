@@ -277,9 +277,13 @@ export async function startDockerWorker(
 
   if (config.extraPortMappings) {
     for (const m of config.extraPortMappings) {
-      if (m.container === 4100) {
-        envFlags.push(`-e SKILL_SERVER_PORT=${m.container}`)
-      }
+      // The container always forwards host:4100+id → container:3001
+      // (CONTAINER_SKILL_PORT). PreviewManager reads `API_SERVER_PORT`
+      // to override its default — match the published port so the
+      // host's runtime checks reach the API server. Keep the legacy
+      // SKILL_SERVER_PORT alias for any rolled-back binaries.
+      envFlags.push(`-e API_SERVER_PORT=${m.container}`)
+      envFlags.push(`-e SKILL_SERVER_PORT=${m.container}`)
     }
   }
 
