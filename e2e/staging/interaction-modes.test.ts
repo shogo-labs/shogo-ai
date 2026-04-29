@@ -72,6 +72,70 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     await page.waitForTimeout(500)
   })
 
+  test("auto Plan suggestion: Switch to Plan sends held message in Plan mode", async () => {
+    await selectInteractionMode(page, "Agent")
+
+    await sendChatMessage(
+      page,
+      "Implement support for a database migration workflow across multiple files."
+    )
+
+    const suggestion = page.locator('[data-testid="plan-mode-suggestion"]')
+    await expect(suggestion).toBeVisible({ timeout: 5_000 })
+    await expect(suggestion).toContainText("Switch to Plan mode")
+
+    await page.locator('[data-testid="plan-mode-suggestion-switch"]').click()
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Plan", { timeout: 5_000 })
+    await expect(
+      page.getByText("Implement support for a database migration workflow across multiple files.")
+    ).toBeVisible({ timeout: 10_000 })
+    await waitForAgentResponse(page, 180_000)
+  })
+
+  test("auto Plan suggestion: Continue in Agent keeps Agent mode", async () => {
+    await selectInteractionMode(page, "Agent")
+
+    await sendChatMessage(
+      page,
+      "Plan and implement an API refactor across multiple backend files."
+    )
+
+    await expect(page.locator('[data-testid="plan-mode-suggestion"]')).toBeVisible({
+      timeout: 5_000,
+    })
+    await page.locator('[data-testid="plan-mode-suggestion-continue"]').click()
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Agent", { timeout: 5_000 })
+    await expect(
+      page.getByText("Plan and implement an API refactor across multiple backend files.")
+    ).toBeVisible({ timeout: 10_000 })
+    await waitForAgentResponse(page, 180_000)
+  })
+
+  test("auto Plan suggestion: timeout continues in Agent mode", async () => {
+    await selectInteractionMode(page, "Agent")
+
+    await sendChatMessage(
+      page,
+      "Design and implement a CI workflow migration across the deployment configuration."
+    )
+
+    const suggestion = page.locator('[data-testid="plan-mode-suggestion"]')
+    await expect(suggestion).toBeVisible({ timeout: 5_000 })
+    await expect(suggestion).toContainText(/\b(10|9)s\b/)
+    await expect(suggestion).toBeHidden({ timeout: 12_000 })
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Agent", { timeout: 5_000 })
+    await expect(
+      page.getByText("Design and implement a CI workflow migration across the deployment configuration.")
+    ).toBeVisible({ timeout: 10_000 })
+    await waitForAgentResponse(page, 180_000)
+  })
+
   test("Ask mode: no tool calls in response", async () => {
     await selectInteractionMode(page, "Ask")
 

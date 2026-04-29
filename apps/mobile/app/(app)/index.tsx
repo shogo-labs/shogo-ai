@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -14,7 +14,7 @@ import {
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
-import { ArrowRight } from 'lucide-react-native'
+import { AlertCircle, ArrowRight } from 'lucide-react-native'
 import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { ProjectCard } from '../../components/home/ProjectCard'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -32,7 +32,14 @@ import type { IProject, IMember, IWorkspace } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
-import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
+import {
+  PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS,
+  shouldSuggestPlanMode,
+} from '../../components/chat/plan-mode-suggestion'
+import {
+  loadInteractionModePreference,
+  saveInteractionModePreference,
+} from '../../lib/interaction-mode-preference'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -46,6 +53,11 @@ import { AgentTemplateGalleryCard } from '../../components/templates/agent-templ
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
 type AgentTemplate = AgentTemplateSummary
+
+type PendingPlanModeSuggestionSubmission = {
+  text: string
+  files?: FileAttachment[]
+}
 
 /**
  * Reads the dark class directly from the DOM and observes mutations.
@@ -207,12 +219,27 @@ const HomeScreen = observer(function HomeScreen() {
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const [isCreating, setIsCreating] = useState(false)
+  const [pendingPlanModeSuggestion, setPendingPlanModeSuggestion] =
+    useState<PendingPlanModeSuggestionSubmission | null>(null)
+  const [planModeSuggestionSecondsLeft, setPlanModeSuggestionSecondsLeft] = useState(
+    PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS
+  )
+  const pendingPlanModeSuggestionRef =
+    useRef<PendingPlanModeSuggestionSubmission | null>(null)
+  const planModeSuggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const planModeSuggestionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
   // APP_MODE_DISABLED: homeAppTemplates state removed
   const [activeTab, setActiveTab] = useState<'projects' | 'shared' | 'templates'>('templates')
 
   const [workspaceError, setWorkspaceError] = useState(false)
+
+  useEffect(() => {
+    void loadInteractionModePreference().then((stored) => {
+      if (stored) setInteractionMode(stored)
+    })
+  }, [])
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -371,8 +398,24 @@ const HomeScreen = observer(function HomeScreen() {
         ? 'Ask a question...'
         : `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
 
-  const handlePromptSubmit = useCallback(async (text: string, files?: FileAttachment[]) => {
+  const clearPlanModeSuggestionTimers = useCallback(() => {
+    if (planModeSuggestionTimeoutRef.current) {
+      clearTimeout(planModeSuggestionTimeoutRef.current)
+      planModeSuggestionTimeoutRef.current = null
+    }
+    if (planModeSuggestionIntervalRef.current) {
+      clearInterval(planModeSuggestionIntervalRef.current)
+      planModeSuggestionIntervalRef.current = null
+    }
+  }, [])
+
+  const createProjectFromPrompt = useCallback(async (
+    text: string,
+    files?: FileAttachment[],
+    submissionInteractionMode: InteractionMode = interactionMode,
+  ) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
+
     setIsCreating(true)
     try {
       const projectName = generateProjectNameFromPrompt(text)
@@ -421,7 +464,7 @@ const HomeScreen = observer(function HomeScreen() {
           id: newProject.id,
           chatSessionId: chatSession.id,
           initialMessage: text,
-          initialInteractionMode: interactionMode,
+          initialInteractionMode: submissionInteractionMode,
         },
       } as any)
 
@@ -439,7 +482,82 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setIsCreating(false)
     }
-  }, [actions, http, user?.id, currentWorkspace?.id, projects, router, posthog, interactionMode])
+  }, [
+    actions,
+    currentWorkspace?.id,
+    http,
+    interactionMode,
+    posthog,
+    projects,
+    router,
+    user?.id,
+  ])
+
+  const handlePromptSubmit = useCallback(async (
+    text: string,
+    files?: FileAttachment[],
+    modeOverride?: InteractionMode,
+  ) => {
+    if (pendingPlanModeSuggestionRef.current && !modeOverride) return
+
+    const submissionInteractionMode = modeOverride ?? interactionMode
+    if (
+      !modeOverride &&
+      submissionInteractionMode === 'agent' &&
+      !isCreating &&
+      !pendingPlanModeSuggestionRef.current &&
+      shouldSuggestPlanMode(text)
+    ) {
+      clearPlanModeSuggestionTimers()
+      const pending = { text, files }
+      pendingPlanModeSuggestionRef.current = pending
+      setPendingPlanModeSuggestion(pending)
+      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+      planModeSuggestionIntervalRef.current = setInterval(() => {
+        setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
+      }, 1000)
+      planModeSuggestionTimeoutRef.current = setTimeout(() => {
+        const pendingSubmission = pendingPlanModeSuggestionRef.current
+        if (!pendingSubmission) return
+        clearPlanModeSuggestionTimers()
+        pendingPlanModeSuggestionRef.current = null
+        setPendingPlanModeSuggestion(null)
+        setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+        void createProjectFromPrompt(pendingSubmission.text, pendingSubmission.files, 'agent')
+      }, PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS * 1000)
+      return
+    }
+
+    await createProjectFromPrompt(text, files, submissionInteractionMode)
+  }, [
+    clearPlanModeSuggestionTimers,
+    createProjectFromPrompt,
+    interactionMode,
+    isCreating,
+  ])
+
+  const handleResolvePlanModeSuggestion = useCallback(
+    (targetMode: 'agent' | 'plan') => {
+      const pending = pendingPlanModeSuggestionRef.current
+      if (!pending) return
+
+      clearPlanModeSuggestionTimers()
+      pendingPlanModeSuggestionRef.current = null
+      setPendingPlanModeSuggestion(null)
+      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+
+      handleHomeInteractionModeChange(targetMode)
+
+      void handlePromptSubmit(pending.text, pending.files, targetMode)
+    },
+    [clearPlanModeSuggestionTimers, handleHomeInteractionModeChange, handlePromptSubmit],
+  )
+
+  useEffect(() => {
+    return () => {
+      clearPlanModeSuggestionTimers()
+    }
+  }, [clearPlanModeSuggestionTimers])
 
   const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -560,9 +678,57 @@ const HomeScreen = observer(function HomeScreen() {
                 maxWidth: 680,
               }}
             >
+              {pendingPlanModeSuggestion && (
+                <View
+                  className="mb-2 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3"
+                  testID="plan-mode-suggestion"
+                  accessibilityRole="alert"
+                >
+                  <View className="flex-row items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 text-amber-400" size={16} />
+                    <View className="flex-1">
+                      <Text className="text-sm font-medium text-foreground">
+                        This looks like planning work. Switch to Plan mode?
+                      </Text>
+                      <Text
+                        className="mt-1 text-xs text-muted-foreground"
+                        accessibilityLiveRegion="polite"
+                      >
+                        We&apos;ll send this in Agent mode in{' '}
+                        {Math.max(1, planModeSuggestionSecondsLeft)}s unless you choose Plan.
+                      </Text>
+                    </View>
+                  </View>
+                  <View className="mt-3 flex-row flex-wrap justify-end gap-2">
+                    <Pressable
+                      onPress={() => handleResolvePlanModeSuggestion('agent')}
+                      className="min-h-10 justify-center rounded-md border border-border/70 px-3 py-2"
+                      testID="plan-mode-suggestion-continue"
+                      accessibilityRole="button"
+                      accessibilityLabel="Continue in Agent mode"
+                    >
+                      <Text className="text-xs font-medium text-muted-foreground">
+                        Continue in Agent
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => handleResolvePlanModeSuggestion('plan')}
+                      className="min-h-10 justify-center rounded-md bg-amber-500/20 px-3 py-2"
+                      testID="plan-mode-suggestion-switch"
+                      accessibilityRole="button"
+                      accessibilityLabel="Switch to Plan mode and send"
+                    >
+                      <Text className="text-xs font-medium text-amber-400">
+                        Switch to Plan
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
               <CompactChatInput
                 onSubmit={handlePromptSubmit}
-                isLoading={isCreating}
+                isLoading={isCreating || !!pendingPlanModeSuggestion}
+                disabled={!!pendingPlanModeSuggestion}
                 placeholder={homeComposerPlaceholder}
                 value={prompt}
                 onChange={setPrompt}
