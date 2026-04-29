@@ -5,12 +5,14 @@ import { Pressable, Text, View } from "react-native"
 
 type PlanModeSuggestionProps = {
   secondsLeft: number
+  onEditPrompt?: () => void
   onContinueInAgent: () => void
   onSwitchToPlan: () => void
 }
 
 export function PlanModeSuggestion({
   secondsLeft,
+  onEditPrompt,
   onContinueInAgent,
   onSwitchToPlan,
 }: PlanModeSuggestionProps) {
@@ -33,6 +35,19 @@ export function PlanModeSuggestion({
       </View>
 
       <View className="mt-2 flex-row flex-wrap justify-end gap-2">
+        {onEditPrompt ? (
+          <Pressable
+            onPress={onEditPrompt}
+            className="min-h-11 justify-center rounded-md border border-border/70 bg-background/40 px-3 py-2"
+            testID="plan-mode-suggestion-edit"
+            accessibilityRole="button"
+            accessibilityLabel="Edit prompt"
+          >
+            <Text className="text-xs font-medium text-muted-foreground">
+              Edit prompt
+            </Text>
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={onContinueInAgent}
           className="min-h-11 justify-center rounded-md border border-border/70 bg-background/40 px-3 py-2"

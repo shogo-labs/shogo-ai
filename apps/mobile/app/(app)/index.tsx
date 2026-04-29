@@ -494,48 +494,53 @@ const HomeScreen = observer(function HomeScreen() {
     user?.id,
   ])
 
-  const handlePromptSubmit = useCallback(async (
-    text: string,
-    files?: FileAttachment[],
-    modeOverride?: InteractionMode,
-  ) => {
-    if (pendingPlanModeSuggestionRef.current && !modeOverride) return
+  const handlePromptSubmit = useCallback(
+    (
+      text: string,
+      files?: FileAttachment[],
+      modeOverride?: InteractionMode,
+    ): void | false => {
+      if (pendingPlanModeSuggestionRef.current && !modeOverride) {
+        return false
+      }
 
-    const submissionInteractionMode = modeOverride ?? interactionMode
-    if (
-      !modeOverride &&
-      submissionInteractionMode === 'agent' &&
-      !isCreating &&
-      !pendingPlanModeSuggestionRef.current &&
-      shouldSuggestPlanMode(text)
-    ) {
-      clearPlanModeSuggestionTimers()
-      const pending = { text, files }
-      pendingPlanModeSuggestionRef.current = pending
-      setPendingPlanModeSuggestion(pending)
-      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
-      planModeSuggestionIntervalRef.current = setInterval(() => {
-        setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
-      }, 1000)
-      planModeSuggestionTimeoutRef.current = setTimeout(() => {
-        const pendingSubmission = pendingPlanModeSuggestionRef.current
-        if (!pendingSubmission) return
+      const submissionInteractionMode = modeOverride ?? interactionMode
+      if (
+        !modeOverride &&
+        submissionInteractionMode === 'agent' &&
+        !isCreating &&
+        !pendingPlanModeSuggestionRef.current &&
+        shouldSuggestPlanMode(text)
+      ) {
         clearPlanModeSuggestionTimers()
-        pendingPlanModeSuggestionRef.current = null
-        setPendingPlanModeSuggestion(null)
+        const pending = { text, files }
+        pendingPlanModeSuggestionRef.current = pending
+        setPendingPlanModeSuggestion(pending)
         setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
-        void createProjectFromPrompt(pendingSubmission.text, pendingSubmission.files, 'agent')
-      }, PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS * 1000)
-      return
-    }
+        planModeSuggestionIntervalRef.current = setInterval(() => {
+          setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
+        }, 1000)
+        planModeSuggestionTimeoutRef.current = setTimeout(() => {
+          const pendingSubmission = pendingPlanModeSuggestionRef.current
+          if (!pendingSubmission) return
+          clearPlanModeSuggestionTimers()
+          pendingPlanModeSuggestionRef.current = null
+          setPendingPlanModeSuggestion(null)
+          setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+          void createProjectFromPrompt(pendingSubmission.text, pendingSubmission.files, 'agent')
+        }, PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS * 1000)
+        return false
+      }
 
-    await createProjectFromPrompt(text, files, submissionInteractionMode)
-  }, [
-    clearPlanModeSuggestionTimers,
-    createProjectFromPrompt,
-    interactionMode,
-    isCreating,
-  ])
+      void createProjectFromPrompt(text, files, submissionInteractionMode)
+    },
+    [
+      clearPlanModeSuggestionTimers,
+      createProjectFromPrompt,
+      interactionMode,
+      isCreating,
+    ],
+  )
 
   const handleResolvePlanModeSuggestion = useCallback(
     (targetMode: 'agent' | 'plan') => {
@@ -553,6 +558,17 @@ const HomeScreen = observer(function HomeScreen() {
     },
     [clearPlanModeSuggestionTimers, handleHomeInteractionModeChange, handlePromptSubmit],
   )
+
+  const handleEditPlanModePrompt = useCallback(() => {
+    const pending = pendingPlanModeSuggestionRef.current
+    if (!pending) return
+
+    clearPlanModeSuggestionTimers()
+    pendingPlanModeSuggestionRef.current = null
+    setPendingPlanModeSuggestion(null)
+    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+    setPrompt(pending.text)
+  }, [clearPlanModeSuggestionTimers])
 
   useEffect(() => {
     return () => {
@@ -682,6 +698,7 @@ const HomeScreen = observer(function HomeScreen() {
               {pendingPlanModeSuggestion && (
                 <PlanModeSuggestion
                   secondsLeft={planModeSuggestionSecondsLeft}
+                  onEditPrompt={handleEditPlanModePrompt}
                   onContinueInAgent={() => handleResolvePlanModeSuggestion('agent')}
                   onSwitchToPlan={() => handleResolvePlanModeSuggestion('plan')}
                 />
@@ -690,6 +707,7 @@ const HomeScreen = observer(function HomeScreen() {
                 onSubmit={handlePromptSubmit}
                 isLoading={isCreating || !!pendingPlanModeSuggestion}
                 disabled={!!pendingPlanModeSuggestion}
+                dimWhenDisabled={!pendingPlanModeSuggestion}
                 placeholder={homeComposerPlaceholder}
                 value={prompt}
                 onChange={setPrompt}
