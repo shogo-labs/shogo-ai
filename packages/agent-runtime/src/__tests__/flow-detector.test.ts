@@ -32,8 +32,7 @@ function createTestEnv() {
     sources: [{
       id: 'code',
       scanDir: tmpDir,
-      include: ['**/*.py'],
-      exclude: [],
+      extensions: new Set(['.py']),
     }],
   })
 

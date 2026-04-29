@@ -71,8 +71,8 @@ export class PlatformPackageManager {
     return process.env.SHOGO_BUN_PATH || 'bun'
   }
 
-  private shellOpt(): boolean | undefined {
-    return IS_WINDOWS ? true : undefined
+  private shellOpt(): string | undefined {
+    return IS_WINDOWS ? 'cmd.exe' : undefined
   }
 
   private spawnEnv(base?: NodeJS.ProcessEnv): Record<string, string> {
@@ -99,7 +99,7 @@ export class PlatformPackageManager {
       if (!isNodeAvailableOnWindows(env.PATH)) throw new NodeMissingError()
       try {
         nodeExecSync('npm.cmd install --loglevel=error', {
-          cwd, timeout, stdio, env, shell: true,
+          cwd, timeout, stdio, env, shell: 'cmd.exe',
         })
       } catch (err: any) {
         throw wrapWindowsNpmError(err) ?? err

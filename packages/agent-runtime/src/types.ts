@@ -64,6 +64,9 @@ export interface SandboxConfig {
 
 export interface AgentStatus {
   running: boolean
+  status?: 'active' | 'idle' | 'stopped'
+  currentTask?: string | null
+  lastTool?: string | null
   heartbeat: {
     enabled: boolean
     intervalSeconds: number

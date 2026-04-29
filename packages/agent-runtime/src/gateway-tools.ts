@@ -5117,7 +5117,8 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
         { description: 'Implementation tasks in execution order' }
       ),
     }),
-    execute: async (_id: string, params: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }) => {
+    execute: async (_id: string, rawParams: unknown) => {
+      const params = rawParams as { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
       const slug = params.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').substring(0, 50)
       const hash = Math.random().toString(36).substring(2, 10)
       const filename = `${slug}_${hash}.plan.md`
@@ -5186,13 +5187,14 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         { description: 'Full replacement todo list in execution order' }
       )),
     }),
-    execute: async (_id: string, params: {
-      filepath: string
-      name?: string
-      overview?: string
-      plan?: string
-      todos?: Array<{ id: string; content: string }>
-    }) => {
+    execute: async (_id: string, rawParams: unknown) => {
+      const params = rawParams as {
+        filepath: string
+        name?: string
+        overview?: string
+        plan?: string
+        todos?: Array<{ id: string; content: string }>
+      }
       const resolved = join(ctx.workspaceDir, params.filepath)
       if (!existsSync(resolved)) {
         return textResult(`Error: Plan file not found at ${params.filepath}`)

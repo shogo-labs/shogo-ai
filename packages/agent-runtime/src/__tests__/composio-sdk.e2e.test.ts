@@ -200,7 +200,7 @@ describe('checkComposioAuth', () => {
   })
 
   test.skipIf(SKIP)('returns a valid status after session init', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     const result = await checkComposioAuth('gmail')
 
     expect(['active', 'needs_auth']).toContain(result.status)
@@ -210,7 +210,7 @@ describe('checkComposioAuth', () => {
   }, 30_000)
 
   test.skipIf(SKIP)('records auth check timing', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     clearComposioTimings()
 
     await checkComposioAuth('gmail')
@@ -222,7 +222,7 @@ describe('checkComposioAuth', () => {
   }, 30_000)
 
   test.skipIf(SKIP_AUTH)('returns active for authenticated toolkit', async () => {
-    await initComposioSession(TEST_USER_ID, TEST_PROJECT_ID)
+    await initComposioSession(TEST_USER_ID, TEST_WORKSPACE_ID, TEST_PROJECT_ID)
     const result = await checkComposioAuth('gmail')
     expect(result.status).toBe('active')
   }, 30_000)

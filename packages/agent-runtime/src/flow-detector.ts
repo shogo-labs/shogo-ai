@@ -238,7 +238,7 @@ export function storeFlows(graph: WorkspaceGraph, flows: FlowInfo[]): number {
       JSON.stringify(flow.path), now,
     )
 
-    const flowId = Number(db.prepare('SELECT last_insert_rowid() as id').get()!.id)
+    const flowId = Number((db.prepare('SELECT last_insert_rowid() as id').get() as { id: number }).id)
 
     for (let i = 0; i < flow.path.length; i++) {
       try {

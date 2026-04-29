@@ -36,7 +36,7 @@ export interface SelfAssignConfig {
 export async function checkSelfAssign(apiUrl?: string, workDir?: string): Promise<SelfAssignConfig | null> {
   let assignedProject = process.env.ASSIGNED_PROJECT
   if (!assignedProject || assignedProject === '' || assignedProject === '__POOL__') {
-    assignedProject = readAssignmentMarker(workDir)
+    assignedProject = readAssignmentMarker(workDir) ?? undefined
   }
   if (!assignedProject) {
     return null
