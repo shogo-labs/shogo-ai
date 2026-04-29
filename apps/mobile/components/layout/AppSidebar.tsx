@@ -630,10 +630,16 @@ function WorkspaceSwitcher({
   const planType = getPlanDisplayName(resolvedPlanId !== 'free' ? resolvedPlanId : undefined)
   const effectiveBalance = billingData.effectiveBalance
   const planIdForUsd = resolvedPlanId !== 'free' ? resolvedPlanId : undefined
+  const subSeats = billingData.subscription?.seats ?? 1
   const usdRemaining =
-    effectiveBalance?.total ?? getIncludedUsdForPlan(planIdForUsd)
+    effectiveBalance?.total ?? getIncludedUsdForPlan(planIdForUsd, subSeats)
   const usdTotal = Math.max(
-    getIncludedUsdCapacityForDisplay(planIdForUsd, effectiveBalance?.total, effectiveBalance?.monthlyIncludedAllocationUsd),
+    getIncludedUsdCapacityForDisplay({
+      planId: planIdForUsd,
+      seats: subSeats,
+      remainingTotal: effectiveBalance?.total,
+      monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
+    }),
     0.01,
   )
 
@@ -928,13 +934,18 @@ function CreateWorkspaceModal({
   onSubmit: (name: string) => void
 }) {
   const [name, setName] = useState('')
+  const [error, setError] = useState<string | null>(null)
 
   const handleSubmit = useCallback(() => {
-    if (name.trim()) {
-      onSubmit(name.trim())
-      setName('')
-      onClose()
+    const trimmed = name.trim()
+    if (!trimmed) {
+      setError('Give your workspace a name to continue.')
+      return
     }
+    onSubmit(trimmed)
+    setName('')
+    setError(null)
+    onClose()
   }, [name, onSubmit, onClose])
 
   return (
@@ -953,15 +964,24 @@ function CreateWorkspaceModal({
           <Text className="text-sm text-muted-foreground mb-4">
             Create a new workspace for your team or projects
           </Text>
+          <Text className="text-sm font-medium text-foreground mb-1.5">
+            Workspace name
+          </Text>
           <TextInput
             value={name}
-            onChangeText={setName}
-            placeholder="Enter workspace name"
+            onChangeText={(t) => { setName(t); if (error) setError(null) }}
+            placeholder="e.g. My Team, Acme Corp"
             placeholderTextColor="#9ca3af"
-            className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+            className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background"
             autoFocus={Platform.OS === 'web'}
             onSubmitEditing={handleSubmit}
           />
+          <Text className="text-xs text-muted-foreground mt-1.5 mb-3">
+            You can rename it later in settings.
+          </Text>
+          {error && (
+            <Text className="text-xs text-destructive mb-3">{error}</Text>
+          )}
           <View className="flex-row gap-2 justify-end">
             <Pressable
               onPress={onClose}
@@ -971,13 +991,9 @@ function CreateWorkspaceModal({
             </Pressable>
             <Pressable
               onPress={handleSubmit}
-              className={cn(
-                'px-4 py-2 rounded-md',
-                name.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
-              )}
-              disabled={!name.trim()}
+              className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
             >
-              <Text className={cn('text-sm', name.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
+              <Text className="text-sm text-primary-foreground">
                 Create workspace
               </Text>
             </Pressable>

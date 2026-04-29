@@ -193,14 +193,16 @@ export default observer(function ProjectLayout() {
     ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
 
+  const subSeats = billingData.subscription?.seats ?? 1
   const usdRemaining =
     billingData.effectiveBalance?.total ??
-    getIncludedUsdForPlan(billingData.subscription?.planId)
-  const usdTotal = getIncludedUsdCapacityForDisplay(
-    billingData.subscription?.planId,
-    billingData.effectiveBalance?.total,
-    billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
-  )
+    getIncludedUsdForPlan(billingData.subscription?.planId, subSeats)
+  const usdTotal = getIncludedUsdCapacityForDisplay({
+    planId: billingData.subscription?.planId,
+    seats: subSeats,
+    remainingTotal: billingData.effectiveBalance?.total,
+    monthlyIncludedAllocationUsd: billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
+  })
 
   const isStarred = useMemo(() => {
     try {

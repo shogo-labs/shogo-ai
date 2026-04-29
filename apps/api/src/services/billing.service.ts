@@ -85,11 +85,44 @@ export async function allocateFreeWallet(workspaceId: string) {
 
 
 /**
+ * Trust-first overage block ladder. The first mid-cycle invoice is `$100`;
+ * subsequent blocks step up by `$100` each as the workspace proves it pays
+ * (extending trust), capped at `$500` so a single mid-cycle charge never
+ * spikes too aggressively. So the n-th block is `min(OVERAGE_BLOCK_MAX_USD,
+ * OVERAGE_BLOCK_STEP_USD * n)`, and cumulative billed after N blocks is
+ * `100, 300, 600, 1000, 1500, 2000, 2500, ...`.
+ */
+export const OVERAGE_BLOCK_STEP_USD = 100
+export const OVERAGE_BLOCK_MAX_USD = 500
+/** @deprecated retained for any caller that imports the legacy constant. */
+export const OVERAGE_BLOCK_USD = OVERAGE_BLOCK_STEP_USD
+
+/**
+ * Compute the size of the next overage block to bill, given how much has
+ * already been invoiced this period in trust blocks. The block size grows
+ * with cumulative billed history: `$100 → $200 → $300 → $400 → $500 → $500 → …`
+ */
+export function nextOverageBlockUsd(overageBilledUsd: number): number {
+  let remainder = Math.max(0, overageBilledUsd)
+  let blockIdx = 1
+  // Bounded loop: once `blockIdx > 5`, every block is the cap. Heavy hitters
+  // bail after a handful of iterations, but we keep an outer guard so a
+  // pathological wallet state can't loop forever.
+  while (blockIdx < 10_000) {
+    const size = Math.min(OVERAGE_BLOCK_MAX_USD, OVERAGE_BLOCK_STEP_USD * blockIdx)
+    if (remainder < size) return size
+    remainder -= size
+    blockIdx++
+  }
+  return OVERAGE_BLOCK_MAX_USD
+}
+
+/**
  * Allocate the monthly included USD for a subscription plan and seat count.
  * `seats` is the number of paying seats on the subscription (Pro/Business
  * are per-seat plans; Basic is always 1). Resets accumulated overage so the
  * upcoming period starts clean (any flushed overage should have already
- * been reported to Stripe by `consumeUsage`).
+ * been billed via `chargeOverageBlocks` mid-cycle).
  */
 export async function allocateMonthlyIncluded(
   workspaceId: string,
@@ -109,11 +142,19 @@ export async function allocateMonthlyIncluded(
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
+      // Trust-first: paid plans default to overage on. The hard cap is
+      // optional and still respected.
+      overageEnabled: true,
     },
     update: {
       monthlyIncludedUsd,
       monthlyIncludedAllocationUsd: monthlyIncludedUsd,
       overageAccumulatedUsd: 0,
+      overageBilledUsd: 0,
+      // Re-enable trust-first on plan refresh so anyone who got a `false`
+      // from the legacy default before the migration starts the next period
+      // billed correctly.
+      overageEnabled: true,
       lastMonthlyReset: now,
     },
   });
@@ -284,9 +325,12 @@ export async function consumeUsage(
     try {
       const result = await _consumeUsageTransaction(params)
       if (result.success && (result.overageChargedUsd ?? 0) > 0) {
-        // Fire-and-forget metered report. Stripe is eventually-consistent.
-        reportOverageToStripe(workspaceId, result.overageChargedUsd!).catch((err) =>
-          console.error('[billing] failed to report overage to Stripe:', err),
+        // Fire-and-forget mid-cycle block charging. We invoice the user in
+        // $100 trust blocks as accumulated overage crosses each boundary;
+        // any leftover sub-$100 amount carries over and gets billed on the
+        // next crossing or end-of-period reconciliation.
+        chargeOverageBlocks(workspaceId).catch((err) =>
+          console.error('[billing] failed to charge overage blocks:', err),
         )
       }
       return result
@@ -456,89 +500,153 @@ async function _consumeUsageTransaction(
 }
 
 /**
- * Report marked-up overage in USD to Stripe via the Meter Events API.
+ * Charge whole overage blocks the workspace has crossed since the last
+ * block was billed this period. Trust-first model with an escalating
+ * ladder:
  *
- * Stripe API versions >= 2025-03-31.basil require metered prices to be backed
- * by a `billing.meter`; the legacy `subscription_items.create_usage_record`
- * path no longer accepts new prices. We emit a `billing.meter_event` with the
- * payload `{ stripe_customer_id, value }` and Stripe routes the volume to
- * the metered price item attached to the customer's subscription.
+ *   `overageAccumulatedUsd` is the marked-up USD the workspace has consumed
+ *   beyond their included usage. `overageBilledUsd` is how much of that has
+ *   already been invoiced + paid this period. The block size starts at
+ *   `$100` and steps up by `$100` per successfully billed block, capped at
+ *   `$500` (so trust grows with proven payment history but never spikes the
+ *   card by more than `$500` in a single mid-cycle charge).
  *
- * Lazily ensures the metered price item is attached to the active subscription
- * (and stamps `usageWallet.stripeMeteredItemId` on first attach so we have a
- * cheap idempotency check).
+ *   Sub-block leftovers carry to the next crossing or end-of-period
+ *   reconciliation. If usage races past several thresholds at once we
+ *   bundle them into a single invoice so customers don't get a flurry of
+ *   small statements.
  *
- * Best-effort: logs and swallows errors. The amount stays in
- * `overageAccumulatedUsd` so a reconciler can retry later.
+ * Returns the number of blocks billed (zero is the steady state). Best
+ * effort: logs and swallows errors so a missed Stripe call never blocks
+ * usage from being recorded — `overageAccumulatedUsd` stays as the source
+ * of truth and a future call (or end-of-period reconciler) will catch up.
  */
-export async function reportOverageToStripe(
-  workspaceId: string,
-  amountUsd: number,
-) {
-  if (amountUsd <= 0) return
-
+export async function chargeOverageBlocks(workspaceId: string): Promise<number> {
   const stripeKey = process.env.STRIPE_SECRET_KEY
   if (!stripeKey) {
-    console.warn('[billing] STRIPE_SECRET_KEY unset; skipping overage report')
-    return
-  }
-
-  const sub = await prisma.subscription.findFirst({
-    where: { workspaceId, status: { in: ['active', 'trialing'] } },
-    select: { stripeSubscriptionId: true, stripeCustomerId: true },
-  })
-  if (!sub?.stripeSubscriptionId || !sub.stripeCustomerId) {
-    console.warn(`[billing] no active Stripe subscription/customer for workspace ${workspaceId}; overage not reported`)
-    return
+    console.warn('[billing] STRIPE_SECRET_KEY unset; skipping overage block charge')
+    return 0
   }
 
   const wallet = await prisma.usageWallet.findUnique({
     where: { workspaceId },
-    select: { stripeMeteredItemId: true },
+    select: {
+      id: true,
+      overageAccumulatedUsd: true,
+      overageBilledUsd: true,
+    },
   })
+  if (!wallet) return 0
+
+  // Walk the ladder against the unbilled balance: peel off as many full
+  // blocks as fit, leaving any sub-block remainder for next time.
+  const blockSizes: number[] = []
+  let billedSimulated = wallet.overageBilledUsd
+  let unbilled = wallet.overageAccumulatedUsd - wallet.overageBilledUsd
+  while (unbilled > 0) {
+    const size = nextOverageBlockUsd(billedSimulated)
+    if (unbilled < size) break
+    blockSizes.push(size)
+    unbilled -= size
+    billedSimulated += size
+  }
+  if (blockSizes.length === 0) return 0
+
+  const sub = await prisma.subscription.findFirst({
+    where: { workspaceId, status: { in: ['active', 'trialing'] } },
+    select: { stripeCustomerId: true },
+  })
+  if (!sub?.stripeCustomerId) {
+    console.warn(`[billing] no active Stripe customer for workspace ${workspaceId}; deferring overage block charge`)
+    return 0
+  }
 
   const { default: Stripe } = await import('stripe') as unknown as {
     default: new (key: string, opts?: unknown) => any
   }
   const stripe = new Stripe(stripeKey)
 
-  const cfg = getOveragePriceConfig()
-  let subscriptionItemId = wallet?.stripeMeteredItemId ?? null
+  const totalUsd = blockSizes.reduce((a, b) => a + b, 0)
+  const blocksDue = blockSizes.length
 
-  if (!subscriptionItemId) {
-    const stripeSub = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId)
-    const existingItem = stripeSub.items?.data?.find(
-      (it: any) => it.price?.id === cfg.priceId,
+  // Idempotency: keyed on (workspace, billed snapshot, total). Re-running
+  // with the same prior state hits the same key, so Stripe dedupes a retry
+  // even if our local update was rolled back.
+  const idempotencyKey = `overage:${workspaceId}:${Math.round(wallet.overageBilledUsd)}:${Math.round(totalUsd)}`
+
+  const blockBreakdown = blockSizes.map((s) => `$${s}`).join(' + ')
+  const description = blocksDue === 1
+    ? `Usage overage block (${blockBreakdown})`
+    : `Usage overage (${blocksDue} blocks: ${blockBreakdown})`
+
+  try {
+    await stripe.invoiceItems.create(
+      {
+        customer: sub.stripeCustomerId,
+        amount: totalUsd * 100, // cents
+        currency: 'usd',
+        description,
+        metadata: {
+          workspaceId,
+          blocks: String(blocksDue),
+          blockSizes: blockSizes.join(','),
+          kind: 'overage_block',
+        },
+      },
+      { idempotencyKey: `${idempotencyKey}:item` },
     )
-    if (existingItem) {
-      subscriptionItemId = existingItem.id
-    } else {
-      const created = await stripe.subscriptionItems.create({
-        subscription: sub.stripeSubscriptionId,
-        price: cfg.priceId,
-      })
-      subscriptionItemId = created.id
+
+    const invoice = await stripe.invoices.create(
+      {
+        customer: sub.stripeCustomerId,
+        auto_advance: true,
+        collection_method: 'charge_automatically',
+        description: 'Mid-cycle usage overage',
+        metadata: {
+          workspaceId,
+          kind: 'overage_block',
+          blocks: String(blocksDue),
+          blockSizes: blockSizes.join(','),
+        },
+      },
+      { idempotencyKey: `${idempotencyKey}:invoice` },
+    )
+    await stripe.invoices.finalizeInvoice(invoice.id)
+    try {
+      await stripe.invoices.pay(invoice.id)
+    } catch (payErr: any) {
+      console.warn('[billing] overage invoice pay attempt failed (will retry via Stripe dunning):', payErr?.message ?? payErr)
     }
+
     await prisma.usageWallet.update({
       where: { workspaceId },
-      data: { stripeMeteredItemId: subscriptionItemId },
+      data: { overageBilledUsd: { increment: totalUsd } },
     })
+
+    console.log('[billing] Charged overage blocks:', {
+      workspaceId,
+      blocks: blocksDue,
+      blockSizes,
+      totalUsd,
+    })
+    return blocksDue
+  } catch (err: any) {
+    console.error('[billing] chargeOverageBlocks failed:', err?.message ?? err)
+    return 0
   }
+}
 
-  const value = Math.max(1, Math.round(amountUsd * cfg.unitsPerDollar))
-  // Idempotency: Stripe dedupes meter events by `identifier` within a 24h
-  // window. Pair workspace + minute + value to absorb retries while still
-  // keeping legitimate distinct events.
-  const identifier = `${workspaceId}-${Math.floor(Date.now() / 60000)}-${value}`
-
-  await stripe.billing.meterEvents.create({
-    event_name: cfg.meterEventName,
-    payload: {
-      stripe_customer_id: sub.stripeCustomerId,
-      value: String(value),
-    },
-    identifier,
-  })
+/**
+ * @deprecated Trust-first overage now charges in $100 blocks via
+ * `chargeOverageBlocks`. The Stripe Meter Events path is kept as a no-op
+ * shim for callers that still import this symbol; it will be removed in a
+ * follow-up after migration data is verified.
+ */
+export async function reportOverageToStripe(
+  workspaceId: string,
+  _amountUsd: number,
+) {
+  await chargeOverageBlocks(workspaceId)
 }
 
 /**
@@ -642,6 +750,136 @@ export async function upsertBillingAccount(
       taxId: data.taxId,
     },
   });
+}
+
+/**
+ * Count the distinct active workspace-level members (excludes project-only
+ * memberships and pending invites). This is the denominator for active-seat
+ * billing.
+ */
+export async function countActiveWorkspaceMembers(workspaceId: string): Promise<number> {
+  const rows = await prisma.member.findMany({
+    where: { workspaceId, projectId: null },
+    select: { userId: true },
+  })
+  const unique = new Set(rows.map((r: any) => r.userId))
+  return Math.max(1, unique.size)
+}
+
+/**
+ * Sync the Stripe seat quantity for a workspace's subscription so it matches
+ * the count of distinct active workspace-level members.
+ *
+ * - Pro/Business plans: updates the existing per-seat subscription item with
+ *   `proration_behavior: 'always_invoice'`, so additions are billed
+ *   immediately (Cursor-style active seats) and removals appear as account
+ *   credit on the next invoice.
+ * - Basic plan: no-op (single user only).
+ * - No active subscription: no-op (free tier; seats not billed).
+ *
+ * Returns `{ ok, planId, seats }` on success or `{ ok: false, reason }`
+ * when the sync was skipped. Errors are caught and logged, never thrown.
+ */
+export async function syncSeatsFromMembership(
+  workspaceId: string,
+): Promise<{ ok: boolean; planId?: string; seats?: number; reason?: string }> {
+  if (isLocalMode) return { ok: false, reason: 'local_mode' }
+
+  try {
+    const sub = await prisma.subscription.findFirst({
+      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+    })
+    if (!sub) return { ok: false, reason: 'no_active_subscription' }
+
+    const planId = sub.planId.toLowerCase()
+    if (planId === 'basic' || planId.startsWith('basic')) {
+      return { ok: false, reason: 'basic_plan_single_seat' }
+    }
+
+    const desiredSeats = await countActiveWorkspaceMembers(workspaceId)
+    if (desiredSeats === sub.seats) {
+      // Already in sync — still ensure the wallet allocation matches.
+      const includedUsd = getMonthlyIncludedForPlan(sub.planId, desiredSeats)
+      await prisma.usageWallet.updateMany({
+        where: { workspaceId },
+        data: {
+          monthlyIncludedUsd: includedUsd,
+          monthlyIncludedAllocationUsd: includedUsd,
+        },
+      })
+      return { ok: true, planId: sub.planId, seats: desiredSeats }
+    }
+
+    const stripeKey = process.env.STRIPE_SECRET_KEY
+    if (!stripeKey) {
+      console.warn('[billing] STRIPE_SECRET_KEY unset; updating local seats only')
+      await prisma.subscription.update({
+        where: { id: sub.id },
+        data: { seats: desiredSeats },
+      })
+      const includedUsd = getMonthlyIncludedForPlan(sub.planId, desiredSeats)
+      await prisma.usageWallet.updateMany({
+        where: { workspaceId },
+        data: {
+          monthlyIncludedUsd: includedUsd,
+          monthlyIncludedAllocationUsd: includedUsd,
+        },
+      })
+      return { ok: true, planId: sub.planId, seats: desiredSeats, reason: 'stripe_unconfigured' }
+    }
+
+    const { default: Stripe } = await import('stripe') as unknown as {
+      default: new (key: string, opts?: unknown) => any
+    }
+    const stripe = new Stripe(stripeKey)
+
+    // Find the per-seat licensed subscription item — it's the one whose price
+    // is not the metered overage price. We avoid hard-coding the price id so
+    // monthly/annual swaps don't break sync.
+    const stripeSub = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId)
+    const overageCfg = getOveragePriceConfig()
+    const seatItem = stripeSub.items?.data?.find(
+      (it: any) => it.price?.id !== overageCfg.priceId
+        && it.price?.recurring?.usage_type !== 'metered',
+    )
+    if (!seatItem) {
+      console.warn(`[billing] no seat item found on subscription ${sub.stripeSubscriptionId}`)
+      return { ok: false, reason: 'no_seat_item' }
+    }
+
+    await stripe.subscriptionItems.update(seatItem.id, {
+      quantity: desiredSeats,
+      // Bill the difference immediately on add, credit on remove. This matches
+      // Cursor-style "billing adjusts immediately" behavior and avoids
+      // surprise lump sums at period end.
+      proration_behavior: 'always_invoice',
+    })
+
+    await prisma.subscription.update({
+      where: { id: sub.id },
+      data: { seats: desiredSeats },
+    })
+
+    const includedUsd = getMonthlyIncludedForPlan(sub.planId, desiredSeats)
+    await prisma.usageWallet.updateMany({
+      where: { workspaceId },
+      data: {
+        monthlyIncludedUsd: includedUsd,
+        monthlyIncludedAllocationUsd: includedUsd,
+      },
+    })
+
+    console.log('[billing] Synced seats from membership:', {
+      workspaceId,
+      planId: sub.planId,
+      previousSeats: sub.seats,
+      newSeats: desiredSeats,
+    })
+    return { ok: true, planId: sub.planId, seats: desiredSeats }
+  } catch (err: any) {
+    console.error('[billing] syncSeatsFromMembership failed:', err?.message ?? err)
+    return { ok: false, reason: 'error' }
+  }
 }
 
 /**

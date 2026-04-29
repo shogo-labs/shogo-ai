@@ -72,7 +72,7 @@ export const PRO_FEATURES = [
   '$20 of monthly usage per seat',
   '$0.50 of daily usage (up to $3/month)',
   'All AI models',
-  'Opt-in usage-based pricing for overage',
+  'Auto-billed overage in $100→$500 trust blocks (cap optional)',
   'Unlimited domains',
   'Custom domains',
   'Remove branding',
@@ -138,13 +138,19 @@ export function getIncludedUsdForPlan(planId: string | undefined, seats: number 
 /**
  * Compute "total capacity" for the "remaining / total" usage indicator.
  * Prefers the wallet's locked allocation when present.
+ *
+ * Uses a named-argument object to prevent positional confusion between
+ * `seats` (an integer) and `remainingTotal` (a USD balance) — historic
+ * positional callers passed the remaining balance as `seats`, which
+ * produced absurd capacity totals (e.g. `$40.50 / $1,600.50`).
  */
-export function getIncludedUsdCapacityForDisplay(
-  planId: string | undefined,
-  seats: number,
-  remainingTotal: number | undefined,
-  monthlyIncludedAllocationUsd?: number,
-): number {
+export function getIncludedUsdCapacityForDisplay(opts: {
+  planId: string | undefined
+  seats: number
+  remainingTotal?: number
+  monthlyIncludedAllocationUsd?: number
+}): number {
+  const { planId, seats, remainingTotal, monthlyIncludedAllocationUsd } = opts
   if (monthlyIncludedAllocationUsd && monthlyIncludedAllocationUsd > 0) {
     return monthlyIncludedAllocationUsd + DAILY_INCLUDED_USD
   }
