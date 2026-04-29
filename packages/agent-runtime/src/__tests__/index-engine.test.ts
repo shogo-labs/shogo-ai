@@ -13,7 +13,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
-import { IndexEngine, createCodeSource, createFilesSource, type IndexEngineConfig, type ScanSource } from '../index-engine'
+import { IndexEngine, EmbeddingCache, createCodeSource, createFilesSource, type IndexEngineConfig, type ScanSource } from '../index-engine'
 
 const TEST_DIR = '/tmp/test-index-engine-unit'
 const CODE_DIR = TEST_DIR
@@ -322,5 +322,63 @@ describe('IndexEngine: source configuration', () => {
     expect(db).toBeDefined()
     const result = db.prepare('SELECT 1 as one').get() as { one: number }
     expect(result.one).toBe(1)
+  })
+})
+
+// ============================================================================
+// Embedding LRU Cache
+// ============================================================================
+
+describe('EmbeddingCache', () => {
+  test('returns undefined for cache miss', () => {
+    const cache = new EmbeddingCache(4)
+    expect(cache.get('unknown')).toBeUndefined()
+  })
+
+  test('stores and retrieves embeddings', () => {
+    const cache = new EmbeddingCache(4)
+    const vec = new Float32Array([1, 2, 3])
+    cache.set('hello', vec)
+    expect(cache.get('hello')).toBe(vec)
+  })
+
+  test('evicts oldest entry when capacity is exceeded', () => {
+    const cache = new EmbeddingCache(2)
+    cache.set('a', new Float32Array([1]))
+    cache.set('b', new Float32Array([2]))
+    cache.set('c', new Float32Array([3]))
+
+    expect(cache.get('a')).toBeUndefined()
+    expect(cache.get('b')).toBeDefined()
+    expect(cache.get('c')).toBeDefined()
+  })
+
+  test('accessing an entry refreshes its position', () => {
+    const cache = new EmbeddingCache(2)
+    cache.set('a', new Float32Array([1]))
+    cache.set('b', new Float32Array([2]))
+
+    cache.get('a')
+
+    cache.set('c', new Float32Array([3]))
+
+    expect(cache.get('a')).toBeDefined()
+    expect(cache.get('b')).toBeUndefined()
+    expect(cache.get('c')).toBeDefined()
+  })
+
+  test('overwriting a key does not grow the cache', () => {
+    const cache = new EmbeddingCache(2)
+    cache.set('a', new Float32Array([1]))
+    cache.set('b', new Float32Array([2]))
+
+    const updated = new Float32Array([10])
+    cache.set('a', updated)
+
+    cache.set('c', new Float32Array([3]))
+
+    expect(cache.get('a')).toBe(updated)
+    expect(cache.get('b')).toBeUndefined()
+    expect(cache.get('c')).toBeDefined()
   })
 })
