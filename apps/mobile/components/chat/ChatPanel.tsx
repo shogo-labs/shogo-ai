@@ -151,6 +151,13 @@ type OptimisticUserInput = {
   files?: FileAttachment[]
 }
 
+export type QueuedMessage = {
+  id: string
+  content: string
+  files?: FileAttachment[]
+  selectedModel?: string
+}
+
 function buildOptimisticUserMessage(input: OptimisticUserInput, id = "optimistic-user-pending"): UIMessage {
   const parts: any[] = []
   const text = input.content.trim()
@@ -601,6 +608,17 @@ export function clearChatPanelMessageCache(): void {
   sessionMessageCache.clear()
 }
 
+// Per-session queued-message cache. Survives ChatPanel unmount/remount during
+// navigation so users don't lose what they've typed and queued. Keyed by
+// sessionId; cleared on explicit `clearChatPanelQueueCache()` or whenever the
+// queue for a session drains naturally (delete, send, edit-out).
+const sessionQueueCache = new Map<string, QueuedMessage[]>()
+
+/** Clear the in-memory per-session queued-message cache (e.g. on logout). */
+export function clearChatPanelQueueCache(): void {
+  sessionQueueCache.clear()
+}
+
 function normalizePlanFilepath(filepath?: string | null): string | undefined {
   if (!filepath) return undefined
   const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
@@ -1013,13 +1031,9 @@ export const ChatPanel = observer(function ChatPanel({
     )
   }
 
-  type QueuedMessage = {
-    id: string
-    content: string
-    files?: FileAttachment[]
-    selectedModel?: string
-  }
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>(() =>
+    currentSessionId ? sessionQueueCache.get(currentSessionId) ?? [] : []
+  )
   const isProcessingQueueRef = useRef(false)
 
   const sessionContextUsage = (currentSession as any)?.contextUsageTokens
@@ -3062,14 +3076,31 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
 
+  // Hydrate the queue for the active session from the per-session cache when
+  // the session changes. Previously this effect *cleared* the queue on every
+  // session switch, which also wiped queued messages the user had just typed
+  // (and lost them on any navigation that remounts ChatPanel). The cache is
+  // updated by the effect below whenever `messageQueue` changes, so switching
+  // back to a session restores its pending queue.
   useEffect(() => {
-    if (messageQueue.length > 0) {
-      setMessageQueue([])
-      isProcessingQueueRef.current = false
-    }
+    const cached = currentSessionId
+      ? sessionQueueCache.get(currentSessionId) ?? []
+      : []
+    setMessageQueue(cached)
+    isProcessingQueueRef.current = false
     setOptimisticUserInput(null)
     lastNonEmptyMessagesRef.current = []
   }, [currentSessionId])
+
+  // Mirror the queue into the per-session cache so it survives remounts.
+  useEffect(() => {
+    if (!currentSessionId) return
+    if (messageQueue.length === 0) {
+      sessionQueueCache.delete(currentSessionId)
+    } else {
+      sessionQueueCache.set(currentSessionId, messageQueue)
+    }
+  }, [currentSessionId, messageQueue])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
     setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
@@ -3088,6 +3119,28 @@ export const ChatPanel = observer(function ChatPanel({
           ;[newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]]
         }
         return newQueue
+      })
+    },
+    []
+  )
+
+  // Pull a queued message back into the input as a draft so the user can
+  // tweak the text/attachments and re-send. We remove the original entry
+  // immediately so re-submitting just appends a fresh queue item rather than
+  // duplicating the in-flight one.
+  const handleEditQueuedMessage = useCallback(
+    (messageId: string) => {
+      let target: QueuedMessage | undefined
+      setMessageQueue((queue) => {
+        target = queue.find((m) => m.id === messageId)
+        if (!target) return queue
+        return queue.filter((m) => m.id !== messageId)
+      })
+      if (!target) return
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: target.content,
+        files: target.files,
       })
     },
     []
@@ -3858,6 +3911,7 @@ export const ChatPanel = observer(function ChatPanel({
               queuedMessages={messageQueue}
               onRemoveQueuedMessage={handleRemoveQueuedMessage}
               onReorderQueuedMessage={handleReorderQueuedMessage}
+              onEditQueuedMessage={handleEditQueuedMessage}
               interactionMode={interactionMode}
               onInteractionModeChange={handleInteractionModeChange}
               contextUsage={contextUsage}

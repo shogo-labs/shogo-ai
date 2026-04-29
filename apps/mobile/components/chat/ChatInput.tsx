@@ -53,6 +53,7 @@ import {
   ChevronDown,
   ChevronUp,
   Trash2,
+  Pencil,
   Bot,
   ClipboardList,
   MessageCircleQuestion,
@@ -180,6 +181,7 @@ export interface ChatInputProps {
   queuedMessages?: QueuedMessage[]
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
+  onEditQueuedMessage?: (messageId: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
@@ -202,6 +204,7 @@ export function ChatInput({
   queuedMessages = [],
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
+  onEditQueuedMessage,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
   contextUsage,
@@ -227,6 +230,7 @@ export function ChatInput({
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
+  const [hoveredQueuedId, setHoveredQueuedId] = useState<string | null>(null)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
@@ -713,61 +717,127 @@ export function ChatInput({
           </Pressable>
           {queueExpanded && (
             <View className="border-t border-border/60">
-              {queuedMessages.map((msg, index) => (
-                <View
-                  key={msg.id}
-                  className="flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0"
-                >
-                  <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
-                  <View className="flex-1 min-w-0">
-                    <Text className="text-xs text-foreground" numberOfLines={1}>
-                      {msg.content ||
-                        (msg.files && msg.files.length > 0
-                          ? `${msg.files.length} file(s)`
-                          : "Empty message")}
-                    </Text>
-                  </View>
-                  <View className="flex-row items-center gap-0.5">
-                    {onReorderQueuedMessage && queuedMessages.length > 1 && (
-                      <>
-                        {index > 0 && (
-                          <Pressable
-                            onPress={() => onReorderQueuedMessage(msg.id, "up")}
-                            className="h-6 w-6 items-center justify-center"
-                          >
-                            <ChevronUp
-                              className="h-3 w-3 text-muted-foreground"
-                              size={12}
-                            />
-                          </Pressable>
-                        )}
-                        {index < queuedMessages.length - 1 && (
-                          <Pressable
-                            onPress={() => onReorderQueuedMessage(msg.id, "down")}
-                            className="h-6 w-6 items-center justify-center"
-                          >
-                            <ChevronDown
-                              className="h-3 w-3 text-muted-foreground"
-                              size={12}
-                            />
-                          </Pressable>
-                        )}
-                      </>
+              {queuedMessages.map((msg, index) => {
+                const files = msg.files ?? []
+                const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
+                const otherFiles = files.filter((f) => !f.type?.startsWith("image/"))
+                const previewImage = imageFiles[0]
+                const trimmedContent = msg.content?.trim() ?? ""
+                const attachmentLabel =
+                  files.length > 0
+                    ? `${files.length} ${files.length === 1 ? "attachment" : "attachments"}`
+                    : ""
+                const primaryText = trimmedContent
+                  ? trimmedContent
+                  : attachmentLabel || "Empty message"
+                const isHovered = hoveredQueuedId === msg.id
+                const showActions = Platform.OS !== "web" || isHovered
+                return (
+                  <Pressable
+                    key={msg.id}
+                    onPress={() => onEditQueuedMessage?.(msg.id)}
+                    onHoverIn={() => setHoveredQueuedId(msg.id)}
+                    onHoverOut={() =>
+                      setHoveredQueuedId((prev) => (prev === msg.id ? null : prev))
+                    }
+                    accessibilityLabel="Queued message"
+                    className={cn(
+                      "flex-row items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-b-0",
+                      isHovered && Platform.OS === "web" && "bg-muted/40"
                     )}
-                    {onRemoveQueuedMessage && (
-                      <Pressable
-                        onPress={() => onRemoveQueuedMessage(msg.id)}
-                        className="h-6 w-6 items-center justify-center"
-                      >
-                        <Trash2
-                          className="h-3 w-3 text-muted-foreground"
-                          size={12}
-                        />
-                      </Pressable>
+                  >
+                    <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
+                    {previewImage && (
+                      <Image
+                        source={{ uri: previewImage.dataUrl }}
+                        className="h-7 w-7 rounded border border-border flex-shrink-0"
+                        resizeMode="cover"
+                      />
                     )}
-                  </View>
-                </View>
-              ))}
+                    <View className="flex-1 min-w-0">
+                      <Text className="text-xs text-foreground" numberOfLines={1}>
+                        {primaryText}
+                      </Text>
+                      {trimmedContent && files.length > 0 && (
+                        <View className="flex-row items-center gap-1 mt-0.5">
+                          <ImageIcon
+                            className="h-3 w-3 text-muted-foreground"
+                            size={10}
+                          />
+                          <Text
+                            className="text-[10px] text-muted-foreground"
+                            numberOfLines={1}
+                          >
+                            {imageFiles.length > 0 && otherFiles.length > 0
+                              ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"} + ${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`
+                              : imageFiles.length > 0
+                                ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"}`
+                                : `${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    {showActions && (
+                      <View className="flex-row items-center gap-0.5">
+                      {onReorderQueuedMessage && queuedMessages.length > 1 && (
+                        <>
+                          {index > 0 && (
+                            <Pressable
+                              accessibilityLabel="Move queued message up"
+                              onPress={() => onReorderQueuedMessage(msg.id, "up")}
+                              className="h-6 w-6 items-center justify-center"
+                            >
+                              <ChevronUp
+                                className="h-3 w-3 text-muted-foreground"
+                                size={12}
+                              />
+                            </Pressable>
+                          )}
+                          {index < queuedMessages.length - 1 && (
+                            <Pressable
+                              accessibilityLabel="Move queued message down"
+                              onPress={() =>
+                                onReorderQueuedMessage(msg.id, "down")
+                              }
+                              className="h-6 w-6 items-center justify-center"
+                            >
+                              <ChevronDown
+                                className="h-3 w-3 text-muted-foreground"
+                                size={12}
+                              />
+                            </Pressable>
+                          )}
+                        </>
+                      )}
+                      {onEditQueuedMessage && (
+                        <Pressable
+                          accessibilityLabel="Edit queued message"
+                          onPress={() => onEditQueuedMessage(msg.id)}
+                          className="h-6 w-6 items-center justify-center"
+                        >
+                          <Pencil
+                            className="h-3 w-3 text-muted-foreground"
+                            size={12}
+                          />
+                        </Pressable>
+                      )}
+                      {onRemoveQueuedMessage && (
+                        <Pressable
+                          accessibilityLabel="Delete queued message"
+                          onPress={() => onRemoveQueuedMessage(msg.id)}
+                          className="h-6 w-6 items-center justify-center"
+                        >
+                          <Trash2
+                            className="h-3 w-3 text-muted-foreground"
+                            size={12}
+                          />
+                        </Pressable>
+                      )}
+                      </View>
+                    )}
+                  </Pressable>
+                )
+              })}
             </View>
           )}
         </View>
