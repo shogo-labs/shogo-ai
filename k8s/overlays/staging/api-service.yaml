@@ -317,8 +317,14 @@ spec:
               value: "3600000"
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
+            # 30 min: needs to be longer than typical user-think-time
+            # between chat turns. With 10 min users would idle out while
+            # reading/typing the next message and the next visit hit a
+            # cold start, which (combined with the activator's hardcoded
+            # 5-minute request timeout) was producing the
+            # `eof-without-turn-complete` log lines.
             - name: PROMOTED_POD_IDLE_TIMEOUT_MS
-              value: "600000"
+              value: "1800000"
             - name: LOAD_TEST_SECRET
               valueFrom:
                 secretKeyRef:
