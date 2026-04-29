@@ -5363,12 +5363,9 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
           .map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
 
-        if (errors.length > 0) {
-          totalErrors += errors.length
-          files.push({ path: relPath, ok: false, errors })
-        } else {
-          files.push({ path: relPath, ok: true, errors: [] })
-        }
+        if (errors.length === 0) continue
+        totalErrors += errors.length
+        files.push({ path: relPath, ok: false, errors })
       }
 
       if (files.length === 0) {

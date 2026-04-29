@@ -30,6 +30,12 @@ function randomPort(): number {
 function writeRoutableServer(serverDir: string, port: number, routes: string[] = []): void {
   mkdirSync(serverDir, { recursive: true })
   mkdirSync(join(serverDir, 'generated'), { recursive: true })
+  // Pre-create node_modules so SkillServerManager.installDeps() short-circuits
+  // (it returns early when the directory already exists). This mirrors what
+  // the warm-pool prewarm or the baked runtime template guarantees in
+  // production but doesn't exist in local test environments. The stub server
+  // we write below only uses Bun built-ins, so an empty node_modules is fine.
+  mkdirSync(join(serverDir, 'node_modules'), { recursive: true })
 
   if (!existsSync(join(serverDir, 'custom-routes.ts'))) {
     writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
@@ -74,6 +80,8 @@ Bun.serve({
 function writeHealthOnlyServer(serverDir: string, port: number): void {
   mkdirSync(serverDir, { recursive: true })
   mkdirSync(join(serverDir, 'generated'), { recursive: true })
+  // See note in writeRoutableServer — short-circuits installDeps() locally.
+  mkdirSync(join(serverDir, 'node_modules'), { recursive: true })
 
   if (!existsSync(join(serverDir, 'custom-routes.ts'))) {
     writeFileSync(join(serverDir, 'custom-routes.ts'), "export default { routes: [] }\n", 'utf-8')
@@ -1262,5 +1270,135 @@ describe('SkillServerManager — deleted custom-routes.ts recovery', () => {
     expect(content).toBe(userContent)
 
     await manager.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 16. prewarmDeps — warm-pool boot path
+// ---------------------------------------------------------------------------
+//
+// `SkillServerManager.prewarmDeps` is called during warm-pool pod boot to copy
+// the skill-server template `node_modules` into the workspace BEFORE a project
+// claims the pod. That way the ~270 MB / ~9 s sync cpSync is paid while the
+// pod is idle, not during the user's first chat. These tests verify:
+//
+//   - We don't touch the workspace when the baked template is missing
+//     (e.g. local dev without /app/templates) so calls are safe to make
+//     unconditionally from the pool pre-init path.
+//   - Repeat calls are no-ops once node_modules is in place.
+//   - When the template exists, the copy lands at the path the runtime
+//     expects (`<workspaceDir>/.shogo/server/node_modules`).
+//   - The follow-on `installDeps()` short-circuits — proving the warm-pool
+//     copy is reused on assignment, not redone.
+
+describe('SkillServerManager — prewarmDeps (warm-pool boot)', () => {
+  let workDir: string
+  let templateDir: string
+  const originalTemplateEnv = process.env.SKILL_SERVER_TEMPLATE_DIR
+
+  beforeEach(() => {
+    workDir = makeTempDir()
+    templateDir = makeTempDir()
+  })
+
+  afterEach(() => {
+    if (originalTemplateEnv === undefined) {
+      delete process.env.SKILL_SERVER_TEMPLATE_DIR
+    } else {
+      process.env.SKILL_SERVER_TEMPLATE_DIR = originalTemplateEnv
+    }
+    rmSync(workDir, { recursive: true, force: true })
+    rmSync(templateDir, { recursive: true, force: true })
+  })
+
+  test('returns false and skips when template is missing (safe in local dev)', () => {
+    process.env.SKILL_SERVER_TEMPLATE_DIR = join(templateDir, 'does-not-exist')
+
+    const result = SkillServerManager.prewarmDeps(workDir)
+
+    expect(result).toBe(false)
+    expect(existsSync(join(workDir, '.shogo', 'server', 'node_modules'))).toBe(false)
+  })
+
+  test('returns false and is idempotent when node_modules already exists', () => {
+    const templateModules = join(templateDir, 'node_modules')
+    mkdirSync(templateModules, { recursive: true })
+    writeFileSync(join(templateModules, 'marker'), 'template', 'utf-8')
+    process.env.SKILL_SERVER_TEMPLATE_DIR = templateDir
+
+    const serverDir = join(workDir, '.shogo', 'server')
+    const existingModules = join(serverDir, 'node_modules')
+    mkdirSync(existingModules, { recursive: true })
+    writeFileSync(join(existingModules, 'sentinel'), 'pre-existing', 'utf-8')
+
+    const result = SkillServerManager.prewarmDeps(workDir)
+
+    expect(result).toBe(false)
+    // Pre-existing tree is preserved, NOT clobbered by a redundant copy.
+    expect(readFileSync(join(existingModules, 'sentinel'), 'utf-8')).toBe('pre-existing')
+    expect(existsSync(join(existingModules, 'marker'))).toBe(false)
+  })
+
+  test('copies template node_modules into <workspace>/.shogo/server/node_modules', () => {
+    const templateModules = join(templateDir, 'node_modules')
+    mkdirSync(join(templateModules, 'hono'), { recursive: true })
+    writeFileSync(join(templateModules, 'hono', 'package.json'), '{"name":"hono","version":"4.0.0"}', 'utf-8')
+    mkdirSync(join(templateModules, '.bin'), { recursive: true })
+    writeFileSync(join(templateModules, '.bin', 'prisma'), '#!/usr/bin/env bun\n', 'utf-8')
+    process.env.SKILL_SERVER_TEMPLATE_DIR = templateDir
+
+    const result = SkillServerManager.prewarmDeps(workDir)
+
+    expect(result).toBe(true)
+    const seededModules = join(workDir, '.shogo', 'server', 'node_modules')
+    expect(existsSync(seededModules)).toBe(true)
+    expect(readFileSync(join(seededModules, 'hono', 'package.json'), 'utf-8'))
+      .toBe('{"name":"hono","version":"4.0.0"}')
+    expect(existsSync(join(seededModules, '.bin', 'prisma'))).toBe(true)
+  })
+
+  test('subsequent installDeps() short-circuits after prewarmDeps (the optimization)', () => {
+    const templateModules = join(templateDir, 'node_modules')
+    mkdirSync(join(templateModules, 'hono'), { recursive: true })
+    writeFileSync(join(templateModules, 'hono', 'package.json'), '{"name":"hono"}', 'utf-8')
+    process.env.SKILL_SERVER_TEMPLATE_DIR = templateDir
+
+    expect(SkillServerManager.prewarmDeps(workDir)).toBe(true)
+
+    const seededModules = join(workDir, '.shogo', 'server', 'node_modules')
+    const seededMarker = join(seededModules, 'shogo-warm-pool-marker')
+    writeFileSync(seededMarker, 'placed-by-prewarm', 'utf-8')
+
+    const manager = new SkillServerManager({ workspaceDir: workDir, port: randomPort() })
+    ;(manager as any).installDeps()
+
+    // installDeps() must short-circuit on the existing node_modules and leave
+    // our warm-pool marker untouched. If it had re-run the cpSync, the marker
+    // wouldn't survive (cpSync overwrites cleanly per-file but doesn't leave
+    // file_paths that aren't in the source tree alone if `force: true` were
+    // ever introduced — this guards against a future regression there).
+    expect(readFileSync(seededMarker, 'utf-8')).toBe('placed-by-prewarm')
+  })
+
+  test('preserves project-specific files restored from S3 alongside prewarmed node_modules', () => {
+    // Simulates the warm-pool claim flow: prewarm runs first, then S3 sync
+    // writes the user's schema.prisma + custom-routes.ts into .shogo/server.
+    // The two should coexist — prewarm only ever touches node_modules.
+    const templateModules = join(templateDir, 'node_modules')
+    mkdirSync(join(templateModules, 'hono'), { recursive: true })
+    writeFileSync(join(templateModules, 'hono', 'index.js'), 'module.exports = {}', 'utf-8')
+    process.env.SKILL_SERVER_TEMPLATE_DIR = templateDir
+
+    expect(SkillServerManager.prewarmDeps(workDir)).toBe(true)
+
+    const serverDir = join(workDir, '.shogo', 'server')
+    const userSchema = 'datasource db {\n  provider = "sqlite"\n}\nmodel Client { id String @id }\n'
+    const userRoutes = "import { Hono } from 'hono'\nexport default new Hono().get('/x', (c) => c.text('user'))\n"
+    writeFileSync(join(serverDir, 'schema.prisma'), userSchema, 'utf-8')
+    writeFileSync(join(serverDir, 'custom-routes.ts'), userRoutes, 'utf-8')
+
+    expect(readFileSync(join(serverDir, 'schema.prisma'), 'utf-8')).toBe(userSchema)
+    expect(readFileSync(join(serverDir, 'custom-routes.ts'), 'utf-8')).toBe(userRoutes)
+    expect(existsSync(join(serverDir, 'node_modules', 'hono', 'index.js'))).toBe(true)
   })
 })

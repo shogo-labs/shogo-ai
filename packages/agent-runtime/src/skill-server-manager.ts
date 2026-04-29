@@ -33,7 +33,21 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 const SDK_CLI_PATH = join(MONOREPO_ROOT, 'packages', 'sdk', 'bin', 'shogo.ts')
 
 const LOG_PREFIX = 'skill-server'
-const SKILL_SERVER_TEMPLATE = '/app/templates/skill-server'
+const DEFAULT_SKILL_SERVER_TEMPLATE = '/app/templates/skill-server'
+
+/**
+ * Resolve the skill-server template directory. The default is the path baked
+ * into the runtime container image; the env override exists so tests (and
+ * local dev) can point at a stub template without needing the production
+ * filesystem layout. Mirrors `RUNTIME_TEMPLATE_DIR` in workspace-defaults.
+ *
+ * Resolved at call time (not import time) so test suites that mutate
+ * `process.env` between cases see the new value without re-importing.
+ */
+function getSkillServerTemplate(): string {
+  return process.env.SKILL_SERVER_TEMPLATE_DIR || DEFAULT_SKILL_SERVER_TEMPLATE
+}
+
 const DEFAULT_PORT = 4100
 const DEFAULT_HEALTH_CHECK_RETRIES = 10
 const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 500
@@ -491,7 +505,7 @@ export class SkillServerManager {
     const nodeModules = join(this.serverDir, 'node_modules')
     if (existsSync(nodeModules)) return
 
-    const templateModules = join(SKILL_SERVER_TEMPLATE, 'node_modules')
+    const templateModules = join(getSkillServerTemplate(), 'node_modules')
     if (existsSync(templateModules)) {
       console.log(`[${LOG_PREFIX}] Copying pre-installed dependencies...`)
       cpSync(templateModules, nodeModules, { recursive: true })
@@ -520,7 +534,7 @@ export class SkillServerManager {
     const nodeModules = join(serverDir, 'node_modules')
     if (existsSync(nodeModules)) return false
 
-    const templateModules = join(SKILL_SERVER_TEMPLATE, 'node_modules')
+    const templateModules = join(getSkillServerTemplate(), 'node_modules')
     if (!existsSync(templateModules)) return false
 
     mkdirSync(serverDir, { recursive: true })
