@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { ChevronDown, X } from "lucide-react-native";
 import { Terminal } from "./Terminal";
+import { Problems } from "./Problems";
 
-const TABS = ["Terminal", "Problems", "Output"] as const;
+const TABS = ["Terminal", "Problems"] as const;
 type TabId = (typeof TABS)[number];
 
 /**
- * VS Code-style bottom panel. Hosts Terminal / Problems / Output.
+ * VS Code-style bottom panel. Hosts Terminal / Problems.
  *
  * The panel's visibility is controlled from Workbench (⌘J / Activity Bar
  * terminal button). The Terminal tab is the default, and parents pass a
@@ -19,10 +20,13 @@ export function BottomPanel({
   projectId,
   newSessionNonce,
   onClose,
+  onReveal,
 }: {
   projectId: string | null | undefined;
   newSessionNonce: number;
   onClose: () => void;
+  /** Reveal a workspace file at (line, col). Wired by Workbench. */
+  onReveal?: (path: string, line: number, column: number) => void;
 }) {
   const [tab, setTab] = useState<TabId>("Terminal");
 
@@ -77,16 +81,13 @@ export function BottomPanel({
             onRequestClose={onClose}
           />
         </div>
-        {tab === "Problems" && (
-          <div className="h-full p-3 font-mono text-[12px] text-[#858585]">
-            No problems detected in workspace.
-          </div>
-        )}
-        {tab === "Output" && (
-          <div className="h-full p-3 font-mono text-[12px] text-[#858585]">
-            Output channel — nothing to show yet.
-          </div>
-        )}
+        <div className={`absolute inset-0 ${tab === "Problems" ? "" : "hidden"}`}>
+          <Problems
+            projectId={projectId}
+            visible={tab === "Problems"}
+            onReveal={onReveal}
+          />
+        </div>
       </div>
     </div>
   );
