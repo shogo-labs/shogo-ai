@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useMemo, useSyncExternalStore, useState, useCallback } from "react"
+import { useMemo, useSyncExternalStore, useState, useCallback, useEffect, useRef } from "react"
 import { View, Text, ScrollView, Pressable } from "react-native"
 import {
   Bot,
@@ -65,11 +65,18 @@ function PulsingDot() {
   )
 }
 
-function StreamPartsRenderer({ parts }: { parts: MessagePart[] }) {
+function StreamPartsRenderer({
+  parts,
+  mode = "full",
+}: {
+  parts: MessagePart[]
+  mode?: "latest" | "full"
+}) {
   if (parts.length === 0) return null
+  const visibleParts = mode === "latest" ? parts.slice(-1) : parts
   return (
     <View className="gap-2">
-      {parts.map((part) => {
+      {visibleParts.map((part) => {
         if (part.type === "text") {
           return (
             <View key={part.id}>
@@ -126,6 +133,25 @@ function AgentEntry({
     if (!data.instanceId) return
     stopSubagent(data.instanceId, toolId)
   }
+
+  const [showHistory, setShowHistory] = useState(false)
+  const partsScrollRef = useRef<ScrollView | null>(null)
+  const partsCount = data.parts.length
+
+  useEffect(() => {
+    if (!isExpanded) setShowHistory(false)
+  }, [isExpanded])
+
+  useEffect(() => {
+    if (!isExpanded || !showHistory) return
+    const id = requestAnimationFrame(() => {
+      partsScrollRef.current?.scrollToEnd({ animated: false })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [isExpanded, showHistory, partsCount])
+
+  const priorCount = Math.max(0, partsCount - 1)
+  const hasHistory = priorCount > 0
 
   return (
     <View className="rounded-lg border border-border/40 bg-muted/20 overflow-hidden">
@@ -187,8 +213,35 @@ function AgentEntry({
             </View>
           )}
           {data.parts.length > 0 ? (
-            <View className="pt-1">
-              <StreamPartsRenderer parts={data.parts} />
+            <View className="pt-1 gap-1.5">
+              {hasHistory && (
+                <Pressable
+                  onPress={() => setShowHistory((v) => !v)}
+                  className="flex-row items-center gap-1.5 px-1 py-1 active:opacity-70"
+                  accessibilityLabel={showHistory ? "Hide history" : `Show ${priorCount} prior step${priorCount === 1 ? "" : "s"}`}
+                >
+                  {showHistory ? (
+                    <ChevronDown className="text-muted-foreground/60" size={12} />
+                  ) : (
+                    <ChevronRight className="text-muted-foreground/60" size={12} />
+                  )}
+                  <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    {showHistory ? "Hide history" : `Show ${priorCount} prior step${priorCount === 1 ? "" : "s"}`}
+                  </Text>
+                </Pressable>
+              )}
+              <ScrollView
+                ref={partsScrollRef}
+                style={{ maxHeight: 360 }}
+                nestedScrollEnabled
+                contentContainerClassName="gap-2"
+                showsVerticalScrollIndicator
+              >
+                <StreamPartsRenderer
+                  parts={data.parts}
+                  mode={showHistory ? "full" : "latest"}
+                />
+              </ScrollView>
             </View>
           ) : isRunning ? (
             <View className="items-center justify-center py-4 gap-2">
