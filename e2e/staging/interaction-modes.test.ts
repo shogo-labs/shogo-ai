@@ -82,7 +82,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
 
     const suggestion = page.locator('[data-testid="plan-mode-suggestion"]')
     await expect(suggestion).toBeVisible({ timeout: 5_000 })
-    await expect(suggestion).toContainText("Switch to Plan mode")
+    await expect(suggestion).toContainText("Shogo suggests Plan")
 
     await page.locator('[data-testid="plan-mode-suggestion-switch"]').click()
 

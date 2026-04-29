@@ -79,6 +79,7 @@ import {
   PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS,
   shouldSuggestPlanMode,
 } from "./plan-mode-suggestion"
+import { PlanModeSuggestion } from "./PlanModeSuggestion"
 import {
   loadInteractionModePreference,
   saveInteractionModePreference,
@@ -3739,51 +3740,11 @@ export const ChatPanel = observer(function ChatPanel({
           {/* Input */}
           <View className="bg-transparent max-w-3xl w-full self-center mt-1">
             {pendingPlanModeSuggestion && (
-              <View
-                className="mb-2 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3"
-                testID="plan-mode-suggestion"
-                accessibilityRole="alert"
-              >
-                <View className="flex-row items-start gap-2">
-                  <AlertCircle className="mt-0.5 h-4 w-4 text-amber-400" size={16} />
-                  <View className="flex-1">
-                    <Text className="text-sm font-medium text-foreground">
-                      This looks like planning work. Switch to Plan mode?
-                    </Text>
-                    <Text
-                      className="mt-1 text-xs text-muted-foreground"
-                      accessibilityLiveRegion="polite"
-                    >
-                      We&apos;ll send this in Agent mode in{" "}
-                      {Math.max(1, planModeSuggestionSecondsLeft)}s unless you choose Plan.
-                    </Text>
-                  </View>
-                </View>
-                <View className="mt-3 flex-row flex-wrap justify-end gap-2">
-                  <Pressable
-                    onPress={() => handleResolvePlanModeSuggestion("agent")}
-                    className="min-h-10 justify-center rounded-md border border-border/70 px-3 py-2"
-                    testID="plan-mode-suggestion-continue"
-                    accessibilityRole="button"
-                    accessibilityLabel="Continue in Agent mode"
-                  >
-                    <Text className="text-xs font-medium text-muted-foreground">
-                      Continue in Agent
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => handleResolvePlanModeSuggestion("plan")}
-                    className="min-h-10 justify-center rounded-md bg-amber-500/20 px-3 py-2"
-                    testID="plan-mode-suggestion-switch"
-                    accessibilityRole="button"
-                    accessibilityLabel="Switch to Plan mode and send"
-                  >
-                    <Text className="text-xs font-medium text-amber-400">
-                      Switch to Plan
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
+              <PlanModeSuggestion
+                secondsLeft={planModeSuggestionSecondsLeft}
+                onContinueInAgent={() => handleResolvePlanModeSuggestion("agent")}
+                onSwitchToPlan={() => handleResolvePlanModeSuggestion("plan")}
+              />
             )}
             <ExecutionBadge />
             <ChatInput

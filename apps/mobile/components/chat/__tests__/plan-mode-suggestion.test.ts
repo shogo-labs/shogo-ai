@@ -39,16 +39,37 @@ describe("shouldSuggestPlanMode", () => {
     expect(
       shouldSuggestPlanMode("How does our mobile architecture handle chat session routing?")
     ).toBe(false)
+    expect(shouldSuggestPlanMode("How do I update the Prisma schema?")).toBe(false)
+    expect(shouldSuggestPlanMode("Can you explain how to implement auth?")).toBe(false)
     expect(
       shouldSuggestPlanMode("I do not want a plan, just explain the API workflow.")
     ).toBe(false)
+    expect(
+      shouldSuggestPlanMode("Don't switch to Plan mode for this auth workflow update.")
+    ).toBe(false)
+    expect(shouldSuggestPlanMode("What is Plan mode?")).toBe(false)
   })
 
   test("keeps boundary and command-shaped prompts conservative", () => {
     expect(shouldSuggestPlanMode("Implement auth")).toBe(false)
+    expect(shouldSuggestPlanMode("Implement the login button styling")).toBe(false)
+    expect(shouldSuggestPlanMode("Change the mobile login button color")).toBe(false)
     expect(shouldSuggestPlanMode("run the database migration")).toBe(false)
     expect(
       shouldSuggestPlanMode("run a step by step rollout plan for the database migration workflow")
+    ).toBe(true)
+  })
+
+  test("suggests for broad work with complexity signals", () => {
+    expect(
+      shouldSuggestPlanMode(
+        "Enhance the Plan mode suggestion UI and cross verify it against Cursor behavior."
+      )
+    ).toBe(true)
+    expect(
+      shouldSuggestPlanMode(
+        "Can you plan the migration from the old auth flow to the new API?"
+      )
     ).toBe(true)
   })
 })
