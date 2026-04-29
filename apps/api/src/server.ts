@@ -35,6 +35,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
+import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
@@ -2633,6 +2634,190 @@ app.post('/api/projects/:projectId/terminal/run', async (c) => {
   const router = terminalRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/terminal/run`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Diagnostics routes — IDE Problems tab (TS + ESLint + Vite build errors)
+// =============================================================================
+
+/**
+ * Race a promise against an AbortSignal so a client disconnect doesn't keep
+ * us blocked inside `getProjectPodUrl` (which has no signal parameter — it's
+ * called from too many places to change). On abort the promise rejects with
+ * a DOMException('AbortError') just like a `fetch` would.
+ */
+/**
+ * Project ids are surfaced into `path.join(workspacesDir, projectId)` and
+ * forwarded into the runtime URL. Reject anything that could escape the
+ * workspaces root or smuggle a path segment. Matches the cuid/uuid shapes
+ * we mint elsewhere — alphanumerics, hyphens, underscores only, length-bounded.
+ */
+function isSafeProjectId(id: string): boolean {
+  return typeof id === 'string'
+    && id.length > 0
+    && id.length <= 128
+    && /^[A-Za-z0-9_-]+$/.test(id)
+}
+
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise
+      .then((value) => { signal.removeEventListener('abort', onAbort); resolve(value) })
+      .catch((err) => { signal.removeEventListener('abort', onAbort); reject(err) })
+  })
+}
+//
+// Architecture mirrors the terminal block above: in Kubernetes we proxy to the
+// project's runtime pod with `x-runtime-token` (= deriveRuntimeToken(projectId),
+// which equals the pod's RUNTIME_AUTH_SECRET), and locally we run the same
+// `diagnosticsRoutes` factory in-process. The pod side mounts the matching
+// `runtimeDiagnosticsRoutes` BEFORE the SPA static fallback and registers
+// `/diagnostics` in `authPrefixes` — see PR #458 for the staging-404 trap
+// this avoids.
+
+/**
+ * Forward an upstream `fetch` Response to the client, converting non-JSON
+ * 5xx errors (e.g. Knative HTML 503) into structured JSON the mobile app
+ * can render. Mirrors the inline blocks in the terminal proxies above —
+ * extracted for the diagnostics handlers to keep them readable. We didn't
+ * touch the terminal callers to avoid widening this PR's blast radius.
+ */
+async function forwardDiagnosticsResponse(c: any, response: Response, label: string): Promise<Response> {
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const headers = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          headers.set(key, value)
+        }
+      })
+      return new Response(response.body, { status: response.status, headers })
+    }
+    const errorCode = response.status === 503 ? 'service_starting'
+      : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+    if (response.status !== 503) {
+      console.error(`[DiagnosticsProxy] ${label} upstream error ${response.status}`)
+    }
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (response.status === 503) headers.set('Retry-After', '5')
+    return c.json({
+      error: { code: errorCode, message: `Diagnostics service unavailable (${response.status})` },
+    }, response.status as any)
+  }
+  const headers = new Headers()
+  response.headers.forEach((value, key) => {
+    if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+      headers.set(key, value)
+    }
+  })
+  return new Response(response.body, { status: response.status, headers })
+}
+
+// GET /api/projects/:projectId/diagnostics
+app.get('/api/projects/:projectId/diagnostics', async (c) => {
+  const projectId = c.req.param('projectId')
+  // Containment: the path is later joined with workspacesDir; reject obvious traversal/escape.
+  if (!isSafeProjectId(projectId)) {
+    return c.json({ error: { code: 'invalid_project_id', message: 'Invalid project id' } }, 400)
+  }
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
+      // Forward the original query string verbatim (?source=, ?since=).
+      const inUrl = new URL(c.req.url)
+      const target = new URL(`${podUrl}/diagnostics`)
+      inUrl.searchParams.forEach((v, k) => target.searchParams.set(k, v))
+      const response = await fetch(target, {
+        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        signal: c.req.raw.signal,
+      })
+      return forwardDiagnosticsResponse(c, response, 'GET /diagnostics')
+    } catch (error: any) {
+      // Client cancellation — return 499 (nginx convention) without logging an
+      // error. Don't burn a "proxy_error" toast on a normal navigation away.
+      if (error?.name === 'AbortError') {
+        return c.json({ error: { code: 'aborted', message: 'Request aborted' } }, 499 as any)
+      }
+      const isPodNotReady = error?.message?.includes('not ready')
+        || error?.message?.includes('not found')
+        || error?.message?.includes('starting')
+      if (isPodNotReady) {
+        return c.json({ error: { code: 'service_starting', message: 'Project runtime is starting...' } }, 503)
+      }
+      console.error('[DiagnosticsProxy] GET error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error?.message ?? 'Failed to get diagnostics' } }, 502)
+    }
+  }
+
+  // Local: in-process router
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = diagnosticsRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/diagnostics`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+// POST /api/projects/:projectId/diagnostics/refresh
+app.post('/api/projects/:projectId/diagnostics/refresh', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!isSafeProjectId(projectId)) {
+    return c.json({ error: { code: 'invalid_project_id', message: 'Invalid project id' } }, 400)
+  }
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
+      const target = `${podUrl}/diagnostics/refresh`
+      const body = await c.req.text()
+      const response = await fetch(target, {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': deriveRuntimeToken(projectId),
+          'content-type': c.req.header('content-type') ?? 'application/json',
+        },
+        body,
+        signal: c.req.raw.signal,
+      })
+      return forwardDiagnosticsResponse(c, response, 'POST /diagnostics/refresh')
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return c.json({ error: { code: 'aborted', message: 'Request aborted' } }, 499 as any)
+      }
+      const isPodNotReady = error?.message?.includes('not ready')
+        || error?.message?.includes('not found')
+        || error?.message?.includes('starting')
+      if (isPodNotReady) {
+        return c.json({ error: { code: 'service_starting', message: 'Project runtime is starting...' } }, 503)
+      }
+      console.error('[DiagnosticsProxy] POST error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error?.message ?? 'Failed to refresh diagnostics' } }, 502)
+    }
+  }
+
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = diagnosticsRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/diagnostics/refresh`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
