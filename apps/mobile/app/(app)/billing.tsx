@@ -106,15 +106,15 @@ export default observer(function BillingPage() {
     return () => { cancelled = true }
   }, [http])
 
-  const subSeats = (subscription as { seats?: number } | null)?.seats ?? 1
+  const subSeats = subscription?.seats ?? 1
   const usdRemaining =
     effectiveBalance?.total ?? getIncludedUsdForPlan(subscription?.planId, subSeats)
-  const usdTotal = getIncludedUsdCapacityForDisplay(
-    subscription?.planId,
-    subSeats,
-    effectiveBalance?.total,
-    effectiveBalance?.monthlyIncludedAllocationUsd,
-  )
+  const usdTotal = getIncludedUsdCapacityForDisplay({
+    planId: subscription?.planId,
+    seats: subSeats,
+    remainingTotal: effectiveBalance?.total,
+    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
+  })
 
   const planName = subscription
     ? `${getPlanDisplayName(subscription.planId)} Plan`
@@ -352,7 +352,7 @@ export default observer(function BillingPage() {
                 <View className="flex-row items-center gap-2">
                   <Info size={16} className="text-muted-foreground" />
                   <Text className="text-sm text-muted-foreground">
-                    Usage-based pricing enabled{effectiveBalance.overageHardLimitUsd != null
+                    Overage charges in escalating trust blocks ($100 → $500) once included usage runs out{effectiveBalance.overageHardLimitUsd != null
                       ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
                       : ''}
                     {effectiveBalance.overageAccumulatedUsd > 0

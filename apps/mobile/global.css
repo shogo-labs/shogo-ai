@@ -199,6 +199,16 @@
   --color-brand-landing: 226 121 39;
 }
 
+/* Tailwind's `animate-spin` doesn't set a transform-origin, so on SVG
+   elements (which default to `transform-origin: 0 0` + `transform-box:
+   view-box`) the icon rotates around the top-left of the viewBox
+   instead of its center. Force the rotation to pivot around the visual
+   center for any spinning icon. */
+.animate-spin {
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
 /* Override browser default blue focus ring with theme accent on all inputs/textareas */
 input:focus,
 textarea:focus {

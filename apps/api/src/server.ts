@@ -5803,6 +5803,11 @@ app.post('/api/workspaces/:id/leave', async (c) => {
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
 
+  // Active-seat billing: leaving a workspace removes a paid seat.
+  billingService.syncSeatsFromMembership(workspaceId).catch((err) =>
+    console.error('[Billing] /leave seat sync failed:', err.message ?? err),
+  )
+
   const [leavingUser, workspace] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { email: true } }),
     prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
@@ -6001,6 +6006,14 @@ app.post('/api/invite-links/:token/accept', async (c) => {
 
   // Increment use count
   await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
+
+  // Active-seat billing: workspace-level invite-link acceptance must bump
+  // the Stripe seat quantity (project-only memberships don't bill seats).
+  if (memberData.workspaceId && !memberData.projectId) {
+    billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err) =>
+      console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
+    )
+  }
 
   // Send notification emails (non-blocking — errors are logged internally)
   const baseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || ''
