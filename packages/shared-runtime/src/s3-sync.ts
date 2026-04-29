@@ -36,7 +36,61 @@ import { readdir, readFile, writeFile, mkdir, stat, unlink, rm } from 'fs/promis
 import { join, relative, dirname } from 'path'
 import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
+import { spawn } from 'child_process'
 import * as tar from 'tar'
+
+/**
+ * Extract a `.tar.gz` archive without blocking the Node/Bun event loop.
+ *
+ * Why not `tar.extract` from `node-tar` directly?
+ *   For large archives (~130 MB / 30k+ files) the JS-side gunzip plus the
+ *   per-entry `writeFile` / `chmod` calls accumulate enough event-loop
+ *   work to starve the readiness handler. The Knative queue-proxy probes
+ *   `/ready` on a sub-second interval; a starved loop misses those probes
+ *   and the activator marks the pod NotReady, leaving the activator in
+ *   path with its hardcoded 5-minute request timeout — which was the root
+ *   cause of the `eof-without-turn-complete` chats in staging.
+ *
+ *   Spawning the system `tar` binary as a child process moves all of the
+ *   gunzip + write work off the JS thread; the parent only awaits the
+ *   process exit. We fall back to `node-tar` when the system binary is
+ *   missing (e.g. minimal containers).
+ */
+export async function extractTarFastNonBlocking(
+  archivePath: string,
+  cwd: string,
+): Promise<{ usedBinary: boolean }> {
+  return new Promise<{ usedBinary: boolean }>((resolve, reject) => {
+    const child = spawn('tar', ['-xzf', archivePath, '-C', cwd], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+
+    child.once('error', async (err: NodeJS.ErrnoException) => {
+      // ENOENT: no `tar` binary available — fall back to node-tar.
+      if (err.code === 'ENOENT') {
+        try {
+          await tar.extract({ file: archivePath, cwd, strip: 0 })
+          resolve({ usedBinary: false })
+        } catch (fallbackErr) {
+          reject(fallbackErr)
+        }
+        return
+      }
+      reject(err)
+    })
+
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve({ usedBinary: true })
+      } else {
+        reject(new Error(`tar -xzf exited with code ${code}: ${stderr.trim()}`))
+      }
+    })
+  })
+}
 
 // =============================================================================
 // Types
@@ -384,9 +438,9 @@ export class S3Sync {
     console.log(`[S3Sync] [downloadLayered] Writing temp file and extracting project archive...`)
     await writeFile(tempProject, projectData)
     const writeMs = Date.now() - extractStart
-    await tar.extract({ file: tempProject, cwd: this.config.localDir, strip: 0 })
+    const { usedBinary } = await extractTarFastNonBlocking(tempProject, this.config.localDir)
     const projectExtractMs = Date.now() - extractStart
-    console.log(`[S3Sync] [downloadLayered] Project archive extracted in ${projectExtractMs}ms (write: ${writeMs}ms, tar extract: ${projectExtractMs - writeMs}ms)`)
+    console.log(`[S3Sync] [downloadLayered] Project archive extracted in ${projectExtractMs}ms (write: ${writeMs}ms, tar extract: ${projectExtractMs - writeMs}ms, via=${usedBinary ? 'system-tar' : 'node-tar'})`)
     await unlink(tempProject).catch(() => {})
     this.stats.projectExtractMs = projectExtractMs
 
@@ -497,15 +551,17 @@ export class S3Sync {
     const downloadMs = Date.now() - depsStart
     console.log(`[S3Sync] [restoreDeps] Downloaded deps archive: ${this.formatBytes(depsData.length)} in ${downloadMs}ms (stream read: ${streamMs}ms)`)
 
-    // Extract deps
+    // Extract deps. Uses spawn('tar') so the JS event loop stays free
+    // while gunzip + the ~30k file writes happen in a child process —
+    // critical for keeping `/ready` probes responsive during cold start.
     const extractStart = Date.now()
     const tempDeps = join('/tmp', `deps-${lockfileHash}.tar.gz`)
     console.log(`[S3Sync] [restoreDeps] Extracting deps archive (${this.formatBytes(depsData.length)})...`)
     await writeFile(tempDeps, depsData)
     const writeMs = Date.now() - extractStart
-    await tar.extract({ file: tempDeps, cwd: this.config.localDir, strip: 0 })
+    const { usedBinary } = await extractTarFastNonBlocking(tempDeps, this.config.localDir)
     const extractMs = Date.now() - extractStart
-    console.log(`[S3Sync] [restoreDeps] Deps extracted in ${extractMs}ms (write: ${writeMs}ms, tar: ${extractMs - writeMs}ms)`)
+    console.log(`[S3Sync] [restoreDeps] Deps extracted in ${extractMs}ms (write: ${writeMs}ms, tar: ${extractMs - writeMs}ms, via=${usedBinary ? 'system-tar' : 'node-tar'})`)
     await unlink(tempDeps).catch(() => {})
 
     this.stats.depsCacheHit = true
@@ -550,9 +606,9 @@ export class S3Sync {
     console.log(`[S3Sync] [downloadLegacy] Extracting archive (${this.formatBytes(bodyArray.length)})...`)
     await writeFile(tempArchive, bodyArray)
     const writeMs = Date.now() - extractStart
-    await tar.extract({ file: tempArchive, cwd: this.config.localDir, strip: 0 })
+    const { usedBinary } = await extractTarFastNonBlocking(tempArchive, this.config.localDir)
     const extractTime = Date.now() - extractStart
-    console.log(`[S3Sync] [downloadLegacy] Extracted in ${extractTime}ms (write: ${writeMs}ms, tar: ${extractTime - writeMs}ms)`)
+    console.log(`[S3Sync] [downloadLegacy] Extracted in ${extractTime}ms (write: ${writeMs}ms, tar: ${extractTime - writeMs}ms, via=${usedBinary ? 'system-tar' : 'node-tar'})`)
     await unlink(tempArchive).catch(() => {})
 
     const fileCount = await this.countFiles(this.config.localDir)

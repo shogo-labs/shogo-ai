@@ -220,8 +220,35 @@ const { app, state, logTiming } = await createRuntimeApp({
   }),
 })
 
-// Readiness probe
-app.get('/ready', (c) => c.json({ ready: true }))
+// Readiness probe.
+//
+// Returns 503 until either:
+//   1. The agent gateway has finished starting (full init path), OR
+//   2. The pool-mode warm pod has bound :8080 and is awaiting `/pool/assign`.
+//
+// Returning a fast 503 (instead of blocking on a healthy `200`) is what
+// lets the Knative queue-proxy distinguish "still booting" from "process
+// is hung" — the latter triggers the activator's 5-minute request
+// timeout, which was cutting in-flight chats with `eof-without-turn-complete`.
+app.get('/ready', (c) => {
+  const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
+  const gatewayReady = agentGateway != null
+  if (poolModeUnassigned || gatewayReady) {
+    return c.json({
+      ready: true,
+      gateway: gatewayReady,
+      poolMode: poolModeUnassigned,
+    })
+  }
+  return c.json(
+    {
+      ready: false,
+      reason: 'agent-gateway not started',
+      workspace: workspaceStatus,
+    },
+    503,
+  )
+})
 
 // =============================================================================
 // Agent Workspace Bootstrap

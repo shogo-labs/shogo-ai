@@ -165,4 +165,59 @@ describe('Proxy Billing Session', () => {
 
     expect(consumeUsageCalls.length).toBe(1)
   })
+
+  // -------------------------------------------------------------------------
+  // discardPartial — added when /agent/chat streams that EOF without ever
+  // emitting `data-turn-complete` started showing up in staging logs as
+  // "PARTIAL" persists. The route now passes `discardPartial: true` so the
+  // user is not billed for a turn the upstream activator timed out on.
+  // -------------------------------------------------------------------------
+  describe('closeSession({ discardPartial })', () => {
+    test('drops the session without invoking consumeUsage', async () => {
+      openSession('proj-discard', 'ws-d', 'user-d')
+      accumulateUsage('proj-discard', 'claude-sonnet-4-5', 5000, 2500)
+
+      const result = await closeSession('proj-discard', { discardPartial: true })
+
+      // Tokens are reported (so callers can log them) but no money was charged.
+      expect(result.totalTokens).toBe(7500)
+      expect(result.billedUsd).toBe(0)
+      expect(result.rawUsd).toBe(0)
+
+      // Critical: nothing was sent to the billing service.
+      expect(consumeUsageCalls.length).toBe(0)
+
+      // Session is removed so the next openSession on the same project is fresh.
+      expect(hasSession('proj-discard')).toBe(false)
+    })
+
+    test('discardPartial=false (default) still charges normally', async () => {
+      openSession('proj-charge', 'ws-c', 'user-c')
+      accumulateUsage('proj-charge', 'claude-sonnet-4-5', 1000, 500)
+
+      const result = await closeSession('proj-charge')
+
+      expect(result.totalTokens).toBe(1500)
+      expect(result.billedUsd).toBeGreaterThan(0)
+      expect(consumeUsageCalls.length).toBe(1)
+    })
+
+    test('discardPartial on a zero-token session is a no-op (no log spam)', async () => {
+      openSession('proj-empty-discard', 'ws-1', 'user-1')
+
+      const result = await closeSession('proj-empty-discard', { discardPartial: true })
+
+      expect(result.totalTokens).toBe(0)
+      expect(result.billedUsd).toBe(0)
+      expect(consumeUsageCalls.length).toBe(0)
+    })
+
+    test('discardPartial on a missing session returns zeros without error', async () => {
+      const result = await closeSession('never-opened', { discardPartial: true })
+
+      expect(result.totalTokens).toBe(0)
+      expect(result.billedUsd).toBe(0)
+      expect(consumeUsageCalls.length).toBe(0)
+    })
+  })
 })

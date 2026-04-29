@@ -670,7 +670,18 @@ jobs:
       - name: Ensure Knative max revision timeout for long-running agent turns
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # Knative docs: when raising max-revision-timeout-seconds, the
+      # activator's terminationGracePeriodSeconds should be at least as
+      # long, so in-flight requests aren't disrupted on activator drain.
+      # We're also taking the activator out of the request path for
+      # project pods (target-burst-capacity=0), so this is mostly
+      # belt-and-suspenders.
+      - name: Ensure Knative activator drain window matches max revision timeout
+        run: |
+          kubectl patch deployment activator -n knative-serving --type merge \
+            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
 
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
@@ -927,7 +938,15 @@ jobs:
       - name: Ensure Knative max revision timeout for long-running agent turns
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # Knative docs: when raising max-revision-timeout-seconds, the
+      # activator's terminationGracePeriodSeconds should be at least as
+      # long, so in-flight requests aren't disrupted on activator drain.
+      - name: Ensure Knative activator drain window matches max revision timeout
+        run: |
+          kubectl patch deployment activator -n knative-serving --type merge \
+            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
 
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
@@ -1166,7 +1185,15 @@ jobs:
       - name: Ensure Knative max revision timeout for long-running agent turns
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # Knative docs: when raising max-revision-timeout-seconds, the
+      # activator's terminationGracePeriodSeconds should be at least as
+      # long, so in-flight requests aren't disrupted on activator drain.
+      - name: Ensure Knative activator drain window matches max revision timeout
+        run: |
+          kubectl patch deployment activator -n knative-serving --type merge \
+            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
 
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |
@@ -1396,7 +1423,15 @@ jobs:
       - name: Ensure Knative max revision timeout for long-running agent turns
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"1800","revision-idle-timeout-seconds":"0"}}' || true
+            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # Knative docs: when raising max-revision-timeout-seconds, the
+      # activator's terminationGracePeriodSeconds should be at least as
+      # long, so in-flight requests aren't disrupted on activator drain.
+      - name: Ensure Knative activator drain window matches max revision timeout
+        run: |
+          kubectl patch deployment activator -n knative-serving --type merge \
+            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
 
       - name: Ensure OCI LB idle timeout for SSE streaming
         run: |

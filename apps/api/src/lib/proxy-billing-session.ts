@@ -120,9 +120,16 @@ export function accumulateUsage(
 /**
  * Close a billing session and charge USD based on total accumulated tokens.
  * Returns the marked-up USD charged (0 if no tokens or session not found).
+ *
+ * When `discardPartial: true`, the session is dropped WITHOUT charging.
+ * Used when the upstream stream EOF'd before the runtime emitted its
+ * terminal `data-turn-complete` marker — we don't want to bill a user
+ * for a half-finished turn that the auto-resuming-fetch client will
+ * reconnect and finish on a subsequent request.
  */
 export async function closeSession(
   projectId: string,
+  options: { discardPartial?: boolean } = {},
 ): Promise<{ billedUsd: number; rawUsd: number; totalTokens: number }> {
   const session = sessions.get(projectId)
   sessions.delete(projectId)
@@ -134,6 +141,15 @@ export async function closeSession(
   const totalTokens = session.inputTokens + session.cachedInputTokens + session.cacheWriteTokens + session.outputTokens
   if (totalTokens === 0) {
     return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
+  }
+
+  if (options.discardPartial) {
+    console.log(
+      `[BillingSession] Discarded partial session for project ${projectId} ` +
+      `(stream EOF'd before turn-complete) — ${session.inputTokens} in, ${session.outputTokens} out, ` +
+      `${session.requestCount} request(s) NOT charged.`
+    )
+    return { billedUsd: 0, rawUsd: 0, totalTokens }
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
