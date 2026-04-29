@@ -2074,11 +2074,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   let lastError: Error | null = null
 
   const proxyClientSignal = c.req.raw.signal
-  const proxyFetchSignal = proxyClientSignal
-    ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), proxyClientSignal])
-    : AbortSignal.timeout(FETCH_TIMEOUT_MS)
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // Per-attempt timeout. Sharing one `AbortSignal.timeout` across all
+    // retries means a single timeout aborts every subsequent attempt
+    // instantly (the signal is already in the aborted state), wasting the
+    // cold-start retry budget. Build a fresh combined signal each attempt.
+    const proxyFetchSignal = proxyClientSignal
+      ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), proxyClientSignal])
+      : AbortSignal.timeout(FETCH_TIMEOUT_MS)
+
     try {
       const response = await fetch(targetUrl, {
         method: c.req.method,
