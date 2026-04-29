@@ -5,11 +5,11 @@ import { ChevronDown, X } from "lucide-react-native";
 import { Terminal } from "./Terminal";
 import { Problems } from "./Problems";
 
-const TABS = ["Terminal", "Problems", "Output"] as const;
+const TABS = ["Terminal", "Problems"] as const;
 type TabId = (typeof TABS)[number];
 
 /**
- * VS Code-style bottom panel. Hosts Terminal / Problems / Output.
+ * VS Code-style bottom panel. Hosts Terminal / Problems.
  *
  * The panel's visibility is controlled from Workbench (⌘J / Activity Bar
  * terminal button). The Terminal tab is the default, and parents pass a
@@ -88,11 +88,6 @@ export function BottomPanel({
             onReveal={onReveal}
           />
         </div>
-        {tab === "Output" && (
-          <div className="h-full p-3 font-mono text-[12px] text-[#858585]">
-            Output channel — nothing to show yet.
-          </div>
-        )}
       </div>
     </div>
   );
