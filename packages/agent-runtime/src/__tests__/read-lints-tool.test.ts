@@ -140,8 +140,8 @@ describe('read_lints tool', () => {
     const ctx = createCtx(createMockLSPManager(diagnostics))
     const result = await execReadLints(ctx, { path: 'canvas/surface.ts' })
     expect(result.ok).toBe(true)
-    expect(result.files[0].ok).toBe(true)
-    expect(result.files[0].errors).toHaveLength(0)
+    expect(result.files).toBeUndefined()
+    expect(result.message).toContain('canvas/surface.ts')
   })
 
   test('skips .d.ts files in diagnostics', async () => {
@@ -168,11 +168,10 @@ describe('read_lints tool', () => {
     const ctx = createCtx(createMockLSPManager(diagnostics))
     const result = await execReadLints(ctx)
     expect(result.ok).toBe(false)
-    expect(result.files).toHaveLength(2)
-    const goodFile = result.files.find((f: any) => f.path.includes('good'))
-    const badFile = result.files.find((f: any) => f.path.includes('bad'))
-    expect(goodFile.ok).toBe(true)
-    expect(badFile.ok).toBe(false)
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].path).toContain('bad')
+    expect(result.files[0].ok).toBe(false)
+    expect(result.files.find((f: any) => f.path.includes('good'))).toBeUndefined()
   })
 
   test('ignores warnings (severity 2) and info (severity 3)', async () => {
@@ -186,8 +185,8 @@ describe('read_lints tool', () => {
     const ctx = createCtx(createMockLSPManager(diagnostics))
     const result = await execReadLints(ctx, { path: 'canvas/warn.ts' })
     expect(result.ok).toBe(true)
-    expect(result.files[0].ok).toBe(true)
-    expect(result.files[0].errors).toHaveLength(0)
+    expect(result.files).toBeUndefined()
+    expect(result.message).toContain('canvas/warn.ts')
   })
 
   test('read_lints tool exists in createTools output', () => {
@@ -214,7 +213,8 @@ describe('read_lints tool', () => {
     const result = await execReadLints(ctx)
     expect(result.auto_scoped).toBeUndefined()
     expect(result.ok).toBe(false)
-    expect(result.files).toHaveLength(2)
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].path).toContain('bad')
   })
 
   test('auto-scope: no path + one edited file lints only that file', async () => {
@@ -270,10 +270,8 @@ describe('read_lints tool', () => {
     expect(result.auto_scoped).toBe(true)
     expect(result.ok).toBe(true)
     expect(result.scoped_to).toEqual(['canvas/clean.ts'])
-    expect(result.files).toHaveLength(1)
-    expect(result.files[0].path).toBe('canvas/clean.ts')
-    expect(result.files[0].ok).toBe(true)
-    expect(result.files[0].errors).toHaveLength(0)
+    expect(result.files).toBeUndefined()
+    expect(result.message).toContain('canvas/clean.ts')
   })
 
   test('explicit path overrides auto-scope', async () => {
