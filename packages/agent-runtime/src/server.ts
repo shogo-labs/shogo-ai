@@ -39,6 +39,7 @@ import {
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
+import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
@@ -106,7 +107,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   workDir: WORKSPACE_DIR,
   runtimeType: 'unified',
   internalPaths: ['/agent/heartbeat/trigger'],
-  authPrefixes: ['/agent', '/pool'],
+  authPrefixes: ['/agent', '/pool', '/diagnostics'],
   async onAssign(projectId, envVars) {
     const hostWorkspacesRoot = '/host-workspaces'
     const sentinelPath = '/tmp/shogo-current-project'
@@ -3104,6 +3105,20 @@ function injectCanvasBridge(html: string): string {
 }
 
 // =============================================================================
+// Diagnostics routes (Problems tab) — mounted BEFORE the SPA fallback below.
+//
+// PR #458 lesson: any handler that lives at a non-/agent path must (a) be
+// registered before the `app.get('*')` static fallback at the bottom of this
+// file, otherwise a GET will fall through and return index.html with status
+// 200, and (b) be added to that fallback's skip-list so unknown sub-paths
+// 404 cleanly instead of also returning index.html. We honor both here.
+// =============================================================================
+app.route('/', runtimeDiagnosticsRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  getCurrentProjectId: () => state.currentProjectId,
+}))
+
+// =============================================================================
 // Static File Serving — workspace Vite build output (dist/) at root
 // =============================================================================
 
@@ -3117,7 +3132,8 @@ app.get('*', (c) => {
   if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
       urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
       urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
-      urlPath.startsWith('/api') || urlPath.startsWith('/templates')) {
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
+      urlPath.startsWith('/diagnostics')) {
     return c.notFound()
   }
 

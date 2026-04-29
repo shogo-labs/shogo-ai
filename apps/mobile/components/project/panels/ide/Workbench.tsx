@@ -1303,6 +1303,9 @@ export function Workbench({
                     projectId={projectId ?? null}
                     newSessionNonce={newTerminalNonce}
                     onClose={() => setBottomPanelOpen(false)}
+                    onReveal={(path, line, col) =>
+                      void revealMatch("agent", path, line, col)
+                    }
                   />
                 </div>
               </>
