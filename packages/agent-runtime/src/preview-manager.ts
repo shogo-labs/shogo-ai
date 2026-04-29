@@ -992,24 +992,52 @@ export class PreviewManager {
     const cwd = this.bundlerCwd
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
 
-    if (!existsSync(join(cwd, 'node_modules', '.bin', 'vite'))) {
+    // On Windows the bun/npm-installed shim at `.bin/vite` is a POSIX shell
+    // script that `child_process.spawn` cannot execute directly — it has to
+    // be `.bin/vite.CMD`. Pick the right shim per-platform and bail out
+    // cleanly if neither exists (e.g. dependency install failed earlier).
+    const binDir = join(cwd, 'node_modules', '.bin')
+    const isWindows = process.platform === 'win32'
+    const viteCandidates = isWindows
+      ? [join(binDir, 'vite.CMD'), join(binDir, 'vite.cmd'), join(binDir, 'vite.exe')]
+      : [join(binDir, 'vite')]
+    const viteBin = viteCandidates.find((p) => existsSync(p))
+    if (!viteBin) {
       console.log(`[${LOG_PREFIX}] Vite not found in node_modules — skipping watch`)
       return
     }
 
     console.log(`[${LOG_PREFIX}] Starting vite build --watch...`)
 
-    const viteProcess = spawn('node_modules/.bin/vite', ['build', '--watch'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        NODE_ENV: 'development',
-        VITE_RUNTIME_PORT: String(this.runtimePort),
-      },
-    })
+    let viteProcess: ChildProcess
+    try {
+      viteProcess = spawn(viteBin, ['build', '--watch'], {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // `.CMD` shims must go through cmd.exe on Windows.
+        shell: isWindows,
+        env: {
+          ...process.env,
+          NODE_ENV: 'development',
+          VITE_RUNTIME_PORT: String(this.runtimePort),
+        },
+      })
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Failed to spawn vite build --watch: ${err?.message ?? err}`)
+      return
+    }
 
     this.buildWatchProcess = viteProcess
+
+    // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
+    // not bubble up — without this listener Node treats them as uncaught and
+    // tears down the entire agent runtime process.
+    viteProcess.on('error', (err: Error) => {
+      console.error(`[${LOG_PREFIX}] Vite build --watch error: ${err.message}`)
+      if (this.buildWatchProcess === viteProcess) {
+        this.buildWatchProcess = null
+      }
+    })
 
     viteProcess.stdout?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
@@ -1032,7 +1060,6 @@ export class PreviewManager {
       }
     })
 
-    // Wait briefly for initial build
     await new Promise((resolve) => setTimeout(resolve, 3000))
   }
 
