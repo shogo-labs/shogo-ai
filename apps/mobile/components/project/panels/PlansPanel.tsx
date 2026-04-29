@@ -56,6 +56,7 @@ interface PlansPanelProps {
   projectId: string
   agentUrl?: string | null
   selectedModel?: string
+  requestedPlanPath?: { filepath: string | null; nonce: number } | null
   onBuildPlan?: (plan: PlanData, modelId: string) => void
 }
 
@@ -101,7 +102,20 @@ function extractTodos(
   return todos
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuildPlan }: PlansPanelProps) {
+function normalizePlanFilepath(filepath?: string | null): string | undefined {
+  if (!filepath) return undefined
+  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
+  const filename = normalized.split("/").pop()
+  if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename)) return undefined
+  return `.shogo/plans/${filename}`
+}
+
+function filenameFromPlanPath(filepath?: string | null): string | null {
+  if (!filepath) return null
+  return normalizePlanFilepath(filepath)?.split("/").pop() ?? null
+}
+
+export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan }: PlansPanelProps) {
   const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -111,6 +125,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
   const [searchQuery, setSearchQuery] = useState("")
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [buildStarted, setBuildStarted] = useState(false)
   const prevSelectedPlanRef = useRef<string | null>(null)
 
   // Align Build model with chat when opening a plan or switching plans — not when only
@@ -163,6 +178,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
         setPlanContent(data.content)
       } catch (err) {
         console.error("[PlansPanel] Failed to fetch plan detail:", err)
+        setPlanContent(null)
       } finally {
         setDetailLoading(false)
       }
@@ -199,7 +215,20 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
     if (selectedPlan && selectedPlan !== "__streaming__") {
       fetchPlanDetail(selectedPlan)
     }
-  }, [selectedPlan, fetchPlanDetail])
+  }, [selectedPlan, fetchPlanDetail, planStream?.planRefreshNonce])
+
+  useEffect(() => {
+    if (!visible) return
+    const requestedFilename = filenameFromPlanPath(requestedPlanPath?.filepath)
+    if (!requestedFilename) return
+    setSelectedPlan(requestedFilename)
+    setPlanContent(null)
+    setBuildStarted(false)
+  }, [visible, requestedPlanPath?.nonce])
+
+  useEffect(() => {
+    setBuildStarted(false)
+  }, [selectedPlan])
 
   // Transition from streaming to persisted plan once the file is saved
   useEffect(() => {
@@ -210,10 +239,11 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
     if (!filename) return
     setSelectedPlan(filename)
     setPlanContent(null)
+    setBuildStarted(false)
   }, [selectedPlan, planStream?.streamingPlanFilepath])
 
   const handleBuild = useCallback(() => {
-    if (!planContent || !selectedPlan || !onBuildPlan) return
+    if (buildStarted || !planContent || !selectedPlan || !onBuildPlan) return
     const plan = plans.find((p) => p.filename === selectedPlan)
     const todos = extractTodos(planContent)
     const body = extractPlanBody(planContent)
@@ -222,10 +252,11 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
       overview: plan?.overview || "",
       plan: body,
       todos: todos.map((t) => ({ id: t.id, content: t.content })),
-      filepath: selectedPlan,
+      filepath: normalizePlanFilepath(selectedPlan),
     }
+    setBuildStarted(true)
     onBuildPlan(planData, buildMode)
-  }, [planContent, selectedPlan, plans, onBuildPlan, buildMode])
+  }, [buildStarted, planContent, selectedPlan, plans, onBuildPlan, buildMode])
 
   if (!visible) return null
 
@@ -241,18 +272,18 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
   const streamingData = planStream?.streamingPlan
 
   // Detail view — works for both persisted plans and the live streaming plan
-  if (selectedPlan && (planContent || isStreamingDetail)) {
+  if (selectedPlan) {
     const plan = isStreamingDetail ? null : plans.find((p) => p.filename === selectedPlan)
     const todos = isStreamingDetail
       ? (streamingData?.todos ?? []).map((t) => ({ ...t, status: "pending" }))
-      : extractTodos(planContent!)
+      : planContent ? extractTodos(planContent) : []
     const body = isStreamingDetail
       ? (streamingData?.plan ?? "")
-      : extractPlanBody(planContent!)
+      : planContent ? extractPlanBody(planContent) : ""
     const detailName = isStreamingDetail
       ? (streamingData?.name || "Creating plan...")
       : (plan?.name || selectedPlan)
-    const isBuildDisabled = isStreamingDetail || !onBuildPlan || detailLoading
+    const isBuildDisabled = isStreamingDetail || !onBuildPlan || detailLoading || !planContent || buildStarted
 
     return (
       <View className="flex-1 bg-background">
@@ -358,7 +389,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, onBuil
             )}
           >
             <Play className="h-3.5 w-3.5 text-black" size={14} />
-            <Text className="text-xs font-bold text-black">Build</Text>
+            <Text className="text-xs font-bold text-black">{buildStarted ? "Building..." : "Build"}</Text>
           </Pressable>
 
           {!isStreamingDetail && (

@@ -770,6 +770,9 @@ export default observer(function ProjectLayout() {
     return handler
   }, [handleTabStreamingChange])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; modelId: string; nonce: number } | null>(null)
+  const buildPlanNonceRef = useRef(0)
+  const openPlanNonceRef = useRef(0)
+  const [requestedPlanPath, setRequestedPlanPath] = useState<{ filepath: string | null; nonce: number } | null>(null)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -900,7 +903,8 @@ export default observer(function ProjectLayout() {
   }, [updateProjectSettings, agentUrl, nativeHeaders])
 
   const handleBuildPlan = useCallback((plan: any, modelId: string) => {
-    setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
+    buildPlanNonceRef.current += 1
+    setBuildPlanRequest({ plan, modelId, nonce: buildPlanNonceRef.current })
     setActiveTab('chat')
     if (canvasEnabled) {
       setPreviewTab('dynamic-app')
@@ -908,6 +912,13 @@ export default observer(function ProjectLayout() {
       setPreviewTab('chat-fullscreen')
     }
   }, [canvasEnabled])
+
+  const handleOpenPlan = useCallback((filepath?: string | null) => {
+    openPlanNonceRef.current += 1
+    setRequestedPlanPath({ filepath: filepath ?? null, nonce: openPlanNonceRef.current })
+    setPreviewTab('plans')
+    if (!isWide) setActiveTab('canvas')
+  }, [isWide])
 
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
 
@@ -1223,6 +1234,7 @@ export default observer(function ProjectLayout() {
               onMessagesChange={isActive ? setChatMessages : undefined}
               onStreamingChange={getStreamingChangeHandler(tabId)}
               buildPlanRequest={isActive ? buildPlanRequest : null}
+              onOpenPlan={handleOpenPlan}
               selectedModel={selectedModel}
               onModelChange={handleModelChange}
               className="flex-1"
@@ -1508,7 +1520,7 @@ export default observer(function ProjectLayout() {
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>

@@ -7,7 +7,7 @@
  *
  * Shape:
  *   - `send(text)`         — send a user message to the chat agent.
- *   - `setMode(mode)`      — switch between 'agent' / 'plan'.
+ *   - `setMode(mode)`      — switch between 'agent' / 'plan' / 'ask'.
  *   - `subscribe(fn)`      — receive a typed stream of agent events
  *                            (`turn-start`, `tool-activity`, `turn-end`).
  *
@@ -32,7 +32,7 @@ import React, {
   useState,
 } from 'react'
 
-export type ChatInteractionMode = 'agent' | 'plan'
+export type ChatInteractionMode = 'agent' | 'plan' | 'ask'
 
 /**
  * Agent-side lifecycle events broadcast through the bridge.
