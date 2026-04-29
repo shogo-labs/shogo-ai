@@ -36,23 +36,44 @@ interface ParsedLogEntry {
 // Parser — best-effort, falls back aggressively to info/system
 // ---------------------------------------------------------------------------
 
+const ANSI_RE = /[\x1B\x9B]\[[0-9;]*[A-Za-z]/g
 const ISO_TS_RE = /^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)]\s*/
+const TIME12_RE = /^(\d{1,2}:\d{2}:\d{2}\s*[AP]M)\s+/i
+const TIME24_RE = /^(\d{1,2}:\d{2}:\d{2})\s+/
 const BUNDLER_PREFIX_RE = /^\[(vite|expo|metro)]\s*/i
+
+function stripAnsi(str: string): string {
+  return str.replace(ANSI_RE, '')
+}
 
 let _nextId = 0
 
 function parseLogLine(raw: string): ParsedLogEntry {
   const id = _nextId++
-  let message = raw
+  let message = stripAnsi(raw).trimStart()
   let ts: string | null = null
   let level: LogLevel = 'info'
   let source: LogSource = 'system'
 
-  const tsMatch = message.match(ISO_TS_RE)
-  if (tsMatch) {
-    ts = tsMatch[1]
-    message = message.slice(tsMatch[0].length)
+  const isoMatch = message.match(ISO_TS_RE)
+  if (isoMatch) {
+    ts = isoMatch[1]
+    message = message.slice(isoMatch[0].length)
     source = 'agent'
+  } else {
+    const t12Match = message.match(TIME12_RE)
+    if (t12Match) {
+      ts = t12Match[1]
+      message = message.slice(t12Match[0].length)
+      source = 'agent'
+    } else {
+      const t24Match = message.match(TIME24_RE)
+      if (t24Match) {
+        ts = t24Match[1]
+        message = message.slice(t24Match[0].length)
+        source = 'agent'
+      }
+    }
   }
 
   const bundlerMatch = message.match(BUNDLER_PREFIX_RE)
@@ -67,16 +88,26 @@ function parseLogLine(raw: string): ParsedLogEntry {
     level = 'warn'
   }
 
-  return { id, ts, level, source, message, raw }
+  return { id, ts, level, source, message: message.trim(), raw }
 }
 
-function formatTime(iso: string | null): string {
-  if (!iso) return ''
+function formatTime(ts: string | null): string {
+  if (!ts) return ''
+  if (/^\d{1,2}:\d{2}:\d{2}\s*[AP]M$/i.test(ts)) return ts
+  const h24Match = ts.match(/^(\d{1,2}):(\d{2}):(\d{2})$/)
+  if (h24Match) {
+    let h = parseInt(h24Match[1], 10)
+    const suffix = h >= 12 ? 'PM' : 'AM'
+    if (h === 0) h = 12
+    else if (h > 12) h -= 12
+    return `${h}:${h24Match[2]}:${h24Match[3]} ${suffix}`
+  }
   try {
-    const d = new Date(iso)
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const d = new Date(ts)
+    if (isNaN(d.getTime())) return ts
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })
   } catch {
-    return ''
+    return ts
   }
 }
 
@@ -142,7 +173,7 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
     }
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase()
-      result = result.filter((l) => l.raw.toLowerCase().includes(q))
+      result = result.filter((l) => l.message.toLowerCase().includes(q))
     }
     return result
   }, [parsedLogs, levelFilter, searchQuery])
