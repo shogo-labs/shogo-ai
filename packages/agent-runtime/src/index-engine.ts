@@ -14,7 +14,7 @@
  */
 
 import { Database } from 'bun:sqlite'
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, type Dirent } from 'fs'
 import { join, extname } from 'path'
 import OpenAI from 'openai'
 
@@ -686,9 +686,9 @@ export class IndexEngine {
   private walkDir(src: ScanSource, dir: string, prefix: string): Array<{ relativePath: string; absolutePath: string }> {
     const results: Array<{ relativePath: string; absolutePath: string }> = []
 
-    let entries: ReturnType<typeof readdirSync>
+    let entries: Dirent[]
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf-8' }) as Dirent[]
     } catch { return results }
 
     for (const entry of entries) {

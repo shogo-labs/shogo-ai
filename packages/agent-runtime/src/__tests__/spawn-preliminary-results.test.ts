@@ -102,7 +102,7 @@ describe('spawn preliminary results — real integration', () => {
 
     // onStart should have captured the agentId
     const accumulated = spawn.getAccumulatedOutput()
-    expect(accumulated.agentId).toBe(result.agentId)
+    expect(accumulated.agentId).toBe(result.agentId!)
 
     // onEnd flushed a preliminary event (even if empty parts — it's a complete snapshot)
     const prelimEvents = w.events.filter(
@@ -145,7 +145,7 @@ describe('spawn preliminary results — real integration', () => {
     })
 
     const accumulated = spawn.getAccumulatedOutput()
-    expect(accumulated.agentId).toBe(result.agentId)
+    expect(accumulated.agentId).toBe(result.agentId!)
 
     // Tool parts should be present (onBeforeToolCall / onAfterToolCall fire with mock stream)
     const toolParts = accumulated.parts.filter((p: any) => p.type === 'tool')
@@ -203,8 +203,8 @@ describe('spawn preliminary results — real integration', () => {
     ])
 
     // Each spawn tracked its own agentId
-    expect(spawn1.getAccumulatedOutput().agentId).toBe(resultA.agentId)
-    expect(spawn2.getAccumulatedOutput().agentId).toBe(resultB.agentId)
+    expect(spawn1.getAccumulatedOutput().agentId).toBe(resultA.agentId!)
+    expect(spawn2.getAccumulatedOutput().agentId).toBe(resultB.agentId!)
     expect(resultA.agentId).not.toBe(resultB.agentId)
 
     // Events are scoped by toolCallId — no cross-contamination

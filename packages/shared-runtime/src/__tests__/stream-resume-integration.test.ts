@@ -87,7 +87,7 @@ function createChatHarness(opts?: {
 
   // POST /agent/chat → start stream, return replay-backed response.
   app.post('/agent/chat', async (c) => {
-    const body = await c.req.json<{ chatSessionId?: string }>().catch(() => ({}))
+    const body = await c.req.json<{ chatSessionId?: string }>().catch(() => ({} as { chatSessionId?: string }))
     const sessionId = body.chatSessionId || 'chat'
 
     // Replace any existing buffer for this key.
@@ -132,7 +132,7 @@ function createChatHarness(opts?: {
 
   // POST /agent/stop → abort buffer, future GETs return 204.
   app.post('/agent/stop', async (c) => {
-    const body = await c.req.json<{ chatSessionId?: string }>().catch(() => ({}))
+    const body = await c.req.json<{ chatSessionId?: string }>().catch(() => ({} as { chatSessionId?: string }))
     const sessionId = body.chatSessionId || 'chat'
     store.abort(sessionId)
     return c.json({ stopped: true })
@@ -142,7 +142,7 @@ function createChatHarness(opts?: {
   // sidesteps any test-wide monkey-patching of `global.fetch`.
   const request = (path: string, init?: RequestInit): Promise<Response> => {
     const url = `http://harness.local${path}`
-    return app.fetch(new Request(url, init))
+    return Promise.resolve(app.fetch(new Request(url, init)))
   }
 
   return {

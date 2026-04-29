@@ -165,7 +165,7 @@ function parseSync(langId: string, content: string): any | null {
 interface SymbolInfo {
   kind: 'Class' | 'Function' | 'Test'
   name: string
-  parentName: string | null
+  parentName: string | undefined
   lineStart: number
   lineEnd: number
   params?: string
@@ -544,7 +544,7 @@ export class CodeExtractor implements Extractor {
     const definedNames = new Map<string, string>() // name -> qualified name
 
     // Pass 1: extract symbols (classes, functions, tests)
-    function walkSymbols(node: any, parentName: string | null) {
+    function walkSymbols(node: any, parentName: string | undefined) {
       const classTypes = CLASS_TYPES[langId] || []
       const funcTypes = FUNCTION_TYPES[langId] || []
 
@@ -685,7 +685,7 @@ export class CodeExtractor implements Extractor {
       for (const child of node.namedChildren) walkSymbols(child, parentName)
     }
 
-    walkSymbols(tree.rootNode, null)
+    walkSymbols(tree.rootNode, undefined)
 
     // Pass 2: extract imports
     const imports = extractImports(tree.rootNode, langId, filePath, allFiles)

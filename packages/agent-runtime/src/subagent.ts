@@ -17,7 +17,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool } from './gateway-tools'
+import { createBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -712,7 +712,7 @@ export async function runSubagent(
         execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
           const result = mockFn(params)
           if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
-          return { type: 'text' as const, value: typeof result === 'string' ? result : JSON.stringify(result) }
+          return textResult(typeof result === 'string' ? result : result)
         },
       }
     })
