@@ -47,6 +47,11 @@ COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
+# Copy patches required by `patchedDependencies` in package.json — bun install
+# fails with "Couldn't find patch file" when this directory is missing from
+# the build context.
+COPY patches ./patches
+
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
@@ -115,6 +120,9 @@ COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
+# Same patches directory as the builder stage — bun install fails without it.
+COPY patches ./patches
+
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
@@ -151,6 +159,10 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.jso
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
 COPY --chown=appuser:appgroup --from=builder /app/apps/api/package.json ./apps/api/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
+
+# Same patches as builder/deps stages — `bun install --ignore-scripts` below
+# still re-resolves the patched dependency and fails without these files.
+COPY --chown=appuser:appgroup --from=builder /app/patches ./patches
 
 COPY --chown=appuser:appgroup packages/agent-runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
