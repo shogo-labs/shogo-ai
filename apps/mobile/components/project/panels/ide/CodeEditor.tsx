@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
 import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
+import { setMonacoRef } from "./monaco/workspaceModels";
 
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
@@ -73,6 +74,10 @@ function configureMonaco(monaco: MonacoNs) {
   ts.javascriptDefaults.setDiagnosticsOptions(diagOpts);
 
   ts.typescriptDefaults.setEagerModelSync(true);
+
+  // Register the Monaco instance so workspace files can be preloaded as
+  // models for cross-file go-to-def, hover, and import resolution.
+  setMonacoRef(monaco);
 
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.

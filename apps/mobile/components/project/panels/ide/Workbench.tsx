@@ -28,6 +28,7 @@ import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
+import { loadWorkspaceModels, disposeWorkspaceModels } from "./monaco/workspaceModels";
 import { matchesShortcut, type Command } from "./commands";
 import { useTheme } from "../../../../contexts/theme";
 import {
@@ -244,6 +245,9 @@ export function Workbench({
       try {
         const raw = await svc.listTree("", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
+        // Fire-and-forget: preload TS/JS files as Monaco models so cross-file
+        // IntelliSense (go-to-def, imports) works across the whole project.
+        void loadWorkspaceModels(svc, id, raw).catch(() => {});
       } catch (err) {
         setRoot(id, {
           loading: false,
@@ -390,6 +394,7 @@ export function Workbench({
         return;
       }
       await deleteRoot(id).catch(() => {});
+      disposeWorkspaceModels(id);
       setServices((prev) => {
         const next = { ...prev };
         delete next[id];
