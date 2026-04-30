@@ -14,11 +14,26 @@ type MonacoT = typeof Monaco;
 let monacoRef: MonacoT | null = null;
 const modelsByRoot: Map<string, Set<string>> = new Map(); // rootId -> Set<uri.toString()>
 
+/**
+ * Loads requested before the editor mounted. Replayed once monacoRef is set.
+ * Keyed by rootId so a later load for the same root supersedes an earlier one.
+ */
+const pendingLoads: Map<string, { svc: WorkspaceService; tree: WsNode[] }> = new Map();
+
 const MAX_MODELS_PER_ROOT = 1000;
 const SUPPORTED_EXTS = /\.(tsx?|jsx?|d\.ts|json)$/;
 
 export function setMonacoRef(m: MonacoT) {
+  const wasNull = monacoRef === null;
   monacoRef = m;
+  if (wasNull && pendingLoads.size > 0) {
+    // Replay any loads that were requested before the editor mounted.
+    const entries = [...pendingLoads.entries()];
+    pendingLoads.clear();
+    for (const [rootId, { svc, tree }] of entries) {
+      void loadWorkspaceModels(svc, rootId, tree).catch(() => {});
+    }
+  }
 }
 
 export function getMonacoRef(): MonacoT | null {
@@ -66,7 +81,12 @@ export async function loadWorkspaceModels(
   tree: WsNode[],
 ): Promise<void> {
   const m = monacoRef;
-  if (!m) return; // editor hasn't mounted yet — Workbench will retry next loadRoot
+  if (!m) {
+    // Editor hasn't mounted yet — remember this request and replay it once
+    // setMonacoRef is called by CodeEditor.onMount.
+    pendingLoads.set(rootId, { svc, tree });
+    return;
+  }
 
   let paths = flattenFiles(tree);
   paths.sort();
@@ -165,6 +185,7 @@ export function renameModel(
 
 /** Dispose every model for a root (called on closeRoot). */
 export function disposeWorkspaceModels(rootId: string): void {
+  pendingLoads.delete(rootId);
   const m = monacoRef;
   if (!m) return;
   const set = modelsByRoot.get(rootId);
