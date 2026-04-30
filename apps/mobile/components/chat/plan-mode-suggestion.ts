@@ -162,8 +162,8 @@ export function shouldSuggestPlanMode(prompt: string): boolean {
       (hasRiskyScope || hasComplexitySignal || normalized.length >= 90)) ||
     (hasRiskyScope &&
       hasWorkIntent &&
-      (hasComplexitySignal || normalized.length >= 90)) ||
-    (hasWorkIntent && hasComplexitySignal && normalized.length >= 60) ||
-    (hasWorkIntent && normalized.length >= 140)
+      hasComplexitySignal &&
+      normalized.length >= 90) ||
+    (hasWorkIntent && hasComplexitySignal && normalized.length >= 60)
   )
 }

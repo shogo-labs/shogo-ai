@@ -72,4 +72,17 @@ describe("shouldSuggestPlanMode", () => {
       )
     ).toBe(true)
   })
+
+  test("does not suggest only because an implementation prompt is long", () => {
+    expect(
+      shouldSuggestPlanMode(
+        "Implement this straightforward copy tweak in the settings screen so the empty state describes how to add a teammate, keeps the current layout, and preserves the existing button behavior."
+      )
+    ).toBe(false)
+    expect(
+      shouldSuggestPlanMode(
+        "Fix the chat input so the submit button stays aligned while typing a longer message, without changing the surrounding composer behavior or touching unrelated files."
+      )
+    ).toBe(false)
+  })
 })
