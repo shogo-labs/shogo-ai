@@ -62,6 +62,7 @@ import {
 } from '@shogo/agent-runtime/src/voice-mode/translator-persona'
 import { prisma } from '../lib/prisma'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
+import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
 import { resolveShogoTwilioClient, verifyTwilioSignature } from '../lib/twilio'
 import {
   getUsdBalance,
@@ -451,6 +452,7 @@ export function voiceRoutes() {
    */
   router.get('/voice/signed-url', async (c) => {
     const projectId = c.req.query('projectId')
+    const chatSessionId = c.req.query('chatSessionId')
 
     if (projectId) {
       const authz = await authorizeProject(c, projectId)
@@ -494,9 +496,54 @@ export function voiceRoutes() {
       return c.json({ error: resolved.error }, 503)
     }
 
+    // If the caller passed `?chatSessionId=`, authorize them against
+    // it, look up the owning project, and resolve a per-session
+    // prompt override (persona + project metadata + MEMORY.md +
+    // USER.md). The override is best-effort — any failure falls back
+    // to the bare agent default, which is the same pre-context
+    // behavior we shipped originally.
+    let agentPromptOverride: string | undefined
+    if (chatSessionId && auth?.userId) {
+      const authz = await authorizeChatSession(
+        chatSessionId,
+        auth.userId,
+        auth.via,
+      )
+      if (!authz.ok) {
+        return c.json({ error: authz.message }, authz.status)
+      }
+      try {
+        const session = await prisma.chatSession.findUnique({
+          where: { id: chatSessionId },
+          select: { project: { select: { id: true } } },
+        })
+        const sessionProjectId = session?.project?.id
+        if (sessionProjectId) {
+          const contextBlock = await resolveVoiceContext({
+            projectId: sessionProjectId,
+            signal: c.req.raw.signal,
+          })
+          agentPromptOverride = composeVoiceSystemPrompt(
+            TRANSLATOR_SYSTEM_PROMPT,
+            contextBlock,
+          )
+        }
+      } catch (err: any) {
+        // Never block voice on context resolution — log and proceed.
+        console.warn(
+          '[Voice] resolveVoiceContext failed for chatSessionId',
+          chatSessionId,
+          err?.message || err,
+        )
+      }
+    }
+
     try {
       const signedUrl = await resolved.client.getSignedUrl(resolved.agentId)
-      return c.json({ signedUrl })
+      return c.json({
+        signedUrl,
+        ...(agentPromptOverride ? { agentPromptOverride } : {}),
+      })
     } catch (err: any) {
       console.error('[Voice] getSignedUrl failed:', err?.message || err)
       return c.json(
@@ -588,10 +635,38 @@ export function voiceRoutes() {
         await upsertShogoTextMessage({ chatSessionId, uiMessage: m })
       }
 
+      // Compose the same persona + project context block we send
+      // to the voice modality. The session was already authorized
+      // above; we still wrap the lookup in try/catch so a Postgres or
+      // pod hiccup never blocks the chat reply.
+      let systemPrompt = composeVoiceSystemPrompt(TRANSLATOR_SYSTEM_PROMPT, '')
+      try {
+        const session = await prisma.chatSession.findUnique({
+          where: { id: chatSessionId },
+          select: { project: { select: { id: true } } },
+        })
+        const sessionProjectId = session?.project?.id
+        if (sessionProjectId) {
+          const contextBlock = await resolveVoiceContext({
+            projectId: sessionProjectId,
+            signal: c.req.raw.signal,
+          })
+          systemPrompt = composeVoiceSystemPrompt(
+            TRANSLATOR_SYSTEM_PROMPT,
+            contextBlock,
+          )
+        }
+      } catch (err: any) {
+        console.warn(
+          '[Voice] translator/chat: resolveVoiceContext failed, falling back to bare persona:',
+          err?.message || err,
+        )
+      }
+
       const modelMessages = await convertToModelMessages(uiMessages)
       const result = streamText({
         model,
-        system: TRANSLATOR_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: modelMessages,
         tools: TRANSLATOR_AI_SDK_TOOLS,
       })

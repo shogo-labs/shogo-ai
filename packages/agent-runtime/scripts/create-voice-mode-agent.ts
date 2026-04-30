@@ -1,26 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Provision the shared "Shogo Mode" ElevenLabs convai agent.
+ * Provision (or refresh) the shared "Shogo Mode" ElevenLabs convai
+ * agent.
  *
- * Creates a single convai agent wired to the translator persona
- * (prompt + client tools) defined in
- * `src/voice-mode/translator-persona.ts`. V1 uses one shared agent
- * across all users; the browser mints short-lived signed URLs against
- * it from `/api/voice/signed-url`.
+ * The agent's prompt + tools + first_message live in
+ * `src/voice-mode/translator-persona.ts`. This script is the only
+ * thing that pushes those values to ElevenLabs. V1 uses one shared
+ * agent across all users; the browser mints short-lived signed URLs
+ * against it from `/api/voice/signed-url`.
+ *
+ * Two modes:
+ *
+ *   - Create (no `ELEVENLABS_VOICE_MODE_AGENT_ID` env / flag):
+ *       creates a brand new agent and prints the id you should add
+ *       to your server env.
+ *
+ *   - Update (`ELEVENLABS_VOICE_MODE_AGENT_ID=agent_...`):
+ *       PATCHes the existing agent's persona prompt, tools, and
+ *       first_message in place. The agent_id stays stable, so no
+ *       env-var rotation needed. Use this to refresh the deployed
+ *       persona after editing `translator-persona.ts`.
  *
  * Usage:
  *
+ *   # Create new
  *   ELEVENLABS_API_KEY=sk_... \
+ *     bun run packages/agent-runtime/scripts/create-voice-mode-agent.ts
+ *
+ *   # Refresh existing in place
+ *   ELEVENLABS_API_KEY=sk_... \
+ *   ELEVENLABS_VOICE_MODE_AGENT_ID=agent_xyz... \
  *     bun run packages/agent-runtime/scripts/create-voice-mode-agent.ts
  *
  * Optional env:
  *   - SHOGO_VOICE_MODE_VOICE_ID  — ElevenLabs voice id (default: Rachel / EXAVITQu4vr4xnSDxMaL).
  *   - SHOGO_VOICE_MODE_NAME      — Display name for the agent (default: "Shogo Mode").
- *
- * On success prints the new `agent_id`. Copy it into your server env
- * as `ELEVENLABS_VOICE_MODE_AGENT_ID` — that's the id the API route
- * uses to mint signed URLs.
  */
 
 import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
@@ -51,8 +66,45 @@ async function main() {
   const voiceId = process.env.SHOGO_VOICE_MODE_VOICE_ID || DEFAULT_VOICE_ID
   const displayName = process.env.SHOGO_VOICE_MODE_NAME || DEFAULT_DISPLAY_NAME
   const ttsModelId = process.env.SHOGO_VOICE_MODE_TTS_MODEL || DEFAULT_TTS_MODEL
+  const existingAgentId = process.env.ELEVENLABS_VOICE_MODE_AGENT_ID
 
   const client = new ElevenLabsClient({ apiKey })
+
+  if (existingAgentId) {
+    console.log(
+      `[create-voice-mode-agent] Refreshing convai agent ${existingAgentId} ` +
+        '(persona + tools + first_message)…',
+    )
+    try {
+      await client.patchAgent(existingAgentId, {
+        displayName,
+        characterName: 'Shogo',
+        voiceId,
+        ttsModelId,
+        systemPrompt: TRANSLATOR_SYSTEM_PROMPT,
+        firstMessage: TRANSLATOR_FIRST_MESSAGE,
+        tools: TRANSLATOR_ELEVENLABS_TOOLS,
+        memoryBlock: null,
+        expressivity: 'subtle',
+        // Re-assert that signed-URL sessions may override the system
+        // prompt + first_message. Older agents may have been created
+        // without this — re-running the script flips the bit on.
+        enableUserContextOverride: true,
+      })
+      console.log('\n[create-voice-mode-agent] ✓ agent refreshed')
+      console.log(`  agent_id: ${existingAgentId}`)
+      console.log(
+        '\nNo env changes required — the existing ELEVENLABS_VOICE_MODE_AGENT_ID ' +
+          'still points at the same agent.',
+      )
+      return
+    } catch (err: any) {
+      console.error('[create-voice-mode-agent] patch failed:', err?.message || err)
+      if (err?.body) console.error('  body:', err.body)
+      if (err?.detail) console.error('  detail:', err.detail)
+      process.exit(1)
+    }
+  }
 
   console.log(
     `[create-voice-mode-agent] Creating convai agent "${displayName}" with voice ${voiceId}…`,
