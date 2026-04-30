@@ -6,6 +6,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { runLLMAgentAction, isLLMConfigured } from "./agentLLM";
 
 const PORT = Number(process.env.IDE_SERVER_PORT ?? 38325);
 const WORKSPACE_ROOT = path.resolve(process.cwd(), "..", "..");
@@ -166,7 +167,7 @@ async function handle(req: Request): Promise<Response> {
       const body = (await req.json().catch(() => null)) as AgentActionRequest | null;
       if (!body?.action || !body?.path) return json({ error: "action and path required" }, 400);
       try {
-        const result = await runStubAgentAction(body);
+        const result = await runAgentAction(body);
         if (!result) return new Response(null, { status: 204 });
         return json(result);
       } catch (err) {
@@ -216,6 +217,25 @@ interface AgentActionResult {
  *   if (provider === "openai") return await callOpenAI(prompt);
  *   if (provider === "anthropic") return await callAnthropic(prompt);
  */
+/**
+ * Dispatches to the configured LLM provider when one is set; falls back to
+ * the deterministic stub on any failure. Set SHOGO_AGENT_PROVIDER=openai-compat
+ * plus the related env vars in .env (or your shell) to enable. See
+ * agentLLM.ts and .env.example for the full env contract.
+ */
+async function runAgentAction(req: AgentActionRequest): Promise<AgentActionResult | null> {
+  if (isLLMConfigured()) {
+    try {
+      return await runLLMAgentAction(req);
+    } catch (err) {
+      console.warn(
+        `[agent] LLM call failed (${err instanceof Error ? err.message : err}) — falling back to stub`,
+      );
+    }
+  }
+  return runStubAgentAction(req);
+}
+
 async function runStubAgentAction(req: AgentActionRequest): Promise<AgentActionResult | null> {
   switch (req.action) {
     case "explain":
