@@ -28,6 +28,7 @@ import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
+import { loadWorkspaceModels, disposeWorkspaceModels, removeModel, removeModelsUnderPath } from "./monaco/workspaceModels";
 import { matchesShortcut, type Command } from "./commands";
 import { useTheme } from "../../../../contexts/theme";
 import {
@@ -244,6 +245,9 @@ export function Workbench({
       try {
         const raw = await svc.listTree("", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
+        // Fire-and-forget: preload TS/JS files as Monaco models so cross-file
+        // IntelliSense (go-to-def, imports) works across the whole project.
+        void loadWorkspaceModels(svc, id, raw).catch(() => {});
       } catch (err) {
         setRoot(id, {
           loading: false,
@@ -390,6 +394,7 @@ export function Workbench({
         return;
       }
       await deleteRoot(id).catch(() => {});
+      disposeWorkspaceModels(id);
       setServices((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -703,6 +708,12 @@ export function Workbench({
       const to = parent ? `${parent}/${newName}` : newName;
       try {
         await svc.rename(node.path, to);
+        // Drop the OLD model — loadRoot below will upsert the new path.
+        if (node.kind === "dir") {
+          removeModelsUnderPath(node.rootId, node.path);
+        } else {
+          removeModel(node.rootId, node.path);
+        }
         showToast(`Renamed to ${newName}`);
         rewriteOpenPaths(node.rootId, node.path, to);
         await loadRoot(node.rootId);
@@ -719,6 +730,14 @@ export function Workbench({
       if (!svc) return;
       try {
         await svc.remove(node.path);
+        // Drop the Monaco model(s) so go-to-def / hover don't keep resolving
+        // against deleted files. Files use removeModel; folders need a
+        // prefix sweep to drop every nested file's model.
+        if (node.kind === "dir") {
+          removeModelsUnderPath(node.rootId, node.path);
+        } else {
+          removeModel(node.rootId, node.path);
+        }
         showToast(`Deleted ${node.name}`);
         removeOpenPaths(node.rootId, node.path);
         await loadRoot(node.rootId);
@@ -747,6 +766,12 @@ export function Workbench({
       const to = targetDir ? `${targetDir}/${from.name}` : from.name;
       try {
         await svc.rename(from.path, to);
+        // Drop the OLD model — loadRoot below will upsert the new path.
+        if (from.kind === "dir") {
+          removeModelsUnderPath(from.rootId, from.path);
+        } else {
+          removeModel(from.rootId, from.path);
+        }
         showToast(`Moved ${from.name}`);
         rewriteOpenPaths(from.rootId, from.path, to);
         await loadRoot(from.rootId);
@@ -1190,6 +1215,11 @@ export function Workbench({
                     onReveal={(rootId, path, line, col) =>
                       void revealMatch(rootId, path, line, col)
                     }
+                    onReplaced={(matches, files) => {
+                      showToast(
+                        `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
+                      );
+                    }}
                   />
                 )}
                 {activity === "settings" && (
