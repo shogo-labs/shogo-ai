@@ -17,9 +17,12 @@ import {
   Users,
   DollarSign,
   Lock,
+  Wrench,
+  ExternalLink,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Switch } from '@/components/ui/switch'
+import { useRouter } from 'expo-router'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
@@ -192,8 +195,10 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [hbConfig, setHbConfig] = useState<HeartbeatConfig | null>(null)
   const [hbToggling, setHbToggling] = useState(false)
+  const [hbError, setHbError] = useState<string | null>(null)
   const [contextMarkdown, setContextMarkdown] = useState<string | null>(null)
   const [isLoadingContext, setIsLoadingContext] = useState(false)
+  const router = useRouter()
 
   const fetchHeartbeatConfig = useCallback(async () => {
     try {
@@ -208,6 +213,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
 
   const toggleHeartbeat = useCallback(async (enabled: boolean) => {
     setHbToggling(true)
+    setHbError(null)
     try {
       const res = await agentFetch(`${API_URL}/api/projects/${projectId}/heartbeat`, {
         method: 'PATCH',
@@ -216,9 +222,11 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
       })
       if (res.ok) {
         setHbConfig(await res.json())
+      } else {
+        setHbError(`Failed to update heartbeat (HTTP ${res.status})`)
       }
     } catch (err: any) {
-      console.error('[StatusPanel] Failed to toggle heartbeat:', err.message)
+      setHbError(err.message || 'Failed to toggle heartbeat')
     } finally {
       setHbToggling(false)
     }
@@ -506,6 +514,47 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
               )}
             </DashboardSection>
 
+            {/* Skills / Tools Section */}
+            <DashboardSection
+              title="Skills & Tools"
+              icon={<Wrench size={14} className="text-muted-foreground" />}
+              badge={status.skills.length > 0 ? `${status.skills.length} available` : undefined}
+            >
+              {status.skills.length === 0 ? (
+                <EmptyRow text="No skills configured" />
+              ) : (
+                <View className="gap-1">
+                  {status.skills.map((skill) => (
+                    <View
+                      key={skill.name}
+                      className="px-3 py-2 gap-0.5"
+                    >
+                      <View className="flex-row items-center gap-2">
+                        <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                          {skill.name}
+                        </Text>
+                        {skill.native && (
+                          <View className="rounded px-1.5 bg-primary/10">
+                            <Text className="text-[10px] text-primary font-medium">Built-in</Text>
+                          </View>
+                        )}
+                      </View>
+                      {skill.description ? (
+                        <Text className="text-xs text-muted-foreground" numberOfLines={2}>
+                          {skill.description}
+                        </Text>
+                      ) : null}
+                      {skill.trigger ? (
+                        <Text className="text-[10px] text-muted-foreground/70 font-mono" numberOfLines={1}>
+                          trigger: {skill.trigger}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              )}
+            </DashboardSection>
+
             {/* Heartbeat Section */}
             <DashboardSection
               title="Heartbeat"
@@ -520,7 +569,10 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
             >
               <View className="px-3 py-2.5 gap-3">
                 {!localMode && !isPaidPlan ? (
-                  <View className="flex-row items-center gap-3 py-1">
+                  <Pressable
+                    className="flex-row items-center gap-3 py-1"
+                    onPress={() => router.push('/(app)/billing' as any)}
+                  >
                     <Lock size={16} className="text-muted-foreground" />
                     <View className="flex-1">
                       <Text className="text-sm font-medium text-foreground">
@@ -530,7 +582,8 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                         Upgrade to a paid plan to enable periodic agent check-ins
                       </Text>
                     </View>
-                  </View>
+                    <ExternalLink size={14} className="text-primary" />
+                  </Pressable>
                 ) : (
                 <>
                 {/* Toggle row */}
@@ -556,6 +609,16 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                     }}
                   />
                 </View>
+
+                {hbError && (
+                  <View className="flex-row items-center gap-2 px-2.5 py-1.5 rounded-md bg-destructive/10">
+                    <XCircle size={12} className="text-destructive" />
+                    <Text className="text-xs text-destructive flex-1">{hbError}</Text>
+                    <Pressable onPress={() => setHbError(null)}>
+                      <Text className="text-xs text-destructive underline">Dismiss</Text>
+                    </Pressable>
+                  </View>
+                )}
 
                 {/* Stats row (when enabled) */}
                 {(hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled) && (
