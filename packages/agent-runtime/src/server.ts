@@ -782,7 +782,7 @@ app.post('/agent/chat', async (c) => {
   const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string; name?: string }> }>
 
   let userText: string | undefined
-  let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string }> = []
+  let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string; savedPath?: string }> = []
   if (allMessages.length > 0) {
     const last = [...allMessages].reverse().find((m: any) => m.role === 'user')
     if (last?.parts && Array.isArray(last.parts)) {
@@ -802,10 +802,13 @@ app.post('/agent/chat', async (c) => {
   }
 
   // Save uploaded files to the agent's files/ directory so they're accessible
-  // to the agent via its workspace tools (read_file, search, etc.)
+  // to the agent via its workspace tools (read_file, search, exec/unzip, etc.)
+  // Every base64 data-URL part is persisted regardless of MIME type — even
+  // archives and unknown binaries — and the saved path is annotated back
+  // onto the file part so downstream parsing can surface it to the agent.
   if (userFileParts.length > 0) {
     mkdirSync(FILES_DIR, { recursive: true })
-    const savedPaths: string[] = []
+    const savedSummaries: string[] = []
     for (const fp of userFileParts) {
       try {
         const url = fp.url!
@@ -822,18 +825,25 @@ app.post('/agent/chat', async (c) => {
 
         const dir = dirname(resolved)
         mkdirSync(dir, { recursive: true })
-        writeFileSync(resolved, Buffer.from(base64Match[1], 'base64'))
-        savedPaths.push(baseName)
-        console.log(`[AgentChat] Saved uploaded file to files/${baseName}`)
+        const bytes = Buffer.from(base64Match[1], 'base64')
+        writeFileSync(resolved, bytes)
+        const relPath = `files/${baseName}`
+        fp.savedPath = relPath
+        savedSummaries.push(`- \`${relPath}\` (${mediaType}, ${formatBytes(bytes.length)})`)
+        console.log(`[AgentChat] Saved uploaded file to ${relPath} (${bytes.length} bytes, ${mediaType})`)
 
         try { getIndexEngine().indexFile('files', baseName).catch(() => {}) } catch { /* best-effort */ }
       } catch (err: any) {
         console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
       }
     }
-    if (savedPaths.length > 0) {
-      const note = savedPaths.map(p => `files/${p}`).join(', ')
-      userText = (userText || '') + `\n\n[Uploaded file(s) saved to workspace: ${note}]`
+    if (savedSummaries.length > 0) {
+      const note = [
+        '[Uploaded files saved to workspace:',
+        ...savedSummaries,
+        ']',
+      ].join('\n')
+      userText = userText ? `${userText}\n\n${note}` : note
     }
   }
 
@@ -1939,6 +1949,13 @@ const MIME_EXTENSIONS: Record<string, string> = {
 
 function mimeToExtension(mimeType: string): string {
   return MIME_EXTENSIONS[mimeType] || `.${mimeType.split('/').pop() || 'bin'}`
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([

@@ -883,7 +883,6 @@ export function ChatInput({
             ref={fileInputRef as any}
             type="file"
             multiple
-            accept="image/*,.pdf,.txt,.md,.csv,.json"
             capture={undefined}
             onChange={handleWebFileChange}
             tabIndex={-1}

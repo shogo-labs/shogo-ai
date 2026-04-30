@@ -2882,7 +2882,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const extractMediaType = useCallback((dataUrl: string): string => {
     const match = dataUrl.match(/^data:([^;]+);/)
-    return match?.[1] || "image/png"
+    return match?.[1] || "application/octet-stream"
   }, [])
 
   // Internal function that actually sends a message (used by queue processor)
