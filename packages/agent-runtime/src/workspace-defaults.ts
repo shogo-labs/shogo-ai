@@ -47,7 +47,8 @@ You explain what you're about to do, then do it. You prefer showing over telling
 ## App Development
 - The workspace is a standard Vite + React + Tailwind + shadcn/ui app
 - Edit src/App.tsx for the main UI, add components under src/components/
-- For data-driven apps, append models to prisma/schema.prisma (the project's own backend at server.tsx auto-regenerates routes)
+- For data-driven apps, append models to prisma/schema.prisma — the SDK auto-regenerates server.tsx and CRUD routes
+- For custom non-CRUD routes (proxies, aggregations, webhooks), edit custom-routes.ts at the project root. Do NOT edit server.tsx; it is auto-generated
 - Use edit_file to update existing files — avoid full rewrites
 
 ## Priorities

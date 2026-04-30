@@ -293,4 +293,132 @@ describe('PreviewManager', () => {
     expect(after.length).toBeGreaterThan(0)
     pm.stop()
   })
+
+  // --- API server port resolution ------------------------------------------
+  // Pre-merge, the project backend was a separate `SkillServerManager` whose
+  // port was resolved per-instance from `SKILL_SERVER_PORT` (with a 4100
+  // default). Local Shogo-managed workers, the VM harness, and the docker
+  // eval-worker all rely on injecting that port to dynamically assign one
+  // per worker. After the unification into PreviewManager, the resolver
+  // honours `API_SERVER_PORT` first, then `SKILL_SERVER_PORT`, then 3001.
+
+  describe('apiServerPort resolution', () => {
+    const ENV_KEYS = ['API_SERVER_PORT', 'SKILL_SERVER_PORT'] as const
+    const saved: Record<string, string | undefined> = {}
+
+    beforeEach(() => {
+      for (const k of ENV_KEYS) {
+        saved[k] = process.env[k]
+        delete process.env[k]
+      }
+    })
+    afterEach(() => {
+      for (const k of ENV_KEYS) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+    })
+
+    test('apiServerUrl defaults to 3001 when no env override is set', () => {
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      expect(pm.apiServerUrl).toBe('http://localhost:3001')
+    })
+
+    test('apiServerUrl honours API_SERVER_PORT', () => {
+      process.env.API_SERVER_PORT = '4123'
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      expect(pm.apiServerUrl).toBe('http://localhost:4123')
+    })
+
+    test('apiServerUrl honours legacy SKILL_SERVER_PORT', () => {
+      process.env.SKILL_SERVER_PORT = '4101'
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      expect(pm.apiServerUrl).toBe('http://localhost:4101')
+    })
+
+    test('API_SERVER_PORT wins over SKILL_SERVER_PORT', () => {
+      process.env.API_SERVER_PORT = '5500'
+      process.env.SKILL_SERVER_PORT = '5599'
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      expect(pm.apiServerUrl).toBe('http://localhost:5500')
+    })
+
+    test('invalid env values fall back to 3001', () => {
+      process.env.API_SERVER_PORT = 'not-a-number'
+      process.env.SKILL_SERVER_PORT = '0'
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      expect(pm.apiServerUrl).toBe('http://localhost:3001')
+    })
+
+    test('apiServerPort getter is null until the API process is running', () => {
+      process.env.API_SERVER_PORT = '4242'
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      // No server.tsx, no spawn — getter must report null but apiServerUrl
+      // (the resolved bind target) still reflects the configured port.
+      expect(pm.apiServerPort).toBeNull()
+      expect(pm.apiServerUrl).toBe('http://localhost:4242')
+    })
+
+    test('port is resolved at construction time (later env mutations are ignored)', () => {
+      process.env.API_SERVER_PORT = '6001'
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      process.env.API_SERVER_PORT = '6002'
+      // Already-constructed manager must keep its resolved port — the
+      // running spawn (if any) is bound to the original value.
+      expect(pm.apiServerUrl).toBe('http://localhost:6001')
+    })
+  })
+
+  // --- Custom-routes fast restart -----------------------------------------
+  // The synchronous fast path agent tools call when `custom-routes.ts` is
+  // edited. With no spawned server in the test fixture, the call should
+  // simply exit cleanly (no throw, phase doesn't get stuck).
+
+  describe('restartApiServerOnly', () => {
+    let savedPort: string | undefined
+    beforeEach(() => {
+      // Pin to a high random-ish port so `forceKillPort` doesn't reach
+      // for `lsof` against a port a real local dev shogo runtime might
+      // happen to occupy (3001 is the runtime template default).
+      savedPort = process.env.API_SERVER_PORT
+      process.env.API_SERVER_PORT = '39021'
+    })
+    afterEach(() => {
+      if (savedPort === undefined) delete process.env.API_SERVER_PORT
+      else process.env.API_SERVER_PORT = savedPort
+    })
+
+    test('no-ops cleanly when no API server is running', async () => {
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      // Should not throw — the kill path has nothing to kill, and the
+      // startApiServer existence check returns idle without `server.tsx`.
+      await pm.restartApiServerOnly()
+      expect(['idle', 'crashed']).toContain(pm.apiServerPhase)
+    })
+  })
+
+  // --- API server existence-check ----------------------------------------
+  // Boot path skips `bun run generate` when there's no schema.prisma but
+  // also no server.tsx — that workspace is pre-bootstrap, not crashed.
+
+  describe('startApiServer existence check', () => {
+    let savedPort: string | undefined
+    beforeEach(() => {
+      savedPort = process.env.API_SERVER_PORT
+      process.env.API_SERVER_PORT = '39022'
+    })
+    afterEach(() => {
+      if (savedPort === undefined) delete process.env.API_SERVER_PORT
+      else process.env.API_SERVER_PORT = savedPort
+    })
+
+    test('preboot workspace (no server.tsx, no schema) leaves apiPhase=idle', async () => {
+      const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080 })
+      // Trigger the same code path the orchestrator uses — restartApi-
+      // ServerOnly funnels through startApiServer which has the new
+      // existence-check logic.
+      await pm.restartApiServerOnly()
+      expect(pm.apiServerPhase).toBe('idle')
+    })
+  })
 })

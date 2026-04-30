@@ -165,7 +165,11 @@ const BASE_PORT = 6400
 // `skillServerPort` alias.
 const SKILL_SERVER_BASE_PORT = 4100
 // In-container port the project's API server (`server.tsx`) listens on.
-// PreviewManager spawns the server with PORT=3001 — see preview-manager.ts.
+// PreviewManager resolves its bind port from `API_SERVER_PORT` /
+// `SKILL_SERVER_PORT` per-instance (see preview-manager.ts::
+// resolveApiServerPort). The docker-worker pins this exact value via
+// `-e API_SERVER_PORT=<container>` so host-side runtime checks reach
+// the same port the in-container manager bound to.
 const CONTAINER_SKILL_PORT = 3001
 
 function getWorkerBaseUrl(worker: DockerWorker): string {
