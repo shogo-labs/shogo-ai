@@ -252,7 +252,9 @@ describe('Cloud Login E2E', () => {
     localConfig.clear()
     idCounter = 0
     delete process.env.SHOGO_API_KEY
-    delete process.env.SHOGO_CLOUD_URL
+    // The cloud endpoint is now sourced ONLY from SHOGO_CLOUD_URL — point
+    // it at our in-process bridge for the duration of each test.
+    process.env.SHOGO_CLOUD_URL = CLOUD_HOST
     app = buildApp()
     restoreFetch?.()
     restoreFetch = installFetchBridge(app)
@@ -511,7 +513,8 @@ describe('Cloud Login E2E', () => {
     })
 
     test('happy path: start → complete writes localConfig and status flips', async () => {
-      // Step 1: local start
+      // Step 1: local start. Note: the request body deliberately does NOT
+      // include a cloudUrl — the endpoint now only honors SHOGO_CLOUD_URL.
       const startRes = await app.request('/api/local/cloud-login/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -520,7 +523,6 @@ describe('Cloud Login E2E', () => {
           deviceName: 'E2E Mac',
           devicePlatform: 'darwin',
           deviceAppVersion: '0.1.0',
-          cloudUrl: CLOUD_HOST,
         }),
       })
       expect(startRes.status).toBe(200)
@@ -557,7 +559,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: start.state,
           key: mintedKey,
-          cloudUrl: CLOUD_HOST,
           email: 'e2e@test.com',
           workspace: 'Personal',
         }),
@@ -569,17 +570,21 @@ describe('Cloud Login E2E', () => {
       expect(complete.workspace?.id).toBe('ws-1')
       expect(complete.deviceId).toBe('e2e-device-happy')
 
-      // localConfig persisted
+      // localConfig persisted: ONLY the key + key-info; the cloud URL is
+      // env-only and intentionally not persisted.
       expect(localConfig.get('SHOGO_API_KEY')).toBe(mintedKey)
-      expect(localConfig.get('SHOGO_CLOUD_URL')).toBe(CLOUD_HOST)
+      expect(localConfig.has('SHOGO_CLOUD_URL')).toBe(false)
       const info = JSON.parse(localConfig.get('SHOGO_KEY_INFO')!)
       expect(info.workspace?.id).toBe('ws-1')
       expect(info.email).toBe('e2e@test.com')
       expect(info.deviceId).toBe('e2e-device-happy')
       expect(info.kind).toBe('device')
 
-      // process.env mirrors the stored key for the duration of the process
+      // process.env mirrors the stored key for the duration of the process.
+      // SHOGO_CLOUD_URL is not mutated by the handler — it stays whatever
+      // the operator set at process start.
       expect(process.env.SHOGO_API_KEY).toBe(mintedKey)
+      expect(process.env.SHOGO_CLOUD_URL).toBe(CLOUD_HOST)
 
       // Step 4: status flips to signed in
       const statusRes = await app.request('/api/local/cloud-login/status')
@@ -589,6 +594,24 @@ describe('Cloud Login E2E', () => {
       expect(status.workspace?.id).toBe('ws-1')
       expect(status.deviceId).toBe('e2e-device-happy')
       expect(status.keyPrefix).toStartWith('shogo_sk_')
+      expect(status.cloudUrl).toBe(CLOUD_HOST)
+    })
+
+    test('start ignores cloudUrl in body (env-only contract)', async () => {
+      // Even if a stale client sends a cloudUrl in the request body, the
+      // server must use process.env.SHOGO_CLOUD_URL.
+      const startRes = await app.request('/api/local/cloud-login/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'e2e-env-only',
+          cloudUrl: 'https://attacker.example',
+        }),
+      })
+      expect(startRes.status).toBe(200)
+      const start = await startRes.json()
+      expect(start.cloudUrl).toBe(CLOUD_HOST)
+      expect(start.authUrl).toStartWith(`${CLOUD_HOST}/auth/local-link?`)
     })
 
     test('complete rejects unknown state', async () => {
@@ -598,7 +621,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: 'not-a-real-state',
           key: 'shogo_sk_bogus',
-          cloudUrl: CLOUD_HOST,
         }),
       })
       expect(res.status).toBe(400)
@@ -612,7 +634,7 @@ describe('Cloud Login E2E', () => {
         .request('/api/local/cloud-login/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-bad-key', cloudUrl: CLOUD_HOST }),
+          body: JSON.stringify({ deviceId: 'e2e-bad-key' }),
         })
         .then((r) => r.json())
 
@@ -622,7 +644,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: start.state,
           key: 'definitely-not-a-shogo-key',
-          cloudUrl: CLOUD_HOST,
         }),
       })
       expect(res.status).toBe(400)
@@ -633,7 +654,7 @@ describe('Cloud Login E2E', () => {
         .request('/api/local/cloud-login/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-single-use', cloudUrl: CLOUD_HOST }),
+          body: JSON.stringify({ deviceId: 'e2e-single-use' }),
         })
         .then((r) => r.json())
 
@@ -651,7 +672,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: start.state,
           key: mint.key,
-          cloudUrl: CLOUD_HOST,
         }),
       })
       expect(first.status).toBe(200)
@@ -662,7 +682,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: start.state,
           key: mint.key,
-          cloudUrl: CLOUD_HOST,
         }),
       })
       expect(second.status).toBe(400)
@@ -673,7 +692,7 @@ describe('Cloud Login E2E', () => {
         .request('/api/local/cloud-login/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-bad-validate', cloudUrl: CLOUD_HOST }),
+          body: JSON.stringify({ deviceId: 'e2e-bad-validate' }),
         })
         .then((r) => r.json())
 
@@ -684,7 +703,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: start.state,
           key: 'shogo_sk_' + 'a'.repeat(64),
-          cloudUrl: CLOUD_HOST,
         }),
       })
       expect(res.status).toBe(400)
@@ -702,7 +720,7 @@ describe('Cloud Login E2E', () => {
         .request('/api/local/cloud-login/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceId: 'e2e-signed-in', cloudUrl: CLOUD_HOST }),
+          body: JSON.stringify({ deviceId: 'e2e-signed-in' }),
         })
         .then((r) => r.json())
       const mint = await app
@@ -722,7 +740,6 @@ describe('Cloud Login E2E', () => {
         body: JSON.stringify({
           state: start.state,
           key: mint.key,
-          cloudUrl: CLOUD_HOST,
         }),
       })
       return mint.key
@@ -735,12 +752,16 @@ describe('Cloud Login E2E', () => {
       const res = await app.request('/api/local/cloud-login/signout', { method: 'POST' })
       expect(res.status).toBe(200)
       expect(localConfig.has('SHOGO_API_KEY')).toBe(false)
-      expect(localConfig.has('SHOGO_CLOUD_URL')).toBe(false)
       expect(localConfig.has('SHOGO_KEY_INFO')).toBe(false)
       expect(process.env.SHOGO_API_KEY).toBeUndefined()
+      // SHOGO_CLOUD_URL is env-only and is NOT cleared by signout — the
+      // operator's process-level configuration must persist across user
+      // sign-in/sign-out cycles.
+      expect(process.env.SHOGO_CLOUD_URL).toBe(CLOUD_HOST)
 
       const status = await app.request('/api/local/cloud-login/status').then((r) => r.json())
       expect(status.signedIn).toBe(false)
+      expect(status.cloudUrl).toBe(CLOUD_HOST)
     })
 
     test('heartbeat while signed in bumps lastSeenAt + deviceAppVersion', async () => {

@@ -54,11 +54,9 @@ export default function AdminGeneralPage() {
   const [loginStatus, setLoginStatus] = useState<'idle' | 'connecting' | 'error'>('idle')
   const [loginError, setLoginError] = useState('')
   const [isDisconnecting, setIsDisconnecting] = useState(false)
+  // Cloud URL is read-only; it reflects the API server's `SHOGO_CLOUD_URL`
+  // env var (default https://studio.shogo.ai) and is not user-editable.
   const [cloudUrl, setCloudUrl] = useState(SHOGO_CLOUD_URL_DEFAULT)
-
-  const [cloudUrlDraft, setCloudUrlDraft] = useState(SHOGO_CLOUD_URL_DEFAULT)
-  const [isSavingCloudUrl, setIsSavingCloudUrl] = useState(false)
-  const [cloudUrlError, setCloudUrlError] = useState('')
 
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(null)
   const [instanceNameDraft, setInstanceNameDraft] = useState('')
@@ -88,7 +86,6 @@ export default function AdminGeneralPage() {
       setShogoKeyMask(status.keyPrefix ? `${status.keyPrefix}…` : '')
       if (status.cloudUrl) {
         setCloudUrl(status.cloudUrl)
-        setCloudUrlDraft(status.cloudUrl)
       }
       if (status.signedIn) {
         fetchInstanceInfo()
@@ -201,33 +198,6 @@ export default function AdminGeneralPage() {
     }
   }
 
-  const handleCloudUrlBlur = async () => {
-    const trimmed = cloudUrlDraft.trim().replace(/\/$/, '')
-    if (!trimmed || trimmed === cloudUrl) {
-      setCloudUrlDraft(cloudUrl)
-      return
-    }
-    setIsSavingCloudUrl(true)
-    setCloudUrlError('')
-    try {
-      const data = await platform.updateShogoCloudUrl(trimmed)
-      if (data.ok) {
-        setCloudUrl(trimmed)
-        setCloudUrlDraft(trimmed)
-        setShogoWorkspaceName(data.workspace?.name || '')
-        fetchInstanceInfo()
-      } else {
-        setCloudUrlError(data.error || 'Failed to validate key against new URL')
-        setCloudUrlDraft(cloudUrl)
-      }
-    } catch (err: any) {
-      setCloudUrlError(err.message || 'Connection failed')
-      setCloudUrlDraft(cloudUrl)
-    } finally {
-      setIsSavingCloudUrl(false)
-    }
-  }
-
   const handleInstanceNameBlur = async () => {
     const trimmed = instanceNameDraft.trim()
     if (!trimmed || trimmed === instanceInfo?.name) {
@@ -312,34 +282,15 @@ export default function AdminGeneralPage() {
                 </Pressable>
               </View>
               <View className="gap-1">
-                <View className="flex-row items-center gap-2">
-                  <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Cloud URL
-                  </Text>
-                  {isSavingCloudUrl && <ActivityIndicator size="small" />}
-                </View>
-                <TextInput
-                  value={cloudUrlDraft}
-                  onChangeText={(t) => {
-                    setCloudUrlDraft(t)
-                    setCloudUrlError('')
-                  }}
-                  onBlur={handleCloudUrlBlur}
-                  onSubmitEditing={handleCloudUrlBlur}
-                  editable={!isSavingCloudUrl}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  className={cn(
-                    'border rounded-lg px-3 py-2 text-sm text-foreground bg-background web:outline-none',
-                    cloudUrlError ? 'border-destructive' : 'border-border',
-                  )}
-                />
-                {cloudUrlError ? (
-                  <View className="flex-row items-center gap-1.5">
-                    <AlertTriangle size={14} className="text-destructive" />
-                    <Text className="text-xs text-destructive">{cloudUrlError}</Text>
-                  </View>
-                ) : null}
+                <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Cloud URL
+                </Text>
+                <Text className="text-sm text-foreground" numberOfLines={1}>
+                  {cloudUrl}
+                </Text>
+                <Text className="text-xs text-muted-foreground">
+                  Set by the SHOGO_CLOUD_URL environment variable on this machine.
+                </Text>
               </View>
             </View>
           ) : (
@@ -386,16 +337,11 @@ export default function AdminGeneralPage() {
               </Text>
               <View className="gap-1">
                 <Text className="text-xs font-medium text-muted-foreground">Cloud URL</Text>
-                <TextInput
-                  value={cloudUrl}
-                  onChangeText={setCloudUrl}
-                  placeholder={SHOGO_CLOUD_URL_DEFAULT}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  className="border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
-                />
+                <Text className="text-sm text-foreground" numberOfLines={1}>
+                  {cloudUrl}
+                </Text>
                 <Text className="text-xs text-muted-foreground">
-                  Override for self-hosted or staging environments
+                  Set the SHOGO_CLOUD_URL env var to target staging or a self-hosted cloud.
                 </Text>
               </View>
             </View>

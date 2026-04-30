@@ -298,7 +298,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
   } | null>(null)
   const [loading, setLoading] = useState(true)
   const [apiKey, setApiKey] = useState('')
-  const [cloudUrl, setCloudUrl] = useState('https://studio.shogo.ai')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -308,7 +307,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
       const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
       const data = await res.json()
       setStatus(data)
-      if (data.cloudUrl) setCloudUrl(data.cloudUrl)
     } catch {
       setStatus({ connected: false })
     } finally {
@@ -329,7 +327,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: apiKey.trim(), cloudUrl: cloudUrl.trim() }),
+        body: JSON.stringify({ key: apiKey.trim() }),
       })
       const data = await res.json()
       if (!data.ok) {
@@ -427,17 +425,13 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
               <Text className="text-xs text-muted-foreground">
                 Create an API key from your Shogo Cloud workspace, then paste it here.
               </Text>
-              <View className="gap-2">
-                <View>
-                  <Text className="text-xs text-muted-foreground mb-1">Cloud URL</Text>
-                  <Input
-                    value={cloudUrl}
-                    onChangeText={setCloudUrl}
-                    placeholder="https://studio.shogo.ai"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
+              {status?.cloudUrl ? (
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-xs text-muted-foreground">Cloud URL</Text>
+                  <Text className="text-xs text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
                 </View>
+              ) : null}
+              <View className="gap-2">
                 <View>
                   <Text className="text-xs text-muted-foreground mb-1">API Key</Text>
                   <Input

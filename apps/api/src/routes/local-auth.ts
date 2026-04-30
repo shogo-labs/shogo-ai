@@ -20,9 +20,13 @@
  *      POST /api/local/cloud-login/complete. We verify the state nonce,
  *      re-validate the key against cloud, and persist it.
  *
- * Keys stored in localConfig: SHOGO_API_KEY, SHOGO_CLOUD_URL, SHOGO_KEY_INFO
- * (same keys the legacy PUT /api/local/shogo-key handler uses, so either
- * entry path produces an identical runtime state).
+ * Cloud endpoint selection: the cloud URL is sourced ONLY from
+ * `process.env.SHOGO_CLOUD_URL` (defaulting to https://studio.shogo.ai).
+ * It is never accepted from request bodies, persisted in localConfig, or
+ * configurable through the UI. To target staging or a self-hosted cloud,
+ * set `SHOGO_CLOUD_URL` in the API process environment.
+ *
+ * Keys stored in localConfig: SHOGO_API_KEY, SHOGO_KEY_INFO.
  *
  * The legacy PUT /api/local/shogo-key endpoint is intentionally preserved as
  * a headless / CLI escape hatch — see apps/api/src/server.ts.
@@ -41,7 +45,6 @@ interface PendingState {
   deviceName?: string
   devicePlatform?: string
   deviceAppVersion?: string
-  cloudUrl: string
   expiresAt: number
 }
 
@@ -62,14 +65,9 @@ function generateState(): string {
   return crypto.randomBytes(STATE_BYTE_LENGTH).toString('hex')
 }
 
-function resolveCloudUrl(override?: string | null): string {
-  const raw = override || process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT
-  return raw.replace(/\/$/, '')
-}
-
-async function loadStoredCloudUrl(localDb: any): Promise<string> {
-  const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } }).catch(() => null)
-  return resolveCloudUrl(row?.value)
+/** Single source of truth for the Shogo Cloud endpoint. */
+function getCloudUrl(): string {
+  return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
 }
 
 async function readStoredKey(localDb: any): Promise<string | null> {
@@ -103,21 +101,19 @@ export function localAuthRoutes() {
       deviceName?: string
       devicePlatform?: string
       deviceAppVersion?: string
-      cloudUrl?: string
     }>().catch(() => ({} as any))
 
     if (!body?.deviceId || typeof body.deviceId !== 'string') {
       return c.json({ ok: false, error: 'deviceId is required' }, 400)
     }
 
-    const cloudUrl = resolveCloudUrl(body.cloudUrl ?? await loadStoredCloudUrl(localDb))
+    const cloudUrl = getCloudUrl()
     const state = generateState()
     pendingStates.set(state, {
       deviceId: body.deviceId,
       deviceName: body.deviceName,
       devicePlatform: body.devicePlatform,
       deviceAppVersion: body.deviceAppVersion,
-      cloudUrl,
       expiresAt: Date.now() + STATE_TTL_MS,
     })
 
@@ -141,7 +137,6 @@ export function localAuthRoutes() {
     const body = await c.req.json<{
       state: string
       key: string
-      cloudUrl?: string
       email?: string
       workspace?: string
     }>().catch(() => ({} as any))
@@ -163,7 +158,7 @@ export function localAuthRoutes() {
       return c.json({ ok: false, error: 'Sign-in request expired. Please try again.' }, 400)
     }
 
-    const cloudUrl = resolveCloudUrl(body.cloudUrl || pending.cloudUrl)
+    const cloudUrl = getCloudUrl()
     const validateUrl = `${cloudUrl}/api/api-keys/validate`
 
     let validateData: { valid?: boolean; error?: string; workspace?: any; user?: any; kind?: string; deviceId?: string | null }
@@ -203,11 +198,6 @@ export function localAuthRoutes() {
         create: { key: 'SHOGO_API_KEY', value: body.key },
       }),
       localDb.localConfig.upsert({
-        where: { key: 'SHOGO_CLOUD_URL' },
-        update: { value: cloudUrl },
-        create: { key: 'SHOGO_CLOUD_URL', value: cloudUrl },
-      }),
-      localDb.localConfig.upsert({
         where: { key: 'SHOGO_KEY_INFO' },
         update: { value: JSON.stringify(keyInfo) },
         create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify(keyInfo) },
@@ -215,7 +205,6 @@ export function localAuthRoutes() {
     ])
 
     process.env.SHOGO_API_KEY = body.key
-    process.env.SHOGO_CLOUD_URL = cloudUrl
 
     // Restart the instance tunnel with the new key so inbound cloud-driven
     // remote control picks up fresh credentials immediately.
@@ -236,7 +225,7 @@ export function localAuthRoutes() {
   // POST /api/local/cloud-login/signout — revoke key on cloud, wipe locally.
   router.post('/local/cloud-login/signout', async (c) => {
     const storedKey = await readStoredKey(localDb)
-    const cloudUrl = await loadStoredCloudUrl(localDb)
+    const cloudUrl = getCloudUrl()
 
     // Best-effort server-side revocation. If the network is down we still
     // wipe locally so the UI reflects sign-out; a stale cloud row just
@@ -263,11 +252,9 @@ export function localAuthRoutes() {
 
     await Promise.all([
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
-      localDb.localConfig.deleteMany({ where: { key: 'SHOGO_CLOUD_URL' } }),
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
     ])
     delete process.env.SHOGO_API_KEY
-    delete process.env.SHOGO_CLOUD_URL
 
     import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
       stopInstanceTunnel()
@@ -282,7 +269,7 @@ export function localAuthRoutes() {
     if (!storedKey) {
       return c.json({ ok: false, error: 'Not signed in' }, 401)
     }
-    const cloudUrl = await loadStoredCloudUrl(localDb)
+    const cloudUrl = getCloudUrl()
 
     const body = await c.req.json<{ deviceAppVersion?: string }>().catch(() => ({} as any))
 
@@ -320,13 +307,12 @@ export function localAuthRoutes() {
   router.get('/local/cloud-login/status', async (c) => {
     const storedKey = await readStoredKey(localDb)
     if (!storedKey) {
-      return c.json({ signedIn: false })
+      return c.json({ signedIn: false, cloudUrl: getCloudUrl() })
     }
     const info = await readStoredKeyInfo(localDb)
-    const cloudUrl = await loadStoredCloudUrl(localDb)
     return c.json({
       signedIn: true,
-      cloudUrl,
+      cloudUrl: getCloudUrl(),
       email: info?.email || null,
       workspace: info?.workspace || null,
       deviceId: info?.deviceId || null,

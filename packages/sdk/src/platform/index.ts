@@ -274,12 +274,14 @@ export class PlatformApi {
 
   /**
    * Connect a Shogo Cloud API key (local mode).
-   * Validates the key against the cloud before saving.
+   * Validates the key against the cloud before saving. The cloud endpoint
+   * is determined by the API server's `SHOGO_CLOUD_URL` env var and cannot
+   * be overridden by callers.
    */
-  async connectShogoKey(key: string, cloudUrl?: string): Promise<ShogoKeyConnectResult> {
+  async connectShogoKey(key: string): Promise<ShogoKeyConnectResult> {
     const res = await this.http.request<ShogoKeyConnectResult>(
       '/api/local/shogo-key',
-      { method: 'PUT', body: { key, ...(cloudUrl ? { cloudUrl } : {}) } },
+      { method: 'PUT', body: { key } },
     )
     return res.data ?? { ok: false }
   }
@@ -287,15 +289,6 @@ export class PlatformApi {
   /** Disconnect the Shogo Cloud API key (local mode). */
   async disconnectShogoKey(): Promise<void> {
     await this.http.delete('/api/local/shogo-key')
-  }
-
-  /** Update the Shogo Cloud URL for an existing connection (re-validates the stored key). */
-  async updateShogoCloudUrl(cloudUrl: string): Promise<ShogoKeyConnectResult> {
-    const res = await this.http.request<ShogoKeyConnectResult>(
-      '/api/local/shogo-key',
-      { method: 'PATCH', body: { cloudUrl } },
-    )
-    return res.data ?? { ok: false }
   }
 
   // ===========================================================================
