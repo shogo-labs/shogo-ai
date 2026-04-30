@@ -30,7 +30,9 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
+import type { ToolCallData } from '../chat/tools/types'
 
 export type ChatInteractionMode = 'agent' | 'plan' | 'ask'
 
@@ -89,18 +91,50 @@ export interface ChatBridgeApi {
    */
   chatSessionId: string | null
   /**
+   * Resolved agent runtime base URL. Surfaced through the bridge so
+   * subagent-aware UI (e.g. SubagentCard's live browser preview, the
+   * Shogo overlay) can subscribe to runtime endpoints without depending
+   * on the ChatContext which is only available beneath ChatPanel.
+   */
+  agentUrl: string | null
+  /**
    * One-shot signal: when set, the Shogo Mode panel should auto-connect
    * its voice session as soon as it mounts. Consumers must call
    * `consumeAutoStartVoice()` exactly once to read and clear the flag —
    * the bridge guarantees `true` is returned at most once per provider.
    */
   consumeAutoStartVoice: () => boolean
+  /**
+   * `useSyncExternalStore` plumbing for the subagent (`task` /
+   * `agent_spawn`) tool-call snapshot published by `ChatPanel`. The
+   * Shogo overlay subscribes to this snapshot and renders one
+   * `<SubagentCard>` per entry, reusing the same card component the
+   * technical chat shows. Most consumers should use the
+   * `useSubagentCards()` hook instead of these directly.
+   */
+  subscribeSubagentCards: (fn: () => void) => () => void
+  getSubagentCardsSnapshot: () => ToolCallData[]
+}
+
+/**
+ * Snapshot of `task` / `agent_spawn` tool calls from the technical
+ * agent's message thread, exposed to non-chat surfaces (Shogo Mode)
+ * so they can render the same `<SubagentCard>` UI without owning any
+ * AI SDK message state. Updated by `ChatPanel` whenever its message
+ * list changes via `setSubagentCards`.
+ */
+interface SubagentCardsSnapshot {
+  cards: ToolCallData[]
+  /** Bumps every time the snapshot identity changes; safe to use as a memo key. */
+  version: number
 }
 
 interface BridgeInternals {
   sendImpl: ((text: string) => void) | null
   setModeImpl: ((mode: ChatInteractionMode) => void) | null
   listeners: Set<(event: AgentEvent) => void>
+  subagentCardsSnapshot: SubagentCardsSnapshot
+  subagentCardsListeners: Set<() => void>
 }
 
 const ChatBridgeContext = createContext<{
@@ -111,6 +145,12 @@ const ChatBridgeContext = createContext<{
 export interface ChatBridgeProviderProps {
   /** Currently active chat session id — used for per-session persistence. */
   chatSessionId?: string | null
+  /**
+   * Resolved agent runtime base URL. Threaded through the bridge so
+   * subagent UI (e.g. live browser preview) can subscribe to runtime
+   * endpoints from any surface without piggybacking on ChatContext.
+   */
+  agentUrl?: string | null
   /**
    * Initial value for `shogoModeActive`. When `true`, Shogo Mode is on
    * from first render so the overlay mounts before any user gesture.
@@ -129,6 +169,7 @@ export interface ChatBridgeProviderProps {
 
 export function ChatBridgeProvider({
   chatSessionId = null,
+  agentUrl = null,
   initialShogoModeActive = false,
   initialAutoStartVoice = false,
   children,
@@ -137,6 +178,8 @@ export function ChatBridgeProvider({
     sendImpl: null,
     setModeImpl: null,
     listeners: new Set(),
+    subagentCardsSnapshot: { cards: [], version: 0 },
+    subagentCardsListeners: new Set(),
   })
   const [shogoModeActive, setShogoModeActiveState] = useState(initialShogoModeActive)
   const [shogoPeekActive, setShogoPeekActiveState] = useState(false)
@@ -166,6 +209,17 @@ export function ChatBridgeProvider({
     autoStartVoiceRef.current = false
     return true
   }, [])
+
+  const subscribeSubagentCards = useCallback((fn: () => void) => {
+    internalsRef.current.subagentCardsListeners.add(fn)
+    return () => {
+      internalsRef.current.subagentCardsListeners.delete(fn)
+    }
+  }, [])
+  const getSubagentCardsSnapshot = useCallback(
+    () => internalsRef.current.subagentCardsSnapshot.cards,
+    [],
+  )
 
   const api = useMemo<ChatBridgeApi>(
     () => ({
@@ -197,7 +251,10 @@ export function ChatBridgeProvider({
       shogoPeekActive,
       setShogoPeekActive,
       chatSessionId,
+      agentUrl,
       consumeAutoStartVoice,
+      subscribeSubagentCards,
+      getSubagentCardsSnapshot,
     }),
     [
       shogoModeActive,
@@ -206,7 +263,10 @@ export function ChatBridgeProvider({
       shogoPeekActive,
       setShogoPeekActive,
       chatSessionId,
+      agentUrl,
       consumeAutoStartVoice,
+      subscribeSubagentCards,
+      getSubagentCardsSnapshot,
     ],
   )
 
@@ -237,6 +297,27 @@ export function useChatBridgeOptional(): ChatBridgeApi | null {
   return useContext(ChatBridgeContext)?.api ?? null
 }
 
+/**
+ * Subscribe to the subagent card snapshot published by `ChatPanel` via
+ * the bridge. Returns the current `ToolCallData[]` for `task` /
+ * `agent_spawn` tool calls and re-renders the caller whenever the
+ * snapshot changes. Returns an empty array when no provider is mounted
+ * so callers can render unconditionally.
+ */
+export function useSubagentCards(): ToolCallData[] {
+  const ctx = useContext(ChatBridgeContext)
+  // Stable no-op fallbacks so the hook can be called unconditionally
+  // even without a provider (e.g. in tests or the legacy chat panel).
+  const fallbackSubscribe = React.useCallback(() => () => {}, [])
+  const fallbackEmpty = React.useRef<ToolCallData[]>([]).current
+  const fallbackSnapshot = React.useCallback(() => fallbackEmpty, [fallbackEmpty])
+  return useSyncExternalStore(
+    ctx?.api.subscribeSubagentCards ?? fallbackSubscribe,
+    ctx?.api.getSubagentCardsSnapshot ?? fallbackSnapshot,
+    ctx?.api.getSubagentCardsSnapshot ?? fallbackSnapshot,
+  )
+}
+
 export interface RegistrarArgs {
   send: (text: string) => void
   setMode: (mode: ChatInteractionMode) => void
@@ -257,6 +338,14 @@ export interface RegistrarEmitters {
   }) => void
   /** Fire once per finalized assistant message (mirrors the old emitAssistant). */
   emitTurnEnd: (finalText: string) => void
+  /**
+   * Publish the latest snapshot of subagent (`task` / `agent_spawn`)
+   * tool calls. The Shogo overlay subscribes to this snapshot and
+   * renders one `<SubagentCard>` per entry. Reference equality of the
+   * `cards` array is preserved when the input is identical, so the
+   * overlay only re-renders when something actually changed.
+   */
+  setSubagentCards: (cards: ToolCallData[]) => void
 }
 
 /**
@@ -308,5 +397,55 @@ export function useChatBridgeRegistrar({ send, setMode }: RegistrarArgs): Regist
     [emit],
   )
 
-  return { emitTurnStart, emitToolActivity, emitTurnEnd }
+  const setSubagentCards = useCallback<RegistrarEmitters['setSubagentCards']>(
+    (cards) => {
+      if (!ctx) return
+      const internals = ctx.internals
+      const prev = internals.subagentCardsSnapshot.cards
+      // Skip if we're publishing an empty snapshot and the previous
+      // snapshot was also empty — saves a notify when ChatPanel runs
+      // its publish effect on an idle session.
+      if (prev === cards) return
+      if (prev.length === 0 && cards.length === 0) return
+      // Cheap reference / shallow-by-id-and-state equality check so we
+      // don't churn re-renders when ChatPanel re-derives an equivalent
+      // tool list on every messages update.
+      if (prev === cards) return
+      if (prev.length === cards.length) {
+        let same = true
+        for (let i = 0; i < prev.length; i++) {
+          const a = prev[i]
+          const b = cards[i]
+          if (a === b) continue
+          if (
+            a.id === b.id &&
+            a.toolName === b.toolName &&
+            a.state === b.state &&
+            a.result === b.result &&
+            a.error === b.error &&
+            a.args === b.args
+          ) {
+            continue
+          }
+          same = false
+          break
+        }
+        if (same) return
+      }
+      internals.subagentCardsSnapshot = {
+        cards,
+        version: internals.subagentCardsSnapshot.version + 1,
+      }
+      for (const listener of internals.subagentCardsListeners) {
+        try {
+          listener()
+        } catch (err) {
+          console.warn('[ChatBridge] subagent cards listener threw', err)
+        }
+      }
+    },
+    [ctx],
+  )
+
+  return { emitTurnStart, emitToolActivity, emitTurnEnd, setSubagentCards }
 }

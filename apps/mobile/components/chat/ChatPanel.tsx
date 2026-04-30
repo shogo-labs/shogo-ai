@@ -116,6 +116,7 @@ import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
+import { extractTaskToolsFromMessages } from "./turns/messageParts"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
@@ -929,6 +930,7 @@ export const ChatPanel = observer(function ChatPanel({
     ok?: boolean
   }) => void) | null>(null)
   const emitTurnEndRef = useRef<((text: string) => void) | null>(null)
+  const setSubagentCardsRef = useRef<((cards: ToolCallData[]) => void) | null>(null)
   const lastEmittedMessageIdRef = useRef<string | null>(null)
   /**
    * Per-tool-invocation state cache so the messages-watch effect only
@@ -1881,6 +1883,22 @@ export const ChatPanel = observer(function ChatPanel({
           }
         }
       })
+    }
+  }, [messages])
+
+  // Publish a snapshot of the technical agent's task / agent_spawn tool
+  // calls through the ChatBridge so the Shogo Mode overlay can render
+  // the same `<SubagentCard>` UI as the regular chat (including any
+  // card-level features like the live browser preview). The bridge
+  // dedupes by reference so this is cheap to call on every messages
+  // update.
+  useEffect(() => {
+    const publish = setSubagentCardsRef.current
+    if (!publish) return
+    try {
+      publish(extractTaskToolsFromMessages(messages))
+    } catch (err) {
+      console.warn('[ChatPanel] bridge.setSubagentCards threw', err)
     }
   }, [messages])
 
@@ -3023,6 +3041,7 @@ export const ChatPanel = observer(function ChatPanel({
     emitTurnStart: bridgeEmitTurnStart,
     emitToolActivity: bridgeEmitToolActivity,
     emitTurnEnd: bridgeEmitTurnEnd,
+    setSubagentCards: bridgeSetSubagentCards,
   } = useChatBridgeRegistrar({
     send: bridgeSend,
     setMode: bridgeSetMode,
@@ -3031,12 +3050,14 @@ export const ChatPanel = observer(function ChatPanel({
     emitTurnStartRef.current = bridgeEmitTurnStart
     emitToolActivityRef.current = bridgeEmitToolActivity
     emitTurnEndRef.current = bridgeEmitTurnEnd
+    setSubagentCardsRef.current = bridgeSetSubagentCards
     return () => {
       if (emitTurnStartRef.current === bridgeEmitTurnStart) emitTurnStartRef.current = null
       if (emitToolActivityRef.current === bridgeEmitToolActivity) emitToolActivityRef.current = null
       if (emitTurnEndRef.current === bridgeEmitTurnEnd) emitTurnEndRef.current = null
+      if (setSubagentCardsRef.current === bridgeSetSubagentCards) setSubagentCardsRef.current = null
     }
-  }, [bridgeEmitTurnStart, bridgeEmitToolActivity, bridgeEmitTurnEnd])
+  }, [bridgeEmitTurnStart, bridgeEmitToolActivity, bridgeEmitTurnEnd, bridgeSetSubagentCards])
 
   // Queue processor: processes messages one at a time
   const processMessageQueue = useCallback(async () => {

@@ -14,13 +14,24 @@ import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Bot, CheckCircle2, XCircle, ChevronRight, GitFork, Wrench, Square } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
-import type { ToolCallData } from "../tools/types"
+import { type ToolCallData, getToolKeyArg, formatToolName } from "../tools/types"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
+import { LiveBrowserView } from "../LiveBrowserView"
+import { useChatContextSafe } from "../ChatContext"
+import { useChatBridgeOptional } from "../../voice-mode/ChatBridgeContext"
 
 export interface SubagentCardProps {
   tool: ToolCallData
   className?: string
+  /**
+   * Override the agent runtime base URL used for the live browser
+   * preview. Defaults to the value resolved from `ChatContext` (when
+   * mounted under `ChatPanel`) or the `ChatBridge` (when mounted under
+   * the Shogo overlay). Tests / standalone surfaces can pass it
+   * explicitly.
+   */
+  agentUrl?: string | null
 }
 
 const SPINNER_DURATION = 1200
@@ -83,6 +94,41 @@ function parseOutputParts(result: unknown): SubagentOutputParts {
   return { parts, toolCount, lastText }
 }
 
+/**
+ * Build a short, human-readable label for the latest activity inside a
+ * subagent stream. Walks `parts` from the end and returns the first
+ * useful tool-call summary or text snippet. Returns `null` when nothing
+ * descriptive is available so callers can fall back to a generic
+ * "Running..." line.
+ */
+function deriveLatestActivityLabel(parts: readonly any[] | undefined): string | null {
+  if (!parts || parts.length === 0) return null
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i]
+    if (!part) continue
+    if (part.type === "tool" && part.tool) {
+      const tool = part.tool as ToolCallData
+      const name = formatToolName(tool.toolName || "tool")
+      const key = getToolKeyArg(tool.toolName, tool.args as Record<string, unknown> | undefined)
+      const label = key ? `${name}: ${key}` : name
+      return truncate(label, 80)
+    }
+    if (part.type === "text" && typeof part.text === "string") {
+      const t = part.text.trim()
+      if (t) return truncate(t.replace(/\s+/g, " "), 80)
+    }
+    if (part.type === "reasoning" && typeof part.text === "string") {
+      const t = part.text.trim()
+      if (t) return truncate(t.replace(/\s+/g, " "), 80)
+    }
+  }
+  return null
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 1) + "…" : text
+}
+
 function getStatusText(tool: ToolCallData, elapsed: number, output: SubagentOutputParts): string {
   if (tool.state === "error") return tool.error ?? "Failed"
 
@@ -104,8 +150,10 @@ function getStatusText(tool: ToolCallData, elapsed: number, output: SubagentOutp
   return `Running... ${mins}m ${rem}s${suffix}`
 }
 
-export function SubagentCard({ tool, className }: SubagentCardProps) {
+export function SubagentCard({ tool, className, agentUrl: agentUrlProp }: SubagentCardProps) {
   const [elapsed, setElapsed] = useState(0)
+  const chatContext = useChatContextSafe()
+  const bridge = useChatBridgeOptional()
 
   const isRunning = tool.state === "streaming"
   const isDone = tool.state === "success"
@@ -150,6 +198,15 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
     stopSubagent(instanceId, tool.id)
   }, [instanceId, tool.id])
 
+  const latestActivity = useMemo(
+    () => deriveLatestActivityLabel(streamData?.parts),
+    [streamData?.parts],
+  )
+
+  const resolvedAgentUrl =
+    agentUrlProp ?? chatContext?.agentUrl ?? bridge?.agentUrl ?? null
+  const showLivePreview = isRunning && !!instanceId && !!resolvedAgentUrl
+
   return (
     <Pressable
       onPress={handlePress}
@@ -192,7 +249,7 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
           {isError && <XCircle className="w-3.5 h-3.5 text-muted-foreground" size={14} />}
         </View>
 
-        {/* Bottom row: status + navigate hint */}
+        {/* Information row: latest activity (running) or status text. */}
         <View className="flex-row items-center gap-2">
           {isRunning && output.toolCount > 0 && (
             <Wrench className="w-3 h-3 text-muted-foreground/60" size={12} />
@@ -201,10 +258,22 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
             className="flex-1 text-[11px] text-muted-foreground"
             numberOfLines={1}
           >
-            {statusText}
+            {isRunning && latestActivity ? latestActivity : statusText}
           </Text>
           <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50" size={14} />
         </View>
+
+        {/* Live browser viewport — visible while the subagent is running
+            and we have an AgentManager instance id to subscribe to. */}
+        {showLivePreview && (
+          <View className="mt-1">
+            <LiveBrowserView
+              instanceId={instanceId!}
+              active={isRunning}
+              agentUrl={resolvedAgentUrl}
+            />
+          </View>
+        )}
       </View>
     </Pressable>
   )
