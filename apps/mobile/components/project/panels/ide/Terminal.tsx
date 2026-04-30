@@ -150,6 +150,24 @@ function formatPromptCwd(cwd: string | null): string {
   return parts.slice(-2).join("/");
 }
 
+async function readTerminalError(res: Response, fallback: string): Promise<Error> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string } | string;
+    };
+    const message =
+      typeof body.error === "string"
+        ? body.error
+        : body.error?.message;
+    return new Error(message ?? fallback);
+  }
+
+  const text = await res.text().catch(() => "");
+  const trimmed = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return new Error(trimmed ? `${fallback}: ${trimmed.slice(0, 160)}` : fallback);
+}
+
 export function Terminal({
   projectId,
   visible,
@@ -167,7 +185,7 @@ export function Terminal({
   onRequestClose?: () => void;
 }) {
   const [commands, setCommands] = useState<Record<string, PresetCommandDto[]>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>(() => [makeSession()]);
   const [activeId, setActiveId] = useState<string>(() => sessions[0]?.id ?? "t0");
@@ -194,10 +212,11 @@ export function Terminal({
     try {
       const res = await agentFetch(`${apiBase}/api/projects/${projectId}/terminal/commands`);
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
-          error?: { code?: string; message?: string };
-        };
-        throw new Error(body.error?.message ?? `${res.status}`);
+        throw await readTerminalError(res, `HTTP ${res.status}`);
+      }
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        throw await readTerminalError(res, "Terminal commands endpoint returned a non-JSON response");
       }
       const json = (await res.json()) as { commands: Record<string, PresetCommandDto[]> };
       setCommands(json.commands ?? {});
@@ -366,10 +385,11 @@ export function Terminal({
     async (targetId: string, tag: string, res: Response, ctl: AbortController) => {
       try {
         if (!res.ok || !res.body) {
-          const body = (await res.json().catch(() => ({}))) as {
-            error?: { code?: string; message?: string };
-          };
-          throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+          throw await readTerminalError(res, `HTTP ${res.status}`);
+        }
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("text/html")) {
+          throw await readTerminalError(res, "Terminal endpoint returned HTML instead of command output");
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -537,10 +557,11 @@ export function Terminal({
     async (targetId: string, res: Response, ctl: AbortController) => {
       try {
         if (!res.ok || !res.body) {
-          const body = (await res.json().catch(() => ({}))) as {
-            error?: { code?: string; message?: string };
-          };
-          throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+          throw await readTerminalError(res, `HTTP ${res.status}`);
+        }
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("text/html")) {
+          throw await readTerminalError(res, "Terminal endpoint returned HTML instead of command output");
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
