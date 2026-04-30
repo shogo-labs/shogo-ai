@@ -2943,7 +2943,13 @@ app.post('/agent/skill-server/sync', async (c) => {
 app.post('/agent/runtime-checks', async (c) => {
   const { runRuntimeChecks } = await import('./evals/runtime-checks')
   const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean }>()
-  const skillServerPort = agentGateway?.getSkillServerPort() ?? 4100
+  // Use the PreviewManager's configured port directly; `getSkillServerPort()`
+  // also falls through to the same value via the shim, but reading it from
+  // the manager keeps the source-of-truth obvious. Never falls back to the
+  // retired skill server's 4100 — that port is unallocated post-merge.
+  const skillServerPort = getPreviewManager().apiServerPort
+    ?? agentGateway?.getSkillServerPort()
+    ?? 3001
   try {
     const results = await runRuntimeChecks({
       workspaceDir: WORKSPACE_DIR,

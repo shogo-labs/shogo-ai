@@ -236,7 +236,11 @@ export class RuntimeManager implements IRuntimeManager {
   /**
    * Allocate a random port in the obscure high range.
    * Picks randomly to avoid collisions with stale processes or other services.
-   * Both the Vite port and agent port (offset by AGENT_PORT_OFFSET) must be free.
+   * The Vite port, agent port (offset by AGENT_PORT_OFFSET), and per-project
+   * API server port (agentPort + 1) must all be free. The API server port is
+   * what PreviewManager reads via `API_SERVER_PORT` / `SKILL_SERVER_PORT`;
+   * without a per-project allocation it falls back to a static 3001 and the
+   * second project to spawn fails with EADDRINUSE.
    */
   private async allocatePortAsync(): Promise<number> {
     const range = PORT_RANGE_END - PORT_RANGE_START
@@ -245,15 +249,17 @@ export class RuntimeManager implements IRuntimeManager {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const port = PORT_RANGE_START + Math.floor(Math.random() * range)
       const agentPort = port + AGENT_PORT_OFFSET
+      const apiServerPort = agentPort + 1
 
       if (this.usedPorts.has(port)) continue
 
       const viteInUse = await this.isPortListening(port)
       const agentInUse = await this.isPortListening(agentPort)
+      const apiInUse = await this.isPortListening(apiServerPort)
 
-      if (!viteInUse && !agentInUse) {
+      if (!viteInUse && !agentInUse && !apiInUse) {
         this.usedPorts.add(port)
-        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}`)
+        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}/${apiServerPort}`)
         return port
       }
     }
@@ -896,6 +902,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
           PORT: String(agentPort),
+          // Per-project API server port. PreviewManager reads
+          // API_SERVER_PORT (preferred) or SKILL_SERVER_PORT (legacy alias
+          // kept for rolled-back binaries / older runtime templates) and
+          // binds Bun.serve to it. Without this each project would fall
+          // back to PreviewManager's static 3001 default and the second
+          // concurrent project would crash with EADDRINUSE.
+          API_SERVER_PORT: String(agentPort + 1),
+          SKILL_SERVER_PORT: String(agentPort + 1),
           // Single source of truth for "where is the running app?".
           // The agent-runtime injects this into its system prompt so QA /
           // browser-use subagents navigate to the right URL instead of
