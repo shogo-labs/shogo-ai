@@ -4,6 +4,7 @@ import { Breadcrumbs } from "./Breadcrumbs";
 import { CodeEditor } from "./CodeEditor";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
+import type { ReactNode } from "react";
 
 export function EditorGroupView({
   group,
@@ -17,6 +18,8 @@ export function EditorGroupView({
   onCursor,
   onEditorMount,
   settings,
+  renderBreadcrumbsTrailing,
+  renderAboveEditor,
 }: {
   group: GroupState;
   focused: boolean;
@@ -29,6 +32,10 @@ export function EditorGroupView({
   onCursor: (line: number, col: number) => void;
   onEditorMount?: (ed: editor.IStandaloneCodeEditor) => void;
   settings: EditorSettings;
+  /** Rendered at the right end of the breadcrumbs row (e.g. QuickActions). */
+  renderBreadcrumbsTrailing?: (file: OpenFile) => ReactNode;
+  /** Rendered between the breadcrumbs and the editor (e.g. ExplainPanel). */
+  renderAboveEditor?: (file: OpenFile) => ReactNode;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -50,7 +57,13 @@ export function EditorGroupView({
         onFocus={onFocus}
         groupFocused={focused}
       />
-      {active && <Breadcrumbs path={active.path} />}
+      {active && (
+        <Breadcrumbs
+          path={active.path}
+          trailing={renderBreadcrumbsTrailing?.(active)}
+        />
+      )}
+      {active && renderAboveEditor?.(active)}
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (

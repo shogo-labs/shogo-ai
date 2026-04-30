@@ -22,6 +22,8 @@ import { SettingsPane } from "./SettingsPane";
 import { GitPane } from "./GitPane";
 import { ProposalsPane } from "./ProposalsPane";
 import { ProposalBanner } from "./ProposalBanner";
+import { QuickActions } from "./agent/QuickActions";
+import { ExplainPanel, type ExplainState } from "./agent/ExplainPanel";
 import { proposalStore } from "./workspace/proposalStore";
 import { loadWorkspaceModels, disposeWorkspaceModels } from "./monaco/workspaceModels";
 if (import.meta.env.DEV) {
@@ -67,6 +69,7 @@ function flattenFiles(tree: TreeNode[], out: TreeNode[] = []): TreeNode[] {
 
 export function Workbench({ agentService, agentLabel = "agent-workspace" }: { agentService: WorkspaceService; agentLabel?: string }) {
   const [activity, setActivity] = useState<ActivityId>("files");
+  const [explainState, setExplainState] = useState<ExplainState | null>(null);
   const [services, setServices] = useState<Record<string, WorkspaceService>>({ agent: agentService });
   const [roots, setRoots] = useState<Root[]>([
     { id: "agent", label: agentLabel, kind: "agent", tree: [], loading: true, error: null },
@@ -1055,6 +1058,94 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                       settings={settings}
                       onEditorMount={(ed) => {
                         editorRefs.current[g.id] = ed;
+                      }}
+                      renderBreadcrumbsTrailing={(file) => (
+                        <QuickActions
+                          rootId={file.rootId}
+                          filePath={file.path}
+                          language={file.language}
+                          getContent={() => editorRefs.current[g.id]?.getValue() ?? file.content}
+                          service={svcOf(file.rootId)}
+                          handlers={{
+                            onExplainStart: () => setExplainState({
+                              fileId: file.id,
+                              filePath: file.path,
+                              loading: true,
+                              text: null,
+                              error: null,
+                            }),
+                            onExplainResult: (text) => setExplainState({
+                              fileId: file.id,
+                              filePath: file.path,
+                              loading: false,
+                              text,
+                              error: null,
+                            }),
+                            onExplainError: (err) => setExplainState({
+                              fileId: file.id,
+                              filePath: file.path,
+                              loading: false,
+                              text: null,
+                              error: err,
+                            }),
+                            onProposalCreated: (kind) => {
+                              showToast(
+                                kind === "refactor"
+                                  ? "Refactor proposed — review in ⚡ Proposals"
+                                  : "Test skeleton proposed — review in ⚡ Proposals",
+                              );
+                              setActivity("proposals");
+                            },
+                            onError: (msg) => showToast(msg, 2500),
+                          }}
+                        />
+                      )}
+                      renderAboveEditor={(file) => {
+                        if (!explainState || explainState.fileId !== file.id) return null;
+                        return (
+                          <ExplainPanel
+                            state={explainState}
+                            onClose={() => setExplainState(null)}
+                            onRetry={() => {
+                              const svc = svcOf(file.rootId);
+                              if (!svc) return;
+                              setExplainState({
+                                fileId: file.id,
+                                filePath: file.path,
+                                loading: true,
+                                text: null,
+                                error: null,
+                              });
+                              void (async () => {
+                                try {
+                                  const { runAgentAction } = await import("./agent/agentActions");
+                                  const r = await runAgentAction({
+                                    action: "explain",
+                                    rootId: file.rootId,
+                                    path: file.path,
+                                    content: editorRefs.current[g.id]?.getValue() ?? file.content,
+                                    language: file.language,
+                                  });
+                                  setExplainState({
+                                    fileId: file.id,
+                                    filePath: file.path,
+                                    loading: false,
+                                    text: r?.body ?? "",
+                                    error: r ? null : "Empty response",
+                                  });
+                                } catch (e) {
+                                  setExplainState({
+                                    fileId: file.id,
+                                    filePath: file.path,
+                                    loading: false,
+                                    text: null,
+                                    error: e instanceof Error ? e.message : String(e),
+                                  });
+                                }
+                              })();
+                            }}
+                          />
+                        );
                       }}
                     />
                   </div>
