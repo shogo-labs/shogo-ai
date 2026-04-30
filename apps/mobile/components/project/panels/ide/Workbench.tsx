@@ -29,6 +29,7 @@ import type { WorkspaceService } from "./workspace/types";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
 import { saveRoot, listRoots, deleteRoot, touchRoot } from "./workspace/handleStore";
 import { loadWorkspaceModels, disposeWorkspaceModels } from "./monaco/workspaceModels";
+import { QuickActions } from "./agent/QuickActions";
 import { matchesShortcut, type Command } from "./commands";
 import { useTheme } from "../../../../contexts/theme";
 import {
@@ -1251,6 +1252,15 @@ export function Workbench({
                         editorRefs.current[g.id] = ed;
                         if (monaco) monacoNsRef.current = monaco;
                       }}
+                      renderBreadcrumbsTrailing={(file) => (
+                        <QuickActions
+                          rootId={file.rootId}
+                          filePath={file.path}
+                          language={file.language}
+                          getContent={() => editorRefs.current[g.id]?.getValue() ?? file.content}
+                          onFallbackToast={(msg) => showToast(msg, 4000)}
+                        />
+                      )}
                     />
                   </div>
                 ))
