@@ -8,28 +8,40 @@
  * `ChatPanel` stays mounted (hidden) so its `ChatBridge` registration
  * stays live and the translator can keep driving it.
  *
- * Layout:
+ * Layout (no header bar — controls float over the content for a
+ * minimal, modern look):
  *
- *   ┌─ Shogo Mode ─────────────── [peek] [×] ┐
- *   │           (audio-reactive sphere)      │
+ *   ┌──────────────────────────── [peek] [×] ┐
+ *   │           (audio-reactive sphere)       │
  *   ├─────────────────────────────────────────┤
  *   │    (translator thread — messages)       │
  *   ├─────────────────────────────────────────┤
- *   │ [mic] [text input ...............] [▶] │
+ *   │              ( ◯ mic )                  │   voice mode
+ *   │            "Tap to talk"                │
+ *   │           [ Type instead ]              │
+ *   │                                         │
+ *   │   — or —                                │
+ *   │                                         │
+ *   │ [mic] [text input ...............] [▶] │   text mode
  *   └─────────────────────────────────────────┘
  *
- * Voice lifecycle (when the mic is active):
- *   - `useVoiceConversation({ signedUrlPath: '/api/voice/signed-url', ... })`
- *     fetches a short-lived ElevenLabs signed URL from the API, opens
- *     a convai WebSocket, and streams audio to/from the shared
- *     "Shogo Mode" agent.
+ * Voice lifecycle (cost-conscious):
+ *   - ElevenLabs meters web voice agents by connection duration, so
+ *     the session is closed by default. `useVoiceConversation` opens
+ *     the convai WebSocket only while the user is actively talking
+ *     *or* while Shogo is delivering a one-shot spoken summary.
+ *   - User press → connect (`'user'` purpose) and listen. A second
+ *     press commits the utterance via `sendUserActivity` and ends
+ *     the session.
+ *   - Heartbeat / turn-end → reconnect with `suppressFirstMessage`,
+ *     push the latest activity/final reply as silent context, fire
+ *     a `sendUserMessage` nudge so Shogo speaks the summary, then
+ *     disconnect once `isSpeaking` settles.
+ *   - Pressing the mic while Shogo is speaking a summary interrupts
+ *     it (`restart({ suppressFirstMessage: true })`) and converts
+ *     the session to user-purpose.
  *   - Tool calls from the voice agent (`send_to_chat`, `set_mode`,
  *     `get_recent_activity`) are executed client-side.
- *   - The ChatBridge publishes a typed event stream (turn-start,
- *     tool-activity, turn-end). Every event is fed into the voice
- *     session as a silent `sendContextualUpdate` so Shogo always has
- *     fresh context; *only* turn-end and long-running heartbeats fire
- *     `sendUserMessage` to force Shogo to speak a high-level summary.
  *
  * Text lifecycle:
  *   - `useTranslatorChat({ clientTools, chatSessionId })` runs
@@ -74,7 +86,7 @@ import {
   View,
 } from 'react-native'
 import { Text } from '@/components/ui/text'
-import { Eye, Keyboard, Mic, MicOff, Send, Square, X } from 'lucide-react-native'
+import { Eye, Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
 import {
   OrganicParticles,
   ShogoVoiceProvider,
@@ -92,7 +104,6 @@ import {
 import {
   ShogoTranscriptQueue,
   type TranscriptKind,
-  type TranscriptQueueState,
   type TranscriptTask,
 } from './shogoTranscriptQueue'
 
@@ -109,8 +120,63 @@ interface TranscriptEntry {
 
 /** Max recent-activity lines kept in memory for summarisation. */
 const RECENT_ACTIVITY_MAX = 40
-/** Heartbeat cadence during long-running technical-agent turns (ms). */
+/**
+ * Heartbeat cadence during long-running technical-agent turns (ms).
+ *
+ * Each tick triggers a *one-shot* spoken summary via the summary
+ * dispatcher: briefly reconnect to ElevenLabs, ask Shogo to speak, then
+ * disconnect once the speech has completed. Between ticks the voice
+ * session is fully closed so we are not paying for an idle web voice
+ * call (ElevenLabs meters voice agents by connection duration).
+ */
 const HEARTBEAT_INTERVAL_MS = 30_000
+/**
+ * After Shogo finishes a summary turn (`isSpeaking` goes false) we wait
+ * this long before closing the session. The grace window lets the SDK
+ * flush any tail audio frames and keeps reconnects from overlapping.
+ */
+const SUMMARY_GRACE_AFTER_SPEECH_MS = 1200
+/**
+ * Watchdog: if Shogo never starts speaking after we send a summary
+ * nudge, give up and disconnect. Avoids leaking a paid session if the
+ * model decided the prompt didn't warrant speech.
+ *
+ * Sized to absorb the worst-case path: signed-URL mint (project lookup
+ * + ~2s pod fetch for MEMORY/USER context) + EL handshake + LLM
+ * response + first audio frame. On a warm path the agent typically
+ * starts speaking within 2-3s of `sendUserMessage`; on a cold pod or
+ * a slow EL leg it can be 10s+ before the first audio frame.
+ */
+const SUMMARY_NO_SPEECH_TIMEOUT_MS = 20_000
+/**
+ * After `turn-start` arrives during an active user voice session, this
+ * is the maximum time we'll wait for Shogo to *start* speaking the
+ * post-`send_to_chat` confirmation. The watchdog only fires if Shogo
+ * never speaks at all (truly hung session); once `isSpeaking` goes
+ * true the watchdog is cancelled and the settle watcher takes over,
+ * so a long confirmation can run to completion without being cut off.
+ *
+ * Sized to absorb LLM round-trip + TTS first-frame latency on a slow
+ * leg. A typical confirmation starts within 2-3s; 15s leaves ample
+ * headroom.
+ */
+const POST_USER_FIRST_SPEECH_TIMEOUT_MS = 15_000
+/**
+ * Once Shogo has started speaking the post-`send_to_chat` confirmation
+ * and then `isSpeaking` flips back to `false`, wait this long before
+ * actually closing the session. ElevenLabs reports `isSpeaking: false`
+ * during natural pauses between sentences, so disconnecting on the
+ * first false edge cuts Shogo off mid-utterance. The settle window
+ * lets brief pauses ride through; if Shogo resumes we cancel the
+ * timer and wait for the next silence.
+ */
+const POST_USER_SETTLE_AFTER_SPEECH_MS = 1200
+/**
+ * Small delay before tearing down a user-session after the user taps
+ * "stop listening". Gives ElevenLabs' VAD a chance to commit the final
+ * user transcript before the WebSocket closes.
+ */
+const STOP_LISTENING_FLUSH_MS = 250
 function extractMessageText(message: {
   parts?: Array<{ type?: string; text?: string }>
 }): string {
@@ -164,8 +230,9 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   const [voiceTranscript, setVoiceTranscript] = useState<TranscriptEntry[]>([])
   // Input mode — the user picks either voice or text; we only ever show
   // one composer at a time. Default to voice: entering Shogo Mode is an
-  // explicit gesture, so we auto-start the mic right away and let the
-  // user opt down into text if they prefer.
+  // explicit gesture, so we surface the mic by default and let the user
+  // opt down into text if they prefer. The mic does NOT auto-connect —
+  // the user has to tap it to open an ElevenLabs session.
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice')
 
   // ---------------------------------------------------------------------
@@ -181,14 +248,77 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const turnActiveRef = useRef<boolean>(false)
 
+  // ---------------------------------------------------------------------
+  // Voice session lifecycle. Shogo Mode now connects to ElevenLabs only
+  // while the user is actively talking *or* Shogo is in the middle of a
+  // one-shot spoken summary; the rest of the time the session is fully
+  // closed so we are not paying for an idle web voice call.
+  //
+  // `sessionPurposeRef` records *why* the connection is live so the mic
+  // button and the summary dispatcher can take the right action when it
+  // is pressed or when speech completes.
+  //
+  //   - `'user'`    : the user pressed the mic; we are listening to /
+  //                   conversing with them.
+  //   - `'summary'` : we are programmatically reconnected to deliver a
+  //                   heartbeat or turn-end summary; will disconnect
+  //                   once Shogo finishes speaking.
+  //   - `null`      : disconnected.
+  // ---------------------------------------------------------------------
+  type SessionPurpose = 'user' | 'summary' | null
+  const sessionPurposeRef = useRef<SessionPurpose>(null)
+  // Mirror the ref into React state so the mic UI re-renders when the
+  // purpose changes. The ref remains the synchronous source of truth
+  // for callbacks/effects that mutate it; we update both together via
+  // `setSessionPurpose` below.
+  const [sessionPurpose, setSessionPurposeState] = useState<SessionPurpose>(null)
+  const setSessionPurpose = useCallback((next: SessionPurpose) => {
+    sessionPurposeRef.current = next
+    setSessionPurposeState(next)
+  }, [])
+  /** True when the technical agent is mid-turn (between turn-start and turn-end). */
+  const technicalTurnActiveRef = useRef<boolean>(false)
+  const [technicalTurnActive, setTechnicalTurnActive] = useState(false)
+
+  // Summary dispatcher state.
+  /** True while a summary reconnect → speak → disconnect cycle is active. */
+  const summaryInFlightRef = useRef<boolean>(false)
+  /** Set once `isSpeaking` goes true during the current summary so we know to wait for it to drop again before disconnecting. */
+  const summaryHeardSpeechRef = useRef<boolean>(false)
+  /** Pending summary trigger — at most one is queued; latest wins, with `turn-end` always superseding `heartbeat`. */
+  const pendingSummaryRef = useRef<{ kind: 'heartbeat' | 'turn-end'; finalText?: string } | null>(null)
+  const summaryDisconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const summaryNoSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Set when `turn-start` arrives while a user session is live — disconnect after Shogo's confirmation finishes. */
+  const userPostDisconnectArmedRef = useRef<boolean>(false)
+  const userPostDisconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * Set true the first time `isSpeaking` flips true after `turn-start`
+   * arms the post-user disconnect. Mirrors `summaryHeardSpeechRef` —
+   * we never disconnect on the *initial* `isSpeaking: false` because
+   * Shogo may not have started its confirmation yet (or may be in a
+   * natural pause). We only act on a confirmed speak → silence
+   * transition, with a grace window on top of that.
+   */
+  const userPostHeardSpeechRef = useRef<boolean>(false)
+  const userPostSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Voice session imperative handles — captured in a ref so callbacks
   // declared before `conversation` resolves can still reach the latest
-  // methods (sendContextualUpdate / sendUserMessage / sendUserActivity).
+  // methods.
   const conversationRef = useRef<{
+    start: (opts?: { suppressFirstMessage?: boolean }) => Promise<void>
+    end: () => void
+    restart: (opts?: { suppressFirstMessage?: boolean }) => Promise<void>
     sendContextualUpdate: (t: string) => void
     sendUserMessage: (t: string) => void
     sendUserActivity: () => void
+    setMuted: (m: boolean) => void
+    isSpeaking: boolean
+    isListening: boolean
+    isMuted: boolean
     voiceActive: boolean
+    status: string
   } | null>(null)
 
   // Client tools exposed to both voice and text modalities. In addition
@@ -199,7 +329,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     const base = createBridgeClientTools(bridge)
     const getRecentActivity = () => {
       const items = recentActivityRef.current.slice(-RECENT_ACTIVITY_MAX)
-      if (items.length === 0) return 'No recent technical-agent activity recorded.'
+      if (items.length === 0) return 'No recent background-build activity recorded.'
       return items.join('\n')
     }
     return {
@@ -228,9 +358,19 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // ---------------------------------------------------------------------
   // Voice modality — ElevenLabs convai session.
   // ---------------------------------------------------------------------
+  // Append `chatSessionId` so the API can authorize the session,
+  // resolve the owning project, and return a per-session
+  // `agentPromptOverride` containing project metadata + memory. The
+  // hook plumbs that into `overrides.agent.prompt.prompt` on each
+  // ElevenLabs `startSession`, so Shogo gets fresh project context
+  // every time we (re)connect — no stale memory across sessions.
+  const signedUrlPath = chatSessionId
+    ? `${API_URL ?? ''}/api/voice/signed-url?chatSessionId=${encodeURIComponent(chatSessionId)}`
+    : `${API_URL ?? ''}/api/voice/signed-url`
+
   const conversation = useVoiceConversation({
     characterName: 'Shogo',
-    signedUrlPath: `${API_URL ?? ''}/api/voice/signed-url`,
+    signedUrlPath,
     // Dev mode serves Metro on 8081 and the API on 8002 — without
     // `include` the session cookie isn't sent cross-origin and the
     // route 401s. `include` matches the default HttpClient behaviour
@@ -264,19 +404,241 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     conversation.status === 'connected' || conversation.status === 'connecting'
 
   conversationRef.current = {
+    start: conversation.start,
+    end: conversation.end,
+    restart: conversation.restart,
     sendContextualUpdate: conversation.sendContextualUpdate,
     sendUserMessage: conversation.sendUserMessage,
     sendUserActivity: conversation.sendUserActivity,
+    setMuted: conversation.setMuted,
+    isSpeaking: conversation.isSpeaking,
+    isListening: conversation.isListening,
+    isMuted: conversation.isMuted,
     voiceActive,
+    status: conversation.status,
   }
 
   // ---------------------------------------------------------------------
-  // Heartbeat management. Long technical-agent turns are common
-  // (4–5 minutes typical, 10+ minutes happens) so while a turn is
-  // running we fire a recurring nudge every ~30s that asks Shogo to
-  // summarise *what progressed since the last heartbeat*. Shogo never
-  // speaks on its own during mid-turn activity — only when we ping it
-  // like this at a milestone.
+  // Spoken-summary dispatcher.
+  //
+  // ElevenLabs meters web voice agents by connection duration, so we do
+  // *not* keep the session warm during long technical-agent turns.
+  // Instead, every spoken update (heartbeat tick or turn-end summary)
+  // goes through a one-shot reconnect cycle:
+  //
+  //   1. Connect with `suppressFirstMessage: true` so the agent skips
+  //      its configured intro.
+  //   2. Push the latest activity/final reply as silent context.
+  //   3. Inject a user-role nudge that tells Shogo what to summarise.
+  //   4. Mute the mic so the user's environment doesn't accidentally
+  //      open a fresh user turn while Shogo is talking.
+  //   5. Watch `isSpeaking`. Once Shogo has spoken and gone idle,
+  //      disconnect after a short grace window.
+  //
+  // The dispatcher allows at most one summary in flight. Calls that
+  // arrive while a user session is open or a previous summary is still
+  // speaking are queued; turn-end always supersedes a queued heartbeat.
+  // ---------------------------------------------------------------------
+  const cancelSummaryTimers = useCallback(() => {
+    if (summaryDisconnectTimerRef.current) {
+      clearTimeout(summaryDisconnectTimerRef.current)
+      summaryDisconnectTimerRef.current = null
+    }
+    if (summaryNoSpeechTimerRef.current) {
+      clearTimeout(summaryNoSpeechTimerRef.current)
+      summaryNoSpeechTimerRef.current = null
+    }
+  }, [])
+
+  const finishSummary = useCallback(() => {
+    cancelSummaryTimers()
+    const wasSummary = sessionPurposeRef.current === 'summary'
+    summaryHeardSpeechRef.current = false
+    summaryInFlightRef.current = false
+    if (wasSummary) {
+      setSessionPurpose(null)
+      try {
+        conversationRef.current?.end()
+      } catch (err) {
+        console.warn('[ShogoChatPanel] failed to end summary session', err)
+      }
+    }
+    // Process anything that queued up while we were busy. Latest wins;
+    // a turn-end already supersedes a heartbeat at enqueue time.
+    const next = pendingSummaryRef.current
+    pendingSummaryRef.current = null
+    if (next) {
+      // Re-run on the next tick so React state from the disconnect has
+      // a chance to settle before we open a new session.
+      setTimeout(() => {
+        void runSummary(next.kind, next.finalText)
+      }, 0)
+    }
+  }, [cancelSummaryTimers])
+
+  const runSummary = useCallback(
+    async (kind: 'heartbeat' | 'turn-end', finalText?: string) => {
+      // If the user is mid-conversation, defer — we never want to
+      // hijack a live user session for an automated summary.
+      if (sessionPurposeRef.current === 'user') {
+        const existing = pendingSummaryRef.current
+        // turn-end > heartbeat. Latest within same priority wins.
+        if (existing?.kind === 'turn-end' && kind === 'heartbeat') return
+        pendingSummaryRef.current = { kind, finalText }
+        return
+      }
+      // Already speaking a summary — queue (latest within priority).
+      if (summaryInFlightRef.current) {
+        const existing = pendingSummaryRef.current
+        if (existing?.kind === 'turn-end' && kind === 'heartbeat') return
+        pendingSummaryRef.current = { kind, finalText }
+        return
+      }
+
+      summaryInFlightRef.current = true
+      summaryHeardSpeechRef.current = false
+      setSessionPurpose('summary')
+
+      // Build the activity diff + nudge text.
+      const activity = recentActivityRef.current
+      const sliceStart = lastHeartbeatIndexRef.current
+      const newItems = activity.slice(sliceStart)
+      lastHeartbeatIndexRef.current = activity.length
+      const activityBlock =
+        newItems.length > 0
+          ? `Activity in your background build subsystem since your last update:\n${newItems.join('\n')}`
+          : 'No new named activity since your last update, but your background build subsystem is still running.'
+
+      // The nudge prefix (`[UI heartbeat]` / `[UI turn-complete]`)
+      // matches the recognition strings in the persona prompt. The
+      // body adds an explicit "speak now" instruction so Shogo does
+      // not wait for additional user input before responding. Raw
+      // activity / final-output material is delivered separately via
+      // sendContextualUpdate below, so this nudge stays short.
+      const nudge =
+        kind === 'heartbeat'
+          ? "[UI heartbeat] You're still working on the user's request in the " +
+            'background. Give them a two- or three-sentence high-level ' +
+            'progress update in business-outcome language — focus on what ' +
+            'YOU have accomplished since your previous heartbeat, not what ' +
+            "is still pending. Speak in the first person (\"I've…\", \"I'm " +
+            'wiring up…"), never refer to "the agent". Do not repeat what ' +
+            'you already said last time. Never recite tool names, file ' +
+            'names, or a blow-by-blow list of operations. Speak now — do ' +
+            'not wait for the user to say anything.'
+          : "[UI turn-complete] You just finished the user's request. Give " +
+            'them a two- or three-sentence high-level summary of what was ' +
+            'accomplished — in business-outcome language (what changed, ' +
+            'what it means for them, whether anything is pending). Speak ' +
+            'in the first person ("I added…", "I updated…"), never refer ' +
+            'to "the agent". Never recite tool names, file names, or a ' +
+            'list of operations. Speak now — do not wait for the user to ' +
+            'say anything.'
+
+      try {
+        const ref = conversationRef.current
+        if (!ref) {
+          summaryInFlightRef.current = false
+          setSessionPurpose(null)
+          return
+        }
+        // Ensure a clean connection. If somehow already live (race), use
+        // restart() to clear any in-flight speech and skip the intro.
+        if (ref.voiceActive) {
+          await ref.restart({ suppressFirstMessage: true })
+        } else {
+          await ref.start({ suppressFirstMessage: true })
+        }
+        // `await ref.start()` resolves when the WS is open, but EL's
+        // server still has to send the `conversation_initiation_metadata`
+        // frame before it will act on a user_message. Empirically,
+        // user_message frames sent in the same tick as start() are
+        // sometimes silently dropped — the agent never responds and
+        // the watchdog tears the session down. Poll briefly until
+        // `status === 'connected'` (a proxy for "the SDK is fully
+        // ready") before sending. Cap the wait so we still hit the
+        // no-speech watchdog if the connection truly never establishes.
+        const deadline = Date.now() + 5_000
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const cur = conversationRef.current
+          if (!cur) return
+          if (cur.status === 'connected') break
+          if (Date.now() > deadline) break
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        const ref2 = conversationRef.current
+        if (!ref2) return
+        // Mute input audio first, before any agent speech — the user's
+        // ambient noise should not open a new user turn while Shogo is
+        // summarising. Doing this before sending the nudge avoids a
+        // race where the agent picks up mic audio mid-startup.
+        try {
+          ref2.setMuted(true)
+        } catch {
+          /* best effort */
+        }
+        // Prime context with the activity log + final reply (silent —
+        // does not trigger a response on its own), then send the
+        // user-role nudge that asks Shogo to actually speak. Keeping
+        // these as separate frames seems to make the agent more
+        // reliable about responding than packing everything into a
+        // single user_message.
+        try {
+          if (kind === 'turn-end' && finalText) {
+            ref2.sendContextualUpdate(
+              `You just produced this output in the background: ${finalText}`,
+            )
+          }
+          ref2.sendContextualUpdate(activityBlock)
+        } catch (err) {
+          console.warn('[ShogoChatPanel] sendContextualUpdate failed', err)
+        }
+        try {
+          ref2.sendUserMessage(nudge)
+        } catch (err) {
+          console.warn('[ShogoChatPanel] summary sendUserMessage failed', err)
+        }
+        // Belt-and-braces: ping user-activity so EL flushes any
+        // pending VAD/turn-detection state and processes the
+        // user_message immediately.
+        try {
+          ref2.sendUserActivity()
+        } catch {
+          /* best effort */
+        }
+        // Watchdog: if Shogo never starts speaking, disconnect anyway
+        // so we are not paying for a connected-but-silent session.
+        cancelSummaryTimers()
+        summaryNoSpeechTimerRef.current = setTimeout(() => {
+          summaryNoSpeechTimerRef.current = null
+          if (!summaryHeardSpeechRef.current && summaryInFlightRef.current) {
+            console.warn(
+              '[ShogoChatPanel] summary timed out without speech — disconnecting',
+            )
+            finishSummary()
+          }
+        }, SUMMARY_NO_SPEECH_TIMEOUT_MS)
+      } catch (err) {
+        console.warn('[ShogoChatPanel] summary connect failed', err)
+        cancelSummaryTimers()
+        summaryInFlightRef.current = false
+        setSessionPurpose(null)
+        try {
+          conversationRef.current?.end()
+        } catch {
+          /* best effort */
+        }
+      }
+    },
+    [cancelSummaryTimers, finishSummary, setSessionPurpose],
+  )
+
+  // ---------------------------------------------------------------------
+  // Heartbeat scheduler — fires while the technical agent is mid-turn.
+  // Each tick triggers a one-shot summary via `runSummary`; the
+  // dispatcher above takes care of deferring/queuing as needed and
+  // closes the connection again when speech completes.
   // ---------------------------------------------------------------------
   const stopHeartbeat = useCallback(() => {
     if (heartbeatTimerRef.current) {
@@ -291,30 +653,9 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     turnActiveRef.current = true
     heartbeatTimerRef.current = setInterval(() => {
       if (!turnActiveRef.current) return
-      const ref = conversationRef.current
-      if (!ref || !ref.voiceActive) return
-      const activity = recentActivityRef.current
-      const sliceStart = lastHeartbeatIndexRef.current
-      const newItems = activity.slice(sliceStart)
-      lastHeartbeatIndexRef.current = activity.length
-      const activityBlock = newItems.length > 0
-        ? `Activity since your last update:\n${newItems.join('\n')}`
-        : 'No new named activity since your last update, but the agent is still running.'
-      const nudge =
-        'The technical agent is still working. This is a heartbeat from the UI. ' +
-        'Give the user a two- or three-sentence high-level progress update in ' +
-        'business-outcome language — focus on what has been accomplished ' +
-        'since your previous heartbeat, not what is still pending. Do not ' +
-        'repeat what you already said last time. Never recite tool names, ' +
-        'file names, or a blow-by-blow list of operations.\n\n' +
-        activityBlock
-      try {
-        ref.sendUserMessage(nudge)
-      } catch (err) {
-        console.warn('[ShogoChatPanel] heartbeat sendUserMessage failed', err)
-      }
+      void runSummary('heartbeat')
     }, HEARTBEAT_INTERVAL_MS)
-  }, [stopHeartbeat])
+  }, [stopHeartbeat, runSummary])
 
   // ---------------------------------------------------------------------
   // ChatBridge subscription — the authoritative data source for Shogo's
@@ -324,6 +665,8 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   // doesn't need to resubscribe every render.
   const sendMessageRef = useRef(sendMessage)
   sendMessageRef.current = sendMessage
+  const inputModeRef = useRef(inputMode)
+  inputModeRef.current = inputMode
 
   useEffect(() => {
     const pushActivity = (line: string) => {
@@ -338,25 +681,63 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       appendTranscriptRef.current(source, text)
     }
 
-    const silentContext = (text: string) => {
-      const ref = conversationRef.current
-      if (!ref || !ref.voiceActive) return
-      try {
-        ref.sendContextualUpdate(text)
-      } catch (err) {
-        console.warn('[ShogoChatPanel] sendContextualUpdate failed', err)
-      }
-    }
-
     const unsubscribe = bridge.subscribe((event) => {
       if (event.type === 'turn-start') {
         recentActivityRef.current = ['Turn started.']
         lastHeartbeatIndexRef.current = recentActivityRef.current.length
-        silentContext(
-          'The technical agent just started a new turn. Stay quiet until the ' +
-            'turn ends or you receive a heartbeat nudge.',
-        )
+        technicalTurnActiveRef.current = true
+        setTechnicalTurnActive(true)
+        // Cancel anything queued — fresh turn means new context.
+        pendingSummaryRef.current = null
         startHeartbeat()
+        // The user just submitted (Shogo invoked send_to_chat). If a
+        // user voice session is still live, arm a deferred disconnect
+        // that fires once Shogo's confirmation finishes speaking. We
+        // don't end immediately because we want Shogo's "Got it…"
+        // confirmation to play out cleanly.
+        if (sessionPurposeRef.current === 'user') {
+          userPostDisconnectArmedRef.current = true
+          // Fresh arm — we have not yet seen Shogo speak the
+          // post-`send_to_chat` confirmation, so the watcher must wait
+          // for `isSpeaking: true` before being eligible to disconnect.
+          userPostHeardSpeechRef.current = false
+          if (userPostSettleTimerRef.current) {
+            clearTimeout(userPostSettleTimerRef.current)
+            userPostSettleTimerRef.current = null
+          }
+          if (userPostDisconnectTimerRef.current) {
+            clearTimeout(userPostDisconnectTimerRef.current)
+          }
+          userPostDisconnectTimerRef.current = setTimeout(() => {
+            userPostDisconnectTimerRef.current = null
+            // First-speech watchdog. We only force-disconnect here if
+            // Shogo never spoke at all within the deadline (truly
+            // hung session). Once Shogo starts speaking, the watcher
+            // effect cancels this timer and the settle watcher owns
+            // the disconnect — so a long confirmation can finish
+            // cleanly without getting cut off mid-sentence.
+            if (!userPostDisconnectArmedRef.current) return
+            if (sessionPurposeRef.current !== 'user') return
+            if (
+              userPostHeardSpeechRef.current ||
+              conversationRef.current?.isSpeaking
+            ) {
+              return
+            }
+            userPostDisconnectArmedRef.current = false
+            userPostHeardSpeechRef.current = false
+            if (userPostSettleTimerRef.current) {
+              clearTimeout(userPostSettleTimerRef.current)
+              userPostSettleTimerRef.current = null
+            }
+            setSessionPurpose(null)
+            try {
+              conversationRef.current?.end()
+            } catch {
+              /* best effort */
+            }
+          }, POST_USER_FIRST_SPEECH_TIMEOUT_MS)
+        }
         return
       }
 
@@ -368,10 +749,13 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
             ? `Started: ${event.label}${okSuffix}`
             : `Finished: ${event.label}${okSuffix}`
         pushActivity(line)
-        // Silent awareness only — Shogo must not speak about mid-turn
-        // tool activity. We still mirror it into the on-screen log so
+        // No `sendContextualUpdate` here — during technical-agent work
+        // we are deliberately disconnected from ElevenLabs to avoid
+        // paying for an idle voice session. The activity log lives in
+        // `recentActivityRef`, which the next heartbeat / turn-end
+        // summary picks up via `get_recent_activity` or its diff
+        // block. We still mirror it into the on-screen transcript so
         // the user has visibility if they look.
-        silentContext(`[agent activity] ${line}`)
         mirrorTranscript(
           'agent-activity',
           event.label +
@@ -386,6 +770,8 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
 
       // turn-end
       stopHeartbeat()
+      technicalTurnActiveRef.current = false
+      setTechnicalTurnActive(false)
       const { finalText } = event
       pushActivity(
         finalText ? `Turn ended. Final reply: ${finalText.slice(0, 500)}` : 'Turn ended.',
@@ -397,54 +783,53 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         mirrorTranscript('agent-reply', finalText)
       }
 
-      const ref = conversationRef.current
-      if (ref && ref.voiceActive) {
-        // Feed the final text in as silent context so Shogo has the raw
-        // material, then inject a user-role message that *forces* a
-        // summary turn. The user never hears the nudge — they only hear
-        // Shogo's spoken response.
-        if (finalText) {
-          try {
-            ref.sendContextualUpdate(`The agent replied: ${finalText}`)
-          } catch (err) {
-            console.warn('[ShogoChatPanel] sendContextualUpdate(final) failed', err)
-          }
-        }
-        const nudge =
-          'The technical agent just finished this turn. Give the user a ' +
-          'two- or three-sentence high-level summary of what was ' +
-          'accomplished — in business-outcome language (what changed, ' +
-          'what it means for them, whether anything is pending). Never ' +
-          'recite tool names, file names, or a list of operations. Base ' +
-          'it on the final reply and the recent activity.' +
-          (finalText ? `\n\nFinal reply:\n${finalText}` : '')
-        try {
-          ref.sendUserMessage(nudge)
-        } catch (err) {
-          console.warn('[ShogoChatPanel] turn-end sendUserMessage failed', err)
-        }
-      } else {
+      // Cancel a queued heartbeat — turn-end takes priority.
+      if (pendingSummaryRef.current?.kind === 'heartbeat') {
+        pendingSummaryRef.current = null
+      }
+
+      if (inputModeRef.current === 'voice') {
+        // Voice modality: deliver the spoken summary via the dispatcher.
+        // It will reconnect (if needed), have Shogo speak once, then
+        // disconnect again.
+        void runSummary('turn-end', finalText)
+      } else if (finalText) {
         // Text modality: feed the reply into the translator thread as
         // a user turn so it paraphrases on its next response.
-        if (finalText) {
-          try {
-            void sendMessageRef.current({
-              text: `The agent replied: ${finalText}`,
-            })
-          } catch (err) {
-            console.warn('[ShogoChatPanel] sendMessage(agent reply) failed', err)
-          }
+        try {
+          void sendMessageRef.current({
+            text: `[UI turn-complete] You just produced this output in the background: ${finalText}\n\nGive the user a two- or three-sentence high-level summary in business-outcome language. Speak in the first person — never refer to "the agent".`,
+          })
+        } catch (err) {
+          console.warn('[ShogoChatPanel] sendMessage(turn-complete) failed', err)
         }
       }
     })
     return unsubscribe
-  }, [bridge, startHeartbeat, stopHeartbeat])
+  }, [bridge, startHeartbeat, stopHeartbeat, runSummary, setSessionPurpose])
 
   // Tear down voice session + heartbeat on unmount (user flipped Shogo
   // Mode off, or navigated away).
   useEffect(() => {
     return () => {
       stopHeartbeat()
+      cancelSummaryTimers()
+      if (userPostDisconnectTimerRef.current) {
+        clearTimeout(userPostDisconnectTimerRef.current)
+        userPostDisconnectTimerRef.current = null
+      }
+      if (userPostSettleTimerRef.current) {
+        clearTimeout(userPostSettleTimerRef.current)
+        userPostSettleTimerRef.current = null
+      }
+      // Setting state during unmount is a no-op (component is gone) but
+      // updating the ref is still important if React reuses this hook
+      // tree under a fast-refresh or strict-mode remount.
+      sessionPurposeRef.current = null
+      pendingSummaryRef.current = null
+      summaryInFlightRef.current = false
+      userPostDisconnectArmedRef.current = false
+      userPostHeardSpeechRef.current = false
       try {
         conversation.end()
       } catch {
@@ -454,31 +839,148 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Auto-start the mic when entering Shogo Mode in voice modality. The
-  // user clicking the Shogo Mode toggle counts as the user gesture that
-  // browsers require for `getUserMedia`, so this runs without a prompt
-  // loop. If permissions are denied or the signed URL fails we surface
-  // the error and leave the UI in an obvious "tap the mic to retry"
-  // state.
-  const autoStartedRef = useRef(false)
+  // ---------------------------------------------------------------------
+  // Summary lifecycle watcher.
+  //
+  // While a summary is in flight we wait for `isSpeaking` to go true
+  // (Shogo started talking), then back to false (Shogo finished), and
+  // schedule the disconnect after a small grace window. If the user
+  // interrupts via the mic button, `handleToggleMic` flips the purpose
+  // to `'user'` so this effect bails out without disconnecting.
+  // ---------------------------------------------------------------------
   useEffect(() => {
-    if (autoStartedRef.current) return
-    if (inputMode !== 'voice') return
-    if (conversation.status !== 'disconnected') return
-    autoStartedRef.current = true
-    ;(async () => {
-      try {
-        await conversation.start()
-      } catch (err: unknown) {
-        console.warn('[ShogoChatPanel] auto-start voice failed', err)
-        setVoiceError(
-          (err as Error)?.message ||
-            'Could not start voice session. Check microphone permissions.',
-        )
+    if (sessionPurposeRef.current !== 'summary') return
+    if (!summaryInFlightRef.current) return
+    if (conversation.isSpeaking) {
+      summaryHeardSpeechRef.current = true
+      if (summaryDisconnectTimerRef.current) {
+        clearTimeout(summaryDisconnectTimerRef.current)
+        summaryDisconnectTimerRef.current = null
       }
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inputMode, conversation.status])
+      return
+    }
+    if (!summaryHeardSpeechRef.current) return
+    if (summaryDisconnectTimerRef.current) return
+    summaryDisconnectTimerRef.current = setTimeout(() => {
+      summaryDisconnectTimerRef.current = null
+      finishSummary()
+    }, SUMMARY_GRACE_AFTER_SPEECH_MS)
+  }, [conversation.isSpeaking, finishSummary])
+
+  // ---------------------------------------------------------------------
+  // Post-user-disconnect watcher.
+  //
+  // When `turn-start` arrives during a live user session (Shogo just
+  // called `send_to_chat`) we arm a deferred disconnect. The disconnect
+  // is gated by two conditions, both required:
+  //
+  //   1. Shogo has actually started speaking the confirmation (the
+  //      `userPostHeardSpeech` flip — `isSpeaking` went true at least
+  //      once after the arm). Without this we would tear down before
+  //      Shogo got a word out.
+  //   2. `isSpeaking` has been false for `POST_USER_SETTLE_AFTER_SPEECH_MS`.
+  //      ElevenLabs flips `isSpeaking` to false during natural pauses
+  //      between sentences; without the settle window we cut Shogo off
+  //      mid-utterance the moment it inhales.
+  //
+  // The `POST_USER_DISCONNECT_TIMEOUT_MS` watchdog (set in the bridge
+  // handler) provides a hard cap if `isSpeaking` somehow never settles.
+  // ---------------------------------------------------------------------
+  const finishUserPostDisconnect = useCallback(() => {
+    if (userPostSettleTimerRef.current) {
+      clearTimeout(userPostSettleTimerRef.current)
+      userPostSettleTimerRef.current = null
+    }
+    userPostDisconnectArmedRef.current = false
+    userPostHeardSpeechRef.current = false
+    if (userPostDisconnectTimerRef.current) {
+      clearTimeout(userPostDisconnectTimerRef.current)
+      userPostDisconnectTimerRef.current = null
+    }
+    setSessionPurpose(null)
+    try {
+      conversationRef.current?.end()
+    } catch {
+      /* best effort */
+    }
+  }, [setSessionPurpose])
+
+  useEffect(() => {
+    if (!userPostDisconnectArmedRef.current) return
+    if (sessionPurposeRef.current !== 'user') {
+      // Purpose changed out from under us (e.g. handleToggleMic stopped
+      // the session early) — clean up timers and disarm. No teardown
+      // here; whoever changed the purpose owns it.
+      userPostDisconnectArmedRef.current = false
+      userPostHeardSpeechRef.current = false
+      if (userPostDisconnectTimerRef.current) {
+        clearTimeout(userPostDisconnectTimerRef.current)
+        userPostDisconnectTimerRef.current = null
+      }
+      if (userPostSettleTimerRef.current) {
+        clearTimeout(userPostSettleTimerRef.current)
+        userPostSettleTimerRef.current = null
+      }
+      return
+    }
+    if (conversation.isSpeaking) {
+      // Shogo (re)started speaking — record it, cancel the
+      // first-speech watchdog (settle watcher now owns disconnect),
+      // and cancel any pending settle. We will get another effect
+      // tick when speech ends.
+      userPostHeardSpeechRef.current = true
+      if (userPostDisconnectTimerRef.current) {
+        clearTimeout(userPostDisconnectTimerRef.current)
+        userPostDisconnectTimerRef.current = null
+      }
+      if (userPostSettleTimerRef.current) {
+        clearTimeout(userPostSettleTimerRef.current)
+        userPostSettleTimerRef.current = null
+      }
+      return
+    }
+    // Not speaking — only proceed if we *heard* speech first. The
+    // initial `isSpeaking: false` right after `turn-start` arms us is
+    // not a real pause; ignore it.
+    if (!userPostHeardSpeechRef.current) return
+    if (userPostSettleTimerRef.current) return
+    userPostSettleTimerRef.current = setTimeout(() => {
+      userPostSettleTimerRef.current = null
+      // Re-validate state at fire time — purpose / armed / speaking
+      // may have flipped while we were waiting.
+      if (!userPostDisconnectArmedRef.current) return
+      if (sessionPurposeRef.current !== 'user') return
+      if (conversationRef.current?.isSpeaking) return
+      finishUserPostDisconnect()
+    }, POST_USER_SETTLE_AFTER_SPEECH_MS)
+  }, [conversation.isSpeaking, conversation.status, finishUserPostDisconnect])
+
+  // ---------------------------------------------------------------------
+  // Defensive: if the SDK reports a `disconnected` status while we
+  // still think a session is live (e.g. the server dropped us), reset
+  // our purpose tracking so the next mic press starts cleanly.
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    if (conversation.status !== 'disconnected') return
+    if (sessionPurposeRef.current === null) return
+    setSessionPurpose(null)
+    summaryInFlightRef.current = false
+    summaryHeardSpeechRef.current = false
+    cancelSummaryTimers()
+    // Mirror the cleanup for the user post-disconnect watcher so a
+    // surprise SDK-level disconnect doesn't leave stale armed/timer
+    // state that fires against the next session.
+    userPostDisconnectArmedRef.current = false
+    userPostHeardSpeechRef.current = false
+    if (userPostDisconnectTimerRef.current) {
+      clearTimeout(userPostDisconnectTimerRef.current)
+      userPostDisconnectTimerRef.current = null
+    }
+    if (userPostSettleTimerRef.current) {
+      clearTimeout(userPostSettleTimerRef.current)
+      userPostSettleTimerRef.current = null
+    }
+  }, [conversation.status, cancelSummaryTimers, setSessionPurpose])
 
   // ---------------------------------------------------------------------
   // Voice transcript persistence — server-authoritative, queue-backed.
@@ -514,13 +1016,6 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
    * that slipped through a previous POST failure. */
   const rawTurnsRef = useRef<Map<string, TranscriptTask>>(new Map())
 
-  const [queueState, setQueueState] = useState<TranscriptQueueState>({
-    pendingCount: 0,
-    inFlight: false,
-    backoffActive: false,
-    lastError: null,
-  })
-
   const debugLog = useCallback((msg: string, data?: unknown) => {
     if (typeof __DEV__ !== 'undefined' && __DEV__) {
       console.log(msg, data ?? '')
@@ -535,7 +1030,6 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       new ShogoTranscriptQueue({
         apiUrl: API_URL ?? '',
         credentials: Platform.OS === 'web' ? 'include' : 'omit',
-        onStateChange: (state) => setQueueState(state),
         onTaskPersisted: (task) => {
           persistedEntryIdsRef.current.add(task.id)
         },
@@ -746,47 +1240,110 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     void sendMessage({ text })
   }, [draft, sendMessage])
 
-  // Mic button behaviour: first press connects; subsequent presses
-  // toggle ElevenLabs' `setMuted` instead of ending the session. Muting
-  // gates input audio off but keeps the WebSocket + MediaStream alive,
-  // so (a) any pending user utterance is naturally committed by the
-  // server's VAD after the silence window, and (b) unmuting never by
-  // itself interrupts the agent — a new user turn only starts if the
-  // VAD picks up actual speech.
+  // Mic button behaviour. The mic is now the single visible control for
+  // the voice session lifecycle, and its meaning depends on what state
+  // we are in:
+  //
+  //   - Disconnected (idle or technical agent working)
+  //       → Connect a fresh user-purpose session and start listening.
+  //   - Listening to the user (`'user'` purpose, connected)
+  //       → "Stop listening / send" — push a `sendUserActivity` nudge
+  //         to encourage VAD to commit the final transcript, then
+  //         disconnect after a tiny flush window.
+  //   - Shogo is mid-summary (`'summary'` purpose)
+  //       → Interrupt: cancel the summary, restart the session with
+  //         `suppressFirstMessage` so any in-flight speech is cut off,
+  //         and immediately switch to user-purpose listening. This is
+  //         the user's "click the microphone to interrupt the agent"
+  //         affordance.
   const handleToggleMic = useCallback(async () => {
     setVoiceError(null)
-    if (voiceActive) {
-      conversation.setMuted(!conversation.isMuted)
+    const ref = conversationRef.current
+    if (!ref) return
+
+    // 1) Interrupt-and-listen path.
+    if (sessionPurposeRef.current === 'summary') {
+      cancelSummaryTimers()
+      pendingSummaryRef.current = null
+      summaryInFlightRef.current = false
+      summaryHeardSpeechRef.current = false
+      setSessionPurpose('user')
+      try {
+        await ref.restart({ suppressFirstMessage: true })
+        try {
+          conversationRef.current?.setMuted(false)
+        } catch {
+          /* best effort */
+        }
+      } catch (err: unknown) {
+        console.warn(
+          '[ShogoChatPanel] interrupt-and-listen restart failed',
+          err,
+        )
+        setSessionPurpose(null)
+        setVoiceError(
+          (err as Error)?.message || 'Could not restart voice session.',
+        )
+      }
       return
     }
+
+    // 2) Stop-listening path.
+    if (sessionPurposeRef.current === 'user' && ref.voiceActive) {
+      setSessionPurpose(null)
+      userPostDisconnectArmedRef.current = false
+      userPostHeardSpeechRef.current = false
+      if (userPostSettleTimerRef.current) {
+        clearTimeout(userPostSettleTimerRef.current)
+        userPostSettleTimerRef.current = null
+      }
+      if (userPostDisconnectTimerRef.current) {
+        clearTimeout(userPostDisconnectTimerRef.current)
+        userPostDisconnectTimerRef.current = null
+      }
+      try {
+        ref.sendUserActivity()
+      } catch {
+        /* best effort — older SDKs may lack this */
+      }
+      // Small flush window so VAD can commit a final user transcript
+      // before we tear down the WebSocket.
+      setTimeout(() => {
+        try {
+          conversationRef.current?.end()
+        } catch {
+          /* best effort */
+        }
+      }, STOP_LISTENING_FLUSH_MS)
+      return
+    }
+
+    // 3) Connect-and-listen path (disconnected or stale state).
+    //
+    // Always start with `suppressFirstMessage: true`. The agent has a
+    // configured greeting ("Hi, I'm Shogo. Tell me what you'd like to
+    // work on…") which on connect plays unprompted and then gets
+    // immediately cut off as soon as the user starts talking — feels
+    // like a bug. The Shogo Mode panel already shows a written intro
+    // in its empty state, so we never need a spoken intro on a fresh
+    // user session.
+    setSessionPurpose('user')
     try {
-      await conversation.start()
+      await ref.start({ suppressFirstMessage: true })
+      try {
+        conversationRef.current?.setMuted(false)
+      } catch {
+        /* best effort */
+      }
     } catch (err: unknown) {
+      setSessionPurpose(null)
       console.warn('[ShogoChatPanel] failed to start voice session', err)
       setVoiceError(
         (err as Error)?.message ||
           'Could not start voice session. Check microphone permissions.',
       )
     }
-  }, [conversation, voiceActive])
-
-  // ElevenLabs' `useConversation` has no public barge-in API, so "stop
-  // the AI from talking" is implemented as a fast reconnect. The
-  // hook-level `restart({ suppressFirstMessage: true })` passes
-  // `overrides.agent.firstMessage = ''` so the new session comes back
-  // silent instead of replaying an intro, and it preserves the in-
-  // memory transcript across the reconnect gap.
-  const handleStopAI = useCallback(async () => {
-    setVoiceError(null)
-    try {
-      await conversation.restart({ suppressFirstMessage: true })
-    } catch (err: unknown) {
-      console.warn('[ShogoChatPanel] restart after stop-AI failed', err)
-      setVoiceError(
-        (err as Error)?.message || 'Could not restart voice session.',
-      )
-    }
-  }, [conversation])
+  }, [cancelSummaryTimers, setSessionPurpose])
 
   // When the user flips back to text mode we end any live voice session —
   // we never want the mic hot while the voice composer is hidden.
@@ -794,15 +1351,32 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     (next: 'voice' | 'text') => {
       setInputMode(next)
       setVoiceError(null)
-      if (next === 'text' && voiceActive) {
-        try {
-          conversation.end()
-        } catch {
-          // no-op.
+      if (next === 'text') {
+        cancelSummaryTimers()
+        pendingSummaryRef.current = null
+        summaryInFlightRef.current = false
+        summaryHeardSpeechRef.current = false
+        setSessionPurpose(null)
+        userPostDisconnectArmedRef.current = false
+        userPostHeardSpeechRef.current = false
+        if (userPostSettleTimerRef.current) {
+          clearTimeout(userPostSettleTimerRef.current)
+          userPostSettleTimerRef.current = null
+        }
+        if (userPostDisconnectTimerRef.current) {
+          clearTimeout(userPostDisconnectTimerRef.current)
+          userPostDisconnectTimerRef.current = null
+        }
+        if (voiceActive) {
+          try {
+            conversation.end()
+          } catch {
+            // no-op.
+          }
         }
       }
     },
-    [conversation, voiceActive],
+    [conversation, voiceActive, cancelSummaryTimers, setSessionPurpose],
   )
 
   const scrollRef = useRef<ScrollView | null>(null)
@@ -814,16 +1388,24 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
 
   return (
     <View className={className ?? 'flex-1 bg-background'}>
-      <Header
-        status={conversation.status}
-        voiceError={voiceError}
-        inputMode={inputMode}
-        onInputModeChange={handleSetInputMode}
-        onPeek={handlePeek}
-        onClose={handleClose}
-      />
-
-      <SyncBanner state={queueState} />
+      {/* Floating top-right controls. No header bar; the controls
+          hover over the content for a less chrome-heavy look. */}
+      <View className="absolute top-3 right-3 z-10 flex-row items-center gap-1">
+        <Pressable
+          onPress={handlePeek}
+          className="p-2 rounded-full hover:bg-muted/60 active:bg-muted"
+          accessibilityLabel="Peek at technical chat"
+        >
+          <Eye size={16} className="text-muted-foreground" />
+        </Pressable>
+        <Pressable
+          onPress={handleClose}
+          className="p-2 rounded-full hover:bg-muted/60 active:bg-muted"
+          accessibilityLabel="Exit Shogo Mode"
+        >
+          <X size={16} className="text-muted-foreground" />
+        </Pressable>
+      </View>
 
       {isVoiceMode && (
         <SphereHero
@@ -889,19 +1471,22 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       {isVoiceMode ? (
         <VoiceComposer
           onToggleMic={handleToggleMic}
-          onStopAI={handleStopAI}
+          onSwitchToText={() => handleSetInputMode('text')}
           voiceActive={voiceActive}
           voiceConnecting={conversation.status === 'connecting'}
           voiceSpeaking={conversation.isSpeaking}
           voiceListening={conversation.isListening}
-          voiceMuted={voiceActive && conversation.isMuted}
           voiceError={voiceError}
+          isUserSession={sessionPurpose === 'user'}
+          isSummarySession={sessionPurpose === 'summary'}
+          technicalTurnActive={technicalTurnActive}
         />
       ) : (
         <TextComposer
           draft={draft}
           onDraftChange={setDraft}
           onSend={handleSendText}
+          onSwitchToVoice={() => handleSetInputMode('voice')}
         />
       )}
     </View>
@@ -924,7 +1509,7 @@ function SphereHero({
   listening: boolean
 }) {
   const caption = !voiceActive
-    ? 'Tap the mic to start talking'
+    ? ''
     : speaking
     ? 'Shogo is speaking…'
     : listening
@@ -937,7 +1522,7 @@ function SphereHero({
         className="w-full"
         // Fixed height gives the Three.js canvas a stable layout box;
         // the particle cloud scales inside via `style`.
-        style={{ height: 400 }}
+        style={{ height: 350 }}
       >
         <OrganicParticles
           config={SHOGO_PARTICLES_CONFIG}
@@ -946,162 +1531,7 @@ function SphereHero({
           style={{ width: '100%', height: '100%' }}
         />
       </View>
-      <Text className="text-xs text-muted-foreground pb-2">{caption}</Text>
-    </View>
-  )
-}
-
-function Header({
-  status,
-  voiceError,
-  inputMode,
-  onInputModeChange,
-  onPeek,
-  onClose,
-}: {
-  status: 'disconnected' | 'connecting' | 'connected'
-  voiceError: string | null
-  inputMode: 'voice' | 'text'
-  onInputModeChange: (next: 'voice' | 'text') => void
-  onPeek: () => void
-  onClose: () => void
-}) {
-  const isVoice = inputMode === 'voice'
-  // Only show the live voice status dot when the user is actually in voice
-  // mode — otherwise it's confusing ("Idle" next to the Text composer).
-  const showStatus = isVoice
-  const statusLabel =
-    status === 'connected'
-      ? 'Voice connected'
-      : status === 'connecting'
-      ? 'Connecting…'
-      : 'Idle'
-  const statusDotClass =
-    status === 'connected'
-      ? 'bg-emerald-500'
-      : status === 'connecting'
-      ? 'bg-amber-500'
-      : 'bg-muted-foreground/40'
-
-  return (
-    <View className="flex-row items-center justify-between px-4 py-3 border-b border-border gap-3">
-      <View className="flex-row items-center gap-3 min-w-0 flex-1">
-        <View className="min-w-0 flex-1">
-          <Text className="text-base font-semibold text-foreground">
-            Shogo Mode
-          </Text>
-        </View>
-      </View>
-      <View className="flex-row items-center gap-2">
-        <InputModeSwitcher mode={inputMode} onChange={onInputModeChange} />
-        {showStatus && (
-          <View className="flex-row items-center gap-1.5">
-            <View className={`w-1.5 h-1.5 rounded-full ${statusDotClass}`} />
-            <Text className="text-xs text-muted-foreground">
-              {voiceError ? 'Error' : statusLabel}
-            </Text>
-          </View>
-        )}
-        <Pressable
-          onPress={onPeek}
-          className="p-1.5 rounded-md hover:bg-muted"
-          accessibilityLabel="Peek at technical chat"
-        >
-          <Eye size={16} className="text-muted-foreground" />
-        </Pressable>
-        <Pressable
-          onPress={onClose}
-          className="p-1.5 rounded-md hover:bg-muted"
-          accessibilityLabel="Exit Shogo Mode"
-        >
-          <X size={16} className="text-muted-foreground" />
-        </Pressable>
-      </View>
-    </View>
-  )
-}
-
-/**
- * Segmented control that flips between voice and text composers. We keep
- * it small + text-free on labels (pure icon) so it fits the header at any
- * chat-column width.
- */
-function InputModeSwitcher({
-  mode,
-  onChange,
-}: {
-  mode: 'voice' | 'text'
-  onChange: (next: 'voice' | 'text') => void
-}) {
-  return (
-    <View className="flex-row items-center rounded-full bg-muted p-0.5">
-      <Pressable
-        onPress={() => onChange('voice')}
-        className={`flex-row items-center gap-1 px-2.5 py-1 rounded-full ${
-          mode === 'voice' ? 'bg-background shadow-sm' : ''
-        }`}
-        accessibilityLabel="Switch to voice input"
-      >
-        <Mic
-          size={12}
-          className={mode === 'voice' ? 'text-foreground' : 'text-muted-foreground'}
-        />
-        <Text
-          className={`text-[11px] font-semibold ${
-            mode === 'voice' ? 'text-foreground' : 'text-muted-foreground'
-          }`}
-        >
-          Voice
-        </Text>
-      </Pressable>
-      <Pressable
-        onPress={() => onChange('text')}
-        className={`flex-row items-center gap-1 px-2.5 py-1 rounded-full ${
-          mode === 'text' ? 'bg-background shadow-sm' : ''
-        }`}
-        accessibilityLabel="Switch to text input"
-      >
-        <Keyboard
-          size={12}
-          className={mode === 'text' ? 'text-foreground' : 'text-muted-foreground'}
-        />
-        <Text
-          className={`text-[11px] font-semibold ${
-            mode === 'text' ? 'text-foreground' : 'text-muted-foreground'
-          }`}
-        >
-          Text
-        </Text>
-      </Pressable>
-    </View>
-  )
-}
-
-/**
- * Subtle horizontal banner shown when the transcript queue has pending
- * writes or is backing off after a transient failure. Keeps the user
- * aware that "your last turn hasn't landed yet" instead of silently
- * losing it the way the original fire-and-forget path did.
- */
-function SyncBanner({ state }: { state: TranscriptQueueState }) {
-  if (state.pendingCount === 0 && !state.lastError) return null
-  const label = state.backoffActive
-    ? `Retrying transcript sync (${state.pendingCount} pending)…`
-    : state.inFlight
-    ? state.pendingCount > 1
-      ? `Syncing ${state.pendingCount} messages…`
-      : 'Syncing transcript…'
-    : state.lastError
-    ? `Transcript sync issue: ${state.lastError}`
-    : null
-  if (!label) return null
-  const tone = state.backoffActive || state.lastError ? 'warn' : 'info'
-  const bgClass = tone === 'warn' ? 'bg-amber-500/10' : 'bg-primary/10'
-  const textClass =
-    tone === 'warn' ? 'text-amber-700 dark:text-amber-400' : 'text-primary'
-  return (
-    <View className={`px-4 py-1.5 border-b border-border ${bgClass}`}>
-      <Text className={`text-[11px] ${textClass}`}>{label}</Text>
+      {/* <Text className="text-xs text-muted-foreground pb-2">{caption}</Text> */}
     </View>
   )
 }
@@ -1109,8 +1539,8 @@ function SyncBanner({ state }: { state: TranscriptQueueState }) {
 function EmptyState({ mode }: { mode: 'voice' | 'text' }) {
   const hint =
     mode === 'voice'
-      ? "Tap the mic to start talking. I'll translate what you say for the technical agent and read replies back to you in plain English."
-      : "Type what you'd like to work on below. I'll translate it for the technical agent and summarize replies back to you in plain English."
+      ? "Tap the mic to start talking. I'll get the work going in the background and pop back in to summarize as I go — no idle voice connection in between."
+      : "Type what you'd like to work on below. I'll handle it in the background and summarize what I did back to you in plain English."
   return (
     <View className="flex-1 items-center justify-center py-10 gap-2">
       <Text className="text-sm font-medium text-foreground">Hi, I'm Shogo.</Text>
@@ -1174,90 +1604,101 @@ function MessageRow({
  * Voice-only composer — a single prominent mic button + caption. Shown
  * when the user has picked "Voice" in the mode switcher; hides the text
  * input entirely so the UI never surfaces both at once.
+ *
+ * The mic is the *only* control here, and its meaning depends on the
+ * voice session lifecycle:
+ *
+ *   - Disconnected, technical agent idle  → "Tap to talk".
+ *   - Disconnected, technical agent busy  → dimmed but tappable; lets
+ *                                            the user start a fresh
+ *                                            voice instruction.
+ *   - Connected, user purpose             → "Listening — tap to send".
+ *   - Connected, summary purpose          → "Shogo is speaking — tap to
+ *                                            interrupt".
  */
 function VoiceComposer({
   onToggleMic,
-  onStopAI,
+  onSwitchToText,
   voiceActive,
   voiceConnecting,
   voiceSpeaking,
   voiceListening,
-  voiceMuted,
   voiceError,
+  isUserSession,
+  isSummarySession,
+  technicalTurnActive,
 }: {
   onToggleMic: () => void
-  onStopAI: () => void
+  onSwitchToText: () => void
   voiceActive: boolean
   voiceConnecting: boolean
   voiceSpeaking: boolean
   voiceListening: boolean
-  voiceMuted: boolean
   voiceError: string | null
+  isUserSession: boolean
+  isSummarySession: boolean
+  technicalTurnActive: boolean
 }) {
-  // Visual states (in precedence order once a session is live):
-  //   muted     → muted-tone background, MicOff icon
-  //   speaking  → emerald (agent is talking)
-  //   listening → primary (VAD says the user is talking)
-  //   idle conn → primary/80
+  // Visual states (in precedence order):
+  //   summary-active  → emerald (Shogo is speaking; tap to interrupt)
+  //   user-listening  → primary (VAD says the user is talking)
+  //   user-connected  → primary/80 (connected, idle mic)
+  //   connecting      → amber
+  //   idle-busy       → muted-foreground (technical agent working)
+  //   idle            → primary (tap to talk)
   const micBgClass = voiceActive
-    ? voiceMuted
-      ? 'bg-muted-foreground/60'
-      : voiceSpeaking
+    ? isSummarySession
       ? 'bg-emerald-500'
       : voiceListening
       ? 'bg-primary'
       : 'bg-primary/80'
     : voiceConnecting
     ? 'bg-amber-500'
+    : technicalTurnActive
+    ? 'bg-muted-foreground/60'
     : 'bg-primary'
   const micIconClass = 'text-primary-foreground'
 
+  // Caption mirrors the same precedence so the text and color always
+  // agree on what state we are in.
   const caption = voiceError
     ? voiceError
-    : voiceActive
-    ? voiceMuted
-      ? 'Muted — tap to unmute'
-      : voiceSpeaking
-      ? 'Shogo is speaking…'
-      : voiceListening
-      ? 'Listening — tap to mute'
-      : 'Connected — tap to mute'
+    : isSummarySession && voiceSpeaking
+    ? 'Shogo is speaking — tap to interrupt'
+    : isSummarySession
+    ? 'Shogo is preparing a summary…'
+    : isUserSession && voiceActive
+    ? 'Listening — tap to send'
     : voiceConnecting
     ? 'Connecting…'
-    : 'Tap to start talking'
+    : technicalTurnActive
+    ? 'Technical agent is working — tap to talk'
+    : 'Tap to talk'
 
-  const micAccessibilityLabel = voiceActive
-    ? voiceMuted
-      ? 'Unmute microphone'
-      : 'Mute microphone'
+  const micAccessibilityLabel = isSummarySession
+    ? 'Interrupt Shogo and start talking'
+    : isUserSession && voiceActive
+    ? 'Stop listening and send'
     : 'Start voice session'
 
-  const showStopAI = voiceActive && voiceSpeaking
+  // Render the off-icon when we are disconnected during technical-agent
+  // work — visually communicates that the mic is currently inactive
+  // even though tapping still starts a user voice instruction.
+  const showMicOff = !voiceActive && technicalTurnActive
 
   return (
-    <View className="px-3 py-2 items-center gap-2">
-      <View className="flex-row items-center gap-3">
-        <Pressable
-          onPress={onToggleMic}
-          className={`rounded-full w-12 h-12 items-center justify-center shadow-lg ${micBgClass}`}
-          accessibilityLabel={micAccessibilityLabel}
-        >
-          {voiceActive && voiceMuted ? (
-            <MicOff size={26} className={micIconClass} />
-          ) : (
-            <Mic size={26} className={micIconClass} />
-          )}
-        </Pressable>
-        {showStopAI ? (
-          <Pressable
-            onPress={onStopAI}
-            className="rounded-full w-9 h-9 items-center justify-center shadow bg-destructive"
-            accessibilityLabel="Stop Shogo from speaking"
-          >
-            <Square size={16} className="text-destructive-foreground" />
-          </Pressable>
-        ) : null}
-      </View>
+    <View className="relative px-3 pt-3 pb-4 items-center gap-2">
+      <Pressable
+        onPress={onToggleMic}
+        className={`rounded-full w-16 h-16 items-center justify-center shadow-lg ${micBgClass}`}
+        accessibilityLabel={micAccessibilityLabel}
+      >
+        {showMicOff ? (
+          <MicOff size={28} className={micIconClass} />
+        ) : (
+          <Mic size={28} className={micIconClass} />
+        )}
+      </Pressable>
       <Text
         className={`text-xs text-center ${
           voiceError ? 'text-destructive' : 'text-muted-foreground'
@@ -1265,6 +1706,14 @@ function VoiceComposer({
       >
         {caption}
       </Text>
+      <Pressable
+        onPress={onSwitchToText}
+        className="absolute bottom-3 right-3 flex-row items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-muted/60 active:bg-muted"
+        accessibilityLabel="Switch to text input"
+      >
+        <Keyboard size={12} className="text-muted-foreground" />
+        <Text className="text-[11px] text-muted-foreground">Type instead</Text>
+      </Pressable>
     </View>
   )
 }
@@ -1277,15 +1726,24 @@ function TextComposer({
   draft,
   onDraftChange,
   onSend,
+  onSwitchToVoice,
 }: {
   draft: string
   onDraftChange: (v: string) => void
   onSend: () => void
+  onSwitchToVoice: () => void
 }) {
   const canSend = draft.trim().length > 0
 
   return (
-    <View className="border-t border-border px-3 py-3 flex-row items-center gap-2">
+    <View className="px-3 pb-3 pt-2 flex-row items-center gap-2">
+      <Pressable
+        onPress={onSwitchToVoice}
+        className="rounded-full w-10 h-10 items-center justify-center hover:bg-muted/60 active:bg-muted"
+        accessibilityLabel="Switch to voice input"
+      >
+        <Mic size={18} className="text-muted-foreground" />
+      </Pressable>
       <TextInput
         value={draft}
         onChangeText={onDraftChange}
