@@ -20,6 +20,7 @@ function makeFakeBridge() {
     shogoPeekActive: false,
     setShogoPeekActive: () => {},
     chatSessionId: null,
+    consumeAutoStartVoice: () => false,
   }
   return { api, sends, modes }
 }

@@ -1365,6 +1365,49 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
   return router.fetch(newReq)
 })
 
+/**
+ * Preemptively warm a project runtime pod.
+ *
+ * Returns 202 immediately and resolves the pod URL in the background via
+ * `getProjectPodUrl()` — the warm-pool-first resolver. This is the hook
+ * the homepage composer calls as soon as the user starts a draft project
+ * so a warm pod is being claimed/assigned (or cold-started) while they
+ * are still typing or talking.
+ *
+ * Idempotent: repeated calls during pod resolution join the existing
+ * `pendingPodRequests` entry inside `getProjectPodUrl`, so spamming
+ * this endpoint does not multiply work.
+ */
+app.post('/api/projects/:projectId/runtime/prewarm', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      // Fire and forget: the resolver dedupes concurrent requests and
+      // promotes a warm pod (or cold-starts) in the background. We
+      // intentionally do not await so the homepage gets a snappy 202
+      // and the pod warms while the user keeps composing.
+      getProjectPodUrl(projectId).catch((err) => {
+        console.error(`[Runtime Prewarm] Background prewarm failed for ${projectId}:`, err?.message ?? err)
+      })
+      return c.json({ success: true, projectId, status: 'warming' }, 202)
+    } catch (err: any) {
+      console.error(`[Runtime Prewarm] Failed to schedule prewarm for ${projectId}:`, err.message)
+      return c.json({ error: `Failed to prewarm runtime: ${err.message}` }, 500)
+    }
+  }
+
+  // Local dev: there is no warm pool to claim — fall back to the
+  // existing start path so callers still see consistent behavior.
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/runtime/start`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
 // Stop project runtime
 app.post('/api/projects/:projectId/runtime/stop', async (c) => {
   const projectId = c.req.param('projectId')

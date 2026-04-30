@@ -88,6 +88,13 @@ export interface ChatBridgeApi {
    * writes are POSTed to `/api/voice/*?chatSessionId=<id>`.
    */
   chatSessionId: string | null
+  /**
+   * One-shot signal: when set, the Shogo Mode panel should auto-connect
+   * its voice session as soon as it mounts. Consumers must call
+   * `consumeAutoStartVoice()` exactly once to read and clear the flag —
+   * the bridge guarantees `true` is returned at most once per provider.
+   */
+  consumeAutoStartVoice: () => boolean
 }
 
 interface BridgeInternals {
@@ -104,17 +111,36 @@ const ChatBridgeContext = createContext<{
 export interface ChatBridgeProviderProps {
   /** Currently active chat session id — used for per-session persistence. */
   chatSessionId?: string | null
+  /**
+   * Initial value for `shogoModeActive`. When `true`, Shogo Mode is on
+   * from first render so the overlay mounts before any user gesture.
+   * Used by the homepage → project navigation when the user clicks the
+   * mic to start voice project creation.
+   */
+  initialShogoModeActive?: boolean
+  /**
+   * One-shot: request that the Shogo Mode panel auto-connect its voice
+   * session on mount. The flag is consumed (and cleared) on the first
+   * read via `consumeAutoStartVoice()` from the bridge api.
+   */
+  initialAutoStartVoice?: boolean
   children: React.ReactNode
 }
 
-export function ChatBridgeProvider({ chatSessionId = null, children }: ChatBridgeProviderProps) {
+export function ChatBridgeProvider({
+  chatSessionId = null,
+  initialShogoModeActive = false,
+  initialAutoStartVoice = false,
+  children,
+}: ChatBridgeProviderProps) {
   const internalsRef = useRef<BridgeInternals>({
     sendImpl: null,
     setModeImpl: null,
     listeners: new Set(),
   })
-  const [shogoModeActive, setShogoModeActiveState] = useState(false)
+  const [shogoModeActive, setShogoModeActiveState] = useState(initialShogoModeActive)
   const [shogoPeekActive, setShogoPeekActiveState] = useState(false)
+  const autoStartVoiceRef = useRef<boolean>(initialAutoStartVoice)
 
   const setShogoModeActive = useCallback((active: boolean) => {
     setShogoModeActiveState(active)
@@ -133,6 +159,12 @@ export function ChatBridgeProvider({ chatSessionId = null, children }: ChatBridg
 
   const setShogoPeekActive = useCallback((active: boolean) => {
     setShogoPeekActiveState(active)
+  }, [])
+
+  const consumeAutoStartVoice = useCallback(() => {
+    if (!autoStartVoiceRef.current) return false
+    autoStartVoiceRef.current = false
+    return true
   }, [])
 
   const api = useMemo<ChatBridgeApi>(
@@ -165,6 +197,7 @@ export function ChatBridgeProvider({ chatSessionId = null, children }: ChatBridg
       shogoPeekActive,
       setShogoPeekActive,
       chatSessionId,
+      consumeAutoStartVoice,
     }),
     [
       shogoModeActive,
@@ -173,6 +206,7 @@ export function ChatBridgeProvider({ chatSessionId = null, children }: ChatBridg
       shogoPeekActive,
       setShogoPeekActive,
       chatSessionId,
+      consumeAutoStartVoice,
     ],
   )
 
