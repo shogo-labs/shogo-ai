@@ -2425,12 +2425,15 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
     // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
       const targetUrl = `${podUrl}/terminal/commands`
       
       console.log(`[TerminalProxy] Proxying commands list to ${targetUrl}`)
       
-      const response = await fetch(targetUrl)
+      const response = await fetch(targetUrl, {
+        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+      })
       
       // Handle non-OK responses with proper JSON errors
       if (!response.ok) {
@@ -2513,6 +2516,7 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
     // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
       const targetUrl = `${podUrl}/terminal/exec`
       
@@ -2525,6 +2529,7 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
         method: 'POST',
         headers: {
           'Content-Type': c.req.header('Content-Type') || 'application/json',
+          'x-runtime-token': deriveRuntimeToken(projectId),
         },
         body,
       })
@@ -2575,6 +2580,7 @@ app.post('/api/projects/:projectId/terminal/run', async (c) => {
     // In Kubernetes: Proxy to the project's runtime pod.
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
       const targetUrl = `${podUrl}/terminal/run`
 
@@ -2586,6 +2592,7 @@ app.post('/api/projects/:projectId/terminal/run', async (c) => {
         method: 'POST',
         headers: {
           'Content-Type': c.req.header('Content-Type') || 'application/json',
+          'x-runtime-token': deriveRuntimeToken(projectId),
         },
         body,
         signal: c.req.raw.signal,
