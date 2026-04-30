@@ -5,7 +5,6 @@ import { CodeEditor } from "./CodeEditor";
 import { ImagePreview } from "./ImagePreview";
 import type { EditorGroup as GroupState, EditorSettings, OpenFile } from "./types";
 import type { editor } from "monaco-editor";
-import type { ReactNode } from "react";
 
 type MonacoNs = typeof import("monaco-editor");
 
@@ -22,7 +21,6 @@ export function EditorGroupView({
   onEditorMount,
   settings,
   themeMode,
-  renderBreadcrumbsTrailing,
 }: {
   group: GroupState;
   focused: boolean;
@@ -36,8 +34,6 @@ export function EditorGroupView({
   onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
   settings: EditorSettings;
   themeMode: "dark" | "light";
-  /** Right-edge content for the breadcrumbs row (e.g. QuickActions buttons). */
-  renderBreadcrumbsTrailing?: (file: OpenFile) => ReactNode;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -59,12 +55,7 @@ export function EditorGroupView({
         onFocus={onFocus}
         groupFocused={focused}
       />
-      {active && (
-        <Breadcrumbs
-          path={active.path}
-          trailing={renderBreadcrumbsTrailing?.(active)}
-        />
-      )}
+      {active && <Breadcrumbs path={active.path} />}
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (
