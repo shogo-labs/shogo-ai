@@ -102,6 +102,27 @@ export function SearchPane({
       : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
   }, [query, useRegex, caseSensitive]);
 
+  /**
+   * Validate the regex client-side so we can disable Replace and surface a
+   * clear inline error instead of silently throwing inside the replace
+   * helpers. Only applies when useRegex is on — non-regex queries are always
+   * valid because we escape them before constructing the RegExp.
+   *
+   * Note: the search side (svc.search) may interpret regex differently from
+   * the JS engine. If the JS engine rejects what the backend accepted, we
+   * tell the user explicitly rather than failing silently. Resolves #6, #7.
+   */
+  const regexError = useMemo<string | null>(() => {
+    if (!useRegex || !query) return null;
+    try {
+      // eslint-disable-next-line no-new
+      new RegExp(query, caseSensitive ? "g" : "gi");
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : "Invalid regex";
+    }
+  }, [useRegex, query, caseSensitive]);
+
   /** Replace just the match at (line, col). Other matches stay intact. */
   const replaceSingleMatch = useCallback(
     async (rootId: string, path: string, line: number, col: number) => {
@@ -165,22 +186,40 @@ export function SearchPane({
     let totalMatchCount = 0;
     let fileCount = 0;
     try {
+      // Bounded parallelism: chunk per-file work so a 50-file replace runs
+      // concurrently rather than serially. CHUNK kept conservative because
+      // the underlying writeFile path retries on 429s — we don't want to
+      // amplify that. Resolves issue #3 from the PR review.
+      const CHUNK = 6;
+      const tasks: { svc: import("./workspace/types").WorkspaceService; path: string }[] = [];
       for (const rr of rootResults) {
         const svc = services[rr.rootId];
         if (!svc) continue;
-        for (const file of rr.results) {
-          try {
-            const f = await svc.readFile(file.path);
-            const re = buildReplaceRegex();
-            const next = f.content.replace(re, replacement);
-            if (next === f.content) continue;
-            const re2 = buildReplaceRegex();
-            const matches = (f.content.match(re2) ?? []).length;
-            await svc.writeFile(file.path, next);
-            totalMatchCount += matches;
+        for (const file of rr.results) tasks.push({ svc, path: file.path });
+      }
+      for (let i = 0; i < tasks.length; i += CHUNK) {
+        const slice = tasks.slice(i, i + CHUNK);
+        const results = await Promise.all(
+          slice.map(async ({ svc, path }) => {
+            try {
+              const f = await svc.readFile(path);
+              const re = buildReplaceRegex();
+              const next = f.content.replace(re, replacement);
+              if (next === f.content) return { changed: false, matches: 0 };
+              const re2 = buildReplaceRegex();
+              const matches = (f.content.match(re2) ?? []).length;
+              await svc.writeFile(path, next);
+              return { changed: true, matches };
+            } catch (err) {
+              console.error("[search] replaceAll: file failed", path, err);
+              return { changed: false, matches: 0 };
+            }
+          }),
+        );
+        for (const r of results) {
+          if (r.changed) {
+            totalMatchCount += r.matches;
             fileCount += 1;
-          } catch (err) {
-            console.error("[search] replaceAll: file failed", file.path, err);
           }
         }
       }
@@ -221,7 +260,7 @@ export function SearchPane({
     }
   };
 
-  const canReplace = query.length > 0 && totalMatches > 0 && !replacing;
+  const canReplace = query.length > 0 && totalMatches > 0 && !replacing && !regexError;
 
   return (
     <div className="flex h-full flex-col">
@@ -262,6 +301,11 @@ export function SearchPane({
                 </button>
               )}
             </div>
+            {regexError && (
+              <div className="px-1 text-[10px] text-red-500" title={regexError}>
+                Invalid regex: {regexError}
+              </div>
+            )}
             {showReplace && (
               <div className="relative flex items-center rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-input-bg)] focus-within:border-[color:var(--ide-active-ring)]">
                 <Replace size={14} className="ml-2 mr-1 shrink-0 text-[color:var(--ide-muted)]" />

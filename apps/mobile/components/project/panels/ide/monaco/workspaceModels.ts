@@ -22,6 +22,14 @@ const modelsByRoot: Map<string, Set<string>> = new Map();
 /** Loads requested before the editor mounted. Replayed once monacoRef is set. */
 const pendingLoads: Map<string, { svc: WorkspaceService; tree: WsNode[] }> = new Map();
 
+/**
+ * In-flight loads keyed by rootId. If a second loadWorkspaceModels arrives
+ * for a rootId whose load is still walking, we return the existing promise
+ * instead of starting a parallel walk. Prevents the race where two walks'
+ * stale-model cleanup phases dispose each other's freshly-upserted models.
+ */
+const inFlightLoads: Map<string, Promise<void>> = new Map();
+
 const MAX_MODELS_PER_ROOT = 1000;
 const SUPPORTED_EXTS = /\.(tsx?|jsx?|d\.ts|json)$/;
 
@@ -82,10 +90,29 @@ export async function loadWorkspaceModels(
 ): Promise<void> {
   const m = monacoRef;
   if (!m) {
+    // Latest tree wins — by design (tree may have changed during mount).
     pendingLoads.set(rootId, { svc, tree });
     return;
   }
+  // Coalesce rapid re-loads for the same rootId so the stale-model cleanup
+  // phases of two parallel walks can't race each other.
+  const existing = inFlightLoads.get(rootId);
+  if (existing) return existing;
+  const run = doLoad(m, svc, rootId, tree);
+  inFlightLoads.set(rootId, run);
+  try {
+    await run;
+  } finally {
+    inFlightLoads.delete(rootId);
+  }
+}
 
+async function doLoad(
+  m: MonacoT,
+  svc: WorkspaceService,
+  rootId: string,
+  tree: WsNode[],
+): Promise<void> {
   let paths = flattenFiles(tree);
   paths.sort();
   if (paths.length > MAX_MODELS_PER_ROOT) {
@@ -161,9 +188,31 @@ export function removeModel(rootId: string, path: string): void {
   modelsByRoot.get(rootId)?.delete(uri.toString());
 }
 
+/**
+ * Disposes every model under a path prefix in a root. Used when a directory
+ * is renamed/moved/deleted — every nested file's model needs to go too.
+ */
+export function removeModelsUnderPath(rootId: string, prefix: string): void {
+  const m = monacoRef;
+  if (!m) return;
+  const set = modelsByRoot.get(rootId);
+  if (!set) return;
+  const norm = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+  const head = `inmemory://${encodeURIComponent(rootId)}/${norm}/`;
+  const exact = `inmemory://${encodeURIComponent(rootId)}/${norm}`;
+  for (const uriStr of [...set]) {
+    if (uriStr === exact || uriStr.startsWith(head)) {
+      const model = m.editor.getModel(m.Uri.parse(uriStr));
+      if (model) model.dispose();
+      set.delete(uriStr);
+    }
+  }
+}
+
 /** Dispose every model for a root (called on closeRoot). */
 export function disposeWorkspaceModels(rootId: string): void {
   pendingLoads.delete(rootId);
+  inFlightLoads.delete(rootId);
   const m = monacoRef;
   if (!m) return;
   const set = modelsByRoot.get(rootId);
