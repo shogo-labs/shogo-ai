@@ -31,6 +31,29 @@ export interface SkillServerManagerConfig {
 const LOG_PREFIX = 'api-server-shim'
 const DEFAULT_PORT = 3001
 
+/**
+ * Resolve the same port the unified `PreviewManager` will pick when it
+ * eventually attaches. Mirrors `resolveApiServerPort` over there but kept
+ * local to avoid an import cycle with the `PreviewManager` module's
+ * heavyweight side-effects (it pulls in `child_process`, `fs.watch`, ...).
+ *
+ * Precedence: `API_SERVER_PORT` → legacy `SKILL_SERVER_PORT` → 3001. Both
+ * env vars are still emitted by the local-worker / docker-worker / VM
+ * harness for the per-instance dynamic-port contract; honoring them here
+ * means callers reading `.port` before `attach()` (gateway prompt
+ * builders during cold-start, eg.) see the same value as the eventually
+ * attached `PreviewManager`.
+ */
+function resolveFallbackPort(): number {
+  const candidates = [process.env.API_SERVER_PORT, process.env.SKILL_SERVER_PORT]
+  for (const raw of candidates) {
+    if (!raw) continue
+    const n = parseInt(raw, 10)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return DEFAULT_PORT
+}
+
 export class SkillServerManager {
   private workspaceDir: string
   private pm: PreviewManager | null = null
@@ -39,9 +62,9 @@ export class SkillServerManager {
   constructor(config: SkillServerManagerConfig) {
     this.workspaceDir = config.workspaceDir
     // We're a shim — the real port comes from PreviewManager once attached.
-    // Use the API server's fixed port as the default for callers that read
-    // `.port` before `attach()` has been called.
-    this.fallbackPort = DEFAULT_PORT
+    // Resolve the same dynamic port contract the manager will use so
+    // callers that read `.port` before `attach()` don't see a stale 3001.
+    this.fallbackPort = resolveFallbackPort()
   }
 
   /**
@@ -105,6 +128,22 @@ export class SkillServerManager {
   async restart(): Promise<void> {
     if (!this.pm) return
     await this.pm.sync()
+  }
+
+  /**
+   * Fast restart for `custom-routes.ts` edits — kills + respawns
+   * `server.tsx` without running `shogo generate` or `prisma db push`.
+   * Use this from `edit_file`/`write_file` post-hooks when the agent
+   * touches the custom-routes file; for any schema change use
+   * {@link sync} instead.
+   *
+   * No-ops gracefully when the shim hasn't been attached yet (boot
+   * phase, eg). Errors during restart bubble up so the caller can
+   * surface them to the agent.
+   */
+  async restartApiServerOnly(): Promise<void> {
+    if (!this.pm) return
+    await this.pm.restartApiServerOnly()
   }
 
   /** No-op: the `PreviewManager` owns the API server lifecycle. */

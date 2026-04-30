@@ -97,6 +97,13 @@ const workspaceStatus: {
     renamedModels: Array<{ from: string; to: string; reason: string }>
     customRoutesNeedReview: boolean
   }
+  customRoutesExtracted?: {
+    snapshotPath: string | null
+    notesPath: string | null
+    at: string | null
+    hadMarker: boolean
+    needsReview: boolean
+  }
 } = {
   templateSeeded: false,
   depsInstalled: false,
@@ -389,6 +396,33 @@ function ensureWorkspaceFiles(): void {
     }
   } catch (err: any) {
     console.error('[agent-runtime] Skill-server migration import failed:', err.message)
+  }
+
+  // Second one-shot migration: any workspace from the brief "merged
+  // server.tsx + custom-routes" era (between the skill-server retirement
+  // and the SDK-emitted server.tsx restoration) has a hand-crafted or
+  // skill-migrated `server.tsx` at the root. We pull anything custom
+  // out into `custom-routes.ts` and let the SDK re-emit `server.tsx` on
+  // the next `shogo generate`. Idempotent / silent when there's nothing
+  // to extract — see `migrations/extract-custom-routes.ts`.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { extractCustomRoutes } = require('./migrations/extract-custom-routes') as typeof import('./migrations/extract-custom-routes')
+    const result = extractCustomRoutes(WORKSPACE_DIR)
+    if (result.migrated) {
+      workspaceStatus.customRoutesExtracted = {
+        snapshotPath: result.snapshotPath ?? null,
+        notesPath: result.notesPath ?? null,
+        at: result.at ?? null,
+        hadMarker: !!result.hadMarker,
+        needsReview: !!result.needsReview,
+      }
+      logTiming('extract-custom-routes migration complete')
+    } else if (result.error) {
+      console.error('[agent-runtime] extract-custom-routes failed:', result.error)
+    }
+  } catch (err: any) {
+    console.error('[agent-runtime] extract-custom-routes import failed:', err.message)
   }
 }
 
@@ -2927,9 +2961,12 @@ app.post('/agent/runtime-checks', async (c) => {
 // =============================================================================
 // API Proxy — forward /api/* to the project's Hono `server.tsx`.
 //
-// PreviewManager owns the single API server (root `server.tsx` on port
-// 3001). The legacy "skill server" on a separate port has been retired;
-// see `migrations/skill-server-to-root.ts` for the one-shot migration of
+// PreviewManager owns the single API server (root `server.tsx`); the
+// bound port is resolved per-instance from `API_SERVER_PORT` /
+// `SKILL_SERVER_PORT` (legacy alias) / `3001` default — see
+// `preview-manager.ts::resolveApiServerPort`. The legacy "skill server"
+// on a separate port has been retired; see
+// `migrations/skill-server-to-root.ts` for the one-shot migration of
 // existing workspaces.
 // =============================================================================
 

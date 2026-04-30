@@ -77,29 +77,57 @@ export interface PreviewManagerConfig {
 
 // API sidecar port (Hono `server.tsx`) — NOT the app URL. The app is served
 // by the runtime itself on `runtimePort`, and this sidecar is proxied at
-// `/api/*`. Fixed for now; see the templateApiPort field in
-// `tech-stacks/<stack>/stack.json`.
+// `/api/*`.
 //
 // This is the *single* backend for any app the agent builds: editing the
 // project's root `prisma/schema.prisma` triggers regenerate + restart of
 // this server. There is no longer a parallel "skill server" on a different
 // port; PreviewManager owns the whole pipeline. See migrations/skill-server-to-root.ts
 // for the one-shot migration that retires `.shogo/server/` on workspace boot.
-// Port the project's API server (`server.tsx`) listens on. Honors
-// `API_SERVER_PORT` so the VM/Docker harness can pin a known port (the
-// VM forwards host:4100 → guest:4100, the docker eval-worker maps
-// host:4100+id → container:3001 etc.). Falls back to 3001 — matching
-// the runtime template's package.json scripts and SDK examples — when
-// no override is provided.
-const API_SERVER_PORT = (() => {
-  const raw = process.env.API_SERVER_PORT
-  const n = raw ? parseInt(raw, 10) : NaN
-  return Number.isFinite(n) && n > 0 ? n : 3001
-})()
+//
+// Port resolution preserves the dynamic-port contract from the retired
+// `SkillServerManager`: callers that already wire a per-instance port via
+// `SKILL_SERVER_PORT` (local-worker, VM harness, ...) keep working without
+// changes. Precedence:
+//   1. `API_SERVER_PORT` — preferred new name; pinned by the docker
+//      eval-worker (`-e API_SERVER_PORT=<container>`).
+//   2. `SKILL_SERVER_PORT` — legacy alias still emitted by local-worker
+//      and rolled-back binaries; mirrors the pre-merge behaviour.
+//   3. `3001` — runtime template default (matches package.json scripts
+//      and SDK examples) when nothing is provided.
+// Resolved per-instance so multiple managers in the same process (eg.
+// tests) can vary the env without import-time leakage.
+const DEFAULT_API_SERVER_PORT = 3001
+function resolveApiServerPort(): number {
+  const candidates = [process.env.API_SERVER_PORT, process.env.SKILL_SERVER_PORT]
+  for (const raw of candidates) {
+    if (!raw) continue
+    const n = parseInt(raw, 10)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return DEFAULT_API_SERVER_PORT
+}
 
 const SCHEMA_DEBOUNCE_MS = 1500
 const HEALTH_CHECK_RETRIES = 10
 const HEALTH_CHECK_INTERVAL_MS = 500
+
+// Crash-recovery tunables. Mirrors the pre-merge `SkillServerManager`
+// behaviour: exponential backoff capped at 30s, give up after 5 attempts
+// in a row. The crash counter resets to 0 on every successful health
+// probe so steady-state edits-while-running don't accumulate budget.
+const CRASH_BACKOFF_BASE_MS = 1000
+const CRASH_BACKOFF_MAX_MS = 30_000
+const MAX_CRASH_RESTARTS = 5
+
+// `custom-routes.ts` is the agent-editable surface for non-CRUD routes
+// — see `templates/runtime-template/custom-routes.ts`. Saves trigger a
+// fast restart (no shogo generate, no `prisma db push`) so the server
+// reloads with the new routes in well under a second. Debounce avoids
+// a flurry of restarts when an editor saves several times in quick
+// succession (file-watch APIs frequently emit duplicate events on the
+// same write).
+const CUSTOM_ROUTES_DEBOUNCE_MS = 500
 
 // Default starting port for Metro when running via `expo start --tunnel`.
 // Expo's historic default is 8081, but during `bun dev:all` the studio's own
@@ -185,10 +213,28 @@ export class PreviewManager {
   private metroPort: number | null = null
   private schemaWatcher: FSWatcher | null = null
   private schemaTimer: ReturnType<typeof setTimeout> | null = null
+  private customRoutesWatcher: FSWatcher | null = null
+  private customRoutesTimer: ReturnType<typeof setTimeout> | null = null
   private apiPhase: ApiServerPhase = 'idle'
   private regenerating = false
   private pendingSchemaChange = false
   private lastGenerateError: string | null = null
+  /**
+   * Crash-recovery state.
+   *
+   *   `intentionalStop` — `true` while `stop()` / `restartApiServerOnly()` /
+   *      `sync()` are tearing the API server down on purpose. The exit
+   *      handler consults this so a deliberate SIGTERM doesn't trip the
+   *      backoff/restart loop.
+   *   `crashCount` — number of consecutive unexpected exits. Resets to 0
+   *      when a fresh process passes its health check, so a long-running
+   *      server that crashes once doesn't immediately use up its budget.
+   *   `crashRestartTimer` — pending `handleCrash()` setTimeout handle so
+   *      `stop()` can cancel it instead of leaking a delayed respawn.
+   */
+  private intentionalStop = false
+  private crashCount = 0
+  private crashRestartTimer: ReturnType<typeof setTimeout> | null = null
   /**
    * `true` if `@expo/ngrok` was found at the time the last Metro tunnel
    * spawn was attempted. `null` means we haven't tried yet (no metro
@@ -200,6 +246,12 @@ export class PreviewManager {
   private onLogLine?: (line: string, stream: 'stdout' | 'stderr') => void
   private started = false
   private _phase: PreviewPhase = 'idle'
+  /**
+   * Port the spawned project API server (`server.tsx`) binds to. Resolved
+   * once in the constructor — subsequent `process.env` mutations don't
+   * hot-swap the bound port mid-flight.
+   */
+  private readonly apiPort: number
 
   constructor(config: PreviewManagerConfig) {
     this.workspaceDir = config.workspaceDir
@@ -208,6 +260,7 @@ export class PreviewManager {
     this.onConsoleLogReset = config.onConsoleLogReset
     this.onLogLine = config.onLogLine
     this.localMode = config.localMode ?? detectLocalMode()
+    this.apiPort = resolveApiServerPort()
   }
 
   /**
@@ -311,7 +364,7 @@ export class PreviewManager {
   }
 
   get apiServerPort(): number | null {
-    return this.apiServerProcess && !this.apiServerProcess.killed ? API_SERVER_PORT : null
+    return this.apiServerProcess && !this.apiServerProcess.killed ? this.apiPort : null
   }
 
   /**
@@ -332,11 +385,11 @@ export class PreviewManager {
   /**
    * URL the agent uses to talk to the API sidecar from inside the pod
    * (i.e. for tools like `web`). The sidecar listens on
-   * `localhost:API_SERVER_PORT`; the runtime then proxies `/api/*` to
+   * `localhost:<apiPort>`; the runtime then proxies `/api/*` to
    * the same port — both are valid origins.
    */
   get apiServerUrl(): string {
-    return `http://localhost:${API_SERVER_PORT}`
+    return `http://localhost:${this.apiPort}`
   }
 
   /** Quick health check against `<apiServerUrl>/health`. */
@@ -441,21 +494,58 @@ export class PreviewManager {
   }
 
   /**
-   * Run `bunx shogo generate` at the project root. Picks up new models
-   * from `prisma/schema.prisma` and regenerates `src/generated/routes/`,
-   * `src/lib/db.ts`, `server.tsx` (skipped if it already exists), etc.
+   * Run code generation at the project root. Picks up new models from
+   * `prisma/schema.prisma` and regenerates `src/generated/`,
+   * `server.tsx`, etc.
+   *
+   * Strategy:
+   *   1. If `package.json` declares a `generate` script, run
+   *      `bun run generate`. The runtime template ships such a script
+   *      that points at the SDK CLI and is the canonical surface for
+   *      project-specific tweaks (e.g. running `db:push` afterwards,
+   *      pausing the watcher around the writes, etc.).
+   *   2. Otherwise fall back to `bun x shogo generate`. This is the
+   *      escape hatch for workspaces that haven't been re-seeded onto
+   *      the new template; it still picks up `shogo.config.json` if
+   *      present, or runs the SDK's legacy single-dir mode if not.
+   *
+   * Both paths read the workspace's `shogo.config.json` (when it
+   * exists), so generated `server.tsx` ends up with the right
+   * `customRoutesPath`, `dynamicCrudImport`, and `bunServe` settings
+   * regardless of which entry point was used.
    *
    * Returns false on any failure; the error message is exposed via
    * `apiLastGenerateError` for the caller to surface to the agent.
    */
   private async runShogoGenerate(): Promise<boolean> {
     const cwd = this.bundlerCwd
-    if (!existsSync(join(cwd, 'package.json'))) return false
+    const pkgJsonPath = join(cwd, 'package.json')
+    if (!existsSync(pkgJsonPath)) return false
 
     this.apiPhase = 'generating'
     this.lastGenerateError = null
     const start = Date.now()
-    console.log(`[${LOG_PREFIX}] Running bunx shogo generate at ${cwd}...`)
+
+    // Prefer the project's own `generate` script when one exists. The
+    // runtime template ships `"generate": "bun x shogo generate"`, so
+    // both paths converge on the SDK CLI; the indirection lets
+    // user-customised projects splice extra steps into the pipeline
+    // without us having to teach PreviewManager about every variation.
+    let useBunRun = false
+    try {
+      const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
+        scripts?: Record<string, string>
+      }
+      if (pkgJson.scripts && typeof pkgJson.scripts.generate === 'string' && pkgJson.scripts.generate.trim()) {
+        useBunRun = true
+      }
+    } catch {
+      // Malformed package.json — fall through to `bun x shogo generate`.
+    }
+
+    const args = useBunRun ? ['run', 'generate'] : ['x', 'shogo', 'generate']
+    const cmdLabel = useBunRun ? 'bun run generate' : 'bunx shogo generate'
+    console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
     return await new Promise<boolean>((resolveResult) => {
       // Use async spawn rather than execSync. The runtime's startup path
@@ -464,8 +554,8 @@ export class PreviewManager {
       // starves their stdio pipes and frequently deadlocks `bunx shogo`'s
       // own child processes (notably `prisma generate`, which speaks to
       // the parent through pipes). spawn + 'ignore' for stdin sidesteps
-      // both issues and matches the manual `bunx shogo generate` shape.
-      const proc = spawn(pkg.bunBinary, ['x', 'shogo', 'generate'], {
+      // both issues and matches the manual CLI invocation shape.
+      const proc = spawn(pkg.bunBinary, args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
@@ -491,7 +581,7 @@ export class PreviewManager {
         clearTimeout(timer)
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
         this.lastGenerateError = err.message
-        console.error(`[${LOG_PREFIX}] shogo generate spawn error after ${elapsed}s: ${err.message}`)
+        console.error(`[${LOG_PREFIX}] ${cmdLabel} spawn error after ${elapsed}s: ${err.message}`)
         this.apiPhase = 'crashed'
         resolveResult(false)
       })
@@ -500,12 +590,12 @@ export class PreviewManager {
         clearTimeout(timer)
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
         if (code === 0) {
-          console.log(`[${LOG_PREFIX}] shogo generate complete (${elapsed}s)`)
+          console.log(`[${LOG_PREFIX}] ${cmdLabel} complete (${elapsed}s)`)
           if (stdout.trim()) console.log(`[${LOG_PREFIX}] generate stdout: ${stdout.trim().slice(0, 500)}`)
           resolveResult(true)
         } else {
           this.lastGenerateError = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || `exit code ${code}`
-          console.error(`[${LOG_PREFIX}] shogo generate failed after ${elapsed}s (exit=${code})`)
+          console.error(`[${LOG_PREFIX}] ${cmdLabel} failed after ${elapsed}s (exit=${code})`)
           if (stdout.trim()) console.error(`[${LOG_PREFIX}] generate stdout: ${stdout.trim().slice(0, 500)}`)
           if (stderr.trim()) console.error(`[${LOG_PREFIX}] generate stderr: ${stderr.trim().slice(0, 500)}`)
           this.apiPhase = 'crashed'
@@ -594,6 +684,14 @@ export class PreviewManager {
   }
 
   private async killApiServer(): Promise<void> {
+    // Mark every shutdown initiated through this method as intentional
+    // so the exit handler doesn't trigger crash recovery. Callers that
+    // want to relax that (none currently) can flip the flag back after.
+    this.intentionalStop = true
+    if (this.crashRestartTimer) {
+      clearTimeout(this.crashRestartTimer)
+      this.crashRestartTimer = null
+    }
     const proc = this.apiServerProcess
     if (!proc || proc.killed) {
       this.apiServerProcess = null
@@ -897,10 +995,16 @@ export class PreviewManager {
    * Stop the preview server and kill the bundler process.
    */
   stop(): void {
+    this.intentionalStop = true
     this.stopSchemaWatcher()
+    this.stopCustomRoutesWatcher()
     if (this.schemaTimer) {
       clearTimeout(this.schemaTimer)
       this.schemaTimer = null
+    }
+    if (this.crashRestartTimer) {
+      clearTimeout(this.crashRestartTimer)
+      this.crashRestartTimer = null
     }
     if (this.apiServerProcess) {
       console.log(`[${LOG_PREFIX}] Stopping API server...`)
@@ -1065,25 +1169,32 @@ export class PreviewManager {
 
   private async startApiServer(): Promise<void> {
     const cwd = this.bundlerCwd
-    const serverFile = join(cwd, 'server.tsx')
-    if (!existsSync(serverFile)) {
-      this.apiPhase = 'idle'
-      return
-    }
 
-    // Make sure SDK-generated routes exist before spawning the server.
-    // The runtime template's server.tsx imports `./src/generated/routes`
-    // unconditionally; if `shogo generate` has never been run for this
-    // workspace the import resolves to nothing and the server crashes
-    // immediately with "Cannot find module". The template ships a partial
-    // `src/generated/prisma/` only — check specifically for the routes
-    // entrypoint and fall back to a one-shot generate.  Generate-on-first-
-    // boot is cheap (~1s) and idempotent — re-runs after a model change
-    // happen through {@link sync} via the schema watcher.
-    const routesDir = join(cwd, 'src', 'generated', 'routes')
-    const routesIndexTsx = join(routesDir, 'index.tsx')
-    const routesIndexTs = join(routesDir, 'index.ts')
-    if (!existsSync(routesIndexTsx) && !existsSync(routesIndexTs)) {
+    // The runtime template no longer ships a hand-written `server.tsx`
+    // — it's generated by the SDK from `shogo.config.json` (see
+    // `templates/runtime-template/shogo.config.json`). We treat both
+    // `server.tsx` AND the per-model routes index as required artifacts:
+    // missing either means we need to run code generation before
+    // spawning. Generate-on-first-boot is cheap (~1s) and idempotent;
+    // after that the schema watcher / `sync()` handle subsequent runs.
+    const serverFile = join(cwd, 'server.tsx')
+    const routesIndexTsx = join(cwd, 'src', 'generated', 'index.tsx')
+    const routesIndexTs = join(cwd, 'src', 'generated', 'index.ts')
+    const hasGeneratedIndex = existsSync(routesIndexTsx) || existsSync(routesIndexTs)
+    const hasServerEntry = existsSync(serverFile)
+
+    if (!hasServerEntry || !hasGeneratedIndex) {
+      // Skip the call when there's nothing to generate from. A workspace
+      // with neither `package.json` nor `prisma/schema.prisma` yet is
+      // simply pre-bootstrap — leave apiPhase=idle so the gateway
+      // surfaces the "available, edit prisma/schema.prisma to begin"
+      // message rather than "crashed".
+      const schemaPath = join(cwd, 'prisma', 'schema.prisma')
+      if (!existsSync(join(cwd, 'package.json')) || !existsSync(schemaPath)) {
+        this.apiPhase = 'idle'
+        return
+      }
+
       const ok = await this.runShogoGenerate()
       if (!ok) {
         console.warn(
@@ -1091,18 +1202,44 @@ export class PreviewManager {
             `Last error: ${this.lastGenerateError ?? 'unknown'}`,
         )
       }
+
+      // Re-check after generation. If `server.tsx` still isn't on disk,
+      // bail before spawn — the SDK CLI failed silently or
+      // `shogo.config.json` isn't configured to emit it.
+      if (!existsSync(serverFile)) {
+        this.apiPhase = ok ? 'idle' : 'crashed'
+        return
+      }
     }
 
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
-    console.log(`[${LOG_PREFIX}] Starting API server on port ${API_SERVER_PORT}...`)
+    console.log(`[${LOG_PREFIX}] Starting API server on port ${this.apiPort}...`)
     this.apiPhase = 'starting'
 
+    // Make sure the port is actually free before we spawn — a previous
+    // run may have leaked a process or had its EADDRINUSE handler skip
+    // cleanup. `forceKillPort()` no-ops when nothing is listening.
+    await this.waitForPortRelease()
+
+    // Each fresh spawn is also a fresh chance to recover from a crash
+    // loop; the running counter only matters across consecutive failures
+    // without an intervening spawn.
+    this.intentionalStop = false
+
+    // Pass the resolved port through every name `server.tsx` and the SDK
+    // template scripts might consult: `PORT` is the canonical Bun.serve
+    // input; `API_SERVER_PORT` and the legacy `SKILL_SERVER_PORT` alias
+    // keep generated code / rolled-back binaries consistent with the
+    // host-side runtime checks.
+    const portStr = String(this.apiPort)
     const proc = spawn(pkg.bunBinary, ['run', 'server.tsx'], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        PORT: String(API_SERVER_PORT),
+        PORT: portStr,
+        API_SERVER_PORT: portStr,
+        SKILL_SERVER_PORT: portStr,
         DATABASE_URL: `file:${join(cwd, 'prisma', 'dev.db')}`,
       },
     })
@@ -1122,9 +1259,17 @@ export class PreviewManager {
     proc.on('exit', (code, signal) => {
       console.log(`[${LOG_PREFIX}] API server exited (code=${code}, signal=${signal})`)
       if (this.apiServerProcess === proc) this.apiServerProcess = null
-      // Don't downgrade an `idle`/`stopped` phase set by `stop()`.
+
+      // Don't downgrade an `idle`/`stopped` phase set by `stop()`, and
+      // don't trigger crash recovery when the exit was intentional
+      // (`stop()`, `restartApiServerOnly()`, `sync()`, schema-driven
+      // restart). Schema-driven `runShogoGenerate` flips `regenerating`
+      // so we treat that the same as an intentional teardown.
       if (this.apiPhase === 'starting' || this.apiPhase === 'healthy') {
         this.apiPhase = 'crashed'
+      }
+      if (!this.intentionalStop && !this.regenerating && this.apiPhase === 'crashed') {
+        this.handleCrash()
       }
     })
 
@@ -1148,16 +1293,209 @@ export class PreviewManager {
 
     if (healthy) {
       this.apiPhase = 'healthy'
-      console.log(`[${LOG_PREFIX}] API server healthy on port ${API_SERVER_PORT}`)
+      // A fresh, healthy process clears the crash budget so a long-
+      // running server that crashes once tomorrow doesn't run out of
+      // retries because of yesterday's bad start.
+      this.crashCount = 0
+      console.log(`[${LOG_PREFIX}] API server healthy on port ${this.apiPort}`)
     } else if (this.apiServerProcess === proc && !proc.killed) {
       // Process is up but /health never responded — treat as best-effort
       // running. The caller can still proxy to it (if templates omit
       // /health entirely, prior behaviour was the same fixed-delay return).
       this.apiPhase = 'healthy'
+      this.crashCount = 0
       console.warn(`[${LOG_PREFIX}] API server started but /health never returned 2xx — proceeding anyway`)
     }
 
     this.startSchemaWatcher()
+    this.startCustomRoutesWatcher()
+  }
+
+  /**
+   * Fast path for `custom-routes.ts` edits: kill the running server,
+   * wait for the port to free, then respawn `server.tsx`. Skips the
+   * full regenerate + `db push` cycle because non-CRUD route edits
+   * don't change the schema.
+   *
+   * Safe to call concurrently with itself — the second caller will
+   * find `intentionalStop=true` already set and just join the kill
+   * promise. Returns once the new process is healthy (or its health
+   * check times out).
+   *
+   * Public so the gateway tools layer can invoke it directly from
+   * `edit_file`/`write_file` of `custom-routes.ts` (the watcher path is
+   * the safety net; the synchronous tool-level call lets us answer the
+   * agent with a single round-trip "server restarted with your new
+   * routes").
+   */
+  async restartApiServerOnly(): Promise<void> {
+    if (this.crashRestartTimer) {
+      clearTimeout(this.crashRestartTimer)
+      this.crashRestartTimer = null
+    }
+    this.intentionalStop = true
+    this.apiPhase = 'restarting'
+    await this.killApiServer()
+    await this.forceKillPort()
+    await this.waitForPortRelease()
+    // killApiServer / forceKillPort have set `intentionalStop=true`;
+    // `startApiServer` will reset it before spawning the new process.
+    await this.startApiServer()
+  }
+
+  /**
+   * Watch `custom-routes.ts` (and `.tsx`) at the project root for
+   * changes and trigger a fast restart via {@link restartApiServerOnly}.
+   * Uses `fs.watch` on the parent directory since the file may not
+   * exist on first start (older workspaces, projects upgraded mid-
+   * flight from the merged-server era).
+   */
+  private startCustomRoutesWatcher(): void {
+    const cwd = this.bundlerCwd
+    if (!existsSync(cwd)) return
+    if (this.customRoutesWatcher) return
+
+    try {
+      this.customRoutesWatcher = watch(cwd, (_event, filename) => {
+        if (!filename) return
+        if (filename !== 'custom-routes.ts' && filename !== 'custom-routes.tsx') return
+
+        // Skip while a regenerate is in flight — the surrounding cycle
+        // already bounces the server, no need to pile on a second
+        // restart on top.
+        if (this.regenerating) return
+        if (this.apiPhase === 'restarting') return
+
+        if (this.customRoutesTimer) clearTimeout(this.customRoutesTimer)
+        this.customRoutesTimer = setTimeout(() => {
+          this.customRoutesTimer = null
+          if (this.regenerating) return
+          console.log(`[${LOG_PREFIX}] custom-routes change detected, fast-restarting API server...`)
+          void this.restartApiServerOnly().catch((err: any) => {
+            console.error(`[${LOG_PREFIX}] custom-routes restart failed: ${err?.message ?? err}`)
+          })
+        }, CUSTOM_ROUTES_DEBOUNCE_MS)
+      })
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Failed to watch ${cwd} for custom-routes changes: ${err.message}`)
+    }
+  }
+
+  private stopCustomRoutesWatcher(): void {
+    if (this.customRoutesWatcher) {
+      this.customRoutesWatcher.close()
+      this.customRoutesWatcher = null
+    }
+    if (this.customRoutesTimer) {
+      clearTimeout(this.customRoutesTimer)
+      this.customRoutesTimer = null
+    }
+  }
+
+  /**
+   * Schedule a respawn after an unexpected exit using exponential
+   * backoff. Bounded by `MAX_CRASH_RESTARTS` to avoid burning CPU on a
+   * permanently-broken `server.tsx` (e.g. a syntax error the agent
+   * hasn't fixed). The agent surfaces the failure via
+   * `apiLastGenerateError` and the `apiServerPhase=crashed` state.
+   *
+   * Mirrors the legacy `SkillServerManager.handleCrash` algorithm so
+   * pods rolled forward across the merge see the same recovery
+   * behaviour they had before.
+   */
+  private handleCrash(): void {
+    if (this.intentionalStop || this.regenerating) return
+
+    this.crashCount++
+    if (this.crashCount > MAX_CRASH_RESTARTS) {
+      console.error(`[${LOG_PREFIX}] Exceeded max crash restarts (${MAX_CRASH_RESTARTS}), giving up`)
+      this.apiPhase = 'crashed'
+      return
+    }
+
+    const backoff = Math.min(
+      CRASH_BACKOFF_BASE_MS * Math.pow(2, this.crashCount - 1),
+      CRASH_BACKOFF_MAX_MS,
+    )
+    console.log(`[${LOG_PREFIX}] API server crash #${this.crashCount}, restarting in ${backoff}ms...`)
+    this.apiPhase = 'restarting'
+
+    if (this.crashRestartTimer) clearTimeout(this.crashRestartTimer)
+    this.crashRestartTimer = setTimeout(async () => {
+      this.crashRestartTimer = null
+      if (this.intentionalStop || this.regenerating) return
+      try {
+        await this.killApiServer()
+        await this.forceKillPort()
+        await this.waitForPortRelease()
+        await this.startApiServer()
+      } catch (err: any) {
+        console.error(`[${LOG_PREFIX}] Crash-restart attempt failed: ${err?.message ?? err}`)
+      }
+    }, backoff)
+  }
+
+  /**
+   * Force-kill any process listening on the API port. Used before
+   * spawning a fresh server so a leaked previous process (or an
+   * unrelated user-spawned binary) can't squat the port and EADDRINUSE
+   * the new spawn. Falls back to `lsof` and `fuser`; both are
+   * universally available on Linux pods and macOS dev machines.
+   *
+   * Best-effort: any failure (missing binary, permission denied) is
+   * swallowed. The caller already polls the port via
+   * {@link waitForPortRelease} and a leaked process will then surface
+   * as a crash loop the operator can investigate.
+   */
+  private async forceKillPort(): Promise<void> {
+    try {
+      const result = execSync(
+        `lsof -ti :${this.apiPort} 2>/dev/null || fuser ${this.apiPort}/tcp 2>/dev/null || true`,
+        { encoding: 'utf-8', timeout: 5000 },
+      ).trim()
+      if (!result) return
+
+      const pids = result.split(/\s+/).filter(Boolean)
+      for (const pid of pids) {
+        try {
+          process.kill(Number(pid), 'SIGKILL')
+          console.log(`[${LOG_PREFIX}] Force-killed leaked process ${pid} on port ${this.apiPort}`)
+        } catch {
+          // Process already exited / permission denied — fine.
+        }
+      }
+    } catch {
+      // lsof / fuser missing on this platform; waitForPortRelease will
+      // still give the kernel time to clean up the socket.
+    }
+  }
+
+  /**
+   * Block until the API port is free, polling at 250ms intervals.
+   * Returns silently after `timeoutMs` even if the port is still bound
+   * — the subsequent spawn will then EADDRINUSE and the crash handler
+   * will retry. Logs a warning so operators can see "spawn raced port
+   * cleanup" in the build log.
+   */
+  private async waitForPortRelease(timeoutMs = 5000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      const free = await this.isPortFree()
+      if (free) return
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    console.warn(`[${LOG_PREFIX}] Port ${this.apiPort} still occupied after ${timeoutMs}ms`)
+  }
+
+  private isPortFree(): Promise<boolean> {
+    return new Promise((resolveFree) => {
+      const tester = createServer()
+        .once('error', () => resolveFree(false))
+        .once('listening', () => {
+          tester.close(() => resolveFree(true))
+        })
+        .listen(this.apiPort, '127.0.0.1')
+    })
   }
 
   /**

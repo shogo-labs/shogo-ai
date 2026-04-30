@@ -1,0 +1,26 @@
+{
+  "schema": "./prisma/schema.prisma",
+  "outputs": [
+    {
+      "dir": "./src/generated",
+      "generate": ["routes", "hooks", "types", "stores", "api-client"],
+      "fileExtension": "ts"
+    },
+    {
+      "dir": ".",
+      "generate": ["server"],
+      "fileExtension": "tsx",
+      "serverConfig": {
+        "port": 3001,
+        "cors": true,
+        "routesPath": "./src/generated",
+        "dbPath": "./src/lib/db",
+        "apiBasePath": "/api",
+        "staticDir": "./dist",
+        "customRoutesPath": "./custom-routes",
+        "dynamicCrudImport": true,
+        "bunServe": true
+      }
+    }
+  ]
+}

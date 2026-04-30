@@ -31,6 +31,7 @@ const {
   generateTypes,
   generateRoutes,
   generateRoutesIndex,
+  generateServer,
 } = generators
 
 type PrismaModel = Parameters<typeof generateServerFunctions>[0][0]
@@ -140,6 +141,50 @@ function cleanupStaleGeneratedFiles(outputDir: string, models: PrismaModel[]): v
       }
     }
   }
+}
+
+/**
+ * Resolve the first `outputs[]` entry that includes `'server'` in its
+ * `generate` list and emit `server.<ext>` via the SDK's
+ * {@link generateServer}. Always overwrites the file — `server.tsx`
+ * is agent-invisible by design.
+ *
+ * Falls back to the SDK's default config when no `shogo.config.json`
+ * exists or no entry declares `'server'`. The fallback still produces
+ * a working file (CORS, /health, dynamic CRUD import).
+ */
+function writeServerEntry(projectDir: string): void {
+  type ServerConfig = Parameters<typeof generateServer>[0]
+  let serverConfig: ServerConfig = {}
+  let outDir = projectDir
+  let ext: 'ts' | 'tsx' = 'tsx'
+
+  const configPath = join(projectDir, 'shogo.config.json')
+  if (existsSync(configPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as {
+        outputs?: Array<{
+          dir?: string
+          generate?: string[]
+          fileExtension?: 'ts' | 'tsx'
+          serverConfig?: ServerConfig
+        }>
+      }
+      const out = raw.outputs?.find((o) => Array.isArray(o.generate) && o.generate.includes('server'))
+      if (out) {
+        serverConfig = out.serverConfig ?? {}
+        outDir = out.dir ? join(projectDir, out.dir) : projectDir
+        ext = out.fileExtension ?? 'tsx'
+      }
+    } catch (err: any) {
+      console.warn(`   ⚠️ Failed to parse shogo.config.json: ${err.message} — using SDK defaults`)
+    }
+  }
+
+  mkdirSync(outDir, { recursive: true })
+  const target = join(outDir, `server.${ext}`)
+  writeFileSync(target, generateServer(serverConfig), 'utf-8')
+  console.log(`   server.${ext}`)
 }
 
 /**
@@ -285,38 +330,21 @@ async function main() {
     writeFileSync(join(OUTPUT_DIR, 'index.ts'), generateIndexFile())
     console.log('   index.ts')
 
-    // Patch server.tsx to mount generated API routes (if not already done)
-    const serverPath = join(PROJECT_DIR, 'server.tsx')
-    if (existsSync(serverPath)) {
-      const serverContent = readFileSync(serverPath, 'utf-8')
-      if (!serverContent.includes('createAllRoutes')) {
-        console.log('')
-        console.log('Patching server.tsx to mount API routes...')
-        // Add import for createAllRoutes and prisma
-        let patched = serverContent
-        // Add imports after the last existing import
-        const importInsertPoint = patched.lastIndexOf('\nimport ')
-        const importEndLine = patched.indexOf('\n', importInsertPoint + 1)
-        const newImports = [
-          `\nimport { createAllRoutes } from './src/generated/routes'`,
-          `import { prisma } from './src/lib/db'`,
-        ].join('\n')
-        patched = patched.slice(0, importEndLine) + newImports + '\n' + patched.slice(importEndLine)
-
-        // Add route mounting before static file serving
-        const staticLineIdx = patched.indexOf("serveStatic({ root:")
-        if (staticLineIdx !== -1) {
-          const lineStart = patched.lastIndexOf('\n', staticLineIdx)
-          // Walk back to include the app.use('/*' line
-          const insertBefore = patched.lastIndexOf('\n', lineStart - 1)
-          const routeMount = `\n// Mount SDK-generated API routes\napp.route('/api', createAllRoutes(prisma))\n`
-          patched = patched.slice(0, insertBefore) + routeMount + patched.slice(insertBefore)
-        }
-
-        writeFileSync(serverPath, patched)
-        console.log('   server.tsx patched with API route mounting')
-      }
-    }
+    // Generate server.tsx — the runtime's API server entry point.
+    //
+    // This is the single source of truth: agents must NOT edit
+    // `server.tsx` directly. Custom non-CRUD routes live in
+    // `./custom-routes.ts`, which `server.tsx` mounts under `/api/`.
+    //
+    // We always overwrite the file (no `skipIfExists`) so changes to
+    // `shogo.config.json` (CORS, port, customRoutesPath, ...)
+    // propagate immediately. The agent-facing surface is
+    // `custom-routes.ts`, never `server.tsx`.
+    //
+    // Reads `outputs[].serverConfig` from `shogo.config.json` and
+    // delegates to the SDK's `generateServer`. Falls back to default
+    // SDK config when no entry declares `'server'`.
+    writeServerEntry(PROJECT_DIR)
 
     // Run db:push to apply schema changes to database (non-destructive)
     console.log('')
