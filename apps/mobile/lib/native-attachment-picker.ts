@@ -173,7 +173,7 @@ export function executeNativeAttachAction(
 
     const out: NativePickedAttachment[] = []
     for (const doc of result.assets) {
-      const mime = doc.mimeType ?? mimeFromName(doc.name)
+      const mime = doc.mimeType?.trim() || mimeFromName(doc.name)
       let dataUrl: string
       try {
         dataUrl = await uriToDataUrl(doc.uri, mime)
