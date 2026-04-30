@@ -18,7 +18,8 @@
     "build:android:prod": "eas build --platform android --profile production",
     "build:android:local": "eas build --platform android --profile preview --local",
     "prebuild": "expo prebuild --clean",
-    "eas-build-post-install": "cd ../../packages/sdk && bun run build"
+    "eas-build-post-install": "cd ../../packages/sdk && bun run build",
+    "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
@@ -102,7 +103,10 @@
   },
   "expo": {
     "autolinking": {
-      "exclude": ["react-native-reanimated", "react-native-worklets"]
+      "exclude": [
+        "react-native-reanimated",
+        "react-native-worklets"
+      ]
     }
   },
   "devDependencies": {
