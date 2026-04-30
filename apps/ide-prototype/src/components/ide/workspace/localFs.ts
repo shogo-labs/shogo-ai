@@ -5,6 +5,7 @@ import type {
   WsFile,
   WsNode,
 } from "./types";
+import { proposalStore } from "./proposalStore";
 
 const DENY_DIRS = new Set([
   ".git",
@@ -162,7 +163,20 @@ export class LocalFs implements WorkspaceService {
     };
   }
 
-  async writeFile(path: string, content: string) {
+  async writeFile(
+    path: string,
+    content: string,
+    opts?: { review?: boolean },
+  ) {
+    if (opts?.review !== false) {
+      await proposalStore.propose({
+        rootId: this.id,
+        path,
+        after: content,
+        source: "agent",
+      });
+      return { mtime: Date.now(), size: content.length };
+    }
     const { parent, name } = await this.resolve(path, { create: true });
     if (!name) throw new Error("Invalid path");
     const handle = await parent.getFileHandle(name, { create: true });
@@ -205,7 +219,7 @@ export class LocalFs implements WorkspaceService {
       await this.copyDir(from, to);
     } else {
       const file = await this.readFile(from);
-      await this.writeFile(to, file.content);
+      await this.writeFile(to, file.content, { review: false });
     }
     await this.remove(from);
   }
@@ -286,7 +300,7 @@ export class LocalFs implements WorkspaceService {
       if (e.kind === "dir") await this.copyDir(e.path, target);
       else {
         const file = await this.readFile(e.path);
-        await this.writeFile(target, file.content);
+        await this.writeFile(target, file.content, { review: false });
       }
     }
   }

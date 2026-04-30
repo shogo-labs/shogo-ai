@@ -20,6 +20,13 @@ import {
 import { SearchPane } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
 import { GitPane } from "./GitPane";
+import { ProposalsPane } from "./ProposalsPane";
+import { ProposalBanner } from "./ProposalBanner";
+import { proposalStore } from "./workspace/proposalStore";
+if (import.meta.env.DEV) {
+  // Side-effect import: attaches window.__shogoSim for manual testing.
+  void import("./dev/simulateProposal");
+}
 import type { WorkspaceService } from "./workspace/types";
 import { api } from "./workspace/apiBase";
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
@@ -152,6 +159,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   }, [services, loadRoot]);
 
   useEffect(() => {
+    proposalStore.registerService("agent", agentService);
     void loadRoot("agent");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -160,6 +168,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
   const mountLocalRoot = useCallback(
     async (id: string, label: string, handle: FileSystemDirectoryHandle) => {
       const svc = new LocalFs(id, label, handle);
+      proposalStore.registerService(id, svc);
       setServices((prev) => ({ ...prev, [id]: svc }));
       setRoots((prev) => {
         if (prev.some((r) => r.id === id)) return prev;
@@ -201,6 +210,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         return;
       }
       await deleteRoot(id).catch(() => {});
+      proposalStore.unregisterService(id);
       setServices((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -470,7 +480,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       const full = parentPath ? `${parentPath}/${name}` : name;
       try {
         if (kind === "dir") await svc.mkdir(full);
-        else await svc.writeFile(full, "");
+        else await svc.writeFile(full, "", { review: false });
         showToast(kind === "dir" ? `Created folder ${name}` : `Created ${name}`);
         await loadRoot(rootId);
       } catch (err) {
@@ -604,7 +614,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       const content = f.content;
       const id = f.id;
       try {
-        await svc.writeFile(f.path, content);
+        await svc.writeFile(f.path, content, { review: false });
         setGroups((prev) =>
           prev.map((g) => ({
             ...g,
@@ -968,6 +978,18 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                 }
               />
             )}
+            {activity === "proposals" && (
+              <ProposalsPane
+                onOpenFile={(rootId, path) => {
+                  handleOpenFile({
+                    rootId,
+                    path,
+                    name: path.split("/").pop() ?? path,
+                    kind: "file",
+                  });
+                }}
+              />
+            )}
             {activity === "git" && (
               <GitPane
                 onOpenDiff={(p, staged) => void openDiffFile(p, staged)}
@@ -997,6 +1019,18 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                     }}
                     className="flex min-w-0 flex-col"
                   >
+                    {(() => {
+                      const af = g.files.find((f) => f.id === g.activeId);
+                      if (!af) return null;
+                      return (
+                        <ProposalBanner
+                          rootId={af.rootId}
+                          path={af.path}
+                          editorDirty={af.dirty}
+                          onReview={() => setActivity("proposals")}
+                        />
+                      );
+                    })()}
                     <EditorGroupView
                       group={g}
                       focused={i === activeGroupIdx}
@@ -1074,6 +1108,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
         problems={0}
         warnings={0}
         saved={!active?.dirty}
+        onOpenProposals={() => setActivity("proposals")}
       />
 
       {palette === "command" && (

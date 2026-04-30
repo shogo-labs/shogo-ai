@@ -43,7 +43,11 @@ export interface WorkspaceService {
   readonly label: string;
   listTree(path?: string, depth?: number): Promise<WsNode[]>;
   readFile(path: string): Promise<WsFile>;
-  writeFile(path: string, content: string): Promise<{ mtime: number; size: number }>;
+  writeFile(
+    path: string,
+    content: string,
+    opts?: { review?: boolean },
+  ): Promise<{ mtime: number; size: number }>;
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;

@@ -7,6 +7,7 @@ import type {
 } from "./types";
 
 import { API_BASE as BASE } from "./apiBase";
+import { proposalStore } from "./proposalStore";
 
 async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -40,7 +41,26 @@ export class AgentFs implements WorkspaceService {
     return jfetch<WsFile>(url);
   }
 
-  async writeFile(path: string, content: string) {
+  async writeFile(
+    path: string,
+    content: string,
+    opts?: { review?: boolean },
+  ) {
+    // Default: route through the proposal store so agent edits get reviewed
+    // before they hit disk. Pass `{ review: false }` to bypass (e.g. user
+    // saves from the editor, or the proposal store committing an accepted
+    // hunk).
+    if (opts?.review !== false) {
+      await proposalStore.propose({
+        rootId: this.id,
+        path,
+        after: content,
+        source: "agent",
+      });
+      // No mtime/size yet — nothing has been written.
+      return { mtime: Date.now(), size: content.length };
+    }
+
     const data = await jfetch<{ mtime: number; size: number }>(
       `${BASE}/api/fs/file`,
       {
