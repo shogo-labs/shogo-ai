@@ -71,6 +71,16 @@ describe("extraLibs", () => {
     expect(react!.content).toMatch(/function useRef</);
   });
 
+  test("bundles @types/react/global.d.ts so the triple-slash reference at the top of index.d.ts resolves", () => {
+    const global = EXTRA_LIBS.find((l) => l.path.endsWith("@types/react/global.d.ts"));
+    expect(global).toBeDefined();
+    expect(global!.content.length).toBeGreaterThan(1000);
+    expect(global!.content).toMatch(/interface Event/);
+
+    const react = EXTRA_LIBS.find((l) => l.path.endsWith("@types/react/index.d.ts"));
+    expect(react!.content).toMatch(/\/\/\/ <reference path="global.d.ts" \/>/);
+  });
+
   test("bundles react-dom/client (createRoot for React 18+)", () => {
     const client = EXTRA_LIBS.find((l) => l.path.endsWith("react-dom/client.d.ts"));
     expect(client).toBeDefined();

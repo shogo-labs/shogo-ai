@@ -25,6 +25,7 @@ const PROP_TYPES = '15.7.13';
 
 const SOURCES = [
   { id: 'REACT_DTS',             pkg: '@types/react',     ver: REACT_TYPES,     file: 'index.d.ts',         path: 'file:///node_modules/@types/react/index.d.ts' },
+  { id: 'REACT_GLOBAL_DTS',      pkg: '@types/react',     ver: REACT_TYPES,     file: 'global.d.ts',        path: 'file:///node_modules/@types/react/global.d.ts' },
   { id: 'REACT_JSX_RUNTIME_DTS', pkg: '@types/react',     ver: REACT_TYPES,     file: 'jsx-runtime.d.ts',   path: 'file:///node_modules/@types/react/jsx-runtime.d.ts' },
   { id: 'REACT_JSX_DEV_DTS',     pkg: '@types/react',     ver: REACT_TYPES,     file: 'jsx-dev-runtime.d.ts', path: 'file:///node_modules/@types/react/jsx-dev-runtime.d.ts' },
   { id: 'REACT_DOM_DTS',         pkg: '@types/react-dom', ver: REACT_DOM_TYPES, file: 'index.d.ts',         path: 'file:///node_modules/@types/react-dom/index.d.ts' },
