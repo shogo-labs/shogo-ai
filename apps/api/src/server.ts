@@ -903,15 +903,20 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   })
 
   // ── Local mode: Shogo Cloud API key ──────────────────────────────────────
+  // Cloud endpoint selection is centralized: it is sourced ONLY from
+  // `process.env.SHOGO_CLOUD_URL` (default: production studio). Request
+  // bodies, persisted localConfig rows, and UI inputs are NOT honored — to
+  // target staging or self-hosted, set the env var on the API process.
   const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+  const getShogoCloudUrl = (): string =>
+    (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
 
   app.get('/api/local/shogo-key', async (c) => {
     try {
       const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
-      const urlRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } })
       const infoRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_KEY_INFO' } })
       if (!row) {
-        return c.json({ connected: false })
+        return c.json({ connected: false, cloudUrl: getShogoCloudUrl() })
       }
       const keyMask = row.value.slice(0, 17) + '...' + row.value.slice(-4)
       let info: any = null
@@ -919,22 +924,21 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({
         connected: true,
         keyMask,
-        cloudUrl: urlRow?.value || SHOGO_CLOUD_URL_DEFAULT,
+        cloudUrl: getShogoCloudUrl(),
         workspace: info?.workspace || null,
       })
     } catch {
-      return c.json({ connected: false })
+      return c.json({ connected: false, cloudUrl: getShogoCloudUrl() })
     }
   })
 
   app.put('/api/local/shogo-key', async (c) => {
-    const body = await c.req.json<{ key: string; cloudUrl?: string }>()
+    const body = await c.req.json<{ key: string }>()
     if (!body.key || !body.key.startsWith('shogo_sk_')) {
       return c.json({ ok: false, error: 'Invalid key format. Keys start with shogo_sk_' }, 400)
     }
 
-    const storedCloudUrl = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } }).then((r: any) => r?.value).catch(() => null)
-    const cloudUrl = (body.cloudUrl || process.env.SHOGO_CLOUD_URL || storedCloudUrl || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
+    const cloudUrl = getShogoCloudUrl()
     const validateUrl = `${cloudUrl}/api/api-keys/validate`
 
     try {
@@ -964,11 +968,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
           create: { key: 'SHOGO_API_KEY', value: body.key },
         }),
         localDb.localConfig.upsert({
-          where: { key: 'SHOGO_CLOUD_URL' },
-          update: { value: cloudUrl },
-          create: { key: 'SHOGO_CLOUD_URL', value: cloudUrl },
-        }),
-        localDb.localConfig.upsert({
           where: { key: 'SHOGO_KEY_INFO' },
           update: { value: JSON.stringify({ workspace: validateData.workspace }) },
           create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
@@ -976,7 +975,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       ])
 
       process.env.SHOGO_API_KEY = body.key
-      process.env.SHOGO_CLOUD_URL = cloudUrl
 
       // (Re)start instance tunnel with the new key
       import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
@@ -984,70 +982,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         startInstanceTunnel()
       }).catch(() => {})
 
-      return c.json({ ok: true, workspace: validateData.workspace })
+      return c.json({ ok: true, workspace: validateData.workspace, cloudUrl })
     } catch (err: any) {
       console.error(`[ShogoKey] Failed to reach cloud at ${validateUrl}:`, err.message)
       return c.json({ ok: false, error: `Cannot reach Shogo Cloud at ${cloudUrl}: ${err.message}`, cloudUrl }, 502)
-    }
-  })
-
-  app.patch('/api/local/shogo-key', async (c) => {
-    const body = await c.req.json<{ cloudUrl: string }>()
-    if (!body.cloudUrl?.trim()) {
-      return c.json({ ok: false, error: 'cloudUrl is required' }, 400)
-    }
-    const newCloudUrl = body.cloudUrl.trim().replace(/\/$/, '')
-
-    const keyRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
-    if (!keyRow) {
-      return c.json({ ok: false, error: 'No Shogo Cloud key is connected' }, 400)
-    }
-
-    const validateUrl = `${newCloudUrl}/api/api-keys/validate`
-    try {
-      console.log(`[ShogoKey] Re-validating key against new cloud: ${validateUrl}`)
-      const validateRes = await fetch(validateUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: keyRow.value }),
-        signal: AbortSignal.timeout(10000),
-      })
-      let validateData: { valid: boolean; workspace?: any; error?: string }
-      try {
-        validateData = await validateRes.json()
-      } catch {
-        console.error(`[ShogoKey] Cloud returned non-JSON (HTTP ${validateRes.status})`)
-        return c.json({ ok: false, error: `Shogo Cloud (${newCloudUrl}) returned an unexpected response (HTTP ${validateRes.status})`, cloudUrl: newCloudUrl }, 502)
-      }
-      if (!validateData.valid) {
-        console.error(`[ShogoKey] Cloud at ${newCloudUrl} rejected key: ${validateData.error}`)
-        return c.json({ ok: false, error: `${validateData.error || 'Key validation failed'} (validated against ${newCloudUrl})`, cloudUrl: newCloudUrl }, 400)
-      }
-
-      await Promise.all([
-        localDb.localConfig.upsert({
-          where: { key: 'SHOGO_CLOUD_URL' },
-          update: { value: newCloudUrl },
-          create: { key: 'SHOGO_CLOUD_URL', value: newCloudUrl },
-        }),
-        localDb.localConfig.upsert({
-          where: { key: 'SHOGO_KEY_INFO' },
-          update: { value: JSON.stringify({ workspace: validateData.workspace }) },
-          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
-        }),
-      ])
-
-      process.env.SHOGO_CLOUD_URL = newCloudUrl
-
-      import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
-        stopInstanceTunnel()
-        startInstanceTunnel()
-      }).catch(() => {})
-
-      return c.json({ ok: true, workspace: validateData.workspace })
-    } catch (err: any) {
-      console.error(`[ShogoKey] Failed to reach cloud at ${validateUrl}:`, err.message)
-      return c.json({ ok: false, error: `Cannot reach Shogo Cloud at ${newCloudUrl}: ${err.message}`, cloudUrl: newCloudUrl }, 502)
     }
   })
 
@@ -1055,11 +993,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     try {
       await Promise.all([
         localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
-        localDb.localConfig.deleteMany({ where: { key: 'SHOGO_CLOUD_URL' } }),
         localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
       ])
       delete process.env.SHOGO_API_KEY
-      delete process.env.SHOGO_CLOUD_URL
 
       import('./lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
         stopInstanceTunnel()
@@ -1087,7 +1023,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
     const nameRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_INSTANCE_NAME' } }).catch(() => null)
     const infoRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_KEY_INFO' } }).catch(() => null)
-    const urlRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } }).catch(() => null)
 
     let workspaceName: string | null = null
     try { workspaceName = infoRow ? JSON.parse(infoRow.value)?.workspace?.name : null } catch {}
@@ -1098,7 +1033,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       os: osPlatform(),
       arch: osArch(),
       tunnelConnected,
-      cloudUrl: urlRow?.value || process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai',
+      cloudUrl: getShogoCloudUrl(),
       workspaceName,
     })
   })
@@ -6190,8 +6125,21 @@ console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, Open
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   await (async () => {
     try {
+      // SHOGO_CLOUD_URL is intentionally never restored from local config —
+      // the cloud endpoint is sourced ONLY from the process environment so
+      // staging/self-hosted overrides cannot be silently shadowed by stale
+      // localConfig rows from a prior install. Best-effort delete of any
+      // legacy row keeps the local DB tidy.
+      const RESTORE_DENY_LIST = new Set(['SHOGO_CLOUD_URL'])
       const savedConfig = await (prisma as any).localConfig.findMany({})
       for (const row of savedConfig) {
+        if (RESTORE_DENY_LIST.has(row.key)) {
+          try {
+            await (prisma as any).localConfig.deleteMany({ where: { key: row.key } })
+            console.log(`[LocalMode] Discarded legacy localConfig row ${row.key} (managed via env)`)
+          } catch {}
+          continue
+        }
         if (!process.env[row.key]) {
           process.env[row.key] = row.value
           console.log(`[LocalMode] Restored ${row.key} from local config`)

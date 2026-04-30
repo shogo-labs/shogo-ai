@@ -28,7 +28,6 @@ export interface MeetingConfig {
 
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
-  cloudUrl: string
   vmIsolation: VMIsolationConfig
   meetings: MeetingConfig
   /** Stable per-machine identifier. Generated on first launch and used so
@@ -36,6 +35,21 @@ export interface DesktopConfig {
    * install signs in multiple times. Treated as non-secret metadata — the
    * minted API key is still the only credential. */
   deviceId: string
+}
+
+/** Default Shogo Cloud endpoint used when SHOGO_CLOUD_URL is not set. */
+const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+
+/**
+ * Resolve the Shogo Cloud endpoint for this desktop process.
+ *
+ * Single source of truth: the `SHOGO_CLOUD_URL` env var (default
+ * https://studio.shogo.ai). Per-install JSON overrides are deliberately
+ * NOT supported — set the env var (e.g. for staging) before launching the
+ * desktop binary.
+ */
+export function getCloudUrl(): string {
+  return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
 }
 
 const DEFAULT_VM_CONFIG: VMIsolationConfig = {
@@ -57,7 +71,6 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
 
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
-  cloudUrl: 'https://studio.shogo.ai',
   vmIsolation: { ...DEFAULT_VM_CONFIG },
   meetings: { ...DEFAULT_MEETING_CONFIG },
 }
@@ -83,9 +96,6 @@ export function readConfig(): DesktopConfig {
 
   const config: DesktopConfig = {
     mode: parsed.mode === 'cloud' ? 'cloud' : 'local',
-    cloudUrl: typeof parsed.cloudUrl === 'string' && parsed.cloudUrl
-      ? parsed.cloudUrl
-      : DEFAULT_CONFIG.cloudUrl,
     vmIsolation: {
       ...DEFAULT_VM_CONFIG,
       ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null
