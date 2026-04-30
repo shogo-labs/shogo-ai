@@ -1,34 +1,23 @@
 /**
- * Base URL for the skill server.
+ * Base URL for the project's API server.
  *
- * In canvas mode the Vite `/api` proxy targets port 3001 (dead), so we hit
- * the skill server directly on localhost. In a production deploy, set
- * `VITE_SKILL_SERVER_URL=""` so fetches become same-origin.
+ * In canvas mode the Vite `/api` proxy targets the runtime, which proxies
+ * `/api/*` to the project's `server.tsx` (port 3001 inside the VM /
+ * pod). For local IDE dev outside the runtime sandbox, set
+ * `VITE_API_BASE_URL=""` so fetches stay same-origin.
  *
- * The skill server port follows a predictable pattern in this runtime:
- *   app    = 37XYZ  (external)       /  38XYZ (internal)
- *   skill  = 38XYZ + 1
- *
- * We derive it from `window.location.port` so tab rotation across sessions
- * keeps working without code changes.
+ * Historically a separate "skill server" lived on its own port; that's
+ * been folded into the project's own backend. The legacy
+ * `VITE_SKILL_SERVER_URL` env override is still honoured for backwards
+ * compatibility.
  */
 function inferBase(): string {
   const env = (import.meta as unknown as { env?: Record<string, string> }).env;
-  const override = env?.VITE_SKILL_SERVER_URL;
+  const override = env?.VITE_API_BASE_URL ?? env?.VITE_SKILL_SERVER_URL;
   if (typeof override === "string") return override;
-
-  if (typeof window !== "undefined" && window.location?.port) {
-    const port = parseInt(window.location.port, 10);
-    // External app port (37XXX) → skill port = (port + 1001)
-    // Internal app port (38XXX) → skill port = (port + 1)
-    if (port >= 37000 && port < 38000) {
-      return `http://localhost:${port + 1001}`;
-    }
-    if (port >= 38000 && port < 40000) {
-      return `http://localhost:${port + 1}`;
-    }
-  }
-  return "http://localhost:38601";
+  // Default: same-origin. The runtime proxies `/api/*` to the project
+  // server, so a relative URL works in both pod + local-runtime modes.
+  return "";
 }
 
 export const API_BASE: string = inferBase();

@@ -65,7 +65,11 @@ export default function NewWorkspacePage() {
   const businessPricing = PLAN_PRICING.business
 
   const handleCheckout = useCallback(async (planType: 'pro' | 'business', seats: number) => {
-    if (!workspaceName.trim() || !user?.id) return
+    if (!user?.id) return
+    if (!workspaceName.trim()) {
+      setError('Give your workspace a name before subscribing.')
+      return
+    }
     setIsCheckoutLoading(true)
     setError(null)
     try {
@@ -147,8 +151,6 @@ export default function NewWorkspacePage() {
     }
   }, [http, workspaceName, billingInterval, user?.id, user?.email, router])
 
-  const nameValid = workspaceName.trim().length > 0
-
   return (
     <ScrollView
       className="flex-1 bg-background"
@@ -178,12 +180,15 @@ export default function NewWorkspacePage() {
           </Text>
           <TextInput
             value={workspaceName}
-            onChangeText={setWorkspaceName}
+            onChangeText={(t) => { setWorkspaceName(t); if (error) setError(null) }}
             placeholder="e.g. My Team, Acme Corp"
             placeholderTextColor="#9ca3af"
             className="border border-border rounded-md px-3 py-2.5 text-sm text-foreground bg-background"
             autoFocus={Platform.OS === 'web'}
           />
+          <Text className="text-xs text-muted-foreground mt-2">
+            You can rename it later in settings.
+          </Text>
         </CardContent>
       </Card>
 
@@ -272,17 +277,17 @@ export default function NewWorkspacePage() {
 
               <Pressable
                 onPress={() => handleCheckout('pro', proSeats)}
-                disabled={isCheckoutLoading || !nameValid}
+                disabled={isCheckoutLoading}
                 className={cn(
                   'w-full items-center justify-center py-3 rounded-md',
-                  nameValid && !isCheckoutLoading ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+                  isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
                 )}
               >
                 <Text className={cn(
                   'text-sm font-medium',
-                  nameValid && !isCheckoutLoading ? 'text-primary-foreground' : 'text-muted-foreground'
+                  isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
                 )}>
-                  {isCheckoutLoading ? 'Redirecting...' : !nameValid ? 'Enter workspace name' : 'Subscribe & Create'}
+                  {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
                 </Text>
               </Pressable>
 
@@ -343,17 +348,17 @@ export default function NewWorkspacePage() {
 
               <Pressable
                 onPress={() => handleCheckout('business', businessSeats)}
-                disabled={isCheckoutLoading || !nameValid}
+                disabled={isCheckoutLoading}
                 className={cn(
                   'w-full items-center justify-center py-3 rounded-md',
-                  nameValid && !isCheckoutLoading ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+                  isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
                 )}
               >
                 <Text className={cn(
                   'text-sm font-medium',
-                  nameValid && !isCheckoutLoading ? 'text-primary-foreground' : 'text-muted-foreground'
+                  isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
                 )}>
-                  {isCheckoutLoading ? 'Redirecting...' : !nameValid ? 'Enter workspace name' : 'Subscribe & Create'}
+                  {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
                 </Text>
               </Pressable>
 

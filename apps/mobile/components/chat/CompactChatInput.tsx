@@ -94,7 +94,7 @@ interface AttachedFile {
 }
 
 export interface CompactChatInputProps {
-  onSubmit: (prompt: string, files?: FileAttachment[]) => void
+  onSubmit: (prompt: string, files?: FileAttachment[]) => void | false
   disabled?: boolean
   isLoading?: boolean
   placeholder?: string
@@ -107,6 +107,16 @@ export interface CompactChatInputProps {
   onModelChange?: (modelId: string) => void
   isPro?: boolean
   onUpgradeClick?: () => void
+  /** When false, disabled state does not dim the composer (e.g. plan-mode suggestion keeps draft readable). */
+  dimWhenDisabled?: boolean
+  /**
+   * Optional opt-in handler that replaces the default `useVoiceInput`
+   * dictation behavior on the empty-composer mic button. When provided,
+   * tapping the mic invokes this handler instead of starting local
+   * speech-to-text — the homepage uses this to open Shogo Mode for
+   * project creation while preemptively warming a runtime pod.
+   */
+  onStartVoiceProjectCreation?: () => void | Promise<void>
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -125,6 +135,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       onModelChange,
       isPro = false,
       onUpgradeClick,
+      dimWhenDisabled = true,
+      onStartVoiceProjectCreation,
     },
     ref
   ) {
@@ -392,7 +404,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       ]
       const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
 
-      onSubmit(trimmedContent, fileData)
+      const submitResult = onSubmit(trimmedContent, fileData)
+      if (submitResult === false) {
+        return
+      }
       setValue("")
       setPendingFiles([])
       setFileError(null)
@@ -448,7 +463,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               ref={fileInputRef as any}
               type="file"
               multiple
-              accept="image/*,.pdf,.txt,.md,.csv,.json"
               capture={undefined}
               onChange={handleWebFileChange}
               tabIndex={-1}
@@ -551,7 +565,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             className={cn(
               "min-h-[80px] max-h-[200px] w-full",
               "px-4 pt-4 text-xs text-foreground",
-              disabled && "opacity-50",
+              disabled && dimWhenDisabled && "opacity-50",
               Platform.OS === "web" && "outline-none no-focus-ring"
             )}
             textAlignVertical="top"
@@ -819,6 +833,27 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     )}
                   >
                     <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                  </Pressable>
+                ) : onStartVoiceProjectCreation ? (
+                  <Pressable
+                    onPress={() => {
+                      voiceInput.clearError()
+                      void Promise.resolve(onStartVoiceProjectCreation()).catch(() => {})
+                    }}
+                    disabled={disabled}
+                    role="button"
+                    accessibilityLabel="Start voice project creation"
+                    className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+                  >
+                    <Mic
+                      className={cn(
+                        "h-4 w-4",
+                        disabled
+                          ? "text-muted-foreground/40"
+                          : "text-muted-foreground"
+                      )}
+                      size={14}
+                    />
                   </Pressable>
                 ) : voiceInput.canRecord ? (
                   <Pressable

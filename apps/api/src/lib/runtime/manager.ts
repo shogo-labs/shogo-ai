@@ -248,14 +248,12 @@ export class RuntimeManager implements IRuntimeManager {
 
       if (this.usedPorts.has(port)) continue
 
-      const skillServerPort = agentPort + 1
       const viteInUse = await this.isPortListening(port)
       const agentInUse = await this.isPortListening(agentPort)
-      const skillInUse = await this.isPortListening(skillServerPort)
 
-      if (!viteInUse && !agentInUse && !skillInUse) {
+      if (!viteInUse && !agentInUse) {
         this.usedPorts.add(port)
-        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}/${skillServerPort}`)
+        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}`)
         return port
       }
     }
@@ -898,7 +896,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
           PORT: String(agentPort),
-          SKILL_SERVER_PORT: String(agentPort + 1),
           // Single source of truth for "where is the running app?".
           // The agent-runtime injects this into its system prompt so QA /
           // browser-use subagents navigate to the right URL instead of

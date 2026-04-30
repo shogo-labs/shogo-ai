@@ -47,6 +47,11 @@ COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
+# Copy patches required by `patchedDependencies` in package.json — bun install
+# fails with "Couldn't find patch file" when this directory is missing from
+# the build context.
+COPY patches ./patches
+
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
@@ -65,14 +70,11 @@ COPY templates/runtime-template ./templates/runtime-template
 # so agent-runtime's `import '@shogo-ai/sdk/memory'` fails at runtime without this.
 RUN cd packages/sdk && bun install && bun run build
 
-# Pre-install runtime-template dependencies so workspaces get node_modules instantly
+# Pre-install runtime-template dependencies so workspaces get node_modules instantly.
+# This is the **single** template the runtime now seeds — the legacy
+# `templates/skill-server/` install was retired alongside the unified
+# server architecture (see migrations/skill-server-to-root.ts).
 RUN cd templates/runtime-template && bun install
-
-# Pre-install skill server dependencies so schema regeneration doesn't need network
-RUN mkdir -p templates/skill-server && \
-    printf '{"name":"skill-server","private":true,"dependencies":{"hono":"^4.7.0","prisma":"7.4.1","@prisma/client":"7.4.1","prisma-adapter-bun-sqlite":"^0.6.8"}}' \
-      > templates/skill-server/package.json && \
-    cd templates/skill-server && bun install
 
 # Fetch external Claude Code skills from skill-registry.json
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
@@ -118,6 +120,9 @@ COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
+# Same patches directory as the builder stage — bun install fails without it.
+COPY patches ./patches
+
 # Copy prisma schema and config before install (postinstall runs db:generate:all)
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
@@ -142,7 +147,6 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packa
 COPY --chown=appuser:appgroup --from=builder /app/packages/model-catalog ./packages/model-catalog
 COPY --chown=appuser:appgroup --from=builder /app/packages/sdk ./packages/sdk
 COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
-COPY --chown=appuser:appgroup --from=builder /app/templates/skill-server ./templates/skill-server
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
@@ -155,6 +159,10 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/shared-ui/package.jso
 COPY --chown=appuser:appgroup --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
 COPY --chown=appuser:appgroup --from=builder /app/apps/api/package.json ./apps/api/
 COPY --chown=appuser:appgroup --from=builder /app/apps/mobile/package.json ./apps/mobile/
+
+# Same patches as builder/deps stages — `bun install --ignore-scripts` below
+# still re-resolves the patched dependency and fails without these files.
+COPY --chown=appuser:appgroup --from=builder /app/patches ./patches
 
 COPY --chown=appuser:appgroup packages/agent-runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

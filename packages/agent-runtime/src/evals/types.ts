@@ -71,7 +71,12 @@ export interface AgentEval {
   workspaceFiles?: Record<string, string>
   /** Seed workspace with the runtime template (Vite + React + Tailwind + shadcn/ui). Provides index.html, package.json, tsconfig, etc. */
   useRuntimeTemplate?: boolean
-  /** Seed .shogo/server/ with the canonical skill server scaffold (shogo.config.json, prisma.config.ts, base schema). */
+  /**
+   * @deprecated The legacy `.shogo/server/` skill server has been retired
+   * — every workspace ships with its own backend at root `server.tsx`.
+   * Setting this flag now just signals "this eval exercises the API
+   * server" so the runner runs full server / route / CRUD checks.
+   */
   useSkillServer?: boolean
   /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
   initialMode?: 'canvas' | 'app' | 'plan' | 'none'

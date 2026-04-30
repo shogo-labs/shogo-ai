@@ -7,7 +7,11 @@
  * The agent writes directly into src/ and the build runs automatically.
  */
 
-const SKILL_PORT = process.env.SKILL_SERVER_PORT || '4100'
+// The project's API server (`server.tsx` at the project root) listens on
+// this port. Same-origin proxying through the runtime's `/api/*` makes
+// the port irrelevant from React code, but agent tools (`web`, `exec`,
+// scripts) sometimes need the full URL.
+const API_PORT = '3001'
 
 // ---------------------------------------------------------------------------
 // Section 1: Core Guide
@@ -35,7 +39,7 @@ src/
     LeadTracker.tsx    ← Feature component (example)
   lib/
     cn.ts              ← Tailwind class merge utility
-    db.ts              ← Database client (for skill server)
+    db.ts              ← Prisma database client (server-side only)
 index.html             ← Vite entry HTML
 vite.config.ts         ← Vite config (already set up)
 package.json           ← Dependencies (react, tailwind, recharts, etc.)
@@ -154,45 +158,38 @@ After writing or editing files under \`src/\`, **always** call \`read_lints\` wi
 - If \`read_lints\` returns \`ok: true\` — the code is clean, proceed normally.
 - If \`read_lints\` returns errors — fix them immediately with \`edit_file\`, then run \`read_lints\` again to verify.
 
-### Skill Server API
+### Backend API
 
-**From React code (src/):** Always use relative URLs — \`fetch('/api/items')\`. The app is served behind a proxy that routes \`/api/*\` to the skill server automatically.
+**From React code (src/):** Always use relative URLs — \`fetch('/api/items')\`. The app is served behind a proxy that routes \`/api/*\` to the project's backend automatically.
 
-**From agent tools (web, exec):** Use the full URL — \`web({ url: "http://localhost:${SKILL_PORT}/api/items", method: "POST", body: {...} })\`
+**From agent tools (web, exec):** Use the full URL — \`web({ url: "http://localhost:${API_PORT}/api/items", method: "POST", body: {...} })\`
 
-**From scripts or server-side code (Node/Bun):** Read the port from \`process.env.SKILL_SERVER_PORT\` (currently \`${SKILL_PORT}\` on this runtime). The port varies per deployment — do NOT hardcode it. Example: \`const port = process.env.SKILL_SERVER_PORT ?? '${SKILL_PORT}'; await fetch(\\\`http://localhost:\${port}/api/items\\\`)\`.
+**From scripts or server-side code (Node/Bun):** Default to port \`${API_PORT}\` (\`process.env.PORT\` inside \`server.tsx\` itself). Example: \`await fetch('http://localhost:${API_PORT}/api/items')\`.
 
 ### Build Systems, Not Reports
 
 When the user asks you to analyze, organize, track, or monitor data:
-1. **Persist the data** — Write a schema and POST processed data to the skill server API
-2. **Visualize it** — Write React code in \`src/\` that fetches from the skill server
+1. **Persist the data** — Write a schema and POST processed data via the project's API
+2. **Visualize it** — Write React code in \`src/\` that fetches from \`/api/...\`
 3. **Make it reusable** — Save a skill file so the workflow can be re-run
 
 Do NOT write Markdown reports, summary files, or text-only responses when the user wants an ongoing system.
 `
 
 // ---------------------------------------------------------------------------
-// Section 2: Backend with Skill Server
+// Section 2: Backend
 // ---------------------------------------------------------------------------
 
-export const CANVAS_V2_BACKEND_GUIDE = `## Backend — Skill Server
+export const CANVAS_V2_BACKEND_GUIDE = `## Backend — Project Server
 
-For apps that need persistent data (CRUD, lists, forms), create a skill server backend. The frontend fetches data via \`fetch()\`.
+For apps that need persistent data (CRUD, lists, forms), edit the project's **own** backend. Every workspace ships with a Hono \`server.tsx\` at the project root and a Prisma schema at \`prisma/schema.prisma\`. The frontend fetches data via \`fetch()\`.
 
 ### Creating the backend
 
-Write a Prisma schema to \`.shogo/server/schema.prisma\`:
+Edit \`prisma/schema.prisma\` to add models — do NOT replace the file. The schema starts with a generator + datasource block and (usually) a \`User\` model from the runtime template; **append** your new models below it:
 
 \`\`\`prisma
-datasource db {
-  provider = "sqlite"
-}
-
-generator client {
-  provider = "prisma-client"
-  output   = "./generated/prisma"
-}
+// ... existing generator + datasource + User model stay intact ...
 
 model Lead {
   id        String   @id @default(cuid())
@@ -205,44 +202,43 @@ model Lead {
 }
 \`\`\`
 
-That's it — **everything else is automatic**: dependency install, code generation, database creation, and server startup on \`http://localhost:${SKILL_PORT}\`. In scripts or server-side code, read the port from \`process.env.SKILL_SERVER_PORT\` (currently \`${SKILL_PORT}\` on this runtime) — do not hardcode it, it varies per deployment. Do NOT manually write \`server.tsx\` or \`db.tsx\` — they are auto-generated from the schema. Only write \`schema.prisma\`.
+That's it — **everything else is automatic**: the runtime watches \`prisma/schema.prisma\`, runs \`bunx shogo generate\` (which regenerates routes, types, hooks, and \`src/lib/db.ts\`), runs \`prisma db push\`, and restarts the server. The API server listens on \`http://localhost:${API_PORT}\` and serves a \`/health\` endpoint plus full CRUD at \`/api/{model-name-plural}\`. If routes are missing after a schema change, call \`server_sync\` to force a regenerate + restart.
 
-**CRITICAL — No custom servers:** NEVER create your own HTTP server (Hono, Express, Fastify, etc.). Do NOT write \`server.ts\`, \`server.tsx\`, or any file that imports a server framework and calls \`.listen()\` or \`Bun.serve()\`. The skill server is **always running** at \`http://localhost:${SKILL_PORT}\` with a \`/health\` endpoint — it starts automatically and provides full CRUD on every model once a schema is written. There are three ways to get data into the app:
-1. **Integration Tools SDK** — For external APIs (Meta Ads, Gmail, Slack, etc.), use \`useTools()\` from \`@shogo-ai/sdk/tools\` directly in React code. This proxies through the runtime automatically — no custom server needed.
-2. **Skill server** — For persistent CRUD data, write a \`.shogo/server/schema.prisma\` and fetch from \`/api/...\` endpoints.
-3. **Custom API routes** — For routes beyond CRUD (external API proxies, aggregation, webhooks), edit \`.shogo/server/custom-routes.ts\` (see below).
+**Generated files — do NOT hand-edit:**
+- \`src/generated/routes/\` — per-model CRUD route handlers
+- \`src/generated/api-client.tsx\` — typed React fetch hooks
+- \`src/lib/db.ts\` — Prisma client singleton
 
-Never create a standalone server file. Use the tools SDK, skill server, or custom routes.
+**Hand-edited files:**
+- \`prisma/schema.prisma\` — your data model
+- \`server.tsx\` — Hono app entry point. Already mounts \`createAllRoutes(prisma)\` at \`/api\`. Add custom routes here for proxies, aggregation, webhooks, etc.
+- \`src/\` — the whole React app
 
 ### Custom API Routes
 
-The file \`.shogo/server/custom-routes.ts\` already exists and is mounted at \`/api/\`. To add custom routes (external API proxies, aggregation endpoints, webhooks), **edit** this file using \`edit_file\`:
+To add custom routes (external API proxies, aggregation endpoints, webhooks), \`edit_file\` \`server.tsx\` and add handlers above the static-file middleware. The Hono \`app\` instance is already in scope; just call \`app.get/post/...\`:
 
-\`\`\`ts
-import { Hono } from 'hono'
-const app = new Hono()
-
-app.get('/meta/campaigns', async (c) => {
+\`\`\`tsx
+// server.tsx
+app.get('/api/meta/campaigns', async (c) => {
   const token = c.req.header('X-Meta-Token')
   const res = await fetch(\`https://graph.facebook.com/v19.0/me/campaigns?access_token=\${token}\`)
   return c.json(await res.json())
 })
-
-export default app
 \`\`\`
 
-Custom routes are mounted at \`/api/\` alongside the CRUD routes and the server auto-restarts when the file is saved. Use this instead of creating a standalone server. You do NOT need a schema.prisma to use custom routes — they work independently.
+The runtime restarts \`server.tsx\` automatically when you save it. The CRUD routes mounted by \`createAllRoutes(prisma)\` keep working alongside whatever you add.
 
 ### Additive schema management
 
 The schema is **cumulative** — models from different features coexist in one file. Follow these rules:
 
-1. **Before writing the schema, ALWAYS \`read_file\` the current \`.shogo/server/schema.prisma\`** to see what models already exist
-2. **If models already exist, APPEND your new models** — include ALL existing models in your write. Never drop models the user has already built.
+1. **Before writing the schema, ALWAYS \`read_file\` the current \`prisma/schema.prisma\`** to see what models already exist
+2. **If models already exist, APPEND your new models** — never replace the file wholesale. Use \`edit_file\` to add new \`model\` blocks at the end.
 3. **Use relations across features** when it makes sense — e.g. an \`Engineer\` model created for a capacity planner can be referenced by an on-call scheduler via a relation field
-4. **NEVER write a schema that removes existing models** — the database preserves data across changes, and dropping models deletes user data
+4. **NEVER drop existing models** — the database preserves data across changes, and removing a model deletes user data
 
-Adding models is safe and cheap — the server regenerates incrementally and \`db push\` adds new tables without touching existing ones.
+Adding models is safe and cheap — \`shogo generate\` regenerates incrementally and \`prisma db push\` adds new tables without touching existing ones.
 
 Each model gets full CRUD at \`/api/{model-name-plural}\`:
 
@@ -260,8 +256,8 @@ API responses are JSON-wrapped — always unwrap before using:
 
 ### Fetching from the app
 
-Use \`fetch()\` in a \`useEffect\` to load data from the skill server.
-**IMPORTANT:** In React code, always use relative URLs (\`/api/...\`) — never \`http://localhost:...\`. The app is served behind a proxy.
+Use \`fetch()\` in a \`useEffect\` to load data from the project's API.
+**IMPORTANT:** In React code, always use relative URLs (\`/api/...\`) — never \`http://localhost:...\`. The app is served behind a same-origin proxy.
 
 \`\`\`tsx
 const [leads, setLeads] = useState<any[]>([])
@@ -277,12 +273,12 @@ useEffect(() => {
 
 ### Full-stack workflow
 
-1. \`read_file\` the current schema, then write \`.shogo/server/schema.prisma\` with **ALL** models (existing + new)
-2. Seed initial data using the web tool: \`web({ url: "http://localhost:${SKILL_PORT}/api/leads", method: "POST", body: { name: "Acme Corp", email: "hello@acme.com" } })\`
+1. \`read_file\` the current schema, then \`edit_file\` \`prisma/schema.prisma\` to **append** your new models
+2. Seed initial data using the web tool: \`web({ url: "http://localhost:${API_PORT}/api/leads", method: "POST", body: { name: "Acme Corp", email: "hello@acme.com" } })\`
 3. Create a feature component under \`src/components/\`, then update \`src/App.tsx\` to include it
-4. If building a reusable template, save a skill file: \`write_file({ path: "skills/lead-tracking.md", content: "..." })\`
+4. If building a reusable template, save a skill file: \`write_file({ path: ".shogo/skills/lead-tracking.md", content: "..." })\`
 
-The skill server starts automatically when the schema is saved. The app can immediately \`fetch()\` from it.
+The API server restarts automatically when the schema is saved. The app can immediately \`fetch()\` from it.
 `
 
 // ---------------------------------------------------------------------------
@@ -490,12 +486,14 @@ export default function App() {
 }\`})
 \`\`\`
 
-### Example 2: Full-stack CRUD app with skill server
+### Example 2: Full-stack CRUD app with project backend
 
 User: "Build a lead tracker"
 
 \`\`\`
-write_file({ path: ".shogo/server/schema.prisma", content: "datasource db {\\n  provider = \\"sqlite\\"\\n}\\n\\ngenerator client {\\n  provider = \\"prisma-client\\"\\n  output   = \\"./generated/prisma\\"\\n}\\n\\nmodel Lead {\\n  id        String   @id @default(cuid())\\n  name      String\\n  email     String\\n  status    String   @default(\\"new\\")\\n  createdAt DateTime @default(now())\\n  updatedAt DateTime @updatedAt\\n}" })
+// Read existing schema first, then APPEND a Lead model.
+read_file({ path: "prisma/schema.prisma" })
+edit_file({ path: "prisma/schema.prisma", instructions: "Append a Lead model after the existing models", new_str: "\\nmodel Lead {\\n  id        String   @id @default(cuid())\\n  name      String\\n  email     String\\n  status    String   @default(\\"new\\")\\n  createdAt DateTime @default(now())\\n  updatedAt DateTime @updatedAt\\n}\\n" })
 
 write_file({ path: "src/components/AddLeadForm.tsx", content: \`import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'

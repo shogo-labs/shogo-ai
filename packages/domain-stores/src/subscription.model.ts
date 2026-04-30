@@ -22,6 +22,12 @@ export const SubscriptionModel = types
     stripeSubscriptionId: types.string,
     stripeCustomerId: types.string,
     planId: types.string,
+    /**
+     * Paying seat count. Basic is always 1; Pro/Business are per-seat. The
+     * server (`Subscription.seats`) is the source of truth — the client
+     * model exposes it for UI math (price/included display).
+     */
+    seats: types.optional(types.number, 1),
     status: types.enumeration("SubscriptionStatus", ["active", "past_due", "canceled", "trialing", "paused"]),
     billingInterval: types.enumeration("BillingInterval", ["monthly", "annual"]),
     currentPeriodStart: types.number,

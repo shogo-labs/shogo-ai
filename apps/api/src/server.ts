@@ -35,6 +35,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
+import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
@@ -902,15 +903,20 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   })
 
   // ── Local mode: Shogo Cloud API key ──────────────────────────────────────
+  // Cloud endpoint selection is centralized: it is sourced ONLY from
+  // `process.env.SHOGO_CLOUD_URL` (default: production studio). Request
+  // bodies, persisted localConfig rows, and UI inputs are NOT honored — to
+  // target staging or self-hosted, set the env var on the API process.
   const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+  const getShogoCloudUrl = (): string =>
+    (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
 
   app.get('/api/local/shogo-key', async (c) => {
     try {
       const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
-      const urlRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } })
       const infoRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_KEY_INFO' } })
       if (!row) {
-        return c.json({ connected: false })
+        return c.json({ connected: false, cloudUrl: getShogoCloudUrl() })
       }
       const keyMask = row.value.slice(0, 17) + '...' + row.value.slice(-4)
       let info: any = null
@@ -918,22 +924,21 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({
         connected: true,
         keyMask,
-        cloudUrl: urlRow?.value || SHOGO_CLOUD_URL_DEFAULT,
+        cloudUrl: getShogoCloudUrl(),
         workspace: info?.workspace || null,
       })
     } catch {
-      return c.json({ connected: false })
+      return c.json({ connected: false, cloudUrl: getShogoCloudUrl() })
     }
   })
 
   app.put('/api/local/shogo-key', async (c) => {
-    const body = await c.req.json<{ key: string; cloudUrl?: string }>()
+    const body = await c.req.json<{ key: string }>()
     if (!body.key || !body.key.startsWith('shogo_sk_')) {
       return c.json({ ok: false, error: 'Invalid key format. Keys start with shogo_sk_' }, 400)
     }
 
-    const storedCloudUrl = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } }).then((r: any) => r?.value).catch(() => null)
-    const cloudUrl = (body.cloudUrl || process.env.SHOGO_CLOUD_URL || storedCloudUrl || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
+    const cloudUrl = getShogoCloudUrl()
     const validateUrl = `${cloudUrl}/api/api-keys/validate`
 
     try {
@@ -963,11 +968,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
           create: { key: 'SHOGO_API_KEY', value: body.key },
         }),
         localDb.localConfig.upsert({
-          where: { key: 'SHOGO_CLOUD_URL' },
-          update: { value: cloudUrl },
-          create: { key: 'SHOGO_CLOUD_URL', value: cloudUrl },
-        }),
-        localDb.localConfig.upsert({
           where: { key: 'SHOGO_KEY_INFO' },
           update: { value: JSON.stringify({ workspace: validateData.workspace }) },
           create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
@@ -975,7 +975,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       ])
 
       process.env.SHOGO_API_KEY = body.key
-      process.env.SHOGO_CLOUD_URL = cloudUrl
 
       // (Re)start instance tunnel with the new key
       import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
@@ -983,70 +982,10 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         startInstanceTunnel()
       }).catch(() => {})
 
-      return c.json({ ok: true, workspace: validateData.workspace })
+      return c.json({ ok: true, workspace: validateData.workspace, cloudUrl })
     } catch (err: any) {
       console.error(`[ShogoKey] Failed to reach cloud at ${validateUrl}:`, err.message)
       return c.json({ ok: false, error: `Cannot reach Shogo Cloud at ${cloudUrl}: ${err.message}`, cloudUrl }, 502)
-    }
-  })
-
-  app.patch('/api/local/shogo-key', async (c) => {
-    const body = await c.req.json<{ cloudUrl: string }>()
-    if (!body.cloudUrl?.trim()) {
-      return c.json({ ok: false, error: 'cloudUrl is required' }, 400)
-    }
-    const newCloudUrl = body.cloudUrl.trim().replace(/\/$/, '')
-
-    const keyRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
-    if (!keyRow) {
-      return c.json({ ok: false, error: 'No Shogo Cloud key is connected' }, 400)
-    }
-
-    const validateUrl = `${newCloudUrl}/api/api-keys/validate`
-    try {
-      console.log(`[ShogoKey] Re-validating key against new cloud: ${validateUrl}`)
-      const validateRes = await fetch(validateUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: keyRow.value }),
-        signal: AbortSignal.timeout(10000),
-      })
-      let validateData: { valid: boolean; workspace?: any; error?: string }
-      try {
-        validateData = await validateRes.json()
-      } catch {
-        console.error(`[ShogoKey] Cloud returned non-JSON (HTTP ${validateRes.status})`)
-        return c.json({ ok: false, error: `Shogo Cloud (${newCloudUrl}) returned an unexpected response (HTTP ${validateRes.status})`, cloudUrl: newCloudUrl }, 502)
-      }
-      if (!validateData.valid) {
-        console.error(`[ShogoKey] Cloud at ${newCloudUrl} rejected key: ${validateData.error}`)
-        return c.json({ ok: false, error: `${validateData.error || 'Key validation failed'} (validated against ${newCloudUrl})`, cloudUrl: newCloudUrl }, 400)
-      }
-
-      await Promise.all([
-        localDb.localConfig.upsert({
-          where: { key: 'SHOGO_CLOUD_URL' },
-          update: { value: newCloudUrl },
-          create: { key: 'SHOGO_CLOUD_URL', value: newCloudUrl },
-        }),
-        localDb.localConfig.upsert({
-          where: { key: 'SHOGO_KEY_INFO' },
-          update: { value: JSON.stringify({ workspace: validateData.workspace }) },
-          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
-        }),
-      ])
-
-      process.env.SHOGO_CLOUD_URL = newCloudUrl
-
-      import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
-        stopInstanceTunnel()
-        startInstanceTunnel()
-      }).catch(() => {})
-
-      return c.json({ ok: true, workspace: validateData.workspace })
-    } catch (err: any) {
-      console.error(`[ShogoKey] Failed to reach cloud at ${validateUrl}:`, err.message)
-      return c.json({ ok: false, error: `Cannot reach Shogo Cloud at ${newCloudUrl}: ${err.message}`, cloudUrl: newCloudUrl }, 502)
     }
   })
 
@@ -1054,11 +993,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     try {
       await Promise.all([
         localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
-        localDb.localConfig.deleteMany({ where: { key: 'SHOGO_CLOUD_URL' } }),
         localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
       ])
       delete process.env.SHOGO_API_KEY
-      delete process.env.SHOGO_CLOUD_URL
 
       import('./lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
         stopInstanceTunnel()
@@ -1086,7 +1023,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
     const nameRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_INSTANCE_NAME' } }).catch(() => null)
     const infoRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_KEY_INFO' } }).catch(() => null)
-    const urlRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } }).catch(() => null)
 
     let workspaceName: string | null = null
     try { workspaceName = infoRow ? JSON.parse(infoRow.value)?.workspace?.name : null } catch {}
@@ -1097,7 +1033,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       os: osPlatform(),
       arch: osArch(),
       tunnelConnected,
-      cloudUrl: urlRow?.value || process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai',
+      cloudUrl: getShogoCloudUrl(),
       workspaceName,
     })
   })
@@ -1429,6 +1365,49 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
   return router.fetch(newReq)
 })
 
+/**
+ * Preemptively warm a project runtime pod.
+ *
+ * Returns 202 immediately and resolves the pod URL in the background via
+ * `getProjectPodUrl()` — the warm-pool-first resolver. This is the hook
+ * the homepage composer calls as soon as the user starts a draft project
+ * so a warm pod is being claimed/assigned (or cold-started) while they
+ * are still typing or talking.
+ *
+ * Idempotent: repeated calls during pod resolution join the existing
+ * `pendingPodRequests` entry inside `getProjectPodUrl`, so spamming
+ * this endpoint does not multiply work.
+ */
+app.post('/api/projects/:projectId/runtime/prewarm', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      // Fire and forget: the resolver dedupes concurrent requests and
+      // promotes a warm pod (or cold-starts) in the background. We
+      // intentionally do not await so the homepage gets a snappy 202
+      // and the pod warms while the user keeps composing.
+      getProjectPodUrl(projectId).catch((err) => {
+        console.error(`[Runtime Prewarm] Background prewarm failed for ${projectId}:`, err?.message ?? err)
+      })
+      return c.json({ success: true, projectId, status: 'warming' }, 202)
+    } catch (err: any) {
+      console.error(`[Runtime Prewarm] Failed to schedule prewarm for ${projectId}:`, err.message)
+      return c.json({ error: `Failed to prewarm runtime: ${err.message}` }, 500)
+    }
+  }
+
+  // Local dev: there is no warm pool to claim — fall back to the
+  // existing start path so callers still see consistent behavior.
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/runtime/start`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
 // Stop project runtime
 app.post('/api/projects/:projectId/runtime/stop', async (c) => {
   const projectId = c.req.param('projectId')
@@ -1747,7 +1726,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
     // Canvas iframe loads directly from the runtime (not through the proxy)
-    // so fetch('/api/...') resolves same-origin to the skill server.
+    // so fetch('/api/...') resolves same-origin to the project's API server.
     // In production this is the preview subdomain; locally it's the direct runtime port.
     const canvasBaseUrl = previewMode === 'subdomain'
       ? getPreviewUrl(projectId)
@@ -2073,11 +2052,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   let lastError: Error | null = null
 
   const proxyClientSignal = c.req.raw.signal
-  const proxyFetchSignal = proxyClientSignal
-    ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), proxyClientSignal])
-    : AbortSignal.timeout(FETCH_TIMEOUT_MS)
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // Per-attempt timeout. Sharing one `AbortSignal.timeout` across all
+    // retries means a single timeout aborts every subsequent attempt
+    // instantly (the signal is already in the aborted state), wasting the
+    // cold-start retry budget. Build a fresh combined signal each attempt.
+    const proxyFetchSignal = proxyClientSignal
+      ? AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), proxyClientSignal])
+      : AbortSignal.timeout(FETCH_TIMEOUT_MS)
+
     try {
       const response = await fetch(targetUrl, {
         method: c.req.method,
@@ -2640,6 +2624,190 @@ app.post('/api/projects/:projectId/terminal/run', async (c) => {
   const router = terminalRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/terminal/run`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
+// Diagnostics routes — IDE Problems tab (TS + ESLint + Vite build errors)
+// =============================================================================
+
+/**
+ * Race a promise against an AbortSignal so a client disconnect doesn't keep
+ * us blocked inside `getProjectPodUrl` (which has no signal parameter — it's
+ * called from too many places to change). On abort the promise rejects with
+ * a DOMException('AbortError') just like a `fetch` would.
+ */
+/**
+ * Project ids are surfaced into `path.join(workspacesDir, projectId)` and
+ * forwarded into the runtime URL. Reject anything that could escape the
+ * workspaces root or smuggle a path segment. Matches the cuid/uuid shapes
+ * we mint elsewhere — alphanumerics, hyphens, underscores only, length-bounded.
+ */
+function isSafeProjectId(id: string): boolean {
+  return typeof id === 'string'
+    && id.length > 0
+    && id.length <= 128
+    && /^[A-Za-z0-9_-]+$/.test(id)
+}
+
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise
+      .then((value) => { signal.removeEventListener('abort', onAbort); resolve(value) })
+      .catch((err) => { signal.removeEventListener('abort', onAbort); reject(err) })
+  })
+}
+//
+// Architecture mirrors the terminal block above: in Kubernetes we proxy to the
+// project's runtime pod with `x-runtime-token` (= deriveRuntimeToken(projectId),
+// which equals the pod's RUNTIME_AUTH_SECRET), and locally we run the same
+// `diagnosticsRoutes` factory in-process. The pod side mounts the matching
+// `runtimeDiagnosticsRoutes` BEFORE the SPA static fallback and registers
+// `/diagnostics` in `authPrefixes` — see PR #458 for the staging-404 trap
+// this avoids.
+
+/**
+ * Forward an upstream `fetch` Response to the client, converting non-JSON
+ * 5xx errors (e.g. Knative HTML 503) into structured JSON the mobile app
+ * can render. Mirrors the inline blocks in the terminal proxies above —
+ * extracted for the diagnostics handlers to keep them readable. We didn't
+ * touch the terminal callers to avoid widening this PR's blast radius.
+ */
+async function forwardDiagnosticsResponse(c: any, response: Response, label: string): Promise<Response> {
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const headers = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          headers.set(key, value)
+        }
+      })
+      return new Response(response.body, { status: response.status, headers })
+    }
+    const errorCode = response.status === 503 ? 'service_starting'
+      : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+    if (response.status !== 503) {
+      console.error(`[DiagnosticsProxy] ${label} upstream error ${response.status}`)
+    }
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (response.status === 503) headers.set('Retry-After', '5')
+    return c.json({
+      error: { code: errorCode, message: `Diagnostics service unavailable (${response.status})` },
+    }, response.status as any)
+  }
+  const headers = new Headers()
+  response.headers.forEach((value, key) => {
+    if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+      headers.set(key, value)
+    }
+  })
+  return new Response(response.body, { status: response.status, headers })
+}
+
+// GET /api/projects/:projectId/diagnostics
+app.get('/api/projects/:projectId/diagnostics', async (c) => {
+  const projectId = c.req.param('projectId')
+  // Containment: the path is later joined with workspacesDir; reject obvious traversal/escape.
+  if (!isSafeProjectId(projectId)) {
+    return c.json({ error: { code: 'invalid_project_id', message: 'Invalid project id' } }, 400)
+  }
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
+      // Forward the original query string verbatim (?source=, ?since=).
+      const inUrl = new URL(c.req.url)
+      const target = new URL(`${podUrl}/diagnostics`)
+      inUrl.searchParams.forEach((v, k) => target.searchParams.set(k, v))
+      const response = await fetch(target, {
+        headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+        signal: c.req.raw.signal,
+      })
+      return forwardDiagnosticsResponse(c, response, 'GET /diagnostics')
+    } catch (error: any) {
+      // Client cancellation — return 499 (nginx convention) without logging an
+      // error. Don't burn a "proxy_error" toast on a normal navigation away.
+      if (error?.name === 'AbortError') {
+        return c.json({ error: { code: 'aborted', message: 'Request aborted' } }, 499 as any)
+      }
+      const isPodNotReady = error?.message?.includes('not ready')
+        || error?.message?.includes('not found')
+        || error?.message?.includes('starting')
+      if (isPodNotReady) {
+        return c.json({ error: { code: 'service_starting', message: 'Project runtime is starting...' } }, 503)
+      }
+      console.error('[DiagnosticsProxy] GET error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error?.message ?? 'Failed to get diagnostics' } }, 502)
+    }
+  }
+
+  // Local: in-process router
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = diagnosticsRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/diagnostics`
+  const newReq = new Request(url.toString(), { method: 'GET', headers: c.req.raw.headers })
+  return router.fetch(newReq)
+})
+
+// POST /api/projects/:projectId/diagnostics/refresh
+app.post('/api/projects/:projectId/diagnostics/refresh', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!isSafeProjectId(projectId)) {
+    return c.json({ error: { code: 'invalid_project_id', message: 'Invalid project id' } }, 400)
+  }
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const podUrl = await raceAbort(getProjectPodUrl(projectId), c.req.raw.signal)
+      const target = `${podUrl}/diagnostics/refresh`
+      const body = await c.req.text()
+      const response = await fetch(target, {
+        method: 'POST',
+        headers: {
+          'x-runtime-token': deriveRuntimeToken(projectId),
+          'content-type': c.req.header('content-type') ?? 'application/json',
+        },
+        body,
+        signal: c.req.raw.signal,
+      })
+      return forwardDiagnosticsResponse(c, response, 'POST /diagnostics/refresh')
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return c.json({ error: { code: 'aborted', message: 'Request aborted' } }, 499 as any)
+      }
+      const isPodNotReady = error?.message?.includes('not ready')
+        || error?.message?.includes('not found')
+        || error?.message?.includes('starting')
+      if (isPodNotReady) {
+        return c.json({ error: { code: 'service_starting', message: 'Project runtime is starting...' } }, 503)
+      }
+      console.error('[DiagnosticsProxy] POST error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error?.message ?? 'Failed to refresh diagnostics' } }, 502)
+    }
+  }
+
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = diagnosticsRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/diagnostics/refresh`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
@@ -5625,6 +5793,11 @@ app.post('/api/workspaces/:id/leave', async (c) => {
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
 
+  // Active-seat billing: leaving a workspace removes a paid seat.
+  billingService.syncSeatsFromMembership(workspaceId).catch((err) =>
+    console.error('[Billing] /leave seat sync failed:', err.message ?? err),
+  )
+
   const [leavingUser, workspace] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { email: true } }),
     prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
@@ -5824,6 +5997,14 @@ app.post('/api/invite-links/:token/accept', async (c) => {
   // Increment use count
   await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
 
+  // Active-seat billing: workspace-level invite-link acceptance must bump
+  // the Stripe seat quantity (project-only memberships don't bill seats).
+  if (memberData.workspaceId && !memberData.projectId) {
+    billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err) =>
+      console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
+    )
+  }
+
   // Send notification emails (non-blocking — errors are logged internally)
   const baseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || ''
   const resolvedWorkspaceId = memberData.workspaceId
@@ -5994,8 +6175,21 @@ console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, Open
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   await (async () => {
     try {
+      // SHOGO_CLOUD_URL is intentionally never restored from local config —
+      // the cloud endpoint is sourced ONLY from the process environment so
+      // staging/self-hosted overrides cannot be silently shadowed by stale
+      // localConfig rows from a prior install. Best-effort delete of any
+      // legacy row keeps the local DB tidy.
+      const RESTORE_DENY_LIST = new Set(['SHOGO_CLOUD_URL'])
       const savedConfig = await (prisma as any).localConfig.findMany({})
       for (const row of savedConfig) {
+        if (RESTORE_DENY_LIST.has(row.key)) {
+          try {
+            await (prisma as any).localConfig.deleteMany({ where: { key: row.key } })
+            console.log(`[LocalMode] Discarded legacy localConfig row ${row.key} (managed via env)`)
+          } catch {}
+          continue
+        }
         if (!process.env[row.key]) {
           process.env[row.key] = row.value
           console.log(`[LocalMode] Restored ${row.key} from local config`)

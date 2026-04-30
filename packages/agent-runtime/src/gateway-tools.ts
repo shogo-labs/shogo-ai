@@ -340,6 +340,82 @@ const IMAGE_READ_MIME: Record<string, string> = {
 }
 const MAX_IMAGE_READ_BYTES = 20 * 1024 * 1024
 
+const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string }> = {
+  '.zip': { label: 'ZIP archive', mediaType: 'application/zip' },
+  '.gz': { label: 'gzip archive', mediaType: 'application/gzip' },
+  '.tgz': { label: 'gzip archive', mediaType: 'application/gzip' },
+  '.tar': { label: 'tar archive', mediaType: 'application/x-tar' },
+  '.bz2': { label: 'bzip2 archive', mediaType: 'application/x-bzip2' },
+  '.xz': { label: 'xz archive', mediaType: 'application/x-xz' },
+  '.7z': { label: '7-Zip archive', mediaType: 'application/x-7z-compressed' },
+  '.rar': { label: 'RAR archive', mediaType: 'application/vnd.rar' },
+  '.pdf': { label: 'PDF document', mediaType: 'application/pdf' },
+  '.doc': { label: 'Word document', mediaType: 'application/msword' },
+  '.docx': { label: 'Word document', mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  '.xls': { label: 'Excel spreadsheet', mediaType: 'application/vnd.ms-excel' },
+  '.xlsx': { label: 'Excel spreadsheet', mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  '.ppt': { label: 'PowerPoint presentation', mediaType: 'application/vnd.ms-powerpoint' },
+  '.pptx': { label: 'PowerPoint presentation', mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+  '.sqlite': { label: 'SQLite database', mediaType: 'application/vnd.sqlite3' },
+  '.db': { label: 'database file', mediaType: 'application/octet-stream' },
+  '.mp3': { label: 'MP3 audio', mediaType: 'audio/mpeg' },
+  '.wav': { label: 'WAV audio', mediaType: 'audio/wav' },
+  '.mp4': { label: 'MP4 video', mediaType: 'video/mp4' },
+  '.mov': { label: 'QuickTime video', mediaType: 'video/quicktime' },
+  '.exe': { label: 'Windows executable', mediaType: 'application/vnd.microsoft.portable-executable' },
+  '.bin': { label: 'binary file', mediaType: 'application/octet-stream' },
+  '.so': { label: 'shared object', mediaType: 'application/octet-stream' },
+  '.dylib': { label: 'dynamic library', mediaType: 'application/octet-stream' },
+  '.dll': { label: 'dynamic link library', mediaType: 'application/octet-stream' },
+  '.class': { label: 'Java class', mediaType: 'application/java-vm' },
+  '.jar': { label: 'Java archive', mediaType: 'application/java-archive' },
+  '.wasm': { label: 'WebAssembly module', mediaType: 'application/wasm' },
+}
+
+/**
+ * Heuristic: returns binary metadata when the file is clearly binary (NUL byte
+ * in the first chunk, or known archive/binary magic bytes / extension).
+ * Returns null for plain text — including UTF-8 with BOM and CRLF.
+ */
+function detectBinaryContent(
+  buf: Buffer,
+  absolutePath: string,
+): { label: string; mediaType: string } | null {
+  const ext = extname(absolutePath).toLowerCase()
+  const known = BINARY_EXTENSION_LABELS[ext]
+  if (known) return known
+
+  if (buf.length === 0) return null
+
+  // Quick magic-byte check for common archives even if extension is missing.
+  if (buf.length >= 4) {
+    if (buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07)) {
+      return { label: 'ZIP archive', mediaType: 'application/zip' }
+    }
+    if (buf[0] === 0x1f && buf[1] === 0x8b) {
+      return { label: 'gzip archive', mediaType: 'application/gzip' }
+    }
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {
+      return { label: 'PDF document', mediaType: 'application/pdf' }
+    }
+    if (buf[0] === 0x37 && buf[1] === 0x7a && buf[2] === 0xbc && buf[3] === 0xaf) {
+      return { label: '7-Zip archive', mediaType: 'application/x-7z-compressed' }
+    }
+    if (buf[0] === 0x52 && buf[1] === 0x61 && buf[2] === 0x72 && buf[3] === 0x21) {
+      return { label: 'RAR archive', mediaType: 'application/vnd.rar' }
+    }
+  }
+
+  // Generic NUL-byte heuristic on the first 8 KB.
+  const sampleLen = Math.min(buf.length, 8 * 1024)
+  for (let i = 0; i < sampleLen; i++) {
+    if (buf[i] === 0) {
+      return { label: 'binary file', mediaType: 'application/octet-stream' }
+    }
+  }
+  return null
+}
+
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
@@ -431,7 +507,22 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      const fullContent = readFileSync(resolved, 'utf-8')
+      const rawBytes = readFileSync(resolved)
+      const binaryInfo = detectBinaryContent(rawBytes, resolved)
+      if (binaryInfo) {
+        return textResult({
+          path: filePath,
+          bytes: rawBytes.length,
+          mediaType: binaryInfo.mediaType,
+          binary: true,
+          error:
+            `File "${filePath}" appears to be a ${binaryInfo.label} (${rawBytes.length} bytes). ` +
+            'Binary content cannot be read as text. ' +
+            'Use the shell `exec` tool with the appropriate command (e.g. `unzip`, `tar -xzf`, `pdftotext`, ' +
+            '`file`) to inspect or extract it, or hand the path to a parser tool that understands this format.',
+        })
+      }
+      const fullContent = rawBytes.toString('utf-8')
 
       const totalLineCount = fullContent.split('\n').length
       const mtime = statSync(resolved).mtimeMs
@@ -592,8 +683,13 @@ async function maybeSchemaSync(
   const customRoutesResult = await maybeCustomRoutesSync(ctx, filePath, resolved, baseResult)
   if (customRoutesResult) return customRoutesResult
 
-  const isSchemaWrite = filePath === '.shogo/server/schema.prisma' ||
-    resolved.endsWith('.shogo/server/schema.prisma')
+  // Watch the project's root Prisma schema. The legacy `.shogo/server/`
+  // path is migrated into root paths on workspace boot — see
+  // `migrations/skill-server-to-root.ts`.
+  const isSchemaWrite =
+    filePath === 'prisma/schema.prisma' ||
+    resolved.endsWith('/prisma/schema.prisma') ||
+    resolved.endsWith('\\prisma\\schema.prisma')
   if (!isSchemaWrite) return null
 
   const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
@@ -608,7 +704,7 @@ async function maybeSchemaSync(
 
     const result: Record<string, unknown> = {
       ...baseResult,
-      skillServer: {
+      apiServer: {
         synced: syncResult.ok,
         phase: syncResult.phase,
         activeRoutes: activeRoutePaths,
@@ -618,8 +714,8 @@ async function maybeSchemaSync(
 
     if (orphaned.length > 0) {
       const unique = [...new Map(orphaned.map(o => [`${o.route}::${o.file}`, o])).values()]
-      ;(result.skillServer as Record<string, unknown>).orphanedFetches = unique
-      ;(result.skillServer as Record<string, unknown>).warning =
+      ;(result.apiServer as Record<string, unknown>).orphanedFetches = unique
+      ;(result.apiServer as Record<string, unknown>).warning =
         `Your schema is missing models for ${new Set(unique.map(o => o.route)).size} route(s) that your UI code fetches. ` +
         `These fetch calls will fail at runtime. Either add the missing models to the schema or remove the fetch calls.`
     }
@@ -628,7 +724,7 @@ async function maybeSchemaSync(
   } catch (err: any) {
     return {
       ...baseResult,
-      skillServer: {
+      apiServer: {
         synced: false,
         error: err.message,
         hint: 'Schema saved but regeneration failed. Check the schema for errors.',
@@ -643,28 +739,30 @@ async function maybeCustomRoutesSync(
   _resolved: string,
   baseResult: Record<string, unknown>,
 ): Promise<Record<string, unknown> | null> {
-  const isCustomRoutesWrite =
-    /\.shogo\/server\/custom-routes\.tsx?$/.test(filePath)
-  if (!isCustomRoutesWrite || !ctx.skillServerManager) return null
+  // Custom routes now live in `server.tsx` at the project root. PreviewManager
+  // already restarts the server on file change, so the tool only needs to
+  // surface a friendly status hint when the agent edits server.tsx.
+  const isServerEdit = filePath === 'server.tsx' || filePath.endsWith('/server.tsx')
+  if (!isServerEdit || !ctx.skillServerManager) return null
 
   try {
     await ctx.skillServerManager.restart()
     return {
       ...baseResult,
-      skillServer: {
-        customRoutesMounted: true,
+      apiServer: {
+        serverRestarted: true,
         phase: ctx.skillServerManager.phase,
         url: ctx.skillServerManager.url,
-        hint: 'Custom routes are now live. They are mounted at /api/ alongside CRUD routes.',
+        hint: 'server.tsx changes will be picked up on the next request. CRUD routes mounted by createAllRoutes() keep working.',
       },
     }
   } catch (err: any) {
     return {
       ...baseResult,
-      skillServer: {
-        customRoutesMounted: false,
+      apiServer: {
+        serverRestarted: false,
         error: err.message,
-        hint: 'Custom routes file saved but server restart failed.',
+        hint: 'server.tsx saved but restart failed.',
       },
     }
   }
@@ -693,21 +791,21 @@ function maybeValidateQuickActions(
 }
 
 // ---------------------------------------------------------------------------
-// Skill Server Sync Tool
+// Server Sync Tool
 // ---------------------------------------------------------------------------
 
-function createSkillServerSyncTool(ctx: ToolContext): AgentTool {
+function createServerSyncTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'skill_server_sync',
+    name: 'server_sync',
     description:
-      'Force the skill server to regenerate routes from schema.prisma and restart. ' +
+      "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. " +
       'Use this when routes are returning 404 after a schema change, or to verify the server is healthy. ' +
       'Returns the current phase and list of active API routes.',
-    label: 'Skill Server Sync',
+    label: 'Server Sync',
     parameters: Type.Object({}),
     execute: async () => {
       if (!ctx.skillServerManager) {
-        return textResult({ ok: false, error: 'Skill server manager not available' })
+        return textResult({ ok: false, error: 'API server provider not attached' })
       }
 
       try {
@@ -3672,7 +3770,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createChannelDisconnectTool(ctx),
     createChannelListTool(ctx),
     createReadLintsTool(ctx),
-    createSkillServerSyncTool(ctx),
+    createServerSyncTool(ctx),
     createToolSearchTool(ctx),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
@@ -4009,7 +4107,7 @@ export const ALL_TOOL_NAMES = [
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
   'heartbeat_configure', 'heartbeat_status',
-  'read_lints', 'skill_server_sync',
+  'read_lints', 'server_sync',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
   'transcribe_audio',
@@ -5100,6 +5198,26 @@ function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
 // Plan Mode: create_plan tool
 // ---------------------------------------------------------------------------
 
+function normalizePlanFilepath(filepath: string): string | null {
+  const normalized = filepath.replace(/^\/+/, '').replace(/\\/g, '/')
+  const filename = normalized.split('/').pop() ?? ''
+  if (!/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename)) return null
+  return `.shogo/plans/${filename}`
+}
+
+function parsePlanTodosFromFrontmatter(fm: string): Array<{ id: string; content: string }> {
+  const todos: Array<{ id: string; content: string }> = []
+  const todoBlocks = fm.split(/\n  - id: /).slice(1)
+  for (const block of todoBlocks) {
+    const idMatch = block.match(/^(\S+)/)
+    const contentMatch = block.match(/content:\s*"?([^"\n]*)"?/)
+    if (idMatch && contentMatch) {
+      todos.push({ id: idMatch[1], content: contentMatch[1] })
+    }
+  }
+  return todos
+}
+
 function createCreatePlanTool(ctx: ToolContext): AgentTool {
   return {
     name: 'create_plan',
@@ -5156,6 +5274,7 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
             plan: params.plan,
             todos: params.todos,
             filepath: `.shogo/plans/${filename}`,
+            toolCallId: _id,
           },
         })
       }
@@ -5195,15 +5314,23 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         plan?: string
         todos?: Array<{ id: string; content: string }>
       }
-      const resolved = join(ctx.workspaceDir, params.filepath)
+      const planFilepath = normalizePlanFilepath(params.filepath)
+      if (!planFilepath) {
+        return textResult(`Error: Invalid plan filepath ${params.filepath}`)
+      }
+      const plansDir = resolve(ctx.workspaceDir, '.shogo', 'plans')
+      const resolved = resolve(ctx.workspaceDir, planFilepath)
+      if (!resolved.startsWith(`${plansDir}/`) && resolved !== plansDir) {
+        return textResult(`Error: Plan filepath must stay within .shogo/plans/`)
+      }
       if (!existsSync(resolved)) {
-        return textResult(`Error: Plan file not found at ${params.filepath}`)
+        return textResult(`Error: Plan file not found at ${planFilepath}`)
       }
 
       const existing = readFileSync(resolved, 'utf-8')
       const fmMatch = existing.match(/^---\n([\s\S]*?)\n---/)
       if (!fmMatch) {
-        return textResult(`Error: Could not parse frontmatter in ${params.filepath}`)
+        return textResult(`Error: Could not parse frontmatter in ${planFilepath}`)
       }
 
       const fm = fmMatch[1]
@@ -5248,16 +5375,17 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
         ctx.uiWriter.write({
           type: 'data-plan-update',
           data: {
-            filepath: params.filepath,
+            filepath: planFilepath,
             name: updatedName,
             overview: updatedOverview,
             plan: updatedBody,
-            todos: params.todos,
+            todos: params.todos ?? parsePlanTodosFromFrontmatter(fm),
+            toolCallId: _id,
           },
         })
       }
 
-      return textResult(`Plan "${updatedName}" updated at ${params.filepath}`)
+      return textResult(`Plan "${updatedName}" updated at ${planFilepath}`)
     },
   }
 }

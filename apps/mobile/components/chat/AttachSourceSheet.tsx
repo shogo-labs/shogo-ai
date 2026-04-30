@@ -23,7 +23,7 @@ const ROWS: {
   {
     action: "documents",
     label: "Browse files",
-    hint: "PDF, documents, images",
+    hint: "Any file type",
     Icon: FolderOpen,
   },
   {

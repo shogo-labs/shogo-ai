@@ -39,6 +39,7 @@ import {
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
+import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
@@ -86,7 +87,18 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
-const workspaceStatus = {
+const workspaceStatus: {
+  templateSeeded: boolean
+  depsInstalled: boolean
+  serverMigrated?: {
+    snapshotPath: string | null
+    notesPath: string | null
+    at: string | null
+    mergedModels: string[]
+    renamedModels: Array<{ from: string; to: string; reason: string }>
+    customRoutesNeedReview: boolean
+  }
+} = {
   templateSeeded: false,
   depsInstalled: false,
 }
@@ -96,7 +108,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   workDir: WORKSPACE_DIR,
   runtimeType: 'unified',
   internalPaths: ['/agent/heartbeat/trigger'],
-  authPrefixes: ['/agent', '/pool', '/terminal'],
+  authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
   async onAssign(projectId, envVars) {
     const hostWorkspacesRoot = '/host-workspaces'
     const sentinelPath = '/tmp/shogo-current-project'
@@ -210,8 +222,35 @@ const { app, state, logTiming } = await createRuntimeApp({
   }),
 })
 
-// Readiness probe
-app.get('/ready', (c) => c.json({ ready: true }))
+// Readiness probe.
+//
+// Returns 503 until either:
+//   1. The agent gateway has finished starting (full init path), OR
+//   2. The pool-mode warm pod has bound :8080 and is awaiting `/pool/assign`.
+//
+// Returning a fast 503 (instead of blocking on a healthy `200`) is what
+// lets the Knative queue-proxy distinguish "still booting" from "process
+// is hung" — the latter triggers the activator's 5-minute request
+// timeout, which was cutting in-flight chats with `eof-without-turn-complete`.
+app.get('/ready', (c) => {
+  const poolModeUnassigned = state.isPoolMode && !state.poolAssigned
+  const gatewayReady = agentGateway != null
+  if (poolModeUnassigned || gatewayReady) {
+    return c.json({
+      ready: true,
+      gateway: gatewayReady,
+      poolMode: poolModeUnassigned,
+    })
+  }
+  return c.json(
+    {
+      ready: false,
+      reason: 'agent-gateway not started',
+      workspace: workspaceStatus,
+    },
+    503,
+  )
+})
 
 // =============================================================================
 // Agent Workspace Bootstrap
@@ -322,6 +361,35 @@ function ensureWorkspaceFiles(): void {
     workspaceStatus.templateSeeded = seeded || existsSync(join(WORKSPACE_DIR, 'package.json'))
   } else {
     workspaceStatus.templateSeeded = true
+  }
+
+  // One-shot migration: any workspace that still has `.shogo/server/` from
+  // the legacy skill-server era is folded into root `prisma/schema.prisma`
+  // + `server.tsx` here, before PreviewManager spins up the API server. The
+  // migration is idempotent and silent on fresh workspaces.
+  try {
+    // require() (not dynamic import) so this stays synchronous —
+    // ensureWorkspaceFiles() is called from sync code paths (boot +
+    // /agent/seed handler) and the migration must finish before
+    // PreviewManager looks at the schema.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { migrateSkillServerToRoot } = require('./migrations/skill-server-to-root') as typeof import('./migrations/skill-server-to-root')
+    const result = migrateSkillServerToRoot(WORKSPACE_DIR)
+    if (result.migrated) {
+      workspaceStatus.serverMigrated = {
+        snapshotPath: result.snapshotPath ?? null,
+        notesPath: result.notesPath ?? null,
+        at: result.at ?? null,
+        mergedModels: result.mergedModels ?? [],
+        renamedModels: result.renamedModels ?? [],
+        customRoutesNeedReview: !!result.customRoutesNeedReview,
+      }
+      logTiming('Skill-server -> root migration complete')
+    } else if (result.error) {
+      console.error('[agent-runtime] Skill-server migration failed:', result.error)
+    }
+  } catch (err: any) {
+    console.error('[agent-runtime] Skill-server migration import failed:', err.message)
   }
 }
 
@@ -720,7 +788,7 @@ app.post('/agent/chat', async (c) => {
   const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string; name?: string }> }>
 
   let userText: string | undefined
-  let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string }> = []
+  let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string; savedPath?: string }> = []
   if (allMessages.length > 0) {
     const last = [...allMessages].reverse().find((m: any) => m.role === 'user')
     if (last?.parts && Array.isArray(last.parts)) {
@@ -740,10 +808,13 @@ app.post('/agent/chat', async (c) => {
   }
 
   // Save uploaded files to the agent's files/ directory so they're accessible
-  // to the agent via its workspace tools (read_file, search, etc.)
+  // to the agent via its workspace tools (read_file, search, exec/unzip, etc.)
+  // Every base64 data-URL part is persisted regardless of MIME type — even
+  // archives and unknown binaries — and the saved path is annotated back
+  // onto the file part so downstream parsing can surface it to the agent.
   if (userFileParts.length > 0) {
     mkdirSync(FILES_DIR, { recursive: true })
-    const savedPaths: string[] = []
+    const savedSummaries: string[] = []
     for (const fp of userFileParts) {
       try {
         const url = fp.url!
@@ -760,18 +831,25 @@ app.post('/agent/chat', async (c) => {
 
         const dir = dirname(resolved)
         mkdirSync(dir, { recursive: true })
-        writeFileSync(resolved, Buffer.from(base64Match[1], 'base64'))
-        savedPaths.push(baseName)
-        console.log(`[AgentChat] Saved uploaded file to files/${baseName}`)
+        const bytes = Buffer.from(base64Match[1], 'base64')
+        writeFileSync(resolved, bytes)
+        const relPath = `files/${baseName}`
+        fp.savedPath = relPath
+        savedSummaries.push(`- \`${relPath}\` (${mediaType}, ${formatBytes(bytes.length)})`)
+        console.log(`[AgentChat] Saved uploaded file to ${relPath} (${bytes.length} bytes, ${mediaType})`)
 
         try { getIndexEngine().indexFile('files', baseName).catch(() => {}) } catch { /* best-effort */ }
       } catch (err: any) {
         console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
       }
     }
-    if (savedPaths.length > 0) {
-      const note = savedPaths.map(p => `files/${p}`).join(', ')
-      userText = (userText || '') + `\n\n[Uploaded file(s) saved to workspace: ${note}]`
+    if (savedSummaries.length > 0) {
+      const note = [
+        '[Uploaded files saved to workspace:',
+        ...savedSummaries,
+        ']',
+      ].join('\n')
+      userText = userText ? `${userText}\n\n${note}` : note
     }
   }
 
@@ -1879,6 +1957,13 @@ function mimeToExtension(mimeType: string): string {
   return MIME_EXTENSIONS[mimeType] || `.${mimeType.split('/').pop() || 'bin'}`
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
 const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
   'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
   'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
@@ -2785,14 +2870,31 @@ app.get('/agent/logs/stream', (c) => {
 
 
 // =============================================================================
-// Skill Server control (used by eval harness to force-sync before runtime checks)
+// API Server control (used by eval harness to force-sync before runtime checks).
+//
+// Legacy aliases: `/agent/skill-server/*` paths still work — both forward
+// to the same handlers — so existing eval workers keep functioning during
+// the rollout.
 // =============================================================================
 
+app.get('/agent/api-server/status', (c) => {
+  if (!agentGateway) return c.json({ phase: 'unknown' })
+  return c.json({ phase: agentGateway.getSkillServerPhase() })
+})
 app.get('/agent/skill-server/status', (c) => {
   if (!agentGateway) return c.json({ phase: 'unknown' })
   return c.json({ phase: agentGateway.getSkillServerPhase() })
 })
 
+app.post('/agent/api-server/sync', async (c) => {
+  if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
+  try {
+    const result = await agentGateway.syncSkillServer()
+    return c.json(result)
+  } catch (err: any) {
+    return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
+  }
+})
 app.post('/agent/skill-server/sync', async (c) => {
   if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
   try {
@@ -2804,8 +2906,10 @@ app.post('/agent/skill-server/sync', async (c) => {
 })
 
 // =============================================================================
-// Runtime checks (used by eval harness in K8s mode — runs checks locally where
-// workspace files and skill server are colocated)
+// Runtime checks (used by eval harness in any isolation mode — K8s pod
+// or VM — where the workspace files and API server are colocated inside
+// the worker. Local/Docker workers run the checks directly against the
+// host's bind-mounted workspace dir instead.)
 // =============================================================================
 
 app.post('/agent/runtime-checks', async (c) => {
@@ -2827,11 +2931,16 @@ app.post('/agent/runtime-checks', async (c) => {
 })
 
 // =============================================================================
-// Template API Proxy (forward /api/* to the template's Hono server)
+// API Proxy — forward /api/* to the project's Hono `server.tsx`.
+//
+// PreviewManager owns the single API server (root `server.tsx` on port
+// 3001). The legacy "skill server" on a separate port has been retired;
+// see `migrations/skill-server-to-root.ts` for the one-shot migration of
+// existing workspaces.
 // =============================================================================
 
 app.all('/api/*', async (c) => {
-  const port = agentGateway?.getSkillServerPort() ?? getPreviewManager().apiServerPort
+  const port = getPreviewManager().apiServerPort
   if (!port) return c.notFound()
 
   const url = new URL(c.req.url)
@@ -2851,7 +2960,7 @@ app.all('/api/*', async (c) => {
     })
   } catch (err: any) {
     console.error(`[api-proxy] Failed to proxy ${c.req.method} ${url.pathname}:`, err.message)
-    return c.json({ error: 'Template API server not responding' }, 502)
+    return c.json({ error: 'API server not responding' }, 502)
   }
 })
 
@@ -3019,6 +3128,20 @@ function injectCanvasBridge(html: string): string {
 }
 
 // =============================================================================
+// Diagnostics routes (Problems tab) — mounted BEFORE the SPA fallback below.
+//
+// PR #458 lesson: any handler that lives at a non-/agent path must (a) be
+// registered before the `app.get('*')` static fallback at the bottom of this
+// file, otherwise a GET will fall through and return index.html with status
+// 200, and (b) be added to that fallback's skip-list so unknown sub-paths
+// 404 cleanly instead of also returning index.html. We honor both here.
+// =============================================================================
+app.route('/', runtimeDiagnosticsRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  getCurrentProjectId: () => state.currentProjectId,
+}))
+
+// =============================================================================
 // Static File Serving — workspace Vite build output (dist/) at root
 // =============================================================================
 
@@ -3032,7 +3155,8 @@ app.get('*', (c) => {
   if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
       urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
       urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
-      urlPath.startsWith('/api') || urlPath.startsWith('/templates')) {
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
+      urlPath.startsWith('/diagnostics')) {
     return c.notFound()
   }
 
@@ -3217,6 +3341,9 @@ async function startGateway(): Promise<void> {
 
   const { AgentGateway } = await import('./gateway')
   agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
+  // Wire the runtime's API-server-owning PreviewManager into the gateway
+  // so prompt builders and tools can query/sync the project's backend.
+  agentGateway.attachApiServer(getPreviewManager())
   agentGateway.setLogCallback((line: string) => {
     appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {

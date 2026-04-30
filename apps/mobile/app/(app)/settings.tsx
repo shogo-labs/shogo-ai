@@ -60,7 +60,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { getIncludedUsdCapacityForDisplay, formatUsd } from '../../lib/billing-config'
+import { getIncludedUsdCapacityForDisplay, formatUsd, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
@@ -298,7 +298,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
   } | null>(null)
   const [loading, setLoading] = useState(true)
   const [apiKey, setApiKey] = useState('')
-  const [cloudUrl, setCloudUrl] = useState('https://studio.shogo.ai')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -308,7 +307,6 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
       const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
       const data = await res.json()
       setStatus(data)
-      if (data.cloudUrl) setCloudUrl(data.cloudUrl)
     } catch {
       setStatus({ connected: false })
     } finally {
@@ -329,7 +327,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: apiKey.trim(), cloudUrl: cloudUrl.trim() }),
+        body: JSON.stringify({ key: apiKey.trim() }),
       })
       const data = await res.json()
       if (!data.ok) {
@@ -427,17 +425,13 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
               <Text className="text-xs text-muted-foreground">
                 Create an API key from your Shogo Cloud workspace, then paste it here.
               </Text>
-              <View className="gap-2">
-                <View>
-                  <Text className="text-xs text-muted-foreground mb-1">Cloud URL</Text>
-                  <Input
-                    value={cloudUrl}
-                    onChangeText={setCloudUrl}
-                    placeholder="https://studio.shogo.ai"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
+              {status?.cloudUrl ? (
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-xs text-muted-foreground">Cloud URL</Text>
+                  <Text className="text-xs text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
                 </View>
+              ) : null}
+              <View className="gap-2">
                 <View>
                   <Text className="text-xs text-muted-foreground mb-1">API Key</Text>
                   <Input
@@ -2115,6 +2109,7 @@ function InviteMembersModal({
   const nativeCompactScrollMaxHeight = Math.min(height * 0.78, 560)
 
   const workspaces = useWorkspaceCollection()
+  const { subscription } = useBillingData(workspaceId)
   const [emailInput, setEmailInput] = useState('')
   const [role, setRole] = useState<string>('member')
   const [showRolePicker, setShowRolePicker] = useState(false)
@@ -2138,6 +2133,27 @@ function InviteMembersModal({
 
   const validEmails = parseEmails(emailInput)
   const canSubmit = validEmails.length > 0 && !isSubmitting
+
+  /**
+   * Per-seat monthly cost on the active subscription. We only compute it when
+   * there's an active paid subscription; on free/Basic the seat hint is a
+   * no-op. The actual seat sync happens server-side in
+   * `syncSeatsFromMembership` once an invitee accepts.
+   */
+  const seatHint = useMemo(() => {
+    const planId = subscription?.planId?.toLowerCase?.() ?? ''
+    const isPaidSeatPlan = planId.startsWith('pro') || planId.startsWith('business')
+    if (!isPaidSeatPlan) return null
+    const pricing = planId.startsWith('business') ? PLAN_PRICING.business : PLAN_PRICING.pro
+    const interval = subscription?.billingInterval === 'annual' ? 'annual' : 'monthly'
+    const perSeatMonthly = interval === 'annual' ? Math.round(pricing.annual / 12) : pricing.monthly
+    const incomingCount = validEmails.length
+    return {
+      perSeatMonthly,
+      incomingCount,
+      planLabel: planId.startsWith('business') ? 'Business' : 'Pro',
+    }
+  }, [subscription, validEmails.length])
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -2234,6 +2250,16 @@ function InviteMembersModal({
           </View>
         )}
       </View>
+
+      {seatHint && (
+        <View className={cn('rounded-lg bg-muted/40 border border-border p-3', compactInviteModal ? 'mb-4' : 'mb-6')}>
+          <Text className="text-xs text-foreground">
+            {seatHint.incomingCount > 0
+              ? `Each accepted invite adds a ${seatHint.planLabel} seat at ${formatUsd(seatHint.perSeatMonthly)}/seat/mo (prorated immediately). Pending invites are not billed — ${seatHint.incomingCount} seat${seatHint.incomingCount === 1 ? '' : 's'} would be added if all accept.`
+              : `Each accepted invite adds a ${seatHint.planLabel} seat at ${formatUsd(seatHint.perSeatMonthly)}/seat/mo (prorated immediately). Pending invites are not billed.`}
+          </Text>
+        </View>
+      )}
     </>
   )
 
@@ -2377,7 +2403,6 @@ function BillingTab() {
   const workspace = useActiveWorkspace()
   const { subscription, effectiveBalance, refetchUsageWallet } = useBillingData(workspace?.id)
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
-  const [overageEnabled, setOverageEnabled] = useState(false)
   const [overageLimitInput, setOverageLimitInput] = useState<string>('')
   const [overageSaving, setOverageSaving] = useState(false)
   const [overageError, setOverageError] = useState<string | null>(null)
@@ -2385,13 +2410,12 @@ function BillingTab() {
 
   useEffect(() => {
     if (!effectiveBalance) return
-    setOverageEnabled(effectiveBalance.overageEnabled)
     setOverageLimitInput(
       effectiveBalance.overageHardLimitUsd != null
         ? String(effectiveBalance.overageHardLimitUsd)
         : ''
     )
-  }, [effectiveBalance?.overageEnabled, effectiveBalance?.overageHardLimitUsd])
+  }, [effectiveBalance?.overageHardLimitUsd])
 
   const handleSaveOverage = useCallback(async () => {
     if (!workspace?.id) return
@@ -2408,18 +2432,19 @@ function BillingTab() {
         }
         limitUsd = parsed
       }
+      // Trust-first overage stays enabled; the cap is the only knob.
       await api.setUsageBasedPricing(http, workspace.id, {
-        enabled: overageEnabled,
+        enabled: true,
         hardLimitUsd: limitUsd,
       })
       setOverageSaved(true)
       refetchUsageWallet()
     } catch (e: any) {
-      setOverageError(e?.message ?? 'Failed to update usage-based pricing')
+      setOverageError(e?.message ?? 'Failed to update spending cap')
     } finally {
       setOverageSaving(false)
     }
-  }, [workspace?.id, overageEnabled, overageLimitInput, http, refetchUsageWallet])
+  }, [workspace?.id, overageLimitInput, http, refetchUsageWallet])
 
   useEffect(() => {
     if (!workspace?.id) return
@@ -2444,11 +2469,13 @@ function BillingTab() {
           ? 'Basic'
           : 'Free'
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const totalUsd = getIncludedUsdCapacityForDisplay(
-    hasActiveSubscription ? subscription?.planId : undefined,
-    effectiveBalance?.total,
-    effectiveBalance?.monthlyIncludedAllocationUsd,
-  )
+  const subSeats = subscription?.seats ?? 1
+  const totalUsd = getIncludedUsdCapacityForDisplay({
+    planId: hasActiveSubscription ? subscription?.planId : undefined,
+    seats: subSeats,
+    remainingTotal: effectiveBalance?.total,
+    monthlyIncludedAllocationUsd: effectiveBalance?.monthlyIncludedAllocationUsd,
+  })
   const usdRemaining = effectiveBalance?.total ?? 0
   const usdUsed = Math.max(0, totalUsd - usdRemaining)
   const usagePct = totalUsd > 0 ? Math.min(100, Math.round((usdUsed / totalUsd) * 100)) : 0
@@ -2510,7 +2537,7 @@ function BillingTab() {
             </Text>
             {effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
               <Text className="text-xs text-muted-foreground">
-                Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)}
+                Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in trust blocks: $100 → $500)
               </Text>
             )}
           </View>
@@ -2541,30 +2568,26 @@ function BillingTab() {
         <Card>
           <CardContent className="p-4 gap-3">
             <View className="gap-1">
-              <Text className="text-sm font-semibold text-foreground">Usage-based pricing</Text>
+              <Text className="text-sm font-semibold text-foreground">Spending limit</Text>
               <Text className="text-xs text-muted-foreground">
-                When your included usage runs out, keep working and pay provider cost + 20% for
-                the extra. Overage is billed at the end of each period. Set a monthly hard cap
-                to protect your workspace from surprise bills.
+                You keep working when your included usage runs out — we charge the saved card
+                in trust blocks billed at provider cost + 20%. Blocks start at $100 and step
+                up by $100 as you build payment history (capped at $500 per charge). Set an
+                optional monthly cap below to protect against surprise spend.
               </Text>
             </View>
 
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm text-foreground">Enable usage-based pricing</Text>
-              <Switch value={overageEnabled} onValueChange={setOverageEnabled} />
-            </View>
-
             <View className="gap-1">
-              <Text className="text-xs text-muted-foreground">Monthly hard cap (USD)</Text>
+              <Text className="text-xs text-muted-foreground">Monthly spending cap (USD)</Text>
               <Input
                 value={overageLimitInput}
                 onChangeText={setOverageLimitInput}
                 keyboardType="decimal-pad"
                 placeholder="e.g. 100"
-                editable={overageEnabled}
               />
               <Text className="text-[10px] text-muted-foreground">
-                Leave blank for no cap. Set to 0 to disable overage without turning the toggle off.
+                Leave blank for no cap. Set to 0 to stop overage entirely once included usage
+                runs out.
               </Text>
             </View>
 
@@ -2581,7 +2604,7 @@ function BillingTab() {
               disabled={overageSaving}
             >
               <Text className="text-foreground font-medium">
-                {overageSaving ? 'Saving...' : 'Save usage-based pricing'}
+                {overageSaving ? 'Saving...' : 'Save spending cap'}
               </Text>
             </Button>
           </CardContent>

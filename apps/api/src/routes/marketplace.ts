@@ -12,6 +12,29 @@ import * as gamification from '../services/creator-gamification.service'
 const PRICING_MODELS = new Set<string>(['free', 'one_time', 'subscription'])
 const LISTING_SORTS = new Set<string>(['popular', 'rating', 'newest', 'featured'])
 
+// Headers stripped from forwarded requests/responses. Mirrors the skip lists
+// used in tools-proxy.ts; we add `cookie` because the local browser's cookies
+// are meaningless against cloud.
+const FORWARDED_SKIP_HEADERS = new Set([
+  'host',
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'te',
+  'trailer',
+  'upgrade',
+  'cookie',
+])
+const RESPONSE_SKIP_HEADERS = new Set([
+  ...FORWARDED_SKIP_HEADERS,
+  'content-encoding',
+  'content-length',
+])
+
+function getShogoCloudUrl(): string {
+  return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
+}
+
 function getFrontendUrl(): string {
   if (process.env.APP_URL) {
     return process.env.APP_URL
@@ -51,6 +74,86 @@ function parseTags(v: string | undefined): string[] | undefined {
 
 export function marketplaceRoutes() {
   const app = new Hono()
+
+  // ── Local mode: forward every marketplace request to Shogo Cloud ──────────
+  //
+  // In local/desktop mode (`SHOGO_LOCAL_MODE=true`) the marketplace is a
+  // cloud-only product — there's no point running the schema, Stripe Connect
+  // mock, or gamification stats against the local SQLite DB. Instead we
+  // reverse-proxy `/api/marketplace/*` to `${SHOGO_CLOUD_URL}` (default
+  // `https://studio.shogo.ai`).
+  //
+  // Auth flow:
+  //   - If `SHOGO_API_KEY` is set (populated by the cloud-login flow in
+  //     local-auth.ts / `PUT /api/local/shogo-key`), attach it as the
+  //     bearer token so creator/install/checkout endpoints succeed.
+  //   - Otherwise forward anonymously: cloud serves public reads (browse,
+  //     featured, search, listing detail, leaderboard, public creator
+  //     profile, reviews list) without auth. For endpoints that DO require
+  //     auth, cloud returns 401 — we translate that to
+  //     `503 { code: 'cloud_signin_required' }` so the client can prompt the
+  //     user to sign in.
+  //
+  // Mirrors the same pattern used by ai-proxy.ts and tools-proxy.ts.
+  app.use('*', async (c, next) => {
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') return next()
+
+    const cloudKey = process.env.SHOGO_API_KEY
+    const url = `${getShogoCloudUrl()}${c.req.path}${new URL(c.req.url).search}`
+
+    const headers = new Headers()
+    c.req.raw.headers.forEach((value, key) => {
+      const lower = key.toLowerCase()
+      if (FORWARDED_SKIP_HEADERS.has(lower)) return
+      // Strip the local-mode Authorization (browser cookies / shogo_sk_*
+      // values that are only valid against the local API). Cloud only
+      // accepts a cloud-issued SHOGO_API_KEY.
+      if (lower === 'authorization') return
+      headers.set(key, value)
+    })
+    if (cloudKey) {
+      headers.set('Authorization', `Bearer ${cloudKey}`)
+    }
+
+    let upstream: Response
+    try {
+      upstream = await fetch(url, {
+        method: c.req.method,
+        headers,
+        body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
+        // @ts-expect-error duplex required for streaming bodies in Node fetch
+        duplex: 'half',
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[marketplace] cloud proxy failed:', msg)
+      return c.json(
+        { error: `Cannot reach Shogo Cloud at ${getShogoCloudUrl()}: ${msg}`, code: 'cloud_unreachable' },
+        502,
+      )
+    }
+
+    // Translate cloud 401 → 503 cloud_signin_required when no cloud key was
+    // attached. Public endpoints don't 401 anonymously, so this only fires
+    // on creator/install/payout/review-write paths.
+    if (upstream.status === 401 && !cloudKey) {
+      return c.json(
+        { error: 'Sign in to Shogo Cloud to use the marketplace.', code: 'cloud_signin_required' },
+        503,
+      )
+    }
+
+    const responseHeaders = new Headers()
+    upstream.headers.forEach((value, key) => {
+      if (RESPONSE_SKIP_HEADERS.has(key.toLowerCase())) return
+      responseHeaders.set(key, value)
+    })
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: responseHeaders,
+    })
+  })
 
   app.get('/', async (c) => {
     try {

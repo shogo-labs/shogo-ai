@@ -23,6 +23,7 @@
  */
 
 import { createContext, useContext, type ReactNode } from "react"
+import type { PlanData } from "./PlanCard"
 
 // ============================================================================
 // Types
@@ -84,8 +85,20 @@ export interface ChatContextValue {
   /** Persist a tool output to in-memory messages and the DB (e.g. ask_user answers) */
   saveToolOutput?: (params: { messageId: string; toolCallId: string; output: string }) => void
 
-  /** Confirm and execute a pending plan. Null when no plan is pending. */
-  confirmPlan?: (() => void) | null
+  /** Build and execute a pending plan. Null when no plan is pending. */
+  buildPlan?: ((plan?: PlanData | null) => void) | null
+
+  /** Backwards-compatible alias for older plan-card consumers. */
+  confirmPlan?: ((plan?: PlanData | null) => void) | null
+
+  /** Current plan waiting for user review/build. */
+  pendingPlan?: PlanData | null
+
+  /** Plan whose Build action has started execution. */
+  confirmedPlan?: PlanData | null
+
+  /** Open the saved plan artifact in the Plans panel. */
+  openPlan?: (filepath?: string | null) => void
 }
 
 // ============================================================================
