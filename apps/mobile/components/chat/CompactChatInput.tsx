@@ -463,7 +463,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               ref={fileInputRef as any}
               type="file"
               multiple
-              accept="image/*,.pdf,.txt,.md,.csv,.json"
               capture={undefined}
               onChange={handleWebFileChange}
               tabIndex={-1}

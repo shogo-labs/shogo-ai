@@ -340,6 +340,82 @@ const IMAGE_READ_MIME: Record<string, string> = {
 }
 const MAX_IMAGE_READ_BYTES = 20 * 1024 * 1024
 
+const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string }> = {
+  '.zip': { label: 'ZIP archive', mediaType: 'application/zip' },
+  '.gz': { label: 'gzip archive', mediaType: 'application/gzip' },
+  '.tgz': { label: 'gzip archive', mediaType: 'application/gzip' },
+  '.tar': { label: 'tar archive', mediaType: 'application/x-tar' },
+  '.bz2': { label: 'bzip2 archive', mediaType: 'application/x-bzip2' },
+  '.xz': { label: 'xz archive', mediaType: 'application/x-xz' },
+  '.7z': { label: '7-Zip archive', mediaType: 'application/x-7z-compressed' },
+  '.rar': { label: 'RAR archive', mediaType: 'application/vnd.rar' },
+  '.pdf': { label: 'PDF document', mediaType: 'application/pdf' },
+  '.doc': { label: 'Word document', mediaType: 'application/msword' },
+  '.docx': { label: 'Word document', mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  '.xls': { label: 'Excel spreadsheet', mediaType: 'application/vnd.ms-excel' },
+  '.xlsx': { label: 'Excel spreadsheet', mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  '.ppt': { label: 'PowerPoint presentation', mediaType: 'application/vnd.ms-powerpoint' },
+  '.pptx': { label: 'PowerPoint presentation', mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+  '.sqlite': { label: 'SQLite database', mediaType: 'application/vnd.sqlite3' },
+  '.db': { label: 'database file', mediaType: 'application/octet-stream' },
+  '.mp3': { label: 'MP3 audio', mediaType: 'audio/mpeg' },
+  '.wav': { label: 'WAV audio', mediaType: 'audio/wav' },
+  '.mp4': { label: 'MP4 video', mediaType: 'video/mp4' },
+  '.mov': { label: 'QuickTime video', mediaType: 'video/quicktime' },
+  '.exe': { label: 'Windows executable', mediaType: 'application/vnd.microsoft.portable-executable' },
+  '.bin': { label: 'binary file', mediaType: 'application/octet-stream' },
+  '.so': { label: 'shared object', mediaType: 'application/octet-stream' },
+  '.dylib': { label: 'dynamic library', mediaType: 'application/octet-stream' },
+  '.dll': { label: 'dynamic link library', mediaType: 'application/octet-stream' },
+  '.class': { label: 'Java class', mediaType: 'application/java-vm' },
+  '.jar': { label: 'Java archive', mediaType: 'application/java-archive' },
+  '.wasm': { label: 'WebAssembly module', mediaType: 'application/wasm' },
+}
+
+/**
+ * Heuristic: returns binary metadata when the file is clearly binary (NUL byte
+ * in the first chunk, or known archive/binary magic bytes / extension).
+ * Returns null for plain text — including UTF-8 with BOM and CRLF.
+ */
+function detectBinaryContent(
+  buf: Buffer,
+  absolutePath: string,
+): { label: string; mediaType: string } | null {
+  const ext = extname(absolutePath).toLowerCase()
+  const known = BINARY_EXTENSION_LABELS[ext]
+  if (known) return known
+
+  if (buf.length === 0) return null
+
+  // Quick magic-byte check for common archives even if extension is missing.
+  if (buf.length >= 4) {
+    if (buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07)) {
+      return { label: 'ZIP archive', mediaType: 'application/zip' }
+    }
+    if (buf[0] === 0x1f && buf[1] === 0x8b) {
+      return { label: 'gzip archive', mediaType: 'application/gzip' }
+    }
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {
+      return { label: 'PDF document', mediaType: 'application/pdf' }
+    }
+    if (buf[0] === 0x37 && buf[1] === 0x7a && buf[2] === 0xbc && buf[3] === 0xaf) {
+      return { label: '7-Zip archive', mediaType: 'application/x-7z-compressed' }
+    }
+    if (buf[0] === 0x52 && buf[1] === 0x61 && buf[2] === 0x72 && buf[3] === 0x21) {
+      return { label: 'RAR archive', mediaType: 'application/vnd.rar' }
+    }
+  }
+
+  // Generic NUL-byte heuristic on the first 8 KB.
+  const sampleLen = Math.min(buf.length, 8 * 1024)
+  for (let i = 0; i < sampleLen; i++) {
+    if (buf[i] === 0) {
+      return { label: 'binary file', mediaType: 'application/octet-stream' }
+    }
+  }
+  return null
+}
+
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
@@ -431,7 +507,22 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      const fullContent = readFileSync(resolved, 'utf-8')
+      const rawBytes = readFileSync(resolved)
+      const binaryInfo = detectBinaryContent(rawBytes, resolved)
+      if (binaryInfo) {
+        return textResult({
+          path: filePath,
+          bytes: rawBytes.length,
+          mediaType: binaryInfo.mediaType,
+          binary: true,
+          error:
+            `File "${filePath}" appears to be a ${binaryInfo.label} (${rawBytes.length} bytes). ` +
+            'Binary content cannot be read as text. ' +
+            'Use the shell `exec` tool with the appropriate command (e.g. `unzip`, `tar -xzf`, `pdftotext`, ' +
+            '`file`) to inspect or extract it, or hand the path to a parser tool that understands this format.',
+        })
+      }
+      const fullContent = rawBytes.toString('utf-8')
 
       const totalLineCount = fullContent.split('\n').length
       const mtime = statSync(resolved).mtimeMs

@@ -26,6 +26,13 @@ export interface FilePart {
   mediaType?: string
   url?: string
   name?: string
+  /**
+   * Optional workspace-relative path where this attachment was saved by the
+   * runtime (e.g. `files/report.zip`). When provided, parseFileAttachments
+   * surfaces this path in the inline attachment context so the agent always
+   * knows where to find the file even when its content cannot be inlined.
+   */
+  savedPath?: string
 }
 
 export interface ParsedAttachments {
@@ -33,10 +40,17 @@ export interface ParsedAttachments {
   textContext: string
 }
 
+function formatSavedPathSuffix(savedPath?: string): string {
+  return savedPath ? ` Saved to workspace at \`${savedPath}\`.` : ''
+}
+
 /**
  * Parse file parts into images (for native vision) and text context
  * (for inline prompt injection). Images go directly to the model;
- * text files / PDFs are decoded and wrapped in delimiters.
+ * text files are decoded and wrapped in delimiters; everything else is
+ * announced as a saved attachment so the agent can reach for the right
+ * tool (e.g. unzip via shell, dedicated parsers) instead of guessing at
+ * binary content.
  */
 export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
   const fileParts = parts.filter((p) => p.type === 'file' && p.url)
@@ -49,6 +63,7 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
     const mediaType = fp.mediaType || 'application/octet-stream'
     const url = fp.url!
     const label = fp.name ? `${fp.name} (${mediaType})` : mediaType
+    const savedSuffix = formatSavedPathSuffix(fp.savedPath)
 
     if (!url.startsWith('data:')) continue
 
@@ -57,6 +72,9 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
 
     if (mediaType.startsWith('image/')) {
       images.push({ type: 'image', data: base64Match[1], mimeType: mediaType })
+      if (fp.savedPath) {
+        sections.push(`[Attached Image (${label})]:${savedSuffix}`)
+      }
       continue
     }
 
@@ -66,17 +84,16 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
     try {
       const decoded = Buffer.from(base64Match[1], 'base64').toString('utf-8')
       if (isTextBased || (!decoded.includes('\0') && decoded.length > 0)) {
-        sections.push(
-          `[Attached File (${label})]:\n${decoded}\n[End of Attached File]`,
-        )
+        const header = `[Attached File (${label})]:${savedSuffix}`
+        sections.push(`${header}\n${decoded}\n[End of Attached File]`)
       } else {
         sections.push(
-          `[Attached File (${label})]: Binary file attached (content cannot be displayed as text).`,
+          `[Attached File (${label})]: Binary content (cannot be inlined as text).${savedSuffix}`,
         )
       }
     } catch {
       sections.push(
-        `[Attached File (${label})]: Could not decode file content.`,
+        `[Attached File (${label})]: Could not decode file content.${savedSuffix}`,
       )
     }
   }

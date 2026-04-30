@@ -33,17 +33,6 @@ export interface NativeAttachPickerOptions {
   onError: (message: string) => void
 }
 
-const DOC_MIME_TYPES: string[] = [
-  "image/*",
-  "application/pdf",
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "application/json",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]
-
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
@@ -51,14 +40,23 @@ function uid(): string {
 function mimeFromName(name: string): string {
   const l = name.toLowerCase()
   if (l.endsWith(".pdf")) return "application/pdf"
-  if (l.endsWith(".txt")) return "text/plain"
-  if (l.endsWith(".md")) return "text/markdown"
+  if (l.endsWith(".txt") || l.endsWith(".log")) return "text/plain"
+  if (l.endsWith(".md") || l.endsWith(".markdown")) return "text/markdown"
   if (l.endsWith(".csv")) return "text/csv"
   if (l.endsWith(".json")) return "application/json"
+  if (l.endsWith(".xml")) return "application/xml"
+  if (l.endsWith(".yaml") || l.endsWith(".yml")) return "application/x-yaml"
   if (l.endsWith(".doc")) return "application/msword"
   if (l.endsWith(".docx"))
     return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  if (l.match(/\.(png|jpe?g|gif|webp|heic|bmp)$/)) return "image/jpeg"
+  if (l.endsWith(".png")) return "image/png"
+  if (l.endsWith(".jpg") || l.endsWith(".jpeg")) return "image/jpeg"
+  if (l.endsWith(".gif")) return "image/gif"
+  if (l.endsWith(".webp")) return "image/webp"
+  if (l.endsWith(".heic")) return "image/heic"
+  if (l.endsWith(".bmp")) return "image/bmp"
+  if (l.endsWith(".svg")) return "image/svg+xml"
+  if (l.endsWith(".zip")) return "application/zip"
   return "application/octet-stream"
 }
 
@@ -167,7 +165,7 @@ export function executeNativeAttachAction(
       return
     }
     const result = await getDocumentAsync({
-      type: DOC_MIME_TYPES,
+      type: "*/*",
       multiple: remaining > 1,
       copyToCacheDirectory: true,
     })
