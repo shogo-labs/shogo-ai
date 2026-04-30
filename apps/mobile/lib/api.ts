@@ -433,6 +433,25 @@ export const api = {
     return res.data ?? { name: '', description: '' }
   },
 
+  // ─── Runtime Prewarm ────────────────────────────────────────
+
+  /**
+   * Best-effort: ask the API to start warming a runtime pod for this
+   * project. The server returns 202 immediately and resolves the warm
+   * pool / cold start in the background. Safe to call repeatedly —
+   * concurrent calls are deduped server-side via `pendingPodRequests`.
+   */
+  async prewarmProjectRuntime(http: HttpClient, projectId: string): Promise<void> {
+    try {
+      await http.post(`/api/projects/${encodeURIComponent(projectId)}/runtime/prewarm`, {})
+    } catch (err) {
+      // Prewarm is purely an optimization — never surface failures to
+      // the UI. The next `getProjectPodUrl()` call from the project
+      // page will still resolve a pod (cold-start path).
+      console.warn('[api.prewarmProjectRuntime] best-effort prewarm failed:', err)
+    }
+  },
+
   // ─── Templates ─────────────────────────────────────────────
 
   async getAgentTemplates(http: HttpClient) {

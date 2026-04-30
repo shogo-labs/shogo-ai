@@ -1345,6 +1345,29 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
     }
   }, [cancelSummaryTimers, setSessionPurpose])
 
+  // ---------------------------------------------------------------------
+  // One-shot auto-start. When the homepage navigates the user into a new
+  // project via the mic CTA, the project layout sets
+  // `initialAutoStartVoice` on the bridge. We consume that flag here as
+  // soon as we have a chat session id (needed for the signed URL) and
+  // the conversation ref is ready, then drive the same code path the
+  // user would invoke by tapping the mic.
+  // ---------------------------------------------------------------------
+  const autoStartConsumedRef = useRef(false)
+  useEffect(() => {
+    if (autoStartConsumedRef.current) return
+    if (!chatSessionId) return
+    if (!conversationRef.current) return
+    if (!bridge.consumeAutoStartVoice()) return
+    autoStartConsumedRef.current = true
+    // Defer to next tick so the panel finishes mounting (and any layout
+    // animations settle) before we ask the browser for the mic.
+    const t = setTimeout(() => {
+      void handleToggleMic()
+    }, 0)
+    return () => clearTimeout(t)
+  }, [bridge, chatSessionId, handleToggleMic])
+
   // When the user flips back to text mode we end any live voice session —
   // we never want the mic hot while the voice composer is hidden.
   const handleSetInputMode = useCallback(

@@ -229,6 +229,19 @@ const HomeScreen = observer(function HomeScreen() {
     useRef<PendingPlanModeSuggestionSubmission | null>(null)
   const planModeSuggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const planModeSuggestionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  /**
+   * Draft project the homepage opens behind the scenes as soon as the
+   * user starts composing (typing or tapping the mic for Shogo Mode).
+   * Reused by both submit and the Shogo voice entry point so we never
+   * create two projects for one creation gesture, and so a runtime pod
+   * is being warmed while the user is still composing.
+   */
+  type HomeDraft = { projectId: string; chatSessionId: string }
+  const draftRef = useRef<HomeDraft | null>(null)
+  const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
+  const draftPrewarmedRef = useRef<Set<string>>(new Set())
+  const draftTypeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
   // APP_MODE_DISABLED: homeAppTemplates state removed
@@ -410,6 +423,85 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [])
 
+  /**
+   * Single-flight: create the draft project + chat session for the home
+   * composer, kick off a runtime prewarm, and return them. Concurrent
+   * callers (typing debounce + submit + mic) all join the same in-flight
+   * promise so we never duplicate creation. Once a draft exists, future
+   * calls resolve to the same draft until it has been consumed by a
+   * navigation away from the home screen.
+   */
+  const ensureDraftProject = useCallback(async (): Promise<HomeDraft | null> => {
+    if (draftRef.current) return draftRef.current
+    if (draftPromiseRef.current) return draftPromiseRef.current
+    if (!user?.id || !currentWorkspace?.id) return null
+
+    const promise = (async (): Promise<HomeDraft | null> => {
+      try {
+        const newProject = await actions.createProject(
+          'New Project',
+          currentWorkspace.id,
+          undefined,
+          user.id,
+          undefined,
+          undefined,
+          'react-app',
+        )
+        const chatSession = await actions.createChatSession({
+          inferredName: 'Untitled',
+          contextType: 'project',
+          contextId: newProject.id,
+        })
+        const draft: HomeDraft = {
+          projectId: newProject.id,
+          chatSessionId: chatSession.id,
+        }
+        draftRef.current = draft
+
+        // Fire-and-forget runtime prewarm. The API returns 202 and warms
+        // the warm-pool / cold-start in the background so the pod is
+        // claimed/assigned by the time the user navigates into the
+        // project. Idempotent — we still guard against duplicate calls
+        // per project id locally.
+        if (!draftPrewarmedRef.current.has(draft.projectId)) {
+          draftPrewarmedRef.current.add(draft.projectId)
+          void api.prewarmProjectRuntime(http, draft.projectId)
+        }
+
+        return draft
+      } catch (err: any) {
+        console.warn('[Home] ensureDraftProject failed:', err?.message ?? err)
+        return null
+      } finally {
+        draftPromiseRef.current = null
+      }
+    })()
+
+    draftPromiseRef.current = promise
+    return promise
+  }, [actions, currentWorkspace?.id, http, user?.id])
+
+  /** Wrap `setPrompt` so the homepage starts warming as soon as there's real input. */
+  const handlePromptChange = useCallback((next: string) => {
+    setPrompt(next)
+    if (next.trim().length < 3) return
+    if (draftRef.current || draftPromiseRef.current) return
+    if (draftTypeTimerRef.current) clearTimeout(draftTypeTimerRef.current)
+    // Tiny debounce so a single keystroke doesn't trigger creation, but
+    // we still kick off well before submit so warm-pool claim has time
+    // to land.
+    draftTypeTimerRef.current = setTimeout(() => {
+      draftTypeTimerRef.current = null
+      void ensureDraftProject()
+    }, 250)
+  }, [ensureDraftProject])
+
+  useEffect(() => {
+    return () => {
+      if (draftTypeTimerRef.current) clearTimeout(draftTypeTimerRef.current)
+    }
+  }, [])
+
   const createProjectFromPrompt = useCallback(async (
     text: string,
     files?: FileAttachment[],
@@ -421,37 +513,51 @@ const HomeScreen = observer(function HomeScreen() {
     try {
       const projectName = generateProjectNameFromPrompt(text)
 
-      let newProject
-      try {
-        newProject = await actions.createProject(
-          projectName,
-          currentWorkspace.id,
-          undefined,
-          user.id,
-          undefined,
-          undefined,
-          'react-app',
-        )
-      } catch (err: any) {
-        const detail = err?.message || err?.details?.error?.message || String(err)
-        console.error('[Home] Failed to create project:', detail, err)
-        Alert.alert('Error', `Failed to create project: ${detail}`)
-        return
+      // Reuse the draft created by typing/mic if available; otherwise
+      // create one synchronously here. This guarantees we never create
+      // two projects for one creation gesture.
+      let draft = draftRef.current
+      if (!draft) {
+        try {
+          draft = await ensureDraftProject()
+        } catch {
+          draft = null
+        }
+      }
+      if (!draft) {
+        try {
+          const newProject = await actions.createProject(
+            projectName,
+            currentWorkspace.id,
+            undefined,
+            user.id,
+            undefined,
+            undefined,
+            'react-app',
+          )
+          const chatSession = await actions.createChatSession({
+            inferredName: 'Untitled',
+            contextType: 'project',
+            contextId: newProject.id,
+          })
+          draft = { projectId: newProject.id, chatSessionId: chatSession.id }
+          draftRef.current = draft
+          if (!draftPrewarmedRef.current.has(draft.projectId)) {
+            draftPrewarmedRef.current.add(draft.projectId)
+            void api.prewarmProjectRuntime(http, draft.projectId)
+          }
+        } catch (err: any) {
+          const detail = err?.message || err?.details?.error?.message || String(err)
+          console.error('[Home] Failed to create project:', detail, err)
+          Alert.alert('Error', `Failed to create project: ${detail}`)
+          return
+        }
       }
 
-      let chatSession
-      try {
-        chatSession = await actions.createChatSession({
-          inferredName: 'Untitled',
-          contextType: 'project',
-          contextId: newProject.id,
-        })
-      } catch (err: any) {
-        const detail = err?.message || err?.details?.error?.message || String(err)
-        console.error('[Home] Failed to create chat session:', detail, err)
-        Alert.alert('Error', `Failed to create chat session: ${detail}`)
-        return
-      }
+      // Update the draft project's name from the heuristic now that we
+      // actually have prompt text. Fire-and-forget — the AI rename below
+      // may overwrite this shortly.
+      actions.updateProject(draft.projectId, { name: projectName }).catch(() => {})
 
       trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'prompt' })
 
@@ -459,19 +565,22 @@ const HomeScreen = observer(function HomeScreen() {
         setPendingFiles(files)
       }
       projects.loadAll()
+      const consumed = draft
+      // Consume the draft so subsequent home interactions create a new one.
+      draftRef.current = null
       router.push({
         pathname: '/(app)/projects/[id]',
         params: {
-          id: newProject.id,
-          chatSessionId: chatSession.id,
+          id: consumed.projectId,
+          chatSessionId: consumed.chatSessionId,
           initialMessage: text,
           initialInteractionMode: submissionInteractionMode,
         },
       } as any)
 
       // Fire-and-forget: replace heuristic name with AI-generated name
-      const pid = newProject.id
-      const sid = chatSession.id
+      const pid = consumed.projectId
+      const sid = consumed.chatSessionId
       api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
         if (name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
@@ -486,8 +595,58 @@ const HomeScreen = observer(function HomeScreen() {
   }, [
     actions,
     currentWorkspace?.id,
+    ensureDraftProject,
     http,
     interactionMode,
+    posthog,
+    projects,
+    router,
+    user?.id,
+  ])
+
+  /**
+   * Homepage mic entry point — clicking the microphone is intentionally
+   * NOT generic dictation. It opens Shogo Mode for a brand-new project:
+   * we ensure a draft project exists (creating + prewarming if needed),
+   * then navigate into the project with route params that tell the
+   * project layout to flip Shogo Mode on and auto-start the voice
+   * session.
+   */
+  const handleStartVoiceProjectCreation = useCallback(async () => {
+    if (Platform.OS !== 'web') return
+    if (isCreating) return
+    if (!user?.id || !currentWorkspace?.id) return
+
+    setIsCreating(true)
+    try {
+      let draft = draftRef.current
+      if (!draft) {
+        draft = await ensureDraftProject()
+      }
+      if (!draft) return
+
+      trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'voice' })
+      projects.loadAll()
+      const consumed = draft
+      draftRef.current = null
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: {
+          id: consumed.projectId,
+          chatSessionId: consumed.chatSessionId,
+          initialInteractionMode: interactionMode,
+          startShogoMode: '1',
+          autoStartVoice: '1',
+        },
+      } as any)
+    } finally {
+      setIsCreating(false)
+    }
+  }, [
+    currentWorkspace?.id,
+    ensureDraftProject,
+    interactionMode,
+    isCreating,
     posthog,
     projects,
     router,
@@ -710,13 +869,16 @@ const HomeScreen = observer(function HomeScreen() {
                 dimWhenDisabled={!pendingPlanModeSuggestion}
                 placeholder={homeComposerPlaceholder}
                 value={prompt}
-                onChange={setPrompt}
+                onChange={handlePromptChange}
                 interactionMode={interactionMode}
                 onInteractionModeChange={handleHomeInteractionModeChange}
                 selectedModel={selectedModel}
                 onModelChange={handleHomeModelChange}
                 isPro={hasAdvancedModelAccess}
                 onUpgradeClick={() => router.push('/billing')}
+                onStartVoiceProjectCreation={
+                  Platform.OS === 'web' ? handleStartVoiceProjectCreation : undefined
+                }
               />
             </View>
           </View>

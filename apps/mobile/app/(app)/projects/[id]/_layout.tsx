@@ -128,6 +128,10 @@ export default observer(function ProjectLayout() {
     initialInteractionMode?: string
     appTemplateName?: string
     showIntegrations?: string
+    /** When '1', enter Shogo Mode immediately on mount (homepage mic flow). */
+    startShogoMode?: string
+    /** When '1' alongside `startShogoMode`, auto-connect the voice session once. */
+    autoStartVoice?: string
   }>()
   const projectId = params.id
   const { width, height } = useWindowDimensions()
@@ -158,6 +162,9 @@ export default observer(function ProjectLayout() {
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
+  // Capture once so router param changes don't re-fire Shogo Mode.
+  const [capturedStartShogoMode] = useState(() => params.startShogoMode === '1')
+  const [capturedAutoStartVoice] = useState(() => params.autoStartVoice === '1')
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
@@ -1323,7 +1330,11 @@ export default observer(function ProjectLayout() {
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <PlanStreamProvider>
-      <ChatBridgeProvider chatSessionId={chatSessionId}>
+      <ChatBridgeProvider
+        chatSessionId={chatSessionId}
+        initialShogoModeActive={Platform.OS === 'web' && capturedStartShogoMode}
+        initialAutoStartVoice={Platform.OS === 'web' && capturedStartShogoMode && capturedAutoStartVoice}
+      >
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">

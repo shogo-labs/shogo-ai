@@ -109,6 +109,14 @@ export interface CompactChatInputProps {
   onUpgradeClick?: () => void
   /** When false, disabled state does not dim the composer (e.g. plan-mode suggestion keeps draft readable). */
   dimWhenDisabled?: boolean
+  /**
+   * Optional opt-in handler that replaces the default `useVoiceInput`
+   * dictation behavior on the empty-composer mic button. When provided,
+   * tapping the mic invokes this handler instead of starting local
+   * speech-to-text — the homepage uses this to open Shogo Mode for
+   * project creation while preemptively warming a runtime pod.
+   */
+  onStartVoiceProjectCreation?: () => void | Promise<void>
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -128,6 +136,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       isPro = false,
       onUpgradeClick,
       dimWhenDisabled = true,
+      onStartVoiceProjectCreation,
     },
     ref
   ) {
@@ -825,6 +834,27 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     )}
                   >
                     <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+                  </Pressable>
+                ) : onStartVoiceProjectCreation ? (
+                  <Pressable
+                    onPress={() => {
+                      voiceInput.clearError()
+                      void Promise.resolve(onStartVoiceProjectCreation()).catch(() => {})
+                    }}
+                    disabled={disabled}
+                    role="button"
+                    accessibilityLabel="Start voice project creation"
+                    className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
+                  >
+                    <Mic
+                      className={cn(
+                        "h-4 w-4",
+                        disabled
+                          ? "text-muted-foreground/40"
+                          : "text-muted-foreground"
+                      )}
+                      size={14}
+                    />
                   </Pressable>
                 ) : voiceInput.canRecord ? (
                   <Pressable
