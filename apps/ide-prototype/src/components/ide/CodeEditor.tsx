@@ -2,6 +2,8 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import { useRef } from "react";
 import type { editor } from "monaco-editor";
 import type { EditorSettings } from "./types";
+import { setMonacoRef } from "./monaco/workspaceModels";
+import { loadExtraLibs } from "./monaco/extraLibs";
 
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
@@ -51,8 +53,8 @@ function configureMonaco(monaco: MonacoNs) {
     noSemanticValidation: false,
     noSyntaxValidation: false,
     diagnosticCodesToIgnore: [
-      2307, // Cannot find module
-      2339, // Property does not exist (common with dynamic types)
+      // 2307 (Cannot find module) is now surfaced — extraLibs loads @types/react.
+      2339, // Property does not exist (common with dynamic types in user code)
       2691, // An import path cannot end with .tsx
       1375, // 'await' expressions in top-level
     ],
@@ -86,6 +88,8 @@ export function CodeEditor({
   const handleMount: OnMount = (ed, monaco) => {
     editorRef.current = ed;
     configureMonaco(monaco);
+    setMonacoRef(monaco);
+    loadExtraLibs(monaco);
     monaco.editor.setTheme("shogo-dark");
 
     ed.onDidChangeCursorPosition((e) => {

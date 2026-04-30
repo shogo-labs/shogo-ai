@@ -23,6 +23,7 @@ import { GitPane } from "./GitPane";
 import { ProposalsPane } from "./ProposalsPane";
 import { ProposalBanner } from "./ProposalBanner";
 import { proposalStore } from "./workspace/proposalStore";
+import { loadWorkspaceModels, disposeWorkspaceModels } from "./monaco/workspaceModels";
 if (import.meta.env.DEV) {
   // Side-effect import: attaches window.__shogoSim for manual testing.
   void import("./dev/simulateProposal");
@@ -144,6 +145,9 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       try {
         const raw = await svc.listTree("", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
+        // Fire-and-forget: preload TS/JS files as Monaco models so cross-file
+        // IntelliSense (go-to-def, imports) works across the whole project.
+        void loadWorkspaceModels(svc, id, raw).catch(() => {});
       } catch (err) {
         setRoot(id, {
           loading: false,
@@ -211,6 +215,7 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
       }
       await deleteRoot(id).catch(() => {});
       proposalStore.unregisterService(id);
+      disposeWorkspaceModels(id);
       setServices((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -976,6 +981,12 @@ export function Workbench({ agentService, agentLabel = "agent-workspace" }: { ag
                 onReveal={(rootId, path, line, col) =>
                   void revealMatch(rootId, path, line, col)
                 }
+                onProposalsCreated={(n) => {
+                  showToast(
+                    `Created ${n} proposal${n === 1 ? "" : "s"} — review in the ⚡ Proposals tab`,
+                  );
+                  setActivity("proposals");
+                }}
               />
             )}
             {activity === "proposals" && (
