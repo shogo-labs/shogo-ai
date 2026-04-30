@@ -20,7 +20,10 @@ function makeFakeBridge() {
     shogoPeekActive: false,
     setShogoPeekActive: () => {},
     chatSessionId: null,
+    agentUrl: null,
     consumeAutoStartVoice: () => false,
+    subscribeSubagentCards: () => () => {},
+    getSubagentCardsSnapshot: () => [],
   }
   return { api, sends, modes }
 }

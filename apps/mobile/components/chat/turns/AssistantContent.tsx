@@ -24,7 +24,11 @@ import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
 import { TodoWidget } from "./TodoWidget"
 import { ToolCallGroup } from "./ToolCallGroup"
 import type { MessagePart, GroupedMessagePart } from "./types"
-import { type ToolCallData, getToolCategory } from "../tools/types"
+import { type ToolCallData } from "../tools/types"
+import {
+  TASK_TOOL_NAMES,
+  extractOrderedParts,
+} from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
 import { GenerateImageWidget } from "./GenerateImageWidget"
@@ -37,13 +41,6 @@ import { PlanCard, type PlanData } from "../PlanCard"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
-
-function safeErrorString(error: unknown): string | undefined {
-  if (error == null) return undefined
-  if (typeof error === "string") return error
-  if (error instanceof Error) return error.message
-  return String(error)
-}
 
 /**
  * Throttle a streaming value so heavy downstream work (markdown parsing, part
@@ -112,111 +109,6 @@ export interface AssistantContentProps {
   className?: string
 }
 
-function mapToolState(state?: string, preliminary?: boolean): ToolCallData["state"] {
-  if (state === "input-streaming") return "streaming"
-  if (state === "output-available") return preliminary ? "streaming" : "success"
-  if (state === "output-error") return "error"
-  if (state === "result") return "success"
-  if (state === "error") return "error"
-  return "streaming"
-}
-
-function extractOrderedParts(message: UIMessage): MessagePart[] {
-  const parts = (message as any).parts as any[] | undefined
-
-  if (!parts || !Array.isArray(parts)) {
-    if (
-      typeof (message as any).content === "string" &&
-      (message as any).content
-    ) {
-      return [{ type: "text", text: (message as any).content, id: "text-0" }]
-    }
-    return []
-  }
-
-  const result: MessagePart[] = []
-
-  for (let index = 0; index < parts.length; index++) {
-    const part = parts[index]
-
-    if (part.type === "reasoning") {
-      const hasContent = part.text?.trim().length > 0
-      const isPartStreaming = "state" in part && part.state === "streaming"
-      if (hasContent || isPartStreaming) {
-        const durationMs = part.durationMs as number | undefined
-        result.push({
-          type: "reasoning",
-          text: part.text || "",
-          isStreaming: isPartStreaming,
-          durationSeconds: durationMs ? Math.ceil(durationMs / 1000) : undefined,
-          id: `reasoning-${index}`,
-        })
-      }
-    } else if (part.type === "text") {
-      if (part.text && part.text.trim()) {
-        result.push({ type: "text", text: part.text, id: `text-${index}` })
-      }
-    } else if (part.type === "tool-invocation") {
-      const inv = part.toolInvocation
-      if (inv) {
-        result.push({
-          type: "tool",
-          id: inv.toolCallId || `tool-${index}`,
-          tool: {
-            id: inv.toolCallId || `tool-${index}`,
-            toolName: inv.toolName || "unknown",
-            category: getToolCategory(inv.toolName || ""),
-            state: mapToolState(inv.state),
-            args: inv.args,
-            result: inv.result,
-            error: safeErrorString(inv.error),
-            timestamp: 0,
-          },
-        })
-      }
-    } else if (part.type === "dynamic-tool") {
-      const toolCallId = part.toolCallId || `tool-${index}`
-      const rawError =
-        part.state === "output-error"
-          ? (part as { errorText?: string }).errorText ?? part.error
-          : part.error
-      const preliminary = part.state === "output-available" && (part as any).preliminary === true
-      result.push({
-        type: "tool",
-        id: toolCallId,
-        tool: {
-          id: toolCallId,
-          toolName: part.toolName || "unknown",
-          category: getToolCategory(part.toolName || ""),
-          state: mapToolState(part.state, preliminary),
-          args: part.input,
-          result: part.output,
-          error: safeErrorString(rawError),
-          timestamp: 0,
-        },
-      })
-    } else if (part.type === "file" && part.url) {
-      if (part.mediaType?.startsWith("image/")) {
-        result.push({
-          type: "image",
-          url: part.url,
-          mediaType: part.mediaType,
-          id: `img-${index}`,
-        })
-      } else {
-        result.push({
-          type: "file",
-          url: part.url,
-          mediaType: part.mediaType || "application/octet-stream",
-          id: `file-${index}`,
-        })
-      }
-    }
-  }
-
-  return result
-}
-
 const UNGROUPABLE_TOOLS = new Set([
   "ask_user",
   "notify_user_error",
@@ -240,7 +132,6 @@ const UNGROUPABLE_TOOLS = new Set([
   "Edit",
   "StrReplace",
 ])
-const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 const MIN_GROUP_SIZE = 2
 

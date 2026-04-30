@@ -93,7 +93,8 @@ import {
   useVoiceConversation,
 } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
-import { useChatBridge } from './ChatBridgeContext'
+import { useChatBridge, useSubagentCards } from './ChatBridgeContext'
+import { SubagentCard } from '../chat/turns/SubagentCard'
 import { createBridgeClientTools } from './bridgeClientTools'
 import { SHOGO_PARTICLES_CONFIG } from './shogoVisualizationConfig'
 import { useTranslatorChat } from './useTranslatorChat'
@@ -224,10 +225,17 @@ export function ShogoChatPanel(props: ShogoChatPanelProps) {
 function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   const bridge = useChatBridge()
   const chatSessionId = bridge.chatSessionId
+  // Snapshot of the technical chat's task / agent_spawn tool calls.
+  // Rendered as <SubagentCard /> rows so Shogo Mode shares the exact
+  // same agent card UI (and live browser preview) as the regular chat.
+  const subagentCards = useSubagentCards()
 
   const [draft, setDraft] = useState('')
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const [voiceTranscript, setVoiceTranscript] = useState<TranscriptEntry[]>([])
+  // Single-line "what is the agent doing right now" caption shown in the
+  // Shogo Mode info row. Sourced from the latest `tool-activity` event.
+  const [latestActivityLine, setLatestActivityLine] = useState<string | null>(null)
   // Input mode — the user picks either voice or text; we only ever show
   // one composer at a time. Default to voice: entering Shogo Mode is an
   // explicit gesture, so we surface the mic by default and let the user
@@ -687,6 +695,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         lastHeartbeatIndexRef.current = recentActivityRef.current.length
         technicalTurnActiveRef.current = true
         setTechnicalTurnActive(true)
+        setLatestActivityLine(null)
         // Cancel anything queued — fresh turn means new context.
         pendingSummaryRef.current = null
         startHeartbeat()
@@ -749,6 +758,16 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
             ? `Started: ${event.label}${okSuffix}`
             : `Finished: ${event.label}${okSuffix}`
         pushActivity(line)
+        // Drive the Shogo Mode info row caption. Only mark a tool as
+        // currently in flight on `start`; on `end` we display the
+        // completed action briefly until the next event arrives.
+        const niceLabel =
+          event.phase === 'start'
+            ? event.label
+            : event.ok === false
+            ? `${event.label} — failed`
+            : `${event.label} — done`
+        setLatestActivityLine(niceLabel)
         // No `sendContextualUpdate` here — during technical-agent work
         // we are deliberately disconnected from ElevenLabs to avoid
         // paying for an idle voice session. The activity log lives in
@@ -772,6 +791,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
       stopHeartbeat()
       technicalTurnActiveRef.current = false
       setTechnicalTurnActive(false)
+      setLatestActivityLine(null)
       const { finalText } = event
       pushActivity(
         finalText ? `Turn ended. Final reply: ${finalText.slice(0, 500)}` : 'Turn ended.',
@@ -1405,7 +1425,7 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
   const scrollRef = useRef<ScrollView | null>(null)
   useEffect(() => {
     scrollRef.current?.scrollToEnd?.({ animated: true })
-  }, [messages.length, voiceTranscript.length])
+  }, [messages.length, voiceTranscript.length, subagentCards.length, latestActivityLine])
 
   const isVoiceMode = inputMode === 'voice'
 
@@ -1444,7 +1464,37 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
         className="flex-1"
         contentContainerClassName="px-4 py-4 gap-3"
       >
-        {messages.length === 0 && voiceTranscript.length === 0 ? (
+        {/* Subagent cards — shared with the regular chat so the live
+            browser preview and any other card-level features show up
+            here too. The info row underneath shows what the technical
+            agent is currently doing in plain English. The noisy
+            per-tool `agent-activity` transcript is intentionally
+            omitted from this surface; it lives in `recentActivityRef`
+            for Shogo's voice / text summaries. */}
+        {subagentCards.length > 0 && (
+          <View className="gap-2">
+            {subagentCards.map((card) => (
+              <SubagentCard key={card.id} tool={card} />
+            ))}
+            {(technicalTurnActive || latestActivityLine) && (
+              <View className="px-3 py-2 flex-row items-center gap-2 rounded-lg border border-border/40 bg-muted/20">
+                <Text
+                  className="flex-1 text-[11px] text-muted-foreground"
+                  numberOfLines={1}
+                >
+                  {latestActivityLine ??
+                    (technicalTurnActive
+                      ? 'Working in the background…'
+                      : '')}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {messages.length === 0 &&
+        voiceTranscript.length === 0 &&
+        subagentCards.length === 0 ? (
           <EmptyState mode={inputMode} />
         ) : (
           <>
@@ -1455,30 +1505,32 @@ function ShogoChatPanelInner({ className }: ShogoChatPanelProps) {
                 text={extractMessageText(m as never)}
               />
             ))}
-            {voiceTranscript.map((t) => (
-              <MessageRow
-                key={t.id}
-                role={
-                  t.source === 'user-voice'
-                    ? 'user'
-                    : t.source === 'shogo-voice'
-                    ? 'shogo'
-                    : t.source === 'agent-activity'
-                    ? 'agent-activity'
-                    : 'agent-reply'
-                }
-                text={t.text}
-                badge={
-                  t.source === 'user-voice'
-                    ? 'voice'
-                    : t.source === 'agent-reply'
-                    ? 'from chat'
-                    : t.source === 'agent-activity'
-                    ? 'agent activity'
-                    : undefined
-                }
-              />
-            ))}
+            {/* Shogo Mode shows agent cards above; collapse the noisy
+                `agent-activity` rows from the voice transcript here so
+                the surface stays card-first. Voice + final-reply rows
+                still render as before. */}
+            {voiceTranscript
+              .filter((t) => t.source !== 'agent-activity')
+              .map((t) => (
+                <MessageRow
+                  key={t.id}
+                  role={
+                    t.source === 'user-voice'
+                      ? 'user'
+                      : t.source === 'shogo-voice'
+                      ? 'shogo'
+                      : 'agent-reply'
+                  }
+                  text={t.text}
+                  badge={
+                    t.source === 'user-voice'
+                      ? 'voice'
+                      : t.source === 'agent-reply'
+                      ? 'from chat'
+                      : undefined
+                  }
+                />
+              ))}
           </>
         )}
 

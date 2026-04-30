@@ -1332,6 +1332,7 @@ export default observer(function ProjectLayout() {
       <PlanStreamProvider>
       <ChatBridgeProvider
         chatSessionId={chatSessionId}
+        agentUrl={agentUrl}
         initialShogoModeActive={Platform.OS === 'web' && capturedStartShogoMode}
         initialAutoStartVoice={Platform.OS === 'web' && capturedStartShogoMode && capturedAutoStartVoice}
       >
