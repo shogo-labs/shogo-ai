@@ -77,11 +77,6 @@ import {
   type RestoreDraftRequest,
 } from "./ChatInput"
 import {
-  PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS,
-  shouldSuggestPlanMode,
-} from "./plan-mode-suggestion"
-import { PlanModeSuggestion } from "./PlanModeSuggestion"
-import {
   loadInteractionModePreference,
   saveInteractionModePreference,
 } from "../../lib/interaction-mode-preference"
@@ -138,12 +133,6 @@ interface VirtualToolEvent {
   toolName: string
   args: Record<string, unknown>
   timestamp: number
-}
-
-type PendingPlanModeSuggestionSubmission = {
-  content: string
-  files?: FileAttachment[]
-  perMsgModel?: string
 }
 
 type OptimisticUserInput = {
@@ -905,16 +894,7 @@ export const ChatPanel = observer(function ChatPanel({
     void saveInteractionModePreference(mode)
   }, [])
 
-  const [pendingPlanModeSuggestion, setPendingPlanModeSuggestion] =
-    useState<PendingPlanModeSuggestionSubmission | null>(null)
   const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
-  const [planModeSuggestionSecondsLeft, setPlanModeSuggestionSecondsLeft] = useState(
-    PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS
-  )
-  const pendingPlanModeSuggestionRef =
-    useRef<PendingPlanModeSuggestionSubmission | null>(null)
-  const planModeSuggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const planModeSuggestionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Bridge for Shogo Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
@@ -3199,109 +3179,12 @@ export const ChatPanel = observer(function ChatPanel({
     [isStreaming, sendMessageInternal, currentSessionId]
   )
 
-  const clearPlanModeSuggestionTimers = useCallback(() => {
-    if (planModeSuggestionTimeoutRef.current) {
-      clearTimeout(planModeSuggestionTimeoutRef.current)
-      planModeSuggestionTimeoutRef.current = null
-    }
-    if (planModeSuggestionIntervalRef.current) {
-      clearInterval(planModeSuggestionIntervalRef.current)
-      planModeSuggestionIntervalRef.current = null
-    }
-  }, [])
-
-  const handleResolvePlanModeSuggestion = useCallback(
-    (targetMode: "agent" | "plan") => {
-      const pending = pendingPlanModeSuggestionRef.current
-      if (!pending) return
-
-      clearPlanModeSuggestionTimers()
-      pendingPlanModeSuggestionRef.current = null
-      setPendingPlanModeSuggestion(null)
-      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
-      setRestoreDraftRequest({
-        nonce: Date.now(),
-        content: "",
-        files: [],
-      })
-
-      handleInteractionModeChange(targetMode)
-
-      handleSendMessage(pending.content, pending.files, pending.perMsgModel)
-    },
-    [clearPlanModeSuggestionTimers, handleInteractionModeChange, handleSendMessage]
-  )
-
-  const handleEditPlanModePrompt = useCallback(() => {
-    const pending = pendingPlanModeSuggestionRef.current
-    if (!pending) return
-
-    clearPlanModeSuggestionTimers()
-    pendingPlanModeSuggestionRef.current = null
-    setPendingPlanModeSuggestion(null)
-    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
-    setRestoreDraftRequest({
-      nonce: Date.now(),
-      content: pending.content,
-      files: pending.files,
-    })
-  }, [clearPlanModeSuggestionTimers])
-
-  const startPlanModeSuggestion = useCallback(
-    (submission: PendingPlanModeSuggestionSubmission) => {
-      clearPlanModeSuggestionTimers()
-      pendingPlanModeSuggestionRef.current = submission
-      setPendingPlanModeSuggestion(submission)
-      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
-      setRestoreDraftRequest({
-        nonce: Date.now(),
-        content: submission.content,
-        files: submission.files,
-      })
-
-      planModeSuggestionIntervalRef.current = setInterval(() => {
-        setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
-      }, 1000)
-      planModeSuggestionTimeoutRef.current = setTimeout(() => {
-        handleResolvePlanModeSuggestion("agent")
-      }, PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS * 1000)
-    },
-    [clearPlanModeSuggestionTimers, handleResolvePlanModeSuggestion]
-  )
-
-  useEffect(() => {
-    return () => {
-      clearPlanModeSuggestionTimers()
-    }
-  }, [clearPlanModeSuggestionTimers])
-
-  useEffect(() => {
-    if (!pendingPlanModeSuggestionRef.current) return
-    clearPlanModeSuggestionTimers()
-    pendingPlanModeSuggestionRef.current = null
-    setPendingPlanModeSuggestion(null)
-    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
-  }, [clearPlanModeSuggestionTimers, currentSessionId])
-
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
     (content: string, files?: FileAttachment[], perMsgModel?: string) => {
-      if (pendingPlanModeSuggestionRef.current) return
-
-      if (
-        interactionModeRef.current === "agent" &&
-        !isStreaming &&
-        !isProcessingQueueRef.current &&
-        !isSendingMessageRef.current &&
-        shouldSuggestPlanMode(content)
-      ) {
-        startPlanModeSuggestion({ content, files, perMsgModel })
-        return
-      }
-
       handleSendMessage(content, files, perMsgModel)
     },
-    [handleSendMessage, isStreaming, startPlanModeSuggestion]
+    [handleSendMessage]
   )
 
   // Plan confirmation: switch to Agent mode and execute.
@@ -3900,18 +3783,10 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Input */}
           <View className="bg-transparent max-w-3xl w-full self-center mt-1">
-            {pendingPlanModeSuggestion && (
-              <PlanModeSuggestion
-                secondsLeft={planModeSuggestionSecondsLeft}
-                onEditPrompt={handleEditPlanModePrompt}
-                onContinueInAgent={() => handleResolvePlanModeSuggestion("agent")}
-                onSwitchToPlan={() => handleResolvePlanModeSuggestion("plan")}
-              />
-            )}
             <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}
-              disabled={!currentSessionId || !!pendingPlanModeSuggestion}
+              disabled={!currentSessionId}
               placeholder={
                 !featureId
                   ? "Select a feature to start chatting..."
@@ -3939,7 +3814,6 @@ export const ChatPanel = observer(function ChatPanel({
               quickActions={quickActions}
               onQuickActionClick={(prompt) => handleSendMessage(prompt)}
               restoreDraftRequest={restoreDraftRequest}
-              dimWhenDisabled={!pendingPlanModeSuggestion}
             />
           </View>
         </KeyboardAvoidingView>
