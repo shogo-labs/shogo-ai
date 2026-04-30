@@ -3047,7 +3047,15 @@ export class AgentGateway {
   }
 
   getSkillServerPort(): number | null {
-    return this.skillServerManager.isRunning ? this.skillServerManager.port : null
+    // Return the configured port regardless of running state. The shim's
+    // `.port` already falls back to the resolved `API_SERVER_PORT` /
+    // `SKILL_SERVER_PORT` / 3001 chain when the manager hasn't attached
+    // yet, so callers (eg. the runtime-checks endpoint) probe the right
+    // port even while the API server is still booting. Returning `null`
+    // here used to short-circuit a stale `?? 4100` fallback that targeted
+    // the retired skill server's port — no longer correct now that the
+    // port is dynamic per-project.
+    return this.skillServerManager.port
   }
 
   getSkillServerPhase(): string {

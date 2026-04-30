@@ -712,7 +712,16 @@ export default defineConfig({
 })
 `
 
-const SKILL_SERVER_PORT = Number(process.env.SKILL_SERVER_PORT) || 4100
+// Legacy `.shogo/server/` skill-server port. The skill server is retired
+// and this constant is only consumed by `buildSkillServerConfig`, which
+// is itself only used by migration tests that synthesize a pre-merge
+// `.shogo/server/` workspace. Honour the same env precedence the unified
+// `PreviewManager` uses (`API_SERVER_PORT` → legacy `SKILL_SERVER_PORT`
+// → 3001) so the fixture doesn't bake in the long-dead 4100 default.
+const SKILL_SERVER_PORT =
+  Number(process.env.API_SERVER_PORT) ||
+  Number(process.env.SKILL_SERVER_PORT) ||
+  3001
 
 export function buildSkillServerConfig(port = SKILL_SERVER_PORT): string {
   return JSON.stringify(
