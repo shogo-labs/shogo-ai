@@ -154,6 +154,39 @@ describe('gateway-tools', () => {
       const result = await exec(createCtx(), 'read_file', { path: 'icon.svg' })
       expect(result.content).toBe(svg)
     })
+
+    test('returns a structured non-text result for ZIP archives instead of decoded garbage', async () => {
+      // Minimal ZIP header: PK\x03\x04 followed by junk bytes.
+      const zipBytes = Buffer.from([
+        0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x00,
+      ])
+      writeFileSync(join(TEST_DIR, 'archive.zip'), zipBytes)
+      const result = await exec(createCtx(), 'read_file', { path: 'archive.zip' })
+      expect(result.binary).toBe(true)
+      expect(result.mediaType).toBe('application/zip')
+      expect(result.bytes).toBe(zipBytes.length)
+      expect(result.error).toContain('archive.zip')
+      expect(result.error).toContain('ZIP archive')
+      expect(result.content).toBeUndefined()
+    })
+
+    test('detects binary content via NUL bytes when extension is unknown', async () => {
+      const bytes = Buffer.from([0x01, 0x02, 0x00, 0x03, 0x04, 0x05])
+      writeFileSync(join(TEST_DIR, 'opaque.unknown'), bytes)
+      const result = await exec(createCtx(), 'read_file', { path: 'opaque.unknown' })
+      expect(result.binary).toBe(true)
+      expect(result.mediaType).toBe('application/octet-stream')
+      expect(result.error).toContain('binary file')
+    })
+
+    test('still reads UTF-8 text with BOM and CRLF as text', async () => {
+      const text = '\uFEFFfirst line\r\nsecond line\r\n'
+      writeFileSync(join(TEST_DIR, 'bom.txt'), text)
+      const result = await exec(createCtx(), 'read_file', { path: 'bom.txt' })
+      expect(result.content).toBe(text)
+      expect(result.binary).toBeUndefined()
+    })
   })
 
   describe('write_file', () => {

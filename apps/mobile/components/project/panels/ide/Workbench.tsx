@@ -102,10 +102,20 @@ export function Workbench({
   agentService,
   agentLabel = "agent-workspace",
   projectId,
+  paneVisible = true,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
   projectId?: string | null;
+  /**
+   * Whether the IDE pane is currently visible to the user. The Workbench
+   * stays mounted under `display: none` when the user is on another tab so
+   * the SSE subscription survives, but we use this to gate the polling
+   * fallback in `useLiveAgentEdits` — running a 2s `readFile` loop against
+   * a hidden panel just floods the network tab whenever the chat agent
+   * edits a file.
+   */
+  paneVisible?: boolean;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -282,6 +292,7 @@ export function Workbench({
     setConflicts,
     refreshTree: refreshAgentTree,
     tryAnimate: tryAnimateLive,
+    visible: paneVisible,
   });
 
   const handleReloadConflict = useCallback(
@@ -1303,6 +1314,9 @@ export function Workbench({
                     projectId={projectId ?? null}
                     newSessionNonce={newTerminalNonce}
                     onClose={() => setBottomPanelOpen(false)}
+                    onReveal={(path, line, col) =>
+                      void revealMatch("agent", path, line, col)
+                    }
                   />
                 </div>
               </>

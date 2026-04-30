@@ -620,25 +620,52 @@ export const AssistantContent = memo(
             )
           }
 
-          if (part.tool.toolName === "create_plan") {
+          if (part.tool.toolName === "create_plan" || part.tool.toolName === "update_plan") {
             const args = part.tool.args as Record<string, unknown> | undefined
-            const planData: PlanData | null = args
+            const pendingPlan = chatContext?.pendingPlan
+            const confirmedPlan = chatContext?.confirmedPlan
+            const toolCallId = part.id
+            const matchesTool = (plan?: PlanData | null) => {
+              if (!plan) return false
+              if (plan.toolCallId && plan.toolCallId === toolCallId) return true
+              if (plan.filepath && args?.filepath && plan.filepath === args.filepath) return true
+              return (
+                part.tool.toolName === "create_plan" &&
+                !plan.toolCallId &&
+                !plan.filepath &&
+                plan.name === args?.name &&
+                plan.plan === args?.plan
+              )
+            }
+            const matchingPendingPlan = matchesTool(pendingPlan) ? pendingPlan : null
+            const matchingConfirmedPlan = matchesTool(confirmedPlan) ? confirmedPlan : null
+            const planData: PlanData | null = matchingPendingPlan ?? matchingConfirmedPlan ?? (args
               ? {
                   name: (args.name as string) ?? "Plan",
                   overview: (args.overview as string) ?? "",
                   plan: (args.plan as string) ?? "",
                   todos: (args.todos as PlanData["todos"]) ?? [],
                   filepath: args.filepath as string | undefined,
+                  toolCallId,
                 }
-              : null
+              : null)
             if (!planData) return null
-            const isPending = part.tool.state === "success" && !!chatContext?.confirmPlan
+            const isConfirmed =
+              !!matchingConfirmedPlan &&
+              ((matchingConfirmedPlan.toolCallId && matchingConfirmedPlan.toolCallId === toolCallId) ||
+                (!!matchingConfirmedPlan.filepath && matchingConfirmedPlan.filepath === planData.filepath))
+            const isPending = part.tool.state === "success" && !!chatContext?.buildPlan && !!matchingPendingPlan && !isConfirmed
             return (
               <PlanCard
                 key={part.id}
                 plan={planData}
-                onConfirm={isPending ? chatContext!.confirmPlan! : undefined}
-                isConfirmed={false}
+                onBuild={isPending ? () => chatContext!.buildPlan!(planData) : undefined}
+                onOpenPlan={
+                  chatContext?.openPlan && planData.filepath
+                    ? () => chatContext.openPlan?.(planData.filepath)
+                    : undefined
+                }
+                isConfirmed={isConfirmed}
               />
             )
           }

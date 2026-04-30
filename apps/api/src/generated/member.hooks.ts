@@ -50,6 +50,7 @@ export interface MemberHooks {
 }
 
 import { sendMemberJoinedEmail, sendMemberRemovedEmail } from "../services/email.service"
+import { syncSeatsFromMembership } from "../services/billing.service"
 
 const userInclude = {
   user: {
@@ -109,6 +110,13 @@ export const memberHooks: MemberHooks = {
 
   afterCreate: async (record, ctx) => {
     if (!record.workspaceId || record.projectId) return
+
+    // Cursor-style active-seat billing: when an accepted member joins the
+    // workspace, bump the Stripe seat quantity (and local Subscription /
+    // UsageWallet allocation). Project-only memberships don't bill seats.
+    syncSeatsFromMembership(record.workspaceId).catch((err) =>
+      console.error('[Billing] afterCreate seat sync failed:', err),
+    )
 
     try {
       const [user, workspace, owners] = await Promise.all([
@@ -325,7 +333,16 @@ export const memberHooks: MemberHooks = {
 
   afterDelete: async (id, ctx) => {
     const member = (ctx as any)._deletedMember
-    if (!member?.user?.email || !member.workspaceId || member.projectId) return
+    if (!member?.workspaceId || member.projectId) return
+
+    // Active-seat billing: removing a workspace member shrinks the seat
+    // quantity. Stripe credits the remaining time as account credit on the
+    // next invoice via `proration_behavior: 'always_invoice'`.
+    syncSeatsFromMembership(member.workspaceId).catch((err) =>
+      console.error('[Billing] afterDelete seat sync failed:', err),
+    )
+
+    if (!member.user?.email) return
 
     // Don't email if user removed themselves (e.g. leaving workspace)
     if (member.userId === ctx.userId) return

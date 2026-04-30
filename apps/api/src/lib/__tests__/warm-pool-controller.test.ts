@@ -684,6 +684,114 @@ describe('WarmPoolController', () => {
     })
   })
 
+  describe('evictProject', () => {
+    test('hard eviction (default) clears DB mapping and deletes the Knative service', async () => {
+      const mockPod: WarmPodInfo = {
+        id: 'evict-pod',
+        serviceName: 'warm-pool-evict-hard',
+        url: 'http://warm-pool-evict-hard.test-namespace.svc.cluster.local',
+        createdAt: Date.now(),
+        ready: true,
+      }
+
+      // Bridge: project lookup must return the same service we're about to evict
+      // so the destructive path actually has a service name to delete.
+      const { prisma } = await import('../prisma')
+      ;(prisma.project.findUnique as any).mockResolvedValueOnce({
+        knativeServiceName: 'warm-pool-evict-hard',
+      })
+
+      await controller.assign(mockPod, 'project-evict-hard', { PROJECT_ID: 'project-evict-hard' })
+      expect(controller.isAssigned('project-evict-hard')).toBe(true)
+
+      mockK8sCustomApi.deleteNamespacedCustomObject.mockClear()
+      mockPrismaProjectUpdate.mockClear()
+
+      const result = await controller.evictProject('project-evict-hard')
+
+      // In-memory assignment cleared
+      expect(controller.isAssigned('project-evict-hard')).toBe(false)
+
+      // DB knativeServiceName cleared (so next visit takes the cold path)
+      expect(mockPrismaProjectUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'project-evict-hard' },
+          data: { knativeServiceName: null },
+        }),
+      )
+
+      // The destructive paths fire async — give the microtasks a tick to land.
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      // Knative Service was deleted
+      expect(mockK8sCustomApi.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'warm-pool-evict-hard',
+          plural: 'services',
+        }),
+      )
+
+      expect(result.evicted).toBe(true)
+      expect(result.oldService).toBe('warm-pool-evict-hard')
+    })
+
+    test('soft eviction keeps DB mapping AND the Knative service alive', async () => {
+      const mockPod: WarmPodInfo = {
+        id: 'evict-pod-soft',
+        serviceName: 'warm-pool-evict-soft',
+        url: 'http://warm-pool-evict-soft.test-namespace.svc.cluster.local',
+        createdAt: Date.now(),
+        ready: true,
+      }
+
+      await controller.assign(mockPod, 'project-evict-soft', { PROJECT_ID: 'project-evict-soft' })
+      expect(controller.isAssigned('project-evict-soft')).toBe(true)
+
+      mockK8sCustomApi.deleteNamespacedCustomObject.mockClear()
+      mockPrismaProjectUpdate.mockClear()
+      mockMergePatch.mockClear()
+
+      const result = await controller.evictProject('project-evict-soft', { deleteService: false })
+
+      // In-memory assignment is cleared so a future claim doesn't double-route.
+      expect(controller.isAssigned('project-evict-soft')).toBe(false)
+
+      // CRITICAL: keep DB mapping intact so the user lands on the same warm
+      // pod when they return — no destructive Prisma write should fire.
+      expect(mockPrismaProjectUpdate).not.toHaveBeenCalled()
+
+      // Give async finally-blocks a tick (none should fire) and assert nothing
+      // tried to delete the live service.
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(mockK8sCustomApi.deleteNamespacedCustomObject).not.toHaveBeenCalled()
+      expect(mockMergePatch).not.toHaveBeenCalled()
+
+      // The function still reports the service it soft-evicted.
+      expect(result.evicted).toBe(true)
+      expect(result.oldService).toBe('warm-pool-evict-soft')
+    })
+
+    test('soft eviction tolerates a project with no in-memory assignment', async () => {
+      // Simulate the GC path: project is in `promotedPods` but the API
+      // pod's in-memory `assigned` map was cleared on a previous restart.
+      const { prisma } = await import('../prisma')
+      ;(prisma.project.findUnique as any).mockResolvedValueOnce({
+        knativeServiceName: 'warm-pool-evict-orphan',
+      })
+
+      mockK8sCustomApi.deleteNamespacedCustomObject.mockClear()
+
+      const result = await controller.evictProject('project-no-memory', { deleteService: false })
+
+      expect(result.evicted).toBe(true)
+      expect(result.oldService).toBe('warm-pool-evict-orphan')
+
+      // Still does NOT delete the service in soft mode.
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(mockK8sCustomApi.deleteNamespacedCustomObject).not.toHaveBeenCalled()
+    })
+  })
+
   describe('Environment Variable Building', () => {
     test('should build complete project environment', async () => {
       const env = await controller.buildProjectEnv('test-project-456')

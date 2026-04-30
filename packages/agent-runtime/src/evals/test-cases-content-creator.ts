@@ -280,7 +280,7 @@ function phase2Workspace(): Record<string, string> {
 function phase3SeedWorkspace(): Record<string, string> {
   return {
     ...phase2Workspace(),
-    '.shogo/server/schema.prisma': PRISMA_SCHEMA_PHASE2,
+    'prisma/schema.prisma': PRISMA_SCHEMA_PHASE2,
   }
 }
 
@@ -288,7 +288,7 @@ function phase3SeedWorkspace(): Record<string, string> {
 function phase4SeedWorkspace(): Record<string, string> {
   return {
     ...phase2Workspace(),
-    '.shogo/server/schema.prisma': PRISMA_SCHEMA_PHASE3,
+    'prisma/schema.prisma': PRISMA_SCHEMA_PHASE3,
   }
 }
 

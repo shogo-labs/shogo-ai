@@ -311,7 +311,13 @@ function buildUserData(config: CloudInitConfig): string {
     lines.push('      fi')
     lines.push('    fi')
     lines.push('    chmod 755 /usr/local/bin/bun')
-    lines.push('    for alias in node npx npm; do')
+    // Bun ships a `bunx` symlink alongside `bun` in its own installer,
+    // but our minimal manual install drops only the `bun` binary into
+    // /usr/local/bin/. Add the missing alias so any code that shells
+    // out to `bunx` (notably `@shogo-ai/sdk`'s installed `bin/cli.mjs`,
+    // which calls `bunx --bun prisma generate`) keeps working without
+    // a VM image rebuild.
+    lines.push('    for alias in node npx npm bunx; do')
     lines.push('      rm -f /usr/local/bin/$alias; ln -s /usr/local/bin/bun /usr/local/bin/$alias')
     lines.push('    done')
     lines.push('    echo "bun ready: $(/usr/local/bin/bun --version 2>/dev/null || echo MISSING)"')

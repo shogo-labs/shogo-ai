@@ -231,7 +231,7 @@ const INVOICES_CSV = [
 function phase3Workspace(): Record<string, string> {
   return {
     ...phase2Workspace(),
-    '.shogo/server/schema.prisma': PRISMA_SCHEMA_PHASE2,
+    'prisma/schema.prisma': PRISMA_SCHEMA_PHASE2,
     'files/invoices.csv': INVOICES_CSV,
   }
 }
@@ -261,7 +261,7 @@ model Invoice {
 function phase4Workspace(): Record<string, string> {
   return {
     ...phase3Workspace(),
-    '.shogo/server/schema.prisma': PRISMA_SCHEMA_PHASE3,
+    'prisma/schema.prisma': PRISMA_SCHEMA_PHASE3,
   }
 }
 

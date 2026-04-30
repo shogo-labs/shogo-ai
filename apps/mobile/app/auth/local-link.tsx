@@ -104,11 +104,12 @@ export default function LocalLinkBridge() {
 
         // Assemble the callback URL that carries everything the desktop
         // app needs to finalize sign-in. The state nonce is required; it's
-        // validated server-side in /api/local/cloud-login/complete.
+        // validated server-side in /api/local/cloud-login/complete. The
+        // cloud endpoint is sourced from the desktop's SHOGO_CLOUD_URL env
+        // var, so we deliberately do NOT echo a cloudUrl back here.
         const callbackParams = new URLSearchParams({
           state,
           key: minted.key,
-          cloudUrl: typeof window !== 'undefined' ? window.location.origin : '',
         })
         if (user?.email) callbackParams.set('email', user.email)
         if (minted.workspace?.name) callbackParams.set('workspace', minted.workspace.name)

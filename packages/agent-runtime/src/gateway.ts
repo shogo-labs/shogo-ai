@@ -569,14 +569,15 @@ export class AgentGateway {
       }
     }
 
-    // Start the skill server if .shogo/server/ exists
+    // The API server (root server.tsx) is owned by PreviewManager — see
+    // server.ts. The shim below just exposes its status to tools/prompts.
     try {
       const { started, port } = await this.skillServerManager.start()
       if (started) {
-        console.log(`[AgentGateway] Skill server running on port ${port}`)
+        console.log(`[AgentGateway] API server already running on port ${port}`)
       }
     } catch (error: any) {
-      console.error('[AgentGateway] Skill server startup error:', error.message)
+      console.error('[AgentGateway] API server status check error:', error.message)
     }
 
     // Composio session init is deferred to per-request (processChatMessageStream)
@@ -1105,7 +1106,7 @@ export class AgentGateway {
       fileParts?: FilePart[]
       userId?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
-      confirmedPlan?: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
+      confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       chatSessionId?: string
     },
   ): Promise<void> {
@@ -1143,12 +1144,13 @@ export class AgentGateway {
     // If a confirmed plan is present, prepend it as context to the user's message
     if (options?.confirmedPlan) {
       const cp = options.confirmedPlan
-      const todoList = cp.todos.map(t => `- [ ] ${t.content}`).join('\n')
+      const todoList = (cp.todos ?? []).map(t => `- [ ] ${t.content}`).join('\n')
       const planContext = [
         'The user has confirmed the following plan. Execute it step by step:',
         '',
         `## ${cp.name}`,
         cp.overview,
+        cp.filepath ? `Saved plan: ${cp.filepath}` : '',
         '',
         cp.plan,
         '',
@@ -1173,7 +1175,7 @@ export class AgentGateway {
       activeSkill = result.activeSkill
     }
 
-    const interactionMode = options?.interactionMode || 'agent'
+    const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
     const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
@@ -1297,10 +1299,11 @@ export class AgentGateway {
       const planModePrompt = [
         '## PLAN MODE ACTIVE',
         '',
-        'Plan mode is active. You MUST NOT make any edits, run commands, write files, or otherwise make changes. This supersedes all other instructions.',
+        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
+        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
         '',
         'Your job:',
-        '1. Research the user\'s request using read-only tools (read_file, grep, glob, web, etc.)',
+        '1. Research the user\'s request using read-only tools (read_file, search, web, etc.)',
         '2. If you need more information, ask clarifying questions using ask_user',
         '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
         '4. If there are multiple valid approaches, ask the user which they prefer',
@@ -1463,14 +1466,15 @@ export class AgentGateway {
     assembledTools = assembledTools.filter(t => !CODE_REVIEW_ONLY_TOOLS.has(t.name))
 
     // Tools delegated to dedicated subagents — removed from the main agent to
-    // reduce per-request token cost. Spawn via agent_spawn({ type: "<subagent>" }).
+    // reduce per-request token cost. Keep small/action-oriented integration,
+    // channel, and heartbeat tools available to the main agent as well:
+    // Haiku reliably used them directly in the persona/agentic pipelines, but
+    // often fails to infer that a subagent should be spawned for simple "connect
+    // my email" or "set up a reminder" requests.
     const SUBAGENT_ONLY_TOOLS = new Set([
       'browser',                                                                       // -> browser subagent
-      'tool_search', 'tool_install', 'tool_uninstall',                                // -> integration subagent
-      'mcp_search', 'mcp_install', 'mcp_uninstall',                                   // -> integration subagent
-      'channel_connect', 'channel_disconnect', 'channel_list', 'send_message',        // -> channel subagent
       'generate_image', 'transcribe_audio',                                            // -> media subagent
-      'heartbeat_configure', 'heartbeat_status', 'skill_server_sync',                 // -> devops subagent
+      'server_sync',                                                                   // -> devops subagent
     ])
     assembledTools = assembledTools.filter(t => !SUBAGENT_ONLY_TOOLS.has(t.name))
 
@@ -2275,6 +2279,17 @@ export class AgentGateway {
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
     pushStable('capabilities-index', CAPABILITIES_INDEX)
 
+    pushStable('action-tools-guide', [
+      '## Action Tools',
+      '',
+      'When the user asks you to connect an integration, configure a channel, or set up a scheduled reminder, use the relevant tool immediately instead of only describing what you would do.',
+      '- Credentials or hostnames in the user message are permission to call `channel_connect` for email, Slack, Discord, Telegram, etc.',
+      '- For managed integrations such as GitHub or Google Calendar, call `tool_search`/`mcp_search`, then `tool_install`/`mcp_install`, then use the installed tools.',
+      '- For recurring reminders, digests, check-ins, or autonomous routines, call `heartbeat_configure` and write or update `HEARTBEAT.md` with the exact checklist.',
+      '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',
+      '- A successful final response should summarize what you configured, not ask whether to start.',
+    ].join('\n'))
+
     if (this.config.quickActionsEnabled !== false) {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
@@ -2651,9 +2666,10 @@ export class AgentGateway {
   }
 
   /**
-   * Build a system prompt section describing the skill server.
-   * If the server is running, tells the agent the base URL.
-   * If not, tells the agent how to create one.
+   * Build a system prompt section describing the project's API server
+   * (root `server.tsx`). If the server is healthy, tells the agent the
+   * base URL and active routes; otherwise gives instructions for adding
+   * models and tools to bring it up to date.
    */
   private buildSkillServerPromptSection(): string | null {
     if (this.config.shellEnabled === false) return null
@@ -2667,20 +2683,20 @@ export class AgentGateway {
     const regenGuide = [
       '### How schema regeneration works',
       '',
-      'When you write or edit `.shogo/server/schema.prisma` using `write_file` or `edit_file`,',
+      'When you edit `prisma/schema.prisma` using `write_file` or `edit_file`,',
       'the tool **automatically** runs the full pipeline before returning:',
-      '1. Runs `shogo generate` — creates routes, types, hooks, server, Prisma client, and pushes the DB schema',
-      '2. Restarts the server process so it loads the new routes',
-      '3. Returns the list of **active routes** in the tool response',
+      '1. Runs `bunx shogo generate` — refreshes routes, types, hooks, the API client, and the Prisma client',
+      '2. Runs `prisma db push` — applies the schema additively to `prisma/dev.db`',
+      '3. Restarts `server.tsx` so it loads the new routes',
+      '4. Returns the list of **active routes** in the tool response',
       '',
       '**The tool response tells you exactly which routes are live.** Use those exact paths in your code.',
       '',
-      '**Important:** Write your **complete schema in one save** — include ALL models you need.',
-      'Do NOT make multiple rapid edits to the schema.',
+      '**Important:** ALWAYS read the existing `prisma/schema.prisma` first and APPEND your new models. Do not replace the file or remove existing models.',
       '',
-      'If you ever see a route 404 or need to force a refresh, use the `skill_server_sync` tool:',
+      'If you ever see a route 404 or need to force a refresh, use the `server_sync` tool:',
       '```',
-      'skill_server_sync({})',
+      'server_sync({})',
       '```',
       'It returns the current phase, active routes, and schema models.',
       '',
@@ -2689,11 +2705,11 @@ export class AgentGateway {
 
     if (this.skillServerManager.isRunning) {
       const lines = [
-        '## Skill Server',
+        '## Project Server',
         '',
-        `A skill server is running at **${url}** (status: **healthy**).`,
+        `Your project\'s backend (\`server.tsx\` at the project root) is running at **${url}** (status: **healthy**).`,
         '',
-        'This is a Hono API backed by SQLite. Each Prisma model gets CRUD routes at',
+        'This is a Hono API backed by SQLite via Prisma. Each model in `prisma/schema.prisma` gets CRUD routes at',
         '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
       ]
 
@@ -2720,19 +2736,12 @@ export class AgentGateway {
         lines.push('These routes will appear after the regeneration pipeline finishes.')
       }
 
-      if (this.skillServerManager.hasCustomRoutes) {
-        lines.push('')
-        lines.push('**Custom routes** are active — `.shogo/server/custom-routes.ts` is mounted at `/api/` alongside the CRUD routes.')
-      }
-
       lines.push('')
-      lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it.`)
+      lines.push(`Use the \`web\` tool with the full URL (e.g. \`web({ url: "${url}/api/${activeRoutes[0] || 'leads'}" })\`) to interact with it from agent tools.`)
       lines.push('')
-      lines.push(`If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`)
-      lines.push('')
-      lines.push('To add new models or change the schema, edit `.shogo/server/schema.prisma`.')
-      lines.push('Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts`.')
-      lines.push('For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `.shogo/server/custom-routes.ts` (it already exists).')
+      lines.push('To add new models, **append** them to `prisma/schema.prisma` (do not replace the file).')
+      lines.push('To add custom business logic for a model (validation, side-effects), create or edit `src/lib/hooks/{model}.ts`.')
+      lines.push('For custom API routes beyond CRUD (external proxies, aggregation, webhooks), edit `server.tsx` directly — the Hono `app` instance is already in scope.')
       lines.push('')
       lines.push(regenGuide)
 
@@ -2741,9 +2750,9 @@ export class AgentGateway {
 
     if (phase === 'generating' || phase === 'restarting') {
       const lines = [
-        `## Skill Server (${phase === 'generating' ? 'Generating...' : 'Restarting...'})`,
+        `## Project Server (${phase === 'generating' ? 'Generating...' : 'Restarting...'})`,
         '',
-        `The skill server is currently ${phase}. It will be available shortly at \`${url}\`.`,
+        `The API server is currently ${phase}. It will be available shortly at \`${url}\`.`,
       ]
 
       if (activeRoutes.length > 0) {
@@ -2760,46 +2769,31 @@ export class AgentGateway {
       }
 
       lines.push('')
-      lines.push(`If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`)
-      lines.push('')
       lines.push(regenGuide)
       return lines.join('\n')
     }
 
     if (phase === 'crashed' && genError) {
       return [
-        '## Skill Server (Error)',
+        '## Project Server (Error)',
         '',
         'The last code generation failed:',
         '```',
         genError,
         '```',
-        'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
-        '',
-        `If you need the port from a script or server-side code, read \`process.env.SKILL_SERVER_PORT\` (currently \`${this.skillServerManager.port}\` on this runtime). Do NOT hardcode the port — it varies per deployment.`,
+        'Fix the issue in `prisma/schema.prisma` (or `server.tsx`) and save — the runtime will retry automatically.',
         '',
         regenGuide,
       ].join('\n')
     }
 
     return [
-      '## Skill Server (Available)',
+      '## Project Server (Available)',
       '',
-      'You can create a persistent REST API backed by SQLite for skills that need structured data.',
-      'Use this when a skill needs to remember data across conversations (leads, tickets, etc.),',
-      'or logic should be deterministic and not burn tokens every time.',
+      'Your project ships with its own backend at `server.tsx` (Hono + Prisma + SQLite). Edit `prisma/schema.prisma` to add models — the runtime regenerates routes and restarts the server automatically.',
       '',
-      'To create the skill server, just write `.shogo/server/schema.prisma` with your models:',
+      'To add a model, append it to `prisma/schema.prisma`:',
       '```prisma',
-      'datasource db {',
-      '  provider = "sqlite"',
-      '}',
-      '',
-      'generator client {',
-      '  provider = "prisma-client"',
-      '  output   = "./generated/prisma"',
-      '}',
-      '',
       'model Lead {',
       '  id        String   @id @default(cuid())',
       '  name      String',
@@ -2810,12 +2804,11 @@ export class AgentGateway {
       '}',
       '```',
       '',
-      'That\'s it — **everything else is automatic**: dependency install, code generation,',
-      `database creation, and server startup on \`${url}\`.`,
+      'That\'s it — **everything else is automatic**: code generation, database migration,',
+      `and server restart on \`${url}\`.`,
       'Each model gets full CRUD at `/api/{model-name-plural}`.',
       '',
-      'Custom logic goes in `.shogo/server/generated/{model}.hooks.ts`.',
-      'For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `.shogo/server/custom-routes.ts` (it already exists).',
+      'For custom API routes beyond CRUD (proxies, aggregation, webhooks), edit `server.tsx` directly.',
       '',
       regenGuide,
     ].join('\n')
@@ -3032,6 +3025,19 @@ export class AgentGateway {
 
   getChannel(type: string): ChannelAdapter | undefined {
     return this.channels.get(type)
+  }
+
+  /**
+   * Wire the runtime's `PreviewManager` (owner of the API server) into
+   * the gateway's prompt builder + tools. Called from server.ts after
+   * both have been constructed.
+   *
+   * Once we finish the refactor, the gateway should hold a
+   * `PreviewManager` reference directly and the `SkillServerManager`
+   * shim can be deleted entirely.
+   */
+  attachApiServer(pm: import('./preview-manager').PreviewManager): void {
+    this.skillServerManager.attach(pm)
   }
 
   getSkillServerPort(): number | null {

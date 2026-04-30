@@ -107,3 +107,24 @@ export {
   createBufferingTransform,
   type StreamBufferWriter,
 } from './stream-buffer'
+
+
+export {
+  diagnosticsRoutes,
+  parseTscOutput,
+  parseEslintOutput,
+  _clearDiagnosticsCacheForTests,
+  type Diagnostic,
+  type DiagnosticSource,
+  type DiagnosticSeverity,
+  type DiagnosticsResult,
+  type DiagnosticsRoutesConfig,
+} from './diagnostics'
+
+export {
+  recordBuildError,
+  getBuildErrors,
+  clearBuildErrors,
+  _resetBuildBufferForTests,
+  type BuildErrorEntry,
+} from './diagnostics-build-buffer'

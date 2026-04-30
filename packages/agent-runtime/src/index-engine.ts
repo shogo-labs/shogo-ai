@@ -140,6 +140,40 @@ const EMBEDDING_BATCH_SIZE = 64
 const DEFAULT_CHUNK_LINES = 40
 const DEFAULT_CHUNK_OVERLAP = 10
 const MAX_EMBEDDING_FAILURES = 3
+const QUERY_EMBEDDING_CACHE_SIZE = 128
+
+// ---------------------------------------------------------------------------
+// Query Embedding LRU Cache
+// ---------------------------------------------------------------------------
+
+export class EmbeddingCache {
+  private cache = new Map<string, Float32Array>()
+  private maxSize: number
+
+  constructor(maxSize: number) {
+    this.maxSize = maxSize
+  }
+
+  get(key: string): Float32Array | undefined {
+    const value = this.cache.get(key)
+    if (value === undefined) return undefined
+    // Move to end (most recently used)
+    this.cache.delete(key)
+    this.cache.set(key, value)
+    return value
+  }
+
+  set(key: string, value: Float32Array): void {
+    if (this.cache.has(key)) {
+      this.cache.delete(key)
+    } else if (this.cache.size >= this.maxSize) {
+      // Evict oldest (first) entry
+      const oldest = this.cache.keys().next().value
+      if (oldest !== undefined) this.cache.delete(oldest)
+    }
+    this.cache.set(key, value)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // IndexEngine
@@ -155,6 +189,7 @@ export class IndexEngine {
   private vecExtensionLoaded: boolean = false
   private indexing: Promise<any> | null = null
   private consecutiveEmbeddingFailures = 0
+  private queryEmbeddingCache = new EmbeddingCache(QUERY_EMBEDDING_CACHE_SIZE)
   private graph: { queryNeighbors(qn: string, edgeKinds?: string[], depth?: number): Array<{ filePath: string }> } | null = null
 
   constructor(config: IndexEngineConfig) {
@@ -618,13 +653,18 @@ export class IndexEngine {
     if (!this.openai) return []
 
     try {
-      const response = await this.openai.embeddings.create({
-        model: EMBEDDING_MODEL,
-        input: [query],
-        dimensions: EMBEDDING_DIMENSIONS,
-      })
+      const normalizedQuery = query.trim().toLowerCase()
+      let queryEmbedding = this.queryEmbeddingCache.get(normalizedQuery)
 
-      const queryEmbedding = new Float32Array(response.data[0].embedding)
+      if (!queryEmbedding) {
+        const response = await this.openai.embeddings.create({
+          model: EMBEDDING_MODEL,
+          input: [query],
+          dimensions: EMBEDDING_DIMENSIONS,
+        })
+        queryEmbedding = new Float32Array(response.data[0].embedding)
+        this.queryEmbeddingCache.set(normalizedQuery, queryEmbedding)
+      }
 
       let sql = `
         SELECT v.chunk_id, v.distance, c.source, c.path, c.chunk, c.line_start, c.line_end

@@ -74,7 +74,13 @@ import {
   DEFAULT_MODEL_FREE,
   type InteractionMode,
   type FileAttachment,
+  type RestoreDraftRequest,
 } from "./ChatInput"
+import {
+  PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS,
+  shouldSuggestPlanMode,
+} from "./plan-mode-suggestion"
+import { PlanModeSuggestion } from "./PlanModeSuggestion"
 import {
   loadInteractionModePreference,
   saveInteractionModePreference,
@@ -116,7 +122,6 @@ import {
   type FixInAgentPayload,
 } from "../project/panels/ide/agentFixProvider"
 
-
 // ============================================================
 // Types
 // ============================================================
@@ -132,6 +137,58 @@ interface VirtualToolEvent {
   toolName: string
   args: Record<string, unknown>
   timestamp: number
+}
+
+type PendingPlanModeSuggestionSubmission = {
+  content: string
+  files?: FileAttachment[]
+  perMsgModel?: string
+}
+
+type OptimisticUserInput = {
+  sessionId: string
+  content: string
+  files?: FileAttachment[]
+}
+
+export type QueuedMessage = {
+  id: string
+  content: string
+  files?: FileAttachment[]
+  selectedModel?: string
+}
+
+function buildOptimisticUserMessage(input: OptimisticUserInput, id = "optimistic-user-pending"): UIMessage {
+  const parts: any[] = []
+  const text = input.content.trim()
+
+  if (text) {
+    parts.push({ type: "text", text })
+  }
+
+  for (const file of input.files ?? []) {
+    parts.push({
+      type: "file",
+      mediaType: file.type || "application/octet-stream",
+      url: file.dataUrl,
+      ...(file.name ? { name: file.name } : {}),
+    })
+  }
+
+  return {
+    id,
+    role: "user",
+    parts,
+  } as unknown as UIMessage
+}
+
+function hasMatchingUserMessage(messages: UIMessage[], input: OptimisticUserInput): boolean {
+  const text = input.content.trim()
+  return messages.some((message) => {
+    if (message.role !== "user") return false
+    if (text && extractTextContent(message).trim() === text) return true
+    return !text && (input.files?.length ?? 0) > 0
+  })
 }
 
 interface SubagentProgress {
@@ -218,6 +275,8 @@ export interface ChatPanelProps {
   onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
   buildPlanRequest?: { plan: PlanData; modelId: string; nonce: number } | null
+  /** Opens the saved plan artifact in the Plans panel. */
+  onOpenPlan?: (filepath?: string | null) => void
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
@@ -549,6 +608,33 @@ export function clearChatPanelMessageCache(): void {
   sessionMessageCache.clear()
 }
 
+// Per-session queued-message cache. Survives ChatPanel unmount/remount during
+// navigation so users don't lose what they've typed and queued. Keyed by
+// sessionId; cleared on explicit `clearChatPanelQueueCache()` or whenever the
+// queue for a session drains naturally (delete, send, edit-out).
+const sessionQueueCache = new Map<string, QueuedMessage[]>()
+
+/** Clear the in-memory per-session queued-message cache (e.g. on logout). */
+export function clearChatPanelQueueCache(): void {
+  sessionQueueCache.clear()
+}
+
+function normalizePlanFilepath(filepath?: string | null): string | undefined {
+  if (!filepath) return undefined
+  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
+  const filename = normalized.split("/").pop()
+  if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename)) return undefined
+  return `.shogo/plans/${filename}`
+}
+
+function normalizePlanData(plan: PlanData): PlanData {
+  return {
+    ...plan,
+    todos: plan.todos ?? [],
+    filepath: normalizePlanFilepath(plan.filepath),
+  }
+}
+
 // ============================================================
 // Component
 // ============================================================
@@ -593,6 +679,7 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
   buildPlanRequest,
+  onOpenPlan,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   isActive = true,
@@ -817,6 +904,17 @@ export const ChatPanel = observer(function ChatPanel({
     void saveInteractionModePreference(mode)
   }, [])
 
+  const [pendingPlanModeSuggestion, setPendingPlanModeSuggestion] =
+    useState<PendingPlanModeSuggestionSubmission | null>(null)
+  const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
+  const [planModeSuggestionSecondsLeft, setPlanModeSuggestionSecondsLeft] = useState(
+    PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS
+  )
+  const pendingPlanModeSuggestionRef =
+    useRef<PendingPlanModeSuggestionSubmission | null>(null)
+  const planModeSuggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const planModeSuggestionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   // Bridge for Shogo Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
   // typed lifecycle event stream (turn-start / tool-activity / turn-end)
@@ -842,8 +940,16 @@ export const ChatPanel = observer(function ChatPanel({
   const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
   const confirmedPlanRef = useRef<PlanData | null>(null)
   const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
+  const pendingPlanRef = useRef<PlanData | null>(null)
 
   const planStream = usePlanStreamSafe()
+
+  useEffect(() => {
+    pendingPlanRef.current = null
+    setPendingPlan(null)
+    setConfirmedPlan(null)
+    confirmedPlanRef.current = null
+  }, [currentSessionId])
 
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
@@ -925,13 +1031,9 @@ export const ChatPanel = observer(function ChatPanel({
     )
   }
 
-  type QueuedMessage = {
-    id: string
-    content: string
-    files?: FileAttachment[]
-    selectedModel?: string
-  }
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>(() =>
+    currentSessionId ? sessionQueueCache.get(currentSessionId) ?? [] : []
+  )
   const isProcessingQueueRef = useRef(false)
 
   const sessionContextUsage = (currentSession as any)?.contextUsageTokens
@@ -1453,15 +1555,36 @@ export const ChatPanel = observer(function ChatPanel({
       if ((dataPart as any).type === "data-plan") {
         const planData = (dataPart as any).data
         if (planData) {
-          setPendingPlan(planData)
-          if (planData.filepath) {
-            planStream?.setStreamingPlanFilepath(planData.filepath)
+          const normalizedPlan = normalizePlanData(planData)
+          pendingPlanRef.current = normalizedPlan
+          setPendingPlan(normalizedPlan)
+          planStream?.setStreamingPlan(normalizedPlan)
+          if (normalizedPlan.filepath) {
+            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
           planStream?.notifyPlanCreated()
         }
       }
 
       if ((dataPart as any).type === "data-plan-update") {
+        const planData = (dataPart as any).data
+        if (planData) {
+          const previousPlan = pendingPlanRef.current
+          const normalizedPlan = normalizePlanData({
+            name: planData.name ?? previousPlan?.name ?? "Plan",
+            overview: planData.overview ?? previousPlan?.overview ?? "",
+            plan: planData.plan ?? previousPlan?.plan ?? "",
+            todos: planData.todos ?? previousPlan?.todos ?? [],
+            filepath: planData.filepath ?? previousPlan?.filepath,
+            toolCallId: planData.toolCallId ?? previousPlan?.toolCallId,
+          })
+          pendingPlanRef.current = normalizedPlan
+          setPendingPlan(normalizedPlan)
+          planStream?.setStreamingPlan(normalizedPlan)
+          if (normalizedPlan.filepath) {
+            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
+          }
+        }
         planStream?.notifyPlanCreated()
       }
 
@@ -1871,6 +1994,7 @@ export const ChatPanel = observer(function ChatPanel({
     errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
+  const [optimisticUserInput, setOptimisticUserInput] = useState<OptimisticUserInput | null>(null)
 
   // Permission approval state (local mode security)
   const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
@@ -1893,10 +2017,28 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages.length, pendingInitialMessage])
 
+  useEffect(() => {
+    if (!optimisticUserInput) return
+    if (optimisticUserInput.sessionId !== currentSessionId) {
+      setOptimisticUserInput(null)
+      return
+    }
+    if (hasMatchingUserMessage(messages, optimisticUserInput)) {
+      setOptimisticUserInput(null)
+    }
+  }, [currentSessionId, messages, optimisticUserInput])
+
   const displayMessages = useMemo((): UIMessage[] => {
     const effectiveMessages = stoppedMessages ?? messages
+    const currentOptimisticInput =
+      optimisticUserInput?.sessionId === currentSessionId ? optimisticUserInput : null
+    const shouldPrependOptimisticUser =
+      currentOptimisticInput && !hasMatchingUserMessage(effectiveMessages, currentOptimisticInput)
+
     if (effectiveMessages.length > 0) {
-      return effectiveMessages
+      return shouldPrependOptimisticUser
+        ? [buildOptimisticUserMessage(currentOptimisticInput), ...effectiveMessages]
+        : effectiveMessages
     }
 
     if (isStreaming || isSendingMessageRef.current) {
@@ -1904,7 +2046,11 @@ export const ChatPanel = observer(function ChatPanel({
       // user bubble) so the conversation doesn't vanish during the brief gap
       // before the AI SDK populates its internal state.
       const fallback = lastNonEmptyMessagesRef.current
-      const lastInput = lastUserInputRef.current
+      const lastInput =
+        currentOptimisticInput ??
+        (currentSessionId && lastUserInputRef.current
+          ? { sessionId: currentSessionId, ...lastUserInputRef.current }
+          : null)
       const lastFallbackMsg = fallback[fallback.length - 1]
       const needsOptimisticUser =
         lastInput?.content && (!lastFallbackMsg || lastFallbackMsg.role !== "user")
@@ -1912,11 +2058,7 @@ export const ChatPanel = observer(function ChatPanel({
       if (needsOptimisticUser) {
         return [
           ...fallback,
-          {
-            id: "optimistic-user-pending",
-            role: "user",
-            parts: [{ type: "text", text: lastInput!.content }],
-          } as unknown as UIMessage,
+          buildOptimisticUserMessage(lastInput),
         ]
       }
       return fallback
@@ -1933,7 +2075,7 @@ export const ChatPanel = observer(function ChatPanel({
       ]
     }
     return []
-  }, [messages, stoppedMessages, pendingInitialMessage, initialMessage, isStreaming])
+  }, [currentSessionId, messages, stoppedMessages, pendingInitialMessage, initialMessage, optimisticUserInput, isStreaming])
 
   // Stable references for memo'd downstream components (TurnList / SubagentPanel).
   // Previously these were `Array.from(Map.values())` inline, which allocated on
@@ -2574,13 +2716,16 @@ export const ChatPanel = observer(function ChatPanel({
         ? planTool.toolInvocation?.args
         : planTool.input ?? planTool.args
     if (!args) return
-    setPendingPlan({
+    const restoredPlan = normalizePlanData({
       name: args.name ?? "Plan",
       overview: args.overview ?? "",
       plan: args.plan ?? "",
       todos: args.todos ?? [],
       filepath: args.filepath,
+      toolCallId: planTool.id ?? planTool.toolCallId,
     })
+    pendingPlanRef.current = restoredPlan
+    setPendingPlan(restoredPlan)
   }, [isInitialLoadComplete, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effect 2: Sync MobX → AI SDK state when data arrives.
@@ -2663,20 +2808,24 @@ export const ChatPanel = observer(function ChatPanel({
         ? planPart.toolInvocation?.args
         : planPart.input ?? planPart.args
     if (!args?.name) return null
-    return {
+    return normalizePlanData({
       name: args.name,
       overview: args.overview ?? "",
       plan: args.plan ?? "",
       todos: args.todos ?? [],
-    }
+      filepath: args.filepath,
+      toolCallId: planPart.id ?? planPart.toolCallId,
+    })
   }, [isStreaming, messages])
 
   useEffect(() => {
     planStream?.setStreamingPlan(derivedStreamingPlan)
     if (derivedStreamingPlan) {
+      planStream?.setStreamingPlanFilepath(derivedStreamingPlan.filepath ?? null)
+    } else if (!isStreaming) {
       planStream?.setStreamingPlanFilepath(null)
     }
-  }, [derivedStreamingPlan, planStream])
+  }, [derivedStreamingPlan, isStreaming, planStream])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
@@ -2733,7 +2882,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const extractMediaType = useCallback((dataUrl: string): string => {
     const match = dataUrl.match(/^data:([^;]+);/)
-    return match?.[1] || "image/png"
+    return match?.[1] || "application/octet-stream"
   }, [])
 
   // Internal function that actually sends a message (used by queue processor)
@@ -2757,6 +2906,7 @@ export const ChatPanel = observer(function ChatPanel({
         stickToBottomRef.current = true
       }
       lastUserInputRef.current = { content: trimmedContent, files: fileArray }
+      setOptimisticUserInput({ sessionId: currentSessionId, content: trimmedContent, files: fileArray })
 
       const parts: Array<
         { type: "text"; text: string } | { type: "file"; mediaType: string; url: string; name?: string }
@@ -2825,9 +2975,9 @@ export const ChatPanel = observer(function ChatPanel({
         }
         const planToSend = confirmedPlanRef.current
         if (planToSend) {
-          bodyExtra.confirmedPlan = planToSend
+          bodyExtra.confirmedPlan = normalizePlanData(planToSend)
+          bodyExtra.interactionMode = "agent"
           confirmedPlanRef.current = null
-          setConfirmedPlan(null)
         }
         console.log("[ChatPanel][send] bodyExtra — interactionMode:", bodyExtra.interactionMode, "agentMode:", bodyExtra.agentMode, "hasConfirmedPlan:", !!bodyExtra.confirmedPlan, "text:", trimmedContent.slice(0, 80))
         await sendMessage(messagePayload, { body: bodyExtra })
@@ -2864,7 +3014,7 @@ export const ChatPanel = observer(function ChatPanel({
     [sendMessageInternal],
   )
   const bridgeSetMode = useCallback(
-    (mode: "agent" | "plan") => {
+    (mode: InteractionMode) => {
       handleInteractionModeChange(mode)
     },
     [handleInteractionModeChange],
@@ -2926,13 +3076,31 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
 
+  // Hydrate the queue for the active session from the per-session cache when
+  // the session changes. Previously this effect *cleared* the queue on every
+  // session switch, which also wiped queued messages the user had just typed
+  // (and lost them on any navigation that remounts ChatPanel). The cache is
+  // updated by the effect below whenever `messageQueue` changes, so switching
+  // back to a session restores its pending queue.
   useEffect(() => {
-    if (messageQueue.length > 0) {
-      setMessageQueue([])
-      isProcessingQueueRef.current = false
-    }
+    const cached = currentSessionId
+      ? sessionQueueCache.get(currentSessionId) ?? []
+      : []
+    setMessageQueue(cached)
+    isProcessingQueueRef.current = false
+    setOptimisticUserInput(null)
     lastNonEmptyMessagesRef.current = []
   }, [currentSessionId])
+
+  // Mirror the queue into the per-session cache so it survives remounts.
+  useEffect(() => {
+    if (!currentSessionId) return
+    if (messageQueue.length === 0) {
+      sessionQueueCache.delete(currentSessionId)
+    } else {
+      sessionQueueCache.set(currentSessionId, messageQueue)
+    }
+  }, [currentSessionId, messageQueue])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
     setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
@@ -2951,6 +3119,28 @@ export const ChatPanel = observer(function ChatPanel({
           ;[newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]]
         }
         return newQueue
+      })
+    },
+    []
+  )
+
+  // Pull a queued message back into the input as a draft so the user can
+  // tweak the text/attachments and re-send. We remove the original entry
+  // immediately so re-submitting just appends a fresh queue item rather than
+  // duplicating the in-flight one.
+  const handleEditQueuedMessage = useCallback(
+    (messageId: string) => {
+      let target: QueuedMessage | undefined
+      setMessageQueue((queue) => {
+        target = queue.find((m) => m.id === messageId)
+        if (!target) return queue
+        return queue.filter((m) => m.id !== messageId)
+      })
+      if (!target) return
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: target.content,
+        files: target.files,
       })
     },
     []
@@ -2988,21 +3178,121 @@ export const ChatPanel = observer(function ChatPanel({
     [isStreaming, sendMessageInternal, currentSessionId]
   )
 
+  const clearPlanModeSuggestionTimers = useCallback(() => {
+    if (planModeSuggestionTimeoutRef.current) {
+      clearTimeout(planModeSuggestionTimeoutRef.current)
+      planModeSuggestionTimeoutRef.current = null
+    }
+    if (planModeSuggestionIntervalRef.current) {
+      clearInterval(planModeSuggestionIntervalRef.current)
+      planModeSuggestionIntervalRef.current = null
+    }
+  }, [])
+
+  const handleResolvePlanModeSuggestion = useCallback(
+    (targetMode: "agent" | "plan") => {
+      const pending = pendingPlanModeSuggestionRef.current
+      if (!pending) return
+
+      clearPlanModeSuggestionTimers()
+      pendingPlanModeSuggestionRef.current = null
+      setPendingPlanModeSuggestion(null)
+      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: "",
+        files: [],
+      })
+
+      handleInteractionModeChange(targetMode)
+
+      handleSendMessage(pending.content, pending.files, pending.perMsgModel)
+    },
+    [clearPlanModeSuggestionTimers, handleInteractionModeChange, handleSendMessage]
+  )
+
+  const handleEditPlanModePrompt = useCallback(() => {
+    const pending = pendingPlanModeSuggestionRef.current
+    if (!pending) return
+
+    clearPlanModeSuggestionTimers()
+    pendingPlanModeSuggestionRef.current = null
+    setPendingPlanModeSuggestion(null)
+    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+    setRestoreDraftRequest({
+      nonce: Date.now(),
+      content: pending.content,
+      files: pending.files,
+    })
+  }, [clearPlanModeSuggestionTimers])
+
+  const startPlanModeSuggestion = useCallback(
+    (submission: PendingPlanModeSuggestionSubmission) => {
+      clearPlanModeSuggestionTimers()
+      pendingPlanModeSuggestionRef.current = submission
+      setPendingPlanModeSuggestion(submission)
+      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: submission.content,
+        files: submission.files,
+      })
+
+      planModeSuggestionIntervalRef.current = setInterval(() => {
+        setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
+      }, 1000)
+      planModeSuggestionTimeoutRef.current = setTimeout(() => {
+        handleResolvePlanModeSuggestion("agent")
+      }, PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS * 1000)
+    },
+    [clearPlanModeSuggestionTimers, handleResolvePlanModeSuggestion]
+  )
+
+  useEffect(() => {
+    return () => {
+      clearPlanModeSuggestionTimers()
+    }
+  }, [clearPlanModeSuggestionTimers])
+
+  useEffect(() => {
+    if (!pendingPlanModeSuggestionRef.current) return
+    clearPlanModeSuggestionTimers()
+    pendingPlanModeSuggestionRef.current = null
+    setPendingPlanModeSuggestion(null)
+    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+  }, [clearPlanModeSuggestionTimers, currentSessionId])
+
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
     (content: string, files?: FileAttachment[], perMsgModel?: string) => {
+      if (pendingPlanModeSuggestionRef.current) return
+
+      if (
+        interactionModeRef.current === "agent" &&
+        !isStreaming &&
+        !isProcessingQueueRef.current &&
+        !isSendingMessageRef.current &&
+        shouldSuggestPlanMode(content)
+      ) {
+        startPlanModeSuggestion({ content, files, perMsgModel })
+        return
+      }
+
       handleSendMessage(content, files, perMsgModel)
     },
-    [handleSendMessage]
+    [handleSendMessage, isStreaming, startPlanModeSuggestion]
   )
 
   // Plan confirmation: switch to Agent mode and execute.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleConfirmPlan = useCallback(() => {
-    if (!pendingPlan) return
-    confirmedPlanRef.current = pendingPlan
-    setConfirmedPlan(pendingPlan)
+  const handleConfirmPlan = useCallback((plan?: PlanData | null) => {
+    const selectedPlan = plan ?? pendingPlanRef.current
+    if (!selectedPlan) return
+    const planToBuild = normalizePlanData(selectedPlan)
+    confirmedPlanRef.current = planToBuild
+    setConfirmedPlan(planToBuild)
+    pendingPlanRef.current = null
     setPendingPlan(null)
     console.log("[ChatPanel][confirm-plan] BEFORE mode change — stateMode:", interactionMode, "refMode:", interactionModeRef.current, "selectedModel:", selectedModel)
     handleInteractionModeChange("agent")
@@ -3012,7 +3302,7 @@ export const ChatPanel = observer(function ChatPanel({
     confirmDismissTimerRef.current = setTimeout(() => {
       setConfirmedPlan(null)
     }, 4000)
-  }, [pendingPlan, handleSendMessage, handleInteractionModeChange])
+  }, [handleSendMessage, handleInteractionModeChange])
 
   // Build from Plans panel: execute a saved plan with selected model
   const lastBuildNonceRef = useRef<number>(0)
@@ -3020,8 +3310,10 @@ export const ChatPanel = observer(function ChatPanel({
     if (!buildPlanRequest || buildPlanRequest.nonce === lastBuildNonceRef.current) return
     lastBuildNonceRef.current = buildPlanRequest.nonce
     const { plan, modelId: requestedMode } = buildPlanRequest
-    confirmedPlanRef.current = plan
-    setConfirmedPlan(plan)
+    const planToBuild = normalizePlanData(plan)
+    confirmedPlanRef.current = planToBuild
+    setConfirmedPlan(planToBuild)
+    pendingPlanRef.current = null
     setPendingPlan(null)
     handleInteractionModeChange("agent")
     handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
@@ -3211,7 +3503,11 @@ export const ChatPanel = observer(function ChatPanel({
     agentUrl: resolvedAgentUrl,
     addToolOutput: (params) => addToolOutput(params as any),
     saveToolOutput: handleSaveToolOutput,
+    buildPlan: pendingPlan ? handleConfirmPlan : null,
     confirmPlan: pendingPlan ? handleConfirmPlan : null,
+    pendingPlan,
+    confirmedPlan,
+    openPlan: onOpenPlan,
   }
 
   const handleCompactSubmit = useCallback(
@@ -3583,10 +3879,18 @@ export const ChatPanel = observer(function ChatPanel({
 
           {/* Input */}
           <View className="bg-transparent max-w-3xl w-full self-center mt-1">
+            {pendingPlanModeSuggestion && (
+              <PlanModeSuggestion
+                secondsLeft={planModeSuggestionSecondsLeft}
+                onEditPrompt={handleEditPlanModePrompt}
+                onContinueInAgent={() => handleResolvePlanModeSuggestion("agent")}
+                onSwitchToPlan={() => handleResolvePlanModeSuggestion("plan")}
+              />
+            )}
             <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}
-              disabled={!currentSessionId}
+              disabled={!currentSessionId || !!pendingPlanModeSuggestion}
               placeholder={
                 !featureId
                   ? "Select a feature to start chatting..."
@@ -3607,11 +3911,14 @@ export const ChatPanel = observer(function ChatPanel({
               queuedMessages={messageQueue}
               onRemoveQueuedMessage={handleRemoveQueuedMessage}
               onReorderQueuedMessage={handleReorderQueuedMessage}
+              onEditQueuedMessage={handleEditQueuedMessage}
               interactionMode={interactionMode}
               onInteractionModeChange={handleInteractionModeChange}
               contextUsage={contextUsage}
               quickActions={quickActions}
               onQuickActionClick={(prompt) => handleSendMessage(prompt)}
+              restoreDraftRequest={restoreDraftRequest}
+              dimWhenDisabled={!pendingPlanModeSuggestion}
             />
           </View>
         </KeyboardAvoidingView>

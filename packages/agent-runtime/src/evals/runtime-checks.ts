@@ -3,11 +3,13 @@
 /**
  * Post-eval runtime validation.
  *
- * After the agent finishes, these checks verify the skill server actually
- * boots, CRUD endpoints work, and canvas code references the correct port.
+ * After the agent finishes, these checks verify the project's API server
+ * (root `server.tsx`) actually boots, CRUD endpoints work, and the
+ * generated routes match the schema models.
  *
- * Route discovery reads the generated routes/index.ts to extract the real
- * paths the server registered, rather than reimplementing pluralization.
+ * Route discovery reads `src/generated/routes/index.{ts,tsx}` (output of
+ * `bunx shogo generate`) to extract the real paths the server registered,
+ * rather than reimplementing pluralization.
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -35,13 +37,23 @@ function toRoutePath(name: string): string {
 }
 
 /**
- * Discover registered API routes by reading the generated routes/index.ts.
+ * Discover registered API routes by reading the generated routes index.
+ * The SDK emits `src/generated/routes/index.tsx` (or `.ts`) under the
+ * project root. Older legacy outputs (`.shogo/server/generated/...`)
+ * are no longer produced; the migration in
+ * `migrations/skill-server-to-root.ts` retired that path.
+ *
  * Falls back to schema-based toRoutePath if the generated file is missing.
  */
 function discoverRoutes(workspaceDir: string, modelNames: string[]): string[] {
-  const routesIndex = join(workspaceDir, '.shogo/server/generated/routes/index.ts')
-
-  if (existsSync(routesIndex)) {
+  const candidates = [
+    join(workspaceDir, 'src', 'generated', 'routes', 'index.tsx'),
+    join(workspaceDir, 'src', 'generated', 'routes', 'index.ts'),
+    join(workspaceDir, 'src', 'generated', 'index.tsx'),
+    join(workspaceDir, 'src', 'generated', 'index.ts'),
+  ]
+  for (const routesIndex of candidates) {
+    if (!existsSync(routesIndex)) continue
     try {
       const content = readFileSync(routesIndex, 'utf-8')
       const paths: string[] = []
@@ -62,6 +74,40 @@ function discoverRoutes(workspaceDir: string, modelNames: string[]): string[] {
 interface ModelInfo {
   name: string
   requiredFields: { name: string; type: string }[]
+  /**
+   * True when this model is identical (modulo whitespace and trailing
+   * `@@map(...)`) to the runtime-template's seeded `User` block. We
+   * skip CRUD probes for these because they're scaffolding the agent
+   * inherited, not work the eval is testing — and probing them either
+   * collides with itself (unique `email`) or breaks when the agent
+   * customizes the model in a way our generic test body doesn't satisfy.
+   */
+  isTemplateSentinel: boolean
+}
+
+/**
+ * Field set the runtime-template ships in `templates/runtime-template/prisma/schema.prisma`.
+ * If a model named `User` has *exactly* this set of fields (order-independent)
+ * we treat it as scaffolding rather than agent-authored.
+ *
+ * Keep in sync with `templates/runtime-template/prisma/schema.prisma`. If
+ * the seeded `User` shape changes, update this list — otherwise CRUD
+ * probes will start tripping on the new template again.
+ */
+const SEEDED_USER_FIELDS = new Set(['id', 'email', 'name', 'createdAt', 'updatedAt'])
+
+function isSeededUserBody(name: string, body: string): boolean {
+  if (name !== 'User') return false
+  const fields = new Set<string>()
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('@@')) continue
+    const m = trimmed.match(/^(\w+)\s+/)
+    if (m) fields.add(m[1])
+  }
+  if (fields.size !== SEEDED_USER_FIELDS.size) return false
+  for (const f of SEEDED_USER_FIELDS) if (!fields.has(f)) return false
+  return true
 }
 
 function parseModels(schemaPath: string): ModelInfo[] {
@@ -83,7 +129,7 @@ function parseModels(schemaPath: string): ModelInfo[] {
       if (rest.includes('@id') || rest.includes('@default') || rest.includes('@updatedAt') || rest.includes('@relation')) continue
       requiredFields.push({ name: fieldName, type: fieldType })
     }
-    models.push({ name, requiredFields })
+    models.push({ name, requiredFields, isTemplateSentinel: isSeededUserBody(name, body) })
   }
   return models
 }
@@ -219,26 +265,39 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<{ o
 // ---------------------------------------------------------------------------
 
 function checkWorkspaceIntegrity(workspaceDir: string, verbose?: boolean): WorkspaceIntegrity {
-  const serverDir = join(workspaceDir, '.shogo', 'server')
-  const schemaPath = join(serverDir, 'schema.prisma')
-  const generatedDir = join(serverDir, 'generated')
+  const schemaPath = join(workspaceDir, 'prisma', 'schema.prisma')
+  const generatedRoutesDir = join(workspaceDir, 'src', 'generated', 'routes')
+  const generatedFlatDir = join(workspaceDir, 'src', 'generated')
 
   const schema = existsSync(schemaPath)
+  // `schemaHasModels` gates the CRUD-functional eval criterion. We
+  // count only agent-authored models — the runtime-template seeds a
+  // `User` block on every workspace, and treating that as "the agent
+  // built a backend" causes the runtime-check pipeline to probe a
+  // model the eval never asked for and dock 15% of maxScore when the
+  // probe's generic test body doesn't match the seeded shape.
   let schemaHasModels = false
   if (schema) {
     try {
-      const content = readFileSync(schemaPath, 'utf-8')
-      schemaHasModels = /^model\s+\w+/m.test(content)
+      const models = parseModels(schemaPath)
+      schemaHasModels = models.some(m => !m.isTemplateSentinel)
     } catch {}
   }
 
-  const generated = existsSync(generatedDir) && (() => {
-    try { return readdirSync(generatedDir).length > 0 } catch { return false }
+  const generated = (() => {
+    for (const dir of [generatedRoutesDir, generatedFlatDir]) {
+      if (existsSync(dir)) {
+        try {
+          if (readdirSync(dir).length > 0) return true
+        } catch {}
+      }
+    }
+    return false
   })()
 
-  const server = existsSync(join(serverDir, 'server.ts')) || existsSync(join(serverDir, 'server.tsx'))
-  const db = existsSync(join(serverDir, 'db.ts')) || existsSync(join(serverDir, 'db.tsx'))
-  const prismaClient = existsSync(join(serverDir, 'node_modules', '@prisma', 'client'))
+  const server = existsSync(join(workspaceDir, 'server.ts')) || existsSync(join(workspaceDir, 'server.tsx'))
+  const db = existsSync(join(workspaceDir, 'src', 'lib', 'db.ts')) || existsSync(join(workspaceDir, 'src', 'lib', 'db.tsx'))
+  const prismaClient = existsSync(join(workspaceDir, 'node_modules', '@prisma', 'client'))
 
   const integrity: WorkspaceIntegrity = { schema, schemaHasModels, generated, server, db, prismaClient }
 
@@ -326,16 +385,24 @@ function checkViteBuildReadiness(workspaceDir: string, verbose?: boolean): ViteB
 
 export interface RuntimeCheckOptions {
   workspaceDir: string
-  skillServerPort: number
+  /**
+   * Port the project's API server (root `server.tsx`) is reachable on.
+   * Historically named `skillServerPort`; that name is preserved as an
+   * alias for backwards compatibility with existing eval workers.
+   */
+  apiServerPort?: number
+  /** @deprecated use `apiServerPort` */
+  skillServerPort?: number
   canvasExpectedPort?: number
   evalId: string
   verbose?: boolean
 }
 
 export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<RuntimeCheckResults | null> {
-  const { workspaceDir, skillServerPort, canvasExpectedPort, evalId, verbose } = opts
-  const canvasPort = canvasExpectedPort ?? skillServerPort
-  const schemaPath = join(workspaceDir, '.shogo/server/schema.prisma')
+  const { workspaceDir, canvasExpectedPort, evalId, verbose } = opts
+  const apiServerPort = opts.apiServerPort ?? opts.skillServerPort ?? 3001
+  const canvasPort = canvasExpectedPort ?? apiServerPort
+  const schemaPath = join(workspaceDir, 'prisma', 'schema.prisma')
   const hasSchema = existsSync(schemaPath)
 
   // 0. Canvas compilation check (independent of skill server)
@@ -363,7 +430,7 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
     return null
   }
 
-  // 1-3. Skill server checks (only when schema exists)
+  // 1-3. API server checks (only when schema exists)
   let serverHealthy: boolean | null = hasSchema ? false : null
   let healthEndpoint = false
   let canListModels = false
@@ -372,7 +439,7 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
   let discoveredRoutePaths: string[] = []
 
   if (hasSchema) {
-    const baseUrl = `http://localhost:${skillServerPort}`
+    const baseUrl = `http://localhost:${apiServerPort}`
 
     // 1. Health check with retries
     for (let attempt = 1; attempt <= HEALTH_RETRY_COUNT; attempt++) {
@@ -389,15 +456,32 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
     if (verbose) console.log(`  [${LOG_PREFIX}] Health: ${healthEndpoint ? 'OK' : 'FAIL'}`)
     serverHealthy = healthEndpoint
 
-    // 2. Discover actual routes and check schema-route completeness
-    const models = parseModels(schemaPath)
-    const routePaths = discoverRoutes(workspaceDir, models.map(m => m.name))
+    // 2. Discover actual routes and check schema-route completeness.
+    // We exclude template-sentinel models (e.g. seeded `User`) from the
+    // CRUD probe because they're scaffolding the runtime-template
+    // ships, not models the eval is testing. They still get listed in
+    // `discoverRoutes` so the route-stabilization probe catches them,
+    // but `buildTestBody` is too generic to safely insert into them.
+    const allModels = parseModels(schemaPath)
+    const sentinelNames = new Set(allModels.filter(m => m.isTemplateSentinel).map(m => m.name))
+    const routePaths = discoverRoutes(workspaceDir, allModels.map(m => m.name))
     discoveredRoutePaths = routePaths
-    canListModels = routePaths.length > 0
+    // Routes worth CRUD-probing — sentinel models are template
+    // scaffolding and skipped below. If the agent didn't add any
+    // models of its own, `canListModels` stays false and the eval
+    // criterion is `skip:true` via `schemaHasModels`.
+    const probeRoutes = routePaths.filter(rp => {
+      const m = allModels.find(am => toRoutePath(am.name).toLowerCase() === rp.toLowerCase())
+      return !m || !m.isTemplateSentinel
+    })
+    canListModels = probeRoutes.length > 0
 
-    // Schema-route completeness: every model should have a corresponding route
+    // Schema-route completeness: every agent-authored model should
+    // have a corresponding route (sentinels are not the eval's
+    // responsibility, so don't flag them as missing).
     const routePathSet = new Set(routePaths.map(r => r.toLowerCase()))
-    for (const model of models) {
+    for (const model of allModels) {
+      if (model.isTemplateSentinel) continue
       const expected = toRoutePath(model.name).toLowerCase()
       if (!routePathSet.has(expected)) {
         missingRoutes.push(model.name)
@@ -432,10 +516,22 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
       if (verbose) console.log(`  [${LOG_PREFIX}] Routes stabilized: ${stabilized ? 'YES' : 'NO'} (${routePaths.length} routes)`)
     }
 
-    // 3. Full model CRUD: GET + POST + round-trip GET for every model
+    // 3. Full model CRUD: GET + POST + round-trip GET for every
+    //    *agent-authored* model. Sentinel models (e.g. seeded `User`)
+    //    are skipped — they're template scaffolding and probing them
+    //    either collides with itself on `email @unique` or fails when
+    //    the agent renames `name` to a required field.
     for (let i = 0; i < routePaths.length; i++) {
       const routePath = routePaths[i]
-      const model = models[i] // may be undefined if routes > models
+      // Re-resolve the model by route path rather than positional index
+      // so sentinel skipping is robust to ordering. `model` may be
+      // undefined if `discoverRoutes` returned a path that doesn't map
+      // back to a parsed model (e.g. fallback pluralization).
+      const model = allModels.find(m => toRoutePath(m.name).toLowerCase() === routePath.toLowerCase())
+      if (model?.isTemplateSentinel || sentinelNames.has(model?.name ?? '')) {
+        if (verbose) console.log(`  [${LOG_PREFIX}] Skipping sentinel model ${model?.name} (template scaffolding)`)
+        continue
+      }
       const endpoint = `${baseUrl}/api/${routePath}`
 
       // GET (list)
@@ -485,14 +581,18 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
   if (canvasFiles.length > 0) {
     canvasPortCorrect = true
     const portPattern = /localhost:(\d+)/g
+    // We flag any hard-coded localhost port that isn't the API server's
+    // port (3001 by default), since the agent should always use relative
+    // `/api/...` URLs from canvas / src code. The legacy 4100-4200
+    // range (skill server) is now invalid wherever it appears.
     for (const filePath of canvasFiles) {
       try {
         const content = readFileSync(filePath, 'utf-8')
         for (const match of content.matchAll(portPattern)) {
           const usedPort = parseInt(match[1], 10)
-          if (usedPort !== canvasPort && usedPort >= 4100 && usedPort <= 4200) {
+          if (usedPort !== canvasPort && (usedPort === 3001 || (usedPort >= 4100 && usedPort <= 4200))) {
             canvasPortCorrect = false
-            errors.push(`Canvas ${filePath} references port ${usedPort}, but skill server is on ${canvasPort}`)
+            errors.push(`Canvas ${filePath} references port ${usedPort}, but the API server is on ${canvasPort}`)
           }
         }
       } catch {}

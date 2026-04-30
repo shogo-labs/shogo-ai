@@ -240,7 +240,11 @@ export class KnativeProjectManager {
   constructor(config: KnativeProjectManagerConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
     this.image = config.image || RUNTIME_CONFIG.image()
-    this.idleTimeoutSeconds = config.idleTimeoutSeconds || parseInt(process.env.PROJECT_IDLE_TIMEOUT || "300", 10)
+    // Default 30 min: scale-to-zero retention has to outlast normal
+    // user-think-time between chat turns. The previous 300s caused
+    // pods to recycle between every message, forcing cold-start S3
+    // restores that block the runtime's `/ready` probe.
+    this.idleTimeoutSeconds = config.idleTimeoutSeconds || parseInt(process.env.PROJECT_IDLE_TIMEOUT || "1800", 10)
     this.memoryLimit = config.memoryLimit || "2Gi"
     this.cpuLimit = config.cpuLimit || "1000m"
     this.s3WorkspacesBucket = config.s3WorkspacesBucket || process.env.S3_WORKSPACES_BUCKET || null
@@ -1147,7 +1151,14 @@ export class KnativeProjectManager {
     }
 
     const diskSizeLimit = sizeOverrides?.diskSizeLimit ?? "2Gi"
-    const minScale = sizeOverrides?.minScale ?? 0
+    // Default min-scale=1 keeps a warm replica for the entire idle-retention
+    // window so back-to-back chats don't cold-start (the 116s tar extract
+    // during S3 deps restore otherwise blocks Bun's event loop, /ready
+    // probes start failing, and the activator's hardcoded 5-minute request
+    // timeout cuts the in-flight chat with `eof-without-turn-complete`).
+    // Callers that explicitly want scale-to-zero (e.g. eval workers) can
+    // pass `minScale: 0` via sizeOverrides.
+    const minScale = sizeOverrides?.minScale ?? 1
 
     // Build containers array
     const containers: any[] = [
@@ -1194,7 +1205,12 @@ export class KnativeProjectManager {
     ]
 
     const podSpec: any = {
-      timeoutSeconds: 1800,
+      // 3600s headroom for very long agent turns (heavy multi-tool runs,
+      // browser_use loops, large file edits). Requires the cluster-level
+      // `max-revision-timeout-seconds` in `knative-serving/config-defaults`
+      // to be at least this value — `.github/workflows/deploy.yml` patches
+      // it on every deploy.
+      timeoutSeconds: 3600,
       responseStartTimeoutSeconds: 600,
       securityContext: { fsGroup: 999 },
       containers,
@@ -1221,6 +1237,12 @@ export class KnativeProjectManager {
               "autoscaling.knative.dev/max-scale": "1",
               "autoscaling.knative.dev/scale-to-zero-pod-retention-period": `${this.idleTimeoutSeconds}s`,
               "autoscaling.knative.dev/target": "10",
+              // Take the activator out of the request path once a replica is
+              // ready. With `0`, requests bypass the activator's hardcoded
+              // 5-minute `defaultRequestTimeout` (handler/timeout.go) which
+              // was cutting in-flight chat streams mid-turn and surfacing as
+              // `eof-without-turn-complete` in the API logs.
+              "autoscaling.knative.dev/target-burst-capacity": "0",
             },
           },
           spec: podSpec,

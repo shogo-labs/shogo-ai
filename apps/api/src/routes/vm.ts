@@ -28,7 +28,6 @@ interface VMIsolationConfig {
 
 interface DesktopConfig {
   mode: 'local' | 'cloud'
-  cloudUrl: string
   vmIsolation: VMIsolationConfig
 }
 
@@ -41,7 +40,6 @@ const DEFAULT_VM_CONFIG: VMIsolationConfig = {
 
 const DEFAULT_CONFIG: DesktopConfig = {
   mode: 'local',
-  cloudUrl: 'https://studio.shogo.ai',
   vmIsolation: { ...DEFAULT_VM_CONFIG },
 }
 
@@ -65,9 +63,6 @@ function readConfig(): DesktopConfig {
     const parsed = JSON.parse(raw)
     return {
       mode: parsed.mode === 'cloud' ? 'cloud' : 'local',
-      cloudUrl: typeof parsed.cloudUrl === 'string' && parsed.cloudUrl
-        ? parsed.cloudUrl
-        : DEFAULT_CONFIG.cloudUrl,
       vmIsolation: {
         ...DEFAULT_VM_CONFIG,
         ...(typeof parsed.vmIsolation === 'object' && parsed.vmIsolation !== null

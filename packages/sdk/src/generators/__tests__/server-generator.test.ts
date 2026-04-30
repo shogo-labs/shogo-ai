@@ -85,7 +85,7 @@ describe('Server Generator', () => {
     })
   })
 
-  describe('all three combined (skill server template)', () => {
+  describe('all three combined (project server template)', () => {
     const output = generateServer({
       port: 4100,
       skipStatic: true,

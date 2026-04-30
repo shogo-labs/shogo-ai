@@ -32,7 +32,7 @@
  *
  *   17 tools are now delegated to subagents (browser, tool_*, mcp_*,
  *   channel_*, send_message, generate_image, transcribe_audio, heartbeat_*,
- *   skill_server_sync), saving ~4,000 schema tokens vs the original 53 tools.
+ *   server_sync), saving ~4,000 schema tokens vs the original 53 tools.
  *   The `web` tool stays on the main agent for direct HTTP fetching.
  *
  *   Ceiling of 16,000 accounts for the eval workspace's seeded content

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -32,7 +32,15 @@ import type { IProject, IMember, IWorkspace } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
-import { saveInteractionModePreference } from '../../lib/interaction-mode-preference'
+import {
+  PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS,
+  shouldSuggestPlanMode,
+} from '../../components/chat/plan-mode-suggestion'
+import { PlanModeSuggestion } from '../../components/chat/PlanModeSuggestion'
+import {
+  loadInteractionModePreference,
+  saveInteractionModePreference,
+} from '../../lib/interaction-mode-preference'
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -46,6 +54,11 @@ import { AgentTemplateGalleryCard } from '../../components/templates/agent-templ
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
 type AgentTemplate = AgentTemplateSummary
+
+type PendingPlanModeSuggestionSubmission = {
+  text: string
+  files?: FileAttachment[]
+}
 
 /**
  * Reads the dark class directly from the DOM and observes mutations.
@@ -207,12 +220,40 @@ const HomeScreen = observer(function HomeScreen() {
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   const [isCreating, setIsCreating] = useState(false)
+  const [pendingPlanModeSuggestion, setPendingPlanModeSuggestion] =
+    useState<PendingPlanModeSuggestionSubmission | null>(null)
+  const [planModeSuggestionSecondsLeft, setPlanModeSuggestionSecondsLeft] = useState(
+    PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS
+  )
+  const pendingPlanModeSuggestionRef =
+    useRef<PendingPlanModeSuggestionSubmission | null>(null)
+  const planModeSuggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const planModeSuggestionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  /**
+   * Draft project the homepage opens behind the scenes as soon as the
+   * user starts composing (typing or tapping the mic for Shogo Mode).
+   * Reused by both submit and the Shogo voice entry point so we never
+   * create two projects for one creation gesture, and so a runtime pod
+   * is being warmed while the user is still composing.
+   */
+  type HomeDraft = { projectId: string; chatSessionId: string }
+  const draftRef = useRef<HomeDraft | null>(null)
+  const draftPromiseRef = useRef<Promise<HomeDraft | null> | null>(null)
+  const draftPrewarmedRef = useRef<Set<string>>(new Set())
+  const draftTypeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
   // APP_MODE_DISABLED: homeAppTemplates state removed
   const [activeTab, setActiveTab] = useState<'projects' | 'shared' | 'templates'>('templates')
 
   const [workspaceError, setWorkspaceError] = useState(false)
+
+  useEffect(() => {
+    void loadInteractionModePreference().then((stored) => {
+      if (stored) setInteractionMode(stored)
+    })
+  }, [])
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -371,16 +412,34 @@ const HomeScreen = observer(function HomeScreen() {
         ? 'Ask a question...'
         : `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
 
-  const handlePromptSubmit = useCallback(async (text: string, files?: FileAttachment[]) => {
-    if (!text.trim() || !user?.id || !currentWorkspace?.id) return
-    setIsCreating(true)
-    try {
-      const projectName = generateProjectNameFromPrompt(text)
+  const clearPlanModeSuggestionTimers = useCallback(() => {
+    if (planModeSuggestionTimeoutRef.current) {
+      clearTimeout(planModeSuggestionTimeoutRef.current)
+      planModeSuggestionTimeoutRef.current = null
+    }
+    if (planModeSuggestionIntervalRef.current) {
+      clearInterval(planModeSuggestionIntervalRef.current)
+      planModeSuggestionIntervalRef.current = null
+    }
+  }, [])
 
-      let newProject
+  /**
+   * Single-flight: create the draft project + chat session for the home
+   * composer, kick off a runtime prewarm, and return them. Concurrent
+   * callers (typing debounce + submit + mic) all join the same in-flight
+   * promise so we never duplicate creation. Once a draft exists, future
+   * calls resolve to the same draft until it has been consumed by a
+   * navigation away from the home screen.
+   */
+  const ensureDraftProject = useCallback(async (): Promise<HomeDraft | null> => {
+    if (draftRef.current) return draftRef.current
+    if (draftPromiseRef.current) return draftPromiseRef.current
+    if (!user?.id || !currentWorkspace?.id) return null
+
+    const promise = (async (): Promise<HomeDraft | null> => {
       try {
-        newProject = await actions.createProject(
-          projectName,
+        const newProject = await actions.createProject(
+          'New Project',
           currentWorkspace.id,
           undefined,
           user.id,
@@ -388,26 +447,117 @@ const HomeScreen = observer(function HomeScreen() {
           undefined,
           'react-app',
         )
-      } catch (err: any) {
-        const detail = err?.message || err?.details?.error?.message || String(err)
-        console.error('[Home] Failed to create project:', detail, err)
-        Alert.alert('Error', `Failed to create project: ${detail}`)
-        return
-      }
-
-      let chatSession
-      try {
-        chatSession = await actions.createChatSession({
+        const chatSession = await actions.createChatSession({
           inferredName: 'Untitled',
           contextType: 'project',
           contextId: newProject.id,
         })
+        const draft: HomeDraft = {
+          projectId: newProject.id,
+          chatSessionId: chatSession.id,
+        }
+        draftRef.current = draft
+
+        // Fire-and-forget runtime prewarm. The API returns 202 and warms
+        // the warm-pool / cold-start in the background so the pod is
+        // claimed/assigned by the time the user navigates into the
+        // project. Idempotent — we still guard against duplicate calls
+        // per project id locally.
+        if (!draftPrewarmedRef.current.has(draft.projectId)) {
+          draftPrewarmedRef.current.add(draft.projectId)
+          void api.prewarmProjectRuntime(http, draft.projectId)
+        }
+
+        return draft
       } catch (err: any) {
-        const detail = err?.message || err?.details?.error?.message || String(err)
-        console.error('[Home] Failed to create chat session:', detail, err)
-        Alert.alert('Error', `Failed to create chat session: ${detail}`)
-        return
+        console.warn('[Home] ensureDraftProject failed:', err?.message ?? err)
+        return null
+      } finally {
+        draftPromiseRef.current = null
       }
+    })()
+
+    draftPromiseRef.current = promise
+    return promise
+  }, [actions, currentWorkspace?.id, http, user?.id])
+
+  /** Wrap `setPrompt` so the homepage starts warming as soon as there's real input. */
+  const handlePromptChange = useCallback((next: string) => {
+    setPrompt(next)
+    if (next.trim().length < 3) return
+    if (draftRef.current || draftPromiseRef.current) return
+    if (draftTypeTimerRef.current) clearTimeout(draftTypeTimerRef.current)
+    // Tiny debounce so a single keystroke doesn't trigger creation, but
+    // we still kick off well before submit so warm-pool claim has time
+    // to land.
+    draftTypeTimerRef.current = setTimeout(() => {
+      draftTypeTimerRef.current = null
+      void ensureDraftProject()
+    }, 250)
+  }, [ensureDraftProject])
+
+  useEffect(() => {
+    return () => {
+      if (draftTypeTimerRef.current) clearTimeout(draftTypeTimerRef.current)
+    }
+  }, [])
+
+  const createProjectFromPrompt = useCallback(async (
+    text: string,
+    files?: FileAttachment[],
+    submissionInteractionMode: InteractionMode = interactionMode,
+  ) => {
+    if (!text.trim() || !user?.id || !currentWorkspace?.id) return
+
+    setIsCreating(true)
+    try {
+      const projectName = generateProjectNameFromPrompt(text)
+
+      // Reuse the draft created by typing/mic if available; otherwise
+      // create one synchronously here. This guarantees we never create
+      // two projects for one creation gesture.
+      let draft = draftRef.current
+      if (!draft) {
+        try {
+          draft = await ensureDraftProject()
+        } catch {
+          draft = null
+        }
+      }
+      if (!draft) {
+        try {
+          const newProject = await actions.createProject(
+            projectName,
+            currentWorkspace.id,
+            undefined,
+            user.id,
+            undefined,
+            undefined,
+            'react-app',
+          )
+          const chatSession = await actions.createChatSession({
+            inferredName: 'Untitled',
+            contextType: 'project',
+            contextId: newProject.id,
+          })
+          draft = { projectId: newProject.id, chatSessionId: chatSession.id }
+          draftRef.current = draft
+          if (!draftPrewarmedRef.current.has(draft.projectId)) {
+            draftPrewarmedRef.current.add(draft.projectId)
+            void api.prewarmProjectRuntime(http, draft.projectId)
+          }
+        } catch (err: any) {
+          const detail = err?.message || err?.details?.error?.message || String(err)
+          console.error('[Home] Failed to create project:', detail, err)
+          Alert.alert('Error', `Failed to create project: ${detail}`)
+          return
+        }
+      }
+
+      // Update the draft project's name from the heuristic now that we
+      // actually have prompt text. Fire-and-forget — the AI rename below
+      // may overwrite this shortly.
+      actions.updateProject(draft.projectId, { name: projectName }).catch(() => {})
 
       trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'prompt' })
 
@@ -415,19 +565,22 @@ const HomeScreen = observer(function HomeScreen() {
         setPendingFiles(files)
       }
       projects.loadAll()
+      const consumed = draft
+      // Consume the draft so subsequent home interactions create a new one.
+      draftRef.current = null
       router.push({
         pathname: '/(app)/projects/[id]',
         params: {
-          id: newProject.id,
-          chatSessionId: chatSession.id,
+          id: consumed.projectId,
+          chatSessionId: consumed.chatSessionId,
           initialMessage: text,
-          initialInteractionMode: interactionMode,
+          initialInteractionMode: submissionInteractionMode,
         },
       } as any)
 
       // Fire-and-forget: replace heuristic name with AI-generated name
-      const pid = newProject.id
-      const sid = chatSession.id
+      const pid = consumed.projectId
+      const sid = consumed.chatSessionId
       api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
         if (name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
@@ -439,7 +592,148 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setIsCreating(false)
     }
-  }, [actions, http, user?.id, currentWorkspace?.id, projects, router, posthog, interactionMode])
+  }, [
+    actions,
+    currentWorkspace?.id,
+    ensureDraftProject,
+    http,
+    interactionMode,
+    posthog,
+    projects,
+    router,
+    user?.id,
+  ])
+
+  /**
+   * Homepage mic entry point — clicking the microphone is intentionally
+   * NOT generic dictation. It opens Shogo Mode for a brand-new project:
+   * we ensure a draft project exists (creating + prewarming if needed),
+   * then navigate into the project with route params that tell the
+   * project layout to flip Shogo Mode on and auto-start the voice
+   * session.
+   */
+  const handleStartVoiceProjectCreation = useCallback(async () => {
+    if (Platform.OS !== 'web') return
+    if (isCreating) return
+    if (!user?.id || !currentWorkspace?.id) return
+
+    setIsCreating(true)
+    try {
+      let draft = draftRef.current
+      if (!draft) {
+        draft = await ensureDraftProject()
+      }
+      if (!draft) return
+
+      trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'voice' })
+      projects.loadAll()
+      const consumed = draft
+      draftRef.current = null
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: {
+          id: consumed.projectId,
+          chatSessionId: consumed.chatSessionId,
+          initialInteractionMode: interactionMode,
+          startShogoMode: '1',
+          autoStartVoice: '1',
+        },
+      } as any)
+    } finally {
+      setIsCreating(false)
+    }
+  }, [
+    currentWorkspace?.id,
+    ensureDraftProject,
+    interactionMode,
+    isCreating,
+    posthog,
+    projects,
+    router,
+    user?.id,
+  ])
+
+  const handlePromptSubmit = useCallback(
+    (
+      text: string,
+      files?: FileAttachment[],
+      modeOverride?: InteractionMode,
+    ): void | false => {
+      if (pendingPlanModeSuggestionRef.current && !modeOverride) {
+        return false
+      }
+
+      const submissionInteractionMode = modeOverride ?? interactionMode
+      if (
+        !modeOverride &&
+        submissionInteractionMode === 'agent' &&
+        !isCreating &&
+        !pendingPlanModeSuggestionRef.current &&
+        shouldSuggestPlanMode(text)
+      ) {
+        clearPlanModeSuggestionTimers()
+        const pending = { text, files }
+        pendingPlanModeSuggestionRef.current = pending
+        setPendingPlanModeSuggestion(pending)
+        setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+        planModeSuggestionIntervalRef.current = setInterval(() => {
+          setPlanModeSuggestionSecondsLeft((seconds) => Math.max(0, seconds - 1))
+        }, 1000)
+        planModeSuggestionTimeoutRef.current = setTimeout(() => {
+          const pendingSubmission = pendingPlanModeSuggestionRef.current
+          if (!pendingSubmission) return
+          clearPlanModeSuggestionTimers()
+          pendingPlanModeSuggestionRef.current = null
+          setPendingPlanModeSuggestion(null)
+          setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+          void createProjectFromPrompt(pendingSubmission.text, pendingSubmission.files, 'agent')
+        }, PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS * 1000)
+        return false
+      }
+
+      void createProjectFromPrompt(text, files, submissionInteractionMode)
+    },
+    [
+      clearPlanModeSuggestionTimers,
+      createProjectFromPrompt,
+      interactionMode,
+      isCreating,
+    ],
+  )
+
+  const handleResolvePlanModeSuggestion = useCallback(
+    (targetMode: 'agent' | 'plan') => {
+      const pending = pendingPlanModeSuggestionRef.current
+      if (!pending) return
+
+      clearPlanModeSuggestionTimers()
+      pendingPlanModeSuggestionRef.current = null
+      setPendingPlanModeSuggestion(null)
+      setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+
+      handleHomeInteractionModeChange(targetMode)
+
+      void handlePromptSubmit(pending.text, pending.files, targetMode)
+    },
+    [clearPlanModeSuggestionTimers, handleHomeInteractionModeChange, handlePromptSubmit],
+  )
+
+  const handleEditPlanModePrompt = useCallback(() => {
+    const pending = pendingPlanModeSuggestionRef.current
+    if (!pending) return
+
+    clearPlanModeSuggestionTimers()
+    pendingPlanModeSuggestionRef.current = null
+    setPendingPlanModeSuggestion(null)
+    setPlanModeSuggestionSecondsLeft(PLAN_MODE_SUGGESTION_TIMEOUT_SECONDS)
+    setPrompt(pending.text)
+  }, [clearPlanModeSuggestionTimers])
+
+  useEffect(() => {
+    return () => {
+      clearPlanModeSuggestionTimers()
+    }
+  }, [clearPlanModeSuggestionTimers])
 
   const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -560,18 +854,31 @@ const HomeScreen = observer(function HomeScreen() {
                 maxWidth: 680,
               }}
             >
+              {pendingPlanModeSuggestion && (
+                <PlanModeSuggestion
+                  secondsLeft={planModeSuggestionSecondsLeft}
+                  onEditPrompt={handleEditPlanModePrompt}
+                  onContinueInAgent={() => handleResolvePlanModeSuggestion('agent')}
+                  onSwitchToPlan={() => handleResolvePlanModeSuggestion('plan')}
+                />
+              )}
               <CompactChatInput
                 onSubmit={handlePromptSubmit}
-                isLoading={isCreating}
+                isLoading={isCreating || !!pendingPlanModeSuggestion}
+                disabled={!!pendingPlanModeSuggestion}
+                dimWhenDisabled={!pendingPlanModeSuggestion}
                 placeholder={homeComposerPlaceholder}
                 value={prompt}
-                onChange={setPrompt}
+                onChange={handlePromptChange}
                 interactionMode={interactionMode}
                 onInteractionModeChange={handleHomeInteractionModeChange}
                 selectedModel={selectedModel}
                 onModelChange={handleHomeModelChange}
                 isPro={hasAdvancedModelAccess}
                 onUpgradeClick={() => router.push('/billing')}
+                onStartVoiceProjectCreation={
+                  Platform.OS === 'web' ? handleStartVoiceProjectCreation : undefined
+                }
               />
             </View>
           </View>

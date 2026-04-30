@@ -20,6 +20,7 @@ function makeFakeBridge() {
     shogoPeekActive: false,
     setShogoPeekActive: () => {},
     chatSessionId: null,
+    consumeAutoStartVoice: () => false,
   }
   return { api, sends, modes }
 }
@@ -42,13 +43,13 @@ describe('createBridgeClientTools', () => {
     expect(sends).toEqual([])
   })
 
-  test('set_mode accepts agent/plan (case-insensitive) and rejects others', () => {
+  test('set_mode accepts agent/plan/ask (case-insensitive) and rejects others', () => {
     const { api, modes } = makeFakeBridge()
     const tools = createBridgeClientTools(api)
     expect(tools.set_mode({ mode: 'plan' })).toBe('Switched to plan mode.')
     expect(tools.set_mode({ mode: 'AGENT' })).toBe('Switched to agent mode.')
-    expect(tools.set_mode({ mode: 'ask' })).toContain('Error')
+    expect(tools.set_mode({ mode: 'ask' })).toBe('Switched to ask mode.')
     expect(tools.set_mode({})).toContain('Error')
-    expect(modes).toEqual(['plan', 'agent'])
+    expect(modes).toEqual(['plan', 'agent', 'ask'])
   })
 })

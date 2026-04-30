@@ -15,7 +15,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
-import { readConfig, writeConfig, getDeviceInfo } from './config'
+import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import {
   registerRecordingIpcHandlers,
@@ -162,7 +162,6 @@ async function handleAuthCallback(callbackUrl: string): Promise<void> {
     const parsed = new URL(callbackUrl)
     const state = parsed.searchParams.get('state') || ''
     const key = parsed.searchParams.get('key') || ''
-    const cloudUrl = parsed.searchParams.get('cloudUrl') || ''
     const email = parsed.searchParams.get('email') || ''
     const workspace = parsed.searchParams.get('workspace') || ''
     const error = parsed.searchParams.get('error') || ''
@@ -178,10 +177,12 @@ async function handleAuthCallback(callbackUrl: string): Promise<void> {
       return
     }
 
+    // The cloud endpoint is sourced from the local API's SHOGO_CLOUD_URL env
+    // var; we deliberately do not forward a `cloudUrl` from the callback URL.
     const res = await fetch(`${getApiUrl()}/api/local/cloud-login/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state, key, cloudUrl, email, workspace }),
+      body: JSON.stringify({ state, key, email, workspace }),
     })
     const body = (await res.json().catch(() => ({}))) as CloudLoginBody
     if (!res.ok || body?.ok === false) {
@@ -537,8 +538,7 @@ function createWindow(): void {
   })
 
   if (isCloudMode) {
-    const config = readConfig()
-    mainWindow.loadURL(config.cloudUrl)
+    mainWindow.loadURL(getCloudUrl())
   } else if (IS_DEV) {
     const devUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
     mainWindow.loadURL(devUrl).catch(() => {
@@ -592,12 +592,8 @@ function isTrustedMediaOrigin(url: string): boolean {
     if (devUrl && url.startsWith(devUrl)) return true
   }
   if (isCloudMode) {
-    try {
-      const cloudUrl = readConfig().cloudUrl
-      if (cloudUrl && url.startsWith(cloudUrl)) return true
-    } catch {
-      // ignore — fall through to deny
-    }
+    const cloudUrl = getCloudUrl()
+    if (cloudUrl && url.startsWith(cloudUrl)) return true
   }
   return false
 }

@@ -49,5 +49,5 @@ export const COORDINATOR_READONLY_TOOLS = new Set([
   'web', 'browser', 'memory_read', 'memory_search',
   'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
   'team_create', 'team_delete', 'task_create', 'task_get', 'task_list', 'task_update', 'send_team_message',
-  'ask_user', 'todo_write', 'create_plan',
+  'ask_user', 'todo_write', 'create_plan', 'update_plan',
 ])

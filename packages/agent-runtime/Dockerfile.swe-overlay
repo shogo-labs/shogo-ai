@@ -35,6 +35,11 @@ COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
+# Copy patches required by `patchedDependencies` in package.json — bun install
+# fails with "Couldn't find patch file" when this directory is missing from
+# the build context.
+COPY patches ./patches
+
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
 COPY prisma.config.local.ts ./prisma.config.local.ts
@@ -78,6 +83,9 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
+
+# Same patches directory as the builder stage — bun install fails without it.
+COPY patches ./patches
 
 COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts

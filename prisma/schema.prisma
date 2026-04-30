@@ -504,9 +504,14 @@ model UsageWallet {
   dailyIncludedUsd              Float    @default(0)
   monthlyIncludedAllocationUsd  Float    @default(0)
   dailyUsedThisMonthUsd         Float    @default(0)
-  overageEnabled                Boolean  @default(false)
+  overageEnabled                Boolean  @default(true)
   overageHardLimitUsd           Float?
   overageAccumulatedUsd         Float    @default(0)
+  // USD already invoiced this period in $100 trust blocks. When
+  // `overageAccumulatedUsd` crosses the next 100 dollar threshold past this
+  // value, a new $100 invoice is created mid-cycle and this field bumps.
+  // Resets to 0 each monthly allocation reset.
+  overageBilledUsd              Float    @default(0)
   stripeMeteredItemId           String?
   anniversaryDay                Int
   lastDailyReset                DateTime

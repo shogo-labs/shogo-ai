@@ -98,6 +98,15 @@ export interface UseLiveAgentEditsArgs {
   tryAnimate?: (fileId: string, newContent: string) => boolean;
   /** Master switch (user setting). Default true. */
   enabled?: boolean;
+  /**
+   * Whether the IDE pane is visible to the user. The hook stays mounted
+   * across tab switches (the SSE subscription must survive so live edits
+   * still flow into the buffers), but the 2s polling fallback only runs
+   * while the user is actually looking at the Workbench. Defaults to
+   * `true` so callers that don't care about visibility (tests, embedded
+   * uses) keep their existing behaviour.
+   */
+  visible?: boolean;
 }
 
 /**
@@ -116,6 +125,7 @@ export function useLiveAgentEdits({
   refreshTree,
   tryAnimate,
   enabled = true,
+  visible = true,
 }: UseLiveAgentEditsArgs): void {
   // Keep refs to the latest values so handlers closed over at subscribe time
   // read fresh state without us retearing the subscription on every render.
@@ -361,9 +371,18 @@ export function useLiveAgentEdits({
   // Polling fallback — checks the currently-active agent file every
   // POLL_INTERVAL_MS. Catches writes the SSE stream drops (proxies that
   // buffer SSE, corporate firewalls, temporary network blips).
+  //
+  // Skipped when the IDE pane is not visible. The Workbench stays mounted
+  // (display:none) across tab switches so the SSE subscription survives,
+  // but polling a hidden panel just floods the network tab with
+  // GET /agent/workspace/files/<path> every 2s after the chat agent
+  // edits a file. The SSE handler's initial-resync block already re-reads
+  // every open agent file when the subscription (re)opens, which is enough
+  // to catch up anything missed while polling was paused.
   // -----------------------------------------------------------------------
   useEffect(() => {
     if (!enabled) return;
+    if (!visible) return;
     if (!service) return;
 
     let stopped = false;
@@ -406,5 +425,5 @@ export function useLiveAgentEdits({
       stopped = true;
       window.clearInterval(interval);
     };
-  }, [service, enabled]);
+  }, [service, enabled, visible]);
 }

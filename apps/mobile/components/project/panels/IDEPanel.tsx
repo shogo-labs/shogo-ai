@@ -70,6 +70,7 @@ export function IDEPanel({ visible, projectId, projectName, agentUrl }: IDEPanel
           agentService={agentService}
           agentLabel={projectName || `project/${projectId}`}
           projectId={projectId}
+          paneVisible={visible}
         />
       </div>
     </View>

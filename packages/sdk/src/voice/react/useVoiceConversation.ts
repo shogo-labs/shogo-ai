@@ -96,8 +96,17 @@ export interface UseVoiceConversationOptions {
 }
 
 export interface UseVoiceConversationResult {
-  /** Begin a new session. Requests microphone permission and fetches a signed URL. */
-  start: () => Promise<void>
+  /**
+   * Begin a new session. Requests microphone permission and fetches a
+   * signed URL.
+   *
+   * `suppressFirstMessage` mirrors the option on `restart()` — when
+   * `true`, the new session is opened with `overrides.agent.firstMessage = ''`
+   * so the agent skips its opening greeting. Useful when the consumer
+   * is programmatically reconnecting (e.g. to deliver a one-shot spoken
+   * summary) and does not want to hear the configured intro.
+   */
+  start: (options?: { suppressFirstMessage?: boolean }) => Promise<void>
   /** End the current session (if any). */
   end: () => void
   /**
@@ -356,7 +365,17 @@ export function useVoiceConversation(
         headers: authHeaders(),
       })
       if (!res.ok) throw new Error(`Signed URL request failed: ${res.status}`)
-      const data = (await res.json()) as { signedUrl: string; userContext?: string }
+      const data = (await res.json()) as {
+        signedUrl: string
+        userContext?: string
+        // Optional per-session full-prompt override. The server resolves
+        // project metadata + memory and composes a complete persona +
+        // context prompt; we forward it verbatim to ElevenLabs via
+        // `overrides.agent.prompt.prompt`. Requires the agent to be
+        // provisioned with `platform_settings.overrides.agent.prompt.prompt = true`
+        // (see packages/sdk/src/voice/elevenlabs.ts createAgent).
+        agentPromptOverride?: string
+      }
       const ctx = data.userContext || 'No prior memories yet.'
       weStartedSessionRef.current = true
       const sessionPayload: Record<string, unknown> = {
@@ -366,8 +385,19 @@ export function useVoiceConversation(
           user_context: ctx,
         },
       }
+      // Build `overrides.agent` lazily so we only set the keys we
+      // actually want to override — ElevenLabs treats any present key
+      // as "use this value" and any missing key as "use the agent's
+      // configured default".
+      const agentOverrides: Record<string, unknown> = {}
       if (opts?.suppressFirstMessage) {
-        sessionPayload.overrides = { agent: { firstMessage: '' } }
+        agentOverrides.firstMessage = ''
+      }
+      if (typeof data.agentPromptOverride === 'string' && data.agentPromptOverride.length > 0) {
+        agentOverrides.prompt = { prompt: data.agentPromptOverride }
+      }
+      if (Object.keys(agentOverrides).length > 0) {
+        sessionPayload.overrides = { agent: agentOverrides }
       }
       await startSession(sessionPayload as never)
     },
@@ -382,9 +412,12 @@ export function useVoiceConversation(
     ],
   )
 
-  const start = useCallback(async () => {
-    await startInternal()
-  }, [startInternal])
+  const start = useCallback(
+    async (options?: { suppressFirstMessage?: boolean }) => {
+      await startInternal(options)
+    },
+    [startInternal],
+  )
 
   const end = useCallback(() => {
     endSession()

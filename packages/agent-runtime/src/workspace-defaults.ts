@@ -47,7 +47,7 @@ You explain what you're about to do, then do it. You prefer showing over telling
 ## App Development
 - The workspace is a standard Vite + React + Tailwind + shadcn/ui app
 - Edit src/App.tsx for the main UI, add components under src/components/
-- For data-driven apps, create a skill server by writing .shogo/server/schema.prisma
+- For data-driven apps, append models to prisma/schema.prisma (the project's own backend at server.tsx auto-regenerates routes)
 - Use edit_file to update existing files — avoid full rewrites
 
 ## Priorities
@@ -683,7 +683,7 @@ export const SKILL_SERVER_SCHEMA_HEADER = `datasource db {
 
 generator client {
   provider = "prisma-client"
-  output   = "./generated/prisma"
+  output   = "../src/generated/prisma"
 }
 `
 
@@ -760,29 +760,28 @@ const app = new Hono()
 export default app
 `
 
+/**
+ * The legacy `.shogo/server/` skill server has been retired. The project's
+ * own backend (root `server.tsx` + `prisma/schema.prisma`) is now the
+ * single API server, owned by `PreviewManager`. This helper is kept as a
+ * no-op shim because eval workers and other callers still reference it
+ * during the rollout — it will be deleted once those callers stop calling
+ * it. See `migrations/skill-server-to-root.ts` for the one-shot migration
+ * of existing workspaces with a populated `.shogo/server/`.
+ */
 export function seedSkillServer(workspaceDir: string): { created: boolean; serverDir: string } {
-  const serverDir = join(workspaceDir, '.shogo', 'server')
-  const schemaPath = join(serverDir, 'schema.prisma')
+  return { created: false, serverDir: join(workspaceDir, '.shogo', 'server') }
+}
 
-  if (existsSync(schemaPath)) {
-    // Even if the schema already existed, ensure custom-routes.ts is present
-    const customRoutesPath = join(serverDir, 'custom-routes.ts')
-    if (!existsSync(customRoutesPath)) {
-      writeFileSync(customRoutesPath, CUSTOM_ROUTES_TEMPLATE, 'utf-8')
-    }
-    return { created: false, serverDir }
-  }
-
-  mkdirSync(serverDir, { recursive: true })
-  mkdirSync(join(serverDir, 'generated'), { recursive: true })
-  mkdirSync(join(serverDir, 'hooks'), { recursive: true })
-
-  writeFileSync(schemaPath, SKILL_SERVER_SCHEMA, 'utf-8')
-  writeFileSync(join(serverDir, 'shogo.config.json'), SKILL_SERVER_CONFIG, 'utf-8')
-  writeFileSync(join(serverDir, 'prisma.config.ts'), SKILL_SERVER_PRISMA_CONFIG, 'utf-8')
-  writeFileSync(join(serverDir, 'custom-routes.ts'), CUSTOM_ROUTES_TEMPLATE, 'utf-8')
-
-  return { created: true, serverDir }
+/**
+ * Test-only: re-export the legacy schema/config strings for any test that
+ * still constructs a synthetic `.shogo/server/` for migration coverage.
+ * Production code should not use these.
+ */
+export const __LEGACY_SKILL_SERVER_INTERNALS = {
+  SKILL_SERVER_SCHEMA,
+  SKILL_SERVER_CONFIG,
+  CUSTOM_ROUTES_TEMPLATE,
 }
 
 // ---------------------------------------------------------------------------

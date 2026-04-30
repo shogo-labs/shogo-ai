@@ -117,6 +117,17 @@ export interface PromotedPodInfo {
   ready: boolean
 }
 
+/**
+ * Per-process record of pods that have been soft-evicted (assignment cleared
+ * but Knative service kept alive) by the idle GC. We track these so that the
+ * next reconcile cycle doesn't immediately re-evict the same pod and produce
+ * a flood of `Evicting idle promoted pod` log lines for a project the user
+ * may yet return to. The cooldown is a small multiple of the GC interval.
+ *
+ * Map key: serviceName.
+ */
+const softEvictionCooldownMs = (): number => 5 * 60_000
+
 export interface GcStats {
   orphansDeleted: number
   idleEvictions: number
@@ -211,6 +222,9 @@ export class WarmPoolController {
    * Used for routing while the real Knative Service is being created in the background.
    */
   private assigned = new Map<string, WarmPodInfo>()
+
+  /** serviceName -> Unix ms when soft-evicted (suppress repeat eviction) */
+  private softEvictedAt = new Map<string, number>()
 
   /**
    * Service names that have been claimed but not yet passed to assign().
@@ -771,45 +785,78 @@ export class WarmPoolController {
    * Evict a project from its current warm pod so the next request
    * claims a fresh one (with up-to-date env vars and image).
    *
-   * Steps:
-   *  1. Remove from in-memory assigned map
-   *  2. Clear knativeServiceName in the database
-   *  3. Delete the old Knative Service (async, best-effort)
-   *  4. Delete the preview DomainMapping (async, best-effort)
+   * Two modes, controlled by `options.deleteService`:
    *
-   * The next chat/runtime request triggers getProjectPodUrl() which
-   * claims a new warm pod from the pool.
+   *  - `deleteService: true` (default, "hard evict") — full teardown:
+   *      1. Remove from in-memory assigned map
+   *      2. Clear `knativeServiceName` in the database
+   *      3. Delete the old Knative Service
+   *      4. Delete the preview DomainMapping
+   *    Used when the pod is broken/wrong-image/permanently unhealthy.
+   *
+   *  - `deleteService: false` ("soft evict") — keep the live pod intact:
+   *      1. Remove from in-memory assigned map
+   *      2. Record the eviction time in `softEvictedAt` so the idle GC
+   *         doesn't re-evict the same pod every reconcile cycle.
+   *      3. Leave DB mapping, Knative Service, and DomainMapping alone.
+   *    Used by the idle GC. If the user returns within Knative's
+   *    scale-to-zero retention window, `getProjectPodUrl()` resolves
+   *    via the still-set DB `knativeServiceName` and reuses the warm
+   *    pod — avoiding the expensive S3 deps re-extract that an
+   *    activator-in-path cold start would otherwise produce.
    */
-  async evictProject(projectId: string): Promise<{ evicted: boolean; oldService?: string }> {
+  async evictProject(
+    projectId: string,
+    options: { deleteService?: boolean } = {},
+  ): Promise<{ evicted: boolean; oldService?: string }> {
+    const deleteService = options.deleteService ?? true
     const pod = this.assigned.get(projectId)
 
     // Clear in-memory state regardless of whether we found it
     this.assigned.delete(projectId)
 
-    // Clear DB mapping
     let oldServiceName: string | undefined
-    try {
-      const { prisma } = await import('./prisma')
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { knativeServiceName: true },
-      })
-      oldServiceName = project?.knativeServiceName ?? pod?.serviceName
-      if (project?.knativeServiceName) {
-        await prisma.project.update({
+    if (deleteService) {
+      // HARD EVICT: clear DB mapping so the next request gets a fresh pod.
+      try {
+        const { prisma } = await import('./prisma')
+        const project = await prisma.project.findUnique({
           where: { id: projectId },
-          data: { knativeServiceName: null },
+          select: { knativeServiceName: true },
         })
+        oldServiceName = project?.knativeServiceName ?? pod?.serviceName
+        if (project?.knativeServiceName) {
+          await prisma.project.update({
+            where: { id: projectId },
+            data: { knativeServiceName: null },
+          })
+        }
+      } catch (err: any) {
+        console.error(`[WarmPool] evictProject: DB cleanup failed for ${projectId}:`, err.message)
       }
-    } catch (err: any) {
-      console.error(`[WarmPool] evictProject: DB cleanup failed for ${projectId}:`, err.message)
+    } else {
+      // SOFT EVICT: keep the DB mapping so a returning user reuses the pod.
+      oldServiceName = pod?.serviceName
+      if (!oldServiceName) {
+        try {
+          const { prisma } = await import('./prisma')
+          const project = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { knativeServiceName: true },
+          })
+          oldServiceName = project?.knativeServiceName ?? undefined
+        } catch {
+          // best-effort lookup only
+        }
+      }
+      if (oldServiceName) {
+        this.softEvictedAt.set(oldServiceName, Date.now())
+      }
     }
 
-    // Clear the active label so namespace GC can reclaim the service if
-    // it scales to zero before we finish deleting it.
-    const serviceToDelete = oldServiceName
-    if (serviceToDelete) {
-      (async () => {
+    if (deleteService && oldServiceName) {
+      const serviceToDelete = oldServiceName
+      ;(async () => {
         try {
           const { mergePatchKnativeService } = await import('./knative-project-manager')
           await mergePatchKnativeService(this.namespace, serviceToDelete, {
@@ -839,20 +886,20 @@ export class WarmPoolController {
           }
         }
       })()
+
+      ;(async () => {
+        try {
+          const { getKnativeProjectManager } = await import('./knative-project-manager')
+          const manager = getKnativeProjectManager()
+          await manager.deletePreviewDomainMapping(projectId)
+        } catch (err: any) {
+          console.error(`[WarmPool] evictProject: failed to delete DomainMapping for ${projectId} (non-fatal):`, err.message)
+        }
+      })()
     }
 
-    // Delete the preview DomainMapping (best-effort, non-blocking)
-    ;(async () => {
-      try {
-        const { getKnativeProjectManager } = await import('./knative-project-manager')
-        const manager = getKnativeProjectManager()
-        await manager.deletePreviewDomainMapping(projectId)
-      } catch (err: any) {
-        console.error(`[WarmPool] evictProject: failed to delete DomainMapping for ${projectId} (non-fatal):`, err.message)
-      }
-    })()
-
-    console.log(`[WarmPool] evictProject: evicted project ${projectId} from ${oldServiceName || '(not found)'}`)
+    const mode = deleteService ? 'hard-evicted' : 'soft-evicted (service kept)'
+    console.log(`[WarmPool] evictProject: ${mode} project ${projectId} from ${oldServiceName || '(not found)'}`)
     return { evicted: !!oldServiceName, oldService: oldServiceName }
   }
 
@@ -1122,6 +1169,16 @@ export class WarmPoolController {
           continue
         }
 
+        // Soft-evict cooldown: if we already soft-evicted this pod recently,
+        // don't repeat the eviction every reconcile cycle. The pod stays
+        // alive (DB mapping intact) so a returning user reuses it; if they
+        // never return, Knative's scale-to-zero retention will reclaim
+        // the underlying resources without us having to do anything.
+        const lastSoftEvict = this.softEvictedAt.get(pod.serviceName)
+        if (lastSoftEvict && Date.now() - lastSoftEvict < softEvictionCooldownMs()) {
+          continue
+        }
+
         try {
           const { deriveRuntimeToken } = await import('./runtime-token')
           const resp = await fetch(`${pod.url}/pool/activity`, {
@@ -1151,7 +1208,13 @@ export class WarmPoolController {
           )
         }
 
-        await this.evictProject(pod.projectId).catch((err) => {
+        // Use soft eviction by default: keep the live Knative service so a
+        // returning user reuses the warm pod (deps cache, gateway state)
+        // instead of paying the cost of a fresh warm-pool claim + S3
+        // restore. The Knative `scale-to-zero-pod-retention-period` (now
+        // 1800s by default in `knative-project-manager.ts`) handles the
+        // actual resource-freeing lifecycle.
+        await this.evictProject(pod.projectId, { deleteService: false }).catch((err) => {
           console.error(`[WarmPool GC] Failed to evict ${pod.projectId}:`, err.message)
         })
         idleEvicted++
@@ -1601,6 +1664,19 @@ export class WarmPoolController {
 
       this.promotedPods = newPromotedPods
 
+      // Drop soft-eviction records for services that no longer exist or
+      // have transitioned out of `promoted` status (e.g. user came back
+      // and the pod is now claimed by another project). Also expire
+      // entries older than the cooldown so the map doesn't grow without
+      // bound.
+      const promotedNamesSet = new Set(newPromotedPods.map((p) => p.serviceName))
+      const cooldownExpiry = Date.now() - softEvictionCooldownMs()
+      for (const [name, evictedAt] of this.softEvictedAt) {
+        if (!promotedNamesSet.has(name) || evictedAt < cooldownExpiry) {
+          this.softEvictedAt.delete(name)
+        }
+      }
+
       const readyCount = [...this.available.values()].filter(p => p.ready).length
       if (this.available.size > 0) {
         console.log(
@@ -1805,10 +1881,20 @@ export class WarmPoolController {
             annotations: {
               'autoscaling.knative.dev/min-scale': '1',
               'autoscaling.knative.dev/max-scale': '1',
+              // Take the activator out of the request path. Knative's
+              // activator imposes a hardcoded 5-minute `defaultRequestTimeout`
+              // on in-flight requests (see `handler/timeout.go`), which was
+              // cutting long agent chat streams mid-turn. With burst-capacity=0
+              // the data-plane path is queue-proxy → user-container, with no
+              // activator-imposed deadline.
+              'autoscaling.knative.dev/target-burst-capacity': '0',
             },
           },
           spec: {
-            timeoutSeconds: 1800,
+            // 3600s headroom for very long agent turns. Requires
+            // `max-revision-timeout-seconds` >= 3600 in the cluster's
+            // `knative-serving/config-defaults` (set by the deploy workflow).
+            timeoutSeconds: 3600,
             responseStartTimeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
             containers: [

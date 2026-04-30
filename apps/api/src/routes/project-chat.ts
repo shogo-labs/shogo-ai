@@ -110,6 +110,13 @@ async function trackUsageFromStream(
   let currentReasoningPart: { type: 'reasoning'; text: string; durationMs?: number } | null = null
   let reasoningStartedAt: number | null = null
   let streamInterrupted = false
+  // True iff we observed the runtime's terminal `data-turn-complete` SSE
+  // frame. Stream EOF without this marker means the upstream proxy
+  // (typically Knative activator's hardcoded 5-min request timeout) cut
+  // the body mid-turn — we should NOT bill or persist a partial message,
+  // and the client's auto-resuming-fetch will reconnect via ?fromSeq=N.
+  let observedTurnComplete = false
+  let turnCompleteStatus: 'completed' | 'failed' | null = null
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
@@ -274,6 +281,20 @@ async function trackUsageFromStream(
           }
         }
 
+        // The runtime writes `data-turn-complete` exactly once at the
+        // tail of every successfully-streamed turn (including failed
+        // turns that the runtime caught and reported). Its presence
+        // confirms the agent reached the end of its work; its absence
+        // is what identifies an upstream cut (activator timeout, pod
+        // restart, network drop) vs a clean finish.
+        if (type === 'data-turn-complete') {
+          observedTurnComplete = true
+          const status = data?.data?.status
+          if (status === 'completed' || status === 'failed') {
+            turnCompleteStatus = status
+          }
+        }
+
         // Track usage from finish events or dedicated usage events
         if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
           // Custom data-usage event from runtime puts data in `data` field
@@ -333,16 +354,39 @@ async function trackUsageFromStream(
 
   const toolCallCount = toolCallMap.size
 
+  // Stream EOF without the runtime's terminal `data-turn-complete` marker
+  // means the upstream proxy cut the response mid-turn. Treat this as
+  // interrupted so we (a) skip the partial DB persistence (the resume
+  // path on `/agent/chat/:chatSessionId/stream` will replay the buffer
+  // and the next clean turn will persist the full message), and (b)
+  // discard the billing session instead of charging for a turn the
+  // user never saw the end of.
+  const eofWithoutTurnComplete = !streamInterrupted && !observedTurnComplete
+  if (eofWithoutTurnComplete) {
+    streamInterrupted = true
+  }
+
+  let streamOutcome: string
+  if (observedTurnComplete) {
+    streamOutcome = `complete (status=${turnCompleteStatus ?? 'unknown'})`
+  } else if (eofWithoutTurnComplete) {
+    streamOutcome = 'eof-without-turn-complete'
+  } else {
+    streamOutcome = 'interrupted'
+  }
+
   console.log(
-    `[ProjectChat] 📊 Stream ${streamInterrupted ? 'interrupted' : 'complete'} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
+    `[ProjectChat] 📊 Stream ${streamOutcome} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
   // Usage billing is handled by the AI proxy billing session (opened before
-  // proxying, closed after stream completes in the route handler).
-
-  // Close the billing session — this triggers the actual USD charge based
-  // on total accumulated tokens across all API calls in the agentic loop.
-  const { billedUsd } = await closeSession(project.id)
+  // proxying, closed after stream completes in the route handler). When the
+  // upstream proxy cuts mid-turn (eofWithoutTurnComplete), discard the
+  // session without charging — the auto-resuming-fetch client will reconnect
+  // and the next successful turn will bill normally.
+  const { billedUsd } = await closeSession(project.id, {
+    discardPartial: eofWithoutTurnComplete,
+  })
   if (billedUsd > 0) {
     console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }
@@ -350,7 +394,19 @@ async function trackUsageFromStream(
   // Persist assistant message first so we have a messageId for tool call logs.
   let assistantMessageId: string | null = null
 
-  if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
+  // When the stream EOF'd without a turn-complete marker we deliberately
+  // SKIP persistence: the runtime's `streamBufferStore` still holds the
+  // full turn, the client's auto-resuming-fetch reconnects via
+  // `?fromSeq=N`, and the resume path (which runs to completion or to a
+  // genuine error) will be the one that records the final assistant
+  // message. Persisting a "PARTIAL" row here just creates duplicate
+  // history entries that confuse the next turn.
+  if (eofWithoutTurnComplete) {
+    console.warn(
+      `[ProjectChat] Skipping partial persist for session ${chatSessionId ?? 'unknown'} — ` +
+      `awaiting client resume via /agent/chat/${chatSessionId ?? '<id>'}/stream?fromSeq=N`
+    )
+  } else if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
     try {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (session) {
@@ -380,8 +436,10 @@ async function trackUsageFromStream(
     }
   }
 
-  // Log tool calls with real args, results, duration, and the correct messageId
-  if (toolCallMap.size > 0 && chatSessionId) {
+  // Log tool calls with real args, results, duration, and the correct messageId.
+  // Skip logging when we abandoned persistence (eofWithoutTurnComplete) — the
+  // resume path will redo the same tool calls and we don't want duplicates.
+  if (toolCallMap.size > 0 && chatSessionId && !eofWithoutTurnComplete) {
     try {
       const session = assistantMessageId
         ? true

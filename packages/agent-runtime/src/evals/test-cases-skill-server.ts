@@ -182,16 +182,18 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'wrote-schema',
-        description: 'Created or edited .shogo/server/schema.prisma with a Lead model',
+        description: 'Created or edited prisma/schema.prisma with a Lead model',
         points: 20,
         phase: 'execution',
         validate: (r) =>
           r.toolCalls
-            .filter((t) => t.name === 'write_file')
+            .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
             .some((t) => {
               const input = t.input as Record<string, any>
               const path = String(input.path ?? '')
-              const content = String(input.content ?? '')
+              const content = String(
+                input.content ?? input.new_str ?? input.new_string ?? input.code_edit ?? input.replace ?? '',
+              )
               return path.includes('schema.prisma') && content.toLowerCase().includes('model') && content.toLowerCase().includes('lead')
             }),
       },
@@ -267,7 +269,7 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     level: 3,
     useSkillServer: true,
     workspaceFiles: {
-      '.shogo/server/schema.prisma': EXISTING_TODO_SCHEMA,
+      'prisma/schema.prisma': EXISTING_TODO_SCHEMA,
     },
     input: 'I have a skill server with a Todo model. Add a "priority" field (P0-P3, default P2) to Todo, and add a new Tag model with name and color fields so I can tag my todos.',
     maxScore: 100,
@@ -350,7 +352,7 @@ export const SKILL_SERVER_EVALS: AgentEval[] = [
     level: 4,
     useSkillServer: true,
     workspaceFiles: {
-      '.shogo/server/schema.prisma': EXISTING_BOOKMARK_SCHEMA,
+      'prisma/schema.prisma': EXISTING_BOOKMARK_SCHEMA,
     },
     conversationHistory: [
       {

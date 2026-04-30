@@ -11,13 +11,13 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "bun run server.tsx",
-    "generate": "bunx shogo generate",
-    "db:generate": "bunx --bun prisma generate",
-    "db:migrate:dev": "bunx --bun prisma migrate dev",
-    "db:migrate:deploy": "bunx --bun prisma migrate deploy",
-    "db:push": "bunx --bun prisma db push",
-    "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
-    "db:studio": "bunx --bun prisma studio"
+    "generate": "bun x shogo generate",
+    "db:generate": "bun x --bun prisma generate",
+    "db:migrate:dev": "bun x --bun prisma migrate dev",
+    "db:migrate:deploy": "bun x --bun prisma migrate deploy",
+    "db:push": "bun x --bun prisma db push",
+    "db:reset": "bun x --bun prisma db push --force-reset --accept-data-loss",
+    "db:studio": "bun x --bun prisma studio"
   },
   "dependencies": {
     "@prisma/adapter-libsql": "^7.3.0",

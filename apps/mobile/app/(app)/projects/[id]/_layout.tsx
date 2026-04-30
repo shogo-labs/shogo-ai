@@ -128,6 +128,10 @@ export default observer(function ProjectLayout() {
     initialInteractionMode?: string
     appTemplateName?: string
     showIntegrations?: string
+    /** When '1', enter Shogo Mode immediately on mount (homepage mic flow). */
+    startShogoMode?: string
+    /** When '1' alongside `startShogoMode`, auto-connect the voice session once. */
+    autoStartVoice?: string
   }>()
   const projectId = params.id
   const { width, height } = useWindowDimensions()
@@ -158,6 +162,9 @@ export default observer(function ProjectLayout() {
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
   // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
+  // Capture once so router param changes don't re-fire Shogo Mode.
+  const [capturedStartShogoMode] = useState(() => params.startShogoMode === '1')
+  const [capturedAutoStartVoice] = useState(() => params.autoStartVoice === '1')
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
@@ -193,14 +200,16 @@ export default observer(function ProjectLayout() {
     ? getPlanDisplayName(billingData.subscription.planId)
     : 'Free'
 
+  const subSeats = billingData.subscription?.seats ?? 1
   const usdRemaining =
     billingData.effectiveBalance?.total ??
-    getIncludedUsdForPlan(billingData.subscription?.planId)
-  const usdTotal = getIncludedUsdCapacityForDisplay(
-    billingData.subscription?.planId,
-    billingData.effectiveBalance?.total,
-    billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
-  )
+    getIncludedUsdForPlan(billingData.subscription?.planId, subSeats)
+  const usdTotal = getIncludedUsdCapacityForDisplay({
+    planId: billingData.subscription?.planId,
+    seats: subSeats,
+    remainingTotal: billingData.effectiveBalance?.total,
+    monthlyIncludedAllocationUsd: billingData.effectiveBalance?.monthlyIncludedAllocationUsd,
+  })
 
   const isStarred = useMemo(() => {
     try {
@@ -770,6 +779,9 @@ export default observer(function ProjectLayout() {
     return handler
   }, [handleTabStreamingChange])
   const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; modelId: string; nonce: number } | null>(null)
+  const buildPlanNonceRef = useRef(0)
+  const openPlanNonceRef = useRef(0)
+  const [requestedPlanPath, setRequestedPlanPath] = useState<{ filepath: string | null; nonce: number } | null>(null)
   const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -900,7 +912,8 @@ export default observer(function ProjectLayout() {
   }, [updateProjectSettings, agentUrl, nativeHeaders])
 
   const handleBuildPlan = useCallback((plan: any, modelId: string) => {
-    setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
+    buildPlanNonceRef.current += 1
+    setBuildPlanRequest({ plan, modelId, nonce: buildPlanNonceRef.current })
     setActiveTab('chat')
     if (canvasEnabled) {
       setPreviewTab('dynamic-app')
@@ -908,6 +921,13 @@ export default observer(function ProjectLayout() {
       setPreviewTab('chat-fullscreen')
     }
   }, [canvasEnabled])
+
+  const handleOpenPlan = useCallback((filepath?: string | null) => {
+    openPlanNonceRef.current += 1
+    setRequestedPlanPath({ filepath: filepath ?? null, nonce: openPlanNonceRef.current })
+    setPreviewTab('plans')
+    if (!isWide) setActiveTab('canvas')
+  }, [isWide])
 
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
 
@@ -1223,6 +1243,7 @@ export default observer(function ProjectLayout() {
               onMessagesChange={isActive ? setChatMessages : undefined}
               onStreamingChange={getStreamingChangeHandler(tabId)}
               buildPlanRequest={isActive ? buildPlanRequest : null}
+              onOpenPlan={handleOpenPlan}
               selectedModel={selectedModel}
               onModelChange={handleModelChange}
               className="flex-1"
@@ -1309,7 +1330,11 @@ export default observer(function ProjectLayout() {
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <PlanStreamProvider>
-      <ChatBridgeProvider chatSessionId={chatSessionId}>
+      <ChatBridgeProvider
+        chatSessionId={chatSessionId}
+        initialShogoModeActive={Platform.OS === 'web' && capturedStartShogoMode}
+        initialAutoStartVoice={Platform.OS === 'web' && capturedStartShogoMode && capturedAutoStartVoice}
+      >
       <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
@@ -1508,7 +1533,7 @@ export default observer(function ProjectLayout() {
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} onBuildPlan={handleBuildPlan} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
               <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
             </View>
           </View>
