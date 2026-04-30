@@ -146,7 +146,7 @@ function applyAcceptedHunks(proposal: Proposal): string {
     cursor++;
   }
 
-  const trailing = proposal.before.endsWith("\n") ? "\n" : "";
+  const trailing = proposal.after.endsWith("\n") ? "\n" : "";
   return out.join("\n") + (out.length > 0 ? trailing : "");
 }
 
