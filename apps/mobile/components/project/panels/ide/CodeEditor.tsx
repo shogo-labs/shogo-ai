@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
 import type { EditorSettings } from "./types";
 import { setupAgentFix } from "./agentFixProvider";
+import { setMonacoRef } from "./monaco/workspaceModels";
+import { setupExtraLibs } from "./monaco/extraLibs";
 
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
@@ -58,12 +60,13 @@ function configureMonaco(monaco: MonacoNs) {
   ts.typescriptDefaults.setCompilerOptions(compilerOptions);
   ts.javascriptDefaults.setCompilerOptions(compilerOptions);
 
-  // Suppress "cannot find module" spam for files outside the current model.
+  // We register extraLibs (react, react-dom, csstype, prop-types) below,
+  // so 2307 "Cannot find module" should fire correctly for genuinely-missing
+  // packages. We still ignore noisy codes that apply to ad-hoc workspace files.
   const diagOpts = {
     noSemanticValidation: false,
     noSyntaxValidation: false,
     diagnosticCodesToIgnore: [
-      2307, // Cannot find module
       2339, // Property does not exist (common with dynamic types)
       2691, // An import path cannot end with .tsx
       1375, // 'await' expressions in top-level
@@ -73,6 +76,14 @@ function configureMonaco(monaco: MonacoNs) {
   ts.javascriptDefaults.setDiagnosticsOptions(diagOpts);
 
   ts.typescriptDefaults.setEagerModelSync(true);
+
+  // Register the Monaco instance so workspace files can be preloaded as
+  // models for cross-file go-to-def, hover, and import resolution.
+  setMonacoRef(monaco);
+
+  // Load real @types/react, @types/react-dom, csstype, prop-types
+  // declaration files as extraLibs so React autocomplete + hover work.
+  setupExtraLibs(monaco);
 
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.
