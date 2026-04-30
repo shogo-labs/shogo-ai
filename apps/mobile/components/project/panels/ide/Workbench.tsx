@@ -1195,6 +1195,11 @@ export function Workbench({
                     onReveal={(rootId, path, line, col) =>
                       void revealMatch(rootId, path, line, col)
                     }
+                    onReplaced={(matches, files) => {
+                      showToast(
+                        `Replaced ${matches} match${matches === 1 ? "" : "es"} in ${files} file${files === 1 ? "" : "s"}`,
+                      );
+                    }}
                   />
                 )}
                 {activity === "settings" && (
