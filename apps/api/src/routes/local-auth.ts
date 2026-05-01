@@ -37,6 +37,10 @@ import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
 
 const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+/** Default deep-link the cloud bridge page redirects back to. Override with
+ * `SHOGO_AUTH_CALLBACK_URL` (e.g. `http://localhost:8081/auth/desktop-callback`)
+ * to redirect to a local web URL for development instead of the desktop app. */
+const AUTH_CALLBACK_DEFAULT = 'shogo://auth-callback'
 const STATE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 const STATE_BYTE_LENGTH = 32
 
@@ -68,6 +72,16 @@ function generateState(): string {
 /** Single source of truth for the Shogo Cloud endpoint. */
 function getCloudUrl(): string {
   return (process.env.SHOGO_CLOUD_URL || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
+}
+
+/** Where the cloud bridge page should redirect after minting a device key.
+ * Defaults to the `shogo://auth-callback` deep link the desktop registers,
+ * but can be overridden via SHOGO_AUTH_CALLBACK_URL for dev/testing — e.g.
+ * `http://localhost:8081/auth/desktop-callback` to land in the local web. */
+function getAuthCallbackUrl(): string {
+  const raw = process.env.SHOGO_AUTH_CALLBACK_URL
+  if (typeof raw === 'string' && raw.trim()) return raw.trim()
+  return AUTH_CALLBACK_DEFAULT
 }
 
 async function readStoredKey(localDb: any): Promise<string | null> {
@@ -119,7 +133,7 @@ export function localAuthRoutes() {
 
     const params = new URLSearchParams({
       state,
-      callback: 'shogo://auth-callback',
+      callback: getAuthCallbackUrl(),
       deviceId: body.deviceId,
     })
     if (body.deviceName) params.set('deviceName', body.deviceName)
