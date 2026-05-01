@@ -1,0 +1,49 @@
+{
+  "id": "stripe-revenue-ops",
+  "name": "Stripe Revenue Ops",
+  "description": "Revenue ops dashboard powered by Stripe: churn-risk surfacing, support-email evidence, and a refund execution pane with receipts. Live data flows in once Stripe is connected.",
+  "category": "sales",
+  "icon": "DollarSign",
+  "tags": [
+    "sales",
+    "revenue-ops",
+    "stripe",
+    "churn",
+    "refund",
+    "dashboard",
+    "support",
+    "receipts"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "payments",
+      "description": "Pull Stripe metrics, identify churn risk, and execute refunds with receipts",
+      "required": true
+    },
+    {
+      "categoryId": "email",
+      "description": "Read support inbox to find customers who emailed support twice and notify on refund completion"
+    },
+    {
+      "categoryId": "ticketing",
+      "description": "Read support tickets to detect repeat contacts as a churn-risk signal"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Post refund summaries and churn-risk alerts to the team"
+    }
+  ],
+  "techStack": "react-app"
+}

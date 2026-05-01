@@ -457,6 +457,7 @@ export function IntegrationsCard({
             <ChevronDown size={14} className="text-muted-foreground" />
           </Pressable>
           <Pressable
+            testID="integrations-card-dismiss"
             onPress={onDismiss}
             className="p-1.5 rounded-md active:bg-muted"
             hitSlop={4}

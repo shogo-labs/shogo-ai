@@ -123,6 +123,15 @@ export const INTEGRATION_CATALOG: Record<string, IntegrationCategory> = {
       { toolkit: 'airbnb', name: 'Airbnb' },
     ],
   },
+  'voice': {
+    id: 'voice',
+    label: 'Voice & Telephony',
+    icon: 'phone',
+    options: [
+      { toolkit: 'twilio', name: 'Twilio' },
+      { toolkit: 'elevenlabs', name: 'ElevenLabs' },
+    ],
+  },
 }
 
 /**

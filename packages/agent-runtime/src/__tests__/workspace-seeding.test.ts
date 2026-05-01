@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync, symlinkSync, readFileSync } from 'fs'
 import { join } from 'path'
 import {
   getRuntimeTemplatePath,
   seedRuntimeTemplate,
   seedWorkspaceDefaults,
   ensureWorkspaceDeps,
+  overlayAgentTemplateCodeDirs,
 } from '../workspace-defaults'
 
 const TEST_DIR = '/tmp/test-workspace-seeding'
@@ -144,6 +145,38 @@ describe('seedRuntimeTemplate', () => {
       else process.env.RUNTIME_TEMPLATE_DIR = origEnv
       rmSync(symlinkPath, { force: true })
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// overlayAgentTemplateCodeDirs — curator src wins after runtime skeleton
+// ---------------------------------------------------------------------------
+
+describe('overlayAgentTemplateCodeDirs', () => {
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    mkdirSync(TEST_DIR, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('replaces generic Project Ready App after seedRuntimeTemplate (agent template bootstrap order)', () => {
+    expect(seedRuntimeTemplate(TEST_DIR)).toBe(true)
+    const genericApp = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
+    expect(genericApp).toContain('Project Ready')
+
+    expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'sales-bdr-pipeline')).toBe(true)
+
+    const app = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
+    expect(app).toContain('BDRPipeline')
+    expect(app).not.toContain('Project Ready')
+    expect(existsSync(join(TEST_DIR, 'src', 'surfaces', 'BDRPipeline.tsx'))).toBe(true)
+  })
+
+  test('returns false for unknown template id', () => {
+    expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'unknown-template-xxxxx')).toBe(false)
   })
 })
 
@@ -295,5 +328,60 @@ describe('full workspace bootstrap', () => {
     expect(existsSync(join(TEST_DIR, 'vite.config.ts'))).toBe(true)
     expect(existsSync(join(TEST_DIR, 'tsconfig.json'))).toBe(true)
     expect(existsSync(join(TEST_DIR, 'src', 'App.tsx'))).toBe(true)
+  })
+
+  test('local mode order (apps/api copies bundled template, then template overlay) renders the template surface, not Project Ready', () => {
+    // 1. Mimic apps/api/src/lib/runtime/manager.ts: copy the bundled
+    //    runtime-template into the project dir (this is what the user sees
+    //    *before* the agent-runtime even spawns).
+    const templatePath = getRuntimeTemplatePath()
+    expect(templatePath).not.toBeNull()
+    require('fs').cpSync(templatePath!, TEST_DIR, {
+      recursive: true,
+      filter: (src: string) =>
+        !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock'),
+    })
+    expect(existsSync(join(TEST_DIR, 'package.json'))).toBe(true)
+    const before = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
+    expect(before).toContain('Project Ready')
+
+    // 2. Apply the agent-template overlay BEFORE Vite would spawn — same
+    //    new code path the API now exercises in `ensureProjectDirectory`.
+    expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'sales-bdr-pipeline')).toBe(true)
+
+    // 3. The canvas iframe will paint this src/App.tsx on first request,
+    //    so it must be the template's surface — not the generic stub.
+    const after = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
+    expect(after).not.toContain('Project Ready')
+    expect(after).toContain('BDRPipeline')
+
+    expect(existsSync(join(TEST_DIR, 'src', 'surfaces', 'BDRPipeline.tsx'))).toBe(true)
+    expect(existsSync(join(TEST_DIR, 'src', 'components', 'MetricCard.tsx'))).toBe(true)
+  })
+
+  test('local mode order: cold-call agent template overlays correctly', () => {
+    const templatePath = getRuntimeTemplatePath()
+    require('fs').cpSync(templatePath!, TEST_DIR, {
+      recursive: true,
+      filter: (src: string) =>
+        !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock'),
+    })
+    expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'sales-cold-call-agent')).toBe(true)
+    const after = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
+    expect(after).not.toContain('Project Ready')
+    expect(existsSync(join(TEST_DIR, 'src', 'surfaces', 'OutboundCalls.tsx'))).toBe(true)
+  })
+
+  test('local mode order: stripe revenue ops template overlays correctly', () => {
+    const templatePath = getRuntimeTemplatePath()
+    require('fs').cpSync(templatePath!, TEST_DIR, {
+      recursive: true,
+      filter: (src: string) =>
+        !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock'),
+    })
+    expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'stripe-revenue-ops')).toBe(true)
+    const after = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
+    expect(after).not.toContain('Project Ready')
+    expect(existsSync(join(TEST_DIR, 'src', 'surfaces', 'RevenueOps.tsx'))).toBe(true)
   })
 })

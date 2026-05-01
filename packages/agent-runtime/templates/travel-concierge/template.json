@@ -1,0 +1,54 @@
+{
+  "id": "travel-concierge",
+  "name": "Travel Concierge",
+  "description": "Plan trips end-to-end — flights, hotels, curated dining, and shows — with live availability checks and an optional voice agent that can call phone-only restaurants on your behalf.",
+  "category": "personal",
+  "icon": "Plane",
+  "tags": [
+    "travel",
+    "concierge",
+    "planning",
+    "restaurants",
+    "hotels",
+    "flights",
+    "voice",
+    "browser",
+    "memory"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": false,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "07:00",
+      "timezone": "UTC"
+    },
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "calendar",
+      "description": "Hold trip dates, restaurant reservations, and show times"
+    },
+    {
+      "categoryId": "email",
+      "description": "Pull confirmations and itineraries from your inbox"
+    },
+    {
+      "categoryId": "travel",
+      "description": "Search and book flights, hotels, and experiences"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Send updates and confirmations to fellow travelers"
+    }
+  ],
+  "techStack": "react-app"
+}

@@ -83,6 +83,20 @@ export interface SubagentResult {
   agentId?: string
   /** The actual model used for the final iteration (may differ from config if router active). */
   effectiveModelId?: string
+  // ------------------------------------------------------------------------
+  // Quality signals (Phase 2.1) — surfaced through SubagentResult so the
+  // AgentManager can include them in the AgentCostMetric row, and the
+  // recommendation gate can rely on real quality data instead of the legacy
+  // `success: didn't throw` heuristic.
+  // ------------------------------------------------------------------------
+  /** True when the loop stopped because maxIterations was hit, not natural end. */
+  hitMaxTurns?: boolean
+  /** True when the loop's circuit breaker detected a tool-call/text cycle. */
+  loopDetected?: boolean
+  /** True when the spawn-time router escalated to a higher-tier model mid-run. */
+  escalated?: boolean
+  /** True when the final response is empty or a "Subagent failed: ..." marker. */
+  responseEmpty?: boolean
 }
 
 export interface SubagentStreamCallbacks {
@@ -538,6 +552,170 @@ export function resolveModelTier(tier: ModelTierName | undefined, parentModel: s
 }
 
 // ---------------------------------------------------------------------------
+// Sub-Agent Model Override Resolver — Phase 1.1 (boss concern #2)
+// ---------------------------------------------------------------------------
+//
+// Resolution precedence (highest first):
+//
+//   1. Explicit caller-supplied SubagentConfig.model
+//      (e.g. `task --subagent_type=explore --model=opus`)
+//
+//   2. Project-level override   — (workspaceId, projectId, agentType)
+//   3. Workspace-level override — (workspaceId, projectId=NULL, agentType)
+//      Both come from the SubagentModelOverride Postgres table; the runtime
+//      reads them via an authenticated HTTP call to the API server because
+//      the runtime sub-process has no direct DB access.
+//
+//   4. Built-in/custom default. Built-ins use `getBuiltinSubagentConfig()`
+//      (e.g. explore→haiku); custom agents fall back to their registered
+//      default tier or the parent model.
+//
+// In CLI / desktop mode there's no API server reachable, so the HTTP fetch
+// silently returns null and the built-in default wins. That's fine — overrides
+// only matter for cloud-managed workspaces today.
+//
+// The resolver is deliberately not used for the auto-router or modelTier paths;
+// those represent explicit dynamic decisions by the parent agent that already
+// take precedence over user defaults.
+
+export interface SubagentModelOverrideHit {
+  model: string
+  provider: string | null
+  source: 'project' | 'workspace'
+}
+
+const SUBAGENT_OVERRIDE_CACHE_TTL_MS = 30_000
+const subagentOverrideCache = new Map<string, { value: SubagentModelOverrideHit | null; expiresAt: number }>()
+
+function overrideCacheKey(workspaceId: string, projectId: string | null, agentType: string): string {
+  return `${workspaceId}::${projectId ?? ''}::${agentType}`
+}
+
+/**
+ * Resolve a sub-agent override by calling the API server's internal endpoint.
+ * Returns null when no override is configured or when the API is unreachable.
+ *
+ * Caches results for 30 seconds so a busy agent loop spawning the same
+ * sub-agent type repeatedly doesn't hammer the override endpoint. The TTL is
+ * short enough that "Apply" → next spawn picks up the change within a single
+ * user turn.
+ */
+export interface ExperimentAssignmentHit {
+  experimentId: string
+  model: string
+  variant: 'A' | 'B'
+}
+
+export async function fetchSubagentOverrideFromApi(
+  agentType: string,
+  workspaceId: string,
+  projectId: string | null,
+  /** Optional stable bucket key (typically the agentRunId) — keeps experiment
+   *  assignment deterministic across retries / nested helpers within one run. */
+  bucketKey?: string,
+): Promise<{ override: SubagentModelOverrideHit | null; experiment: ExperimentAssignmentHit | null }> {
+  const cacheKey = overrideCacheKey(workspaceId, projectId, agentType)
+  const cached = subagentOverrideCache.get(cacheKey)
+  const now = Date.now()
+  // Experiment assignment must NOT be cached at the bucketKey-less level
+  // because it picks a random variant; we only cache the override result.
+  if (cached && cached.expiresAt > now && !bucketKey) {
+    return { override: cached.value, experiment: null }
+  }
+
+  const apiUrl = (await import('./internal-api')).deriveApiUrl()
+  if (!apiUrl) {
+    subagentOverrideCache.set(cacheKey, { value: null, expiresAt: now + SUBAGENT_OVERRIDE_CACHE_TTL_MS })
+    return { override: null, experiment: null }
+  }
+
+  try {
+    const headers = (await import('./internal-api')).getInternalHeaders()
+    const params = new URLSearchParams({ workspaceId, agentType })
+    if (projectId) params.set('projectId', projectId)
+    if (bucketKey) params.set('bucketKey', bucketKey)
+    const res = await fetch(`${apiUrl}/api/internal/subagent-overrides/resolve?${params}`, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(2_000),
+    })
+    if (!res.ok) {
+      subagentOverrideCache.set(cacheKey, { value: null, expiresAt: now + SUBAGENT_OVERRIDE_CACHE_TTL_MS })
+      return { override: null, experiment: null }
+    }
+    const body = await res.json() as {
+      override: SubagentModelOverrideHit | null
+      experiment: ExperimentAssignmentHit | null
+    }
+    subagentOverrideCache.set(cacheKey, { value: body.override, expiresAt: now + SUBAGENT_OVERRIDE_CACHE_TTL_MS })
+    return { override: body.override, experiment: body.experiment ?? null }
+  } catch {
+    subagentOverrideCache.set(cacheKey, { value: null, expiresAt: now + SUBAGENT_OVERRIDE_CACHE_TTL_MS })
+    return { override: null, experiment: null }
+  }
+}
+
+/** Test/eval seam — clears the override cache between runs. */
+export function clearSubagentOverrideCache(): void {
+  subagentOverrideCache.clear()
+}
+
+/**
+ * Resolve the effective sub-agent model. Implements the four-step precedence
+ * documented above. Returns the resolved model + provider so callers can apply
+ * both at once (a Postgres override might point at a different provider).
+ */
+export async function resolveSubagentModel(
+  agentType: string,
+  workspaceId: string | null,
+  projectId: string | null,
+  configModel: string | undefined,
+  configProvider: string | undefined,
+  builtinModel: string,
+  builtinProvider: string | undefined,
+  /** Optional stable key for experiment bucketing (usually agentRunId). When
+   *  the spawning context can supply this, A/B assignment stays consistent
+   *  across nested calls within the same run. */
+  bucketKey?: string,
+): Promise<{
+  model: string
+  provider: string | undefined
+  source: 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
+  experimentId?: string
+  experimentVariant?: 'A' | 'B'
+}> {
+  if (configModel) {
+    return {
+      model: configModel,
+      provider: configProvider ?? inferProviderFromModel(configModel, builtinProvider),
+      source: 'explicit',
+    }
+  }
+  if (workspaceId) {
+    const hit = await fetchSubagentOverrideFromApi(agentType, workspaceId, projectId, bucketKey)
+    if (hit.override) {
+      return {
+        model: hit.override.model,
+        provider: hit.override.provider ?? inferProviderFromModel(hit.override.model, builtinProvider ?? configProvider),
+        source: hit.override.source,
+      }
+    }
+    if (hit.experiment) {
+      // Phase 3.2 — no override but a shadow A/B is running. Honour the
+      // bucket assignment so the experiment actually gets traffic.
+      return {
+        model: hit.experiment.model,
+        provider: inferProviderFromModel(hit.experiment.model, configProvider ?? builtinProvider),
+        source: 'experiment',
+        experimentId: hit.experiment.experimentId,
+        experimentVariant: hit.experiment.variant,
+      }
+    }
+  }
+  return { model: builtinModel, provider: inferProviderFromModel(builtinModel, builtinProvider ?? configProvider), source: 'builtin' }
+}
+
+// ---------------------------------------------------------------------------
 // Read-only tool set (used by readonly mode)
 // ---------------------------------------------------------------------------
 
@@ -718,8 +896,64 @@ export async function runSubagent(
     })
   }
 
-  const parentModel = config.model || parentCtx.effectiveModel || parentCtx.config.model.name
-  const provider = config.provider || parentCtx.config.model.provider
+  // Sub-agent override resolver — checks (project, workspace) overrides before
+  // falling back to the built-in/custom default. Only consulted when the caller
+  // hasn't explicitly set `config.model` AND the parent isn't asking for a
+  // concrete tier shorthand AND auto-routing is off. `agent_create` defaults to
+  // modelTier="default"; that is not an explicit model choice and should still
+  // allow one-click Apply recommendations to take effect for custom agents.
+  const builtinConfig = getBuiltinSubagentConfig(config.name, parentCtx, allParentTools)
+  const isBuiltin = !!builtinConfig
+  const hasExplicitModel =
+    !!config.model && (!isBuiltin || config.model !== builtinConfig?.model)
+  const hasExplicitTier = !!config.modelTier && config.modelTier !== 'default'
+  let resolvedOverride: {
+    model: string
+    provider: string | undefined
+    source: 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
+    experimentId?: string
+    experimentVariant?: 'A' | 'B'
+  } | null = null
+  if (!hasExplicitModel && !hasExplicitTier && !parentCtx.autoRouting) {
+    try {
+      const workspaceId = process.env.WORKSPACE_ID || null
+      const projectId = parentCtx.projectId || null
+      // Stable bucket key — keeps a single agent run on one A/B variant for
+      // the duration of the run. Falls back to the (parent) sessionId so we
+      // still bucket if there's no agentRunId yet.
+      const bucketKey =
+        options?.instanceId ||
+        parentCtx.sessionId ||
+        undefined
+      resolvedOverride = await resolveSubagentModel(
+        config.name,
+        workspaceId,
+        projectId,
+        undefined,
+        config.provider,
+        builtinConfig?.model || resolveModelTier(config.modelTier, parentCtx.effectiveModel || parentCtx.config.model.name),
+        builtinConfig?.provider || config.provider,
+        bucketKey,
+      )
+      if (resolvedOverride.source !== 'builtin') {
+        console.log(
+          `[Subagent:${config.name}] Override resolved: ${resolvedOverride.model} ` +
+            `(source: ${resolvedOverride.source}` +
+            (resolvedOverride.experimentVariant ? `, variant: ${resolvedOverride.experimentVariant}` : '') +
+            ')',
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[Subagent:${config.name}] Override lookup failed (continuing with default):`, err.message)
+    }
+  }
+
+  const parentModel = resolvedOverride?.model
+    || (hasExplicitModel ? config.model : undefined)
+    || config.model
+    || parentCtx.effectiveModel
+    || parentCtx.config.model.name
+  const provider = resolvedOverride?.provider || config.provider || parentCtx.config.model.provider
   const maxIterations = config.maxTurns || (isFork ? 200 : 50)
 
   // Spawn-time model routing: when Auto mode is active and no explicit
@@ -745,6 +979,9 @@ export async function runSubagent(
     if (parentCtx.uiWriter) {
       parentCtx.uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
     }
+  } else if (resolvedOverride && resolvedOverride.source !== 'builtin') {
+    // Override won — skip tier shorthand resolution to honor the user's choice.
+    model = parentModel
   } else {
     model = resolveModelTier(config.modelTier, parentModel)
   }
@@ -793,6 +1030,10 @@ export async function runSubagent(
       }
     }
 
+    const responseEmpty =
+      !result.text || result.text.trim().length === 0
+      || result.text.startsWith('Subagent failed:')
+
     return {
       toolCalls: result.toolCalls.length,
       iterations: result.iterations,
@@ -804,6 +1045,10 @@ export async function runSubagent(
       newMessages: result.newMessages,
       agentId,
       effectiveModelId: result.effectiveModelId,
+      hitMaxTurns: result.maxIterationsExhausted === true,
+      loopDetected: !!result.loopBreak,
+      escalated: false,
+      responseEmpty,
     }
   }
 
@@ -823,6 +1068,7 @@ export async function runSubagent(
         callbacks?.onStart?.(config.name, config.description, agentId)
         result = await runOnce(escalated.selectedModel)
         result.effectiveModelId = escalated.selectedModel
+        result.escalated = true
         callbacks?.onEnd?.(config.name)
       }
     }
@@ -837,6 +1083,7 @@ export async function runSubagent(
         try {
           const retryResult = await runOnce(escalated.selectedModel)
           retryResult.effectiveModelId = escalated.selectedModel
+          retryResult.escalated = true
           callbacks?.onEnd?.(config.name)
           return retryResult
         } catch (retryErr: any) {
@@ -857,6 +1104,10 @@ export async function runSubagent(
       responseText: `Subagent failed: ${err.message}`,
       newMessages: [],
       agentId,
+      hitMaxTurns: false,
+      loopDetected: false,
+      escalated: false,
+      responseEmpty: true,
     }
   }
 }
