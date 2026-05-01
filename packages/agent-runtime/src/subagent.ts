@@ -26,7 +26,7 @@ import { createBrowserTool, textResult } from './gateway-tools'
 // ---------------------------------------------------------------------------
 
 const CORE_GATEWAY_TOOLS = new Set([
-  'exec', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
+  'exec', 'exec_wait', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',

@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { sandboxExec, shouldSandbox } from './sandbox-exec'
+import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { CommandRegistry, type CommandEntry } from './command-registry'
 import {
   resolveRunDir as resolveScreenshotRunDir,
   nextScreenshotPath as nextScreenshotFilePath,
@@ -127,6 +128,8 @@ export interface ToolContext {
   autoRouting?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
   shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
+  /** Tracks backgrounded shell commands that soft-timed-out so exec_wait can retrieve them */
+  commandRegistry?: import('./command-registry').CommandRegistry
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
   /** Eval mock functions — propagated to subagents so mocked tools work in delegated calls */
@@ -236,6 +239,83 @@ export function containerToHost(containerPath: string, workspaceDir: string): st
 // Tool Definitions (created via factory)
 // ---------------------------------------------------------------------------
 
+/** Default soft timeout for exec / exec_wait — after this we hand control back. */
+const DEFAULT_EXEC_SOFT_TIMEOUT_MS = 30_000
+
+interface ExecRunMetadata {
+  cwdFileHost: string
+  isSandboxed: boolean
+  previousCwd: string
+  cwdReset: boolean
+}
+
+const execRunMetadata = new WeakMap<CommandHandle, ExecRunMetadata>()
+
+/** Read the trap-written cwd file and update shellState. Idempotent on retry. */
+function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
+  let newCwd = meta.previousCwd
+  try {
+    const rawCwd = readFileSync(meta.cwdFileHost, 'utf-8').trim()
+    if (rawCwd) {
+      newCwd = meta.isSandboxed
+        ? containerToHost(rawCwd, ctx.workspaceDir)
+        : rawCwd
+    }
+    unlinkSync(meta.cwdFileHost)
+  } catch { /* trap may not have fired or already cleaned up */ }
+  ctx.shellState?.setCwd(newCwd)
+  return newCwd
+}
+
+interface BuildExecResultOpts {
+  ctx: ToolContext
+  entry: CommandEntry
+  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }
+}
+
+function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
+  const meta = execRunMetadata.get(entry.handle)
+  const newCwd = meta ? finalizeCwdAfterExec(ctx, meta) : (ctx.shellState?.getCwd() || ctx.workspaceDir)
+  const durationMs = Date.now() - entry.handle.startedAt
+  // Mirror the legacy sandboxExec contract: trim outer whitespace so callers
+  // get `"hello"` not `"hello\n"`.
+  const stdoutTrimmed = finalResult.stdout.trim()
+  const stderrTrimmed = finalResult.stderr.trim()
+  return textResult({
+    cwd: newCwd,
+    exitCode: finalResult.exitCode,
+    stdout: truncateExecOutput(stdoutTrimmed),
+    stderr: stderrTrimmed ? truncateExecOutput(stderrTrimmed) : undefined,
+    durationMs,
+    sandboxed: entry.handle.sandboxed || undefined,
+    cwdReset: meta?.cwdReset || undefined,
+    killed: finalResult.killed || undefined,
+    timedOut: finalResult.timedOut || undefined,
+    run_id: entry.runId,
+  })
+}
+
+function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): AgentToolResult<any> {
+  const elapsedMs = Date.now() - entry.handle.startedAt
+  const killTarget = entry.handle.sandboxed && entry.handle.containerName
+    ? `docker kill ${entry.handle.containerName}`
+    : (process.platform === 'win32'
+        ? `taskkill /F /PID ${entry.handle.pid}`
+        : `kill ${entry.handle.pid}`)
+  return textResult({
+    status: 'running',
+    run_id: entry.runId,
+    pid: entry.handle.pid,
+    sandboxed: entry.handle.sandboxed || undefined,
+    container_name: entry.handle.containerName,
+    elapsedMs,
+    stdout: truncateExecOutput(entry.handle.stdout().trim()),
+    stderr: truncateExecOutput(entry.handle.stderr().trim()),
+    hint: `Command still running after ${Math.round(softTimeoutMs / 1000)}s. ` +
+      `Call exec_wait('${entry.runId}') to wait more, or run \`exec("${killTarget}")\` to terminate and move on.`,
+  })
+}
+
 function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
@@ -245,14 +325,20 @@ function createExecTool(ctx: ToolContext): AgentTool {
       'The result includes the current cwd. Destructive commands are blocked. ' +
       'Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. ' +
       'Never use interactive flags (-i). Prefer read_file over cat/head/tail. ' +
-      'Tokens saved to .env are auto-loaded.',
+      'Tokens saved to .env are auto-loaded. ' +
+      `Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), ` +
+      'this tool returns `{ status: "running", run_id, pid, ... }` while the command keeps running in the background. ' +
+      'You can then call `exec_wait(run_id)` to keep waiting, or `exec("kill <pid>")` to terminate it and move on.',
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
-      timeout: Type.Optional(Type.Number({ description: 'Timeout in milliseconds (default: 300000)' })),
+      timeout: Type.Optional(Type.Number({
+        description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). ` +
+          'If exceeded, the command keeps running in the background and you receive a run_id to wait on or kill.',
+      })),
     }),
-    execute: async (toolCallId, params) => {
-      const { command, timeout = 300_000 } = params as { command: string; timeout?: number }
+    execute: async (_toolCallId, params) => {
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as { command: string; timeout?: number }
 
       if (isBlockedCommand(command)) {
         return textResult({ error: `Blocked command: ${command}` })
@@ -291,39 +377,142 @@ function createExecTool(ctx: ToolContext): AgentTool {
         command,
       ].join('\n')
 
-      const startTime = Date.now()
-      const result = sandboxExec({
+      // Spawn the command via the async primitive so we can race it against
+      // a soft timeout and hand the agent a run_id if it overruns.
+      const handle = sandboxExecAsync({
         command: wrappedCommand,
         workspaceDir: ctx.workspaceDir,
-        timeout,
         sandboxConfig: ctx.sandbox,
         sessionId: ctx.sessionId,
         mainSessionIds: ctx.mainSessionIds,
       })
-      const durationMs = Date.now() - startTime
 
-      let newCwd = currentCwd
-      try {
-        const rawCwd = readFileSync(cwdFileHost, 'utf-8').trim()
-        if (rawCwd) {
-          newCwd = isSandboxed
-            ? containerToHost(rawCwd, ctx.workspaceDir)
-            : rawCwd
-        }
-        unlinkSync(cwdFileHost)
-      } catch { /* trap may not have fired (e.g. user overrode it) — keep previous cwd */ }
+      const meta: ExecRunMetadata = { cwdFileHost, isSandboxed, previousCwd: currentCwd, cwdReset }
+      execRunMetadata.set(handle, meta)
 
-      ctx.shellState?.setCwd(newCwd)
+      // Always register so a follow-up exec_wait can find this run, even if it
+      // completes within the soft timeout (defensive against races where the
+      // model decided to wait while we were already returning).
+      const registry = ctx.commandRegistry ?? new CommandRegistry()
+      const entry = registry.register(command, handle)
 
-      return textResult({
-        cwd: newCwd,
-        exitCode: result.exitCode,
-        stdout: truncateExecOutput(result.stdout),
-        stderr: result.stderr ? truncateExecOutput(result.stderr) : undefined,
-        durationMs,
-        sandboxed: result.sandboxed || undefined,
-        cwdReset: cwdReset || undefined,
+      const softTimeoutMs = Math.max(0, timeout)
+      const SOFT_TIMEOUT = Symbol('soft-timeout')
+      let timer: NodeJS.Timeout | undefined
+      const timeoutPromise = new Promise<typeof SOFT_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(SOFT_TIMEOUT), softTimeoutMs)
+        timer.unref?.()
       })
+
+      const winner = await Promise.race([handle.done, timeoutPromise])
+      if (timer) clearTimeout(timer)
+
+      if (winner === SOFT_TIMEOUT) {
+        return buildSoftTimeoutResult(entry, softTimeoutMs)
+      }
+
+      return buildCompletedExecResult({ ctx, entry, finalResult: winner })
+    },
+  }
+}
+
+function createExecWaitTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'exec_wait',
+    description:
+      'Wait for a backgrounded shell command (one that returned `status: "running"` from a previous exec call). ' +
+      `Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). ` +
+      'If the command is still running after the wait, you receive the same { status: "running", run_id, pid, ... } shape and can call again. ' +
+      'If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. ' +
+      'Optional `pattern` resolves early as soon as the regex matches accumulated stdout or stderr.',
+    label: 'Wait for Command',
+    parameters: Type.Object({
+      run_id: Type.String({ description: 'The run_id returned by a previous exec or exec_wait call' }),
+      timeout_ms: Type.Optional(Type.Number({
+        description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). Set to 0 for an immediate non-blocking status check.`,
+      })),
+      pattern: Type.Optional(Type.String({
+        description: 'Optional regex (JavaScript syntax). Resolves as soon as the regex matches accumulated stdout or stderr.',
+      })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { run_id, timeout_ms = DEFAULT_EXEC_SOFT_TIMEOUT_MS, pattern } = params as {
+        run_id: string
+        timeout_ms?: number
+        pattern?: string
+      }
+
+      const registry = ctx.commandRegistry
+      if (!registry) {
+        return textResult({ error: 'CommandRegistry not available — exec_wait requires a sessionId.' })
+      }
+
+      const entry = registry.get(run_id)
+      if (!entry) {
+        return textResult({ error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).` })
+      }
+
+      // If already done, return final result immediately.
+      if (entry.finalResult) {
+        return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
+      }
+
+      let regex: RegExp | undefined
+      if (pattern) {
+        try {
+          regex = new RegExp(pattern, 'm')
+        } catch (err: any) {
+          return textResult({ error: `Invalid pattern regex: ${err?.message || String(err)}` })
+        }
+      }
+
+      const softTimeoutMs = Math.max(0, timeout_ms)
+      const SOFT_TIMEOUT = Symbol('soft-timeout')
+      const PATTERN_HIT = Symbol('pattern-hit')
+
+      let timer: NodeJS.Timeout | undefined
+      const timeoutPromise = new Promise<typeof SOFT_TIMEOUT>((resolve) => {
+        if (softTimeoutMs === 0) {
+          resolve(SOFT_TIMEOUT)
+          return
+        }
+        timer = setTimeout(() => resolve(SOFT_TIMEOUT), softTimeoutMs)
+        timer.unref?.()
+      })
+
+      // Pattern polling: ~250ms tick. Cheap and avoids hooking into the
+      // child stream from a different tool than the one that owns it.
+      let patternTimer: NodeJS.Timeout | undefined
+      const patternPromise = regex
+        ? new Promise<typeof PATTERN_HIT>((resolve) => {
+            const tick = () => {
+              if (entry.handle.exited()) return // `done` will win
+              if (regex!.test(entry.handle.stdout()) || regex!.test(entry.handle.stderr())) {
+                resolve(PATTERN_HIT)
+                return
+              }
+              patternTimer = setTimeout(tick, 250)
+              patternTimer.unref?.()
+            }
+            tick()
+          })
+        : new Promise<never>(() => {}) // never resolves
+
+      const winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise])
+      if (timer) clearTimeout(timer)
+      if (patternTimer) clearTimeout(patternTimer)
+
+      if (winner === SOFT_TIMEOUT || winner === PATTERN_HIT) {
+        // Re-check completion in case the process exited between the race
+        // resolving and us building the result, so we always prefer the
+        // final result when available.
+        if (entry.finalResult) {
+          return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
+        }
+        return buildSoftTimeoutResult(entry, softTimeoutMs)
+      }
+
+      return buildCompletedExecResult({ ctx, entry, finalResult: winner })
     },
   }
 }
@@ -3779,6 +3968,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   const tools: AgentTool[] = [
     g(createExecTool(ctx), 'shell'),
+    g(createExecWaitTool(ctx), 'shell'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -4112,7 +4302,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  * Skills can reference either group names or individual tool names.
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
-  shell: ['exec'],
+  shell: ['exec', 'exec_wait'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
   search: ['search', 'impact_radius'],
@@ -4131,7 +4321,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
+  'exec', 'exec_wait', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'notify_user_error', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',

@@ -78,6 +78,7 @@ import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, CAPABILITIES_INDEX } from './guide-registry'
 import { AgentManager } from './agent-manager'
+import { CommandRegistry } from './command-registry'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
 import {
@@ -330,6 +331,8 @@ export class AgentGateway {
   private teamManager?: TeamManager
   /** Per-session shell cwd tracking — persists cd across exec calls */
   private shellCwd = new Map<string, string>()
+  /** Per-session backgrounded command registry — soft-timed-out exec runs */
+  private commandRegistries = new Map<string, import('./command-registry').CommandRegistry>()
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -1245,6 +1248,8 @@ export class AgentGateway {
         // so fresh decisions are taken against the new (empty) history.
         this.contentReplacementStates.delete(sessionId)
         this.turnCounters.delete(sessionId)
+        // Kill any backgrounded shell commands; they belong to the wiped session.
+        this.disposeSessionState(sessionId)
       },
       getMessages: () => [...session.messages],
       reloadConfig: () => this.reloadConfig(),
@@ -1252,6 +1257,28 @@ export class AgentGateway {
         session.modelOverride = model
       },
       getStatus: () => this.getStatus(),
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Backgrounded shell command bookkeeping (per-session)
+  // ---------------------------------------------------------------------------
+
+  private getOrCreateCommandRegistry(sessionId: string): CommandRegistry {
+    let reg = this.commandRegistries.get(sessionId)
+    if (!reg) {
+      reg = new CommandRegistry()
+      this.commandRegistries.set(sessionId, reg)
+    }
+    return reg
+  }
+
+  /** Tear down per-session bookkeeping. Kills any backgrounded shell runs. */
+  private disposeSessionState(sessionId: string): void {
+    const reg = this.commandRegistries.get(sessionId)
+    if (reg) {
+      reg.killAll()
+      this.commandRegistries.delete(sessionId)
     }
   }
 
@@ -1446,6 +1473,7 @@ export class AgentGateway {
         getCwd: () => this.shellCwd.get(sessionId!) || this.workspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
+      commandRegistry: sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined,
       guideRegistry: this.currentGuideRegistry,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
       updateHeartbeatConfig: async (config) => {
@@ -1481,7 +1509,7 @@ export class AgentGateway {
       assembledTools = assembledTools.filter(t => t.name !== 'browser')
     }
     if (this.config.shellEnabled === false) {
-      assembledTools = assembledTools.filter(t => t.name !== 'exec')
+      assembledTools = assembledTools.filter(t => t.name !== 'exec' && t.name !== 'exec_wait')
     }
     if (this.config.heartbeatEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'heartbeat_configure' && t.name !== 'heartbeat_status')

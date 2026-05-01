@@ -11,9 +11,10 @@
  * - Automatic container cleanup (--rm)
  */
 
-import { execSync } from 'child_process'
+import { execSync, spawn, type ChildProcess } from 'child_process'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import { randomBytes } from 'crypto'
 import type { SandboxConfig } from './types'
 
 // ---------------------------------------------------------------------------
@@ -344,4 +345,259 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
       sandboxed: false,
     }
   }
+}
+
+// ===========================================================================
+// Async / soft-timeout exec primitive
+// ---------------------------------------------------------------------------
+// `sandboxExecAsync` is the spawn-based counterpart of `sandboxExec`. It
+// returns a `CommandHandle` so callers can race a soft timeout against
+// completion without killing the underlying process. Output is accumulated
+// in bounded ring buffers so a runaway log producer can't OOM the runtime.
+// ===========================================================================
+
+/** Default absolute kill ceiling for backgrounded runs (10 min). */
+const DEFAULT_HARD_TIMEOUT_MS = 600_000
+
+/** Per-stream buffer cap. When exceeded we keep head + tail and drop the middle. */
+const MAX_STREAM_BUFFER_BYTES = 64 * 1024
+
+function getHardTimeoutMs(): number {
+  const env = parseInt(process.env.SHOGO_EXEC_HARD_TIMEOUT_MS || '', 10)
+  return Number.isFinite(env) && env > 0 ? env : DEFAULT_HARD_TIMEOUT_MS
+}
+
+/**
+ * Bounded text buffer that keeps the head and tail of a stream when it
+ * grows beyond `maxBytes`. The middle is collapsed into a marker so the
+ * caller can still see start-of-run banners and end-of-run errors.
+ */
+class BoundedBuffer {
+  private head = ''
+  private tail = ''
+  private droppedBytes = 0
+  private readonly headSize: number
+  private readonly tailSize: number
+
+  constructor(maxBytes: number = MAX_STREAM_BUFFER_BYTES) {
+    this.headSize = Math.floor(maxBytes * 0.5)
+    this.tailSize = maxBytes - this.headSize
+  }
+
+  push(chunk: string): void {
+    if (!chunk) return
+    if (this.head.length < this.headSize) {
+      const room = this.headSize - this.head.length
+      if (chunk.length <= room) {
+        this.head += chunk
+        return
+      }
+      this.head += chunk.slice(0, room)
+      chunk = chunk.slice(room)
+    }
+    this.tail += chunk
+    if (this.tail.length > this.tailSize) {
+      const overflow = this.tail.length - this.tailSize
+      this.droppedBytes += overflow
+      this.tail = this.tail.slice(overflow)
+    }
+  }
+
+  toString(): string {
+    if (this.droppedBytes === 0) return this.head + this.tail
+    return `${this.head}\n\n... [${this.droppedBytes} bytes dropped from middle] ...\n\n${this.tail}`
+  }
+}
+
+export interface CommandHandle {
+  /** Native pid for non-sandboxed runs, the docker CLI pid otherwise. */
+  pid: number | undefined
+  /** Sandbox container name when sandboxed (use `docker kill <name>` to terminate). */
+  containerName?: string
+  sandboxed: boolean
+  /** Snapshot accumulated stdout so far (truncated head/tail when very large). */
+  stdout: () => string
+  /** Snapshot accumulated stderr so far. */
+  stderr: () => string
+  /** Resolves once the child process has exited (cleanly, killed, or timed out). */
+  done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }>
+  /** Send a termination signal. SIGTERM is graceful, SIGKILL is forceful. */
+  kill: (signal?: 'SIGTERM' | 'SIGKILL') => void
+  /** True once the child has exited. */
+  exited: () => boolean
+  startedAt: number
+}
+
+export interface SandboxExecAsyncOptions extends SandboxExecOptions {
+  /**
+   * Absolute lifetime cap. After this many ms the run is forcibly SIGKILLed
+   * even if no caller has asked for it. Defaults to SHOGO_EXEC_HARD_TIMEOUT_MS
+   * env var or 10 minutes.
+   */
+  hardTimeoutMs?: number
+}
+
+/**
+ * Spawn a command and return a CommandHandle. Output is captured into bounded
+ * buffers; the returned `done` promise resolves when the child exits.
+ *
+ * The caller is responsible for racing `done` against any soft timeout it
+ * wants to expose to the agent — this primitive never returns "still running".
+ */
+export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
+  const useSandbox = shouldSandbox(opts)
+  const startedAt = Date.now()
+  const hardTimeout = opts.hardTimeoutMs ?? getHardTimeoutMs()
+
+  const stdoutBuf = new BoundedBuffer()
+  const stderrBuf = new BoundedBuffer()
+
+  let child: ChildProcess
+  let containerName: string | undefined
+
+  if (useSandbox) {
+    const config = { ...defaultSandboxConfig(), ...opts.sandboxConfig }
+    containerName = `shogo-exec-${randomBytes(6).toString('hex')}`
+
+    const dockerArgs = [
+      'run', '--rm',
+      '--name', containerName,
+      '-v', `${opts.workspaceDir}:/workspace`,
+      '-w', '/workspace',
+      '--memory', config.memoryLimit,
+      '--cpus', config.cpuLimit,
+      '--pids-limit', '256',
+      '--cap-drop', 'ALL',
+      '--security-opt', 'no-new-privileges',
+    ]
+    if (!config.networkEnabled) {
+      dockerArgs.push('--network', 'none')
+    }
+    const workspaceEnv = loadWorkspaceEnv(opts.workspaceDir)
+    for (const [key, val] of Object.entries(workspaceEnv)) {
+      dockerArgs.push('-e', `${key}=${val}`)
+    }
+    dockerArgs.push(config.image, 'bash', '-c', opts.command)
+
+    child = spawn('docker', dockerArgs, {
+      env: stripRuntimeVars(getSanitizedEnv()),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } else {
+    const shell = resolveShell()
+    const baseEnv = stripRuntimeVars(getSanitizedEnv())
+    const env = { ...baseEnv, ...loadWorkspaceEnv(opts.workspaceDir) }
+
+    if (shell) {
+      child = spawn(shell, ['-c', opts.command], {
+        cwd: opts.workspaceDir,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } else {
+      child = spawn(opts.command, {
+        cwd: opts.workspaceDir,
+        env,
+        shell: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    }
+  }
+
+  let killed = false
+  let timedOut = false
+  let exited = false
+
+  child.stdout?.setEncoding('utf-8')
+  child.stderr?.setEncoding('utf-8')
+  child.stdout?.on('data', (chunk: string) => stdoutBuf.push(chunk))
+  child.stderr?.on('data', (chunk: string) => stderrBuf.push(chunk))
+
+  // Suppress unhandled-error events; we surface failures via the `done`
+  // promise's exitCode field instead of throwing.
+  child.on('error', (err) => {
+    stderrBuf.push(`\n[shogo] spawn error: ${err.message}\n`)
+  })
+
+  // Hard ceiling — auto-SIGKILL backgrounded orphans.
+  const hardTimer = setTimeout(() => {
+    if (exited) return
+    timedOut = true
+    sendKill('SIGKILL')
+  }, hardTimeout)
+  hardTimer.unref?.()
+
+  function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
+    killed = true
+    try {
+      child.kill(signal)
+    } catch { /* already gone */ }
+
+    // For sandboxed runs the SIGTERM to the docker CLI may not always
+    // propagate to the container — issue an explicit `docker kill` as
+    // belt-and-suspenders when the caller asks for a forceful kill.
+    if (useSandbox && containerName && signal === 'SIGKILL') {
+      try {
+        execSync(`docker kill ${containerName}`, {
+          timeout: 5_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        })
+      } catch { /* container may already be gone */ }
+    }
+  }
+
+  function gracefulKill(): void {
+    if (exited) return
+    sendKill('SIGTERM')
+    // Escalate after 2s grace period.
+    const escalate = setTimeout(() => {
+      if (!exited) sendKill('SIGKILL')
+    }, 2_000)
+    escalate.unref?.()
+  }
+
+  const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; timedOut: boolean }>((resolve) => {
+    child.on('exit', (code, signal) => {
+      exited = true
+      clearTimeout(hardTimer)
+      const exitCode = typeof code === 'number'
+        ? code
+        : (signal ? 128 + (signalNumber(signal) ?? 0) : 1)
+      resolve({
+        exitCode,
+        stdout: stdoutBuf.toString(),
+        stderr: stderrBuf.toString(),
+        killed,
+        timedOut,
+      })
+    })
+  })
+
+  return {
+    pid: child.pid,
+    containerName,
+    sandboxed: useSandbox,
+    stdout: () => stdoutBuf.toString(),
+    stderr: () => stderrBuf.toString(),
+    done,
+    kill: (signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM') => {
+      if (signal === 'SIGTERM') {
+        gracefulKill()
+      } else {
+        sendKill('SIGKILL')
+      }
+    },
+    exited: () => exited,
+    startedAt,
+  }
+}
+
+const SIGNAL_NUMBERS: Record<string, number> = {
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6,
+  SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12,
+  SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15,
+}
+
+function signalNumber(signal: NodeJS.Signals): number | undefined {
+  return SIGNAL_NUMBERS[signal]
 }
