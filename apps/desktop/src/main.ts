@@ -334,7 +334,10 @@ function registerIpcHandlers(): void {
 
   // Cloud login: ask the local API for a one-shot authUrl (includes state
   // nonce + device metadata), then open it in the user's default browser.
-  ipcMain.handle('start-cloud-login', async () => {
+  // Renderer may pass `{ workspaceId }` to pre-select a workspace on the
+  // bridge picker (e.g. for the "Switch workspace" affordance). When
+  // omitted, the bridge prompts the user if they have >1 workspace.
+  ipcMain.handle('start-cloud-login', async (_event, opts?: { workspaceId?: string }) => {
     try {
       const device = getDeviceInfo()
       const res = await fetch(`${getApiUrl()}/api/local/cloud-login/start`, {
@@ -345,6 +348,7 @@ function registerIpcHandlers(): void {
           deviceName: device.name,
           devicePlatform: device.platform,
           deviceAppVersion: device.appVersion,
+          workspaceId: opts?.workspaceId,
         }),
       })
       const body = (await res.json().catch(() => ({}))) as CloudLoginBody

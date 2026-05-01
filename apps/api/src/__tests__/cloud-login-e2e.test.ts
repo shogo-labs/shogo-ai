@@ -597,6 +597,81 @@ describe('Cloud Login E2E', () => {
       expect(status.cloudUrl).toBe(CLOUD_HOST)
     })
 
+    test('start echoes preselected workspaceId into the bridge URL', async () => {
+      // The desktop "Switch workspace" affordance passes a workspaceId so
+      // the bridge picker can pre-select. start must round-trip it as a
+      // query param on the generated authUrl.
+      const startRes = await app.request('/api/local/cloud-login/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'e2e-preselect-ws',
+          workspaceId: 'ws-2',
+        }),
+      })
+      expect(startRes.status).toBe(200)
+      const start = await startRes.json()
+      const parsed = new URL(start.authUrl)
+      expect(parsed.searchParams.get('workspaceId')).toBe('ws-2')
+    })
+
+    test('start omits workspaceId when none provided', async () => {
+      // The default sign-in flow leaves workspaceId off so the bridge
+      // shows its picker (or auto-mints when the user has only one ws).
+      const startRes = await app.request('/api/local/cloud-login/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: 'e2e-no-preselect' }),
+      })
+      const start = await startRes.json()
+      const parsed = new URL(start.authUrl)
+      expect(parsed.searchParams.has('workspaceId')).toBe(false)
+    })
+
+    test('happy path: explicit workspaceId mints + persists for the chosen ws', async () => {
+      // Multi-workspace user picks ws-2 instead of the default ws-1
+      // (the user's first membership by createdAt). The minted key, the
+      // /complete response, and SHOGO_KEY_INFO must all reflect ws-2.
+      const startRes = await app.request('/api/local/cloud-login/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'e2e-pick-ws-2',
+          deviceName: 'E2E Mac',
+          workspaceId: 'ws-2',
+        }),
+      })
+      const start = await startRes.json()
+
+      const mint = await app.request('/api/api-keys/device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: 'ws-2',
+          deviceId: 'e2e-pick-ws-2',
+          deviceName: 'E2E Mac',
+        }),
+      })
+      const minted = await mint.json()
+      expect(minted.workspace?.id).toBe('ws-2')
+
+      const completeRes = await app.request('/api/local/cloud-login/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          state: start.state,
+          key: minted.key,
+        }),
+      })
+      expect(completeRes.status).toBe(200)
+      const complete = await completeRes.json()
+      expect(complete.workspace?.id).toBe('ws-2')
+
+      const info = JSON.parse(localConfig.get('SHOGO_KEY_INFO')!)
+      expect(info.workspace?.id).toBe('ws-2')
+      expect(info.workspace?.name).toBe('Team')
+    })
+
     test('start ignores cloudUrl in body (env-only contract)', async () => {
       // Even if a stale client sends a cloudUrl in the request body, the
       // server must use process.env.SHOGO_CLOUD_URL.

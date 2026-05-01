@@ -214,8 +214,8 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   // Cloud login (replaces the old paste-API-key flow)
   getDeviceInfo: (): Promise<{ id: string; name: string; platform: string; appVersion: string }> =>
     ipcRenderer.invoke('get-device-info'),
-  startCloudLogin: (): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('start-cloud-login'),
+  startCloudLogin: (opts?: { workspaceId?: string }): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('start-cloud-login', opts),
   signOutCloud: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('sign-out-cloud'),
   onCloudLoginResult: (
