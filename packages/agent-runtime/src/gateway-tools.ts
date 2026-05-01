@@ -2343,7 +2343,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       throw new Error(
         `Browser launch failed: ${err.message}. ` +
         `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${execPath}. ` +
-        'If running locally, try: bunx playwright install chromium',
+        'If running locally, try: bun x playwright install chromium',
       )
     }
   }

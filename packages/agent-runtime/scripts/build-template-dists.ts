@@ -126,7 +126,11 @@ function ensureCleanStaging(stagingDir: string): void {
  * the runtime-template provides) and the template's `index.css` if any.
  */
 function buildOnce(templateId: string, stagingDir: string): { ok: boolean; reason?: string } {
-  const result = spawnSync('bunx', ['vite', 'build'], {
+  // Use `bun x` instead of `bunx`: bunx isn't always present (CI Linux
+  // images, the bundled bun.exe shipped with Shogo Desktop on Windows,
+  // pre-1.2 manual installs). `bun x` is built into bun and only needs
+  // bun on PATH.
+  const result = spawnSync('bun', ['x', 'vite', 'build'], {
     cwd: stagingDir,
     stdio: 'pipe',
     encoding: 'utf-8',

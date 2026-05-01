@@ -153,7 +153,7 @@ async function main() {
       console.warn('⚠️  db:push failed (incompatible schema change), falling back to prisma migrate dev...')
       console.warn('   Reason:', pushStderr.split('\n')[0])
 
-      const migrate = Bun.spawn(['bunx', '--bun', 'prisma', 'migrate', 'dev', '--name', 'auto'], {
+      const migrate = Bun.spawn(['bun', 'x', '--bun', 'prisma', 'migrate', 'dev', '--name', 'auto'], {
         cwd: PROJECT_DIR,
         stdout: 'pipe',
         stderr: 'pipe',

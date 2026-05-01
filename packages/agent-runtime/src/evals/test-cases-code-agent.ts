@@ -72,7 +72,7 @@ function codeAgentUsedTemplateList(r: { toolCalls: Array<{ name: string }> }): b
 function ranForbiddenCommand(r: { toolCalls: Array<{ name: string; input: Record<string, unknown> }> }): boolean {
   const forbidden = [
     'vite dev', 'vite build', 'vite serve',
-    'npx vite', 'bunx vite',
+    'npx vite', 'bunx vite', 'bun x vite',
     'bun run dev', 'bun run build',
     'npm run dev', 'npm run build',
     'yarn dev', 'yarn build',

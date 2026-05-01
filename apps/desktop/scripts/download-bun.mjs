@@ -77,14 +77,32 @@ function main() {
     execSync(`unzip -o "${zipPath}" -d "${outputDir}"`)
   }
 
-  // The zip contains a directory like bun-darwin-aarch64/bun
+  // The zip contains a directory like bun-darwin-aarch64/bun.
+  // On Windows the same directory may also contain bunx.exe (a thin
+  // wrapper that calls into bun). We copy both so package.json scripts
+  // and agent commands that say `bunx <tool>` keep working out of the
+  // box — without bunx.exe, Windows users hit `'bunx' is not recognized`
+  // the moment the runtime tries to run `bunx prisma db push` etc.
+  // (See platform-pkg.ts and the rewriteBunxOnWindows() shim, which
+  // exists as a defense-in-depth fallback for shells that still don't
+  // see bunx on PATH.)
   const extractedDir = path.join(outputDir, bunTarget)
   const extractedBin = path.join(extractedDir, bunExe)
 
   if (fs.existsSync(extractedBin)) {
     fs.renameSync(extractedBin, outputPath)
-    fs.rmSync(extractedDir, { recursive: true, force: true })
   }
+
+  if (isWindows) {
+    const bunxExe = 'bunx.exe'
+    const extractedBunx = path.join(extractedDir, bunxExe)
+    const outputBunx = path.join(outputDir, bunxExe)
+    if (fs.existsSync(extractedBunx) && !fs.existsSync(outputBunx)) {
+      fs.renameSync(extractedBunx, outputBunx)
+    }
+  }
+
+  fs.rmSync(extractedDir, { recursive: true, force: true })
 
   // Make executable on unix
   if (!isWindows) {
@@ -95,6 +113,9 @@ function main() {
   fs.rmSync(zipPath, { force: true })
 
   console.log(`Bun binary saved to ${outputPath}`)
+  if (isWindows && fs.existsSync(path.join(outputDir, 'bunx.exe'))) {
+    console.log(`Bunx binary saved to ${path.join(outputDir, 'bunx.exe')}`)
+  }
 }
 
 main()

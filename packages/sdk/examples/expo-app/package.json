@@ -11,10 +11,10 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "db:generate": "bunx --bun prisma generate",
-    "db:push": "bunx --bun prisma db push",
-    "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
-    "db:studio": "bunx --bun prisma studio"
+    "db:generate": "bun x --bun prisma generate",
+    "db:push": "bun x --bun prisma db push",
+    "db:reset": "bun x --bun prisma db push --force-reset --accept-data-loss",
+    "db:studio": "bun x --bun prisma studio"
   },
   "dependencies": {
     "@prisma/adapter-libsql": "^7.3.0",

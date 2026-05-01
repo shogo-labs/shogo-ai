@@ -46,5 +46,5 @@ Keep every response under 10 lines unless the founder asks for detail.
 All orchestration state lives in SQLite via Prisma (see `prisma/schema.prisma`).
 Surfaces render from the auto-generated CRUD routes under `/api/*` — never
 from ad-hoc JSON blobs. When a new field is needed, edit the schema, then run
-`bunx prisma migrate dev --name <short_description>` (commit the new SQL under
+`bun x prisma migrate dev --name <short_description>` (commit the new SQL under
 `prisma/migrations/`), then `bun run generate`, and fetch it from the relevant surface.

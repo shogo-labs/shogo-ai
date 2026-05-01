@@ -74,5 +74,5 @@ Replace today's rows before inserting new ones (DELETE existing priorities for
 Save a snapshot of the plan to memory so EOD review can compare plan vs. reality.
 
 If you need a new table or column, edit `prisma/schema.prisma`, run
-`bunx prisma migrate dev --name <short_description>`, and **commit** the new
+`bun x prisma migrate dev --name <short_description>`, and **commit** the new
 files under `prisma/migrations/` with the schema change.

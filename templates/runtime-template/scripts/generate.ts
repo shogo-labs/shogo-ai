@@ -49,7 +49,7 @@ function generateHooksTemplate(models: PrismaModel[]): string {
     ' * Server Function Hooks',
     ' *',
     ' * Customize CRUD behavior with before/after hooks.',
-    ' * This file is safe to edit - it will not be overwritten by `bunx shogo generate`.',
+    ' * This file is safe to edit - it will not be overwritten by `bun x shogo generate`.',
     ' */',
     '',
     'import type { ServerFunctionHooks } from \'./types\'',
@@ -194,7 +194,7 @@ function generateIndexFile(): string {
   return `/**
  * Generated Shogo SDK Code
  *
- * DO NOT EDIT - regenerate with \`bunx shogo generate\`
+ * DO NOT EDIT - regenerate with \`bun x shogo generate\`
  */
 
 // Types
