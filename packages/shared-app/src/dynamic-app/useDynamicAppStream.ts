@@ -3,14 +3,19 @@
 /**
  * useDynamicAppStream
  *
- * React hook that connects to the agent runtime's SSE endpoint for dynamic
- * app messages. Maintains client-side surface state and provides an action
- * dispatch function for user interactions.
+ * Local-state hook for dynamic app surfaces. Maintains a client-side surfaces
+ * Map and exposes `applyMessage` for callers to drive surface mutations from
+ * any source (e.g. local edit-mode previews). Also exposes `dispatchAction`
+ * and `updateLocalData` for action POST + optional persist back to the agent.
  *
- * Platform-agnostic: uses EventSource (available in browsers and Expo Web).
+ * Note: this hook no longer subscribes to `/agent/canvas/stream`. That endpoint
+ * is now a workspace-files event stream (init / reload / file.changed /
+ * file.deleted) and never emits the dynamic-app surface messages this hook
+ * understood. Surface population is now driven entirely by callers via
+ * `applyMessage`.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import type {
   SurfaceState,
   ComponentDefinition,
@@ -20,8 +25,6 @@ import type {
 } from './types'
 import { setByPointer } from './pointer'
 
-const INITIAL_STATE_TIMEOUT_MS = 5_000
-
 export interface DynamicAppStreamState {
   surfaces: Map<string, SurfaceState>
   connected: boolean
@@ -30,22 +33,15 @@ export interface DynamicAppStreamState {
 }
 
 export interface DynamicAppStreamOptions {
+  /** Retained for ABI stability; ignored now that the SSE connection is gone. */
   headers?: () => Record<string, string>
-  /** Pass true for cross-origin web requests so the browser sends auth cookies with the EventSource. */
+  /** Retained for ABI stability; ignored now that the SSE connection is gone. */
   withCredentials?: boolean
 }
 
-export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAppStreamOptions) {
+export function useDynamicAppStream(agentUrl: string | null, _options?: DynamicAppStreamOptions) {
   const [surfaces, setSurfaces] = useState<Map<string, SurfaceState>>(new Map())
   const [activeSurfaceId, setActiveSurfaceId] = useState<string | null>(null)
-  const [connected, setConnected] = useState(false)
-  const [connecting, setConnecting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const eventSourceRef = useRef<EventSource | null>(null)
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const reconnectAttemptRef = useRef(0)
-  const initialStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const receivedFirstMessage = useRef(false)
 
   const applyMessage = useCallback((msg: DynamicAppMessage) => {
     if (msg.type === 'clearAll') {
@@ -155,105 +151,14 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
     })
   }, [])
 
-  const connect = useCallback(() => {
-    if (!agentUrl) return
-
-    setConnecting(true)
-    receivedFirstMessage.current = false
-
-    const url = `${agentUrl}/agent/canvas/stream`
-    const extraHeaders = options?.headers?.()
-    const needsCredentials = options?.withCredentials
-    const esInit: EventSourceInit & { headers?: Record<string, string> } = {}
-    if (extraHeaders) esInit.headers = extraHeaders
-    if (needsCredentials) esInit.withCredentials = true
-    const es = Object.keys(esInit).length > 0
-      ? new (EventSource as any)(url, esInit)
-      : new EventSource(url)
-    eventSourceRef.current = es
-
-    if (initialStateTimerRef.current) clearTimeout(initialStateTimerRef.current)
-    initialStateTimerRef.current = setTimeout(() => {
-      if (!receivedFirstMessage.current) {
-        setConnected(true)
-        setConnecting(false)
-      }
-    }, INITIAL_STATE_TIMEOUT_MS)
-
-    es.onopen = () => {
-      setConnected(true)
-      setError(null)
-      reconnectAttemptRef.current = 0
-    }
-
-    es.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data) as DynamicAppMessage
-        if (!receivedFirstMessage.current) {
-          receivedFirstMessage.current = true
-          setConnecting(false)
-          if (initialStateTimerRef.current) {
-            clearTimeout(initialStateTimerRef.current)
-            initialStateTimerRef.current = null
-          }
-        }
-        applyMessage(msg)
-      } catch {
-        // Ignore parse errors (e.g. heartbeat comments)
-      }
-    }
-
-    es.onerror = () => {
-      es.close()
-      eventSourceRef.current = null
-      setConnected(false)
-      setConnecting(false)
-
-      if (initialStateTimerRef.current) {
-        clearTimeout(initialStateTimerRef.current)
-        initialStateTimerRef.current = null
-      }
-
-      const attempt = reconnectAttemptRef.current++
-      const delay = Math.min(1000 * Math.pow(2, attempt), 30_000)
-
-      setConnecting(true)
-      if (attempt >= 5) {
-        setError('Reconnecting...')
-      }
-
-      reconnectTimeoutRef.current = setTimeout(connect, delay)
-    }
-  }, [agentUrl, applyMessage])
-
-  useEffect(() => {
-    connect()
-
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
-        eventSourceRef.current = null
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
-        reconnectTimeoutRef.current = null
-      }
-      if (initialStateTimerRef.current) {
-        clearTimeout(initialStateTimerRef.current)
-        initialStateTimerRef.current = null
-      }
-    }
-  }, [connect])
-
   const dispatchAction = useCallback(
     async (surfaceId: string, name: string, context?: Record<string, unknown>) => {
       if (!agentUrl) return
 
       try {
-        const extraHeaders = options?.headers?.()
         await fetch(`${agentUrl}/agent/canvas/action`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...extraHeaders },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             surfaceId,
             name,
@@ -265,7 +170,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
         console.error('[DynamicApp] Failed to dispatch action:', err)
       }
     },
-    [agentUrl, options?.headers],
+    [agentUrl],
   )
 
   const updateLocalData = useCallback(
@@ -295,21 +200,20 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
   )
 
   const reconnect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
-      eventSourceRef.current = null
-    }
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current)
-      reconnectTimeoutRef.current = null
-    }
     setSurfaces(new Map())
     setActiveSurfaceId(null)
-    setConnected(false)
-    setError(null)
-    reconnectAttemptRef.current = 0
-    connect()
-  }, [connect])
+  }, [])
 
-  return { surfaces, activeSurfaceId, setActiveSurfaceId, connected, connecting, error, dispatchAction, updateLocalData, reconnect, applyMessage }
+  return {
+    surfaces,
+    activeSurfaceId,
+    setActiveSurfaceId,
+    connected: true,
+    connecting: false,
+    error: null as string | null,
+    dispatchAction,
+    updateLocalData,
+    reconnect,
+    applyMessage,
+  }
 }

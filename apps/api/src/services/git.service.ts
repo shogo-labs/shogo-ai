@@ -16,7 +16,7 @@
  */
 
 import { execSync, execFileSync, exec } from 'child_process';
-import { existsSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync, appendFileSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { promisify } from 'util';
@@ -151,6 +151,79 @@ export function isGitRepo(workspacePath: string): boolean {
 }
 
 /**
+ * Set `core.longpaths=true` on the repo so git can handle the >260-char paths
+ * that show up in deep `node_modules/` trees (especially React Native /
+ * Expo) on Windows. Without this, `git add -A` aborts with
+ * `open(...): Filename too long` and the caller sees a `fatal: adding files
+ * failed` from an otherwise healthy workspace.
+ *
+ * Idempotent — safe to call every time we touch the repo.
+ */
+function ensureLongPathsConfigured(workspacePath: string): void {
+  try {
+    execFileSync('git', ['config', 'core.longpaths', 'true'], {
+      cwd: workspacePath,
+      stdio: 'pipe',
+    });
+  } catch {
+    // Non-fatal: older/limited git builds may not support it. The caller
+    // will surface a clearer error if the follow-up `git add` still fails.
+  }
+}
+
+/**
+ * Entries we always want ignored in a Shogo-managed workspace. Staging these
+ * on Windows is what triggers the long-path crash in the first place, and
+ * committing a 1 GB `node_modules/` tree is never what the user wants.
+ */
+const REQUIRED_IGNORE_ENTRIES = ['node_modules/', '.bun/'] as const;
+
+/**
+ * Guarantee that `.gitignore` exists and lists the entries in
+ * REQUIRED_IGNORE_ENTRIES. If the file is missing we write DEFAULT_GITIGNORE;
+ * if it exists but is missing any required entry, we append the missing
+ * entries under a clearly-labeled block instead of rewriting the user's file.
+ */
+function ensureGitignoreIgnoresDeps(workspacePath: string): void {
+  const gitignorePath = join(workspacePath, '.gitignore');
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, DEFAULT_GITIGNORE);
+    return;
+  }
+
+  let contents: string;
+  try {
+    contents = readFileSync(gitignorePath, 'utf-8');
+  } catch {
+    return;
+  }
+
+  // Normalize to individual non-empty, non-comment lines for membership checks.
+  const existing = new Set(
+    contents
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith('#'))
+  );
+
+  const missing = REQUIRED_IGNORE_ENTRIES.filter((entry) => {
+    // Treat `node_modules` and `node_modules/` as equivalent.
+    const bare = entry.replace(/\/$/, '');
+    return !existing.has(entry) && !existing.has(bare);
+  });
+
+  if (missing.length === 0) return;
+
+  const prefix = contents.length === 0 || contents.endsWith('\n') ? '' : '\n';
+  const block = `${prefix}\n# Added by Shogo AI to prevent committing dependency trees\n${missing.join('\n')}\n`;
+  try {
+    appendFileSync(gitignorePath, block);
+  } catch {
+    // Best-effort; don't abort git operations over a .gitignore write failure.
+  }
+}
+
+/**
  * Initialize a git repository in the workspace.
  * Creates .gitignore and initial commit if not already a repo.
  */
@@ -162,6 +235,11 @@ export async function initRepo(
   const defaultBranch = options?.defaultBranch || 'main';
 
   if (isGitRepo(workspacePath)) {
+    // Self-heal repos that were initialized before these settings existed so
+    // subsequent commits don't crash on Windows long paths or re-stage
+    // node_modules.
+    ensureLongPathsConfigured(workspacePath);
+    ensureGitignoreIgnoresDeps(workspacePath);
     const branch = await getCurrentBranch(workspacePath);
     return { created: false, branch };
   }
@@ -169,11 +247,13 @@ export async function initRepo(
   // Initialize git repo
   execFileSync('git', ['init', '-b', defaultBranch], { cwd: workspacePath, stdio: 'pipe' });
 
-  // Create .gitignore if it doesn't exist
-  const gitignorePath = join(workspacePath, '.gitignore');
-  if (!existsSync(gitignorePath)) {
-    writeFileSync(gitignorePath, DEFAULT_GITIGNORE);
-  }
+  // Must be set BEFORE the first `git add` so long-path files in
+  // node_modules/ don't abort the initial commit on Windows.
+  ensureLongPathsConfigured(workspacePath);
+
+  // Ensure dependency dirs are ignored (writes DEFAULT_GITIGNORE if missing,
+  // or appends missing entries to an existing .gitignore).
+  ensureGitignoreIgnoresDeps(workspacePath);
 
   // Create .shogo directory for checkpoint metadata
   const shogoDir = join(workspacePath, SHOGO_DIR);
@@ -187,7 +267,7 @@ export async function initRepo(
 
   // Initial commit
   execFileSync('git', ['add', '-A'], { cwd: workspacePath, stdio: 'pipe' });
-  
+
   try {
     execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: workspacePath, stdio: 'pipe' });
   } catch (err: any) {
@@ -313,6 +393,12 @@ export async function commit(
 ): Promise<GitCommit | null> {
   requireGit();
   const { message, author, email, includeUntracked = true } = options;
+
+  // Self-heal legacy repos that pre-date these settings: enable long paths
+  // and make sure node_modules/ is ignored so the stage step below doesn't
+  // trip on Windows MAX_PATH inside deep dependency trees.
+  ensureLongPathsConfigured(workspacePath);
+  ensureGitignoreIgnoresDeps(workspacePath);
 
   // Stage changes
   if (includeUntracked) {

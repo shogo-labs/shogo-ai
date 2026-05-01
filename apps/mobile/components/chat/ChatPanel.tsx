@@ -1744,11 +1744,28 @@ export const ChatPanel = observer(function ChatPanel({
           if (userText) {
             hasTriggeredNamingRef.current = true
             const http = createHttpClient()
-            api.generateProjectName(http, userText, workspaceId).then(({ name }) => {
-              if (name) {
-                actions.updateChatSession(currentSessionId, { inferredName: name })
-              }
-            }).catch(() => {})
+            api
+              .generateProjectName(http, userText, workspaceId)
+              .then(({ name }) => {
+                if (!name) return
+                // Guard: the session may have been deleted (or never persisted
+                // server-side) between sending the naming RPC and its
+                // resolution — e.g. the user switched chat tabs and removed
+                // the original session. Calling `updateChatSession` on a
+                // missing id throws "Item not found" inside the MST flow,
+                // which becomes an UnhandledPromiseRejection (the inner
+                // Promise was previously NOT returned from the .then, so the
+                // outer .catch couldn't see it). Check first AND return the
+                // inner Promise so any future error path is funneled through
+                // the outer .catch.
+                if (!studioChat.chatSessionCollection.get(currentSessionId)) {
+                  return
+                }
+                return actions.updateChatSession(currentSessionId, {
+                  inferredName: name,
+                })
+              })
+              .catch(() => {})
           }
         }
       }
@@ -2427,7 +2444,19 @@ export const ChatPanel = observer(function ChatPanel({
     // SSE, wedging isLoadingMessagesRef forever. Hydrate cache only; the
     // post-stream revalidate effect below will refetch once streaming ends.
     if (isStreamingRef.current || isSendingMessageRef.current) {
-      if (hasCached && messagesRef.current !== cachedMessagesRef.current) {
+      // Only hydrate from cache when the live `messages` array is empty —
+      // i.e. the panel just (re)mounted and has nothing to show yet. Never
+      // overwrite a non-empty live `messages` with the cache: the AI SDK is
+      // the authoritative source mid-stream, and reference-only inequality
+      // (e.g. cache stale by one tick) would otherwise feed setMessages back
+      // into the SDK every render, racing the streaming updates and risking
+      // a "Maximum update depth exceeded" loop.
+      if (
+        hasCached &&
+        messagesRef.current.length === 0 &&
+        cachedMessagesRef.current!.length > 0 &&
+        cachedMessagesRef.current !== messagesRef.current
+      ) {
         setMessages(cachedMessagesRef.current!)
       }
       if (hasCached) setIsInitialLoadComplete(true)
@@ -2784,46 +2813,95 @@ export const ChatPanel = observer(function ChatPanel({
   // Only the active panel (the one feeding onMessagesChange) drives the shared plan-stream context.
   // Background panels must not fight over setIsPlanStreaming.
   const isActivePanel = onMessagesChange != null
+
+  // Read `planStream` from a ref inside the publishing effects below so that
+  // changes to the context value's identity do NOT re-run the effects (and
+  // therefore can't cascade back into setState on the same context). The
+  // setters on the context value are stable `useState` setters, so reading
+  // them through the ref is safe.
+  const planStreamRef = useRef(planStream)
+  planStreamRef.current = planStream
+
   useEffect(() => {
     if (!isActivePanel) return
-    planStream?.setIsPlanStreaming(isStreaming && interactionMode === "plan")
-  }, [isStreaming, interactionMode, planStream, isActivePanel])
+    const next = isStreaming && interactionMode === "plan"
+    const ctx = planStreamRef.current
+    if (!ctx) return
+    if (ctx.isPlanStreaming === next) return
+    ctx.setIsPlanStreaming(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming, interactionMode, isActivePanel])
+
+  // Track the last plan we published so we can return the SAME object
+  // identity when nothing about the create_plan args has changed. Without
+  // this, every streaming token rebuilt a fresh `normalizePlanData({...})`
+  // object, which in turn forced `setStreamingPlan` to fire (new identity →
+  // React doesn't bail out) and stormed every `usePlanStream()` consumer.
+  const lastDerivedPlanRef = useRef<{
+    sig: string
+    plan: PlanData | null
+  }>({ sig: "", plan: null })
 
   const derivedStreamingPlan = useMemo<PlanData | null>(() => {
-    if (!isStreaming) return null
-    const lastMsg = messages[messages.length - 1]
-    if (!lastMsg || lastMsg.role !== "assistant") return null
-    const parts = (lastMsg as any).parts as any[] | undefined
-    if (!parts) return null
-    const planPart = parts.find(
-      (p: any) =>
-        (p.type === "tool-invocation" && p.toolInvocation?.toolName === "create_plan") ||
-        (p.type === "dynamic-tool" && p.toolName === "create_plan"),
-    )
-    if (!planPart) return null
-    const args =
-      planPart.type === "tool-invocation"
-        ? planPart.toolInvocation?.args
-        : planPart.input ?? planPart.args
-    if (!args?.name) return null
-    return normalizePlanData({
-      name: args.name,
-      overview: args.overview ?? "",
-      plan: args.plan ?? "",
-      todos: args.todos ?? [],
-      filepath: args.filepath,
-      toolCallId: planPart.id ?? planPart.toolCallId,
-    })
+    const computeFresh = (): PlanData | null => {
+      if (!isStreaming) return null
+      const lastMsg = messages[messages.length - 1]
+      if (!lastMsg || lastMsg.role !== "assistant") return null
+      const parts = (lastMsg as any).parts as any[] | undefined
+      if (!parts) return null
+      const planPart = parts.find(
+        (p: any) =>
+          (p.type === "tool-invocation" && p.toolInvocation?.toolName === "create_plan") ||
+          (p.type === "dynamic-tool" && p.toolName === "create_plan"),
+      )
+      if (!planPart) return null
+      const args =
+        planPart.type === "tool-invocation"
+          ? planPart.toolInvocation?.args
+          : planPart.input ?? planPart.args
+      if (!args?.name) return null
+      return normalizePlanData({
+        name: args.name,
+        overview: args.overview ?? "",
+        plan: args.plan ?? "",
+        todos: args.todos ?? [],
+        filepath: args.filepath,
+        toolCallId: planPart.id ?? planPart.toolCallId,
+      })
+    }
+    const fresh = computeFresh()
+    let sig = ""
+    try {
+      sig = fresh ? JSON.stringify(fresh) : ""
+    } catch {
+      sig = `__nonserializable__:${Math.random()}`
+    }
+    if (sig === lastDerivedPlanRef.current.sig) {
+      return lastDerivedPlanRef.current.plan
+    }
+    lastDerivedPlanRef.current = { sig, plan: fresh }
+    return fresh
   }, [isStreaming, messages])
 
   useEffect(() => {
-    planStream?.setStreamingPlan(derivedStreamingPlan)
-    if (derivedStreamingPlan) {
-      planStream?.setStreamingPlanFilepath(derivedStreamingPlan.filepath ?? null)
-    } else if (!isStreaming) {
-      planStream?.setStreamingPlanFilepath(null)
+    const ctx = planStreamRef.current
+    if (!ctx) return
+    if (ctx.streamingPlan !== derivedStreamingPlan) {
+      ctx.setStreamingPlan(derivedStreamingPlan)
     }
-  }, [derivedStreamingPlan, isStreaming, planStream])
+    const nextFilepath = derivedStreamingPlan
+      ? (derivedStreamingPlan.filepath ?? null)
+      : !isStreaming
+        ? null
+        : ctx.streamingPlanFilepath
+    if (ctx.streamingPlanFilepath !== nextFilepath) {
+      ctx.setStreamingPlanFilepath(nextFilepath)
+    }
+    // `planStream` intentionally omitted: we read it via `planStreamRef` so
+    // its identity churn (fixed independently in PlanStreamContext) cannot
+    // cause this effect to re-run and re-publish the same value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedStreamingPlan, isStreaming])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange

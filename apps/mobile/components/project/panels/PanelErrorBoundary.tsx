@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { Component, type ReactNode } from 'react'
+import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { View } from 'react-native'
 import * as Sentry from '@sentry/react-native'
 import { Text } from '@/components/ui/text'
@@ -24,6 +24,22 @@ const AUTO_RETRY_DELAY_MS = 1500
 const MAX_AUTO_RETRIES = 1
 
 /**
+ * Errors we never auto-retry. Auto-retrying re-mounts the panel and, for
+ * runaway-render bugs, the new tree usually loops again immediately, which
+ * buries the original componentStack under a fresh one. Surface the manual
+ * recovery UI so the developer / user actually sees the diagnostic.
+ */
+const NON_AUTO_RETRYABLE_PATTERNS = [
+  /Maximum update depth exceeded/i,
+  /Too many re-renders/i,
+]
+
+function isNonAutoRetryable(error: Error): boolean {
+  const msg = error?.message ?? ''
+  return NON_AUTO_RETRYABLE_PATTERNS.some((re) => re.test(msg))
+}
+
+/**
  * Scoped error boundary for project panels (Chat, IDE, Terminal, etc.).
  * Catches rendering crashes, auto-retries once, then shows manual recovery UI.
  * Each instance is independent — a crash in one panel does not affect others.
@@ -36,12 +52,26 @@ export class PanelErrorBoundary extends Component<Props, State> {
     return { hasError: true, error }
   }
 
-  componentDidCatch(error: Error) {
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    const componentStack = info?.componentStack ?? null
     Sentry.captureException(error, {
       tags: { boundary: 'panel' },
-      extra: { panelName: this.props.panelName },
+      extra: {
+        panelName: this.props.panelName,
+        componentStack,
+      },
     })
-    console.error(`[PanelErrorBoundary:${this.props.panelName}] Render crash: ${error.message}`)
+    console.error(
+      `[PanelErrorBoundary:${this.props.panelName}] Render crash: ${error.message}` +
+        (componentStack ? `\nComponent stack:${componentStack}` : ''),
+    )
+
+    if (isNonAutoRetryable(error)) {
+      // Skip auto-retry for runaway-render bugs so the operator can see the
+      // stack we just logged; otherwise the next mount loops again and the
+      // original stack is overwritten before anyone can read it.
+      return
+    }
 
     if (this.state.errorCount < MAX_AUTO_RETRIES) {
       this.scheduleAutoRetry()
