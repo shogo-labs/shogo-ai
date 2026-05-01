@@ -83,6 +83,7 @@ import { InspectorPanel } from '../../../../components/dynamic-app/edit/Inspecto
 import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
 import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
+import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
 import {
   ChannelsPanel,
   FilesBrowserPanel,
@@ -1223,31 +1224,33 @@ export default observer(function ProjectLayout() {
             style={!isActive ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 } : undefined}
             pointerEvents={isActive ? 'auto' : 'none'}
           >
-            <ChatPanel
-              featureId={projectId ?? null}
-              featureName={project.name}
-              phase={null}
-              chatSessionId={tabId}
-              onChatSessionChange={handleChatSessionChange}
-              workspaceId={project?.workspaceId}
-              userId={user?.id}
-              projectId={projectId}
-              projectType="unified"
-              isActive={isActive}
-              localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
-              initialMessage={isInitialSession ? capturedInitialMessage : undefined}
-              initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
-              initialFiles={isInitialSession ? capturedInitialFiles : undefined}
-              billingData={billingDataResolved}
-              onCanvasPreview={handleCanvasPreview}
-              onMessagesChange={isActive ? setChatMessages : undefined}
-              onStreamingChange={getStreamingChangeHandler(tabId)}
-              buildPlanRequest={isActive ? buildPlanRequest : null}
-              onOpenPlan={handleOpenPlan}
-              selectedModel={selectedModel}
-              onModelChange={handleModelChange}
-              className="flex-1"
-            />
+            <PanelErrorBoundary panelName="Chat">
+              <ChatPanel
+                featureId={projectId ?? null}
+                featureName={project.name}
+                phase={null}
+                chatSessionId={tabId}
+                onChatSessionChange={handleChatSessionChange}
+                workspaceId={project?.workspaceId}
+                userId={user?.id}
+                projectId={projectId}
+                projectType="unified"
+                isActive={isActive}
+                localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
+                initialMessage={isInitialSession ? capturedInitialMessage : undefined}
+                initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
+                initialFiles={isInitialSession ? capturedInitialFiles : undefined}
+                billingData={billingDataResolved}
+                onCanvasPreview={handleCanvasPreview}
+                onMessagesChange={isActive ? setChatMessages : undefined}
+                onStreamingChange={getStreamingChangeHandler(tabId)}
+                buildPlanRequest={isActive ? buildPlanRequest : null}
+                onOpenPlan={handleOpenPlan}
+                selectedModel={selectedModel}
+                onModelChange={handleModelChange}
+                className="flex-1"
+              />
+            </PanelErrorBoundary>
           </View>
         )
       })}
@@ -1502,7 +1505,11 @@ export default observer(function ProjectLayout() {
             )}
 
             {canvasEnabled && previewTab === 'dynamic-app' && (
-              <View className="absolute inset-0">{canvasPanel}</View>
+              <View className="absolute inset-0">
+                <PanelErrorBoundary panelName="Canvas">
+                  {canvasPanel}
+                </PanelErrorBoundary>
+              </View>
             )}
             {previewTab === 'app-preview' && (
               <View
@@ -1527,15 +1534,33 @@ export default observer(function ProjectLayout() {
                   : 'none'
               }
             >
-              <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
-              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
-              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
-              <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
-              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
-              <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
+              <PanelErrorBoundary panelName="IDE">
+                <IDEPanel visible={previewTab === 'ide'} projectId={projectId!} projectName={project.name} agentUrl={agentUrl} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Files">
+                <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Terminal">
+                <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Capabilities">
+                <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Channels">
+                <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Agents">
+                <AgentsPanel visible={previewTab === 'agents'} selectedToolId={selectedAgentToolId} agentUrl={agentUrl} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Monitor">
+                <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Plans">
+                <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
+              </PanelErrorBoundary>
+              <PanelErrorBoundary panelName="Checkpoints">
+                <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
+              </PanelErrorBoundary>
             </View>
           </View>
 
