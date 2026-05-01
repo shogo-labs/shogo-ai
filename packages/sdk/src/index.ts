@@ -88,6 +88,7 @@ export {
   type DeviceInfo,
   type CloudLoginStart,
   type CloudLoginStatus,
+  type WorkspaceSummary,
   type FeatureFlagOverrides,
   type FeatureFlagPatch,
 } from './platform/index.js'
