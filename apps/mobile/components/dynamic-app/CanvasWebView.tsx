@@ -4,8 +4,9 @@
  * CanvasWebView — Canvas v2 renderer.
  *
  * Loads the canvas-runtime SPA shell inside a WebView (native) or iframe (web).
- * The parent owns the SSE connection to the agent and relays events into the
- * iframe/WebView via postMessage, eliminating cross-origin and proxy issues.
+ * The iframe handles its own same-origin SSE for live reload via canvas-bridge.js;
+ * this parent only relays theme + active-surface messages and forwards canvas
+ * actions / errors back to the agent over HTTP.
  */
 
 import { useCallback, useEffect, useRef, useMemo } from 'react'
@@ -105,14 +106,13 @@ interface ThemeMessage {
 interface BridgeProps {
   url: string
   agentUrl: string
-  sse: ReturnType<typeof useCanvasSSE>
   activeSurfaceId?: string | null
   themeMessage: ThemeMessage | null
   onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
 }
 
-function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
 
@@ -122,11 +122,6 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
 
   // Reload is handled inside the iframe itself (main.tsx listens to the SSE
   // stream on the same origin, avoiding cross-origin issues entirely).
-
-  // Send connected status
-  useEffect(() => {
-    if (sse.connected) sendToIframe({ type: 'canvas-connected' })
-  }, [sse.connected, sendToIframe])
 
   // Relay active surface selection from parent tabs
   useEffect(() => {
@@ -148,9 +143,6 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
 
       if (msg.type === 'canvas-ready') {
         readyRef.current = true
-        const init = sse.replayInit()
-        if (init) sendToIframe({ type: 'canvas-event', event: init })
-        if (sse.connected) sendToIframe({ type: 'canvas-connected' })
         if (themeMessage) sendToIframe(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
@@ -168,7 +160,7 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [agentUrl, sse, sendToIframe, themeMessage, onCanvasError, onCanvasCapabilities])
+  }, [agentUrl, sendToIframe, themeMessage, onCanvasError, onCanvasCapabilities])
 
   return (
     <View style={styles.container}>
@@ -191,7 +183,7 @@ function CanvasIframe({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCan
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
-function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
+function CanvasNativeWebView({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
@@ -199,11 +191,6 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
   const sendToWebView = useCallback((msg: Record<string, unknown>) => {
     webViewRef.current?.postMessage(JSON.stringify(msg))
   }, [])
-
-  // Send connected status
-  useEffect(() => {
-    if (sse.connected) sendToWebView({ type: 'canvas-connected' })
-  }, [sse.connected, sendToWebView])
 
   // Relay active surface selection from parent tabs
   useEffect(() => {
@@ -223,9 +210,6 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
 
       if (msg.type === 'canvas-ready') {
         readyRef.current = true
-        const init = sse.replayInit()
-        if (init) sendToWebView({ type: 'canvas-event', event: init })
-        if (sse.connected) sendToWebView({ type: 'canvas-connected' })
         if (themeMessage) sendToWebView(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
@@ -240,7 +224,7 @@ function CanvasNativeWebView({ url, agentUrl, sse, activeSurfaceId, themeMessage
         onCanvasError?.(msg.surfaceId as string, msg.phase as 'compile' | 'runtime', msg.error as string)
       }
     } catch {}
-  }, [agentUrl, sse, sendToWebView, themeMessage, onCanvasError, onCanvasCapabilities])
+  }, [agentUrl, sendToWebView, themeMessage, onCanvasError, onCanvasCapabilities])
 
   return (
     <View style={styles.container}>
