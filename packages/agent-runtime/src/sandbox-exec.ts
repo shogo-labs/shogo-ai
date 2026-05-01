@@ -59,6 +59,45 @@ function resolveShell(): string | undefined {
   return undefined
 }
 
+// ---------------------------------------------------------------------------
+// `bunx` → `bun x` shim for Windows
+// ---------------------------------------------------------------------------
+// Defense-in-depth for `bunx` not being on PATH on Windows.
+//
+// Primary fix: `apps/desktop/scripts/download-bun.mjs` now extracts
+// `bunx.exe` alongside `bun.exe` so Shogo Desktop's bundled bun
+// directory (which is prepended to PATH in `local-server.ts`) resolves
+// `bunx` natively. This shim is the safety net for:
+//   - Older Shogo Desktop installs where the bundle predates that fix
+//   - Custom Windows bun installs (manual unzip / pre-1.2 builds) that
+//     ship `bun.exe` without the `bunx.exe` companion
+//   - User-written commands typed into the agent that say `bunx ...`
+//
+// Without this shim, a `'bunx' is not recognized` error trips the very
+// first time the agent runs `bunx shogo generate`, `bunx prisma db push`,
+// `bunx tsc --noEmit`, `bunx shadcn add ...`, etc. — and the failure
+// mode is cryptic because the message comes from cmd.exe, not bun.
+//
+// `bun x …` is bun's built-in equivalent and only requires `bun` on
+// PATH, so we transparently rewrite leading-position `bunx <args>`
+// (and bare `bunx`) to `bun x <args>`. The rewrite is scoped to
+// commands that *start* with `bunx ` and to occurrences after a shell
+// separator (`&&`, `||`, `;`, `|`, newline) so we don't accidentally
+// clobber argument substrings like `grep bunx README.md` or
+// `echo "ran bunx"`.
+//
+// The rewrite is a no-op on macOS / Linux (where bunx normally exists
+// as a symlink to bun) and on Windows when the command doesn't
+// reference bunx — keeping the hot path zero-cost.
+
+const BUNX_REWRITE_RE = /(^|[\r\n;&|]\s*)bunx(\s|$)/g
+
+export function rewriteBunxOnWindows(command: string): string {
+  if (process.platform !== 'win32') return command
+  if (!command.includes('bunx')) return command
+  return command.replace(BUNX_REWRITE_RE, (_, lead: string, trail: string) => `${lead}bun x${trail}`)
+}
+
 // Project-scoped env vars that are safe for the agent to read.
 // These are derived per-project (HMAC of projectId + signing secret),
 // so even if the agent reads them, the blast radius is zero.
@@ -326,9 +365,10 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
 
 function nativeExec(command: string, cwd: string, timeout?: number): SandboxExecResult {
   const shell = resolveShell()
+  const finalCommand = rewriteBunxOnWindows(command)
   try {
     const baseEnv = stripRuntimeVars(getSanitizedEnv())
-    const stdout = execSync(command, {
+    const stdout = execSync(finalCommand, {
       cwd,
       timeout: timeout || 300_000,
       encoding: 'utf-8',
@@ -487,15 +527,16 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     const shell = resolveShell()
     const baseEnv = stripRuntimeVars(getSanitizedEnv())
     const env = { ...baseEnv, ...loadWorkspaceEnv(opts.workspaceDir) }
+    const finalCommand = rewriteBunxOnWindows(opts.command)
 
     if (shell) {
-      child = spawn(shell, ['-c', opts.command], {
+      child = spawn(shell, ['-c', finalCommand], {
         cwd: opts.workspaceDir,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } else {
-      child = spawn(opts.command, {
+      child = spawn(finalCommand, {
         cwd: opts.workspaceDir,
         env,
         shell: true,

@@ -922,12 +922,12 @@ async function main() {
           console.log(`   ✓ Static site built at ${docsDir}/build`)
           console.log('')
           console.log(`📄 Docs available at: ${docsDir}/build/index.html`)
-          console.log(`   Serve locally: bunx serve ${docsDir}/build`)
+          console.log(`   Serve locally: bun x serve ${docsDir}/build`)
         } catch (buildError) {
           console.log('')
           console.log('⚠️  Docs build failed (docs files were still generated):')
           console.log(`   ${buildError instanceof Error ? buildError.message : buildError}`)
-          console.log(`   You can build manually: cd ${docsDir} && bun install && bunx docusaurus build`)
+          console.log(`   You can build manually: cd ${docsDir} && bun install && bun x docusaurus build`)
         }
       }
     }

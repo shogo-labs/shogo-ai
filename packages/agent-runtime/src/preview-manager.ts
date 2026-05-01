@@ -381,7 +381,7 @@ export class PreviewManager {
     return this.apiPhase
   }
 
-  /** Last error from `bunx shogo generate`, or null on success. */
+  /** Last error from `bun x shogo generate`, or null on success. */
   get apiLastGenerateError(): string | null {
     return this.lastGenerateError
   }
@@ -548,14 +548,14 @@ export class PreviewManager {
     }
 
     const args = useBunRun ? ['run', 'generate'] : ['x', 'shogo', 'generate']
-    const cmdLabel = useBunRun ? 'bun run generate' : 'bunx shogo generate'
+    const cmdLabel = useBunRun ? 'bun run generate' : 'bun x shogo generate'
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
     return await new Promise<boolean>((resolveResult) => {
       // Use async spawn rather than execSync. The runtime's startup path
       // already drives a vite watcher, an LSP server, and the agent
       // gateway concurrently — blocking the event loop with execSync
-      // starves their stdio pipes and frequently deadlocks `bunx shogo`'s
+      // starves their stdio pipes and frequently deadlocks `bun x shogo`'s
       // own child processes (notably `prisma generate`, which speaks to
       // the parent through pipes). spawn + 'ignore' for stdin sidesteps
       // both issues and matches the manual CLI invocation shape.

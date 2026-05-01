@@ -202,7 +202,7 @@ model Lead {
 }
 \`\`\`
 
-That's it — **everything else is automatic**: the runtime watches \`prisma/schema.prisma\`, runs \`bunx shogo generate\` (which regenerates routes, types, hooks, and \`src/lib/db.ts\`), runs \`prisma db push\`, and restarts the server. The API server listens on \`http://localhost:${API_PORT}\` and serves a \`/health\` endpoint plus full CRUD at \`/api/{model-name-plural}\`. If routes are missing after a schema change, call \`server_sync\` to force a regenerate + restart.
+That's it — **everything else is automatic**: the runtime watches \`prisma/schema.prisma\`, runs \`bun x shogo generate\` (which regenerates routes, types, hooks, and \`src/lib/db.ts\`), runs \`prisma db push\`, and restarts the server. The API server listens on \`http://localhost:${API_PORT}\` and serves a \`/health\` endpoint plus full CRUD at \`/api/{model-name-plural}\`. If routes are missing after a schema change, call \`server_sync\` to force a regenerate + restart.
 
 **Generated files — do NOT hand-edit:**
 - \`src/generated/routes/\` — per-model CRUD route handlers

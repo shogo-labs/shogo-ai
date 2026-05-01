@@ -120,7 +120,7 @@ Workflow when the founder asks for new state:
 2. **Generate and commit a migration** — from the workspace root (where
    `prisma.config.ts` lives), run:
    `bun run db:migrate:dev -- --name <short_description>`
-   (or `bunx prisma migrate dev --name <short_description>`).
+   (or `bun x prisma migrate dev --name <short_description>`).
    This writes SQL under `prisma/migrations/`. **Commit those files** with
    the schema change; do not rely on `db:push` alone for anything that ships.
    Fresh environments apply history with `bun run db:migrate:deploy`.
