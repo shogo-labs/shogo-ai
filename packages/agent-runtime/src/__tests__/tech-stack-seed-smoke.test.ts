@@ -13,13 +13,13 @@
 // for nightly / pre-merge runs only.
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   TECH_STACK_REGISTRY,
   type StackRegistryEntry,
 } from '@shogo/shared-runtime'
-import { seedTechStack } from '../workspace-defaults'
+import { seedTechStack, wipeProjectFiles } from '../workspace-defaults'
 
 const TMP_BASE = join(import.meta.dir, '..', '..', '.test-tmp-seed-smoke')
 let workspaceDir: string
@@ -115,6 +115,86 @@ describe('per-stack workspace seed smoke', () => {
 
     seedTechStack(workspaceDir, 'expo-app')
     expect(readFileSync(path, 'utf-8')).toBe(sentinel)
+  })
+})
+
+// `wipeProjectFiles` powers the destructive "reset project to new tech
+// stack" flow exposed via `POST /agent/workspace/reset-stack`. It must
+// delete the previous stack's project code while preserving the user's
+// agent identity, persistent memory, and git history.
+describe('wipeProjectFiles + stack switch', () => {
+  test('preserves .shogo/, memory/, .git/, .canvas-state.json, .template', () => {
+    // Lay down a representative spread of project files first.
+    seedTechStack(workspaceDir, 'expo-app')
+
+    // User-edited content under the preserve allowlist.
+    const agentsMd = join(workspaceDir, '.shogo', 'AGENTS.md')
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(agentsMd, '# user edited identity\n', 'utf-8')
+
+    const memoryNote = join(workspaceDir, 'memory', 'notes.md')
+    mkdirSync(join(workspaceDir, 'memory'), { recursive: true })
+    writeFileSync(memoryNote, 'remembered fact\n', 'utf-8')
+
+    const gitHead = join(workspaceDir, '.git', 'HEAD')
+    mkdirSync(join(workspaceDir, '.git'), { recursive: true })
+    writeFileSync(gitHead, 'ref: refs/heads/main\n', 'utf-8')
+
+    const canvasState = join(workspaceDir, '.canvas-state.json')
+    writeFileSync(canvasState, '{"surfaces":[]}', 'utf-8')
+
+    const templateMarker = join(workspaceDir, '.template')
+    writeFileSync(templateMarker, 'travel-concierge', 'utf-8')
+
+    // Sanity: expo's `app.json` was seeded above.
+    expect(existsSync(join(workspaceDir, 'app.json'))).toBe(true)
+
+    const removed = wipeProjectFiles(workspaceDir)
+    expect(removed).toBeGreaterThan(0)
+
+    // Project code should be gone.
+    expect(existsSync(join(workspaceDir, 'app.json'))).toBe(false)
+    expect(existsSync(join(workspaceDir, '.tech-stack'))).toBe(false)
+
+    // Allowlisted paths and their contents must survive untouched.
+    expect(readFileSync(agentsMd, 'utf-8')).toBe('# user edited identity\n')
+    expect(readFileSync(memoryNote, 'utf-8')).toBe('remembered fact\n')
+    expect(readFileSync(gitHead, 'utf-8')).toBe('ref: refs/heads/main\n')
+    expect(readFileSync(canvasState, 'utf-8')).toBe('{"surfaces":[]}')
+    expect(readFileSync(templateMarker, 'utf-8')).toBe('travel-concierge')
+  })
+
+  test('wipe + reseed switches stack from react-app/threejs-game to expo-app', () => {
+    // Start on a Vite-based stack with a stack-specific marker.
+    seedTechStack(workspaceDir, 'threejs-game')
+    expect(existsSync(join(workspaceDir, 'vite.config.ts'))).toBe(true)
+
+    // User customisation in .shogo/ that must survive the reset.
+    const customAgents = join(workspaceDir, '.shogo', 'AGENTS.md')
+    writeFileSync(customAgents, '# my custom agent\n', 'utf-8')
+
+    // Wipe + reseed onto a Metro-based stack.
+    wipeProjectFiles(workspaceDir)
+    expect(existsSync(join(workspaceDir, 'vite.config.ts'))).toBe(false)
+
+    const ok = seedTechStack(workspaceDir, 'expo-app')
+    expect(ok).toBe(true)
+
+    // New stack's marker file lands.
+    expect(existsSync(join(workspaceDir, 'app.json'))).toBe(true)
+    // Old stack's marker file is gone.
+    expect(existsSync(join(workspaceDir, 'vite.config.ts'))).toBe(false)
+    // .tech-stack reflects the new stack.
+    expect(readFileSync(join(workspaceDir, '.tech-stack'), 'utf-8').trim()).toBe(
+      'expo-app',
+    )
+    // User customisation in .shogo/ survived.
+    expect(readFileSync(customAgents, 'utf-8')).toBe('# my custom agent\n')
+  })
+
+  test('wipeProjectFiles is a no-op on a non-existent dir', () => {
+    const ghost = join(TMP_BASE, 'does-not-exist')
+    expect(wipeProjectFiles(ghost)).toBe(0)
   })
 })
 

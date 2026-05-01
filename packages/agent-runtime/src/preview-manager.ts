@@ -19,10 +19,14 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
 import { createServer } from 'net'
-import { createHash } from 'crypto'
 import { pkg } from '@shogo/shared-runtime'
 import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
-import { loadTechStackMeta } from './workspace-defaults'
+import {
+  loadTechStackMeta,
+  computePackageJsonHash,
+  readInstallMarker,
+  writeInstallMarker,
+} from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
 
@@ -859,31 +863,19 @@ export class PreviewManager {
     //   2. False negative — every install ran the anchor check from disk,
     //      which is technically O(deps) stat calls vs. one stat + read.
     //
+    // The marker logic lives in workspace-defaults so `ensureWorkspaceDeps`
+    // (host-side, host-spawned RuntimeManager) can write the same marker
+    // after its install. Without that shared helper, a stack switch
+    // (Vite → Expo) would always trip the "hash changed" path here even
+    // though ensureWorkspaceDeps had just installed the right deps —
+    // and on Windows boxes without Node.js the resulting reinstall blew
+    // up with NodeMissingError.
+    //
     // The marker is best-effort: any read/parse failure falls through to a
     // full install, so a corrupted marker can never cause a stale-deps
     // crash — only at most one redundant install.
-    const pkgJsonPath = join(installCwd, 'package.json')
-    const markerPath = join(installCwd, '.shogo', 'install-marker')
-
-    const computeMarker = (): string | null => {
-      try {
-        if (!existsSync(pkgJsonPath)) return null
-        const raw = readFileSync(pkgJsonPath, 'utf-8')
-        return createHash('sha256').update(raw).digest('hex')
-      } catch {
-        return null
-      }
-    }
-
-    const expectedHash = computeMarker()
-    const recordedHash = (() => {
-      try {
-        if (!existsSync(markerPath)) return null
-        return readFileSync(markerPath, 'utf-8').trim() || null
-      } catch {
-        return null
-      }
-    })()
+    const expectedHash = computePackageJsonHash(installCwd)
+    const recordedHash = readInstallMarker(installCwd)
 
     if (
       hasNodeModules &&
@@ -909,12 +901,7 @@ export class PreviewManager {
       console.log(
         `[${LOG_PREFIX}] node_modules/ present but install-marker missing — recording hash without reinstall`,
       )
-      try {
-        mkdirSync(join(installCwd, '.shogo'), { recursive: true })
-        writeFileSync(markerPath, expectedHash, 'utf-8')
-      } catch (err: any) {
-        console.warn(`[${LOG_PREFIX}] Could not write install-marker:`, err.message)
-      }
+      writeInstallMarker(installCwd, expectedHash)
       timings.install = 0
       return
     }
@@ -929,22 +916,19 @@ export class PreviewManager {
     const t0 = Date.now()
     try {
       console.log(`[${LOG_PREFIX}] Installing dependencies in ${installCwd}...`)
-      // No `frozen: true` here: we're recovering from a stale template
-      // node_modules and there's no lockfile from the user yet.
-      pkg.installSync(installCwd, { frozen: false })
+      // installAsync (vs. installSync) lets the platform layer apply its
+      // Windows fallback policy — npm if available, else
+      // `bun install --backend=copyfile` to dodge the bun-1.x hardlink
+      // bug that produces empty package dirs (see platform-pkg.ts).
+      // No `frozen: true` here: we may be recovering from a stale
+      // template node_modules with no user-owned lockfile.
+      await pkg.installAsync(installCwd, { frozen: false })
       timings.install = Date.now() - t0
       console.log(`[${LOG_PREFIX}] Dependencies installed (${timings.install}ms)`)
 
       // Best-effort marker write — a failure here just means we'll run
       // install one more time on the next start, never anything worse.
-      if (expectedHash != null) {
-        try {
-          mkdirSync(join(installCwd, '.shogo'), { recursive: true })
-          writeFileSync(markerPath, expectedHash, 'utf-8')
-        } catch (err: any) {
-          console.warn(`[${LOG_PREFIX}] Could not write install-marker:`, err.message)
-        }
-      }
+      writeInstallMarker(installCwd, expectedHash ?? undefined)
     } catch (err: any) {
       timings.install = Date.now() - t0
       console.error(`[${LOG_PREFIX}] Dependency install failed:`, err.message)
