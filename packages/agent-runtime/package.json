@@ -25,6 +25,7 @@
     "generate-templates": "bun run src/template-generator/cli.ts",
     "generate-templates:force": "bun run src/template-generator/cli.ts --force",
     "generate-templates:dry": "bun run src/template-generator/cli.ts --dry-run",
+    "build-template-dists": "bun run scripts/build-template-dists.ts",
     "migrate-canvas": "bun run src/migrate-canvas-to-code.ts",
     "migrate-canvas:all": "bun run src/migrate-canvas-to-code.ts --all",
     "test:pool-assign": "bun run ../../scripts/test-pool-assign.ts"

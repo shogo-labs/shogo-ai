@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pkg } from '@shogo/shared-runtime'
 import { getAgentTemplateById } from './agent-templates'
-import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir } from './template-loader'
+import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir, getTemplateDistDir } from './template-loader'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -233,16 +233,38 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
     cpSync(templatePrismaDir, join(dir, 'prisma'), { recursive: true, force: true })
   }
 
+  // Pre-built dist/ — see `getTemplateDistDir` doc-comment. We rm the
+  // existing dist/ first because vite emits hashed filenames (e.g.
+  // `index-AQQBZ6vm.js`) and `cpSync(force:true)` only overwrites files
+  // with the same name. Without the rm, the bundled runtime-template's
+  // `index-XXX.js` (Project Ready) lives on alongside the template's
+  // `index-YYY.js` (BDR Pipeline) in dist/assets/ — the iframe's
+  // index.html (replaced by the cp) references the new bundle, but
+  // any tooling that reads the directory (or any cache that picks up
+  // the stale chunk) still sees the old surface.
+  const templateDistDir = getTemplateDistDir(templateId)
+  if (templateDistDir) {
+    const destDist = join(dir, 'dist')
+    rmSync(destDist, { recursive: true, force: true })
+    cpSync(templateDistDir, destDist, { recursive: true })
+  }
+
   writeFileSync(join(dir, '.template'), templateId, 'utf-8')
   return true
 }
 
 /**
- * Re-merge a template's `src/` and `prisma/` onto an existing workspace.
+ * Re-merge a template's `src/`, `prisma/` and pre-built `dist/` onto an
+ * existing workspace.
  *
  * Must run **after** `seedRuntimeTemplate` on first boot: the runtime skeleton
  * copies generic `src/App.tsx` (`Project Ready`). Agent templates ship curated
  * surfaces under `templates/<id>/src/` — those must win over that starter file.
+ *
+ * The pre-built `dist/` overlay is the second half of that fix: the canvas
+ * iframe paints whatever `dist/` is on disk during Vite's cold rebuild, so
+ * without overlaying the template's dist the user sees `Project Ready`
+ * flash for ~1-3s even after `src/` is correct. See `getTemplateDistDir`.
  *
  * Same copy rules as inside `seedWorkspaceFromTemplate`; safe to repeat when
  * the workspace already matched the overlay (cpSync force is idempotent).
@@ -265,6 +287,15 @@ export function overlayAgentTemplateCodeDirs(dir: string, templateId: string): b
     didAnything = true
   }
 
+  const templateDistDir = getTemplateDistDir(templateId)
+  if (templateDistDir) {
+    // Full replace, not merge — see seedWorkspaceFromTemplate for why.
+    const destDist = join(dir, 'dist')
+    rmSync(destDist, { recursive: true, force: true })
+    cpSync(templateDistDir, destDist, { recursive: true })
+    didAnything = true
+  }
+
   return didAnything
 }
 
@@ -273,11 +304,20 @@ export function overlayAgentTemplateCodeDirs(dir: string, templateId: string): b
 // ---------------------------------------------------------------------------
 
 const RUNTIME_TEMPLATE_SKIP = new Set([
-  'dist',
+  // node_modules is platform-specific; `ensureWorkspaceDeps` copies a fresh
+  // tree (or runs `bun install`) once the workspace is seeded.
   'node_modules',
+  // .shogo is template-/agent-specific; `seedWorkspaceDefaults` populates it.
   '.shogo',
-  // Prisma generated files and lock are workspace-specific
+  // Prisma generated files are workspace-specific (DB URL etc.) and are
+  // re-created by `prisma generate` after seeding.
   'src/generated',
+  // Note: we DO copy `dist/`. The bundled runtime-template ships a pre-built
+  // bundle so the canvas iframe paints something useful (the generic Vite
+  // starter) on the very first request, before Vite finishes its cold
+  // rebuild. For agent-template projects, `overlayAgentTemplateCodeDirs`
+  // replaces this with the template's own pre-built dist immediately
+  // afterwards — see packages/agent-runtime/templates/<id>/dist.
 ])
 
 /**

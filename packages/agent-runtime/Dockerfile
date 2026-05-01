@@ -76,6 +76,22 @@ RUN cd packages/sdk && bun install && bun run build
 # server architecture (see migrations/skill-server-to-root.ts).
 RUN cd templates/runtime-template && bun install
 
+# Pre-build per-template canvas dist/ bundles. Each agent template
+# (packages/agent-runtime/templates/<id>/) ships a `src/App.tsx` rendering
+# its curated surface; the build script stages it on top of the
+# runtime-template, runs `vite build`, and writes the result to
+# `templates/<id>/dist/`. `seedWorkspaceFromTemplate` and
+# `overlayAgentTemplateCodeDirs` cp this dist over the workspace's dist
+# (`force:true`), so the canvas iframe paints the correct template
+# surface on the very first request — no flash of "Project Ready" while
+# Vite does its cold rebuild.
+#
+# Rebuilding here (rather than relying on whatever `dist/` was committed)
+# means staging/production images can never drift from the template's
+# committed `src/`. ~30s for ~20 templates thanks to the symlinked
+# node_modules.
+RUN bun run --cwd packages/agent-runtime build-template-dists
+
 # Fetch external Claude Code skills from skill-registry.json
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     bun run scripts/fetch-external-skills.ts && \

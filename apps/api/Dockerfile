@@ -62,9 +62,23 @@ COPY templates/runtime-template ./templates/runtime-template
 WORKDIR /app/packages/sdk
 RUN bun run build
 
+# Pre-build per-template canvas dist/ bundles so the API's
+# `RuntimeManager.ensureProjectDirectory` ships them into every project
+# workspace and the canvas iframe paints the correct surface on the
+# first request (no "Project Ready" flash). Requires the runtime-template
+# to have its deps installed because the build script symlinks
+# templates/runtime-template/node_modules into each per-template staging
+# dir to share vite/react/postcss/tailwind. The deps tree is dropped
+# afterwards — the API doesn't need it at runtime, only the
+# (now-populated) `templates/<id>/dist/` directories.
+WORKDIR /app/templates/runtime-template
+RUN bun install
+WORKDIR /app
+RUN bun run --cwd packages/agent-runtime build-template-dists && \
+    rm -rf templates/runtime-template/node_modules
+
 # Clean per-package node_modules (bun symlinks that resolve via .bun/ cache).
 # These are rebuilt in the production stage via `bun install --ignore-scripts`.
-WORKDIR /app
 RUN rm -rf packages/*/node_modules
 
 # =============================================================================

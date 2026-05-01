@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
   Modal,
+  TextInput,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -24,7 +25,7 @@ import { api, getOnboardingMessage, type AgentTemplateSummary, type EvalOutputRu
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePostHogSafe } from '../../contexts/posthog'
-import { Download, X } from 'lucide-react-native'
+import { Download, X, Search } from 'lucide-react-native'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
@@ -75,6 +76,7 @@ export default observer(function TemplatesPage() {
   const [loading, setLoading] = useState(true)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [activeFilter, setActiveFilter] = useState('all')
+  const [searchQuery, setSearchQuery] = useState('')
   const [importModalVisible, setImportModalVisible] = useState(false)
   const [evalRuns, setEvalRuns] = useState<EvalOutputRun[]>([])
   const [loadingEvals, setLoadingEvals] = useState(false)
@@ -208,10 +210,24 @@ export default observer(function TemplatesPage() {
     })
   }, [agentTemplates])
 
-  const filteredAgentTemplates =
-    activeFilter === 'all'
-      ? uniqueAgentTemplates
-      : uniqueAgentTemplates.filter((t) => t.category === activeFilter)
+  const filteredAgentTemplates = useMemo(() => {
+    let list =
+      activeFilter === 'all'
+        ? uniqueAgentTemplates
+        : uniqueAgentTemplates.filter((t) => t.category === activeFilter)
+
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      list = list.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          t.description.toLowerCase().includes(q) ||
+          t.category.toLowerCase().includes(q) ||
+          (t.tags ?? []).some((tag) => tag.toLowerCase().includes(q)),
+      )
+    }
+    return list
+  }, [uniqueAgentTemplates, activeFilter, searchQuery])
 
   const filterTabs = AGENT_FILTER_TABS
   const currentTemplates = filteredAgentTemplates
@@ -251,6 +267,35 @@ export default observer(function TemplatesPage() {
             <Download size={16} className="text-foreground" />
             <Text className="text-sm font-medium text-foreground">Import Template</Text>
           </Pressable>
+        </View>
+
+        {/* Search */}
+        <View className="px-6 mb-4 items-center">
+          <View
+            className="flex-row items-center bg-card border border-input rounded-lg px-3 h-10 w-full"
+            style={{ maxWidth: 480 }}
+          >
+            <Search size={16} className="text-muted-foreground" />
+            <TextInput
+              className="flex-1 ml-2 py-0 text-sm text-foreground web:outline-none"
+              placeholder="Search templates by name, category, or tag..."
+              placeholderTextColor="#71717a"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+              textAlignVertical="center"
+            />
+            {searchQuery.length > 0 && (
+              <Pressable
+                onPress={() => setSearchQuery('')}
+                className="p-1 -mr-1"
+                hitSlop={6}
+              >
+                <X size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          </View>
         </View>
 
         {/* Filter tabs */}
@@ -323,8 +368,21 @@ export default observer(function TemplatesPage() {
           {currentTemplates.length === 0 && (
             <View className="items-center py-16">
               <Text className="text-muted-foreground text-sm">
-                No templates in this category yet
+                {searchQuery.trim()
+                  ? `No templates match "${searchQuery.trim()}"`
+                  : 'No templates in this category yet'}
               </Text>
+              {(searchQuery.trim() || activeFilter !== 'all') && (
+                <Pressable
+                  onPress={() => {
+                    setSearchQuery('')
+                    setActiveFilter('all')
+                  }}
+                  className="mt-3 px-3 py-1.5 rounded-md border border-border active:bg-muted"
+                >
+                  <Text className="text-xs font-medium text-foreground">Clear filters</Text>
+                </Pressable>
+              )}
             </View>
           )}
         </View>
