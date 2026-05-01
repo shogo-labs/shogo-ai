@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 import type { PlanData } from "./PlanCard"
 
 export interface PlanStreamContextValue {
@@ -35,19 +35,36 @@ export function PlanStreamProvider({ children }: PlanStreamProviderProps) {
     setPlanRefreshNonce((n) => n + 1)
   }, [])
 
+  // Memoize the context value so its identity only changes when one of the
+  // four state slots actually changes. Without this, every render of this
+  // provider produced a fresh object literal, forcing every `usePlanStream()`
+  // consumer (including `ChatPanel`) to re-render and re-run effects keyed on
+  // `planStream` — a major contributor to streaming-time render storms.
+  // `setIsPlanStreaming`/`setStreamingPlan`/`setStreamingPlanFilepath` are
+  // already-stable `useState` setters, and `notifyPlanCreated` is wrapped in
+  // `useCallback([])`, so they don't need to be in the deps array.
+  const value = useMemo<PlanStreamContextValue>(
+    () => ({
+      isPlanStreaming,
+      streamingPlan,
+      planRefreshNonce,
+      streamingPlanFilepath,
+      setIsPlanStreaming,
+      setStreamingPlan,
+      setStreamingPlanFilepath,
+      notifyPlanCreated,
+    }),
+    [
+      isPlanStreaming,
+      streamingPlan,
+      planRefreshNonce,
+      streamingPlanFilepath,
+      notifyPlanCreated,
+    ],
+  )
+
   return (
-    <PlanStreamContext.Provider
-      value={{
-        isPlanStreaming,
-        streamingPlan,
-        planRefreshNonce,
-        streamingPlanFilepath,
-        setIsPlanStreaming,
-        setStreamingPlan,
-        setStreamingPlanFilepath,
-        notifyPlanCreated,
-      }}
-    >
+    <PlanStreamContext.Provider value={value}>
       {children}
     </PlanStreamContext.Provider>
   )

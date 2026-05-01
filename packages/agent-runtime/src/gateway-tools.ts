@@ -14,6 +14,7 @@ import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname, relative } from 'path'
 import { execSync } from 'child_process'
+import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
@@ -1949,7 +1950,9 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
 
 function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () => void }> {
   const { spawn } = require('child_process') as typeof import('child_process')
-  const srcDir = dirname(new URL(import.meta.url).pathname)
+  // Use fileURLToPath so this works on Windows. `new URL(import.meta.url).pathname`
+  // returns a `/C:/...` path that breaks existsSync / spawn on win32.
+  const srcDir = dirname(fileURLToPath(import.meta.url))
   const relayScript = existsSync(join(srcDir, 'browser-relay.cjs'))
     ? join(srcDir, 'browser-relay.cjs')
     : join(srcDir, '..', 'src', 'browser-relay.cjs')
@@ -2117,11 +2120,23 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CONTAINER) {
           launchArgs.push('--no-sandbox', '--disable-setuid-sandbox')
         }
-        browser = await pw.chromium.launch({
+        // Bun's stdio pipe transport (FDs 3/4) doesn't deliver CDP frames
+        // reliably, so Playwright's default `--remote-debugging-pipe` flow
+        // hangs (chromium launches and prints "DevTools listening on ws://"
+        // but Browser.getVersion on the pipe never returns). Setting
+        // `cdpPort: 0` switches Playwright to its WebSocketTransport, which
+        // works correctly under bun once the patch in
+        // scripts/patch-playwright-bun.ts has been applied to playwright-core.
+        // `cdpPort` is on the internal launch options — not in the public
+        // .d.ts — but is accepted via the protocol validator.
+        const isBun = typeof (globalThis as any).Bun !== 'undefined'
+        const launchOpts: any = {
           headless: true,
           executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
           args: launchArgs.length > 0 ? launchArgs : undefined,
-        })
+        }
+        if (isBun) launchOpts.cdpPort = 0
+        browser = await pw.chromium.launch(launchOpts)
         page = await browser.newPage()
       }
       await ensureScreencast()

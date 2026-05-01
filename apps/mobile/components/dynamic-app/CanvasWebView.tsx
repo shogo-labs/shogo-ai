@@ -8,7 +8,7 @@
  * iframe/WebView via postMessage, eliminating cross-origin and proxy issues.
  */
 
-import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
+import { useCallback, useEffect, useRef, useMemo } from 'react'
 import { Platform, View, StyleSheet } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 
@@ -26,68 +26,6 @@ interface CanvasWebViewProps {
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
   /** Incremented externally to force the iframe to reload. */
   refreshKey?: number
-}
-
-interface CanvasEvent {
-  type: 'init' | 'renderCode' | 'dataUpdate' | 'removeSurface'
-  [key: string]: unknown
-}
-
-// ---------------------------------------------------------------------------
-// SSE hook — connects to the agent canvas stream, returns events for relay
-// ---------------------------------------------------------------------------
-
-function useCanvasSSE(agentUrl: string | null) {
-  const [connected, setConnected] = useState(false)
-  const lastInitRef = useRef<CanvasEvent | null>(null)
-  const subscribersRef = useRef<Set<(event: CanvasEvent) => void>>(new Set())
-
-  const subscribe = useCallback((fn: (event: CanvasEvent) => void) => {
-    subscribersRef.current.add(fn)
-    return () => { subscribersRef.current.delete(fn) }
-  }, [])
-
-  const replayInit = useCallback(() => lastInitRef.current, [])
-
-  useEffect(() => {
-    if (!agentUrl) return
-
-    let es: EventSource | null = null
-    let alive = true
-    let reconnectTimer: ReturnType<typeof setTimeout>
-
-    function connect() {
-      if (!alive) return
-
-      es = new EventSource(`${agentUrl}/agent/canvas/stream`, { withCredentials: true })
-
-      es.onopen = () => setConnected(true)
-
-      es.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data) as CanvasEvent
-          if (event.type === 'init') lastInitRef.current = event
-          for (const fn of subscribersRef.current) fn(event)
-        } catch {}
-      }
-
-      es.onerror = () => {
-        setConnected(false)
-        es?.close()
-        if (alive) reconnectTimer = setTimeout(connect, 2000)
-      }
-    }
-
-    connect()
-
-    return () => {
-      alive = false
-      es?.close()
-      clearTimeout(reconnectTimer)
-    }
-  }, [agentUrl])
-
-  return { connected, subscribe, replayInit }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +63,6 @@ function postCanvasError(
 export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
   const iframeBase = canvasBaseUrl || agentUrl
   const canvasUrl = iframeBase ? `${iframeBase}/` : null
-  const sse = useCanvasSSE(agentUrl)
   const canvasTheme = useCanvasThemeOptional()
 
   const themeMessage = useMemo(() => {
@@ -149,10 +86,10 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, activeSurfaceId, onCanv
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
+    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
+  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} activeSurfaceId={activeSurfaceId} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
 }
 
 // ---------------------------------------------------------------------------

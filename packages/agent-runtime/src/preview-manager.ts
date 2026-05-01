@@ -1483,17 +1483,37 @@ export class PreviewManager {
   }
 
   /**
+   * Resolve the `expo` CLI shim inside `<cwd>/node_modules/.bin`, picking
+   * the per-platform variant `child_process.spawn` can actually execute.
+   *
+   * On Windows the no-extension `expo` file is a POSIX shell script that
+   * `spawn` can't run — `existsSync` returns true but `spawn` then async-
+   * emits ENOENT, which (without an `'error'` listener) kills the runtime.
+   * The real shim is `expo.CMD`/`expo.cmd`. Mirrors the same logic in
+   * `startBuildWatch` for Vite.
+   */
+  private resolveExpoBin(cwd: string): string | null {
+    const binDir = join(cwd, 'node_modules', '.bin')
+    const isWindows = process.platform === 'win32'
+    const candidates = isWindows
+      ? [join(binDir, 'expo.CMD'), join(binDir, 'expo.cmd'), join(binDir, 'expo.exe')]
+      : [join(binDir, 'expo')]
+    return candidates.find((p) => existsSync(p)) ?? null
+  }
+
+  /**
    * Run `expo export --platform web --output-dir dist` once. The resulting
    * `dist/` is served by the runtime at the root, just like a Vite build.
    * This gives Studio's iframe preview a working web rendering of the RN
    * app via `react-native-web`. Re-run on demand via `restart()`.
    */
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
-    const expoBin = join(cwd, 'node_modules', '.bin', 'expo')
-    if (!existsSync(expoBin)) {
+    const expoBin = this.resolveExpoBin(cwd)
+    if (!expoBin) {
       console.log(`[${LOG_PREFIX}] expo CLI not found in node_modules — skipping web export`)
       return
     }
+    const isWindows = process.platform === 'win32'
 
     // Build log lives next to the bundler cwd. For Vite stacks that's the
     // legacy `<workspace>/project/` subdir; for Expo stacks it's the
@@ -1503,15 +1523,31 @@ export class PreviewManager {
     const t0 = Date.now()
     console.log(`[${LOG_PREFIX}] Running expo export --platform web...`)
     await new Promise<void>((resolveExport) => {
-      const proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', 'dist'], {
-        cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'development',
-          // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
-          CI: '1',
-        },
+      let proc: ChildProcess
+      try {
+        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', 'dist'], {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // `.CMD` shims must go through cmd.exe on Windows.
+          shell: isWindows,
+          env: {
+            ...process.env,
+            NODE_ENV: 'development',
+            // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
+            CI: '1',
+          },
+        })
+      } catch (err: any) {
+        console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
+        resolveExport()
+        return
+      }
+      // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
+      // not bubble up — without this listener Node treats them as uncaught and
+      // tears down the entire agent runtime process.
+      proc.on('error', (err: Error) => {
+        console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
+        resolveExport()
       })
       proc.stdout?.on('data', (data: Buffer) => {
         const text = data.toString()
@@ -1568,11 +1604,12 @@ export class PreviewManager {
   private async startMetroTunnel(cwd: string): Promise<void> {
     if (!this.localMode) return
 
-    const expoBin = join(cwd, 'node_modules', '.bin', 'expo')
-    if (!existsSync(expoBin)) {
+    const expoBin = this.resolveExpoBin(cwd)
+    if (!expoBin) {
       console.log(`[${LOG_PREFIX}] expo CLI not found in node_modules — skipping device tunnel`)
       return
     }
+    const isWindows = process.platform === 'win32'
     if (!this.hasNgrok(cwd)) {
       // Don't even try to spawn — `expo start --tunnel` would either prompt
       // to install ngrok (CI=1 suppresses the prompt → silent hang) or
@@ -1608,21 +1645,41 @@ export class PreviewManager {
     // browser auto-open. The legacy `--non-interactive` CLI flag was
     // deprecated in Expo SDK 50 and now logs a warning + exits, so we
     // rely solely on the env var.
-    const proc = spawn(
-      expoBin,
-      ['start', '--tunnel', ...portArgs],
-      {
-        cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          CI: '1',
-          EXPO_NO_TELEMETRY: '1',
+    let proc: ChildProcess
+    try {
+      proc = spawn(
+        expoBin,
+        ['start', '--tunnel', ...portArgs],
+        {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // `.CMD` shims must go through cmd.exe on Windows.
+          shell: isWindows,
+          env: {
+            ...process.env,
+            CI: '1',
+            EXPO_NO_TELEMETRY: '1',
+          },
         },
-      },
-    )
+      )
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Failed to spawn expo start --tunnel: ${err?.message ?? err}`)
+      return
+    }
 
     this.metroProcess = proc
+
+    // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
+    // not bubble up — without this listener Node treats them as uncaught and
+    // tears down the entire agent runtime process.
+    proc.on('error', (err: Error) => {
+      console.error(`[${LOG_PREFIX}] Expo tunnel error: ${err.message}`)
+      if (this.metroProcess === proc) {
+        this.metroProcess = null
+        this.metroUrl = null
+        this.metroPort = null
+      }
+    })
     // Match either the legacy `exp://` URL or the modern `exp+...://` scheme.
     const expRe = /(exp(?:s|\+[a-z0-9-]+)?:\/\/[^\s]+)/
     // If Expo decides to use a different port than we asked for ("Port 8081

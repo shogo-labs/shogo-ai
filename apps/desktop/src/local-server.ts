@@ -313,6 +313,11 @@ export async function startLocalServer(): Promise<void> {
       : path.join(projectRoot, 'canvas-runtime', 'canvas-globals.d.ts'),
     ...(IS_DEV ? {} : {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
+      // Point Playwright at the Chromium copy bundled into resources/
+      // by apps/desktop/scripts/bundle-api.mjs. Without this, playwright-core
+      // would look in ~/AppData/Local/ms-playwright (or ~/.cache on linux/mac),
+      // which is empty for end users who never ran `playwright install`.
+      PLAYWRIGHT_BROWSERS_PATH: path.join(projectRoot, 'ms-playwright'),
     }),
     SHOGO_DATA_DIR: getDataDir(),
     SHOGO_SHERPA_DIR: path.join(getDataDir(), 'sherpa-onnx'),

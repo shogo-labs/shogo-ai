@@ -253,6 +253,43 @@ function main() {
       cwd: RESOURCES_DIR,
       stdio: 'inherit',
     })
+
+    // The bundled `playwright-core` is a fresh install (we marked it as
+    // `external` and re-installed under apps/desktop/resources/), so the
+    // monorepo-root postinstall never patched it. Re-run the bun-vs-WS
+    // patch against this copy so the packaged app's bun runtime can
+    // actually open CDP connections. Idempotent.
+    const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-playwright-bun.ts')
+    if (fs.existsSync(patchScript)) {
+      console.log('  Patching bundled playwright-core for bun WS compat...')
+      try {
+        execSync(`bun "${patchScript}"`, { cwd: RESOURCES_DIR, stdio: 'inherit' })
+      } catch (err) {
+        console.warn('  ⚠ playwright-core patch failed (non-fatal):', err.message)
+      }
+    }
+
+    // Download Playwright's bundled Chromium into resources/ms-playwright/
+    // so the packaged app is fully self-contained — playwright-core does
+    // not auto-download. We use the headless-shell variant (smaller, ~80MB
+    // instead of ~280MB) because gateway-tools.ts always launches with
+    // headless: true. Set PLAYWRIGHT_BROWSERS_PATH so playwright installs
+    // into our bundle instead of the user's home cache. The matching
+    // PLAYWRIGHT_BROWSERS_PATH is wired into the API child env in
+    // local-server.ts so the runtime resolves the same location.
+    const browsersDir = path.join(RESOURCES_DIR, 'ms-playwright')
+    console.log(`  Installing Chromium headless shell into ${browsersDir}...`)
+    try {
+      execSync('bun x playwright install chromium-headless-shell', {
+        cwd: RESOURCES_DIR,
+        stdio: 'inherit',
+        env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsersDir },
+        timeout: 5 * 60_000,
+      })
+      console.log('  ✓ Chromium headless shell installed')
+    } catch (err) {
+      console.warn('  ⚠ Chromium install failed (non-fatal):', err.message)
+    }
   }
 
   // --- Copy canvas-runtime type definitions (used by LSP for canvas code linting) ---
