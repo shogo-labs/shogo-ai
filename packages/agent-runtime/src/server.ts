@@ -38,7 +38,16 @@ import {
   StreamBufferStore,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
-import { seedWorkspaceDefaults, seedWorkspaceFromTemplate, seedLSPConfig, seedRuntimeTemplate, ensureWorkspaceDeps, seedTechStack, runTechStackSetup } from './workspace-defaults'
+import {
+  overlayAgentTemplateCodeDirs,
+  seedWorkspaceDefaults,
+  seedWorkspaceFromTemplate,
+  seedLSPConfig,
+  seedRuntimeTemplate,
+  ensureWorkspaceDeps,
+  seedTechStack,
+  runTechStackSetup,
+} from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
@@ -368,6 +377,15 @@ function ensureWorkspaceFiles(): void {
     workspaceStatus.templateSeeded = seeded || existsSync(join(WORKSPACE_DIR, 'package.json'))
   } else {
     workspaceStatus.templateSeeded = true
+  }
+
+  // Agent templates curated `src/` is applied in `seedWorkspaceFromTemplate`
+  // **before** the block above — but fresh workspaces had no package.json yet,
+  // so `seedRuntimeTemplate` just laid down generic `Project Ready` App.tsx on
+  // top. Re-merge template `src/` (and optional `prisma/`) here so the canvas
+  // matches the bundled template surfaces.
+  if (templateId && overlayAgentTemplateCodeDirs(WORKSPACE_DIR, templateId)) {
+    logTiming(`Agent template code overlay reapplied (${templateId})`)
   }
 
   // One-shot migration: any workspace that still has `.shogo/server/` from

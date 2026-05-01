@@ -256,6 +256,195 @@ export const api = {
     return (res.data as any).data ?? res.data
   },
 
+  // ─── Cost Analytics ───────────────────────────────────────
+
+  async getWorkspaceCostAnalytics<T>(
+    http: HttpClient,
+    workspaceId: string,
+    endpoint: string,
+    params?: Record<string, string>,
+  ): Promise<T> {
+    const res = await http.get<{ data: T }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/${endpoint}`,
+      params,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async postWorkspaceCostAnalytics<T>(
+    http: HttpClient,
+    workspaceId: string,
+    endpoint: string,
+    body: Record<string, unknown>,
+  ): Promise<T> {
+    const res = await http.post<{ data: T }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/${endpoint}`,
+      body,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  // ─── Sub-Agent Model Overrides (Phase 1: boss concern #2) ────
+  // Lets the user override which model a built-in sub-agent uses, so the
+  // optimizer's recommendations are actually applicable in one click.
+
+  async listSubagentOverrides(
+    http: HttpClient,
+    workspaceId: string,
+  ) {
+    return await this.getWorkspaceCostAnalytics<Array<{
+      id: string
+      workspaceId: string
+      projectId: string | null
+      agentType: string
+      model: string
+      provider: string | null
+      updatedBy: string | null
+      createdAt: string
+      updatedAt: string
+    }>>(http, workspaceId, 'subagent-overrides')
+  },
+
+  async upsertSubagentOverride(
+    http: HttpClient,
+    workspaceId: string,
+    body: {
+      agentType: string
+      model: string
+      provider?: string | null
+      projectId?: string | null
+    },
+  ) {
+    const res = await http.post<{ data: any }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/subagent-overrides`,
+      body,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async deleteSubagentOverride(
+    http: HttpClient,
+    workspaceId: string,
+    agentType: string,
+    projectId?: string | null,
+  ) {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+    await http.delete(
+      `/api/workspaces/${workspaceId}/cost-analytics/subagent-overrides/${encodeURIComponent(agentType)}${qs}`,
+    )
+  },
+
+  // ─── Agent Eval Sets (Phase 2: custom sub-agent recommendations) ────
+  // Workspace-authored examples that let custom agent types get eval-backed
+  // cost recommendations instead of relying on built-in eval suites only.
+
+  async listAgentEvalSets(
+    http: HttpClient,
+    workspaceId: string,
+    params?: { agentType?: string; projectId?: string | null; enabled?: boolean },
+  ) {
+    const query: Record<string, string> = {}
+    if (params?.agentType) query.agentType = params.agentType
+    if (params?.projectId !== undefined && params.projectId !== null) query.projectId = params.projectId
+    if (params?.enabled !== undefined) query.enabled = String(params.enabled)
+    return await this.getWorkspaceCostAnalytics<Array<{
+      id: string
+      workspaceId: string
+      projectId: string | null
+      agentType: string
+      name: string
+      description: string | null
+      examples: unknown
+      enabled: boolean
+      createdBy: string | null
+      createdAt: string
+      updatedAt: string
+    }>>(http, workspaceId, 'agent-eval-sets', query)
+  },
+
+  async upsertAgentEvalSet(
+    http: HttpClient,
+    workspaceId: string,
+    body: {
+      id?: string
+      agentType: string
+      name: string
+      description?: string | null
+      examples: unknown[]
+      enabled?: boolean
+      projectId?: string | null
+    },
+  ) {
+    const res = await http.post<{ data: any }>(
+      `/api/workspaces/${workspaceId}/cost-analytics/agent-eval-sets`,
+      body,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async deleteAgentEvalSet(
+    http: HttpClient,
+    workspaceId: string,
+    id: string,
+  ) {
+    await http.delete(
+      `/api/workspaces/${workspaceId}/cost-analytics/agent-eval-sets/${encodeURIComponent(id)}`,
+    )
+  },
+
+  // ─── Optimizer in Action (Phase 3.3) ─────────────────────────
+  // Single-shot dataset for the report surface: which overrides have been
+  // applied, what the before/after cost & quality looked like, eval pass-rates
+  // per (agent, model), and any active shadow A/Bs. The "show this to the
+  // boss" view leans on this endpoint.
+
+  async getOptimizerInActionReport(
+    http: HttpClient,
+    workspaceId: string,
+  ) {
+    return await this.getWorkspaceCostAnalytics<{
+      workspaceId: string
+      generatedAt: string
+      overrides: Array<{
+        id: string
+        agentType: string
+        projectId: string | null
+        fromModel: string | null
+        toModel: string
+        appliedAt: string
+        updatedBy: string | null
+        avgCostBefore: number | null
+        avgCostAfter: number | null
+        qualitySuccessBefore: number | null
+        qualitySuccessAfter: number | null
+        runsBefore: number
+        runsAfter: number
+      }>
+      evalScores: Array<{
+        agentType: string
+        model: string
+        suite: string
+        passRate: number
+        totalCases: number
+        capturedAt: string
+      }>
+      experiments: Array<{
+        id: string
+        name: string
+        agentType: string
+        modelA: string
+        modelB: string
+        status: string
+        expectedEndAt: string | null
+        runsA: number
+        runsB: number
+        verdict: 'inconclusive' | 'A' | 'B' | 'tie'
+        reasons: string[]
+      }>
+      monthlySavingsUSD: number
+    }>(http, workspaceId, 'optimizer-in-action')
+  },
+
   // ─── Publish ─────────────────────────────────────────────
 
   async getPublishState(http: HttpClient, projectId: string) {

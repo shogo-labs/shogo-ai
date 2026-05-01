@@ -31,6 +31,7 @@ const SPINNER_COLOR: Record<string, string> = {
   'technical-quant-lab': '#8b5cf6',
   'dividend-income-builder': '#22c55e',
   'macro-market-briefing': '#0ea5e9',
+  'travel-concierge': '#0ea5e9',
 }
 
 const POPULAR_IDS = new Set([
@@ -821,6 +822,50 @@ function AgentTemplatePreview({
               </View>
             </View>
           ))}
+        </View>
+      )
+    case 'travel-concierge':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Trip Dashboard</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-500/20">
+              <Text className="text-[8px] font-semibold text-sky-700 dark:text-sky-300">3 nights</Text>
+            </View>
+          </View>
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/10">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Hotel · top pick
+                </Text>
+                <Text className={muted}>0 min to anchor · $420/nt</Text>
+              </View>
+              <View className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20">
+                <Text className="text-[8px] font-semibold text-amber-700 dark:text-amber-300">Book</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-emerald-50 dark:bg-emerald-500/10">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Tasting menu · 8pm
+                </Text>
+                <Text className={cn(muted, 'text-emerald-600 dark:text-emerald-400')}>Available · Resy</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/10">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Phone-only spot
+                </Text>
+                <Text className={cn(muted, 'text-amber-600 dark:text-amber-400')}>Want me to call?</Text>
+              </View>
+            </View>
+          </PreviewRow>
         </View>
       )
     default:

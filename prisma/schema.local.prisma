@@ -38,8 +38,9 @@ model User {
   members         Member[]
   notifications   Notification[]
   starredProjects StarredProject[]
-  apiKeys             ApiKey[]
+  apiKeys         ApiKey[]
   creatorProfile  CreatorProfile?
+
   @@map("users")
 }
 
@@ -98,51 +99,58 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id              String   @id @default(uuid())
-  name            String
-  slug            String   @unique
-  description     String?
-  ssoSettings     String?
-  instanceSize    String   @default("micro")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id           String   @id @default(uuid())
+  name         String
+  slug         String   @unique
+  description  String?
+  ssoSettings  String?
+  instanceSize String   @default("micro")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  projects             Project[]
-  members              Member[]
-  billingAccounts      BillingAccount[]
-  invitations          Invitation[]
-  inviteLinks          InviteLink[]
-  folders              Folder[]
-  subscriptions        Subscription[]
-  instanceSubscription InstanceSubscription?
-  usageWallets         UsageWallet[]
-  usageEvents          UsageEvent[]
-  storageUsage         StorageUsage?
-  starredProjects      StarredProject[]
-  instances            Instance[]
-  apiKeys              ApiKey[]
-  meetings             Meeting[]
-  voiceProjectConfigs  VoiceProjectConfig[]
+  projects               Project[]
+  members                Member[]
+  billingAccounts        BillingAccount[]
+  invitations            Invitation[]
+  inviteLinks            InviteLink[]
+  folders                Folder[]
+  subscriptions          Subscription[]
+  instanceSubscription   InstanceSubscription?
+  usageWallets           UsageWallet[]
+  usageEvents            UsageEvent[]
+  storageUsage           StorageUsage?
+  starredProjects        StarredProject[]
+  instances              Instance[]
+  apiKeys                ApiKey[]
+  meetings               Meeting[]
+  voiceProjectConfigs    VoiceProjectConfig[]
+  agentCostMetrics       AgentCostMetric[]
+  budgetAlerts           BudgetAlert[]
+  modelExperiments       ModelExperiment[]
+  subagentModelOverrides SubagentModelOverride[]
+  agentEvalResults       AgentEvalResult[]
+  agentEvalSets          AgentEvalSet[]
+
   @@map("workspaces")
 }
 
 model Project {
-  id                 String   @id @default(uuid())
+  id                 String    @id @default(uuid())
   name               String
   description        String?
   workspaceId        String
-  tier               String   @default("starter")
-  status             String   @default("draft")
-  schemas            String   @default("[]")
+  tier               String    @default("starter")
+  status             String    @default("draft")
+  schemas            String    @default("[]")
   createdBy          String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
   folderId           String?
-  publishedSubdomain String?  @unique
+  publishedSubdomain String?   @unique
   publishedAt        DateTime?
-  accessLevel        String   @default("anyone")
+  accessLevel        String    @default("anyone")
   category           String?
-  type               String   @default("APP")
+  type               String    @default("APP")
   siteTitle          String?
   siteDescription    String?
   thumbnailUrl       String?
@@ -151,20 +159,24 @@ model Project {
   settings           String?
   lastMessageAt      DateTime?
 
-  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  members          Member[]
-  inviteLinks      InviteLink[]
-  featureSessions  FeatureSession[]
-  chatSessions     ChatSession[]
-  usageEvents      UsageEvent[]
-  checkpoints      ProjectCheckpoint[]
-  githubConnection GitHubConnection?
-  starredBy          StarredProject[]
-  agentConfig        AgentConfig?
-  meetings         Meeting[]
-  marketplaceListing MarketplaceListing?
-  voiceConfig        VoiceProjectConfig?
+  workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  members                Member[]
+  inviteLinks            InviteLink[]
+  featureSessions        FeatureSession[]
+  chatSessions           ChatSession[]
+  usageEvents            UsageEvent[]
+  checkpoints            ProjectCheckpoint[]
+  githubConnection       GitHubConnection?
+  starredBy              StarredProject[]
+  agentConfig            AgentConfig?
+  meetings               Meeting[]
+  marketplaceListing     MarketplaceListing?
+  voiceConfig            VoiceProjectConfig?
+  agentCostMetrics       AgentCostMetric[]
+  modelExperiments       ModelExperiment[]
+  subagentModelOverrides SubagentModelOverride[]
+  agentEvalSets          AgentEvalSet[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -400,21 +412,21 @@ model Subscription {
 }
 
 model UsageWallet {
-  id                            String   @id @default(uuid())
-  workspaceId                   String   @unique
-  monthlyIncludedUsd            Float    @default(0)
-  dailyIncludedUsd              Float    @default(0)
-  monthlyIncludedAllocationUsd  Float    @default(0)
-  dailyUsedThisMonthUsd         Float    @default(0)
-  overageEnabled                Boolean  @default(false)
-  overageHardLimitUsd           Float?
-  overageAccumulatedUsd         Float    @default(0)
-  stripeMeteredItemId           String?
-  anniversaryDay                Int
-  lastDailyReset                DateTime
-  lastMonthlyReset              DateTime
-  createdAt                     DateTime @default(now())
-  updatedAt                     DateTime @updatedAt
+  id                           String   @id @default(uuid())
+  workspaceId                  String   @unique
+  monthlyIncludedUsd           Float    @default(0)
+  dailyIncludedUsd             Float    @default(0)
+  monthlyIncludedAllocationUsd Float    @default(0)
+  dailyUsedThisMonthUsd        Float    @default(0)
+  overageEnabled               Boolean  @default(false)
+  overageHardLimitUsd          Float?
+  overageAccumulatedUsd        Float    @default(0)
+  stripeMeteredItemId          String?
+  anniversaryDay               Int
+  lastDailyReset               DateTime
+  lastMonthlyReset             DateTime
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
@@ -565,7 +577,7 @@ model FeatureSession {
   updatedAt          DateTime @updatedAt
   projectId          String?
 
-  project                 Project?               @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  project                 Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull)
   requirements            Requirement[]
   designDecisions         DesignDecision[]
   classificationDecisions ClassificationDecision[]
@@ -591,7 +603,7 @@ model Requirement {
   auditNotes   String?
   createdAt    DateTime @default(now())
 
-  session             FeatureSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session             FeatureSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   testCases           TestCase[]
   implementationTasks ImplementationTask[]
   testSpecifications  TestSpecification[]
@@ -809,7 +821,7 @@ model ComponentDefinition {
   updatedAt         DateTime @updatedAt
 
   bindings       RendererBinding[]
-  fallbackFor    Registry[]     @relation("FallbackComponent")
+  fallbackFor    Registry[]        @relation("FallbackComponent")
   componentSpecs ComponentSpec[]
 
   @@unique([implementationRef])
@@ -825,8 +837,8 @@ model Registry {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  extends           Registry?           @relation("RegistryExtends", fields: [extendsId], references: [id], onDelete: SetNull)
-  extendedBy        Registry[]          @relation("RegistryExtends")
+  extends           Registry?            @relation("RegistryExtends", fields: [extendsId], references: [id], onDelete: SetNull)
+  extendedBy        Registry[]           @relation("RegistryExtends")
   fallbackComponent ComponentDefinition? @relation("FallbackComponent", fields: [fallbackComponentId], references: [id], onDelete: SetNull)
   bindings          RendererBinding[]
 
@@ -926,8 +938,8 @@ model PlatformSetting {
 // ============================================================================
 
 model InfraSnapshot {
-  id             String   @id @default(uuid())
-  timestamp      DateTime @default(now())
+  id        String   @id @default(uuid())
+  timestamp DateTime @default(now())
 
   totalNodes     Int
   asgDesired     Int
@@ -936,17 +948,17 @@ model InfraSnapshot {
   usedPodSlots   Int
   totalCpuMillis Int
   usedCpuMillis  Int
-  limitCpuMillis Int      @default(0)
+  limitCpuMillis Int @default(0)
 
-  warmAvailable  Int
-  warmTarget     Int
-  warmAssigned   Int
-  coldStarts     Int @default(0)
+  warmAvailable Int
+  warmTarget    Int
+  warmAssigned  Int
+  coldStarts    Int @default(0)
 
-  totalProjects  Int
-  readyProjects  Int
+  totalProjects   Int
+  readyProjects   Int
   runningProjects Int
-  scaledToZero   Int
+  scaledToZero    Int
 
   orphansDeleted Int @default(0)
   idleEvictions  Int @default(0)
@@ -1053,28 +1065,28 @@ model PushSubscription {
 // =============================================================================
 
 model EvalRun {
-  id            String    @id @default(cuid())
-  track         String
-  model         String
-  workers       Int       @default(1)
-  status        String    @default("pending")
-  label         String?
-  tags          String?
-  triggeredBy   String?
-  pid           Int?
-  jobName       String?
-  error         String?
-  summary       String?
-  cost          String?
-  byCategory    String?
-  resources     String?
-  progress      String?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id          String    @id @default(cuid())
+  track       String
+  model       String
+  workers     Int       @default(1)
+  status      String    @default("pending")
+  label       String?
+  tags        String?
+  triggeredBy String?
+  pid         Int?
+  jobName     String?
+  error       String?
+  summary     String?
+  cost        String?
+  byCategory  String?
+  resources   String?
+  progress    String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  results       EvalRunResult[]
+  results EvalRunResult[]
 
   @@index([status])
   @@index([createdAt])
@@ -1082,21 +1094,21 @@ model EvalRun {
 }
 
 model EvalRunResult {
-  id            String   @id @default(cuid())
-  runId         String
-  evalId        String
-  name          String
-  category      String
-  level         Int?
-  passed        Boolean
-  score         Int
-  maxScore      Int
-  percentage    Float
+  id              String   @id @default(cuid())
+  runId           String
+  evalId          String
+  name            String
+  category        String
+  level           Int?
+  passed          Boolean
+  score           Int
+  maxScore        Int
+  percentage      Float
   durationMs      Int
   tokens          String?
-  toolCallCount   Int       @default(0)
-  failedToolCalls Int       @default(0)
-  iterations      Int       @default(0)
+  toolCallCount   Int      @default(0)
+  failedToolCalls Int      @default(0)
+  iterations      Int      @default(0)
   phaseScores     String?
   pipeline        String?
   pipelinePhase   Int?
@@ -1107,7 +1119,7 @@ model EvalRunResult {
   log             String?
   createdAt       DateTime @default(now())
 
-  run           EvalRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run EvalRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@index([runId])
   @@index([evalId])
@@ -1119,30 +1131,30 @@ model EvalRunResult {
 // =============================================================================
 
 model AnalyticsDigest {
-  id                   String   @id @default(uuid())
-  date                 DateTime
-  period               String   @default("24h")
+  id     String   @id @default(uuid())
+  date   DateTime
+  period String   @default("24h")
 
-  funnelSignups        Int      @default(0)
-  funnelOnboarded      Int      @default(0)
-  funnelCreatedProject Int      @default(0)
-  funnelSentMessage    Int      @default(0)
-  funnelEngaged        Int      @default(0)
+  funnelSignups        Int    @default(0)
+  funnelOnboarded      Int    @default(0)
+  funnelCreatedProject Int    @default(0)
+  funnelSentMessage    Int    @default(0)
+  funnelEngaged        Int    @default(0)
   avgMinToFirstProject Float?
   avgMinToFirstMessage Float?
 
-  activeUsers          Int      @default(0)
-  totalMessages        Int      @default(0)
-  totalSessions        Int      @default(0)
-  totalToolCalls       Int      @default(0)
-  totalSpendUsd        Float    @default(0)
+  activeUsers    Int   @default(0)
+  totalMessages  Int   @default(0)
+  totalSessions  Int   @default(0)
+  totalToolCalls Int   @default(0)
+  totalSpendUsd  Float @default(0)
 
-  templateStats        String?
-  chunksProcessed      Int      @default(1)
-  messagesAnalyzed     Int      @default(0)
-  aiInsights           String?
+  templateStats    String?
+  chunksProcessed  Int     @default(1)
+  messagesAnalyzed Int     @default(0)
+  aiInsights       String?
 
-  createdAt            DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([date, period])
   @@map("analytics_digests")
@@ -1153,20 +1165,20 @@ model AnalyticsDigest {
 // =============================================================================
 
 model Meeting {
-  id            String   @id @default(cuid())
-  title         String?
-  audioPath     String
-  transcript    String?
-  summary       String?
-  duration      Int?
-  status        String   @default("recording")
-  projectId     String?
-  workspaceId   String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id @default(cuid())
+  title       String?
+  audioPath   String
+  transcript  String?
+  summary     String?
+  duration    Int?
+  status      String   @default("recording")
+  projectId   String?
+  workspaceId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([projectId])
@@ -1191,30 +1203,30 @@ model LocalConfig {
 // =============================================================================
 
 model CreatorProfile {
-  id                       String   @id @default(cuid())
-  userId                   String   @unique
+  id                       String    @id @default(cuid())
+  userId                   String    @unique
   displayName              String
   bio                      String?
   avatarUrl                String?
   websiteUrl               String?
   stripeCustomAccountId    String?
-  payoutStatus             String   @default("not_setup")
+  payoutStatus             String    @default("not_setup")
   payoutDetailsSubmittedAt DateTime?
-  verified                 Boolean  @default(false)
-  totalEarningsInCents     Int      @default(0)
-  pendingPayoutInCents     Int      @default(0)
-  totalPaidOutInCents      Int      @default(0)
-  creatorTier              String   @default("newcomer")
-  reputationScore          Int      @default(0)
-  totalAgentsPublished     Int      @default(0)
-  totalInstalls            Int      @default(0)
-  averageAgentRating       Float    @default(0)
-  totalVersionsShipped     Int      @default(0)
-  activeMaintenanceStreak  Int      @default(0)
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  verified                 Boolean   @default(false)
+  totalEarningsInCents     Int       @default(0)
+  pendingPayoutInCents     Int       @default(0)
+  totalPaidOutInCents      Int       @default(0)
+  creatorTier              String    @default("newcomer")
+  reputationScore          Int       @default(0)
+  totalAgentsPublished     Int       @default(0)
+  totalInstalls            Int       @default(0)
+  averageAgentRating       Float     @default(0)
+  totalVersionsShipped     Int       @default(0)
+  activeMaintenanceStreak  Int       @default(0)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
-  user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   badges       CreatorBadge[]
   listings     MarketplaceListing[]
   transactions MarketplaceTransaction[] @relation("CreatorTransactions")
@@ -1268,8 +1280,8 @@ model MarketplaceListing {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  creator      CreatorProfile             @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  project      Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator      CreatorProfile              @relation(fields: [creatorId], references: [id], onDelete: Cascade)
   versions     MarketplaceListingVersion[]
   installs     MarketplaceInstall[]
   reviews      MarketplaceReview[]
@@ -1286,7 +1298,7 @@ model MarketplaceListing {
 }
 
 model MarketplaceListingVersion {
-  id                String   @id @default(cuid())
+  id                String  @id @default(cuid())
   listingId         String
   version           String
   changelog         String?
@@ -1416,11 +1428,172 @@ model VoiceCallMeter {
   /// (SQLite has no native Json). Populated from the
   /// `post_call_transcription` webhook; null for Twilio-only deliveries
   /// or calls that didn't reach EL.
-  transcript      String?
+  transcript        String?
   /// Optional single-sentence summary. EL returns one when enabled.
   transcriptSummary String?
 
   @@index([projectId])
   @@index([workspaceId])
   @@map("voice_call_meters")
+}
+
+// =============================================================================
+// AGENT COST ANALYTICS
+// =============================================================================
+
+model AgentCostMetric {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  projectId         String?
+  agentRunId        String?  @unique
+  agentType         String
+  model             String
+  inputTokens       Int      @default(0)
+  outputTokens      Int      @default(0)
+  cachedInputTokens Int      @default(0)
+  toolCalls         Int      @default(0)
+  creditCost        Float    @default(0)
+  wallTimeMs        Int      @default(0)
+  success           Boolean  @default(true)
+  hitMaxTurns       Boolean  @default(false)
+  loopDetected      Boolean  @default(false)
+  escalated         Boolean  @default(false)
+  responseEmpty     Boolean  @default(false)
+  metadata          String?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([agentType])
+  @@index([model])
+  @@index([createdAt])
+  @@map("agent_cost_metrics")
+}
+
+model SubagentModelOverride {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String?
+  agentType   String
+  model       String
+  provider    String?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, projectId, agentType])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("subagent_model_overrides")
+}
+
+model AgentEvalResult {
+  id            String   @id @default(uuid())
+  workspaceId   String?
+  agentType     String
+  model         String
+  provider      String?
+  suite         String
+  totalCases    Int
+  passedCases   Int
+  passRate      Float
+  avgWallTimeMs Int      @default(0)
+  avgCreditCost Float    @default(0)
+  commitSha     String?
+  metadata      String?
+  createdAt     DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([agentType, model, createdAt])
+  @@index([workspaceId])
+  @@map("agent_eval_results")
+}
+
+model AgentEvalSet {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String?
+  agentType   String
+  name        String
+  description String?
+  examples    String
+  enabled     Boolean  @default(true)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, agentType])
+  @@index([workspaceId, projectId])
+  @@map("agent_eval_sets")
+}
+
+model BudgetAlert {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  name            String
+  creditLimit     Float
+  periodType      String    @default("monthly")
+  enabled         Boolean   @default(true)
+  autoThrottle    Boolean   @default(false)
+  throttleToModel String?
+  notifyEmail     Boolean   @default(true)
+  lastTriggeredAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("budget_alerts")
+}
+
+model ModelExperiment {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  projectId       String?
+  name            String
+  agentType       String
+  modelA          String
+  modelB          String
+  status          String    @default("running")
+  splitPercentage Int       @default(50)
+  expectedEndAt   DateTime?
+  totalRunsA      Int       @default(0)
+  totalRunsB      Int       @default(0)
+  totalCostA      Float     @default(0)
+  totalCostB      Float     @default(0)
+  totalTokensA    Int       @default(0)
+  totalTokensB    Int       @default(0)
+  successRateA    Float     @default(0)
+  successRateB    Float     @default(0)
+  avgLatencyMsA   Float     @default(0)
+  avgLatencyMsB   Float     @default(0)
+  escalationsA    Int       @default(0)
+  escalationsB    Int       @default(0)
+  loopDetectedA   Int       @default(0)
+  loopDetectedB   Int       @default(0)
+  hitMaxTurnsA    Int       @default(0)
+  hitMaxTurnsB    Int       @default(0)
+  responseEmptyA  Int       @default(0)
+  responseEmptyB  Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([workspaceId, agentType, status])
+  @@map("model_experiments")
 }

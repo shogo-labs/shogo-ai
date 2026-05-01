@@ -235,6 +235,37 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
   return true
 }
 
+/**
+ * Re-merge a template's `src/` and `prisma/` onto an existing workspace.
+ *
+ * Must run **after** `seedRuntimeTemplate` on first boot: the runtime skeleton
+ * copies generic `src/App.tsx` (`Project Ready`). Agent templates ship curated
+ * surfaces under `templates/<id>/src/` — those must win over that starter file.
+ *
+ * Same copy rules as inside `seedWorkspaceFromTemplate`; safe to repeat when
+ * the workspace already matched the overlay (cpSync force is idempotent).
+ */
+export function overlayAgentTemplateCodeDirs(dir: string, templateId: string): boolean {
+  const template = getAgentTemplateById(templateId)
+  if (!template) return false
+
+  let didAnything = false
+  const templateSrcDir = getTemplateSrcDir(templateId)
+  if (templateSrcDir) {
+    cpSync(templateSrcDir, join(dir, 'src'), { recursive: true, force: true })
+    didAnything = true
+  }
+
+  const templatePrismaDir = getTemplatePrismaDir(templateId)
+  if (templatePrismaDir) {
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    cpSync(templatePrismaDir, join(dir, 'prisma'), { recursive: true, force: true })
+    didAnything = true
+  }
+
+  return didAnything
+}
+
 // ---------------------------------------------------------------------------
 // Runtime Template Seed (Vite + React + Tailwind + shadcn/ui)
 // ---------------------------------------------------------------------------

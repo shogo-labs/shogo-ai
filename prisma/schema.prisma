@@ -28,25 +28,26 @@ enum UserRole {
 }
 
 model User {
-  id                  String    @id @default(cuid())
+  id                  String   @id @default(cuid())
   name                String?
-  email               String    @unique
-  emailVerified       Boolean   @default(false)
+  email               String   @unique
+  emailVerified       Boolean  @default(false)
   image               String?
-  role                UserRole  @default(user)
-  onboardingCompleted Boolean   @default(false)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  role                UserRole @default(user)
+  onboardingCompleted Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   // Relations
-  sessions            Session[]
-  accounts            Account[]
-  members             Member[]
-  notifications       Notification[]
-  starredProjects     StarredProject[]
-  signupAttribution   SignupAttribution?
-  apiKeys             ApiKey[]
-  creatorProfile      CreatorProfile?
+  sessions          Session[]
+  accounts          Account[]
+  members           Member[]
+  notifications     Notification[]
+  starredProjects   StarredProject[]
+  signupAttribution SignupAttribution?
+  apiKeys           ApiKey[]
+  creatorProfile    CreatorProfile?
+
   @@map("users")
 }
 
@@ -107,32 +108,39 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id              String       @id @default(uuid())
-  name            String
-  slug            String       @unique
-  description     String?
-  ssoSettings     Json?
-  instanceSize    InstanceSize @default(micro)
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id           String       @id @default(uuid())
+  name         String
+  slug         String       @unique
+  description  String?
+  ssoSettings  Json?
+  instanceSize InstanceSize @default(micro)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 
   // Relations
-  projects             Project[]
-  members              Member[]
-  billingAccounts      BillingAccount[]
-  invitations          Invitation[]
-  inviteLinks          InviteLink[]
-  folders              Folder[]
-  subscriptions        Subscription[]
-  instanceSubscription InstanceSubscription?
-  usageWallets         UsageWallet[]
-  usageEvents          UsageEvent[]
-  storageUsage         StorageUsage?
-  starredProjects      StarredProject[]
-  apiKeys              ApiKey[]
-  instances            Instance[]
-  meetings             Meeting[]
-  voiceProjectConfigs  VoiceProjectConfig[]
+  projects               Project[]
+  members                Member[]
+  billingAccounts        BillingAccount[]
+  invitations            Invitation[]
+  inviteLinks            InviteLink[]
+  folders                Folder[]
+  subscriptions          Subscription[]
+  instanceSubscription   InstanceSubscription?
+  usageWallets           UsageWallet[]
+  usageEvents            UsageEvent[]
+  storageUsage           StorageUsage?
+  starredProjects        StarredProject[]
+  apiKeys                ApiKey[]
+  instances              Instance[]
+  meetings               Meeting[]
+  voiceProjectConfigs    VoiceProjectConfig[]
+  agentCostMetrics       AgentCostMetric[]
+  budgetAlerts           BudgetAlert[]
+  modelExperiments       ModelExperiment[]
+  subagentModelOverrides SubagentModelOverride[]
+  agentEvalResults       AgentEvalResult[]
+  agentEvalSets          AgentEvalSet[]
+
   @@map("workspaces")
 }
 
@@ -145,20 +153,20 @@ enum InstanceSize {
 }
 
 model Project {
-  id                 String        @id @default(uuid())
+  id                 String           @id @default(uuid())
   name               String
   description        String?
   workspaceId        String
-  tier               ProjectTier   @default(starter)
-  status             ProjectStatus @default(draft)
-  schemas            String[]      @default([])
+  tier               ProjectTier      @default(starter)
+  status             ProjectStatus    @default(draft)
+  schemas            String[]         @default([])
   createdBy          String?
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
   folderId           String?
-  publishedSubdomain String?       @unique
+  publishedSubdomain String?          @unique
   publishedAt        DateTime?
-  accessLevel        AccessLevel   @default(anyone)
+  accessLevel        AccessLevel      @default(anyone)
   category           ProjectCategory?
   siteTitle          String?
   siteDescription    String?
@@ -169,20 +177,24 @@ model Project {
   lastMessageAt      DateTime?
 
   // Relations
-  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  members          Member[]
-  inviteLinks      InviteLink[]
-  featureSessions  FeatureSession[]
-  chatSessions     ChatSession[]
-  usageEvents      UsageEvent[]
-  checkpoints      ProjectCheckpoint[]
-  githubConnection GitHubConnection?
-  starredBy        StarredProject[]
-  agentConfig      AgentConfig?
-  meetings         Meeting[]
-  marketplaceListing  MarketplaceListing?
-  voiceConfig         VoiceProjectConfig?
+  workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  members                Member[]
+  inviteLinks            InviteLink[]
+  featureSessions        FeatureSession[]
+  chatSessions           ChatSession[]
+  usageEvents            UsageEvent[]
+  checkpoints            ProjectCheckpoint[]
+  githubConnection       GitHubConnection?
+  starredBy              StarredProject[]
+  agentConfig            AgentConfig?
+  meetings               Meeting[]
+  marketplaceListing     MarketplaceListing?
+  agentCostMetrics       AgentCostMetric[]
+  modelExperiments       ModelExperiment[]
+  subagentModelOverrides SubagentModelOverride[]
+  agentEvalSets          AgentEvalSet[]
+  voiceConfig            VoiceProjectConfig?
 
   @@index([workspaceId])
   @@index([folderId])
@@ -236,29 +248,28 @@ enum ProjectCategory {
   game
 }
 
-
 // =============================================================================
 // VERSION CONTROL (Checkpoints & GitHub Integration)
 // =============================================================================
 
 model ProjectCheckpoint {
-  id            String          @id @default(uuid())
+  id            String   @id @default(uuid())
   projectId     String
-  name          String?         // User-provided name like "Before auth changes"
+  name          String? // User-provided name like "Before auth changes"
   description   String?
-  commitSha     String          // Git commit SHA
+  commitSha     String // Git commit SHA
   commitMessage String
-  branch        String          @default("main")
-  includesDb    Boolean         @default(false)
-  filesChanged  Int             @default(0)
-  additions     Int             @default(0)
-  deletions     Int             @default(0)
-  isAutomatic   Boolean         @default(false) // Auto-checkpoint from AI operations
+  branch        String   @default("main")
+  includesDb    Boolean  @default(false)
+  filesChanged  Int      @default(0)
+  additions     Int      @default(0)
+  deletions     Int      @default(0)
+  isAutomatic   Boolean  @default(false) // Auto-checkpoint from AI operations
   createdBy     String?
-  createdAt     DateTime        @default(now())
+  createdAt     DateTime @default(now())
 
   // Relations
-  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, createdAt(sort: Desc)])
   @@index([commitSha])
@@ -266,24 +277,24 @@ model ProjectCheckpoint {
 }
 
 model GitHubConnection {
-  id              String    @id @default(uuid())
-  projectId       String    @unique
-  repoOwner       String
-  repoName        String
-  repoFullName    String    // owner/repo for convenience
-  defaultBranch   String    @default("main")
-  installationId  Int?      // GitHub App installation ID
-  repoId          Int?      // GitHub repository ID
-  isPrivate       Boolean   @default(true)
-  syncEnabled     Boolean   @default(true)
-  lastPushAt      DateTime?
-  lastPullAt      DateTime?
-  lastSyncError   String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id             String    @id @default(uuid())
+  projectId      String    @unique
+  repoOwner      String
+  repoName       String
+  repoFullName   String // owner/repo for convenience
+  defaultBranch  String    @default("main")
+  installationId Int? // GitHub App installation ID
+  repoId         Int? // GitHub repository ID
+  isPrivate      Boolean   @default(true)
+  syncEnabled    Boolean   @default(true)
+  lastPushAt     DateTime?
+  lastPullAt     DateTime?
+  lastSyncError  String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   // Relations
-  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([installationId])
   @@index([repoFullName])
@@ -598,24 +609,24 @@ model StorageUsage {
 // =============================================================================
 
 model ChatSession {
-  id                   String      @id @default(uuid())
-  name                 String?
-  inferredName         String
-  contextType          ContextType
-  contextId            String?
-  phase                String?
-  claudeCodeSessionId  String?
-  cachedMessageCount   Int         @default(0)
-  contextUsageTokens   Int         @default(0)
-  contextWindowTokens  Int         @default(0)
-  createdAt            DateTime    @default(now())
-  updatedAt            DateTime    @default(now()) @updatedAt
-  lastActiveAt         DateTime    @default(now())
+  id                  String      @id @default(uuid())
+  name                String?
+  inferredName        String
+  contextType         ContextType
+  contextId           String?
+  phase               String?
+  claudeCodeSessionId String?
+  cachedMessageCount  Int         @default(0)
+  contextUsageTokens  Int         @default(0)
+  contextWindowTokens Int         @default(0)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @default(now()) @updatedAt
+  lastActiveAt        DateTime    @default(now())
 
   // Relations - contextId can reference FeatureSession or Project
-  project         Project?       @relation(fields: [contextId], references: [id], onDelete: Cascade)
-  messages        ChatMessage[]
-  toolCallLogs    ToolCallLog[]
+  project      Project?      @relation(fields: [contextId], references: [id], onDelete: Cascade)
+  messages     ChatMessage[]
+  toolCallLogs ToolCallLog[]
 
   @@index([contextType, contextId])
   @@map("chat_sessions")
@@ -689,21 +700,21 @@ enum ToolCallStatus {
 // =============================================================================
 
 model FeatureSession {
-  id                 String              @id @default(cuid())
+  id                 String            @id @default(cuid())
   name               String
   intent             String
-  status             FeatureStatus       @default(discovery)
-  affectedPackages   String[]            @default([])
+  status             FeatureStatus     @default(discovery)
+  affectedPackages   String[]          @default([])
   schemaName         String?
   initialAssessment  Json?
   featureArchetype   FeatureArchetype?
-  applicablePatterns String[]            @default([])
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
+  applicablePatterns String[]          @default([])
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
   projectId          String?
 
   // Relations
-  project                 Project?               @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  project                 Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull)
   requirements            Requirement[]
   designDecisions         DesignDecision[]
   classificationDecisions ClassificationDecision[]
@@ -795,14 +806,14 @@ model DesignDecision {
 }
 
 model ClassificationDecision {
-  id                String            @id @default(cuid())
-  sessionId         String
-  initialAssessment FeatureArchetype?
+  id                 String            @id @default(cuid())
+  sessionId          String
+  initialAssessment  FeatureArchetype?
   validatedArchetype FeatureArchetype
-  evidenceChecklist Json?
-  rationale         String
-  correction        String?
-  createdAt         DateTime          @default(now())
+  evidenceChecklist  Json?
+  rationale          String
+  correction         String?
+  createdAt          DateTime          @default(now())
 
   // Relations
   session FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -842,7 +853,7 @@ enum FindingType {
 }
 
 model IntegrationPoint {
-  id             String     @id @default(cuid())
+  id             String      @id @default(cuid())
   sessionId      String
   name           String
   filePath       String
@@ -852,8 +863,8 @@ model IntegrationPoint {
   description    String
   rationale      String?
   findingId      String?
-  isGenerated    Boolean    @default(false)
-  createdAt      DateTime   @default(now())
+  isGenerated    Boolean     @default(false)
+  createdAt      DateTime    @default(now())
 
   // Relations
   session             FeatureSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -1050,7 +1061,7 @@ model ComponentDefinition {
 
   // Relations
   bindings       RendererBinding[]
-  fallbackFor    Registry[]         @relation("FallbackComponent")
+  fallbackFor    Registry[]        @relation("FallbackComponent")
   componentSpecs ComponentSpec[]
 
   @@unique([implementationRef])
@@ -1075,8 +1086,8 @@ model Registry {
   updatedAt           DateTime @updatedAt
 
   // Relations
-  extends           Registry?           @relation("RegistryExtends", fields: [extendsId], references: [id], onDelete: SetNull)
-  extendedBy        Registry[]          @relation("RegistryExtends")
+  extends           Registry?            @relation("RegistryExtends", fields: [extendsId], references: [id], onDelete: SetNull)
+  extendedBy        Registry[]           @relation("RegistryExtends")
   fallbackComponent ComponentDefinition? @relation("FallbackComponent", fields: [fallbackComponentId], references: [id], onDelete: SetNull)
   bindings          RendererBinding[]
 
@@ -1085,15 +1096,15 @@ model Registry {
 }
 
 model RendererBinding {
-  id              String              @id @default(cuid())
+  id              String   @id @default(cuid())
   name            String
   registryId      String
   componentId     String
   matchExpression Json
-  priority        Int                 @default(0)
+  priority        Int      @default(0)
   defaultConfig   Json?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   // Relations
   registry  Registry            @relation(fields: [registryId], references: [id], onDelete: Cascade)
@@ -1192,8 +1203,8 @@ model PlatformSetting {
 // ============================================================================
 
 model InfraSnapshot {
-  id             String   @id @default(uuid())
-  timestamp      DateTime @default(now())
+  id        String   @id @default(uuid())
+  timestamp DateTime @default(now())
 
   totalNodes     Int
   asgDesired     Int
@@ -1202,17 +1213,17 @@ model InfraSnapshot {
   usedPodSlots   Int
   totalCpuMillis Int
   usedCpuMillis  Int
-  limitCpuMillis Int      @default(0)
+  limitCpuMillis Int @default(0)
 
-  warmAvailable  Int
-  warmTarget     Int
-  warmAssigned   Int
-  coldStarts     Int @default(0)
+  warmAvailable Int
+  warmTarget    Int
+  warmAssigned  Int
+  coldStarts    Int @default(0)
 
-  totalProjects  Int
-  readyProjects  Int
+  totalProjects   Int
+  readyProjects   Int
   runningProjects Int
-  scaledToZero   Int
+  scaledToZero    Int
 
   orphansDeleted Int @default(0)
   idleEvictions  Int @default(0)
@@ -1226,30 +1237,30 @@ model InfraSnapshot {
 // =============================================================================
 
 model AnalyticsDigest {
-  id                   String   @id @default(uuid())
-  date                 DateTime @db.Date
-  period               String   @default("24h")
+  id     String   @id @default(uuid())
+  date   DateTime @db.Date
+  period String   @default("24h")
 
-  funnelSignups        Int      @default(0)
-  funnelOnboarded      Int      @default(0)
-  funnelCreatedProject Int      @default(0)
-  funnelSentMessage    Int      @default(0)
-  funnelEngaged        Int      @default(0)
+  funnelSignups        Int    @default(0)
+  funnelOnboarded      Int    @default(0)
+  funnelCreatedProject Int    @default(0)
+  funnelSentMessage    Int    @default(0)
+  funnelEngaged        Int    @default(0)
   avgMinToFirstProject Float?
   avgMinToFirstMessage Float?
 
-  activeUsers          Int      @default(0)
-  totalMessages        Int      @default(0)
-  totalSessions        Int      @default(0)
-  totalToolCalls       Int      @default(0)
-  totalSpendUsd        Float    @default(0)
+  activeUsers    Int   @default(0)
+  totalMessages  Int   @default(0)
+  totalSessions  Int   @default(0)
+  totalToolCalls Int   @default(0)
+  totalSpendUsd  Float @default(0)
 
-  templateStats        Json?
-  chunksProcessed      Int      @default(1)
-  messagesAnalyzed     Int      @default(0)
-  aiInsights           Json?
+  templateStats    Json?
+  chunksProcessed  Int   @default(1)
+  messagesAnalyzed Int   @default(0)
+  aiInsights       Json?
 
-  createdAt            DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([date, period])
   @@map("analytics_digests")
@@ -1384,28 +1395,28 @@ model PushSubscription {
 // =============================================================================
 
 model EvalRun {
-  id            String    @id @default(cuid())
-  track         String
-  model         String
-  workers       Int       @default(1)
-  status        String    @default("pending")
-  label         String?
-  tags          String[]  @default([])
-  triggeredBy   String?
-  pid           Int?
-  jobName       String?
-  error         String?   @db.Text
-  summary       Json?
-  cost          Json?
-  byCategory    Json?
-  resources     Json?
-  progress      Json?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id          String    @id @default(cuid())
+  track       String
+  model       String
+  workers     Int       @default(1)
+  status      String    @default("pending")
+  label       String?
+  tags        String[]  @default([])
+  triggeredBy String?
+  pid         Int?
+  jobName     String?
+  error       String?   @db.Text
+  summary     Json?
+  cost        Json?
+  byCategory  Json?
+  resources   Json?
+  progress    Json?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  results       EvalRunResult[]
+  results EvalRunResult[]
 
   @@index([status])
   @@index([createdAt])
@@ -1489,30 +1500,30 @@ enum TransactionStatus {
 }
 
 model CreatorProfile {
-  id                      String       @id @default(cuid())
-  userId                  String       @unique
-  displayName             String
-  bio                     String?
-  avatarUrl               String?
-  websiteUrl              String?
-  stripeCustomAccountId   String?
-  payoutStatus            PayoutStatus @default(not_setup)
+  id                       String       @id @default(cuid())
+  userId                   String       @unique
+  displayName              String
+  bio                      String?
+  avatarUrl                String?
+  websiteUrl               String?
+  stripeCustomAccountId    String?
+  payoutStatus             PayoutStatus @default(not_setup)
   payoutDetailsSubmittedAt DateTime?
-  verified                Boolean      @default(false)
-  totalEarningsInCents    Int          @default(0)
-  pendingPayoutInCents    Int          @default(0)
-  totalPaidOutInCents     Int          @default(0)
-  creatorTier             CreatorTier  @default(newcomer)
-  reputationScore         Int          @default(0)
-  totalAgentsPublished    Int          @default(0)
-  totalInstalls           Int          @default(0)
-  averageAgentRating      Float        @default(0)
-  totalVersionsShipped    Int          @default(0)
-  activeMaintenanceStreak Int          @default(0)
-  createdAt               DateTime     @default(now())
-  updatedAt               DateTime     @updatedAt
+  verified                 Boolean      @default(false)
+  totalEarningsInCents     Int          @default(0)
+  pendingPayoutInCents     Int          @default(0)
+  totalPaidOutInCents      Int          @default(0)
+  creatorTier              CreatorTier  @default(newcomer)
+  reputationScore          Int          @default(0)
+  totalAgentsPublished     Int          @default(0)
+  totalInstalls            Int          @default(0)
+  averageAgentRating       Float        @default(0)
+  totalVersionsShipped     Int          @default(0)
+  activeMaintenanceStreak  Int          @default(0)
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
 
-  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   badges       CreatorBadge[]
   listings     MarketplaceListing[]
   transactions MarketplaceTransaction[] @relation("CreatorTransactions")
@@ -1566,8 +1577,8 @@ model MarketplaceListing {
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
-  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  creator      CreatorProfile           @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  project      Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator      CreatorProfile              @relation(fields: [creatorId], references: [id], onDelete: Cascade)
   versions     MarketplaceListingVersion[]
   installs     MarketplaceInstall[]
   reviews      MarketplaceReview[]
@@ -1584,10 +1595,10 @@ model MarketplaceListing {
 }
 
 model MarketplaceListingVersion {
-  id                String   @id @default(cuid())
+  id                String  @id @default(cuid())
   listingId         String
   version           String
-  changelog         String?  @db.Text
+  changelog         String? @db.Text
   workspaceSnapshot Json?
 
   createdAt DateTime @default(now())
@@ -1644,24 +1655,24 @@ model MarketplaceReview {
 }
 
 model MarketplaceTransaction {
-  id                   String            @id @default(cuid())
-  listingId            String
-  installId            String?
-  buyerUserId          String
-  creatorId            String
-  type                 TransactionType
-  amountInCents        Int
-  platformFeeInCents   Int
-  creatorAmountInCents Int
+  id                    String            @id @default(cuid())
+  listingId             String
+  installId             String?
+  buyerUserId           String
+  creatorId             String
+  type                  TransactionType
+  amountInCents         Int
+  platformFeeInCents    Int
+  creatorAmountInCents  Int
   stripePaymentIntentId String?
-  stripeTransferId     String?
-  currency             String            @default("usd")
-  status               TransactionStatus @default(pending)
-  createdAt            DateTime          @default(now())
+  stripeTransferId      String?
+  currency              String            @default("usd")
+  status                TransactionStatus @default(pending)
+  createdAt             DateTime          @default(now())
 
-  listing MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing MarketplaceListing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
   install MarketplaceInstall? @relation(fields: [installId], references: [id], onDelete: SetNull)
-  creator CreatorProfile     @relation("CreatorTransactions", fields: [creatorId], references: [id], onDelete: Cascade)
+  creator CreatorProfile      @relation("CreatorTransactions", fields: [creatorId], references: [id], onDelete: Cascade)
 
   @@index([listingId])
   @@index([creatorId])
@@ -1672,21 +1683,21 @@ model MarketplaceTransaction {
 }
 
 model EvalRunResult {
-  id            String   @id @default(cuid())
-  runId         String
-  evalId        String
-  name          String
-  category      String
-  level         Int?
-  passed        Boolean
-  score         Int
-  maxScore      Int
-  percentage    Float
+  id              String   @id @default(cuid())
+  runId           String
+  evalId          String
+  name            String
+  category        String
+  level           Int?
+  passed          Boolean
+  score           Int
+  maxScore        Int
+  percentage      Float
   durationMs      Int
   tokens          Json?
-  toolCallCount   Int       @default(0)
-  failedToolCalls Int       @default(0)
-  iterations      Int       @default(0)
+  toolCallCount   Int      @default(0)
+  failedToolCalls Int      @default(0)
+  iterations      Int      @default(0)
   phaseScores     Json?
   pipeline        String?
   pipelinePhase   Int?
@@ -1697,7 +1708,7 @@ model EvalRunResult {
   log             String?  @db.Text
   createdAt       DateTime @default(now())
 
-  run           EvalRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run EvalRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@index([runId])
   @@index([evalId])
@@ -1709,20 +1720,20 @@ model EvalRunResult {
 // =============================================================================
 
 model Meeting {
-  id            String   @id @default(cuid())
-  title         String?
-  audioPath     String
-  transcript    String?  @db.Text
-  summary       String?  @db.Text
-  duration      Int?
-  status        String   @default("recording")
-  projectId     String?
-  workspaceId   String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id @default(cuid())
+  title       String?
+  audioPath   String
+  transcript  String?  @db.Text
+  summary     String?  @db.Text
+  duration    Int?
+  status      String   @default("recording")
+  projectId   String?
+  workspaceId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([projectId])
@@ -1783,11 +1794,221 @@ model VoiceCallMeter {
   /// Post-call transcript payload from ElevenLabs (array of turns).
   /// Populated from the `post_call_transcription` webhook; null for
   /// Twilio-only deliveries or calls that didn't reach EL.
-  transcript      Json?
+  transcript        Json?
   /// Optional single-sentence summary. EL returns one when enabled.
   transcriptSummary String?
 
   @@index([projectId])
   @@index([workspaceId])
   @@map("voice_call_meters")
+}
+
+// =============================================================================
+// AGENT COST ANALYTICS
+// =============================================================================
+
+model AgentCostMetric {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  projectId         String?
+  /// Subagent run id (a-<label>-<hex>) — links runtime traces to cost metrics.
+  agentRunId        String?  @unique
+  agentType         String
+  model             String
+  inputTokens       Int      @default(0)
+  outputTokens      Int      @default(0)
+  cachedInputTokens Int      @default(0)
+  toolCalls         Int      @default(0)
+  creditCost        Float    @default(0)
+  wallTimeMs        Int      @default(0)
+  /// Legacy field — true when the run promise resolved without throwing. Kept for backwards
+  /// compatibility but DO NOT use as the primary success signal — use the multi-signal
+  /// columns below. See cost-analytics.service.
+  success           Boolean  @default(true)
+  /// Run hit the configured maxTurns ceiling without producing a final answer.
+  hitMaxTurns       Boolean  @default(false)
+  /// Loop detector tripped during this run.
+  loopDetected      Boolean  @default(false)
+  /// Auto-router escalated to a higher-tier model mid-run (signal of insufficient capability).
+  escalated         Boolean  @default(false)
+  /// Final response was empty / whitespace / "Subagent failed:" prefix.
+  responseEmpty     Boolean  @default(false)
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([agentType])
+  @@index([model])
+  @@index([createdAt])
+  @@map("agent_cost_metrics")
+}
+
+// =============================================================================
+// SUBAGENT MODEL OVERRIDES — user-controlled model per built-in sub-agent type
+// =============================================================================
+// Resolution precedence (highest first):
+//   1. Explicit caller-supplied SubagentConfig.model
+//   2. Project-level override          (workspaceId + projectId + agentType)
+//   3. Workspace-level override        (workspaceId + projectId=NULL + agentType)
+//   4. Built-in default from getBuiltinSubagentConfig()
+// See packages/agent-runtime/src/subagent.ts → resolveSubagentModel().
+
+model SubagentModelOverride {
+  id          String   @id @default(uuid())
+  workspaceId String
+  /// NULL = workspace-default override; non-null = project-specific override.
+  projectId   String?
+  agentType   String
+  model       String
+  provider    String?
+  /// User id of the admin who last set this override (nullable for system applies).
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// One override per (workspace, project?, agentType). Use upsert keyed on this.
+  @@unique([workspaceId, projectId, agentType])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("subagent_model_overrides")
+}
+
+// =============================================================================
+// AGENT EVAL RESULTS — eval-anchored ground truth for recommendations
+// =============================================================================
+// Populated by the nightly eval runner (run-eval --agent-type=<x> --model=<y>).
+// Recommendations cite the latest pass-rate so the user sees why a swap is safe.
+
+model AgentEvalResult {
+  id            String   @id @default(uuid())
+  workspaceId   String?
+  agentType     String
+  model         String
+  provider      String?
+  /// Eval suite identifier — e.g. "test-cases-subagent.ts:explore-suite".
+  suite         String
+  totalCases    Int
+  passedCases   Int
+  /// 0..1 ratio (passedCases / totalCases). Stored separately for fast sorting.
+  passRate      Float
+  avgWallTimeMs Int      @default(0)
+  avgCreditCost Float    @default(0)
+  /// Optional commit SHA the eval ran against — for reproducibility.
+  commitSha     String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([agentType, model, createdAt])
+  @@index([workspaceId])
+  @@map("agent_eval_results")
+}
+
+// =============================================================================
+// AGENT EVAL SETS — workspace-authored examples for custom sub-agent recs
+// =============================================================================
+// Eval results are already generic by agentType. This model provides the missing
+// source examples for any custom agent registered through agent_create.
+
+model AgentEvalSet {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String?
+  agentType   String
+  name        String
+  description String?
+  examples    Json
+  enabled     Boolean  @default(true)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, agentType])
+  @@index([workspaceId, projectId])
+  @@map("agent_eval_sets")
+}
+
+model BudgetAlert {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  name            String
+  creditLimit     Float
+  periodType      String    @default("monthly")
+  enabled         Boolean   @default(true)
+  autoThrottle    Boolean   @default(false)
+  throttleToModel String?
+  notifyEmail     Boolean   @default(true)
+  lastTriggeredAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("budget_alerts")
+}
+
+model ModelExperiment {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  projectId       String?
+  name            String
+  agentType       String
+  modelA          String
+  modelB          String
+  // 'running' | 'completed' | 'shadow'. `shadow` means traffic is still
+  // split but assignment is hidden from the user — used by the two-week
+  // explore A/B from Phase 3.2.
+  status          String    @default("running")
+  splitPercentage Int       @default(50)
+  /**
+   * Optional expected end date — used by the cron cleanup to auto-complete
+   * long-running shadow experiments (e.g. the 14-day explore A/B).
+   */
+  expectedEndAt   DateTime?
+  totalRunsA      Int       @default(0)
+  totalRunsB      Int       @default(0)
+  totalCostA      Float     @default(0)
+  totalCostB      Float     @default(0)
+  totalTokensA    Int       @default(0)
+  totalTokensB    Int       @default(0)
+  // Legacy "did the promise resolve" success rate. Kept so old dashboards
+  // don't break; the recommendation gate now relies on the quality signals
+  // below (Phase 2.3).
+  successRateA    Float     @default(0)
+  successRateB    Float     @default(0)
+  avgLatencyMsA   Float     @default(0)
+  avgLatencyMsB   Float     @default(0)
+  // Phase 3.2 — quality-signal counters mirroring AgentCostMetric so the
+  // experiment can call a winner using the same multi-signal gate as the
+  // recommendations path.
+  escalationsA    Int       @default(0)
+  escalationsB    Int       @default(0)
+  loopDetectedA   Int       @default(0)
+  loopDetectedB   Int       @default(0)
+  hitMaxTurnsA    Int       @default(0)
+  hitMaxTurnsB    Int       @default(0)
+  responseEmptyA  Int       @default(0)
+  responseEmptyB  Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([status])
+  @@index([workspaceId, agentType, status])
+  @@map("model_experiments")
 }

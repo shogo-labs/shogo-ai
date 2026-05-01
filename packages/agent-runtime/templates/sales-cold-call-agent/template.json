@@ -1,0 +1,50 @@
+{
+  "id": "sales-cold-call-agent",
+  "name": "Cold-call Agent",
+  "description": "Outbound voice agent that calls queued leads via Twilio + ElevenLabs, streams live transcripts into the pipeline, qualifies prospects, and books demos. Pairs with the BDR Pipeline.",
+  "category": "sales",
+  "icon": "Phone",
+  "tags": [
+    "sales",
+    "voice",
+    "cold-call",
+    "outbound",
+    "twilio",
+    "elevenlabs",
+    "transcript",
+    "qualification",
+    "demo-booking"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "voice",
+      "description": "Place outbound calls and stream synthesized voice via Twilio + ElevenLabs",
+      "required": true
+    },
+    {
+      "categoryId": "calendar",
+      "description": "Book demos directly into the user's calendar when a prospect agrees"
+    },
+    {
+      "categoryId": "crm",
+      "description": "Sync call outcomes and qualification notes back to CRM"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Alert the team on demo-booked or hot leads"
+    }
+  ],
+  "techStack": "react-app"
+}

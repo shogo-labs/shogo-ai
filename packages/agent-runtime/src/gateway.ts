@@ -66,7 +66,7 @@ import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin } from '@shogo/shared-runtime'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
-import { deriveApiUrl, getInternalHeaders } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
 import {
@@ -272,6 +272,11 @@ export class AgentGateway {
     contextWindowTokens: number
     estimatedContextTokens: number
     model: string
+    success: boolean
+    hitMaxTurns: boolean
+    loopDetected: boolean
+    escalated: boolean
+    responseEmpty: boolean
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
@@ -595,6 +600,35 @@ export class AgentGateway {
       this.agentManager.attachPersistence(this.sessionPersistence)
       this.teamManager = new TeamManager(this.sessionPersistence)
     }
+
+    // Phase 2.1 — forward sub-agent cost metrics (with quality signals) to the
+    // API server. Without this wiring the AgentManager's emitCostMetric()
+    // callback is dangling and AgentCostMetric rows never get written for any
+    // sub-agent runs, only main-chat. We also send the multi-signal fields so
+    // the recommendation gate can compute real success rates.
+    this.agentManager.onCostMetric((data) => {
+      const projectId = this.projectId
+      const workspaceId = process.env.WORKSPACE_ID || null
+      if (!workspaceId) return // local-only test runs without a workspace
+      void postCostMetric({
+        workspaceId,
+        projectId: projectId || undefined,
+        agentRunId: data.agentRunId,
+        agentType: data.agentType,
+        model: data.model,
+        inputTokens: data.inputTokens,
+        outputTokens: data.outputTokens,
+        cachedInputTokens: data.cachedInputTokens,
+        toolCalls: data.toolCalls,
+        creditCost: data.creditCost,
+        wallTimeMs: data.wallTimeMs,
+        success: data.success,
+        hitMaxTurns: data.hitMaxTurns,
+        loopDetected: data.loopDetected,
+        escalated: data.escalated,
+        responseEmpty: data.responseEmpty,
+      })
+    })
 
     // Wire up LLM-powered summarization for context compaction
     this.sessionManager.setSummarizeFn(async (messages) => {
@@ -2016,6 +2050,7 @@ export class AgentGateway {
       // Store usage for callers (server.ts includes it in the `finish` event)
       const estimatedContextTokens = this.sessionManager.estimateTokens(session)
       const effectiveModel = result.effectiveModelId || modelId
+      const responseEmpty = !result.text || result.text.trim().length === 0
       this._lastTurnUsage = {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
@@ -2026,6 +2061,11 @@ export class AgentGateway {
         contextWindowTokens: this.sessionManager.contextWindowTokens,
         estimatedContextTokens,
         model: effectiveModel,
+        success: !result.error && !result.maxIterationsExhausted && !result.loopBreak && !responseEmpty,
+        hitMaxTurns: !!result.maxIterationsExhausted,
+        loopDetected: !!result.loopBreak,
+        escalated: false,
+        responseEmpty,
       }
 
       // UI notifications below may throw if the client disconnected (stop).

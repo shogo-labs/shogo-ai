@@ -15,7 +15,9 @@ const ALL_TEMPLATE_IDS = [
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
   'self-evolving', 'yc-founder-operating-system', 'virtual-engineering-team',
   'equity-research-terminal', 'portfolio-risk-desk', 'technical-quant-lab',
-  'dividend-income-builder', 'macro-market-briefing',
+  'dividend-income-builder', 'macro-market-briefing', 'travel-concierge',
+  // sales-specific reusable apps
+  'sales-bdr-pipeline', 'sales-cold-call-agent', 'stripe-revenue-ops',
 ]
 
 const EXPECTED_TEMPLATE_COUNT = ALL_TEMPLATE_IDS.length
@@ -29,6 +31,7 @@ const TEMPLATES_WITH_CANVAS_SRC = [
   'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
   'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
   'operations-monitor',
+  'sales-bdr-pipeline', 'sales-cold-call-agent', 'stripe-revenue-ops',
 ]
 
 // Templates that ship a real `prisma/schema.prisma` and a `src/` whose surfaces

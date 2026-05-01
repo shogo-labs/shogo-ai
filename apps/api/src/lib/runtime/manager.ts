@@ -497,6 +497,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   private async ensureProjectDirectory(
     projectId: string,
     techStackId?: string,
+    templateId?: string,
   ): Promise<string> {
     const workspacesDir = resolve(this.config.workspacesDir || process.cwd())
     const projectDir = join(workspacesDir, projectId)
@@ -567,6 +568,23 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       } else {
         console.log(`[RuntimeManager] No template found, creating minimal project inline`)
         this.createMinimalProject(projectDir)
+      }
+    }
+
+    // Agent-template overlay: must apply BEFORE Vite spawns, otherwise the
+    // canvas iframe paints the bundled `Project Ready` App.tsx until the
+    // agent-runtime later re-seeds and Vite HMR catches up. We re-apply on
+    // every start (idempotent — `cpSync(force:true)`) so a template-source
+    // edit in the repo propagates to existing local projects on next start.
+    if (templateId) {
+      try {
+        const { overlayAgentTemplateCodeDirs } = await import('@shogo/agent-runtime/src/workspace-defaults')
+        const applied = overlayAgentTemplateCodeDirs(projectDir, templateId)
+        if (applied) {
+          console.log(`[RuntimeManager] Applied agent template overlay (${templateId}) to ${projectId}`)
+        }
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] Agent template overlay failed for ${templateId}: ${err.message}`)
       }
     }
 
@@ -748,7 +766,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // React+Vite template copy and let the agent-runtime's seedTechStack do
     // the right thing. Without this, an expo-three project ends up with a
     // Frankenstein workspace (Vite package.json + Expo `app/`/`metro.config.js`).
-    const projectDir = await this.ensureProjectDirectory(projectId, projectInfo.techStackId)
+    const projectDir = await this.ensureProjectDirectory(projectId, projectInfo.techStackId, projectInfo.templateId)
 
     // Allocate ports (async to check for stale processes)
     const port = await this.allocatePortAsync()

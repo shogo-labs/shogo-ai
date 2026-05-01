@@ -1,0 +1,46 @@
+{
+  "id": "sales-bdr-pipeline",
+  "name": "BDR Pipeline",
+  "description": "BDR workspace that researches and enriches target accounts, drafts personalized cold-email openers, and queues Gmail drafts for outreach. Pipeline view with hover-revealed personalized openers.",
+  "category": "sales",
+  "icon": "Users",
+  "tags": [
+    "sales",
+    "bdr",
+    "cold-email",
+    "outbound",
+    "prospecting",
+    "lead-enrichment",
+    "gmail",
+    "pipeline",
+    "outreach"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "email",
+      "description": "Queue personalized cold-email drafts for outreach",
+      "required": true
+    },
+    {
+      "categoryId": "crm",
+      "description": "Sync enriched leads and track pipeline stage"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Post pipeline updates and reply alerts to the team"
+    }
+  ],
+  "techStack": "react-app"
+}

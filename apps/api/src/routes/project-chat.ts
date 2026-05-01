@@ -24,7 +24,7 @@ import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
-import { openSession, closeSession } from "../lib/proxy-billing-session"
+import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -117,6 +117,13 @@ async function trackUsageFromStream(
   // and the client's auto-resuming-fetch will reconnect via ?fromSeq=N.
   let observedTurnComplete = false
   let turnCompleteStatus: 'completed' | 'failed' | null = null
+  let qualitySignals: {
+    success?: boolean
+    hitMaxTurns?: boolean
+    loopDetected?: boolean
+    escalated?: boolean
+    responseEmpty?: boolean
+  } = {}
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
@@ -306,6 +313,13 @@ async function trackUsageFromStream(
               completionTokens: usageData.completionTokens || usageData.outputTokens || 0,
               totalTokens: usageData.totalTokens || ((usageData.promptTokens || usageData.inputTokens || 0) + (usageData.completionTokens || usageData.outputTokens || 0)),
             }
+            qualitySignals = {
+              success: usageData.success === undefined ? undefined : usageData.success === true,
+              hitMaxTurns: usageData.hitMaxTurns === true,
+              loopDetected: usageData.loopDetected === true,
+              escalated: usageData.escalated === true,
+              responseEmpty: usageData.responseEmpty === true,
+            }
           }
           // Sometimes usage is at top level
           if (data.promptTokens || data.completionTokens || data.inputTokens || data.outputTokens) {
@@ -313,6 +327,13 @@ async function trackUsageFromStream(
               promptTokens: data.promptTokens || data.inputTokens || 0,
               completionTokens: data.completionTokens || data.outputTokens || 0,
               totalTokens: data.totalTokens || ((data.promptTokens || data.inputTokens || 0) + (data.completionTokens || data.outputTokens || 0)),
+            }
+            qualitySignals = {
+              success: data.success === undefined ? undefined : data.success === true,
+              hitMaxTurns: data.hitMaxTurns === true,
+              loopDetected: data.loopDetected === true,
+              escalated: data.escalated === true,
+              responseEmpty: data.responseEmpty === true,
             }
           }
         }
@@ -387,6 +408,7 @@ async function trackUsageFromStream(
   const { billedUsd } = await closeSession(project.id, {
     discardPartial: eofWithoutTurnComplete,
   })
+  setQualitySignals(project.id, qualitySignals)
   if (billedUsd > 0) {
     console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }

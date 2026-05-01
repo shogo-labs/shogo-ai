@@ -20,8 +20,17 @@
 
 import { calculateUsageCost, proxyModelToBillingModel } from './usage-cost'
 import * as billingService from '../services/billing.service'
+import { recordAgentCostMetric } from '../services/cost-analytics.service'
 
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000 // 10 min safety net
+
+export interface BillingSessionQualitySignals {
+  success?: boolean
+  hitMaxTurns?: boolean
+  loopDetected?: boolean
+  escalated?: boolean
+  responseEmpty?: boolean
+}
 
 interface BillingSession {
   projectId: string
@@ -33,6 +42,7 @@ interface BillingSession {
   cacheWriteTokens: number
   outputTokens: number
   requestCount: number
+  quality: BillingSessionQualitySignals
   openedAt: number
   lastActivityAt: number
 }
@@ -78,6 +88,7 @@ export function openSession(
     cacheWriteTokens: 0,
     outputTokens: 0,
     requestCount: 0,
+    quality: {},
     openedAt: Date.now(),
     lastActivityAt: Date.now(),
   })
@@ -114,6 +125,14 @@ export function accumulateUsage(
   session.model = model
   session.lastActivityAt = Date.now()
 
+  return true
+}
+
+export function setQualitySignals(projectId: string, quality: BillingSessionQualitySignals): boolean {
+  const session = sessions.get(projectId)
+  if (!session) return false
+  session.quality = { ...session.quality, ...quality }
+  session.lastActivityAt = Date.now()
   return true
 }
 
@@ -158,6 +177,34 @@ export async function closeSession(
     session.cachedInputTokens, session.cacheWriteTokens,
   )
   const durationMs = Date.now() - session.openedAt
+  const finalQuality = session.quality
+
+  // Always record cost metrics, even if billing fails (e.g. no subscription/credits).
+  // Fire-and-forget so a slow analytics DB does not tax the chat close path.
+  //
+  // Pass `creditCost: 0` and let `recordAgentCostMetric` recompute from tokens
+  // server-side. We could pass `billedUsd` here, but this path runs before any
+  // markup adjustment is finalized — using the canonical token→cost catalog
+  // keeps analytics consistent with the catalog displayed in the UI.
+  void recordAgentCostMetric({
+    workspaceId: session.workspaceId,
+    projectId: session.projectId,
+    agentType: 'main-chat',
+    model: billingModel,
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    cachedInputTokens: session.cachedInputTokens,
+    toolCalls: session.requestCount,
+    creditCost: 0,
+    wallTimeMs: durationMs,
+    success: finalQuality.success === true,
+    hitMaxTurns: finalQuality.hitMaxTurns ?? false,
+    loopDetected: finalQuality.loopDetected ?? false,
+    escalated: finalQuality.escalated ?? false,
+    responseEmpty: finalQuality.responseEmpty ?? false,
+  }).catch((err) => {
+    console.warn('[BillingSession] Failed to record main-chat cost metric:', err?.message ?? err)
+  })
 
   try {
     const result = await billingService.consumeUsage({

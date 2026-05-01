@@ -1,0 +1,9 @@
+{
+  "metrics": {
+    "leads": "0",
+    "enriched": "0",
+    "drafted": "0",
+    "queued": "0"
+  },
+  "leads": []
+}
