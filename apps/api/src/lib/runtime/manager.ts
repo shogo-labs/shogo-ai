@@ -508,11 +508,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       mkdirSync(workspacesDir, { recursive: true })
     }
 
-    // Template copy filter: exclude bun.lock so `bun install` does a fresh
-    // platform-appropriate resolution (a Mac-generated lockfile causes
-    // incomplete installs on Windows)
+    // Template copy filter:
+    //   - exclude `bun.lock` so `bun install` does a fresh platform-appropriate
+    //     resolution (a Mac-generated lockfile causes incomplete installs on Windows)
+    //
+    // We DO copy the bundled runtime-template's `dist/`. For non-template
+    // projects it's the right canvas content (the generic Vite starter). For
+    // template projects, the agent-template overlay below `force:true`-copies
+    // the template's own pre-built dist on top, so the user never sees the
+    // generic page even momentarily. See packages/agent-runtime/templates/<id>/dist.
     const copyFilter = (src: string) =>
-      !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock') && !src.endsWith('bun.lockb')
+      !src.includes('node_modules') &&
+      !src.includes('.git') &&
+      !src.endsWith('bun.lock') &&
+      !src.endsWith('bun.lockb')
 
     const needsSeed = !existsSync(projectDir) || !existsSync(join(projectDir, 'package.json'))
 
@@ -573,9 +582,13 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     // Agent-template overlay: must apply BEFORE Vite spawns, otherwise the
     // canvas iframe paints the bundled `Project Ready` App.tsx until the
-    // agent-runtime later re-seeds and Vite HMR catches up. We re-apply on
-    // every start (idempotent — `cpSync(force:true)`) so a template-source
-    // edit in the repo propagates to existing local projects on next start.
+    // agent-runtime later re-seeds and Vite HMR catches up. Overlays both
+    // `src/` (so HMR rebuilds the right surface) and the template's
+    // pre-built `dist/` (so the canvas iframe paints the right surface
+    // *immediately*, before Vite finishes its cold rebuild). We re-apply
+    // on every start (idempotent — `cpSync(force:true)`) so a template-
+    // source edit in the repo propagates to existing local projects on
+    // next start.
     if (templateId) {
       try {
         const { overlayAgentTemplateCodeDirs } = await import('@shogo/agent-runtime/src/workspace-defaults')

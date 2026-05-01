@@ -120,11 +120,17 @@ describe('seedRuntimeTemplate', () => {
     expect(result).toBe(false)
   })
 
-  test('does not copy node_modules or dist', () => {
+  test('does not copy node_modules but does copy the pre-built dist', () => {
+    // node_modules is platform-specific and is restored separately by
+    // ensureWorkspaceDeps. dist/ on the other hand IS copied so the canvas
+    // iframe has something to paint on the very first request — a flash
+    // of a working "Project Ready" page is much better UX than a blank
+    // iframe while Vite spins up. For template projects, the template
+    // overlay replaces this dist with the template's own pre-built bundle.
     const result = seedRuntimeTemplate(TEST_DIR)
     expect(result).toBe(true)
     expect(existsSync(join(TEST_DIR, 'node_modules'))).toBe(false)
-    expect(existsSync(join(TEST_DIR, 'dist'))).toBe(false)
+    expect(existsSync(join(TEST_DIR, 'dist', 'index.html'))).toBe(true)
   })
 
   test('works when template path is a symlink (VM provisioned image)', () => {
@@ -183,6 +189,33 @@ describe('overlayAgentTemplateCodeDirs', () => {
 
   test('returns false for unknown template id', () => {
     expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'unknown-template-xxxxx')).toBe(false)
+  })
+
+  test('overlays the template-shipped pre-built dist over the runtime-template stub', () => {
+    // Reproduce the canvas iframe race: seedRuntimeTemplate copies the
+    // bundled dist (which has "Project Ready" in its JS bundle), so the
+    // very first paint would flash that page until Vite finished its
+    // cold rebuild. The dist overlay is what removes that flash.
+    expect(seedRuntimeTemplate(TEST_DIR)).toBe(true)
+    const stubDistAssets = join(TEST_DIR, 'dist', 'assets')
+    expect(existsSync(stubDistAssets)).toBe(true)
+    const stubBundles = require('fs').readdirSync(stubDistAssets) as string[]
+    const stubJs = stubBundles.find((f: string) => f.endsWith('.js'))!
+    const stubBody = readFileSync(join(stubDistAssets, stubJs), 'utf-8')
+    expect(stubBody).toContain('Project Ready')
+
+    expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'sales-bdr-pipeline')).toBe(true)
+
+    // After overlay, dist/index.html and assets are the template's pre-built
+    // output. The bundle no longer contains "Project Ready" and *does*
+    // contain the template surface's text — proving the canvas iframe will
+    // paint the right thing immediately, before Vite produces a new build.
+    expect(existsSync(join(TEST_DIR, 'dist', 'index.html'))).toBe(true)
+    const overlaidAssets = require('fs').readdirSync(join(TEST_DIR, 'dist', 'assets')) as string[]
+    const overlaidJs = overlaidAssets.find((f: string) => f.endsWith('.js'))!
+    const overlaidBody = readFileSync(join(TEST_DIR, 'dist', 'assets', overlaidJs), 'utf-8')
+    expect(overlaidBody).not.toContain('Project Ready')
+    expect(overlaidBody).toContain('BDR Pipeline')
   })
 })
 
@@ -479,7 +512,8 @@ describe('full workspace bootstrap', () => {
   test('local mode order (apps/api copies bundled template, then template overlay) renders the template surface, not Project Ready', () => {
     // 1. Mimic apps/api/src/lib/runtime/manager.ts: copy the bundled
     //    runtime-template into the project dir (this is what the user sees
-    //    *before* the agent-runtime even spawns).
+    //    *before* the agent-runtime even spawns). Notably, dist/ IS copied
+    //    so the canvas iframe has something to paint on first request.
     const templatePath = getRuntimeTemplatePath()
     expect(templatePath).not.toBeNull()
     require('fs').cpSync(templatePath!, TEST_DIR, {
@@ -488,21 +522,37 @@ describe('full workspace bootstrap', () => {
         !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock'),
     })
     expect(existsSync(join(TEST_DIR, 'package.json'))).toBe(true)
+    expect(existsSync(join(TEST_DIR, 'dist', 'index.html'))).toBe(true)
     const before = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
     expect(before).toContain('Project Ready')
 
+    // The freshly-copied dist is the bundled "Project Ready" stub —
+    // the very thing we're trying to *not* show in template projects.
+    const stubBundles = require('fs').readdirSync(join(TEST_DIR, 'dist', 'assets')) as string[]
+    const stubJs = stubBundles.find((f: string) => f.endsWith('.js'))!
+    expect(readFileSync(join(TEST_DIR, 'dist', 'assets', stubJs), 'utf-8')).toContain(
+      'Project Ready',
+    )
+
     // 2. Apply the agent-template overlay BEFORE Vite would spawn — same
     //    new code path the API now exercises in `ensureProjectDirectory`.
+    //    This replaces both src/ AND dist/.
     expect(overlayAgentTemplateCodeDirs(TEST_DIR, 'sales-bdr-pipeline')).toBe(true)
 
-    // 3. The canvas iframe will paint this src/App.tsx on first request,
-    //    so it must be the template's surface — not the generic stub.
+    // 3. The canvas iframe will paint this dist/ on first request, so it
+    //    must be the template's pre-built surface — not the generic stub.
     const after = readFileSync(join(TEST_DIR, 'src', 'App.tsx'), 'utf-8')
     expect(after).not.toContain('Project Ready')
     expect(after).toContain('BDRPipeline')
 
     expect(existsSync(join(TEST_DIR, 'src', 'surfaces', 'BDRPipeline.tsx'))).toBe(true)
     expect(existsSync(join(TEST_DIR, 'src', 'components', 'MetricCard.tsx'))).toBe(true)
+
+    const overlaidBundles = require('fs').readdirSync(join(TEST_DIR, 'dist', 'assets')) as string[]
+    const overlaidJs = overlaidBundles.find((f: string) => f.endsWith('.js'))!
+    const overlaidBody = readFileSync(join(TEST_DIR, 'dist', 'assets', overlaidJs), 'utf-8')
+    expect(overlaidBody).not.toContain('Project Ready')
+    expect(overlaidBody).toContain('BDR Pipeline')
   })
 
   test('local mode order: cold-call agent template overlays correctly', () => {

@@ -116,3 +116,26 @@ export function getTemplatePrismaDir(templateId: string): string | null {
   const dir = join(TEMPLATES_BASE, templateId, 'prisma')
   return existsSync(dir) ? dir : null
 }
+
+/**
+ * Get the path to a template's pre-built dist/ directory for direct copying.
+ *
+ * Templates whose `src/App.tsx` renders a curated surface ship a
+ * pre-built `dist/` produced by `scripts/build-template-dists.ts`. The
+ * canvas iframe paints whatever `dist/` is on disk while Vite is still
+ * doing its cold rebuild, so without this the user sees the bundled
+ * runtime-template's pre-built `Project Ready` page flash for 1-3s
+ * before HMR catches up. With it, the canvas paints the template surface
+ * from the very first byte.
+ *
+ * Returns null when the template hasn't been pre-built — in that case
+ * callers fall back to the bundled runtime-template's dist (still safe;
+ * just slower first paint until Vite produces the real bundle).
+ */
+export function getTemplateDistDir(templateId: string): string | null {
+  const dir = join(TEMPLATES_BASE, templateId, 'dist')
+  // We only treat the dist as valid if it has assets — an empty dir from
+  // a half-finished build would otherwise overwrite a healthy fallback.
+  if (existsSync(join(dir, 'index.html'))) return dir
+  return null
+}
