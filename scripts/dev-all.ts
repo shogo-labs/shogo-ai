@@ -9,35 +9,89 @@
  *  3. Start the API and web dev servers via concurrently.
  */
 
-import { spawn, type Subprocess } from "bun";
+import { spawn, spawnSync, type Subprocess } from "bun";
 import { resolve } from "path";
-import { createConnection } from "net";
 
 const ROOT = resolve(import.meta.dir, "..");
 const API_PORT = Number(process.env.API_PORT ?? 8002);
 const WEB_PORT = 8081;
+const IS_WIN = process.platform === "win32";
 
 // ---------------------------------------------------------------------------
-// 1. Kill whatever is listening on API_PORT
+// 1. Kill whatever is bound to API_PORT
 // ---------------------------------------------------------------------------
 
-async function isPortInUse(port: number): Promise<boolean> {
-  return new Promise((res) => {
-    const socket = createConnection({ port, host: "127.0.0.1" });
-    socket.once("connect", () => {
-      socket.destroy();
-      res(true);
+/**
+ * Returns true when the port is currently bound (bind would fail).
+ *
+ * We deliberately use a real bind probe rather than a TCP connect probe —
+ * a zombie listener owned by a dead process refuses connections but still
+ * blocks bind(), and a connect-based test would falsely report "free".
+ */
+async function isPortBound(port: number): Promise<boolean> {
+  try {
+    const probe = Bun.serve({
+      port,
+      hostname: "0.0.0.0",
+      fetch: () => new Response("probe"),
     });
-    socket.once("error", () => res(false));
+    probe.stop(true);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Best-effort sweep of stale shogo-ai bun.exe processes left behind from
+ * previous dev:all runs. We tree-kill anything whose CommandLine references
+ * one of our dev scripts, except this process and the bundled desktop bun.
+ */
+async function sweepStaleShogoBunProcesses(): Promise<void> {
+  if (!IS_WIN) return;
+  const ps = spawn({
+    cmd: [
+      "powershell",
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_Process -Filter \"Name='bun.exe'\" | Select-Object ProcessId,CommandLine,ExecutablePath | ConvertTo-Json -Compress",
+    ],
+    stdout: "pipe",
+    stderr: "ignore",
   });
+  const out = await new Response(ps.stdout).text();
+  await ps.exited;
+
+  let procs: Array<{ ProcessId: number; CommandLine?: string; ExecutablePath?: string }> = [];
+  try {
+    const parsed = JSON.parse(out.trim() || "[]");
+    procs = Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return;
+  }
+
+  const ourPid = process.pid;
+  const trigger = /shogo-ai|watch-api\.ts|dev-all\.ts|apps[\\/]+api[\\/]+src[\\/]+entry\.ts/i;
+  const desktopBundled = /apps[\\/]+desktop[\\/]+resources[\\/]+bun/i;
+
+  for (const p of procs) {
+    if (!p?.ProcessId || p.ProcessId === ourPid) continue;
+    if (p.ExecutablePath && desktopBundled.test(p.ExecutablePath)) continue;
+    if (!p.CommandLine || !trigger.test(p.CommandLine)) continue;
+    spawnSync({
+      cmd: ["taskkill", "/F", "/T", "/PID", String(p.ProcessId)],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  }
 }
 
 async function killProcessOnPort(port: number) {
-  if (!(await isPortInUse(port))) return;
+  if (!(await isPortBound(port))) return;
 
-  console.log(`[dev:all] Killing process on port ${port}…`);
+  console.log(`[dev:all] Port ${port} is occupied — clearing…`);
   try {
-    if (process.platform === "win32") {
+    if (IS_WIN) {
       const netstat = spawn({
         cmd: ["netstat", "-ano"],
         stdout: "pipe",
@@ -54,12 +108,30 @@ async function killProcessOnPort(port: number) {
         }
       }
       for (const pid of pids) {
-        const kill = spawn({
-          cmd: ["taskkill", "/F", "/PID", pid],
+        spawnSync({
+          cmd: ["taskkill", "/F", "/T", "/PID", pid],
           stdout: "ignore",
           stderr: "ignore",
         });
-        await kill.exited;
+      }
+
+      // Belt-and-suspenders: kill orphaned shogo-ai bun.exe trees that may
+      // still hold inherited socket handles to this port.
+      await sweepStaleShogoBunProcesses();
+
+      // Wait briefly for sockets to drain before reporting status.
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (!(await isPortBound(port))) return;
+        await Bun.sleep(250);
+      }
+
+      if (await isPortBound(port)) {
+        console.warn(
+          `[dev:all] Port ${port} is still bound by a leaked socket from a previously-killed process.\n` +
+            `[dev:all] Windows will not release the bind until the kernel reaps the dead-PID's sockets.\n` +
+            `[dev:all] Workarounds: 1) close any browser tab pointing at the dev URL (it keeps connections alive), 2) reboot, or 3) override API_PORT=<other> in .env.local for this session.`
+        );
       }
     } else {
       const proc = spawn({
@@ -82,7 +154,8 @@ async function migrate() {
   console.log("[dev:all] Running SQLite migrations…");
   const proc = spawn({
     cmd: [
-      "bunx",
+      "bun",
+      "x",
       "prisma",
       "migrate",
       "deploy",
@@ -110,7 +183,8 @@ async function startDevServers() {
   console.log("[dev:all] Starting API and web dev servers…");
   const proc = spawn({
     cmd: [
-      "bunx",
+      "bun",
+      "x",
       "concurrently",
       "--kill-others",
       "-n",
@@ -126,7 +200,24 @@ async function startDevServers() {
     stdin: "inherit",
   });
 
-  const cleanup = () => proc.kill();
+  // On Windows, .kill() does TerminateProcess on the immediate child only —
+  // its grandchildren (the actual API/web servers) become orphans and leak
+  // listening sockets. Tree-kill instead so the whole subtree dies together.
+  const cleanup = () => {
+    if (IS_WIN && typeof proc.pid === "number") {
+      try {
+        spawnSync({
+          cmd: ["taskkill", "/F", "/T", "/PID", String(proc.pid)],
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      } catch {
+        proc.kill();
+      }
+    } else {
+      proc.kill();
+    }
+  };
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
