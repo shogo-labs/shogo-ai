@@ -246,6 +246,11 @@ export function CapabilitiesPanel({
   const [stackPickerOpen, setStackPickerOpen] = useState(false)
   const techStacksFetchedRef = useRef(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [pendingStackChange, setPendingStackChange] = useState<{
+    id: string
+    name: string
+    capabilities?: Record<string, boolean>
+  } | null>(null)
 
   useEffect(() => {
     if (isModelControlled || !visible || !agentUrl || fetchedRef.current) return
@@ -457,8 +462,13 @@ export function CapabilitiesPanel({
                             <Pressable
                               key={stack.id}
                               onPress={() => {
-                                onTechStackChange?.(stack.id, stack.capabilities as Record<string, boolean> | undefined)
                                 setStackPickerOpen(false)
+                                if (isSelected) return
+                                setPendingStackChange({
+                                  id: stack.id,
+                                  name: stack.name,
+                                  capabilities: stack.capabilities as Record<string, boolean> | undefined,
+                                })
                               }}
                               className={cn(
                                 'px-3 py-2.5 flex-row items-center gap-3',
@@ -485,6 +495,46 @@ export function CapabilitiesPanel({
                   </Popover>
                 </View>
               </View>
+
+              {/* Destructive confirm: reset project to a different tech stack.
+                  Replaces project source files with the new stack's starter
+                  while preserving .shogo/, memory/, chat history, and project
+                  settings. Mirrors the pendingToggle warning pattern below. */}
+              {pendingStackChange && (
+                <View className="mt-2 border border-destructive/40 bg-destructive/5 rounded-lg p-3">
+                  <View className="flex-row items-start gap-2">
+                    <AlertTriangle size={14} className="text-destructive mt-0.5" />
+                    <View className="flex-1">
+                      <Text className="text-sm font-medium text-foreground mb-1">
+                        Reset project to {pendingStackChange.name}?
+                      </Text>
+                      <Text className="text-xs text-muted-foreground mb-3">
+                        This will replace your project files (src/, package.json, prisma/, configs)
+                        with the {pendingStackChange.name} starter. Your chat history, skills, and
+                        memory are preserved. This cannot be undone.
+                      </Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={() => {
+                            const change = pendingStackChange
+                            setPendingStackChange(null)
+                            onTechStackChange?.(change.id, change.capabilities)
+                          }}
+                          className="px-3 py-1.5 bg-destructive rounded-md active:bg-destructive/80"
+                        >
+                          <Text className="text-xs font-medium text-white">Reset project</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => setPendingStackChange(null)}
+                          className="px-3 py-1.5 border border-border rounded-md active:bg-muted"
+                        >
+                          <Text className="text-xs font-medium text-foreground">Cancel</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              )}
             </View>
           )}
 

@@ -910,6 +910,33 @@ export default observer(function ProjectLayout() {
         console.error('[ProjectLayout] Failed to push stack capabilities to runtime:', err)
       }
     }
+
+    // Destructive: replace project files with the new stack's starter. The
+    // confirmation prompt lives in CapabilitiesPanel; by the time we get here
+    // the user has already approved the wipe. The runtime preserves
+    // .shogo/, memory/, .git/, and .canvas-state.json; everything else is
+    // replaced with the new stack's starter and the preview is restarted.
+    if (agentUrl) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (nativeHeaders) Object.assign(headers, nativeHeaders())
+        const res = await fetch(`${agentUrl}/agent/workspace/reset-stack`, {
+          method: 'POST',
+          headers,
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          body: JSON.stringify({ stackId }),
+        })
+        if (!res.ok) {
+          console.error('[ProjectLayout] Tech stack reset failed:', res.status, await res.text().catch(() => ''))
+        } else {
+          // Force the canvas iframe to reload so the new stack's starter
+          // shows up as soon as the preview server comes back online.
+          setIframeRefreshKey((k) => k + 1)
+        }
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to reset workspace to new tech stack:', err)
+      }
+    }
   }, [updateProjectSettings, agentUrl, nativeHeaders])
 
   const handleBuildPlan = useCallback((plan: any, modelId: string) => {

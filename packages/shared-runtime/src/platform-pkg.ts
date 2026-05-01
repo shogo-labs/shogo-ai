@@ -5,8 +5,15 @@
  * PlatformPackageManager — centralises Windows vs Unix differences for
  * package-manager operations (install, exec, prisma, etc.).
  *
- * On Windows Bun 1.x creates empty node_modules stubs (hardlink bug),
- * so we fall back to npm for installs and npx for tool execution.
+ * On Windows Bun 1.x's default hardlink backend can leave empty package
+ * directories in `node_modules/` (most visibly under transitive deps
+ * like `whatwg-url` → `webidl-conversions`, which then crashes any
+ * `expo export` / Vite build that imports them). We mitigate by
+ * preferring `npm.cmd` for installs when Node.js is on PATH; if it
+ * isn't (Shogo Desktop ships its own bun but not Node), we fall back
+ * to `bun install --backend=copyfile` which sidesteps the hardlink
+ * path entirely. The trade-off is a slower install vs. a half-broken
+ * `node_modules` that fails downstream commands without explanation.
  */
 
 import { execSync as nodeExecSync, spawn, type StdioOptions } from 'node:child_process'
@@ -96,26 +103,76 @@ export class PlatformPackageManager {
     const env = this.spawnEnv(opts?.env)
 
     if (IS_WINDOWS) {
-      if (!isNodeAvailableOnWindows(env.PATH)) throw new NodeMissingError()
-      try {
-        nodeExecSync('npm.cmd install --loglevel=error', {
-          cwd, timeout, stdio, env, shell: 'cmd.exe',
-        })
-      } catch (err: any) {
-        throw wrapWindowsNpmError(err) ?? err
-      }
-    } else {
-      const bun = this.bunBinary
-      if (opts?.frozen) {
+      if (isNodeAvailableOnWindows(env.PATH)) {
         try {
-          nodeExecSync(`"${bun}" install --frozen-lockfile 2>&1`, { cwd, timeout, stdio, env })
+          nodeExecSync('npm.cmd install --loglevel=error', {
+            cwd, timeout, stdio, env, shell: 'cmd.exe',
+          })
           return
-        } catch {
-          // fall through to plain install
+        } catch (err: any) {
+          // If the failure is "npm not found at runtime" (race: user
+          // uninstalled Node mid-session), fall through to bun. Any
+          // other npm error is a real install problem — rethrow it.
+          const wrapped = wrapWindowsNpmError(err)
+          if (!wrapped) throw err
+          // wrapped is NodeMissingError → fall through to bun fallback.
         }
       }
-      nodeExecSync(`"${bun}" install`, { cwd, timeout, stdio, env })
+      // npm unavailable (or vanished mid-run) → bun with --backend=copyfile
+      // to avoid the Windows hardlink bug that produces empty package
+      // dirs (the original reason we preferred npm here in the first
+      // place). Slower than hardlink, but the install actually
+      // *completes correctly* with no Node.js prerequisite.
+      this.installSyncBunCopyfile(cwd, opts)
+      return
     }
+
+    const bun = this.bunBinary
+    if (opts?.frozen) {
+      try {
+        nodeExecSync(`"${bun}" install --frozen-lockfile 2>&1`, { cwd, timeout, stdio, env })
+        return
+      } catch {
+        // fall through to plain install
+      }
+    }
+    nodeExecSync(`"${bun}" install`, { cwd, timeout, stdio, env })
+  }
+
+  /**
+   * Windows-only fallback path: `bun install [--frozen-lockfile]
+   * --backend=copyfile`. Used when npm.cmd isn't available on PATH
+   * (typically: Shogo Desktop bundles bun but the user didn't install
+   * Node.js separately).
+   *
+   * The `--backend=copyfile` flag forces bun to copy package contents
+   * into `node_modules/` instead of hardlinking from
+   * `~/.bun/install/cache`. Hardlinks are bun's default for speed but
+   * fail in confusing ways on Windows (the destination directory gets
+   * created but ends up empty, and downstream `require('webidl-conversions')`
+   * etc. then crash with MODULE_NOT_FOUND). See bun#10327 / #28653.
+   */
+  private installSyncBunCopyfile(cwd: string, opts?: PkgInstallOptions): void {
+    const timeout = opts?.timeout ?? DEFAULT_INSTALL_TIMEOUT
+    const stdio = opts?.stdio ?? 'pipe'
+    const env = this.spawnEnv(opts?.env)
+    const bun = this.bunBinary
+    console.warn(
+      '[platform-pkg] Node.js / npm.cmd not found on PATH — falling back to ' +
+        '`bun install --backend=copyfile` (Shogo Desktop bundle path). ' +
+        'This is slower than hardlink but avoids the Windows extract bug.',
+    )
+    if (opts?.frozen) {
+      try {
+        nodeExecSync(`"${bun}" install --frozen-lockfile --backend=copyfile`, {
+          cwd, timeout, stdio, env,
+        })
+        return
+      } catch {
+        // fall through to plain install (lockfile might be stale)
+      }
+    }
+    nodeExecSync(`"${bun}" install --backend=copyfile`, { cwd, timeout, stdio, env })
   }
 
   // ---------------------------------------------------------------------------
@@ -123,49 +180,116 @@ export class PlatformPackageManager {
   // ---------------------------------------------------------------------------
 
   installAsync(cwd: string, opts?: PkgInstallOptions): Promise<void> {
+    if (IS_WINDOWS) {
+      const env = this.spawnEnv(opts?.env)
+      if (isNodeAvailableOnWindows(env.PATH)) {
+        return this.installAsyncWindowsNpm(cwd, opts).catch((err) => {
+          // npm install failed — if it was specifically "npm.cmd missing"
+          // (race), retry through the bun fallback path. Any other error
+          // is a real install problem and should bubble up.
+          if (err instanceof NodeMissingError) {
+            return this.installAsyncBunCopyfile(cwd, opts)
+          }
+          throw err
+        })
+      }
+      return this.installAsyncBunCopyfile(cwd, opts)
+    }
+    return this.installAsyncBun(cwd, opts)
+  }
+
+  private installAsyncWindowsNpm(cwd: string, opts?: PkgInstallOptions): Promise<void> {
     const timeout = opts?.timeout ?? DEFAULT_INSTALL_TIMEOUT
     const env = this.spawnEnv(opts?.env)
-    const cmd = IS_WINDOWS ? 'npm.cmd' : this.bunBinary
-    const args = IS_WINDOWS ? ['install', '--loglevel=error'] : ['install']
-
-    if (IS_WINDOWS && !isNodeAvailableOnWindows(env.PATH)) {
-      return Promise.reject(new NodeMissingError())
-    }
-
+    const cmd = 'npm.cmd'
+    const args = ['install', '--loglevel=error']
     return new Promise<void>((resolve, reject) => {
       const proc = spawn(cmd, args, {
         cwd,
         stdio: 'pipe',
         env,
-        shell: IS_WINDOWS,
+        shell: true,
       })
-
       const timer = setTimeout(() => {
         proc.kill()
         reject(new Error(`${cmd} install timed out after ${timeout / 1000}s`))
       }, timeout)
-
       let stderr = ''
       proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
-
       proc.on('exit', (code) => {
         clearTimeout(timer)
         if (code === 0) return resolve()
-        // Windows cmd.exe prints "not recognized" when npm.cmd is missing,
-        // even though we preflight above — handle the race where the user
-        // uninstalled Node while Shogo was running.
-        if (IS_WINDOWS && /not recognized as an internal or external command/i.test(stderr)) {
+        if (/not recognized as an internal or external command/i.test(stderr)) {
           return reject(new NodeMissingError())
         }
         reject(new Error(`${cmd} install exited with code ${code}\n${stderr}`))
       })
-
       proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer)
-        if (IS_WINDOWS && err.code === 'ENOENT') return reject(new NodeMissingError())
+        if (err.code === 'ENOENT') return reject(new NodeMissingError())
         reject(err)
       })
     })
+  }
+
+  private installAsyncBunCopyfile(cwd: string, opts?: PkgInstallOptions): Promise<void> {
+    console.warn(
+      '[platform-pkg] Node.js / npm.cmd not found on PATH — falling back to ' +
+        '`bun install --backend=copyfile` (Shogo Desktop bundle path).',
+    )
+    return this.installAsyncBun(cwd, opts, ['--backend=copyfile'])
+  }
+
+  private installAsyncBun(
+    cwd: string,
+    opts?: PkgInstallOptions,
+    extraArgs: string[] = [],
+  ): Promise<void> {
+    const timeout = opts?.timeout ?? DEFAULT_INSTALL_TIMEOUT
+    const env = this.spawnEnv(opts?.env)
+    const bun = this.bunBinary
+    const baseArgs = ['install', ...extraArgs]
+    const frozenArgs = opts?.frozen ? ['install', '--frozen-lockfile', ...extraArgs] : null
+
+    const runOnce = (args: string[]): Promise<{ ok: boolean; stderr: string }> =>
+      new Promise<{ ok: boolean; stderr: string }>((resolve, reject) => {
+        const proc = spawn(bun, args, {
+          cwd,
+          stdio: 'pipe',
+          env,
+        })
+        const timer = setTimeout(() => {
+          proc.kill()
+          reject(new Error(`bun ${args.join(' ')} timed out after ${timeout / 1000}s`))
+        }, timeout)
+        let stderr = ''
+        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+        proc.stdout?.on('data', () => { /* drain */ })
+        proc.on('exit', (code) => {
+          clearTimeout(timer)
+          resolve({ ok: code === 0, stderr })
+        })
+        proc.on('error', (err) => {
+          clearTimeout(timer)
+          reject(err)
+        })
+      })
+
+    const run = async () => {
+      if (frozenArgs) {
+        const first = await runOnce(frozenArgs)
+        if (first.ok) return
+        // Lockfile out of date / missing — retry without --frozen-lockfile.
+        // Mirrors the legacy ensureWorkspaceDeps fallback: we'd rather
+        // produce a working node_modules than insist on the lockfile.
+      }
+      const second = await runOnce(baseArgs)
+      if (!second.ok) {
+        throw new Error(`bun install failed: ${second.stderr}`)
+      }
+    }
+
+    return run()
   }
 
   // ---------------------------------------------------------------------------

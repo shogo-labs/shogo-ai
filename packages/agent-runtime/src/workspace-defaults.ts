@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, unlinkSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { pkg } from '@shogo/shared-runtime'
 import { getAgentTemplateById } from './agent-templates'
 import { getTemplateShogoDir, getTemplateCanvasStatePath, getTemplateCanvasCodeDir, getTemplateSrcDir, getTemplatePrismaDir } from './template-loader'
 
@@ -482,6 +484,65 @@ export function validateTechStackRegistry(
 }
 
 /**
+ * Paths under the workspace root that survive a `wipeProjectFiles()` pass.
+ *
+ * Anything *not* listed here is removed when the user explicitly resets the
+ * project to a different tech stack. The allowlist is intentionally narrow:
+ * agent identity (`.shogo/`), persistent agent memory, git history, canvas
+ * state (so the dashboard layout doesn't blink to empty mid-reset), and the
+ * agent-template marker — none of those describe the *code* of the project.
+ *
+ * Notably absent (i.e. wiped):
+ *   - `src/`, `prisma/`, `package.json`, `bun.lock`, `vite.config.ts`,
+ *     `tsconfig.json`, `app.json`, `tailwind.config.*`, etc. — the project
+ *     code that the new stack's `starter/` will replace.
+ *   - `.tech-stack` marker — `seedTechStack()` rewrites it for the new id.
+ *   - `node_modules/` — a stack switch usually changes engines (Vite ↔ Metro,
+ *     etc.); `ensureWorkspaceDeps()` will reinstall after seeding. Keeping a
+ *     stale tree here is more dangerous than the install latency.
+ */
+const WIPE_PRESERVE_TOP_LEVEL = new Set<string>([
+  '.shogo',
+  'memory',
+  '.git',
+  '.canvas-state.json',
+  '.template',
+])
+
+/**
+ * Destructively remove every file/directory at the workspace root that isn't
+ * in `WIPE_PRESERVE_TOP_LEVEL`. Used by the `/agent/workspace/reset-stack`
+ * endpoint when the user confirms switching tech stacks — `seedTechStack()`
+ * is idempotent and won't overwrite, so the workspace must be cleared first
+ * for the new starter to take effect.
+ *
+ * Returns the number of top-level entries removed (useful for logging).
+ */
+export function wipeProjectFiles(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let removed = 0
+  for (const entry of readdirSync(dir)) {
+    if (WIPE_PRESERVE_TOP_LEVEL.has(entry)) continue
+    const target = join(dir, entry)
+    try {
+      rmSync(target, { recursive: true, force: true })
+      removed++
+    } catch (err: any) {
+      console.warn(`[workspace-defaults] wipeProjectFiles: could not remove ${target}: ${err?.message ?? err}`)
+    }
+  }
+  // `.shogo/` survives wipes (agent identity), but the install-marker
+  // inside it is package.json-specific. Leaving the old hash behind
+  // makes PreviewManager think the *new* stack's deps are stale on the
+  // very first start after a switch, kicking off a reinstall it
+  // doesn't actually need (and which fails on Windows boxes without
+  // Node.js).
+  clearInstallMarker(dir)
+  console.log(`[workspace-defaults] wipeProjectFiles: removed ${removed} top-level entries from ${dir}`)
+  return removed
+}
+
+/**
  * Seed tech stack files into a workspace.
  * Copies .shogo/STACK.md and starter/ files from the tech stack.
  * Only writes files that don't already exist (preserves customizations).
@@ -569,6 +630,86 @@ function readPlatformMarker(dir: string): string | null {
 
 function writePlatformMarker(dir: string): void {
   try { writeFileSync(join(dir, 'node_modules', '.shogo-platform'), PLATFORM_TAG + '\n') } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Install-marker — sha256(package.json) under `.shogo/install-marker`
+// ---------------------------------------------------------------------------
+//
+// Both `ensureWorkspaceDeps` (host-side, fires before the agent runtime is
+// up) and `PreviewManager.installDepsIfNeeded` (agent-side, fires when the
+// preview starts) need to agree on whether the workspace's deps are
+// already installed for the current `package.json`. The marker is the
+// shared signal so:
+//   - `ensureWorkspaceDeps` records the hash after a successful install,
+//   - `PreviewManager` skips its own redundant reinstall when the recorded
+//     hash matches the current `package.json` hash.
+//
+// Without this, a stack switch (Vite→Expo, etc.) would always trip
+// PreviewManager's "package.json hash changed" reinstall path even though
+// `ensureWorkspaceDeps` had just run a fresh install for the new stack.
+// On Windows that reinstall hits the `npm.cmd not found` failure path
+// when Node.js isn't separately installed — see
+// `apps/desktop/.../docs/windows-node-prereq.md` for context.
+
+const INSTALL_MARKER_RELATIVE = ['.shogo', 'install-marker'] as const
+
+export function getInstallMarkerPath(dir: string): string {
+  return join(dir, ...INSTALL_MARKER_RELATIVE)
+}
+
+/** sha256 of the workspace's `package.json`, or null if it can't be read. */
+export function computePackageJsonHash(dir: string): string | null {
+  try {
+    const pkgPath = join(dir, 'package.json')
+    if (!existsSync(pkgPath)) return null
+    return createHash('sha256').update(readFileSync(pkgPath, 'utf-8')).digest('hex')
+  } catch {
+    return null
+  }
+}
+
+export function readInstallMarker(dir: string): string | null {
+  try {
+    const path = getInstallMarkerPath(dir)
+    if (!existsSync(path)) return null
+    const raw = readFileSync(path, 'utf-8').trim()
+    return raw || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Write the install marker for `dir`. Defaults to the current
+ * `package.json` hash when no explicit hash is provided. Best-effort:
+ * any I/O failure is swallowed because a missing marker only causes one
+ * extra (idempotent) install on the next start, never a correctness bug.
+ */
+export function writeInstallMarker(dir: string, hash?: string): void {
+  const value = hash ?? computePackageJsonHash(dir)
+  if (!value) return
+  try {
+    mkdirSync(join(dir, '.shogo'), { recursive: true })
+    writeFileSync(getInstallMarkerPath(dir), value, 'utf-8')
+  } catch {
+    // Marker write is best-effort.
+  }
+}
+
+/**
+ * Remove the install marker. Used by `wipeProjectFiles` on a stack switch
+ * — `.shogo/` is preserved across wipes (it carries agent identity), but
+ * the marker inside it is package.json-specific and would otherwise leak
+ * a stale hash from the previous stack.
+ */
+export function clearInstallMarker(dir: string): void {
+  try {
+    const path = getInstallMarkerPath(dir)
+    if (existsSync(path)) unlinkSync(path)
+  } catch {
+    // Best-effort.
+  }
 }
 
 /**
@@ -675,33 +816,21 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
   }
 
   console.log('[workspace-defaults] Installing workspace dependencies...')
-  const { spawn } = await import('child_process')
-  const bunBin = process.env.SHOGO_BUN_PATH || 'bun'
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn(bunBin, ['install', '--frozen-lockfile'], {
-      cwd: dir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stderr = ''
-    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    proc.stdout?.on('data', () => {})
-    proc.on('close', (code) => {
-      if (code === 0) resolve()
-      else {
-        console.warn(`[workspace-defaults] bun install exited with code ${code}, retrying without --frozen-lockfile`)
-        const retry = spawn(bunBin, ['install'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
-        retry.stderr?.on('data', () => {})
-        retry.stdout?.on('data', () => {})
-        retry.on('close', (c2) => {
-          if (c2 === 0) resolve()
-          else reject(new Error(`bun install failed: ${stderr}`))
-        })
-        retry.on('error', reject)
-      }
-    })
-    proc.on('error', reject)
-  })
+  // Delegate to the platform-aware package manager so we go through the
+  // *same* install pipeline as `PreviewManager.installDepsIfNeeded`. On
+  // Windows that means npm (which doesn't trip the bun-1.x hardlink bug
+  // — see platform-pkg.ts) with an automatic fallback to
+  // `bun install --backend=copyfile` when Node.js isn't installed; on
+  // macOS/Linux it stays bun. Doing the install through pkg.installAsync
+  // also means we no longer need this file's hand-rolled --frozen-lockfile
+  // dance — installAsync owns the retry policy.
+  await pkg.installAsync(dir, { frozen: true })
   writePlatformMarker(dir)
+  // Record the install marker so PreviewManager.installDepsIfNeeded sees
+  // a hash match on its first run and skips redundant reinstall — this
+  // is what made stack switches (Vite → Expo) trip the "package.json
+  // hash changed" path even though we just installed the right deps.
+  writeInstallMarker(dir)
   console.log('[workspace-defaults] Workspace dependencies installed')
 }
 

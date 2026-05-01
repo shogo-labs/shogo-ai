@@ -9,6 +9,12 @@ import {
   seedWorkspaceDefaults,
   ensureWorkspaceDeps,
   overlayAgentTemplateCodeDirs,
+  computePackageJsonHash,
+  readInstallMarker,
+  writeInstallMarker,
+  clearInstallMarker,
+  getInstallMarkerPath,
+  wipeProjectFiles,
 } from '../workspace-defaults'
 
 const TEST_DIR = '/tmp/test-workspace-seeding'
@@ -298,6 +304,146 @@ describe('ensureWorkspaceDeps platform detection', () => {
     }
     // The foreign rollup package should be gone
     expect(existsSync(join(DEPS_DIR, 'node_modules', '@rollup', `rollup-${foreignOs}-arm64`))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Install marker — shared with PreviewManager.installDepsIfNeeded
+// ---------------------------------------------------------------------------
+//
+// These exercise the install-marker contract that lets ensureWorkspaceDeps
+// (host-side) and PreviewManager (agent-side) agree on whether the
+// workspace's deps are already installed for the current package.json.
+// A regression here causes PreviewManager to redundantly reinstall after
+// every stack switch — and on Windows boxes without Node.js, that
+// reinstall blows up with NodeMissingError.
+
+describe('install marker helpers', () => {
+  const MARKER_DIR = '/tmp/test-install-marker'
+
+  beforeEach(() => {
+    rmSync(MARKER_DIR, { recursive: true, force: true })
+    mkdirSync(MARKER_DIR, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(MARKER_DIR, { recursive: true, force: true })
+  })
+
+  test('computePackageJsonHash returns a stable sha256 for identical content', () => {
+    writeFileSync(join(MARKER_DIR, 'package.json'), '{"name":"a","version":"1.0.0"}')
+    const h1 = computePackageJsonHash(MARKER_DIR)
+    const h2 = computePackageJsonHash(MARKER_DIR)
+    expect(h1).not.toBeNull()
+    expect(h1).toBe(h2)
+    expect(h1!.length).toBe(64)
+  })
+
+  test('computePackageJsonHash returns different hashes for different content', () => {
+    writeFileSync(join(MARKER_DIR, 'package.json'), '{"name":"a"}')
+    const h1 = computePackageJsonHash(MARKER_DIR)
+    writeFileSync(join(MARKER_DIR, 'package.json'), '{"name":"b"}')
+    const h2 = computePackageJsonHash(MARKER_DIR)
+    expect(h1).not.toBe(h2)
+  })
+
+  test('computePackageJsonHash returns null when package.json is missing', () => {
+    expect(computePackageJsonHash(MARKER_DIR)).toBeNull()
+  })
+
+  test('writeInstallMarker + readInstallMarker round-trip the package.json hash', () => {
+    writeFileSync(join(MARKER_DIR, 'package.json'), '{"name":"round-trip"}')
+    expect(readInstallMarker(MARKER_DIR)).toBeNull()
+    writeInstallMarker(MARKER_DIR)
+    const expected = computePackageJsonHash(MARKER_DIR)
+    expect(readInstallMarker(MARKER_DIR)).toBe(expected!)
+  })
+
+  test('writeInstallMarker accepts an explicit hash override', () => {
+    writeFileSync(join(MARKER_DIR, 'package.json'), '{"name":"explicit"}')
+    writeInstallMarker(MARKER_DIR, 'deadbeef')
+    expect(readInstallMarker(MARKER_DIR)).toBe('deadbeef')
+  })
+
+  test('writeInstallMarker is a no-op when there is nothing to record', () => {
+    // No package.json + no explicit hash → nothing to write.
+    writeInstallMarker(MARKER_DIR)
+    expect(readInstallMarker(MARKER_DIR)).toBeNull()
+    expect(existsSync(getInstallMarkerPath(MARKER_DIR))).toBe(false)
+  })
+
+  test('clearInstallMarker removes a previously-written marker', () => {
+    writeFileSync(join(MARKER_DIR, 'package.json'), '{"name":"clear"}')
+    writeInstallMarker(MARKER_DIR)
+    expect(readInstallMarker(MARKER_DIR)).not.toBeNull()
+    clearInstallMarker(MARKER_DIR)
+    expect(readInstallMarker(MARKER_DIR)).toBeNull()
+    expect(existsSync(getInstallMarkerPath(MARKER_DIR))).toBe(false)
+  })
+
+  test('clearInstallMarker is a no-op when no marker exists', () => {
+    // Should not throw even if `.shogo/` doesn't exist yet.
+    clearInstallMarker(MARKER_DIR)
+    expect(readInstallMarker(MARKER_DIR)).toBeNull()
+  })
+
+  test('getInstallMarkerPath lives under .shogo/ to survive wipeProjectFiles preservation', () => {
+    const path = getInstallMarkerPath(MARKER_DIR)
+    expect(path).toContain('.shogo')
+    expect(path.endsWith('install-marker')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// wipeProjectFiles — stack switch behaviour
+// ---------------------------------------------------------------------------
+
+describe('wipeProjectFiles — stack switch', () => {
+  const WIPE_DIR = '/tmp/test-wipe-project-files'
+
+  beforeEach(() => {
+    rmSync(WIPE_DIR, { recursive: true, force: true })
+    mkdirSync(WIPE_DIR, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(WIPE_DIR, { recursive: true, force: true })
+  })
+
+  test('clears stale install-marker so PreviewManager does not redundantly reinstall', () => {
+    // Simulate a workspace mid-life: the previous tech stack installed deps
+    // and recorded a marker, then the user switched to a different stack.
+    writeFileSync(join(WIPE_DIR, 'package.json'), '{"name":"old-stack"}')
+    writeInstallMarker(WIPE_DIR)
+    expect(readInstallMarker(WIPE_DIR)).not.toBeNull()
+
+    // Lay down some stack-specific files we expect to be wiped.
+    writeFileSync(join(WIPE_DIR, 'vite.config.ts'), 'export default {}')
+    mkdirSync(join(WIPE_DIR, 'src'), { recursive: true })
+    writeFileSync(join(WIPE_DIR, 'src', 'App.tsx'), 'export default () => null')
+
+    wipeProjectFiles(WIPE_DIR)
+
+    // Stack-specific files are gone.
+    expect(existsSync(join(WIPE_DIR, 'vite.config.ts'))).toBe(false)
+    expect(existsSync(join(WIPE_DIR, 'src'))).toBe(false)
+    expect(existsSync(join(WIPE_DIR, 'package.json'))).toBe(false)
+    // Marker is cleared even though `.shogo/` is preserved across wipes.
+    expect(readInstallMarker(WIPE_DIR)).toBeNull()
+  })
+
+  test('preserves .shogo/ contents other than the install-marker', () => {
+    writeFileSync(join(WIPE_DIR, 'package.json'), '{}')
+    mkdirSync(join(WIPE_DIR, '.shogo', 'skills'), { recursive: true })
+    writeFileSync(join(WIPE_DIR, '.shogo', 'AGENTS.md'), '# agent identity')
+    writeInstallMarker(WIPE_DIR)
+
+    wipeProjectFiles(WIPE_DIR)
+
+    // Identity survives a stack switch — only the marker is cleared.
+    expect(existsSync(join(WIPE_DIR, '.shogo', 'AGENTS.md'))).toBe(true)
+    expect(existsSync(join(WIPE_DIR, '.shogo', 'skills'))).toBe(true)
+    expect(readInstallMarker(WIPE_DIR)).toBeNull()
   })
 })
 

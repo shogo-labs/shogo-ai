@@ -47,6 +47,8 @@ import {
   ensureWorkspaceDeps,
   seedTechStack,
   runTechStackSetup,
+  wipeProjectFiles,
+  getTechStackPath,
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { SkillServerManager } from './skill-server-manager'
@@ -1875,6 +1877,65 @@ app.post('/agent/workspace/seed', async (c) => {
     written++
   }
   return c.json({ ok: true, written })
+})
+
+// Destructive: wipe project source files and re-seed a fresh tech stack
+// starter. Triggered by the Capabilities panel after the user explicitly
+// confirms switching stacks (e.g. react-app → expo-three).
+//
+// Preserves agent identity (`.shogo/`), persistent memory, git history, and
+// canvas state — see `WIPE_PRESERVE_TOP_LEVEL` in workspace-defaults.ts.
+//
+// Sequence: stop preview → wipe non-allowlisted files → seedTechStack →
+// re-seed Vite runtime template if the new stack is Vite-based → restart
+// preview so the new starter is built and served immediately.
+app.post('/agent/workspace/reset-stack', async (c) => {
+  let body: { stackId?: string } = {}
+  try {
+    body = await c.req.json<{ stackId?: string }>()
+  } catch {
+    return c.json({ error: 'Expected JSON body { stackId }' }, 400)
+  }
+  const stackId = body.stackId?.trim()
+  if (!stackId) return c.json({ error: 'stackId is required' }, 400)
+
+  // Verify the stack exists *before* we wipe anything — a typo on the client
+  // shouldn't take the workspace down.
+  if (!getTechStackPath(stackId)) {
+    return c.json({ error: `Unknown tech stack: ${stackId}` }, 404)
+  }
+
+  console.log(`[reset-stack] Resetting workspace to "${stackId}"`)
+
+  try {
+    getPreviewManager().stop()
+  } catch (err: any) {
+    console.warn(`[reset-stack] Preview stop failed (continuing): ${err?.message ?? err}`)
+  }
+
+  const removed = wipeProjectFiles(WORKSPACE_DIR)
+
+  const seeded = seedTechStack(WORKSPACE_DIR, stackId)
+  if (!seeded) {
+    return c.json({ error: `Failed to seed tech stack ${stackId}` }, 500)
+  }
+
+  // Vite-based stacks share the bundled runtime-template (vite + react +
+  // tailwind + shadcn/ui). Mirrors the boot-time logic in `ensureWorkspaceFiles`.
+  const viteStacks = new Set(['react-app', 'threejs-game', 'phaser-game'])
+  if (viteStacks.has(stackId)) {
+    seedRuntimeTemplate(WORKSPACE_DIR)
+  }
+
+  // Kick off a preview restart but don't block the HTTP response on it —
+  // `bun install` for a fresh stack can take 30s+ and the client only needs
+  // to know the wipe + seed is done so it can refresh the iframe.
+  void getPreviewManager().restart().catch((err: any) => {
+    console.error(`[reset-stack] Preview restart failed: ${err?.message ?? err}`)
+  })
+
+  console.log(`[reset-stack] Reset complete (stack=${stackId}, wiped=${removed} entries)`)
+  return c.json({ ok: true, stackId, wiped: removed })
 })
 
 // Heartbeat trigger (called by external HeartbeatScheduler).
