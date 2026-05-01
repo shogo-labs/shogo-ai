@@ -61,24 +61,40 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
   const [isTesting, setIsTesting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
 
-  // If the user already completed the shogo:// deep-link handshake before
-  // landing on this step (e.g. during a re-run of onboarding), pick that up
-  // so we don't force them to sign in again.
+  // Pick up an existing cloud sign-in (e.g. from a previous onboarding run or
+  // a separate sign-in tab that just finished). On the desktop, we get a push
+  // notification via the bridge; in browsers we poll while we're "connecting"
+  // and also re-check whenever this tab regains focus so a new-tab handshake
+  // is detected as soon as the user comes back.
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
+
+    const refreshStatus = async (): Promise<boolean> => {
       try {
         const status = await platform.cloudLoginStatus()
-        if (cancelled) return
+        if (cancelled) return false
         if (status.signedIn) {
           setShogoSignedIn(true)
           setShogoEmail(status.email || '')
           setShogoWorkspace(status.workspace?.name || '')
+          setShogoLoginStatus('idle')
+          setShogoKeyError('')
+          return true
         }
       } catch {
         // Local API not reachable — onboarding can still proceed with other modes.
       }
-    })()
+      return false
+    }
+
+    void refreshStatus()
+
+    const onFocus = () => {
+      if (!shogoSignedIn) void refreshStatus()
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onFocus)
+    }
 
     const desktop = (typeof window !== 'undefined' ? (window as any).shogoDesktop : null) as
       | {
@@ -103,9 +119,38 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
 
     return () => {
       cancelled = true
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onFocus)
+      }
       desktop?.removeCloudLoginListener?.()
     }
-  }, [platform])
+  }, [platform, shogoSignedIn])
+
+  // While the user is in the "Waiting for browser…" state, poll the local API
+  // so the moment the other tab persists the device key we move forward.
+  useEffect(() => {
+    if (shogoSignedIn || shogoLoginStatus !== 'connecting') return
+    let cancelled = false
+    const interval = setInterval(async () => {
+      try {
+        const status = await platform.cloudLoginStatus()
+        if (cancelled) return
+        if (status.signedIn) {
+          setShogoSignedIn(true)
+          setShogoEmail(status.email || '')
+          setShogoWorkspace(status.workspace?.name || '')
+          setShogoLoginStatus('idle')
+          setShogoKeyError('')
+        }
+      } catch {
+        // Transient — keep polling.
+      }
+    }, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [platform, shogoSignedIn, shogoLoginStatus])
 
   const handleStartShogoLogin = useCallback(async () => {
     setShogoLoginStatus('connecting')
@@ -136,7 +181,8 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
       if (typeof window !== 'undefined') {
         window.open(start.authUrl, '_blank', 'noopener,noreferrer')
       }
-      setShogoLoginStatus('idle')
+      // Stay in 'connecting' state so the polling effect picks up the
+      // device key the moment the other tab finishes the handshake.
     } catch (err: any) {
       setShogoLoginStatus('idle')
       setShogoKeyError(err?.message || 'Sign-in failed')
