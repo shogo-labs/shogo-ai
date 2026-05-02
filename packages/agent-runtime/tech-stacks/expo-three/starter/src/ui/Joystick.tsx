@@ -6,6 +6,7 @@ const RADIUS = 60
 
 export function Joystick() {
   const knob = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current
+  const { moveInput } = useGame()
 
   const responder = useRef(
     PanResponder.create({
@@ -15,11 +16,11 @@ export function Joystick() {
         const dx = Math.max(-RADIUS, Math.min(RADIUS, g.dx))
         const dy = Math.max(-RADIUS, Math.min(RADIUS, g.dy))
         knob.setValue({ x: dx, y: dy })
-        useGame.getState().setMove({ x: dx / RADIUS, y: dy / RADIUS })
+        moveInput.current = { x: dx / RADIUS, y: dy / RADIUS }
       },
       onPanResponderRelease: () => {
         Animated.spring(knob, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start()
-        useGame.getState().setMove({ x: 0, y: 0 })
+        moveInput.current = { x: 0, y: 0 }
       },
     }),
   ).current

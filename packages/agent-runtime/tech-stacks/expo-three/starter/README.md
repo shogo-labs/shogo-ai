@@ -8,7 +8,7 @@ A 3D mobile game scaffold built on Expo + `@react-three/fiber/native`.
 - Instanced mobs and projectiles (`src/game/Mobs.tsx`, `Projectiles.tsx`).
 - Lerp-follow camera rig (`src/game/CameraRig.tsx`).
 - HUD + on-screen FPS overlay.
-- `zustand` store for input + entity state.
+- React Context store for input refs + HP state (`src/lib/store.tsx`).
 
 ## Performance reminder
 

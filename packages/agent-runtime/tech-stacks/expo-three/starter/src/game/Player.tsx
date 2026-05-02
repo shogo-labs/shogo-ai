@@ -7,9 +7,10 @@ const SPEED = 6
 
 export function Player() {
   const ref = useRef<Mesh>(null)
+  const { moveInput } = useGame()
 
   useFrame((_, dt) => {
-    const m = useGame.getState().moveInput
+    const m = moveInput.current
     const mesh = ref.current
     if (!mesh) return
     mesh.position.x += m.x * SPEED * dt

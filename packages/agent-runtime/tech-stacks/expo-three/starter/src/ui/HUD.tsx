@@ -2,7 +2,7 @@ import { View, Text, StyleSheet } from 'react-native'
 import { useGame } from '@/lib/store'
 
 export function HUD() {
-  const hp = useGame((s) => s.playerHp)
+  const { playerHp: hp } = useGame()
   return (
     <View style={styles.root} pointerEvents="none">
       <Text style={styles.label}>HP</Text>
