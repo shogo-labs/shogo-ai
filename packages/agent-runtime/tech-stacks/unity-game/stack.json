@@ -18,5 +18,23 @@
     "imageGenEnabled": true,
     "memoryEnabled": true,
     "quickActionsEnabled": false
-  }
+  },
+  "quickCommands": [
+    {
+      "id": "dotnet-build",
+      "label": "Rebuild",
+      "description": "Build the .NET solution",
+      "command": "dotnet build",
+      "category": "build",
+      "timeout": 300000
+    },
+    {
+      "id": "dotnet-test",
+      "label": "Run Tests",
+      "description": "Run .NET test suite",
+      "command": "dotnet test",
+      "category": "test",
+      "timeout": 300000
+    }
+  ]
 }

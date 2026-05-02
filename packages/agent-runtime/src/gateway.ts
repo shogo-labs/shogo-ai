@@ -156,6 +156,12 @@ function isAuthError(raw: string): boolean {
   return AUTH_ERROR_PATTERNS.some(p => l.includes(p))
 }
 
+function formatUploadedFileSize(size: number): string {
+  if (size < 1024) return `${size}B`
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)}KB`
+  return `${(size / (1024 * 1024)).toFixed(1)}MB`
+}
+
 function toUserMessage(toolkit: string, raw: string): string {
   const l = raw.toLowerCase()
   if (l.includes('tool') && l.includes('not found'))
@@ -2920,43 +2926,71 @@ export class AgentGateway {
   }
 
   /**
-   * Build a context section listing files the user has uploaded to files/.
-   * Included in the system prompt so the agent knows what data is available
-   * and can proactively use search/read_file to access it.
+   * Build a context section listing files the user has uploaded.
+   *
+   * Most uploads land in `files/` and are searchable via the index engine.
+   * Zip archives are placed directly at the workspace root so the agent can
+   * `unzip` them in place, so we surface those separately here — otherwise
+   * the agent wouldn't know they exist and would `ls files/` to nothing.
    */
   private buildUploadedFilesContext(): string | null {
     const filesDir = join(this.workspaceDir, 'files')
-    if (!existsSync(filesDir)) return null
+    const fileEntries = existsSync(filesDir)
+      ? this.walkUploadedFiles(filesDir, '')
+      : []
 
+    let rootZips: Array<{ path: string; size: number }> = []
     try {
-      const entries = this.walkUploadedFiles(filesDir, '')
-      if (entries.length === 0) return null
+      for (const entry of readdirSync(this.workspaceDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue
+        if (!entry.name.toLowerCase().endsWith('.zip')) continue
+        if (entry.name.startsWith('.')) continue
+        try {
+          const stat = statSync(join(this.workspaceDir, entry.name))
+          rootZips.push({ path: entry.name, size: stat.size })
+        } catch {
+          // Ignore stat errors for individual entries
+        }
+      }
+    } catch {
+      // Workspace dir unreadable — treat as no archives
+      rootZips = []
+    }
 
-      const lines = [
-        '## Workspace Uploaded Files',
-        '',
+    if (fileEntries.length === 0 && rootZips.length === 0) return null
+
+    const lines: string[] = ['## Workspace Uploaded Files', '']
+
+    if (fileEntries.length > 0) {
+      lines.push(
         'The user has uploaded the following files to the workspace `files/` directory.',
         'Use `search` to search content, or `read_file` with path `files/<name>` to read them.',
         '',
-      ]
-
-      for (const entry of entries.slice(0, 50)) {
-        const sizeStr = entry.size < 1024
-          ? `${entry.size}B`
-          : entry.size < 1024 * 1024
-            ? `${Math.round(entry.size / 1024)}KB`
-            : `${(entry.size / (1024 * 1024)).toFixed(1)}MB`
-        lines.push(`- \`${entry.path}\` (${sizeStr})`)
+      )
+      for (const entry of fileEntries.slice(0, 50)) {
+        lines.push(`- \`files/${entry.path}\` (${formatUploadedFileSize(entry.size)})`)
       }
-
-      if (entries.length > 50) {
-        lines.push(`- ... and ${entries.length - 50} more files`)
+      if (fileEntries.length > 50) {
+        lines.push(`- ... and ${fileEntries.length - 50} more files`)
       }
-
-      return lines.join('\n')
-    } catch {
-      return null
     }
+
+    if (rootZips.length > 0) {
+      if (fileEntries.length > 0) lines.push('')
+      lines.push(
+        'The user has uploaded the following zip archive(s) to the workspace root.',
+        'Use the shell `exec` tool with `unzip <name>.zip` to extract them in place.',
+        '',
+      )
+      for (const entry of rootZips.slice(0, 50)) {
+        lines.push(`- \`${entry.path}\` (${formatUploadedFileSize(entry.size)})`)
+      }
+      if (rootZips.length > 50) {
+        lines.push(`- ... and ${rootZips.length - 50} more archives`)
+      }
+    }
+
+    return lines.join('\n')
   }
 
   private walkUploadedFiles(

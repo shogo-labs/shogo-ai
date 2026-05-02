@@ -16,9 +16,9 @@
  */
 
 import { execSync, execFileSync, exec } from 'child_process';
-import { existsSync, writeFileSync, mkdirSync, readFileSync, appendFileSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -135,6 +135,15 @@ test-results/
 # Database (local dev)
 *.db
 *.db-journal
+
+# Windows reserved device names (defensive). Git Bash / WSL on Windows
+# can create these via shell redirects (e.g. \`cmd > nul\`); the Win32
+# git.exe then refuses to add them with \`error: invalid path 'nul'\`,
+# which kills \`git add -A\` and breaks auto-checkpoints.
+nul
+con
+prn
+aux
 `;
 
 const SHOGO_DIR = '.shogo';
@@ -151,23 +160,39 @@ export function isGitRepo(workspacePath: string): boolean {
 }
 
 /**
- * Set `core.longpaths=true` on the repo so git can handle the >260-char paths
- * that show up in deep `node_modules/` trees (especially React Native /
- * Expo) on Windows. Without this, `git add -A` aborts with
- * `open(...): Filename too long` and the caller sees a `fatal: adding files
- * failed` from an otherwise healthy workspace.
+ * Per-workspace git settings that keep `git add -A` from imploding on Windows.
+ *
+ *   - `core.longpaths=true`  — without this, `git add -A` aborts with
+ *     `open(...): Filename too long` inside any deep `node_modules/` tree
+ *     (React Native / Expo / Next.js easily exceed MAX_PATH).
+ *
+ *   - `core.autocrlf=false` + `core.safecrlf=false` — Git for Windows defaults
+ *     to `autocrlf=true, safecrlf=warn`, which (a) rewrites file bytes on
+ *     stage (bad for an AI workspace where we want byte-for-byte fidelity:
+ *     binary `.obj` / `.gltf` assets, generated code, etc.) and (b) prints
+ *     a `LF will be replaced by CRLF` warning to stderr for every text-ish
+ *     file on every checkpoint. With auto-checkpoint on each chat message,
+ *     that floods the API log with hundreds of warnings per turn.
  *
  * Idempotent — safe to call every time we touch the repo.
  */
-function ensureLongPathsConfigured(workspacePath: string): void {
-  try {
-    execFileSync('git', ['config', 'core.longpaths', 'true'], {
-      cwd: workspacePath,
-      stdio: 'pipe',
-    });
-  } catch {
-    // Non-fatal: older/limited git builds may not support it. The caller
-    // will surface a clearer error if the follow-up `git add` still fails.
+function ensureCheckpointSafeGitConfig(workspacePath: string): void {
+  const settings: Array<[string, string]> = [
+    ['core.longpaths', 'true'],
+    ['core.autocrlf', 'false'],
+    ['core.safecrlf', 'false'],
+  ];
+  for (const [key, value] of settings) {
+    try {
+      execFileSync('git', ['config', key, value], {
+        cwd: workspacePath,
+        stdio: 'pipe',
+      });
+    } catch {
+      // Non-fatal: older/limited git builds may not support a given key.
+      // The caller will surface a clearer error if the follow-up `git add`
+      // still fails.
+    }
   }
 }
 
@@ -175,8 +200,99 @@ function ensureLongPathsConfigured(workspacePath: string): void {
  * Entries we always want ignored in a Shogo-managed workspace. Staging these
  * on Windows is what triggers the long-path crash in the first place, and
  * committing a 1 GB `node_modules/` tree is never what the user wants.
+ *
+ * The `nul`/`con`/etc. lines defend against shell redirects accidentally
+ * creating Win32-reserved device-name files inside the workspace (see
+ * `purgeWindowsReservedFiles` below for the matching cleanup pass).
  */
-const REQUIRED_IGNORE_ENTRIES = ['node_modules/', '.bun/'] as const;
+const REQUIRED_IGNORE_ENTRIES = [
+  'node_modules/',
+  '.bun/',
+  // Windows reserved device names. These can be created via Git Bash / WSL
+  // (which use the MSYS POSIX layer where `nul` is just a filename), but
+  // the Win32 `git.exe` then refuses to add them with `error: invalid
+  // path 'nul'`, killing the whole `git add -A` and blocking checkpoints.
+  'nul',
+  'con',
+  'prn',
+  'aux',
+] as const;
+
+/**
+ * Basenames the Win32 layer reserves as device names. Matched
+ * case-insensitively, with or without an extension (`nul`, `nul.txt`,
+ * `CON.log`, …) per Microsoft's path naming rules.
+ */
+const WINDOWS_RESERVED_BASENAMES = new Set([
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+]);
+
+function isWindowsReservedBasename(name: string): boolean {
+  // Strip extension(s); Windows treats `nul.txt` as the NUL device too.
+  const stem = name.split('.')[0]?.toLowerCase() ?? '';
+  return WINDOWS_RESERVED_BASENAMES.has(stem);
+}
+
+/**
+ * Walk the workspace and delete any files whose basenames are Windows
+ * reserved device names. These can ONLY be created via tooling that
+ * bypasses the Win32 path layer (Git Bash / WSL / MSYS), and they are
+ * always shell-redirect junk — no Win32 program (including `git.exe`)
+ * can open them, so there's no legitimate use case for keeping them.
+ *
+ * Without this sweep, `git add -A` aborts on Windows with:
+ *   error: invalid path 'nul'
+ *   error: unable to add 'nul' to index
+ *   fatal: adding files failed
+ *
+ * No-op on non-Windows hosts (those names are valid filenames there and
+ * deleting them would be surprising). Returns the count of files removed
+ * for caller logging.
+ */
+function purgeWindowsReservedFiles(workspacePath: string): number {
+  if (process.platform !== 'win32') return 0;
+
+  let removed = 0;
+  const skipDirs = new Set(['.git', 'node_modules', '.bun', '.next', '.turbo']);
+
+  const walk = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry);
+      let stat;
+      try {
+        stat = statSync(full);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) {
+        if (skipDirs.has(entry)) continue;
+        walk(full);
+        continue;
+      }
+      if (isWindowsReservedBasename(basename(full))) {
+        try {
+          unlinkSync(full);
+          removed += 1;
+        } catch {
+          // Can't unlink — the file is probably inaccessible to Win32
+          // anyway, so it'll trip git on the next `add` either way. We
+          // can't do anything useful here.
+        }
+      }
+    }
+  };
+
+  walk(workspacePath);
+  return removed;
+}
 
 /**
  * Guarantee that `.gitignore` exists and lists the entries in
@@ -236,9 +352,9 @@ export async function initRepo(
 
   if (isGitRepo(workspacePath)) {
     // Self-heal repos that were initialized before these settings existed so
-    // subsequent commits don't crash on Windows long paths or re-stage
-    // node_modules.
-    ensureLongPathsConfigured(workspacePath);
+    // subsequent commits don't crash on Windows long paths, re-stage
+    // node_modules, or spam CRLF warnings on every checkpoint.
+    ensureCheckpointSafeGitConfig(workspacePath);
     ensureGitignoreIgnoresDeps(workspacePath);
     const branch = await getCurrentBranch(workspacePath);
     return { created: false, branch };
@@ -248,8 +364,9 @@ export async function initRepo(
   execFileSync('git', ['init', '-b', defaultBranch], { cwd: workspacePath, stdio: 'pipe' });
 
   // Must be set BEFORE the first `git add` so long-path files in
-  // node_modules/ don't abort the initial commit on Windows.
-  ensureLongPathsConfigured(workspacePath);
+  // node_modules/ don't abort the initial commit on Windows and so the
+  // initial commit isn't preceded by a wall of CRLF warnings.
+  ensureCheckpointSafeGitConfig(workspacePath);
 
   // Ensure dependency dirs are ignored (writes DEFAULT_GITIGNORE if missing,
   // or appends missing entries to an existing .gitignore).
@@ -394,11 +511,21 @@ export async function commit(
   requireGit();
   const { message, author, email, includeUntracked = true } = options;
 
-  // Self-heal legacy repos that pre-date these settings: enable long paths
-  // and make sure node_modules/ is ignored so the stage step below doesn't
-  // trip on Windows MAX_PATH inside deep dependency trees.
-  ensureLongPathsConfigured(workspacePath);
+  // Self-heal legacy repos that pre-date these settings: enable long paths,
+  // disable CRLF rewriting, and make sure node_modules/ is ignored so the
+  // stage step below doesn't trip on Windows MAX_PATH inside deep
+  // dependency trees or flood stderr with `LF will be replaced by CRLF`
+  // warnings on every auto-checkpoint.
+  ensureCheckpointSafeGitConfig(workspacePath);
   ensureGitignoreIgnoresDeps(workspacePath);
+
+  // Sweep Win32-reserved-name files (`nul`, `con`, …) out of the working
+  // tree before staging. These are virtually always shell-redirect garbage
+  // from Git Bash on Windows (`cmd > nul`, `cmd 2>nul`); the Win32 git.exe
+  // refuses to add them and aborts the entire `git add -A` with
+  // `error: invalid path 'nul' / fatal: adding files failed`, taking the
+  // checkpoint with it. No-op on macOS/Linux where these are valid names.
+  purgeWindowsReservedFiles(workspacePath);
 
   // Stage changes
   if (includeUntracked) {

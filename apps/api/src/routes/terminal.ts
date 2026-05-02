@@ -14,8 +14,10 @@
  * free-form counterpart to `exec` (which only knows curated commands).
  *
  * Shell semantics:
- *   - Each call runs in an ephemeral `bash -c` process. `cd`, `export`,
- *     shell-local aliases, background jobs etc. do not persist on their own.
+ *   - Each call runs in an ephemeral shell process: `bash -c` on Unix
+ *     and `powershell.exe -Command` on Windows (see ../../packages/agent-
+ *     runtime/src/terminal-shell.ts). `cd`, `export`/`$env:`, shell-local
+ *     aliases, background jobs etc. do not persist on their own.
  *   - To give users the illusion of a persistent shell we track the CWD on
  *     the client: the client sends the session's current `cwd` (and
  *     previous `prevCwd` for `cd -`), we `cd` into it before running the
@@ -36,10 +38,11 @@
  */
 
 import { Hono } from "hono"
-import { spawn, execSync } from "child_process"
+import { execSync } from "child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { isAbsolute, join, resolve } from "path"
+import { makeKillChild, spawnPresetShell, spawnRunShell } from "@shogo/agent-runtime/src/terminal-shell"
 
 /**
  * ASCII Record-Separator framed sentinel used to carry post-command metadata
@@ -286,22 +289,12 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
         // Write header
         await writer.write(encoder.encode(`$ ${preset.command}\n\n`))
 
-        // Spawn the command in its own process group so that Stop / client
-        // abort / timeout can signal the whole tree (sh + children like
-        // `playwright test` workers) instead of orphaning grandchildren.
-        // See `makeKillChild` for the negative-pid group-signal mechanics.
-        const child = spawn('sh', ['-c', preset.command], {
-          cwd: projectDir,
-          env: {
-            ...process.env,
-            // Ensure colors are enabled
-            FORCE_COLOR: '1',
-            // Prisma needs this to not prompt
-            CI: 'true',
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: true,
-        })
+        // Spawn via the platform-aware helper so that on Unix we get the
+        // original `sh -c` + detached process group (used by `makeKillChild`'s
+        // negative-pid group-signal mechanics) and on Windows we get
+        // PowerShell + windowsHide so no console window flashes and
+        // taskkill /T can walk the process tree.
+        const child = spawnPresetShell({ command: preset.command, cwd: projectDir })
 
         const killChild = makeKillChild(child)
 
@@ -449,66 +442,21 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
     }
 
     ;(async () => {
-      // Launcher script. We run the user command via `eval "$SHOGO_CMD"` so
-      // that aliases, pipes, redirects, env-var expansion and multi-statement
-      // lines all work. After the user command finishes we dump the current
-      // pwd to a side-file that the server reads once the child exits, so
-      // `cd`, `cd ..`, `cd -`, `cd ~` all persist across requests without any
-      // fd multiplexing tricks.
-      // NB: we re-export OLDPWD *after* the initial cd. Bash's own `cd`
-      // rewrites OLDPWD to "the pwd before the cd", which in our case is
-      // always effectiveCwd — that would silently destroy the prevCwd the
-      // client passed in, breaking `cd -`. Setting it again afterwards
-      // restores the caller's intent so `cd -` jumps back to the user's
-      // actual previous directory.
-      const launcher =
-        'cd -- "${SHOGO_CWD:-$SHOGO_ROOT}" 2>/dev/null || cd -- "$SHOGO_ROOT"; ' +
-        'export OLDPWD="${SHOGO_OLDPWD:-$PWD}"; ' +
-        'eval "$SHOGO_CMD"; ' +
-        '__shogo_rc=$?; ' +
-        '{ pwd > "$SHOGO_PWD_FILE"; } 2>/dev/null; ' +
-        'exit $__shogo_rc'
-
-      let child: ReturnType<typeof spawn>
+      // The platform-aware launcher in `spawnRunShell` handles the
+      // `cd → eval → write pwd → exit` dance for both bash (Unix) and
+      // PowerShell (Windows). HOME defaults to the project dir on Unix
+      // so tilde-expansion and programs that look at $HOME (npm, git,
+      // etc.) stay scoped to the workspace; on Windows we leave the
+      // user's USERPROFILE alone since PowerShell users expect that.
+      let child: ReturnType<typeof spawnRunShell>
       try {
-        child = spawn("bash", ["-c", launcher], {
-          cwd: effectiveCwd,
-          env: {
-            ...process.env,
-            // Hand the command and target cwd through env so we don't have to
-            // worry about escaping them into the `bash -c` argv. This is the
-            // standard technique for safely wrapping arbitrary user input in
-            // a shell launcher.
-            SHOGO_CMD: command,
-            SHOGO_CWD: effectiveCwd,
-            SHOGO_ROOT: projectDir,
-            SHOGO_PWD_FILE: pwdFile,
-            // OLDPWD makes `cd -` work across separate spawns. We pass it
-            // twice: as OLDPWD so programs that read it early (before our
-            // launcher's explicit export) still see it, and as SHOGO_OLDPWD
-            // so the launcher can restore it *after* its own initial `cd`
-            // stomps on bash's built-in OLDPWD tracking.
-            OLDPWD: prevCwd,
-            SHOGO_OLDPWD: prevCwd,
-            // Scope tilde-expansion and programs that look at $HOME (npm, git,
-            // etc.) to the project workspace by default. Users can still pass
-            // HOME=... explicitly on the command line if they want.
-            HOME: projectDir,
-            PWD: effectiveCwd,
-            // Colors / TTY-ish hints so tools like `ls --color=auto`, `git`,
-            // `eslint` produce helpful output even without a PTY.
-            FORCE_COLOR: "1",
-            CLICOLOR: "1",
-            CLICOLOR_FORCE: "1",
-            TERM: process.env.TERM || "xterm-256color",
-          },
-          stdio: ["ignore", "pipe", "pipe"],
-          // Put the child in its own process group so we can signal the
-          // whole tree (bash + any grandchildren like `sleep`) at once.
-          // Without this, SIGTERM'ing bash while it's `wait`ing on a child
-          // orphans the child — the visible symptom was "Stop doesn't stop
-          // a running sleep".
-          detached: true,
+        child = spawnRunShell({
+          command,
+          effectiveCwd,
+          rootDir: projectDir,
+          pwdFile,
+          prevCwd,
+          extraEnv: process.platform === "win32" ? undefined : { HOME: projectDir },
         })
       } catch (err: any) {
         cleanup()
@@ -637,46 +585,6 @@ function pickCwd(candidate: string | undefined, projectDir: string): string {
   if (!candidate || typeof candidate !== "string") return projectDir
   const abs = isAbsolute(candidate) ? candidate : resolve(projectDir, candidate)
   return existsSync(abs) ? abs : projectDir
-}
-
-/**
- * Returns a function that terminates the child **and every grandchild** it
- * spawned. Two-phase: SIGTERM first so well-behaved programs can clean up,
- * SIGKILL 2s later for anything that ignores it (looking at you,
- * `sleep infinity`). Safe to call repeatedly.
- *
- * We need group killing because the launcher is `bash -c '…; eval "$CMD"; …'`
- * and bash does not forward signals to its children in non-job-control mode.
- * If we only killed `child` (the bash process), its running `sleep` would be
- * reparented to init and keep ticking — which is exactly the bug the test
- * harness caught. Spawn must pass `detached: true` so `child.pid` is also
- * the process-group id that we negate below.
- */
-function makeKillChild(child: ReturnType<typeof spawn>) {
-  let killed = false
-  const killGroup = (sig: NodeJS.Signals) => {
-    if (!child.pid) return
-    try {
-      // Negative pid = "signal the whole process group".
-      process.kill(-child.pid, sig)
-    } catch {
-      // Group may already be gone; fall back to a direct child.kill so we at
-      // least try to terminate the known process.
-      try {
-        child.kill(sig)
-      } catch {
-        /* already exited */
-      }
-    }
-  }
-  return function killChild(signal: NodeJS.Signals = "SIGTERM") {
-    if (killed) return
-    killed = true
-    killGroup(signal)
-    setTimeout(() => {
-      if (!child.killed && child.exitCode === null) killGroup("SIGKILL")
-    }, 2_000).unref?.()
-  }
 }
 
 /**

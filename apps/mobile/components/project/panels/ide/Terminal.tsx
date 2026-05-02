@@ -119,9 +119,10 @@ const CATEGORY_LABEL: Record<string, string> = {
   server: "Server",
   test: "Test",
   build: "Build",
+  lint: "Lint",
 };
 
-const CATEGORY_ORDER: string[] = ["package", "database", "test", "build", "server"];
+const CATEGORY_ORDER: string[] = ["package", "database", "test", "build", "lint", "server"];
 
 let sessionIdSeq = 0;
 const makeSession = (): Session => ({

@@ -12,7 +12,7 @@
 
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
-import { join, resolve, extname, dirname, relative } from 'path'
+import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
@@ -5539,7 +5539,7 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
       }
       const plansDir = resolve(ctx.workspaceDir, '.shogo', 'plans')
       const resolved = resolve(ctx.workspaceDir, planFilepath)
-      if (!resolved.startsWith(`${plansDir}/`) && resolved !== plansDir) {
+      if (!resolved.startsWith(`${plansDir}${sep}`) && resolved !== plansDir) {
         return textResult(`Error: Plan filepath must stay within .shogo/plans/`)
       }
       if (!existsSync(resolved)) {

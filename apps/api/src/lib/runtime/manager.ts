@@ -602,6 +602,33 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
 
     // Install dependencies if needed.
+    //
+    // For tech-stack-seeded workspaces (Expo / React Native / Python / Unity)
+    // we deliberately bail BEFORE the install-sentinel check. The agent-runtime
+    // owns dep installs for these stacks via `ensureWorkspaceDeps` and
+    // `PreviewManager.installDepsIfNeeded`, both of which use the
+    // `.shogo/install-marker` hash gate (see `workspace-defaults.ts`) and
+    // never wipe `node_modules`.
+    //
+    // Why this matters: the `.install-ok` sentinel below lives at
+    // `node_modules/.install-ok` and is *only* written by this function.
+    // Tech-stack workspaces hit the early-return branch above on first start,
+    // so the sentinel is never created. On every subsequent restart the
+    // sentinel-missing branch then deletes `bun.lock` and *wipes
+    // node_modules entirely*, then runs `npm install`. On Windows, with a
+    // stale `package-lock.json` and any peer-dep conflict (e.g. `@react-three/drei@^10`
+    // wanting React 19 vs Expo 51 pinning React 18), the reinstall either
+    // fails outright (ERESOLVE) or silently drops packages — and the
+    // user sees "missing packages every time I restart".
+    //
+    // For non-tech-stack workspaces (the bundled Vite template path) the
+    // sentinel logic is still required: those workspaces have apps/api as
+    // the sole install owner, so the sentinel correctly tracks install
+    // completeness there.
+    if (stackHandlesOwnSeed) {
+      return projectDir
+    }
+
     // Uses a sentinel file (.install-ok) to detect incomplete installs
     // (e.g. when bun --watch crashes mid-install on Windows, leaving partial node_modules).
     const installSentinel = join(projectDir, 'node_modules', '.install-ok')

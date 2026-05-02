@@ -448,6 +448,23 @@ export interface TechStackMeta {
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
   }
+  /**
+   * Optional one-click shell commands surfaced in the IDE's terminal rail.
+   * Layered on top of `package.json#scripts` and file-probe presets by
+   * `buildQuickCommands()` in `quick-commands.ts`. Stack-defined entries
+   * win over colliding script-derived entries with the same `id`, letting
+   * a stack tune labels/timeouts (e.g. python-data's `pip-install-requirements`
+   * uses a longer timeout than the file-probe default).
+   */
+  quickCommands?: Array<{
+    id: string
+    label: string
+    description?: string
+    command: string
+    category: 'package' | 'database' | 'server' | 'test' | 'build' | 'lint'
+    dangerous?: boolean
+    timeout?: number
+  }>
 }
 
 export function loadTechStackMeta(stackId: string): TechStackMeta | null {
@@ -807,6 +824,28 @@ export async function ensureWorkspaceDeps(dir: string): Promise<void> {
         writePlatformMarker(dir)
         return
       }
+    }
+  }
+
+  // Non-Vite stacks (Expo, React Native, etc.) don't have a `vite` bin to
+  // probe, but we *do* have the install-marker (sha256 of package.json)
+  // shared with PreviewManager.installDepsIfNeeded. If node_modules is
+  // present and the marker matches the current package.json, skip the
+  // install — this is the equivalent of the `existsSync(viteBin)` fast path
+  // above but for stacks that don't use Vite.
+  //
+  // Without this short-circuit we'd run `npm install` on every restart for
+  // every Expo project (idempotent but slow: ~30-90s on Windows). It also
+  // means `bun add <pkg>` made by the agent — which updates package.json's
+  // hash — correctly trips a single reinstall on the next start, exactly
+  // the same gating PreviewManager uses.
+  if (existsSync(nodeModules) && (!installedPlatform || installedPlatform === PLATFORM_TAG)) {
+    const expectedHash = computePackageJsonHash(dir)
+    const recordedHash = readInstallMarker(dir)
+    if (expectedHash != null && recordedHash != null && expectedHash === recordedHash) {
+      if (!installedPlatform) writePlatformMarker(dir)
+      console.log('[workspace-defaults] install-marker matches package.json — skipping reinstall')
+      return
     }
   }
 

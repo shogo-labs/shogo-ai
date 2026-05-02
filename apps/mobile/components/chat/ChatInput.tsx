@@ -383,7 +383,11 @@ export function ChatInput({
 
   const processFiles = useCallback((files: FileList | File[]) => {
     Array.from(files).forEach((file: File) => {
-      if (file.size > MAX_FILE_SIZE) {
+      const isZip =
+        file.name.toLowerCase().endsWith(".zip") ||
+        file.type === "application/zip" ||
+        file.type === "application/x-zip-compressed"
+      if (!isZip && file.size > MAX_FILE_SIZE) {
         setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
         return
       }

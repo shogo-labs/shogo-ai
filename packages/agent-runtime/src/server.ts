@@ -62,6 +62,7 @@ import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeError
 import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFrame } from './screencast-broadcaster'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
+import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -861,48 +862,24 @@ app.post('/agent/chat', async (c) => {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
 
-  // Save uploaded files to the agent's files/ directory so they're accessible
-  // to the agent via its workspace tools (read_file, search, exec/unzip, etc.)
-  // Every base64 data-URL part is persisted regardless of MIME type — even
-  // archives and unknown binaries — and the saved path is annotated back
-  // onto the file part so downstream parsing can surface it to the agent.
+  // Save uploaded files to the agent's workspace so they're accessible to the
+  // agent via its workspace tools (read_file, search, exec/unzip, etc.). Every
+  // base64 data-URL part is persisted regardless of MIME type — even archives
+  // and unknown binaries — and the saved path is annotated back onto the file
+  // part so downstream parsing can surface it to the agent.
   if (userFileParts.length > 0) {
-    mkdirSync(FILES_DIR, { recursive: true })
-    const savedSummaries: string[] = []
-    for (const fp of userFileParts) {
-      try {
-        const url = fp.url!
-        const base64Match = url.match(/^data:[^;]*;base64,(.+)$/)
-        if (!base64Match) continue
+    const { saved, savedSummaries, zipUploaded } = saveUploadedFileParts({
+      workspaceDir: WORKSPACE_DIR,
+      parts: userFileParts,
+    })
 
-        const mediaType = fp.mediaType || 'application/octet-stream'
-        const ext = mimeToExtension(mediaType)
-        const baseName = fp.name
-          ? fp.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-          : `upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}${ext}`
-        const resolved = resolveFilesPath(baseName)
-        if (!resolved) continue
-
-        const dir = dirname(resolved)
-        mkdirSync(dir, { recursive: true })
-        const bytes = Buffer.from(base64Match[1], 'base64')
-        writeFileSync(resolved, bytes)
-        const relPath = `files/${baseName}`
-        fp.savedPath = relPath
-        savedSummaries.push(`- \`${relPath}\` (${mediaType}, ${formatBytes(bytes.length)})`)
-        console.log(`[AgentChat] Saved uploaded file to ${relPath} (${bytes.length} bytes, ${mediaType})`)
-
-        try { getIndexEngine().indexFile('files', baseName).catch(() => {}) } catch { /* best-effort */ }
-      } catch (err: any) {
-        console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
-      }
+    for (const sf of saved) {
+      if (sf.isZip) continue
+      try { getIndexEngine().indexFile('files', sf.baseName).catch(() => {}) } catch { /* best-effort */ }
     }
-    if (savedSummaries.length > 0) {
-      const note = [
-        '[Uploaded files saved to workspace:',
-        ...savedSummaries,
-        ']',
-      ].join('\n')
+
+    const note = buildUploadedFilesNote(savedSummaries, zipUploaded)
+    if (note) {
       userText = userText ? `${userText}\n\n${note}` : note
     }
   }
