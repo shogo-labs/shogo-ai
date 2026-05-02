@@ -19,7 +19,9 @@
     "build:android:local": "eas build --platform android --profile preview --local",
     "prebuild": "expo prebuild --clean",
     "eas-build-post-install": "cd ../../packages/sdk && bun run build",
-    "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs"
+    "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
@@ -111,9 +113,17 @@
   },
   "devDependencies": {
     "@expo/metro-runtime": "^6.1.2",
+    "@happy-dom/global-registrator": "^20.9.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "~19.1.0",
+    "@types/react-dom": "^19.2.3",
+    "@types/web": "^0.0.349",
     "babel-plugin-module-resolver": "^5.0.0",
     "babel-preset-expo": "^54.0.10",
+    "happy-dom": "^20.9.0",
     "prettier-plugin-tailwindcss": "^0.5.11",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2"

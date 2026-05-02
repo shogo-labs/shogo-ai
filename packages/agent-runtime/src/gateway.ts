@@ -1988,7 +1988,7 @@ export class AgentGateway {
           if (isError) {
             console.error(`${this.logPrefix} Tool error: ${toolName}`, JSON.stringify(result).substring(0, 500))
           } else {
-            console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 300))
+            console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 20))
           }
           // Wait for onBeforeToolCall's flush gate so the client receives
           // tool-input-start in a separate HTTP chunk before we send the output.

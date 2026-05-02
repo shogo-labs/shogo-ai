@@ -18,6 +18,31 @@
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
+import { recordBuildEntry } from './runtime-log-dispatcher'
+
+/**
+ * Append a line to the on-disk `.build.log` *and* dispatch it through
+ * the runtime-log dispatcher so the Output tab and Monitor pull from
+ * the same source. `stream === 'stderr'` upgrades the level to `'error'`
+ * so the unseen-error red dot turns on for build failures.
+ *
+ * Exported for unit testing — see `__tests__/preview-manager.test.ts`.
+ */
+export function emitBuildLine(
+  buildLogPath: string,
+  prefix: string,
+  line: string,
+  stream: 'stdout' | 'stderr' = 'stdout',
+): void {
+  if (!line) return
+  try {
+    appendFileSync(buildLogPath, `${prefix} ${line}\n`)
+  } catch {
+    // Disk failures shouldn't drop the in-memory dispatch — the Output
+    // tab is still a useful surface even if the on-disk log is unwritable.
+  }
+  recordBuildEntry(`${prefix} ${line}`, stream === 'stderr' ? 'error' : 'info')
+}
 import { createServer } from 'net'
 import { pkg } from '@shogo/shared-runtime'
 import { BUILD_LOG_FILE, CONSOLE_LOG_FILE } from './runtime-log-paths'
@@ -1129,16 +1154,12 @@ export class PreviewManager {
 
     viteProcess.stdout?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
-      if (line) {
-        appendFileSync(buildLogPath, `[stdout] ${line}\n`)
-      }
+      emitBuildLine(buildLogPath, '[stdout]', line, 'stdout')
     })
 
     viteProcess.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
-      if (line) {
-        appendFileSync(buildLogPath, `[stderr] ${line}\n`)
-      }
+      emitBuildLine(buildLogPath, '[stderr]', line, 'stderr')
     })
 
     viteProcess.on('exit', (code, signal) => {
@@ -1232,12 +1253,12 @@ export class PreviewManager {
 
     proc.stdout?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
-      if (line) appendFileSync(buildLogPath, `[api-stdout] ${line}\n`)
+      emitBuildLine(buildLogPath, '[api-stdout]', line, 'stdout')
     })
 
     proc.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
-      if (line) appendFileSync(buildLogPath, `[api-stderr] ${line}\n`)
+      emitBuildLine(buildLogPath, '[api-stderr]', line, 'stderr')
     })
 
     proc.on('exit', (code, signal) => {
@@ -1554,7 +1575,7 @@ export class PreviewManager {
         for (const raw of text.split('\n')) {
           const line = raw.trim()
           if (!line) continue
-          appendFileSync(buildLogPath, `[expo-export-stdout] ${line}\n`)
+          emitBuildLine(buildLogPath, '[expo-export-stdout]', line, 'stdout')
           this.forwardLogLine(`[expo-export] ${line}`, 'stdout')
         }
       })
@@ -1563,7 +1584,7 @@ export class PreviewManager {
         for (const raw of text.split('\n')) {
           const line = raw.trim()
           if (!line) continue
-          appendFileSync(buildLogPath, `[expo-export-stderr] ${line}\n`)
+          emitBuildLine(buildLogPath, '[expo-export-stderr]', line, 'stderr')
           this.forwardLogLine(`[expo-export] ${line}`, 'stderr')
         }
       })
@@ -1713,7 +1734,7 @@ export class PreviewManager {
       for (const raw of text.split('\n')) {
         const line = raw.trim()
         if (!line) continue
-        appendFileSync(buildLogPath, `[metro-stdout] ${line}\n`)
+        emitBuildLine(buildLogPath, '[metro-stdout]', line, 'stdout')
         this.forwardLogLine(`[metro] ${line}`, 'stdout')
       }
     })
@@ -1725,7 +1746,7 @@ export class PreviewManager {
       for (const raw of text.split('\n')) {
         const line = raw.trim()
         if (!line) continue
-        appendFileSync(buildLogPath, `[metro-stderr] ${line}\n`)
+        emitBuildLine(buildLogPath, '[metro-stderr]', line, 'stderr')
         this.forwardLogLine(`[metro] ${line}`, 'stderr')
       }
     })

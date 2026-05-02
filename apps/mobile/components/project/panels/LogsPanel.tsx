@@ -1,139 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import {
   View,
   Text,
   Pressable,
   FlatList,
-  Switch,
-  ActivityIndicator,
   TextInput,
   Platform,
   Share,
 } from 'react-native'
-import { ScrollText, RefreshCw, Trash2, Search, Download, X, AlertCircle } from 'lucide-react-native'
+import { ScrollText, Trash2, Search, Download, X, AlertCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { agentFetch } from '../../../lib/agent-fetch'
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type LogLevel = 'info' | 'warn' | 'error'
-type LogSource = 'agent' | 'vite' | 'system'
-
-interface ParsedLogEntry {
-  id: number
-  ts: string | null
-  level: LogLevel
-  source: LogSource
-  message: string
-  raw: string
-}
-
-// ---------------------------------------------------------------------------
-// Parser — best-effort, falls back aggressively to info/system
-// ---------------------------------------------------------------------------
-
-const ANSI_RE = /[\x1B\x9B]\[[0-9;]*[A-Za-z]/g
-const ISO_TS_RE = /^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)]\s*/
-const TIME12_RE = /^(\d{1,2}:\d{2}:\d{2}\s*[AP]M)\s+/i
-const TIME24_RE = /^(\d{1,2}:\d{2}:\d{2})\s+/
-const BUNDLER_PREFIX_RE = /^\[(vite|expo|metro)]\s*/i
-
-function stripAnsi(str: string): string {
-  return str.replace(ANSI_RE, '')
-}
-
-let _nextId = 0
-
-function parseLogLine(raw: string): ParsedLogEntry {
-  const id = _nextId++
-  let message = stripAnsi(raw).trimStart()
-  let ts: string | null = null
-  let level: LogLevel = 'info'
-  let source: LogSource = 'system'
-
-  const isoMatch = message.match(ISO_TS_RE)
-  if (isoMatch) {
-    ts = isoMatch[1]
-    message = message.slice(isoMatch[0].length)
-    source = 'agent'
-  } else {
-    const t12Match = message.match(TIME12_RE)
-    if (t12Match) {
-      ts = t12Match[1]
-      message = message.slice(t12Match[0].length)
-      source = 'agent'
-    } else {
-      const t24Match = message.match(TIME24_RE)
-      if (t24Match) {
-        ts = t24Match[1]
-        message = message.slice(t24Match[0].length)
-        source = 'agent'
-      }
-    }
-  }
-
-  const bundlerMatch = message.match(BUNDLER_PREFIX_RE)
-  if (bundlerMatch) {
-    source = 'vite'
-    message = message.slice(bundlerMatch[0].length)
-  }
-
-  if (/\bERROR\b/.test(message) || /\bERR\b/.test(message)) {
-    level = 'error'
-  } else if (/\bWARN\b/.test(message)) {
-    level = 'warn'
-  }
-
-  return { id, ts, level, source, message: message.trim(), raw }
-}
-
-function formatTime(ts: string | null): string {
-  if (!ts) return ''
-  if (/^\d{1,2}:\d{2}:\d{2}\s*[AP]M$/i.test(ts)) return ts
-  const h24Match = ts.match(/^(\d{1,2}):(\d{2}):(\d{2})$/)
-  if (h24Match) {
-    let h = parseInt(h24Match[1], 10)
-    const suffix = h >= 12 ? 'PM' : 'AM'
-    if (h === 0) h = 12
-    else if (h > 12) h -= 12
-    return `${h}:${h24Match[2]}:${h24Match[3]} ${suffix}`
-  }
-  try {
-    const d = new Date(ts)
-    if (isNaN(d.getTime())) return ts
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })
-  } catch {
-    return ts
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Level filter config
-// ---------------------------------------------------------------------------
-
-type LevelFilter = 'all' | LogLevel
-
-const LEVEL_FILTERS: LevelFilter[] = ['all', 'error', 'warn', 'info']
-
-const LEVEL_COLORS: Record<LogLevel, { badge: string; text: string }> = {
-  error: { badge: 'bg-red-900/60', text: 'text-red-400' },
-  warn: { badge: 'bg-amber-900/50', text: 'text-amber-400' },
-  info: { badge: '', text: 'text-zinc-400' },
-}
-
-// ---------------------------------------------------------------------------
-// Row height for getItemLayout
-// ---------------------------------------------------------------------------
+import {
+  formatTime,
+  LEVEL_COLORS,
+  LEVEL_FILTERS,
+  resetParserIdsForTest,
+  type LevelFilter,
+  type ParsedLogEntry,
+} from './log-utils'
+import { runtimeEntryToParsed } from './runtime-entry-to-parsed'
+import { clearProject } from '../../../lib/runtime-logs/runtime-log-store'
+import { useRuntimeLogStream } from '../../../lib/runtime-logs/useRuntimeLogStream'
 
 const ROW_HEIGHT = 24
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
 
 interface LogsPanelProps {
   projectId: string
@@ -141,31 +32,40 @@ interface LogsPanelProps {
   visible: boolean
 }
 
-export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPanelProps) {
-  const [rawLogs, setRawLogs] = useState<string[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [autoRefresh, setAutoRefresh] = useState(true)
+/**
+ * Monitor's "Logs" panel. Shares the runtime-log stream with the IDE
+ * Output tab so both surfaces see the same buffer without double-fetching
+ * `/console-log`. The legacy console-log endpoint is still available for
+ * older clients but this component no longer talks to it directly.
+ */
+export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchVisible, setSearchVisible] = useState(false)
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
   const [cleared, setCleared] = useState(false)
 
   const flatListRef = useRef<FlatList<ParsedLogEntry>>(null)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isNearBottomRef = useRef(true)
 
-  // ---- Parsed logs (memoized) ----
-  const parsedLogs = useMemo(() => rawLogs.map(parseLogLine), [rawLogs])
+  const safeProjectId = projectId || '__no_project__'
+  const { entries } = useRuntimeLogStream({
+    projectId: safeProjectId,
+    agentUrl,
+  })
 
-  // ---- Level counts ----
+  // Re-parse runtime entries through the shared utilities so the existing
+  // row renderer (which expects `ParsedLogEntry`) keeps working.
+  const parsedLogs = useMemo(
+    () => entries.map(runtimeEntryToParsed),
+    [entries],
+  )
+
   const levelCounts = useMemo(() => {
     const counts = { error: 0, warn: 0, info: 0 }
     for (const log of parsedLogs) counts[log.level]++
     return counts
   }, [parsedLogs])
 
-  // ---- Filtered logs ----
   const filteredLogs = useMemo(() => {
     let result = parsedLogs
     if (levelFilter !== 'all') {
@@ -178,69 +78,14 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
     return result
   }, [parsedLogs, levelFilter, searchQuery])
 
-  // ---- Fetch logs ----
-  const loadLogs = useCallback(async () => {
-    if (!agentUrl) return
-    try {
-      const res = await agentFetch(`${agentUrl}/console-log`)
-      if (!res.ok) {
-        setError(`HTTP ${res.status}: ${res.statusText || 'Request failed'}`)
-        return
-      }
-      let data: any
-      try {
-        data = await res.json()
-      } catch {
-        setError('Invalid response from agent')
-        return
-      }
-      setRawLogs(data.logs || [])
-      setError(null)
-      setCleared(false)
-    } catch (err: any) {
-      setError(err.message || 'Failed to load logs')
-    }
-  }, [agentUrl])
-
-  // ---- Initial load ----
-  useEffect(() => {
-    if (visible && agentUrl) {
-      setIsLoading(true)
-      loadLogs().finally(() => setIsLoading(false))
-    }
-  }, [visible, agentUrl, loadLogs])
-
-  // ---- Polling ----
-  useEffect(() => {
-    if (visible && autoRefresh && agentUrl) {
-      intervalRef.current = setInterval(loadLogs, 5000)
-      return () => {
-        if (intervalRef.current) clearInterval(intervalRef.current)
-      }
-    }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-    }
-  }, [visible, autoRefresh, loadLogs, agentUrl])
-
-  // ---- Auto-scroll on new data ----
-  useEffect(() => {
-    if (isNearBottomRef.current && filteredLogs.length > 0) {
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: false })
-      }, 50)
-    }
-  }, [filteredLogs.length])
-
-  // ---- Handlers ----
   const handleClear = useCallback(() => {
-    setRawLogs([])
+    clearProject(safeProjectId)
     setCleared(true)
-    _nextId = 0
-  }, [])
+    resetParserIdsForTest()
+  }, [safeProjectId])
 
   const handleExport = useCallback(async () => {
-    const text = rawLogs.join('\n')
+    const text = entries.map((e) => `[${e.source}] ${e.text}`).join('\n')
     if (!text) return
     if (Platform.OS === 'web') {
       try {
@@ -251,13 +96,17 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
         a.download = `agent-logs-${new Date().toISOString().slice(0, 10)}.txt`
         a.click()
         URL.revokeObjectURL(url)
-      } catch { /* best effort */ }
+      } catch {
+        // Best-effort: ignore download failures (popup blocker, etc.).
+      }
     } else {
       try {
         await Share.share({ message: text })
-      } catch { /* user cancelled or unavailable */ }
+      } catch {
+        // User cancelled or Share unavailable on this platform.
+      }
     }
-  }, [rawLogs])
+  }, [entries])
 
   const handleScroll = useCallback((e: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
@@ -272,7 +121,6 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
     })
   }, [])
 
-  // ---- Render ----
   if (!visible) return null
 
   const renderLogRow = ({ item }: { item: ParsedLogEntry }) => {
@@ -330,18 +178,6 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
             <Pressable onPress={handleClear} className="p-1 rounded-md active:bg-muted">
               <Trash2 size={14} className="text-muted-foreground" />
             </Pressable>
-            <View className="flex-row items-center gap-1.5">
-              <Text className="text-xs text-muted-foreground">Auto</Text>
-              <Switch
-                value={autoRefresh}
-                onValueChange={setAutoRefresh}
-                trackColor={{ true: '#6366f1' }}
-                style={{ transform: [{ scale: 0.7 }] }}
-              />
-            </View>
-            <Pressable onPress={loadLogs} className="p-1 rounded-md active:bg-muted">
-              <RefreshCw size={14} className="text-muted-foreground" />
-            </Pressable>
           </View>
         </View>
 
@@ -395,19 +231,8 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
         </View>
       </View>
 
-      {/* ---- Error banner ---- */}
-      {error && (
-        <View className="px-4 py-2 bg-destructive/10 flex-row items-center gap-2">
-          <AlertCircle size={12} className="text-destructive" />
-          <Text className="text-xs text-destructive flex-1">{error}</Text>
-          <Pressable onPress={loadLogs}>
-            <Text className="text-xs text-destructive underline">Retry</Text>
-          </Pressable>
-        </View>
-      )}
-
       {/* ---- Cleared locally banner ---- */}
-      {cleared && rawLogs.length === 0 && (
+      {cleared && entries.length === 0 && (
         <View className="px-4 py-1.5 bg-zinc-900">
           <Text className="text-xs text-zinc-500 text-center">Cleared locally — server buffer unchanged</Text>
         </View>
@@ -421,11 +246,6 @@ export function LogsPanel({ projectId: _projectId, agentUrl, visible }: LogsPane
             <Text className="text-zinc-500 text-center text-xs">
               Agent not running. Start the agent to see logs.
             </Text>
-          </View>
-        ) : isLoading ? (
-          <View className="items-center py-8">
-            <ActivityIndicator size="small" />
-            <Text className="text-zinc-500 text-center mt-2 text-xs">Loading logs...</Text>
           </View>
         ) : filteredLogs.length === 0 ? (
           <Text className="text-zinc-500 text-center py-8 text-xs">

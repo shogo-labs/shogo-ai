@@ -1,0 +1,5 @@
+# Test runner configuration. The two preload files MUST stay separate to
+# avoid the @testing-library import-hoisting bug:
+# https://github.com/testing-library/react-testing-library/issues/1348
+[test]
+preload = ["./test/dom-setup.ts", "./test/testing-library.ts"]
