@@ -7,12 +7,17 @@
  * clicks "Sign in to Shogo Cloud". Once the user is authenticated (via
  * Better Auth — we redirect to /sign-in?next=/auth/local-link if not), we:
  *
- *   1. Mint a device-tagged API key for the signed-in user's default
- *      workspace (POST /api/api-keys/device — cloud dedupes any previous
- *      key for this deviceId).
- *   2. Redirect back to the desktop app via a shogo://auth-callback deep
+ *   1. Fetch the workspaces the signed-in user belongs to. If the user has
+ *      more than one workspace and the desktop didn't pre-select one via
+ *      the `workspaceId` query param, render a picker and wait for the user
+ *      to choose. With a single workspace (or a valid pre-selection) we
+ *      skip the picker and proceed straight to mint.
+ *   2. Mint a device-tagged API key for the chosen workspace
+ *      (POST /api/api-keys/device — cloud dedupes any previous key for this
+ *      deviceId within the same workspace).
+ *   3. Redirect back to the desktop app via a shogo://auth-callback deep
  *      link that carries the fresh key + original state nonce.
- *   3. Leave a "Return to your Shogo desktop app" fallback screen so the
+ *   4. Leave a "Return to your Shogo desktop app" fallback screen so the
  *      user has recourse if the deep link doesn't fire.
  *
  * Query params we consume:
@@ -22,13 +27,15 @@
  *   deviceName      — hostname/"My Laptop"
  *   devicePlatform  — darwin / win32 / linux
  *   appVersion      — desktop app version string
+ *   workspaceId     — optional pre-selected workspace id (used by the
+ *                     desktop "Switch workspace" affordance)
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, ActivityIndicator, Platform } from 'react-native'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { View, Text, ActivityIndicator, Platform, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { Button } from '@shogo/shared-ui/primitives'
-import { PlatformApi } from '@shogo-ai/sdk'
+import { Button, cn } from '@shogo/shared-ui/primitives'
+import { PlatformApi, type WorkspaceSummary } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
 import { useDomainHttp } from '../../contexts/domain'
 
@@ -39,9 +46,17 @@ interface LocalLinkParams {
   deviceName?: string
   devicePlatform?: string
   appVersion?: string
+  workspaceId?: string
 }
 
-type Status = 'checking-auth' | 'redirect-signin' | 'minting' | 'ready' | 'error'
+type Status =
+  | 'checking-auth'
+  | 'redirect-signin'
+  | 'loading-workspaces'
+  | 'picking-workspace'
+  | 'minting'
+  | 'ready'
+  | 'error'
 
 export default function LocalLinkBridge() {
   const router = useRouter()
@@ -53,8 +68,12 @@ export default function LocalLinkBridge() {
   const [status, setStatus] = useState<Status>('checking-auth')
   const [error, setError] = useState<string | null>(null)
   const [callbackUrl, setCallbackUrl] = useState<string | null>(null)
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
   // Guard so strict-mode double-renders / re-runs don't mint two device keys.
   const mintedRef = useRef(false)
+  // Guard so we only fetch the workspace list once per page load.
+  const workspacesLoadedRef = useRef(false)
 
   // Re-use the exact callback scheme from the desktop app. We default to
   // shogo://auth-callback if no override was provided.
@@ -62,6 +81,56 @@ export default function LocalLinkBridge() {
     ? params.callback
     : 'shogo://auth-callback'
   const state = typeof params.state === 'string' ? params.state : ''
+  const preselectedWorkspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : ''
+
+  /** Mint a device key for the chosen workspace and fire the deep link. */
+  const completeMint = useCallback(async (workspaceId: string | undefined) => {
+    if (mintedRef.current) return
+    mintedRef.current = true
+    setStatus('minting')
+    try {
+      const minted = await platform.createDeviceApiKey(
+        {
+          id: String(params.deviceId),
+          name: typeof params.deviceName === 'string' ? params.deviceName : 'Shogo Desktop',
+          platform: typeof params.devicePlatform === 'string' ? params.devicePlatform : 'unknown',
+          appVersion: typeof params.appVersion === 'string' ? params.appVersion : 'unknown',
+        },
+        workspaceId ? { workspaceId } : undefined,
+      )
+
+      // Assemble the callback URL that carries everything the desktop app
+      // needs to finalize sign-in. The state nonce is required; it's
+      // validated server-side in /api/local/cloud-login/complete. The
+      // cloud endpoint is sourced from the desktop's SHOGO_CLOUD_URL env
+      // var, so we deliberately do NOT echo a cloudUrl back here.
+      const callbackParams = new URLSearchParams({
+        state,
+        key: minted.key,
+      })
+      if (user?.email) callbackParams.set('email', user.email)
+      if (minted.workspace?.name) callbackParams.set('workspace', minted.workspace.name)
+      const url = `${callback}?${callbackParams.toString()}`
+
+      setCallbackUrl(url)
+      setStatus('ready')
+
+      // Auto-trigger the deep link. Most OSes will prompt once before
+      // opening; the fallback UI below gives the user a manual button.
+      if (typeof window !== 'undefined') {
+        window.location.replace(url)
+      }
+    } catch (err) {
+      console.error('[LocalLink] Failed to mint device key:', err)
+      mintedRef.current = false
+      setStatus('error')
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to create a sign-in key. Please try again.',
+      )
+    }
+  }, [platform, params.deviceId, params.deviceName, params.devicePlatform, params.appVersion, callback, state, user?.email])
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -89,51 +158,51 @@ export default function LocalLinkBridge() {
       return
     }
 
-    if (mintedRef.current) return
-    mintedRef.current = true
+    if (workspacesLoadedRef.current) return
+    workspacesLoadedRef.current = true
 
-    setStatus('minting')
+    setStatus('loading-workspaces')
     ;(async () => {
       try {
-        const minted = await platform.createDeviceApiKey({
-          id: String(params.deviceId),
-          name: typeof params.deviceName === 'string' ? params.deviceName : 'Shogo Desktop',
-          platform: typeof params.devicePlatform === 'string' ? params.devicePlatform : 'unknown',
-          appVersion: typeof params.appVersion === 'string' ? params.appVersion : 'unknown',
-        })
+        const list = await platform.listMyWorkspaces()
+        setWorkspaces(list)
 
-        // Assemble the callback URL that carries everything the desktop
-        // app needs to finalize sign-in. The state nonce is required; it's
-        // validated server-side in /api/local/cloud-login/complete. The
-        // cloud endpoint is sourced from the desktop's SHOGO_CLOUD_URL env
-        // var, so we deliberately do NOT echo a cloudUrl back here.
-        const callbackParams = new URLSearchParams({
-          state,
-          key: minted.key,
-        })
-        if (user?.email) callbackParams.set('email', user.email)
-        if (minted.workspace?.name) callbackParams.set('workspace', minted.workspace.name)
-        const url = `${callback}?${callbackParams.toString()}`
-
-        setCallbackUrl(url)
-        setStatus('ready')
-
-        // Auto-trigger the deep link. Most OSes will prompt once before
-        // opening; the fallback UI below gives the user a manual button.
-        if (typeof window !== 'undefined') {
-          window.location.replace(url)
+        if (list.length === 0) {
+          setStatus('error')
+          setError('Your account has no workspaces. Create one in Shogo Cloud first.')
+          return
         }
+
+        // Auto-skip the picker when there's only one workspace, or when
+        // the desktop app pre-selected a valid workspaceId.
+        const preselected = preselectedWorkspaceId
+          ? list.find((w) => w.id === preselectedWorkspaceId)
+          : null
+        if (preselected) {
+          await completeMint(preselected.id)
+          return
+        }
+        if (list.length === 1) {
+          await completeMint(list[0].id)
+          return
+        }
+
+        // Multiple workspaces, no valid pre-selection: render the picker.
+        // Default-select the first one so the Continue button is enabled.
+        setSelectedWorkspaceId(list[0].id)
+        setStatus('picking-workspace')
       } catch (err) {
-        console.error('[LocalLink] Failed to mint device key:', err)
+        console.error('[LocalLink] Failed to load workspaces:', err)
+        workspacesLoadedRef.current = false
         setStatus('error')
         setError(
           err instanceof Error
             ? err.message
-            : 'Failed to create a sign-in key. Please try again.',
+            : 'Failed to load your workspaces. Please try again.',
         )
       }
     })()
-  }, [isAuthLoading, isAuthenticated, state, params.deviceId, params.deviceName, params.devicePlatform, params.appVersion, callback, platform, router, user?.email])
+  }, [isAuthLoading, isAuthenticated, state, params.deviceId, preselectedWorkspaceId, platform, router, completeMint])
 
   return (
     <View className="flex-1 bg-background items-center justify-center px-6">
@@ -149,6 +218,59 @@ export default function LocalLinkBridge() {
 
         {status === 'redirect-signin' && (
           <Text className="text-sm text-muted-foreground text-center">Redirecting you to sign in...</Text>
+        )}
+
+        {status === 'loading-workspaces' && (
+          <>
+            <ActivityIndicator />
+            <Text className="text-sm text-muted-foreground text-center">Loading your workspaces...</Text>
+          </>
+        )}
+
+        {status === 'picking-workspace' && (
+          <View className="gap-3 w-full">
+            <Text className="text-sm text-muted-foreground text-center">
+              Choose which workspace to link to this device. You can switch later from
+              the desktop app's General settings.
+            </Text>
+            <View className="gap-2 w-full">
+              {workspaces.map((ws) => {
+                const isSelected = selectedWorkspaceId === ws.id
+                return (
+                  <Pressable
+                    key={ws.id}
+                    onPress={() => setSelectedWorkspaceId(ws.id)}
+                    className={cn(
+                      'flex-row items-center gap-3 px-4 py-3 rounded-lg border',
+                      isSelected ? 'border-primary bg-primary/5' : 'border-border',
+                    )}
+                  >
+                    <View
+                      className={cn(
+                        'w-4 h-4 rounded-full border-2',
+                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground',
+                      )}
+                    />
+                    <View className="flex-1">
+                      <Text className="font-medium text-foreground">{ws.name}</Text>
+                      <Text className="text-xs text-muted-foreground">{ws.slug}</Text>
+                    </View>
+                  </Pressable>
+                )
+              })}
+            </View>
+            <Button
+              onPress={() => {
+                if (selectedWorkspaceId) {
+                  void completeMint(selectedWorkspaceId)
+                }
+              }}
+              disabled={!selectedWorkspaceId}
+              className="w-full"
+            >
+              Continue
+            </Button>
+          </View>
         )}
 
         {status === 'minting' && (
@@ -192,6 +314,7 @@ export default function LocalLinkBridge() {
               variant="outline"
               onPress={() => {
                 mintedRef.current = false
+                workspacesLoadedRef.current = false
                 setStatus('checking-auth')
                 setError(null)
               }}
