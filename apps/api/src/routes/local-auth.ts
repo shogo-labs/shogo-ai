@@ -115,6 +115,10 @@ export function localAuthRoutes() {
       deviceName?: string
       devicePlatform?: string
       deviceAppVersion?: string
+      /** Optional pre-selected workspace for the bridge picker. The bridge
+       * will skip the picker when this matches one of the user's
+       * memberships; otherwise it falls back to showing the picker. */
+      workspaceId?: string
     }>().catch(() => ({} as any))
 
     if (!body?.deviceId || typeof body.deviceId !== 'string') {
@@ -139,6 +143,9 @@ export function localAuthRoutes() {
     if (body.deviceName) params.set('deviceName', body.deviceName)
     if (body.devicePlatform) params.set('devicePlatform', body.devicePlatform)
     if (body.deviceAppVersion) params.set('appVersion', body.deviceAppVersion)
+    if (body.workspaceId && typeof body.workspaceId === 'string') {
+      params.set('workspaceId', body.workspaceId)
+    }
 
     const authUrl = `${cloudUrl}/auth/local-link?${params.toString()}`
     return c.json({ ok: true, state, authUrl, cloudUrl, expiresInMs: STATE_TTL_MS })

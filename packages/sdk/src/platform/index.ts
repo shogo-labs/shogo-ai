@@ -123,6 +123,13 @@ export interface CloudLoginStart {
   expiresInMs: number
 }
 
+/** Minimal workspace fields surfaced by the bridge picker and admin switcher. */
+export interface WorkspaceSummary {
+  id: string
+  name: string
+  slug: string
+}
+
 export interface CloudLoginStatus {
   signedIn: boolean
   cloudUrl?: string
@@ -305,8 +312,16 @@ export class PlatformApi {
   // CLI / headless contexts that paste a raw shogo_sk_ key.
 
   /** Start a cloud login flow. Opens the returned authUrl in the system
-   * browser to complete sign-in. */
-  async startCloudLogin(device: DeviceInfo): Promise<CloudLoginStart> {
+   * browser to complete sign-in.
+   *
+   * Pass `opts.workspaceId` to pre-select a workspace on the bridge picker
+   * (the desktop-side "Switch workspace" button uses this). When omitted,
+   * the bridge prompts the user to pick if they have >1 workspace, and
+   * silently picks the only one otherwise. */
+  async startCloudLogin(
+    device: DeviceInfo,
+    opts?: { workspaceId?: string },
+  ): Promise<CloudLoginStart> {
     const res = await this.http.post<CloudLoginStart>(
       '/api/local/cloud-login/start',
       {
@@ -314,9 +329,21 @@ export class PlatformApi {
         deviceName: device.name,
         devicePlatform: device.platform,
         deviceAppVersion: device.appVersion,
+        workspaceId: opts?.workspaceId,
       },
     )
     return res.data!
+  }
+
+  /** List workspaces the signed-in cloud user is a member of.
+   * Used by the local-link bridge to render a workspace picker when the
+   * user has more than one membership. Requires an authenticated cloud
+   * session (cookie); returns an empty list if unauthenticated. */
+  async listMyWorkspaces(): Promise<WorkspaceSummary[]> {
+    const res = await this.http.get<{ ok?: boolean; items?: WorkspaceSummary[] }>(
+      '/api/workspaces',
+    )
+    return res.data?.items ?? []
   }
 
   /** Read the current local-mode cloud login status. */
