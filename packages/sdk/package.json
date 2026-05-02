@@ -71,6 +71,11 @@
       "types": "./dist/voice/react/index.d.ts",
       "import": "./dist/voice/react/index.js",
       "require": "./dist/voice/react/index.cjs"
+    },
+    "./voice/native": {
+      "types": "./dist/voice/native/index.d.ts",
+      "import": "./dist/voice/native/index.js",
+      "require": "./dist/voice/native/index.cjs"
     }
   },
   "bin": {
@@ -98,6 +103,7 @@
   "devDependencies": {
     "@aws-sdk/client-ses": "^3.700.0",
     "@elevenlabs/react": "^1.1.1",
+    "@elevenlabs/react-native": "^1.1.4",
     "@playwright/test": "^1.40.0",
     "@prisma/internals": "^7.3.0",
     "@types/better-sqlite3": "^7.6.13",
@@ -106,9 +112,12 @@
     "@types/react": "^19.0.0",
     "@types/three": "^0.180.0",
     "better-sqlite3": "^11.10.0",
+    "expo-gl": "^15.0.0",
+    "expo-three": "^8.0.0",
     "mobx": "^6.13.5",
     "mobx-state-tree": "^6.0.1",
     "nodemailer": "^8.0.3",
+    "react-native": "^0.81.0",
     "three": "^0.180.0",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
@@ -119,9 +128,13 @@
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/adapter-libsql": "",
     "@elevenlabs/react": ">=1.1.0",
+    "@elevenlabs/react-native": ">=1.1.0",
     "react": ">=18.0.0",
+    "react-native": ">=0.70.0",
     "better-sqlite3": ">=11.0.0",
-    "three": ">=0.160.0"
+    "three": ">=0.160.0",
+    "expo-gl": ">=15.0.0",
+    "expo-three": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "nodemailer": {
@@ -139,13 +152,25 @@
     "@elevenlabs/react": {
       "optional": true
     },
+    "@elevenlabs/react-native": {
+      "optional": true
+    },
     "react": {
+      "optional": true
+    },
+    "react-native": {
       "optional": true
     },
     "better-sqlite3": {
       "optional": true
     },
     "three": {
+      "optional": true
+    },
+    "expo-gl": {
+      "optional": true
+    },
+    "expo-three": {
       "optional": true
     }
   },

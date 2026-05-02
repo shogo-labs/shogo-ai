@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * `useVoiceConversation` — drop-in React hook wrapping `@elevenlabs/react`'s
- * `useConversation` with batteries included:
+ * `useVoiceConversation` (web) — drop-in React hook wrapping
+ * `@elevenlabs/react`'s `useConversation` with batteries included:
  *
  *   1. Fetches a signed URL from the consumer's server (default: `/api/voice/signed-url`).
  *   2. Registers the canonical `add_memory` client tool (POST-es to `/api/memory/add`).
@@ -15,146 +15,30 @@
  * Consumers can mix in additional `clientTools` and override every path.
  *
  * Requires the caller's app to have `@elevenlabs/react` installed (optional
- * peer dependency).
+ * peer dependency). For React Native, import from
+ * `@shogo-ai/sdk/voice/native` instead.
  */
 
 import { useCallback, useEffect, useRef } from 'react'
 // `@elevenlabs/react` is an optional peer dep. The import is a type-only path
 // at compile time; at runtime the host app must have it installed.
 import { useConversation } from '@elevenlabs/react'
-import { stripAudioTags } from '../audioTags.js'
+import {
+  appendTranscriptLine,
+  buildSessionPayload,
+  createMemoryAddTool,
+  createMemoryContextInjector,
+  createPostJson,
+  createTranscriptDisconnectHandler,
+  fetchSignedUrl,
+  withProjectId,
+  type BaseVoiceConversationOptions,
+  type BaseVoiceConversationResult,
+  type ClientToolFn,
+} from '../shared/index.js'
 
-export interface UseVoiceConversationOptions {
-  /** Name of the companion the user is talking to (passed as a dynamic variable). */
-  characterName: string
-
-  /** Server path that mints an 11Labs signed URL for this user. Default: `/api/voice/signed-url`. */
-  signedUrlPath?: string
-
-  /** Server path the built-in `add_memory` tool POSTs to. Default: `/api/memory/add`. */
-  memoryAddPath?: string
-
-  /** Server path used to auto-inject memory context. Default: `/api/memory/retrieve`. */
-  memoryRetrievePath?: string
-
-  /** Server path the transcript is POSTed to when the session ends. Default: `/api/memory/ingest`. */
-  transcriptIngestPath?: string
-
-  /** Disable the built-in memory context auto-injection. Default: `true` (enabled). */
-  autoInjectMemory?: boolean
-
-  /** Disable the built-in `add_memory` client tool. Default: `true` (enabled). */
-  includeMemoryTool?: boolean
-
-  /**
-   * Additional client tools merged onto `add_memory`. Tools defined here with
-   * the name `add_memory` override the built-in implementation.
-   */
-  clientTools?: Record<string, (params: Record<string, unknown>) => Promise<string> | string>
-
-  /**
-   * Called once per session with the accumulated transcript when the session
-   * disconnects. Defaults to POST `transcriptIngestPath`; set this to suppress
-   * or replace that behaviour.
-   */
-  onTranscript?: (transcript: string) => void | Promise<void>
-
-  /**
-   * Credentials mode for built-in fetch calls.
-   *
-   * - Defaults to `same-origin` in the legacy cookie path.
-   * - Defaults to `omit` when `shogoApiKey` is provided (bearer auth is
-   *   self-contained and you don't want browsers to attach unrelated
-   *   third-party cookies cross-origin).
-   * - Explicit values always win — pass `'include'` to carry both a cookie
-   *   and the bearer in a hybrid same-origin app.
-   */
-  fetchCredentials?: RequestCredentials
-
-  /**
-   * Shogo API key (`shogo_sk_*`) used to authenticate voice routes. When
-   * provided, the hook attaches `Authorization: Bearer <key>` to the
-   * signed-URL fetch and memory fetches, and appends `?projectId=` to
-   * the signed-URL path. Either `shogoApiKey` or a session cookie must
-   * be resolvable by the server — both may be passed; the server's
-   * `apiKeyOrSession` middleware picks bearer first.
-   */
-  shogoApiKey?: string
-
-  /**
-   * Project id (Shogo's `projectId`). Required alongside `shogoApiKey`
-   * for Mode B voice. The server uses it to look up / provision the
-   * project's ElevenLabs agent and resolve the workspace.
-   */
-  projectId?: string
-
-  /** Called on connection errors. */
-  onError?: (error: unknown) => void
-
-  /** Called on each message (user or agent) for debugging / custom UI. */
-  onMessage?: (message: { source: string; message: string }) => void
-}
-
-export interface UseVoiceConversationResult {
-  /**
-   * Begin a new session. Requests microphone permission and fetches a
-   * signed URL.
-   *
-   * `suppressFirstMessage` mirrors the option on `restart()` — when
-   * `true`, the new session is opened with `overrides.agent.firstMessage = ''`
-   * so the agent skips its opening greeting. Useful when the consumer
-   * is programmatically reconnecting (e.g. to deliver a one-shot spoken
-   * summary) and does not want to hear the configured intro.
-   */
-  start: (options?: { suppressFirstMessage?: boolean }) => Promise<void>
-  /** End the current session (if any). */
-  end: () => void
-  /**
-   * Tear down the active session and immediately reconnect. Primarily
-   * used as a programmatic barge-in: ElevenLabs doesn't expose a public
-   * `interrupt()` on `useConversation`, so stopping the agent mid-
-   * utterance requires a fast disconnect + reconnect. When
-   * `suppressFirstMessage` is `true` (the default), the new session is
-   * started with `overrides.agent.firstMessage = ''` so the agent does
-   * not replay its intro. The accumulated transcript is preserved
-   * across the reconnect gap.
-   */
-  restart: (options?: { suppressFirstMessage?: boolean }) => Promise<void>
-  /** `'disconnected' | 'connecting' | 'connected'`. */
-  status: 'disconnected' | 'connecting' | 'connected'
-  /** Whether the agent is currently speaking. */
-  isSpeaking: boolean
-  /** Whether the agent is currently listening. */
-  isListening: boolean
-  /** Whether the microphone is currently muted (input audio is gated off). */
-  isMuted: boolean
-  /**
-   * Toggle the microphone mute state without tearing down the session.
-   * Wraps `@elevenlabs/react`'s `setMuted`, which in turn calls
-   * `conversation.setMicMuted()`. Muting does not end the WebSocket or
-   * release the `MediaStream`; it simply stops input audio from being
-   * forwarded to the server.
-   */
-  setMuted: (isMuted: boolean) => void
-  /** For consumers who want to drive their own visualisation / lipsync. */
-  getOutputByteFrequencyData: () => Uint8Array | null
-  /** Imperatively send a contextual update (e.g. "user navigated to X"). */
-  sendContextualUpdate: (text: string) => void
-  /**
-   * Imperatively inject a user-role message, forcing the agent to take
-   * its next turn immediately (rather than waiting for the human to
-   * speak). Useful for out-of-band prompts like "please summarise what
-   * just happened". The injected text is *not* spoken aloud — the agent
-   * treats it as if the user said it.
-   */
-  sendUserMessage: (text: string) => void
-  /**
-   * Low-level signal that the user is active (typing, clicking) so the
-   * agent doesn't try to fill silence. Used as a fallback nudge when we
-   * want to keep the session "warm" without forcing a full turn.
-   */
-  sendUserActivity: () => void
-}
+export type UseVoiceConversationOptions = BaseVoiceConversationOptions
+export type UseVoiceConversationResult = BaseVoiceConversationResult
 
 /**
  * Hook that owns the voice session lifecycle end-to-end. See module docblock
@@ -184,11 +68,7 @@ export function useVoiceConversation(
     return shogoApiKey ? { authorization: `Bearer ${shogoApiKey}` } : {}
   }, [shogoApiKey])
 
-  const resolvedSignedUrlPath = (() => {
-    if (!projectId) return signedUrlPath
-    const sep = signedUrlPath.includes('?') ? '&' : '?'
-    return `${signedUrlPath}${sep}projectId=${encodeURIComponent(projectId)}`
-  })()
+  const resolvedSignedUrlPath = withProjectId(signedUrlPath, projectId)
 
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
@@ -205,83 +85,35 @@ export function useVoiceConversation(
   } | null>(null)
 
   const postJson = useCallback(
-    async (path: string, body: unknown) => {
-      return fetch(path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...authHeaders() },
-        credentials: fetchCredentials,
-        body: JSON.stringify(body),
-      })
-    },
+    createPostJson({ authHeaders, fetchCredentials }),
     [fetchCredentials, authHeaders],
   )
 
   const injectMemoryContext = useCallback(
-    async (userText: string) => {
-      if (!autoInjectMemory) return
-      try {
-        const res = await postJson(memoryRetrievePath, { query: userText, limit: 4 })
-        if (!res.ok) return
-        const data = (await res.json()) as {
-          results?: Array<{ chunk: string; score?: number }>
-          took_ms?: number
-        }
-        const results = data.results ?? []
-        if (!results.length) return
-        const lines = results
-          .map((r) => `- ${r.chunk.trim().replace(/\s+/g, ' ').slice(0, 200)}`)
-          .join('\n')
-        if (lines === lastInjectedRef.current) return
-        lastInjectedRef.current = lines
-        const payload = `Relevant memory about this user:\n${lines}`
-        conversationRef.current?.sendContextualUpdate(payload)
-      } catch {
-        // Memory injection is best-effort; swallow errors.
-      }
-    },
+    createMemoryContextInjector({
+      postJson,
+      memoryRetrievePath,
+      conversationRef,
+      enabled: autoInjectMemory,
+      lastInjectedRef,
+    }),
     [autoInjectMemory, memoryRetrievePath, postJson],
   )
 
-  const handleTranscriptOnDisconnect = useCallback(() => {
-    if (isRestartingRef.current) {
-      // Transient disconnect between endSession/startSession inside
-      // restart(). Preserve accumulated transcript and the
-      // "we started the session" marker so the consumer's view is
-      // continuous across the gap.
-      return
-    }
-    if (!weStartedSessionRef.current) {
-      transcriptRef.current = []
-      return
-    }
-    weStartedSessionRef.current = false
-    const transcript = transcriptRef.current.join('\n')
-    transcriptRef.current = []
-    if (onTranscript) {
-      void onTranscript(transcript)
-      return
-    }
-    const trimmed = transcript.trim()
-    if (trimmed.length < 20) return
-    void postJson(transcriptIngestPath, { transcript: trimmed }).catch(() => {
-      /* best effort */
-    })
-  }, [onTranscript, postJson, transcriptIngestPath])
+  const handleTranscriptOnDisconnect = useCallback(
+    createTranscriptDisconnectHandler({
+      isRestartingRef,
+      weStartedSessionRef,
+      transcriptRef,
+      onTranscript,
+      transcriptIngestPath,
+      postJson,
+    }),
+    [onTranscript, postJson, transcriptIngestPath],
+  )
 
-  const builtInTools: UseVoiceConversationOptions['clientTools'] = includeMemoryTool
-    ? {
-        add_memory: async (params: Record<string, unknown>) => {
-          const fact = typeof params.fact === 'string' ? params.fact : ''
-          if (!fact.trim()) return 'Memory save failed: empty fact.'
-          try {
-            const res = await postJson(memoryAddPath, { fact })
-            if (!res.ok) return 'Failed to save memory.'
-            return 'Memory saved.'
-          } catch {
-            return 'Memory save failed.'
-          }
-        },
-      }
+  const builtInTools: Record<string, ClientToolFn> = includeMemoryTool
+    ? { add_memory: createMemoryAddTool({ postJson, memoryAddPath }) }
     : {}
 
   const mergedClientTools = { ...builtInTools, ...clientTools }
@@ -301,11 +133,7 @@ export function useVoiceConversation(
     onMessage: (m: unknown) => {
       const msg = m as { source?: string; message?: string }
       if (!msg?.message || !msg?.source) return
-      const speaker = msg.source === 'user' ? 'User' : 'Agent'
-      const cleaned = msg.source === 'user' ? msg.message : stripAudioTags(msg.message)
-      if (cleaned && weStartedSessionRef.current) {
-        transcriptRef.current.push(`${speaker}: ${cleaned}`)
-      }
+      appendTranscriptLine(msg, { transcriptRef, weStartedSessionRef })
       onMessage?.({ source: msg.source, message: msg.message })
       if (
         autoInjectMemory &&
@@ -359,46 +187,23 @@ export function useVoiceConversation(
           /* fall through */
         }
       }
+      // Web-only: ask the browser for mic permission up front so the
+      // signed-URL fetch isn't wasted if the user denies it.
       await navigator.mediaDevices.getUserMedia({ audio: true })
-      const res = await fetch(resolvedSignedUrlPath, {
-        credentials: fetchCredentials,
-        headers: authHeaders(),
+      const data = await fetchSignedUrl({
+        path: resolvedSignedUrlPath,
+        fetchCredentials,
+        authHeaders,
       })
-      if (!res.ok) throw new Error(`Signed URL request failed: ${res.status}`)
-      const data = (await res.json()) as {
-        signedUrl: string
-        userContext?: string
-        // Optional per-session full-prompt override. The server resolves
-        // project metadata + memory and composes a complete persona +
-        // context prompt; we forward it verbatim to ElevenLabs via
-        // `overrides.agent.prompt.prompt`. Requires the agent to be
-        // provisioned with `platform_settings.overrides.agent.prompt.prompt = true`
-        // (see packages/sdk/src/voice/elevenlabs.ts createAgent).
-        agentPromptOverride?: string
-      }
       const ctx = data.userContext || 'No prior memories yet.'
       weStartedSessionRef.current = true
-      const sessionPayload: Record<string, unknown> = {
+      const sessionPayload = buildSessionPayload({
         signedUrl: data.signedUrl,
-        dynamicVariables: {
-          character_name: characterName,
-          user_context: ctx,
-        },
-      }
-      // Build `overrides.agent` lazily so we only set the keys we
-      // actually want to override — ElevenLabs treats any present key
-      // as "use this value" and any missing key as "use the agent's
-      // configured default".
-      const agentOverrides: Record<string, unknown> = {}
-      if (opts?.suppressFirstMessage) {
-        agentOverrides.firstMessage = ''
-      }
-      if (typeof data.agentPromptOverride === 'string' && data.agentPromptOverride.length > 0) {
-        agentOverrides.prompt = { prompt: data.agentPromptOverride }
-      }
-      if (Object.keys(agentOverrides).length > 0) {
-        sessionPayload.overrides = { agent: agentOverrides }
-      }
+        characterName,
+        userContext: ctx,
+        agentPromptOverride: data.agentPromptOverride,
+        suppressFirstMessage: opts?.suppressFirstMessage,
+      })
       await startSession(sessionPayload as never)
     },
     [
