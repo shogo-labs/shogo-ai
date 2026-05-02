@@ -18,5 +18,23 @@
     "imageGenEnabled": true,
     "memoryEnabled": true,
     "quickActionsEnabled": false
-  }
+  },
+  "quickCommands": [
+    {
+      "id": "expo-clear-cache",
+      "label": "Clear Metro Cache",
+      "description": "Restart Expo with --clear to flush the Metro cache",
+      "command": "bun x expo start --clear",
+      "category": "server",
+      "timeout": 600000
+    },
+    {
+      "id": "expo-prebuild",
+      "label": "Expo Prebuild",
+      "description": "Regenerate native iOS/Android projects from app.json",
+      "command": "bun x expo prebuild",
+      "category": "build",
+      "timeout": 300000
+    }
+  ]
 }

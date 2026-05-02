@@ -74,17 +74,23 @@ export const OPTIMIZED_TOOL_PLANNING_GUIDE = `## Tool Planning
 Before executing, plan the full tool sequence upfront. Complete complex tasks
 in fewer LLM iterations by batching independent tool calls.
 
-### Uploaded Files (files/ directory)
+### Uploaded Files (files/ directory and zip archives at workspace root)
 
-Users can upload files via the file browser. Uploaded files are stored in the \`files/\` directory.
-When a user asks about uploaded files, references their data, or you need to find information
-they've shared:
+Users can upload files via the file browser. Most uploads land in the \`files/\` directory,
+but **zip archives are placed directly at the workspace root** so they can be unzipped in
+place. The system prompt will list any uploads that currently exist (under "Workspace
+Uploaded Files") — always trust that listing over assumptions.
+
+When a user asks about uploaded files, references their data, or you need to find
+information they've shared:
 
 - **search** — Semantic search across all workspace content; use \`source: "files"\` to search only uploaded files (supports .txt, .csv, .md)
-- **read_file** — Read a specific file (use path like \`files/myfile.txt\`)
-- **exec** — Run \`ls files/\` to see what's available
+- **read_file** — Read a specific file (use path like \`files/myfile.txt\`, or just \`my-archive.zip\` for an upload at the workspace root)
+- **exec** — Run \`ls files/\` to see what's in the files directory; check the "Workspace Uploaded Files" section for any zip archives at the root
+- **exec** with \`unzip <name>.zip\` — Extract a zip archive in place. Pair with \`-d <dir>\` to extract into a subfolder.
 
-Use \`search\` or \`read_file\` to access uploaded file content.
+Use \`search\` or \`read_file\` to access uploaded file content. Do NOT assume an upload is
+missing just because \`ls files/\` is empty — also check the workspace root for zip archives.
 
 ### Examples
 
@@ -93,6 +99,7 @@ Use \`search\` or \`read_file\` to access uploaded file content.
 - "What's in the file I uploaded?" → \`exec({ command: 'ls files/' }), read_file\` (~1 iteration)
 - "Find revenue numbers in my data" → \`search({ source: "files" })\` (~1 iteration)
 - "Summarize the CSV I uploaded" → \`read_file\` (~1 iteration)
+- "I uploaded a zip, take a look" → \`exec({ command: 'unzip -o <name>.zip' })\` then explore the extracted contents (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness

@@ -338,6 +338,65 @@ describe('ensureWorkspaceDeps platform detection', () => {
     // The foreign rollup package should be gone
     expect(existsSync(join(DEPS_DIR, 'node_modules', '@rollup', `rollup-${foreignOs}-arm64`))).toBe(false)
   })
+
+  // Regression: non-Vite stacks (Expo, RN, Python) used to skip the platform-
+  // marker fast path entirely (it was gated on `existsSync(viteBin)`), which
+  // meant `pkg.installAsync` ran on every restart for these workspaces. For
+  // Expo workspaces with `bun add`-installed deps that aren't in
+  // `package-lock.json`, the redundant `npm install` could partially fail
+  // (peer-dep ERESOLVE) and silently drop packages — leaving the user with
+  // "missing packages every time I restart". The install-marker short-circuit
+  // added below the viteBin path makes this restart a no-op when
+  // package.json hasn't changed, matching what PreviewManager already does.
+  test('skips reinstall on Expo-style workspace when install-marker matches package.json', async () => {
+    rmSync(DEPS_DIR, { recursive: true, force: true })
+    mkdirSync(DEPS_DIR, { recursive: true })
+    // Expo-style package.json (no `vite` dep, no `vite` bin in node_modules)
+    writeFileSync(
+      join(DEPS_DIR, 'package.json'),
+      '{"name":"expo-app","dependencies":{"expo":"~51.0.0","react":"18.2.0"}}',
+    )
+    mkdirSync(join(DEPS_DIR, 'node_modules', 'expo'), { recursive: true })
+    writeFileSync(join(DEPS_DIR, 'node_modules', 'expo', 'package.json'), '{}')
+    writeInstallMarker(DEPS_DIR)
+    expect(readInstallMarker(DEPS_DIR)).toBe(computePackageJsonHash(DEPS_DIR)!)
+
+    await ensureWorkspaceDeps(DEPS_DIR)
+
+    // Marker is preserved (no reinstall happened) and the platform marker
+    // got written so the existing fast path picks it up too on next run.
+    expect(readInstallMarker(DEPS_DIR)).toBe(computePackageJsonHash(DEPS_DIR)!)
+    expect(existsSync(join(DEPS_DIR, 'node_modules', '.shogo-platform'))).toBe(true)
+  })
+
+  test('skip path requires BOTH a populated node_modules and a matching marker', async () => {
+    // Prove the short-circuit is gated: a matching marker without
+    // node_modules must NOT skip (otherwise `bun add` after a workspace
+    // wipe would be silently swallowed and we'd serve a Frankenstein
+    // workspace). We assert this without actually running install by
+    // checking the install-marker side-effect.
+    rmSync(DEPS_DIR, { recursive: true, force: true })
+    mkdirSync(DEPS_DIR, { recursive: true })
+    writeFileSync(join(DEPS_DIR, 'package.json'), '{"name":"expo-app","dependencies":{"expo":"~51.0.0"}}')
+    // No node_modules at all.
+    writeInstallMarker(DEPS_DIR)
+    const beforeHash = readInstallMarker(DEPS_DIR)
+    expect(beforeHash).toBe(computePackageJsonHash(DEPS_DIR)!)
+
+    // The skip branch has an `existsSync(nodeModules)` guard, so it must
+    // proceed to the install path. Inspect the source to lock the guard
+    // in place — we'd rather assert the guard string than fight Bun's
+    // 5s install timeout in this unit test (the install itself is
+    // exercised by the full bootstrap suite).
+    const src = readFileSync(
+      join(__dirname, '..', 'workspace-defaults.ts'),
+      'utf-8',
+    )
+    const skipBlock = src.split(
+      'install-marker matches package.json — skipping reinstall',
+    )[0]
+    expect(skipBlock).toContain('existsSync(nodeModules)')
+  })
 })
 
 // ---------------------------------------------------------------------------

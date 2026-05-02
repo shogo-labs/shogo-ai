@@ -18,5 +18,23 @@
     "imageGenEnabled": false,
     "memoryEnabled": true,
     "quickActionsEnabled": true
-  }
+  },
+  "quickCommands": [
+    {
+      "id": "jupyter-lab",
+      "label": "Open Jupyter",
+      "description": "Launch Jupyter Lab on port 3001",
+      "command": "jupyter lab --no-browser --port=3001",
+      "category": "server",
+      "timeout": 600000
+    },
+    {
+      "id": "pip-install-requirements",
+      "label": "Install Deps",
+      "description": "Install Python dependencies from requirements.txt",
+      "command": "pip install -r requirements.txt",
+      "category": "package",
+      "timeout": 300000
+    }
+  ]
 }

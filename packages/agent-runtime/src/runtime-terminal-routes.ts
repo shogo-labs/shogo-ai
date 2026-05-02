@@ -8,120 +8,26 @@
  * a runtime pod the process is already scoped to exactly one workspace.
  */
 
-import { spawn, execSync } from 'child_process'
+import { execSync } from 'child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { isAbsolute, join, resolve } from 'path'
 import { Hono } from 'hono'
+import { makeKillChild, spawnPresetShell, spawnRunShell } from './terminal-shell'
+import { buildQuickCommands, groupQuickCommandsByCategory } from './quick-commands'
 
 const META_SENTINEL_PREFIX = '\u001eSHOGO_TERM_META:'
 const META_SENTINEL_SUFFIX = '\u001e\n'
-
-interface PresetCommand {
-  id: string
-  label: string
-  description: string
-  command: string
-  category: 'package' | 'database' | 'server' | 'test' | 'build'
-  dangerous?: boolean
-  timeout?: number
-}
-
-const PRESET_COMMANDS: PresetCommand[] = [
-  {
-    id: 'bun-install',
-    label: 'Install Dependencies',
-    description: 'Install all project dependencies with bun',
-    command: 'bun install',
-    category: 'package',
-    timeout: 120000,
-  },
-  {
-    id: 'prisma-generate',
-    label: 'Generate Prisma Client',
-    description: 'Regenerate Prisma client after schema changes',
-    // Use `bun x` instead of `bunx`: Shogo Desktop on Windows ships
-    // bun.exe without a bunx.exe companion, so the bunx form fails
-    // immediately with `'bunx' is not recognized`. `bun x` is bun's
-    // built-in equivalent and only requires bun itself on PATH.
-    command: 'bun x prisma generate',
-    category: 'database',
-  },
-  {
-    id: 'prisma-push',
-    label: 'Push Schema',
-    description: 'Push schema changes to the database',
-    command: 'bun x prisma db push',
-    category: 'database',
-  },
-  {
-    id: 'prisma-reset',
-    label: 'Reset Database',
-    description: 'Wipe and recreate database from schema (destructive)',
-    command: 'bun x prisma db push --force-reset',
-    category: 'database',
-    dangerous: true,
-    timeout: 30000,
-  },
-  {
-    id: 'prisma-migrate',
-    label: 'Run Migrations',
-    description: 'Create and apply database migrations',
-    command: 'bun x prisma migrate dev --name auto',
-    category: 'database',
-    timeout: 60000,
-  },
-  {
-    id: 'playwright-test',
-    label: 'Run Tests',
-    description: 'Run Playwright E2E tests',
-    command: 'bun x playwright test',
-    category: 'test',
-    timeout: 180000,
-  },
-  {
-    id: 'playwright-test-headed',
-    label: 'Run Tests (Visible)',
-    description: 'Run tests with browser visible',
-    command: 'bun x playwright test --headed',
-    category: 'test',
-    timeout: 180000,
-  },
-  {
-    id: 'typecheck',
-    label: 'Type Check',
-    description: 'Run TypeScript type checking',
-    command: 'bun x tsc --noEmit',
-    category: 'build',
-    timeout: 60000,
-  },
-  {
-    id: 'build',
-    label: 'Build for Production',
-    description: 'Create production build',
-    command: 'bun run build',
-    category: 'build',
-    timeout: 120000,
-  },
-]
 
 export function runtimeTerminalRoutes(config: { workspaceDir: string }) {
   const { workspaceDir } = config
   const router = new Hono()
 
   router.get('/terminal/commands', (c) => {
-    const commands = PRESET_COMMANDS.reduce((acc, cmd) => {
-      acc[cmd.category] ??= []
-      acc[cmd.category].push({
-        id: cmd.id,
-        label: cmd.label,
-        description: cmd.description,
-        category: cmd.category,
-        dangerous: cmd.dangerous || false,
-      })
-      return acc
-    }, {} as Record<string, Array<{ id: string; label: string; description: string; category: string; dangerous: boolean }>>)
-
+    // Built per-request from the workspace's `package.json`, file probes
+    // (Prisma/Playwright/Python), and the active stack's `quickCommands`.
+    // See `quick-commands.ts` for the layering rules.
+    const commands = groupQuickCommandsByCategory(buildQuickCommands(workspaceDir))
     return c.json({ commands })
   })
 
@@ -137,7 +43,9 @@ export function runtimeTerminalRoutes(config: { workspaceDir: string }) {
       return c.json({ error: { code: 'invalid_body', message: 'Invalid request body' } }, 400)
     }
 
-    const preset = PRESET_COMMANDS.find(cmd => cmd.id === body.commandId)
+    // Re-resolve from the dynamic list so a freshly added `package.json`
+    // script (or a stack switch) is honored without restarting the runtime.
+    const preset = buildQuickCommands(workspaceDir).find(cmd => cmd.id === body.commandId)
     if (!preset) {
       return c.json({ error: { code: 'unknown_command', message: `Unknown command: ${body.commandId}` } }, 400)
     }
@@ -175,16 +83,11 @@ export function runtimeTerminalRoutes(config: { workspaceDir: string }) {
     ;(async () => {
       try {
         await writer.write(encoder.encode(`$ ${preset.command}\n\n`))
-        const child = spawn('sh', ['-c', preset.command], {
-          cwd: workspaceDir,
-          env: {
-            ...process.env,
-            FORCE_COLOR: '1',
-            CI: 'true',
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: true,
-        })
+        // Platform-aware spawn: `sh -c` + detached process group on Unix
+        // (so `makeKillChild` can signal the whole tree via negative pid)
+        // and PowerShell + windowsHide on Windows so no console window
+        // flashes and `taskkill /T` can walk the process tree.
+        const child = spawnPresetShell({ command: preset.command, cwd: workspaceDir })
         const killChild = makeKillChild(child)
         const timeoutId = setTimeout(() => {
           writer.write(encoder.encode('\n\n[ERROR] Command timed out\n')).catch(() => {})
@@ -261,35 +164,20 @@ export function runtimeTerminalRoutes(config: { workspaceDir: string }) {
     }
 
     ;(async () => {
-      const launcher =
-        'cd -- "${SHOGO_CWD:-$SHOGO_ROOT}" 2>/dev/null || cd -- "$SHOGO_ROOT"; ' +
-        'export OLDPWD="${SHOGO_OLDPWD:-$PWD}"; ' +
-        'eval "$SHOGO_CMD"; ' +
-        '__shogo_rc=$?; ' +
-        '{ pwd > "$SHOGO_PWD_FILE"; } 2>/dev/null; ' +
-        'exit $__shogo_rc'
-
-      let child: ReturnType<typeof spawn>
+      // Platform-aware launcher: bash `cd → eval → write pwd → exit` on
+      // Unix, PowerShell equivalent on Windows. See terminal-shell.ts.
+      // HOME is scoped to the workspace on Unix (npm/git/etc. tilde
+      // expansion) but left alone on Windows where USERPROFILE is what
+      // PowerShell users expect.
+      let child: ReturnType<typeof spawnRunShell>
       try {
-        child = spawn('bash', ['-c', launcher], {
-          cwd: effectiveCwd,
-          env: {
-            ...process.env,
-            SHOGO_CMD: command,
-            SHOGO_CWD: effectiveCwd,
-            SHOGO_ROOT: workspaceDir,
-            SHOGO_PWD_FILE: pwdFile,
-            OLDPWD: prevCwd,
-            SHOGO_OLDPWD: prevCwd,
-            HOME: workspaceDir,
-            PWD: effectiveCwd,
-            FORCE_COLOR: '1',
-            CLICOLOR: '1',
-            CLICOLOR_FORCE: '1',
-            TERM: process.env.TERM || 'xterm-256color',
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: true,
+        child = spawnRunShell({
+          command,
+          effectiveCwd,
+          rootDir: workspaceDir,
+          pwdFile,
+          prevCwd,
+          extraEnv: process.platform === 'win32' ? undefined : { HOME: workspaceDir },
         })
       } catch (err: any) {
         cleanup()
@@ -373,28 +261,6 @@ function pipeWithBackpressure(
         .catch(() => src.resume())
     }
   })
-}
-
-function makeKillChild(child: ReturnType<typeof spawn>) {
-  let killed = false
-  const killGroup = (sig: NodeJS.Signals) => {
-    if (!child.pid) return
-    try {
-      process.kill(-child.pid, sig)
-    } catch {
-      try {
-        child.kill(sig)
-      } catch {}
-    }
-  }
-  return function killChild(signal: NodeJS.Signals = 'SIGTERM') {
-    if (killed) return
-    killed = true
-    killGroup(signal)
-    setTimeout(() => {
-      if (!child.killed && child.exitCode === null) killGroup('SIGKILL')
-    }, 2_000).unref?.()
-  }
 }
 
 async function writeMetaSentinel(
