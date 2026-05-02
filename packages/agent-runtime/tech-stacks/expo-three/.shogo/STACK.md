@@ -31,7 +31,9 @@ Unity build of the same scene would achieve. To stay above that floor:
 ## Files
 
 - `App.tsx` — root component, mounts the canvas and HUD.
-- `src/lib/store.ts` — `zustand` store for entity state.
+- `src/lib/store.tsx` — React Context store. Per-frame inputs (move/aim) live
+  in `useRef` so `useFrame` can read them without re-rendering; `playerHp` is
+  the only field in React state because the HUD subscribes to it.
 - `src/game/` — scene primitives (`CameraRig`, `Ground`, `Player`,
   `Mobs`, `Projectiles`, `FpsMeter`).
 - `src/ui/` — UI overlay (`Joystick`, `HUD`).
