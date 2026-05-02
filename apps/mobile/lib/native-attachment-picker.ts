@@ -182,11 +182,13 @@ export function executeNativeAttachAction(
         return
       }
       const size = doc.size ?? dataUrl.length
-      const isZip =
-        doc.name.toLowerCase().endsWith(".zip") ||
+      const lowerName = doc.name.toLowerCase()
+      const isExempt =
+        lowerName.endsWith(".zip") ||
+        lowerName.endsWith(".shogo-project") ||
         mime === "application/zip" ||
         mime === "application/x-zip-compressed"
-      if (!isZip && size > maxFileSizeBytes) {
+      if (!isExempt && size > maxFileSizeBytes) {
         onError(`"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
         return
       }

@@ -1,28 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * `useVoiceConversation` (web) — drop-in React hook wrapping
- * `@elevenlabs/react`'s `useConversation` with batteries included:
+ * `useVoiceConversation` (native) — drop-in React Native hook wrapping
+ * `@elevenlabs/react-native`'s `useConversation` with the same battery-
+ * included behaviour as the web hook (signed-URL fetch, `add_memory`
+ * tool, contextual memory injection, transcript persistence).
  *
- *   1. Fetches a signed URL from the consumer's server (default: `/api/voice/signed-url`).
- *   2. Registers the canonical `add_memory` client tool (POST-es to `/api/memory/add`).
- *   3. Auto-injects relevant memory as a contextual update on each user message
- *      (POST `/api/memory/retrieve`).
- *   4. Accumulates a plain-text transcript and calls `onTranscript` on disconnect,
- *      plus a `pagehide` `navigator.sendBeacon` fallback so nothing is lost on
- *      tab close.
+ * Differences from the web implementation:
  *
- * Consumers can mix in additional `clientTools` and override every path.
+ *   - Imports from `@elevenlabs/react-native` rather than
+ *     `@elevenlabs/react`. The RN package re-exports the same
+ *     `useConversation` API and additionally configures WebRTC +
+ *     native AudioSession internally, so the wrapper logic is
+ *     identical.
+ *   - There is no `navigator.mediaDevices.getUserMedia` pre-call —
+ *     LiveKit handles mic permission negotiation when the session
+ *     opens. Consumers can pass an optional `requestPermissions`
+ *     callback (typically wired to `expo-av` or
+ *     `react-native-permissions`) which is awaited before the
+ *     signed-URL fetch.
+ *   - The browser's `pagehide` + `navigator.sendBeacon` flush is
+ *     replaced with an `AppState.addEventListener('change', ...)`
+ *     handler that fires a regular `fetch` POST when the app moves
+ *     to the background. There's no native equivalent to `sendBeacon`,
+ *     but the OS keeps the JS context alive long enough during a
+ *     background transition for the request to leave the device.
  *
- * Requires the caller's app to have `@elevenlabs/react` installed (optional
- * peer dependency). For React Native, import from
- * `@shogo-ai/sdk/voice/native` instead.
+ * Requires the host app to install `@elevenlabs/react-native`,
+ * `@livekit/react-native`, and `@livekit/react-native-webrtc`. All
+ * three are optional peer dependencies of `@shogo-ai/sdk`.
  */
 
 import { useCallback, useEffect, useRef } from 'react'
-// `@elevenlabs/react` is an optional peer dep. The import is a type-only path
-// at compile time; at runtime the host app must have it installed.
-import { useConversation } from '@elevenlabs/react'
+import { AppState, type NativeEventSubscription } from 'react-native'
+// `@elevenlabs/react-native` is an optional peer dep at runtime. Just
+// importing it triggers the WebRTC global polyfill and sets the native
+// session setup strategy, so the import order (provider mounted near
+// the root) matters.
+import { useConversation } from '@elevenlabs/react-native'
 import {
   appendTranscriptLine,
   buildSessionPayload,
@@ -37,12 +52,43 @@ import {
   type ClientToolFn,
 } from '../shared/index.js'
 
-export type UseVoiceConversationOptions = BaseVoiceConversationOptions
+export interface UseVoiceConversationOptions extends BaseVoiceConversationOptions {
+  /**
+   * Optional pre-flight microphone permission hook. Called once
+   * before each `start()` (and the `start()` triggered inside
+   * `restart()`). Throw to abort the session — the rejection
+   * propagates out through `start()` so the consumer can present a
+   * permissions UI.
+   *
+   * Typical wiring with `expo-av`:
+   *
+   * ```ts
+   * import * as Audio from 'expo-av'
+   * useVoiceConversation({
+   *   characterName: 'Shogo',
+   *   requestPermissions: async () => {
+   *     const { status } = await Audio.requestPermissionsAsync()
+   *     if (status !== 'granted') {
+   *       throw new Error('Microphone permission denied')
+   *     }
+   *   },
+   * })
+   * ```
+   *
+   * If omitted, the SDK relies on LiveKit's internal permission flow
+   * (which presents the OS prompt the first time the audio track
+   * starts). Wiring this explicitly gives consumers a deterministic
+   * place to surface a custom denial UI.
+   */
+  requestPermissions?: () => Promise<void> | void
+}
+
 export type UseVoiceConversationResult = BaseVoiceConversationResult
 
 /**
- * Hook that owns the voice session lifecycle end-to-end. See module docblock
- * for the wire format of the various server endpoints.
+ * Native hook that owns the voice session lifecycle end-to-end. See
+ * the module docblock for the wire format of the various server
+ * endpoints.
  */
 export function useVoiceConversation(
   options: UseVoiceConversationOptions,
@@ -59,9 +105,14 @@ export function useVoiceConversation(
     onTranscript,
     shogoApiKey,
     projectId,
-    fetchCredentials = shogoApiKey ? 'omit' : 'same-origin',
+    // RN fetch has no real "same-origin" — apps are always cross-
+    // origin to the backend. Default to `'omit'` for the bearer
+    // path and `'include'` for the cookie path so the cookie jar
+    // gets used when the consumer set up auth that way.
+    fetchCredentials = shogoApiKey ? 'omit' : 'include',
     onError,
     onMessage,
+    requestPermissions,
   } = options
 
   const authHeaders = useCallback((): Record<string, string> => {
@@ -73,10 +124,6 @@ export function useVoiceConversation(
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
   const weStartedSessionRef = useRef(false)
-  // Set to `true` between `endSession()` and the subsequent `startSession()`
-  // inside `restart(...)`. While true, the disconnect handler skips the
-  // transcript flush and `onConnect` leaves the transcript buffer intact
-  // so the reconnect gap is transparent to consumers.
   const isRestartingRef = useRef(false)
   const conversationRef = useRef<{
     sendContextualUpdate: (text: string) => void
@@ -154,29 +201,32 @@ export function useVoiceConversation(
     sendUserActivity?: () => void
   }
 
-  // Flush any pending transcript on `pagehide` using sendBeacon — the regular
-  // POST can race against the browser killing the tab.
+  // Flush any pending transcript when the app moves to the background.
+  // No native equivalent of `sendBeacon` exists, but the OS keeps the
+  // JS runtime alive long enough during the foreground → background
+  // transition for a normal `fetch` POST to leave the device. If the
+  // process is killed mid-flight the data is lost; consumers that
+  // need stronger durability should subscribe via `onTranscript` and
+  // persist incrementally instead of relying on disconnect flushes.
   useEffect(() => {
-    const onHide = () => {
-      if (!weStartedSessionRef.current || transcriptRef.current.length === 0) return
-      const transcript = transcriptRef.current.join('\n').trim()
-      transcriptRef.current = []
-      if (transcript.length < 20) return
-      try {
-        const blob = new Blob([JSON.stringify({ transcript })], { type: 'application/json' })
-        navigator.sendBeacon(transcriptIngestPath, blob)
-      } catch {
-        // Beacon failures aren't recoverable; swallow.
-      }
+    const sub: NativeEventSubscription = AppState.addEventListener(
+      'change',
+      (nextState) => {
+        if (nextState !== 'background' && nextState !== 'inactive') return
+        if (!weStartedSessionRef.current || transcriptRef.current.length === 0) return
+        const transcript = transcriptRef.current.join('\n').trim()
+        transcriptRef.current = []
+        if (transcript.length < 20) return
+        void postJson(transcriptIngestPath, { transcript }).catch(() => {
+          // Best effort — the app is going away.
+        })
+      },
+    )
+    return () => {
+      sub.remove()
     }
-    window.addEventListener('pagehide', onHide)
-    return () => window.removeEventListener('pagehide', onHide)
-  }, [transcriptIngestPath])
+  }, [postJson, transcriptIngestPath])
 
-  // Shared session-start routine used by both `start()` and `restart()`.
-  // `suppressFirstMessage` passes `overrides.agent.firstMessage = ''` so
-  // the agent skips its opening greeting — used when programmatically
-  // reconnecting mid-conversation (e.g. a barge-in "stop AI" control).
   const startInternal = useCallback(
     async (opts?: { suppressFirstMessage?: boolean }) => {
       if (status === 'connected' || status === 'connecting') {
@@ -187,9 +237,11 @@ export function useVoiceConversation(
           /* fall through */
         }
       }
-      // Web-only: ask the browser for mic permission up front so the
-      // signed-URL fetch isn't wasted if the user denies it.
-      await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Native: optional consumer-supplied permission gate. Throw to
+      // abort the session before we waste a signed-URL request.
+      if (requestPermissions) {
+        await requestPermissions()
+      }
       const data = await fetchSignedUrl({
         path: resolvedSignedUrlPath,
         fetchCredentials,
@@ -214,12 +266,13 @@ export function useVoiceConversation(
       startSession,
       characterName,
       authHeaders,
+      requestPermissions,
     ],
   )
 
   const start = useCallback(
-    async (options?: { suppressFirstMessage?: boolean }) => {
-      await startInternal(options)
+    async (opts?: { suppressFirstMessage?: boolean }) => {
+      await startInternal(opts)
     },
     [startInternal],
   )
@@ -229,8 +282,8 @@ export function useVoiceConversation(
   }, [endSession])
 
   const restart = useCallback(
-    async (options?: { suppressFirstMessage?: boolean }) => {
-      const suppress = options?.suppressFirstMessage ?? true
+    async (opts?: { suppressFirstMessage?: boolean }) => {
+      const suppress = opts?.suppressFirstMessage ?? true
       isRestartingRef.current = true
       try {
         try {
@@ -238,9 +291,6 @@ export function useVoiceConversation(
         } catch {
           /* best effort — may already be disconnected */
         }
-        // Small settle window matches the existing reconnect pattern in
-        // startInternal so the underlying transport is fully torn down
-        // before we open a new session.
         await new Promise((r) => setTimeout(r, 120))
         await startInternal({ suppressFirstMessage: suppress })
       } finally {
@@ -261,9 +311,6 @@ export function useVoiceConversation(
       ref.sendUserMessage(text)
       return
     }
-    // Older @elevenlabs/react versions only expose sendContextualUpdate.
-    // Fall back to injecting the text as context and nudging activity so
-    // the agent is more likely to take its turn.
     ref.sendContextualUpdate(text)
     try {
       ref.sendUserActivity?.()

@@ -673,13 +673,25 @@ so your `ELEVENLABS_API_KEY` never touches the browser.
 
 - `@shogo-ai/sdk/voice` — framework-agnostic helpers (`ElevenLabsClient`, `composeAgentPrompt`, `stripAudioTags`, `AUDIO_TAGS`, expressivity block composer).
 - `@shogo-ai/sdk/voice/server` — `createVoiceHandlers(...)` factory returning Web-standard `Request → Response` functions for `signedUrl`, `tts`, `agent.{create,patch,delete}`, and `audioTags`.
-- `@shogo-ai/sdk/voice/react` — `useVoiceConversation()` hook wrapping `@elevenlabs/react` with a built-in `add_memory` client tool, automatic memory context injection, and transcript capture.
+- `@shogo-ai/sdk/voice/react` — web React hook (`useVoiceConversation`, `useShogoVoice`) + `<ShogoVoiceProvider>` + `<OrganicSphere>` / `<OrganicParticles>` visualizations, all wrapping `@elevenlabs/react`.
+- `@shogo-ai/sdk/voice/native` — React Native (Expo) sister export with the same API surface, wrapping `@elevenlabs/react-native` and rendering visualizations through `expo-gl` + `expo-three`. See [Voice on React Native](#voice-on-react-native) below.
 
 ### Install peer deps
 
 ```bash
-npm install @elevenlabs/react         # browser hook only
+# Web:
+npm install @elevenlabs/react three
+
+# React Native (Expo):
+npm install \
+  @elevenlabs/react-native @livekit/react-native @livekit/react-native-webrtc \
+  expo-gl expo-three three
 ```
+
+All voice peer deps are optional from the SDK's POV — only install the
+ones you actually use. Web-only consumers don't need any of the
+`@elevenlabs/react-native` / Expo / LiveKit packages, and native-only
+consumers don't need `@elevenlabs/react`.
 
 ### Server mount (Hono)
 
@@ -814,6 +826,98 @@ place, so you can leave the component mounted across connect/disconnect
 cycles.
 
 Requires the host app to have `three` installed (optional peer dep).
+
+### Voice on React Native
+
+`@shogo-ai/sdk/voice/native` is the Expo / React Native sister of
+`@shogo-ai/sdk/voice/react` — same hook signatures, same provider
+pattern, same `<OrganicSphere>` and `<OrganicParticles>` props — so a
+pod that already drives the web sphere can swap import paths without
+other code changes.
+
+```bash
+# Required peers (Expo / RN only):
+npm install \
+  @elevenlabs/react-native \
+  @livekit/react-native @livekit/react-native-webrtc \
+  expo-gl expo-three three
+```
+
+> **Expo dev builds are required.** `@elevenlabs/react-native` ships
+> WebRTC native modules via `@livekit/react-native`, which Expo Go
+> does not bundle. Run `npx expo prebuild` and build with `eas build`
+> or `expo run:ios` / `expo run:android`.
+
+```tsx
+// App.tsx — mount the provider once near the root.
+import { ShogoVoiceProvider } from '@shogo-ai/sdk/voice/native'
+
+export default function App({ children }: { children: React.ReactNode }) {
+  return <ShogoVoiceProvider>{children}</ShogoVoiceProvider>
+}
+```
+
+```tsx
+// Anywhere under that provider:
+import { Pressable, Text, View } from 'react-native'
+import {
+  OrganicParticles,
+  useShogoVoice,
+} from '@shogo-ai/sdk/voice/native'
+
+export function VoiceAvatar() {
+  const conversation = useShogoVoice()
+  const active = conversation.status === 'connected'
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={{ height: 320 }}>
+        <OrganicParticles
+          getFrequencyData={conversation.getOutputByteFrequencyData}
+          active={active}
+          style={{ flex: 1 }}
+        />
+      </View>
+      <Pressable
+        onPress={active ? conversation.end : conversation.start}
+        style={{ padding: 16 }}
+      >
+        <Text>{active ? 'End call' : 'Talk to Shogo'}</Text>
+      </Pressable>
+    </View>
+  )
+}
+```
+
+Differences from the web hook worth knowing:
+
+- **No `getUserMedia` pre-flight.** LiveKit handles mic permissions
+  internally. To present a custom denial UI, pass an explicit
+  `requestPermissions` callback (e.g. wired to `expo-av`). Throw
+  from the callback to abort the session before the signed-URL
+  fetch leaves the device:
+  ```ts
+  import * as Audio from 'expo-av'
+  useShogoVoice({
+    requestPermissions: async () => {
+      const { status } = await Audio.requestPermissionsAsync()
+      if (status !== 'granted') throw new Error('Microphone denied')
+    },
+  })
+  ```
+- **No `pagehide` / `sendBeacon`.** The transcript flush hooks into
+  `AppState` and POSTs via regular `fetch` when the app moves to
+  the background. There's no native `sendBeacon` equivalent, so the
+  request can be lost if the OS kills the process before it
+  completes — for stronger durability, persist incrementally via
+  the `onTranscript` callback.
+- **`fetchCredentials` defaults to `'include'`** (cookie path) or
+  `'omit'` (bearer path). RN apps have no concept of `same-origin`,
+  which is the web default.
+
+The visualization components render through `expo-gl` +
+`expo-three` and reuse the same shaders / config / band reactivity
+model as the web sphere, so visual presets you tune in a browser
+playground transfer 1:1.
 
 ### Pure helpers
 
