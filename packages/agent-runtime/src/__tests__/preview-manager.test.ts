@@ -11,9 +11,13 @@
 // the workspace root (the Expo / RN layout), so `bundlerCwd === workspaceDir`.
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { PreviewManager } from '../preview-manager'
+import { PreviewManager, emitBuildLine } from '../preview-manager'
+import {
+  __resetRuntimeLogDispatcherForTest,
+  getRuntimeLogsSnapshot,
+} from '../runtime-log-dispatcher'
 
 const TEST_DIR = '/tmp/test-preview-manager'
 
@@ -419,6 +423,78 @@ describe('PreviewManager', () => {
       // existence-check logic.
       await pm.restartApiServerOnly()
       expect(pm.apiServerPhase).toBe('idle')
+    })
+  })
+
+  // --- emitBuildLine: build-log dispatcher integration -----------------------
+  // The Output tab and Monitor consume the typed RuntimeLogEntry stream.
+  // Every call site in preview-manager.ts that previously called appendFileSync
+  // directly now goes through `emitBuildLine` so the stream stays in sync with
+  // `.build.log`. These tests pin that contract.
+
+  describe('emitBuildLine', () => {
+    let buildLogPath: string
+
+    beforeEach(() => {
+      __resetRuntimeLogDispatcherForTest()
+      buildLogPath = join(TEST_DIR, '.build.log')
+      // Ensure parent dir exists; setupProjectDir already does this.
+    })
+
+    afterEach(() => {
+      __resetRuntimeLogDispatcherForTest()
+    })
+
+    test('appends to .build.log AND dispatches through recordBuildEntry', () => {
+      emitBuildLine(buildLogPath, '[stdout]', 'compiled successfully', 'stdout')
+      const onDisk = readFileSync(buildLogPath, 'utf-8')
+      expect(onDisk).toContain('[stdout] compiled successfully')
+
+      const entries = getRuntimeLogsSnapshot()
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.source).toBe('build')
+      expect(entries[0]!.text).toBe('[stdout] compiled successfully')
+    })
+
+    test('stderr stream → level=error so the unseen-error red dot turns on', () => {
+      emitBuildLine(buildLogPath, '[stderr]', 'tsc: type error', 'stderr')
+      const entries = getRuntimeLogsSnapshot()
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.level).toBe('error')
+    })
+
+    test('stdout stream defaults to level=info on benign output', () => {
+      emitBuildLine(buildLogPath, '[stdout]', 'compiled in 200ms', 'stdout')
+      const entries = getRuntimeLogsSnapshot()
+      expect(entries[0]!.level).toBe('info')
+    })
+
+    test('empty lines are dropped (no disk write, no dispatch)', () => {
+      emitBuildLine(buildLogPath, '[stdout]', '', 'stdout')
+      expect(getRuntimeLogsSnapshot()).toHaveLength(0)
+      // The file was never created because no append happened.
+      expect(() => readFileSync(buildLogPath, 'utf-8')).toThrow()
+    })
+
+    test('disk failure does NOT block in-memory dispatch', () => {
+      // Point at an unwritable path: a directory we can never create
+      // (parent doesn't exist). appendFileSync will throw; emitBuildLine
+      // must swallow it and still dispatch.
+      const badPath = join(TEST_DIR, 'no-such-dir', 'nested', '.build.log')
+      expect(() =>
+        emitBuildLine(badPath, '[stdout]', 'still dispatched', 'stdout'),
+      ).not.toThrow()
+      const entries = getRuntimeLogsSnapshot()
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.text).toBe('[stdout] still dispatched')
+    })
+
+    test('detects ERROR-class words on stdout and tags as error', () => {
+      // The detector runs on stdout (we don't force level=info there) so
+      // a warm error message still surfaces with level=error.
+      emitBuildLine(buildLogPath, '[stdout]', 'ERROR: missing module', 'stdout')
+      const entries = getRuntimeLogsSnapshot()
+      expect(entries[0]!.level).toBe('error')
     })
   })
 })

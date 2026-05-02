@@ -13,6 +13,23 @@ import {
 } from "lucide-react-native";
 import { API_URL } from "../../../../lib/api";
 import { agentFetch } from "../../../../lib/agent-fetch";
+import { formatPromptCwd } from "./terminal/cwd-format";
+import { readTerminalError } from "./terminal/error-reader";
+import { pushHistory, walkHistory } from "./terminal/history";
+import { OutputBatcher } from "./terminal/output-batch";
+import {
+  finish as finishDecode,
+  makeDecoderState,
+  pushChunk as pushDecoderChunk,
+} from "./terminal/run-stream-decoder";
+import {
+  addSession as addSessionToList,
+  closeSession as closeSessionInList,
+  labelsFor,
+  makeSession,
+  patchSession as patchSessionInList,
+  type Session,
+} from "./terminal/session-reducer";
 
 /**
  * The IDE "Terminal" — a dual-mode runner for project workspaces.
@@ -48,6 +65,10 @@ import { agentFetch } from "../../../../lib/agent-fetch";
  * we lean on simple streamed stdout over HTTP instead of a persistent shell.
  * That covers ~all real workflows (`ls`, `cat`, `bun run …`, `git status`,
  * `curl`, …) without the maintenance surface of a terminal emulator.
+ *
+ * Pure logic (session reducer, history walker, output batcher, sentinel
+ * decoder, cwd formatting, error reading) lives in `./terminal/*.ts` so it
+ * can be unit-tested without rendering React.
  */
 
 interface PresetCommandDto {
@@ -56,61 +77,6 @@ interface PresetCommandDto {
   description: string;
   category: string;
   dangerous: boolean;
-}
-
-interface Session {
-  id: string;
-  output: string;
-  /** Non-null while a command (preset or free-form) is streaming. */
-  runningCmdId: string | null;
-  abort: AbortController | null;
-  /** Free-form prompt history, oldest → newest. */
-  history: string[];
-  /**
-   * Synthetic-shell cwd for this tab. `null` means "server default"
-   * (project workspace root) — we resolve it lazily on first command so
-   * new tabs don't need an up-front API call. Updated from the
-   * out-of-band metadata trailer after every command.
-   */
-  cwd: string | null;
-  /** Previous cwd so `cd -` works across independent `bash -c` invocations. */
-  prevCwd: string | null;
-}
-
-/**
- * Record-Separator framed trailer emitted by the server after a free-form
- * command finishes. Carries `{ cwd, exitCode, signal }` as base64-encoded
- * JSON. Kept in sync with META_SENTINEL_{PREFIX,SUFFIX} in
- * apps/api/src/routes/terminal.ts — change both or neither.
- */
-const META_SENTINEL_RE = /\u001eSHOGO_TERM_META:([A-Za-z0-9+/=]+)\u001e\n?/;
-
-interface RunMeta {
-  cwd?: string;
-  exitCode?: number | null;
-  signal?: string | null;
-}
-
-/**
- * Strip any complete metadata sentinel out of `buf`, returning the decoded
- * payload (if any) plus the remaining buffer with the sentinel removed.
- * Callers feed chunks in progressively and hold back a tail to handle
- * sentinels that straddle chunk boundaries.
- */
-function extractMeta(buf: string): { meta: RunMeta | null; rest: string } {
-  const m = META_SENTINEL_RE.exec(buf);
-  if (!m) return { meta: null, rest: buf };
-  let meta: RunMeta | null = null;
-  try {
-    const json =
-      typeof atob === "function"
-        ? atob(m[1])
-        : Buffer.from(m[1], "base64").toString("utf8");
-    meta = JSON.parse(json) as RunMeta;
-  } catch {
-    meta = null;
-  }
-  return { meta, rest: buf.slice(0, m.index) + buf.slice(m.index + m[0].length) };
 }
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -123,51 +89,6 @@ const CATEGORY_LABEL: Record<string, string> = {
 };
 
 const CATEGORY_ORDER: string[] = ["package", "database", "test", "build", "lint", "server"];
-
-let sessionIdSeq = 0;
-const makeSession = (): Session => ({
-  id: `t-${Date.now().toString(36)}-${++sessionIdSeq}`,
-  output: "",
-  runningCmdId: null,
-  abort: null,
-  history: [],
-  cwd: null,
-  prevCwd: null,
-});
-
-/**
- * Best-effort "looks like an absolute POSIX path inside this project".
- * Purely cosmetic — used to decide whether to render the prompt as `~/foo`
- * (inside project) or `/abs/path` (user cd'd elsewhere). Not a security
- * boundary; the server enforces/ignores escape as it sees fit.
- */
-function formatPromptCwd(cwd: string | null): string {
-  if (!cwd) return "";
-  // Show last two path segments for compactness, but keep absolute form if we
-  // only have one (`/tmp` stays `/tmp`).
-  const parts = cwd.split("/").filter(Boolean);
-  if (parts.length === 0) return "/";
-  if (parts.length === 1) return "/" + parts[0];
-  return parts.slice(-2).join("/");
-}
-
-async function readTerminalError(res: Response, fallback: string): Promise<Error> {
-  const contentType = res.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string } | string;
-    };
-    const message =
-      typeof body.error === "string"
-        ? body.error
-        : body.error?.message;
-    return new Error(message ?? fallback);
-  }
-
-  const text = await res.text().catch(() => "");
-  const trimmed = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  return new Error(trimmed ? `${fallback}: ${trimmed.slice(0, 160)}` : fallback);
-}
 
 export function Terminal({
   projectId,
@@ -200,10 +121,7 @@ export function Terminal({
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
   // Labels are positional — derived on every render so closing tab #2 leaves
   // "Terminal 1, Terminal 2" instead of "Terminal 1, Terminal 3".
-  const labels = useMemo(
-    () => new Map(sessions.map((s, i) => [s.id, `Terminal ${i + 1}`])),
-    [sessions],
-  );
+  const labels = useMemo(() => labelsFor(sessions), [sessions]);
 
   // ─── Preset commands ────────────────────────────────────────────────
   const loadCommands = useCallback(async () => {
@@ -272,7 +190,7 @@ export function Terminal({
   // ─── Session management ─────────────────────────────────────────────
   const addSession = useCallback(() => {
     const s = makeSession();
-    setSessions((prev) => [...prev, s]);
+    setSessions((prev) => addSessionToList(prev, s));
     setActiveId(s.id);
   }, []);
 
@@ -281,24 +199,20 @@ export function Terminal({
       setSessions((prev) => {
         const sess = prev.find((x) => x.id === id);
         sess?.abort?.abort();
-        const next = prev.filter((x) => x.id !== id);
-        // Closing the last terminal should dismiss the whole bottom panel —
-        // VS Code does this and it matches the "X = close this thing" intent.
-        if (next.length === 0) {
+        const result = closeSessionInList(prev, id, activeId);
+        if (result.panelDismissed) {
+          // Dismiss the panel and keep a placeholder for any reopen-
+          // without-unmount edge case.
           onRequestClose?.();
-          // Keep a placeholder so that if the panel gets reopened without
-          // unmounting us (shouldn't happen today, but belt-and-suspenders),
-          // we have a session to show.
           const fresh = makeSession();
           queueMicrotask(() => setActiveId(fresh.id));
           return [fresh];
         }
-        if (id === activeId) {
-          const idx = prev.findIndex((x) => x.id === id);
-          const neighbour = next[Math.max(0, Math.min(idx, next.length - 1))];
-          queueMicrotask(() => setActiveId(neighbour.id));
+        if (result.nextActiveId) {
+          const next = result.nextActiveId;
+          queueMicrotask(() => setActiveId(next));
         }
-        return next;
+        return result.sessions;
       });
     },
     [activeId, onRequestClose],
@@ -323,57 +237,41 @@ export function Terminal({
   }, [newSessionNonce, addSession]);
 
   const patchSession = useCallback((id: string, patch: (s: Session) => Session) => {
-    setSessions((prev) => prev.map((s) => (s.id === id ? patch(s) : s)));
+    setSessions((prev) => patchSessionInList(prev, id, patch));
   }, []);
 
   // ─── Output batching ────────────────────────────────────────────────
   // Chunks from `fetch().body.getReader()` arrive as often as the TCP
   // stack delivers them — for verbose commands (`yes`, `find /`,
   // `bun install`) that's thousands of tiny writes per second. Rendering
-  // a fresh React tree for each chunk pegs the main thread. Instead we
-  // accumulate per-session text in a ref and flush once per animation
-  // frame, so React only runs reconciliation ~60×/sec regardless of how
-  // chatty the command is.
-  const pendingOutputRef = useRef<Map<string, string>>(new Map());
-  const flushScheduledRef = useRef(false);
+  // a fresh React tree for each chunk pegs the main thread. The
+  // OutputBatcher coalesces all `append()` calls between two scheduler
+  // ticks (rAF in browsers, microtask elsewhere) into a single React
+  // commit, so reconciliation runs ~60×/sec regardless of how chatty the
+  // command is.
+  const batcherRef = useRef<OutputBatcher | null>(null);
+  if (batcherRef.current === null) {
+    batcherRef.current = new OutputBatcher((snapshot) => {
+      setSessions((prev) =>
+        prev.map((s) => {
+          const extra = snapshot.get(s.id);
+          return extra ? { ...s, output: s.output + extra } : s;
+        }),
+      );
+    });
+  }
   const flushPending = useCallback(() => {
-    flushScheduledRef.current = false;
-    const pending = pendingOutputRef.current;
-    if (pending.size === 0) return;
-    const snapshot = new Map(pending);
-    pending.clear();
-    setSessions((prev) =>
-      prev.map((s) => {
-        const extra = snapshot.get(s.id);
-        return extra ? { ...s, output: s.output + extra } : s;
-      }),
-    );
+    batcherRef.current?.flushNow();
   }, []);
-  const scheduleFlush = useCallback(() => {
-    if (flushScheduledRef.current) return;
-    flushScheduledRef.current = true;
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(flushPending);
-    } else {
-      // Tests / non-browser environments: fall back to microtask.
-      queueMicrotask(flushPending);
-    }
-  }, [flushPending]);
-  const appendOutput = useCallback(
-    (id: string, text: string) => {
-      if (!text) return;
-      const map = pendingOutputRef.current;
-      map.set(id, (map.get(id) ?? "") + text);
-      scheduleFlush();
-    },
-    [scheduleFlush],
-  );
+  const appendOutput = useCallback((id: string, text: string) => {
+    batcherRef.current?.append(id, text);
+  }, []);
 
   // Drain any pending rAF-buffered output on unmount so we don't leak
   // state into a next mount that happens to reuse a session id.
   useEffect(() => {
     return () => {
-      pendingOutputRef.current.clear();
+      batcherRef.current?.reset();
     };
   }, []);
 
@@ -469,13 +367,11 @@ export function Terminal({
       if (target.runningCmdId) return;
 
       // Record the command in history *before* handling built-ins so that ↑
-      // recalls `clear` / `exit` the same as any other line.
-      const pushHistory = (s: Session): Session => ({
+      // recalls `clear` / `exit` the same as any other line. The dedupe +
+      // 100-cap policy lives in `terminal/history.ts`.
+      const recordCommand = (s: Session): Session => ({
         ...s,
-        history:
-          s.history[s.history.length - 1] === trimmed
-            ? s.history
-            : [...s.history, trimmed].slice(-100),
+        history: pushHistory(s.history, trimmed),
       });
 
       // Built-ins handled client-side — these have no meaningful output or
@@ -485,14 +381,14 @@ export function Terminal({
       if (trimmed === "clear" || trimmed === "cls") {
         // Drop any rAF-batched chunks for this session so they don't bleed
         // back in on the next animation frame.
-        pendingOutputRef.current.delete(targetId);
-        patchSession(targetId, (s) => pushHistory({ ...s, output: "" }));
+        batcherRef.current?.clear(targetId);
+        patchSession(targetId, (s) => recordCommand({ ...s, output: "" }));
         return;
       }
       if (trimmed === "exit" || trimmed === "logout") {
         flushPending();
         patchSession(targetId, (s) =>
-          pushHistory({ ...s, output: s.output + "\n[session closed]\n" }),
+          recordCommand({ ...s, output: s.output + "\n[session closed]\n" }),
         );
         return;
       }
@@ -508,7 +404,7 @@ export function Terminal({
       // last lines.
       flushPending();
       patchSession(targetId, (s) =>
-        pushHistory({
+        recordCommand({
           ...s,
           runningCmdId: `free:${trimmed}`,
           abort: ctl,
@@ -550,9 +446,8 @@ export function Terminal({
    * Specialised streamer for `/terminal/run`. Unlike `streamInto`, we need
    * to strip a trailing base64 metadata sentinel from the visible output
    * and apply the `{ cwd, exitCode }` it carries to the session. The
-   * sentinel is framed in Record-Separator bytes, so we hold back any
-   * partial tail that *could* be the start of a sentinel until we see the
-   * closing byte.
+   * sentinel-aware decoding lives in `terminal/run-stream-decoder.ts`; we
+   * just feed chunks into it and forward visible bytes to the batcher.
    */
   const streamRunInto = useCallback(
     async (targetId: string, res: Response, ctl: AbortController) => {
@@ -566,74 +461,41 @@ export function Terminal({
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let pending = ""; // bytes we've decoded but not yet flushed to `output`
-        let meta: RunMeta | null = null;
-        const flush = (chunk: string) => {
-          if (!chunk) return;
-          appendOutput(targetId, chunk);
-        };
+        const decoderState = makeDecoderState();
 
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          pending += decoder.decode(value, { stream: true });
-
-          // 1. Pull out a complete sentinel, if present. There's only ever
-          //    one (emitted at the very end by the server), but we keep
-          //    looping defensively in case the server ever sends more.
-          for (;;) {
-            const { meta: found, rest } = extractMeta(pending);
-            if (!found) break;
-            meta = found;
-            pending = rest;
-          }
-
-          // 2. Flush whatever precedes a possibly-incomplete sentinel tail.
-          //    If pending ends with a 0x1E that hasn't been closed yet, it
-          //    *could* be the start of the sentinel — hold it back so we
-          //    don't accidentally render `\x1eSHOGO_TERM_META:...` to the
-          //    user if the TCP chunk boundary lands mid-sentinel.
-          const tail = pending.lastIndexOf("\u001e");
-          if (tail === -1) {
-            flush(pending);
-            pending = "";
-          } else {
-            flush(pending.slice(0, tail));
-            pending = pending.slice(tail);
-          }
+          const text = decoder.decode(value, { stream: true });
+          const { visible } = pushDecoderChunk(decoderState, text);
+          if (visible) appendOutput(targetId, visible);
         }
 
-        // Drain any final decoder bytes.
-        pending += decoder.decode();
-        // One last try to pluck a meta sentinel out of the remainder…
-        const finalExtract = extractMeta(pending);
-        if (finalExtract.meta) {
-          meta = finalExtract.meta;
-          pending = finalExtract.rest;
+        const tailText = decoder.decode();
+        if (tailText) {
+          const { visible } = pushDecoderChunk(decoderState, tailText);
+          if (visible) appendOutput(targetId, visible);
         }
-        // If what's left *still* looks like an unterminated sentinel, drop
-        // it rather than leaking control bytes into the display.
-        if (/^\u001eSHOGO_TERM_META:[A-Za-z0-9+/=]*$/.test(pending)) {
-          pending = "";
-        }
-        flush(pending);
+        const { visible: finalVisible } = finishDecode(decoderState);
+        if (finalVisible) appendOutput(targetId, finalVisible);
 
         // Make sure any batched chunks hit state before we append the
         // trailing `[exit N]` line — otherwise the exit marker can race
         // ahead of the last few bytes of command output.
         flushPending();
+        const meta = decoderState.meta;
         if (meta?.cwd) {
           patchSession(targetId, (s) =>
-            s.cwd === meta!.cwd
+            s.cwd === meta.cwd
               ? s
-              : { ...s, prevCwd: s.cwd ?? s.prevCwd, cwd: meta!.cwd ?? s.cwd },
+              : { ...s, prevCwd: s.cwd ?? s.prevCwd, cwd: meta.cwd ?? s.cwd },
           );
         }
         if (typeof meta?.exitCode === "number" && meta.exitCode !== 0) {
           patchSession(targetId, (s) => ({
             ...s,
-            output: s.output + `[exit ${meta!.exitCode}]\n`,
+            output: s.output + `[exit ${meta.exitCode}]\n`,
           }));
         }
       } catch (err) {
@@ -725,6 +587,8 @@ export function Terminal({
       <div
         ref={outputRef}
         onClick={focusPrompt}
+        role="region"
+        aria-label="Terminal output"
         className="flex-1 cursor-text overflow-auto bg-[#1e1e1e] px-3 py-2 font-mono text-[12px] leading-[1.5] text-[#d4d4d4]"
       >
         {active?.output && (
@@ -807,15 +671,17 @@ function SessionTabs({
   const [menuOpen, setMenuOpen] = useState(false);
   return (
     <div className="relative flex shrink-0 items-center justify-between border-b border-[#2a2a2a] bg-[#1e1e1e] pr-2">
-      <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
+      <div role="tablist" aria-label="Terminals" className="flex min-w-0 flex-1 items-center overflow-x-auto">
         {sessions.map((s) => {
           const active = s.id === activeId;
+          const label = labels.get(s.id) ?? s.id;
           return (
             <div
               key={s.id}
               role="tab"
               tabIndex={0}
               aria-selected={active}
+              aria-label={label}
               onClick={() => onSelect(s.id)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -834,9 +700,11 @@ function SessionTabs({
               ) : (
                 <span className="inline-block h-2 w-2 rounded-full bg-[#4ec9b0]/60" />
               )}
-              <span className="max-w-[120px] truncate">{labels.get(s.id) ?? s.id}</span>
+              <span className="max-w-[120px] truncate">{label}</span>
               <button
-                title="Close terminal"
+                type="button"
+                title={`Close ${label}`}
+                aria-label={`Close ${label}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   onClose(s.id);
@@ -851,8 +719,10 @@ function SessionTabs({
           );
         })}
         <button
+          type="button"
           onClick={onAdd}
           title="New Terminal  (⌘⇧`)"
+          aria-label="New Terminal"
           className="flex shrink-0 items-center gap-1 px-2 py-[6px] text-[11px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
         >
           <Plus size={12} />
@@ -863,6 +733,7 @@ function SessionTabs({
           title="Terminal actions & presets"
           aria-label="Terminal actions"
           aria-expanded={menuOpen}
+          aria-haspopup="menu"
           className="flex shrink-0 items-center gap-1 px-1 py-[6px] text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
         >
           <ChevronDown size={12} />
@@ -871,17 +742,21 @@ function SessionTabs({
       <div className="flex items-center gap-1">
         {running && (
           <button
+            type="button"
             onClick={onStop}
             title="Stop running command  (Ctrl+C)"
+            aria-label="Stop running command"
             className="flex items-center gap-1 rounded px-2 py-[2px] text-[11px] text-[#f48771] hover:bg-[#ffffff1a]"
           >
             <Square size={10} /> Stop
           </button>
         )}
         <button
+          type="button"
           onClick={onClear}
           disabled={clearDisabled}
           title="Clear output"
+          aria-label="Clear output"
           className="flex items-center gap-1 rounded px-2 py-[2px] text-[11px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white disabled:opacity-40"
         >
           <Trash2 size={10} /> Clear
@@ -1084,23 +959,13 @@ const Prompt = React.forwardRef<
           setHistIdx(null);
         }}
         onKeyDown={(e) => {
-          if (e.key === "ArrowUp") {
-            if (history.length === 0) return;
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+            const dir = e.key === "ArrowUp" ? "up" : "down";
+            const result = walkHistory(history, histIdx, dir);
+            if (!result) return;
             e.preventDefault();
-            const next = histIdx === null ? history.length - 1 : Math.max(0, histIdx - 1);
-            setHistIdx(next);
-            setValue(history[next] ?? "");
-          } else if (e.key === "ArrowDown") {
-            if (history.length === 0 || histIdx === null) return;
-            e.preventDefault();
-            const next = histIdx + 1;
-            if (next >= history.length) {
-              setHistIdx(null);
-              setValue("");
-            } else {
-              setHistIdx(next);
-              setValue(history[next] ?? "");
-            }
+            setHistIdx(result.index);
+            setValue(result.value);
           } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
             // Ctrl+L / ⌘K parity with a real shell: clear the buffer but
             // preserve whatever the user was typing. We swallow the event so
@@ -1124,6 +989,7 @@ const Prompt = React.forwardRef<
           }
         }}
         disabled={disabled}
+        aria-label="Command"
         spellCheck={false}
         autoCapitalize="off"
         autoCorrect="off"
@@ -1142,12 +1008,18 @@ function ConfirmDangerous({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const titleId = "destructive-confirm-title"
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-[360px] rounded-lg border border-[#2a2a2a] bg-[#252526] p-4 shadow-2xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="w-[360px] rounded-lg border border-[#2a2a2a] bg-[#252526] p-4 shadow-2xl"
+      >
         <div className="mb-2 flex items-center gap-2 text-[#dcdcaa]">
           <AlertTriangle size={14} />
-          <span className="text-[13px] font-semibold">This is a destructive command</span>
+          <span id={titleId} className="text-[13px] font-semibold">This is a destructive command</span>
         </div>
         <div className="mb-1 text-[13px] text-[#cccccc]">{command.label}</div>
         <div className="mb-4 text-[12px] leading-relaxed text-[#858585]">
@@ -1155,12 +1027,14 @@ function ConfirmDangerous({
         </div>
         <div className="flex justify-end gap-2">
           <button
+            type="button"
             onClick={onCancel}
             className="rounded px-3 py-1 text-[12px] text-[#cccccc] hover:bg-[#ffffff1a]"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={onConfirm}
             className="rounded bg-[#c72e2e] px-3 py-1 text-[12px] text-white hover:bg-[#d94545]"
           >

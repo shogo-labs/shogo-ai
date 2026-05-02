@@ -21,34 +21,35 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test'
+import { installAgentFetchMock, restoreAgentFetch } from '../../test/helpers/mockAgentFetch'
 
-// Mock `react-native` BEFORE the SUT imports it (transitively via agent-fetch).
-// `bun:test` resolves mocks at module-graph time, so this must come first.
+// `mock.module` for `react-native` is also installed globally by
+// `test/testing-library.ts`. Re-declaring here keeps the file runnable in
+// isolation; the second registration is a harmless no-op.
 mock.module('react-native', () => ({
   Platform: { OS: 'web' },
 }))
 
-// Stub agent-fetch + api so the SUT has a deterministic transport.
+mock.module('../api', () => ({ API_URL: 'http://api.example.test' }))
+
+// Hook into the testing-library global agent-fetch handler instead of
+// installing a per-file `mock.module('../agent-fetch', …)`. `mock.module`
+// in Bun is process-global and survives the test file, which previously
+// poisoned every downstream test that imported `agent-fetch`.
 let mockResponse: Response | null = null
 let lastUrl = ''
 let lastInit: RequestInit | undefined
-mock.module('../agent-fetch', () => ({
-  agentFetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-    lastUrl = typeof input === 'string' ? input : input.toString()
-    lastInit = init
-    if (init?.signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError')
-    }
-    if (!mockResponse) throw new Error('test forgot to set mockResponse')
-    return mockResponse
-  },
-}))
-mock.module('../api', () => ({ API_URL: 'http://api.example.test' }))
 
-// Auth client is pulled in transitively; stub it so we don't hit Expo SecureStore.
-mock.module('../auth-client', () => ({ authClient: { getCookie: () => null } }))
+const handler = async (input: RequestInfo | URL, init?: RequestInit) => {
+  lastUrl = typeof input === 'string' ? input : input.toString()
+  lastInit = init
+  if (init?.signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError')
+  }
+  if (!mockResponse) throw new Error('test forgot to set mockResponse')
+  return mockResponse
+}
 
-// Now import the SUT.
 const {
   fetchDiagnostics,
   refreshDiagnostics,
@@ -59,10 +60,12 @@ beforeEach(() => {
   mockResponse = null
   lastUrl = ''
   lastInit = undefined
+  installAgentFetchMock(handler)
 })
 
 afterEach(() => {
   mockResponse = null
+  restoreAgentFetch()
 })
 
 describe('diagnostics-api — Knative cold-start (HTML 503)', () => {

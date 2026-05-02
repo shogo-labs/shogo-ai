@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { editor } from "monaco-editor";
-import { useResizable, VerticalSplit, HorizontalSplit } from "./Splitter";
+import { useResizable, VerticalSplit } from "./Splitter";
 import { ActivityBar } from "./ActivityBar";
 import { FileTree, type FileTreeHandlers } from "./FileTree";
 import { StatusBar } from "./StatusBar";
 import { EditorGroupView } from "./EditorGroup";
 import { isImagePath } from "./ImagePreview";
 import { Palette, type PaletteItem } from "./Palette";
-import { BottomPanel } from "./BottomPanel";
+import {
+  ideBottomPanelStore,
+  useBottomPanelState,
+} from "../../../../lib/ide-bottom-panel-store";
 import {
   DEFAULT_SETTINGS,
   type ActivityId,
@@ -131,24 +134,20 @@ export function Workbench({
     try { localStorage.setItem("shogo.ide.sidebarOpen", String(sidebarOpen)); } catch { /* ignore */ }
   }, [sidebarOpen]);
 
-  const [bottomPanelOpen, setBottomPanelOpen] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("shogo.ide.bottomPanelOpen") === "true";
-    } catch { /* ignore */ }
-    return false;
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem("shogo.ide.bottomPanelOpen", String(bottomPanelOpen));
-    } catch { /* ignore */ }
-  }, [bottomPanelOpen]);
-
-  // Nonce incremented on each ⌘⇧` press / "New Terminal" command. Terminal
-  // component subscribes and creates a fresh session whenever it changes.
-  const [newTerminalNonce, setNewTerminalNonce] = useState(0);
+  // Bottom-panel state lives in the lifted store so the same drawer is
+  // visible from anywhere in the project view (via DrawerHost mounted at
+  // ProjectLayout). ⌘J / ⌘⇧` keybinds and the command palette here all
+  // delegate to the store.
+  const bottomPanelOpen = useBottomPanelState((s) => s.open);
+  const setBottomPanelOpen = useCallback((next: boolean | ((v: boolean) => boolean)) => {
+    if (typeof next === "function") {
+      ideBottomPanelStore.setOpen(next(ideBottomPanelStore.getState().open));
+    } else {
+      ideBottomPanelStore.setOpen(next);
+    }
+  }, []);
   const requestNewTerminal = useCallback(() => {
-    setBottomPanelOpen(true);
-    setNewTerminalNonce((n) => n + 1);
+    ideBottomPanelStore.requestNewTerminal();
   }, []);
   const [services, setServices] = useState<Record<string, WorkspaceService>>({ agent: agentService });
   const [roots, setRoots] = useState<Root[]>([
@@ -184,23 +183,6 @@ export function Workbench({
 
   const sidebarSplit = useResizable({ initial: 280, min: 200, max: 540, direction: "horizontal" });
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
-  // Bottom panel height: dragging the horizontal split grows the panel *upward*,
-  // so we invert the delta direction by using the pane's own height state.
-  const [bottomPanelSize, setBottomPanelSize] = useState<number>(() => {
-    try {
-      const raw = localStorage.getItem("shogo.ide.bottomPanelSize");
-      if (raw) {
-        const n = parseInt(raw, 10);
-        if (Number.isFinite(n)) return Math.min(600, Math.max(120, n));
-      }
-    } catch { /* ignore */ }
-    return 260;
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem("shogo.ide.bottomPanelSize", String(bottomPanelSize));
-    } catch { /* ignore */ }
-  }, [bottomPanelSize]);
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
   const monacoNsRef = useRef<MonacoNs | null>(null);
@@ -1314,62 +1296,14 @@ export function Workbench({
               )}
             </div>
 
-            {bottomPanelOpen ? (
-              <>
-                <HorizontalSplit
-                  onMouseDown={(e) => {
-                    const startY = e.clientY;
-                    const startSize = bottomPanelSize;
-                    const move = (ev: MouseEvent) => {
-                      const delta = startY - ev.clientY;
-                      const next = Math.min(800, Math.max(120, startSize + delta));
-                      setBottomPanelSize(next);
-                    };
-                    const up = () => {
-                      window.removeEventListener("mousemove", move);
-                      window.removeEventListener("mouseup", up);
-                      document.body.style.cursor = "";
-                      document.body.style.userSelect = "";
-                    };
-                    window.addEventListener("mousemove", move);
-                    window.addEventListener("mouseup", up);
-                    document.body.style.cursor = "row-resize";
-                    document.body.style.userSelect = "none";
-                    e.preventDefault();
-                  }}
-                  onDoubleClick={() => setBottomPanelSize(260)}
-                />
-                <div style={{ height: bottomPanelSize, flexShrink: 0 }} className="min-h-0">
-                  <BottomPanel
-                    projectId={projectId ?? null}
-                    newSessionNonce={newTerminalNonce}
-                    onClose={() => setBottomPanelOpen(false)}
-                    onReveal={(path, line, col) =>
-                      void revealMatch("agent", path, line, col)
-                    }
-                  />
-                </div>
-              </>
-            ) : (
-              /*
-               * Closed-state peek handle. Sits just above the status bar as a
-               * thin strip; hover reveals the accent + "grab" cursor so users
-               * can find it without reading docs.
-               *
-               * Behaviour:
-               *   - Click (tiny drag < 6px): open at the remembered size.
-               *   - Drag upward: open with a size that tracks the pointer, so
-               *     the panel follows your mouse like VS Code / IntelliJ do
-               *     when dragging the panel border up from the status bar.
-               */
-              <BottomPeekHandle
-                onOpen={(sizeOrNull) => {
-                  if (sizeOrNull != null) setBottomPanelSize(sizeOrNull);
-                  setBottomPanelOpen(true);
-                }}
-                onPreview={(size) => setBottomPanelSize(size)}
-              />
-            )}
+            {/*
+              * The bottom drawer (Terminal / Problems / Output) is mounted
+              * by `DrawerHost` at the project layout level so it survives
+              * previewTab changes (Canvas → IDE → Files cycles no longer
+              * drop the user's terminal sessions). The Workbench keeps the
+              * ⌘J / ⌘⇧` keybinds and command palette items but defers the
+              * actual mount + size + peek-handle to the lifted host.
+              */}
             </div>
 
           </div>
@@ -1394,76 +1328,6 @@ export function Workbench({
       {palette === "file" && (
         <QuickOpen fileItems={fileItems} onClose={() => setPalette(null)} onLine={gotoLine} />
       )}
-    </div>
-  );
-}
-
-/**
- * Invisible-until-hovered strip that lives above the status bar when the
- * bottom panel is closed. Lets users pull the panel up by dragging — the
- * standard IDE affordance — without adding visual weight to the chrome.
- *
- * Callback contract:
- *   - onPreview(size)  live during drag so the panel can follow the cursor
- *     before the mouseup. Size is clamped to sane min/max.
- *   - onOpen(size|null) fires on mouseup / click:
- *       • null  → treat as a click (drag distance < CLICK_SLOP). Caller
- *                 should open at whatever size it was already at.
- *       • number → the final drag size. Caller should set size + open.
- */
-function BottomPeekHandle({
-  onPreview,
-  onOpen,
-}: {
-  onPreview: (size: number) => void;
-  onOpen: (size: number | null) => void;
-}) {
-  const MIN_SIZE = 120;
-  const MAX_SIZE = 800;
-  const CLICK_SLOP = 6;
-  return (
-    <div
-      role="separator"
-      aria-orientation="horizontal"
-      aria-label="Drag up to open panel"
-      title="Drag up to open panel  (⌘J)"
-      className="group relative h-[3px] shrink-0 cursor-row-resize select-none"
-      onMouseDown={(e) => {
-        // Only react to the primary button — right-click / middle-click have
-        // their own meanings and shouldn't hijack the panel.
-        if (e.button !== 0) return;
-        e.preventDefault();
-        const startY = e.clientY;
-        let lastSize: number | null = null;
-        let moved = false;
-        const move = (ev: MouseEvent) => {
-          const delta = startY - ev.clientY;
-          if (!moved && Math.abs(delta) < CLICK_SLOP) return;
-          moved = true;
-          const size = Math.min(MAX_SIZE, Math.max(MIN_SIZE, delta));
-          lastSize = size;
-          onPreview(size);
-        };
-        const up = () => {
-          window.removeEventListener("mousemove", move);
-          window.removeEventListener("mouseup", up);
-          document.body.style.cursor = "";
-          document.body.style.userSelect = "";
-          onOpen(moved ? lastSize : null);
-        };
-        window.addEventListener("mousemove", move);
-        window.addEventListener("mouseup", up);
-        document.body.style.cursor = "row-resize";
-        document.body.style.userSelect = "none";
-      }}
-    >
-      {/* Fat invisible hit-zone on top so users can grab it without a pixel
-          perfect aim. Visible 3px strip is the bottom edge of the editor
-          area; pointer enters pick up the accent color for discoverability. */}
-      <div
-        aria-hidden
-        className="absolute inset-x-0 -top-[4px] bottom-0 group-hover:bg-[#0078d4]/60 transition-colors"
-      />
     </div>
   );
 }

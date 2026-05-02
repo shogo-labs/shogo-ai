@@ -90,11 +90,11 @@ import {
   IDEPanel,
   CapabilitiesPanel,
   MonitorPanel,
-  TerminalPanel,
   PlansPanel,
   AgentsPanel,
   CheckpointsPanel,
 } from '../../../../components/project/panels'
+import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
 import { RefreshCw, MessageSquare, Sparkles } from 'lucide-react-native'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
@@ -115,7 +115,9 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-const STANDALONE_PANELS = ['ide', 'files', 'terminal', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
+// `terminal` is intentionally absent — chat exec entries now appear in
+// the IDE bottom drawer's "Output" tab (filterable to "Exec").
+const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
@@ -1506,6 +1508,14 @@ export default observer(function ProjectLayout() {
               Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
             )}
           >
+            <DrawerHost
+              projectId={projectId ?? null}
+              agentUrl={agentUrl ?? null}
+              messages={chatMessages}
+              platformIsWeb={Platform.OS === 'web'}
+              canvasAreaHidden={canvasAreaHidden}
+              isChatFullscreen={isChatFullscreen}
+            >
             {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
             {showNativeNarrowChatFab && (
               <SafeAreaView
@@ -1567,9 +1577,6 @@ export default observer(function ProjectLayout() {
               <PanelErrorBoundary panelName="Files">
                 <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               </PanelErrorBoundary>
-              <PanelErrorBoundary panelName="Terminal">
-                <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
-              </PanelErrorBoundary>
               <PanelErrorBoundary panelName="Capabilities">
                 <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} techStackId={techStackId} onTechStackChange={handleTechStackChange} selectedModel={selectedModel} onModelChange={handleModelChange} />
               </PanelErrorBoundary>
@@ -1589,6 +1596,7 @@ export default observer(function ProjectLayout() {
                 <CheckpointsPanel visible={previewTab === 'checkpoints'} projectId={projectId!} />
               </PanelErrorBoundary>
             </View>
+            </DrawerHost>
           </View>
 
           {/* Floating integrations card */}

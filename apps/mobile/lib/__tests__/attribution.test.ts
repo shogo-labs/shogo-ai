@@ -14,40 +14,34 @@ mock.module('react-native', () => ({
   Platform: { OS: 'web' },
 }))
 
-const store = new Map<string, string>()
+// `document.referrer` is a getter on happy-dom's `Document.prototype` —
+// we stub the descriptor for the duration of these tests and restore it
+// in `beforeEach` so we don't leak a polluted referrer into the rest of
+// the suite.
+const documentProto = Object.getPrototypeOf(document) as object
+let referrerValue = ''
+function setReferrer(value: string): void {
+  referrerValue = value
+}
 
-Object.defineProperty(globalThis, 'localStorage', {
-  value: {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => store.set(key, value),
-    removeItem: (key: string) => store.delete(key),
-  },
-  writable: true,
+Object.defineProperty(documentProto, 'referrer', {
   configurable: true,
+  get: () => referrerValue,
 })
 
-Object.defineProperty(globalThis, 'document', {
-  value: { referrer: '' },
-  writable: true,
-  configurable: true,
-})
-
-function setLocation(search: string, pathname = '/') {
-  Object.defineProperty(globalThis, 'window', {
-    value: {
-      location: { search, pathname },
-    },
-    writable: true,
-    configurable: true,
-  })
+function setLocation(search: string, pathname = '/'): void {
+  // `window.location` is read-only on happy-dom; the supported mutation
+  // seam is `window.history.replaceState`. The preload pins the origin
+  // to `http://localhost/`, so a relative URL stays same-origin.
+  window.history.replaceState({}, '', `${pathname}${search}`)
 }
 
 const { captureAttribution, getStoredAttribution, clearStoredAttribution } =
   await import('../attribution')
 
 beforeEach(() => {
-  store.clear()
-  ;(document as any).referrer = ''
+  localStorage.clear()
+  setReferrer('')
   setLocation('')
 })
 
@@ -64,7 +58,7 @@ describe('captureAttribution', () => {
   })
 
   test('captures document.referrer', () => {
-    ;(document as any).referrer = 'https://www.google.com/'
+    setReferrer('https://www.google.com/')
     setLocation('')
     captureAttribution()
 
@@ -107,25 +101,25 @@ describe('getStoredAttribution', () => {
   })
 
   test('returns parsed data', () => {
-    store.set('shogo_attribution', JSON.stringify({ utmSource: 'test' }))
+    localStorage.setItem('shogo_attribution', JSON.stringify({ utmSource: 'test' }))
     const data = getStoredAttribution()
     expect(data!.utmSource).toBe('test')
   })
 
   test('returns null on corrupt data', () => {
-    store.set('shogo_attribution', 'not-json')
+    localStorage.setItem('shogo_attribution', 'not-json')
     expect(getStoredAttribution()).toBeNull()
   })
 })
 
 describe('clearStoredAttribution', () => {
   test('removes stored data', () => {
-    store.set('shogo_attribution', '{}')
-    store.set('shogo_landing_page', '/test')
+    localStorage.setItem('shogo_attribution', '{}')
+    localStorage.setItem('shogo_landing_page', '/test')
 
     clearStoredAttribution()
 
-    expect(store.has('shogo_attribution')).toBe(false)
-    expect(store.has('shogo_landing_page')).toBe(false)
+    expect(localStorage.getItem('shogo_attribution')).toBeNull()
+    expect(localStorage.getItem('shogo_landing_page')).toBeNull()
   })
 })

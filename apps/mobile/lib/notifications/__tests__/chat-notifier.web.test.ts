@@ -134,9 +134,33 @@ function installEnv(options?: {
 }
 
 function uninstallEnv() {
-  delete (globalThis as any).document
-  delete (globalThis as any).window
-  delete (globalThis as any).Notification
+  // Restore happy-dom's preload-installed globals rather than deleting
+  // them — otherwise downstream RTL tests crash with `document is not
+  // defined` when run in the same process.
+  if (ORIGINALS.document !== undefined) {
+    ;(globalThis as any).document = ORIGINALS.document
+  } else {
+    delete (globalThis as any).document
+  }
+  if (ORIGINALS.window !== undefined) {
+    ;(globalThis as any).window = ORIGINALS.window
+  } else {
+    delete (globalThis as any).window
+  }
+  if (ORIGINALS.Notification !== undefined) {
+    ;(globalThis as any).Notification = ORIGINALS.Notification
+  } else {
+    delete (globalThis as any).Notification
+  }
+}
+
+const ORIGINALS = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  document: (globalThis as any).document,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  window: (globalThis as any).window,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Notification: (globalThis as any).Notification,
 }
 
 async function freshModule(): Promise<NotifyMod> {

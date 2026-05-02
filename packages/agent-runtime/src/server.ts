@@ -59,6 +59,11 @@ import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
+import {
+  recordCanvasErrorEntry,
+  recordConsoleEntry,
+} from './runtime-log-dispatcher'
+import { runtimeLogsRoutes } from './runtime-logs-routes'
 import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFrame } from './screencast-broadcaster'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
@@ -1472,12 +1477,16 @@ function getConsoleLogsBuffer(): string[] {
  * down the file, but TDZ doesn't apply to top-level `let` references
  * inside a function called only at runtime.
  */
-function recordConsoleLogLine(line: string, _stream: 'stdout' | 'stderr'): void {
+function recordConsoleLogLine(line: string, stream: 'stdout' | 'stderr'): void {
   if (!line) return
   appendRuntimeConsoleLogLine(line)
   for (const listener of logStreamListeners) {
     try { listener(line) } catch {}
   }
+  // Fan out to the typed dispatcher used by the new `/agent/runtime-logs`
+  // endpoints. Existing `/console-log` + `/agent/logs/stream` callers see
+  // no change in semantics; the dispatcher is purely additive.
+  recordConsoleEntry(line, stream)
 }
 
 function getPreviewManager(): PreviewManager {
@@ -2958,6 +2967,18 @@ app.get('/agent/logs/stream', (c) => {
   })
 })
 
+// ─── New typed runtime-log endpoints ───────────────────────────────────────
+// These supersede the line-oriented `/console-log` + `/agent/logs/stream`
+// pair for the Output tab. They emit `RuntimeLogEntry` JSON objects with
+// `source` + `level` so the frontend can filter and surface unseen-error
+// counts.
+//
+// The route bodies live in `runtime-logs-routes.ts` so they can be tested
+// against a tiny Hono app without booting the full agent-gateway. The legacy
+// endpoints are still wired (and forwarded to via the dispatcher) so older
+// clients keep working.
+app.route('/', runtimeLogsRoutes())
+
 
 // =============================================================================
 // API Server control (used by eval harness to force-sync before runtime checks).
@@ -3141,6 +3162,14 @@ app.post('/agent/canvas/error', async (c) => {
       error: body.error,
       timestamp: Date.now(),
     })
+
+    // Mirror into the typed runtime-log dispatcher so the Output tab
+    // surfaces canvas errors alongside build/console output and the
+    // unseen-error counter ticks correctly.
+    recordCanvasErrorEntry(
+      `[${body.phase || 'unknown'}] ${body.error}`,
+      body.surfaceId,
+    )
 
     console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}: ${body.error.slice(0, 200)}`)
     return c.json({ ok: true })

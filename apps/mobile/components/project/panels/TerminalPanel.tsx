@@ -4,16 +4,10 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { View, Text, Pressable, ScrollView } from 'react-native'
 import { Terminal, Trash2, ChevronDown, ChevronRight, CheckCircle2, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { extractExecEntries, type ExecEntry } from './extractExecEntries'
 
-export interface ExecEntry {
-  id: string
-  command: string
-  stdout: string
-  stderr: string
-  exitCode: number
-  durationMs?: number
-  timestamp: number
-}
+export { extractExecEntries }
+export type { ExecEntry }
 
 export interface TerminalPanelProps {
   /** Chat messages from useChat — exec entries are derived from tool-invocation parts */
@@ -41,48 +35,6 @@ function truncateOutput(text: string): { display: string; isTruncated: boolean }
     display: text.slice(0, half) + '\n\n  ── truncated ──\n\n' + text.slice(-half),
     isTruncated: true,
   }
-}
-
-/**
- * Extract exec/Bash tool calls from chat messages' parts.
- * Works with both tool-invocation and dynamic-tool part types.
- */
-export function extractExecEntries(messages: any[]): ExecEntry[] {
-  const entries: ExecEntry[] = []
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue
-    const parts = msg.parts as any[] | undefined
-    if (!parts) continue
-    for (const part of parts) {
-      const isToolInvocation = part.type === 'tool-invocation'
-      const isDynamicTool = part.type === 'dynamic-tool'
-      if (!isToolInvocation && !isDynamicTool) continue
-
-      const toolName = isToolInvocation ? part.toolInvocation?.toolName : part.toolName
-      if (toolName !== 'exec' && toolName !== 'Bash') continue
-
-      const args = isToolInvocation ? part.toolInvocation?.args : part.input
-      const result = isToolInvocation ? part.toolInvocation?.result : part.output
-      const state = isToolInvocation ? part.toolInvocation?.state : part.state
-      const id = isToolInvocation ? part.toolInvocation?.toolCallId : part.id
-
-      if (!args?.command) continue
-      // Skip calls still in progress (no result yet)
-      const hasResult = state === 'result' || state === 'output-available'
-
-      const r = (typeof result === 'object' && result !== null) ? result as Record<string, unknown> : {}
-      entries.push({
-        id: id || `exec-${entries.length}`,
-        command: args.command as string,
-        stdout: typeof r.stdout === 'string' ? r.stdout : (typeof result === 'string' ? result : ''),
-        stderr: typeof r.stderr === 'string' ? r.stderr : '',
-        exitCode: typeof r.exitCode === 'number' ? r.exitCode : (hasResult ? 0 : -1),
-        durationMs: typeof r.durationMs === 'number' ? r.durationMs : undefined,
-        timestamp: msg.createdAt ? new Date(msg.createdAt).getTime() : Date.now(),
-      })
-    }
-  }
-  return entries
 }
 
 function ExecEntryRow({ entry }: { entry: ExecEntry }) {
