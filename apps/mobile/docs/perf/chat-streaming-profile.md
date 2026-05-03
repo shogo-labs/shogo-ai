@@ -369,9 +369,21 @@ inspection — no other code reads the deleted ref.
 ## Phase 1 results: CSS containment
 
 **Change shipped:** `apps/mobile/components/chat/turns/TurnGroup.tsx`
-applies `contain: layout style` to every turn on web, plus
-`content-visibility: auto` + `contain-intrinsic-size: auto 300px` to
-non-streaming turns only. Native is unaffected (CSS-only).
+applies `contain: layout style` to every turn on web. Native is
+unaffected (CSS-only).
+
+> **Followup (regression fix):** an earlier iteration of this PR also
+> applied `content-visibility: auto` +
+> `contain-intrinsic-size: auto 300px` to non-streaming turns to skip
+> paint for offscreen turns. That caused the chat to scroll-jump on
+> initial load and on stream-end — every offscreen turn reported the
+> 300 px placeholder height until first scrolled into view, and each
+> "real measurement" event re-anchored scroll position via the
+> browser's overflow-anchoring. The paint savings turned out to be
+> negligible (`(program)` stayed at 1.2 % with `contain: layout style`
+> alone vs. 4.0 % with both), so `content-visibility` was removed.
+> The big layout-isolation win (the 25 % → 4 % collapse below) comes
+> from `contain: layout style`, not from `content-visibility`.
 
 **Long history @ 30 fps, before vs. after:**
 
