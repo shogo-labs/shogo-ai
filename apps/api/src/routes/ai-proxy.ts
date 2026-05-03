@@ -1433,7 +1433,7 @@ function splitSystemBlocksForCaching(parsed: any): void {
 import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing.service'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, hasSession } from '../lib/proxy-billing-session'
+import { accumulateUsage, accumulateImageUsage } from '../lib/proxy-billing-session'
 
 /**
  * Record token usage for billing.
@@ -1681,16 +1681,20 @@ async function recordImageUsage(
     const billedUsd = single.billedUsd * n
     if (billedUsd === 0) return
 
+    const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
-    if (hasSession(tokenPayload.projectId)) {
-      accumulateUsage(tokenPayload.projectId, `image:${model}`, 0, 0)
-      console.log(`[AI Proxy] 🎨 Accumulated image gen for session (project: ${tokenPayload.projectId}, model: ${model})`)
+    // If a billing session is open for this project, fold this image's USD
+    // into the session so the chat turn produces a single `chat_message`
+    // wallet debit instead of an extra `ai_image_generation` row.
+    if (billingProjectId && accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd)) {
+      console.log(`[AI Proxy] 🎨 Accumulated image gen for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId})`)
+      return
     }
 
     const result = await billingService.consumeUsage({
       workspaceId: tokenPayload.workspaceId,
-      projectId: tokenPayload.projectId || null,
+      projectId: billingProjectId,
       memberId: billingUserId,
       actionType: 'ai_image_generation',
       rawUsd,

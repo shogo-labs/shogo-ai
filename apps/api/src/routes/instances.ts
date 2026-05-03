@@ -43,6 +43,8 @@ import {
   verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
+import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
+import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -1039,6 +1041,27 @@ export function instanceRoutes() {
 
     const requestId = generateRequestId()
 
+    // Bracket chat turns with a billing session so per-turn AI proxy
+    // calls accumulate into a single `chat_message` row. The body envelope
+    // for this route doesn't carry a projectId, but the wrapper path
+    // pattern produced by `useRemoteChatTransport.ts` is the same as the
+    // transparent proxy, so we look in `body.path`.
+    const tunnelProjectId = body.path?.match(
+      /^\/api\/projects\/([^/]+)\/agent-proxy(?:\/|$)/,
+    )?.[1]
+    const cleanPath = body.path ? normalizeTransparentProxyPath(body.path) : ''
+    const isChatTurn = (body.method || 'POST') === 'POST' && cleanPath === '/agent/chat' && !!tunnelProjectId
+    let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
+    if (isChatTurn && tunnelProjectId) {
+      openSession(tunnelProjectId, instance.workspaceId, auth.userId)
+      const trackerStream = new ReadableStream<Uint8Array>({
+        start(c) { trackerController = c },
+      })
+      trackChatStreamForBilling(trackerStream, tunnelProjectId).catch((err) =>
+        console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
+      )
+    }
+
     const stream = new ReadableStream({
       start(controller) {
         const { cancel } = sendTunnelStreamRequest(
@@ -1053,11 +1076,21 @@ export function instanceRoutes() {
           },
           (chunk) => {
             if (chunk.type === 'stream-chunk' && chunk.data) {
-              controller.enqueue(new TextEncoder().encode(chunk.data))
+              const bytes = new TextEncoder().encode(chunk.data)
+              controller.enqueue(bytes)
+              if (trackerController) {
+                try { trackerController.enqueue(bytes) } catch { /* tracker closed */ }
+              }
             } else if (chunk.type === 'stream-end') {
               controller.close()
+              if (trackerController) {
+                try { trackerController.close() } catch { /* already closed */ }
+              }
             } else if (chunk.type === 'stream-error') {
               controller.error(new Error(chunk.error || 'Stream error'))
+              if (trackerController) {
+                try { trackerController.close() } catch { /* already closed */ }
+              }
             }
           },
         )
@@ -1067,6 +1100,9 @@ export function instanceRoutes() {
           signal.addEventListener('abort', () => {
             cancel()
             try { controller.close() } catch {}
+            if (trackerController) {
+              try { trackerController.close() } catch { /* already closed */ }
+            }
           }, { once: true })
         }
       },
@@ -1210,47 +1246,86 @@ export function instanceRoutes() {
         summary: 'streaming',
       })
 
-      const stream = new ReadableStream({
-        start(controller) {
-          const { cancel } = sendTunnelStreamRequest(
-            instanceId,
-            {
-              type: 'request',
-              requestId,
-              method,
-              path: agentPath,
-              projectId: tunnelProjectId,
-              headers: forwardHeaders,
-              body,
-            },
-            (chunk) => {
-              if (chunk.type === 'stream-chunk' && chunk.data) {
-                controller.enqueue(new TextEncoder().encode(chunk.data))
-              } else if (chunk.type === 'stream-end') {
-                controller.close()
-              } else if (chunk.type === 'stream-error') {
-                controller.error(new Error(chunk.error || 'Stream error'))
-              }
-            },
-          )
+      // Bracket chat turns with a billing session so the AI proxy
+      // accumulates per-turn usage into a single `chat_message` row.
+      // The remote runtime makes its own calls back to the cloud AI proxy
+      // for billing, keyed by tunnelProjectId.
+      const isChatTurn = method === 'POST' && cleanPath === '/agent/chat' && !!tunnelProjectId
+      let billingSessionHandedOff = false
+      let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
+      let trackerStream: ReadableStream<Uint8Array> | null = null
+      if (isChatTurn && tunnelProjectId) {
+        openSession(tunnelProjectId, instance.workspaceId, auth.userId)
+        trackerStream = new ReadableStream<Uint8Array>({
+          start(c) { trackerController = c },
+        })
+        trackChatStreamForBilling(trackerStream, tunnelProjectId).catch((err) =>
+          console.error(`[InstanceTunnel] Tracking error for project ${tunnelProjectId}:`, err),
+        )
+        billingSessionHandedOff = true
+      }
 
-          const signal = c.req.raw.signal
-          if (signal) {
-            signal.addEventListener('abort', () => {
-              cancel()
-              try { controller.close() } catch {}
-            }, { once: true })
-          }
-        },
-      })
+      try {
+        const stream = new ReadableStream({
+          start(controller) {
+            const { cancel } = sendTunnelStreamRequest(
+              instanceId,
+              {
+                type: 'request',
+                requestId,
+                method,
+                path: agentPath,
+                projectId: tunnelProjectId,
+                headers: forwardHeaders,
+                body,
+              },
+              (chunk) => {
+                if (chunk.type === 'stream-chunk' && chunk.data) {
+                  const bytes = new TextEncoder().encode(chunk.data)
+                  controller.enqueue(bytes)
+                  if (trackerController) {
+                    try { trackerController.enqueue(bytes) } catch { /* tracker closed */ }
+                  }
+                } else if (chunk.type === 'stream-end') {
+                  controller.close()
+                  if (trackerController) {
+                    try { trackerController.close() } catch { /* already closed */ }
+                  }
+                } else if (chunk.type === 'stream-error') {
+                  controller.error(new Error(chunk.error || 'Stream error'))
+                  if (trackerController) {
+                    try { trackerController.close() } catch { /* already closed */ }
+                  }
+                }
+              },
+            )
 
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        },
-      })
+            const signal = c.req.raw.signal
+            if (signal) {
+              signal.addEventListener('abort', () => {
+                cancel()
+                try { controller.close() } catch {}
+                if (trackerController) {
+                  try { trackerController.close() } catch { /* already closed */ }
+                }
+              }, { once: true })
+            }
+          },
+        })
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          },
+        })
+      } catch (err) {
+        if (isChatTurn && tunnelProjectId && billingSessionHandedOff && hasSession(tunnelProjectId)) {
+          closeSession(tunnelProjectId, { discardPartial: true }).catch(() => {})
+        }
+        throw err
+      }
     }
 
     // Non-streaming: forward and return the response directly
