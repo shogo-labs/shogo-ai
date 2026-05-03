@@ -37,18 +37,29 @@ function stableStringify(val: unknown): string {
   try { return JSON.stringify(val) } catch { return "" }
 }
 
+// See WriteFileWidget.tsx for rationale on the terminal-state fast path.
 function toolWidgetPropsEqual(
   prev: EditFileWidgetProps,
   next: EditFileWidgetProps,
 ) {
+  if (
+    prev.isExpanded !== next.isExpanded ||
+    prev.onToggle !== next.onToggle ||
+    prev.className !== next.className
+  ) {
+    return false
+  }
+  if (prev.tool.state !== next.tool.state) return false
+  if (prev.tool.error !== next.tool.error) return false
+  if (
+    prev.tool.id === next.tool.id &&
+    next.tool.state !== "streaming"
+  ) {
+    return true
+  }
   return (
-    prev.tool.state === next.tool.state &&
     stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
-    prev.tool.error === next.tool.error &&
-    stableStringify(prev.tool.result) === stableStringify(next.tool.result) &&
-    prev.isExpanded === next.isExpanded &&
-    prev.onToggle === next.onToggle &&
-    prev.className === next.className
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
   )
 }
 

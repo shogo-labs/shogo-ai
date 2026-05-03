@@ -2177,56 +2177,36 @@ export const ChatPanel = observer(function ChatPanel({
   // tool executions and the API proxy injects keep-alive frames, so a true
   // idle window of 30 minutes means the runtime really has gone silent.
   // Anything shorter risks killing legitimate long Anthropic / Opus turns.
+  //
+  // We rely on the `messages` array reference being swapped by the AI SDK on
+  // every chunk (text delta, tool input, tool output, data part). React's
+  // dependency check on `messages` reruns this effect on each chunk, which
+  // resets the timer below. The previous implementation also computed a
+  // `JSON.stringify` hash of the entire message tree to detect changes, but
+  // that hash was never read for any decision — the timer was unconditionally
+  // reset on each effect run anyway. With long histories that stringify cost
+  // O(history bytes × tokens) of main-thread freeze per stream chunk, which
+  // is exactly the sort of cost that doesn't show up in the React Profiler.
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastMessageContentRef = useRef<string>("")
   const IDLE_TIMEOUT_MS = 1_800_000
 
   useEffect(() => {
-    // Hash everything in the message tree (text, tool input, tool output,
-    // data parts) so any incremental progress event resets the timer, not
-    // only top-level text deltas.
-    const currentContent = messages
-      .map((m) => {
-        const top = (m as any).content
-        if (typeof top === "string" && top.length > 0) return top
-        return (m.parts || [])
-          .map((p: any) => {
-            try {
-              return JSON.stringify(p)
-            } catch {
-              return p.text || p.type || ""
-            }
-          })
-          .join("|")
-      })
-      .join("\n")
-
-    if (isStreaming) {
-      if (idleTimeoutRef.current) {
-        clearTimeout(idleTimeoutRef.current)
-      }
-
-      if (currentContent !== lastMessageContentRef.current) {
-        lastMessageContentRef.current = currentContent
-      }
-
-      idleTimeoutRef.current = setTimeout(() => {
-        if (isStreaming) {
-          console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
-          handleStop()
-        }
-      }, IDLE_TIMEOUT_MS)
-    } else {
-      if (idleTimeoutRef.current) {
-        clearTimeout(idleTimeoutRef.current)
-        idleTimeoutRef.current = null
-      }
-      lastMessageContentRef.current = ""
+    if (idleTimeoutRef.current) {
+      clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = null
     }
+
+    if (!isStreaming) return
+
+    idleTimeoutRef.current = setTimeout(() => {
+      console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
+      handleStop()
+    }, IDLE_TIMEOUT_MS)
 
     return () => {
       if (idleTimeoutRef.current) {
         clearTimeout(idleTimeoutRef.current)
+        idleTimeoutRef.current = null
       }
     }
   }, [isStreaming, messages, handleStop])

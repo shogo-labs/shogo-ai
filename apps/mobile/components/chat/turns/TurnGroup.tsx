@@ -7,8 +7,8 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { memo, useState, useCallback } from "react"
-import { View, Text, Pressable } from "react-native"
+import { memo, useMemo, useState, useCallback } from "react"
+import { View, Text, Pressable, Platform, type ViewStyle } from "react-native"
 import { Motion } from "@legendapp/motion"
 import * as Clipboard from "expo-clipboard"
 import { Copy, Check } from "lucide-react-native"
@@ -108,11 +108,41 @@ export const TurnGroup = memo(
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "")
 
+    // CSS containment for web only. Two complementary effects:
+    //   - `contain: layout style` makes each turn its own layout context, so a
+    //     streamed token that grows the bottom turn cannot invalidate layout
+    //     for any older turn on the page. This is the biggest single fix for
+    //     the long-history streaming pain on web.
+    //   - `content-visibility: auto` lets the browser skip layout & paint
+    //     entirely for offscreen turns. We only enable it for *non-streaming*
+    //     turns; the streaming turn must paint every commit, and skipping
+    //     paint on the active turn would visibly stutter.
+    //   - `contain-intrinsic-size` prevents the document height from jumping
+    //     on first scroll-into-view. 300px is a rough average of historical
+    //     turns observed in dev DBs; the `auto` keyword tells the browser to
+    //     remember the actual rendered size after first measurement.
+    //
+    // Native ignores these styles (they're CSS-only), so the conditional only
+    // exists to keep the prop value strictly equal across renders on native
+    // (preserves the `Motion.View` reference identity).
+    const webPerfStyle = useMemo<ViewStyle | undefined>(() => {
+      if (Platform.OS !== "web") return undefined
+      const base: Record<string, unknown> = {
+        contain: "layout style",
+      }
+      if (!turn.isStreaming) {
+        base.contentVisibility = "auto"
+        base.containIntrinsicSize = "auto 300px"
+      }
+      return base as ViewStyle
+    }, [turn.isStreaming])
+
   return (
     <Motion.View
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", damping: 20, stiffness: 150 }}
+      style={webPerfStyle}
       className={cn(
         "gap-2",
         turn.assistantMessage ? colors.border : "border-primary/30",

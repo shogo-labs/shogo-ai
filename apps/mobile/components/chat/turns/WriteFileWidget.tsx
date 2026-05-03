@@ -57,18 +57,39 @@ function stableStringify(val: unknown): string {
   try { return JSON.stringify(val) } catch { return "" }
 }
 
+// Memo equality for the tool widget. `groupConsecutiveParts` upstream
+// rebuilds the `tool` object reference on every commit, so we can't use
+// referential equality on `tool` itself. Instead:
+//   - If `tool.id` matches AND state hasn't changed AND we're in a terminal
+//     state (success / error), we know args + result are frozen and bail
+//     out with cheap primitive comparisons. This is the common case during
+//     long subagent runs where most widgets are already complete.
+//   - Otherwise (streaming, or state transition), fall back to the
+//     full content-equality JSON.stringify check. That's still cheaper
+//     than re-rendering the entire widget subtree.
 function toolWidgetPropsEqual(
   prev: WriteFileWidgetProps,
   next: WriteFileWidgetProps,
 ) {
+  if (
+    prev.isExpanded !== next.isExpanded ||
+    prev.onToggle !== next.onToggle ||
+    prev.className !== next.className
+  ) {
+    return false
+  }
+  if (prev.tool.state !== next.tool.state) return false
+  if (prev.tool.error !== next.tool.error) return false
+  // Fast path: terminal-state tool with the same id can never mutate.
+  if (
+    prev.tool.id === next.tool.id &&
+    next.tool.state !== "streaming"
+  ) {
+    return true
+  }
   return (
-    prev.tool.state === next.tool.state &&
     stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
-    prev.tool.error === next.tool.error &&
-    stableStringify(prev.tool.result) === stableStringify(next.tool.result) &&
-    prev.isExpanded === next.isExpanded &&
-    prev.onToggle === next.onToggle &&
-    prev.className === next.className
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
   )
 }
 

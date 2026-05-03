@@ -21,7 +21,8 @@
     "eas-build-post-install": "cd ../../packages/sdk && bun run build",
     "bundle:monaco-types": "node scripts/bundle-monaco-types.mjs",
     "test": "bun test",
-    "test:watch": "bun test --watch"
+    "test:watch": "bun test --watch",
+    "devtools": "bunx react-devtools"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
@@ -125,6 +126,7 @@
     "babel-preset-expo": "^54.0.10",
     "happy-dom": "^20.9.0",
     "prettier-plugin-tailwindcss": "^0.5.11",
+    "react-devtools-core": "^6.1.5",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2"
   }
