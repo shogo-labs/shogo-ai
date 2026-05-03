@@ -42,6 +42,10 @@ interface BillingSession {
   cacheWriteTokens: number
   outputTokens: number
   requestCount: number
+  imageRawUsd: number
+  imageBilledUsd: number
+  imageGenerationCount: number
+  imageModels: string[]
   quality: BillingSessionQualitySignals
   openedAt: number
   lastActivityAt: number
@@ -54,7 +58,7 @@ setInterval(() => {
   const now = Date.now()
   for (const [key, session] of sessions) {
     if (now - session.lastActivityAt > SESSION_TIMEOUT_MS) {
-      console.warn(`[BillingSession] Flushing orphaned session for project ${key} (${session.requestCount} requests, ${session.inputTokens + session.outputTokens} tokens)`)
+      console.warn(`[BillingSession] Flushing orphaned session for project ${key} (${session.requestCount} requests, ${session.inputTokens + session.outputTokens} tokens, ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)})`)
       closeSession(key).catch(err =>
         console.error(`[BillingSession] Failed to flush orphaned session ${key}:`, err)
       )
@@ -88,6 +92,10 @@ export function openSession(
     cacheWriteTokens: 0,
     outputTokens: 0,
     requestCount: 0,
+    imageRawUsd: 0,
+    imageBilledUsd: 0,
+    imageGenerationCount: 0,
+    imageModels: [],
     quality: {},
     openedAt: Date.now(),
     lastActivityAt: Date.now(),
@@ -128,6 +136,31 @@ export function accumulateUsage(
   return true
 }
 
+/**
+ * Accumulate image-generation USD from an AI proxy image call. Returns true
+ * if accumulated against an active session, false if no session exists
+ * (caller should charge per-call).
+ */
+export function accumulateImageUsage(
+  projectId: string,
+  model: string,
+  rawUsd: number,
+  billedUsd: number,
+): boolean {
+  const session = sessions.get(projectId)
+  if (!session) return false
+
+  session.imageRawUsd += rawUsd
+  session.imageBilledUsd += billedUsd
+  session.imageGenerationCount += 1
+  if (!session.imageModels.includes(model)) {
+    session.imageModels.push(model)
+  }
+  session.lastActivityAt = Date.now()
+
+  return true
+}
+
 export function setQualitySignals(projectId: string, quality: BillingSessionQualitySignals): boolean {
   const session = sessions.get(projectId)
   if (!session) return false
@@ -158,7 +191,7 @@ export async function closeSession(
   }
 
   const totalTokens = session.inputTokens + session.cachedInputTokens + session.cacheWriteTokens + session.outputTokens
-  if (totalTokens === 0) {
+  if (totalTokens === 0 && session.imageBilledUsd === 0) {
     return { billedUsd: 0, rawUsd: 0, totalTokens: 0 }
   }
 
@@ -166,16 +199,18 @@ export async function closeSession(
     console.log(
       `[BillingSession] Discarded partial session for project ${projectId} ` +
       `(stream EOF'd before turn-complete) — ${session.inputTokens} in, ${session.outputTokens} out, ` +
-      `${session.requestCount} request(s) NOT charged.`
+      `${session.requestCount} request(s), ${session.imageGenerationCount} image(s) NOT charged.`
     )
     return { billedUsd: 0, rawUsd: 0, totalTokens }
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
-  const { rawUsd, billedUsd } = calculateUsageCost(
+  const tokenCost = calculateUsageCost(
     session.inputTokens, session.outputTokens, billingModel,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
+  const rawUsd = tokenCost.rawUsd + session.imageRawUsd
+  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd
   const durationMs = Date.now() - session.openedAt
   const finalQuality = session.quality
 
@@ -223,14 +258,20 @@ export async function closeSession(
         model: session.model,
         billingModel,
         rawUsd,
+        tokenRawUsd: tokenCost.rawUsd,
+        tokenBilledUsd: tokenCost.billedUsd,
         requestCount: session.requestCount,
+        imageGenerationCount: session.imageGenerationCount,
+        imageRawUsd: session.imageRawUsd,
+        imageBilledUsd: session.imageBilledUsd,
+        imageModels: session.imageModels,
         durationMs,
       },
     })
 
     if (result.success) {
       console.log(
-        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
+        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
       )
     } else {
       console.warn(`[BillingSession] Could not charge usage: ${result.error}`)

@@ -30,6 +30,7 @@ import {
   closeSession,
   hasSession,
   accumulateUsage,
+  accumulateImageUsage,
 } from '../lib/proxy-billing-session'
 
 describe('Proxy Billing Session', () => {
@@ -218,6 +219,95 @@ describe('Proxy Billing Session', () => {
       expect(result.totalTokens).toBe(0)
       expect(result.billedUsd).toBe(0)
       expect(consumeUsageCalls.length).toBe(0)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // accumulateImageUsage — folds image-generation USD into the same chat
+  // turn so a turn that calls `generate_image` does NOT emit a separate
+  // `ai_image_generation` row in addition to the `chat_message` row.
+  // -------------------------------------------------------------------------
+  describe('accumulateImageUsage', () => {
+    test('returns true when session is open, false when not', () => {
+      openSession('proj-img-on', 'ws-1', 'user-1')
+      expect(accumulateImageUsage('proj-img-on', 'gpt-image-1', 0.04, 0.06)).toBe(true)
+
+      expect(accumulateImageUsage('proj-img-off', 'gpt-image-1', 0.04, 0.06)).toBe(false)
+    })
+
+    test('image-only turn still bills via chat_message (single event)', async () => {
+      openSession('proj-img-only', 'ws-img', 'user-img')
+      accumulateImageUsage('proj-img-only', 'gpt-image-1', 0.04, 0.06)
+      accumulateImageUsage('proj-img-only', 'gpt-image-1', 0.04, 0.06)
+
+      const { rawUsd, billedUsd } = await closeSession('proj-img-only')
+
+      expect(rawUsd).toBeCloseTo(0.08, 6)
+      expect(billedUsd).toBeCloseTo(0.12, 6)
+
+      // Critical: ONE consumeUsage call, with `chat_message` actionType.
+      // The image USD was rolled into the chat-turn debit, NOT emitted
+      // as a separate `ai_image_generation` row.
+      expect(consumeUsageCalls.length).toBe(1)
+      const args = consumeUsageCalls[0]
+      expect(args.actionType).toBe('chat_message')
+      expect(args.actionMetadata.imageGenerationCount).toBe(2)
+      expect(args.actionMetadata.imageBilledUsd).toBeCloseTo(0.12, 6)
+      expect(args.actionMetadata.imageRawUsd).toBeCloseTo(0.08, 6)
+      expect(args.actionMetadata.imageModels).toEqual(['gpt-image-1'])
+    })
+
+    test('mixed token + image turn rolls both into a single chat_message debit', async () => {
+      openSession('proj-mixed', 'ws-mixed', 'user-mixed')
+      accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 1000, 500)
+      accumulateImageUsage('proj-mixed', 'gpt-image-1', 0.04, 0.06)
+      accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 500, 250)
+
+      const { rawUsd, billedUsd, totalTokens } = await closeSession('proj-mixed')
+
+      expect(totalTokens).toBe(2250)
+
+      // Token cost: 1500 in + 750 out at sonnet rates = 0.0045 + 0.01125 = 0.01575 raw
+      const expectedTokenRaw = 1500 * 0.000003 + 750 * 0.000015
+      const expectedTokenBilled = expectedTokenRaw * MARKUP_MULTIPLIER
+
+      expect(rawUsd).toBeCloseTo(expectedTokenRaw + 0.04, 6)
+      expect(billedUsd).toBeCloseTo(expectedTokenBilled + 0.06, 6)
+
+      expect(consumeUsageCalls.length).toBe(1)
+      const args = consumeUsageCalls[0]
+      expect(args.actionType).toBe('chat_message')
+      expect(args.actionMetadata.imageGenerationCount).toBe(1)
+      expect(args.actionMetadata.tokenRawUsd).toBeCloseTo(expectedTokenRaw, 6)
+      expect(args.actionMetadata.tokenBilledUsd).toBeCloseTo(expectedTokenBilled, 6)
+      expect(args.actionMetadata.imageBilledUsd).toBeCloseTo(0.06, 6)
+    })
+
+    test('discardPartial drops accumulated image USD too', async () => {
+      openSession('proj-img-discard', 'ws-1', 'user-1')
+      accumulateImageUsage('proj-img-discard', 'gpt-image-1', 0.04, 0.06)
+      accumulateUsage('proj-img-discard', 'claude-sonnet-4-5', 100, 50)
+
+      const result = await closeSession('proj-img-discard', { discardPartial: true })
+
+      expect(result.billedUsd).toBe(0)
+      expect(result.rawUsd).toBe(0)
+      expect(consumeUsageCalls.length).toBe(0)
+      expect(hasSession('proj-img-discard')).toBe(false)
+    })
+
+    test('image accumulation tracks distinct models in metadata', async () => {
+      openSession('proj-img-models', 'ws-1', 'user-1')
+      accumulateImageUsage('proj-img-models', 'gpt-image-1', 0.04, 0.06)
+      accumulateImageUsage('proj-img-models', 'imagen-4', 0.02, 0.03)
+      accumulateImageUsage('proj-img-models', 'gpt-image-1', 0.04, 0.06)
+
+      await closeSession('proj-img-models')
+
+      expect(consumeUsageCalls.length).toBe(1)
+      const args = consumeUsageCalls[0]
+      expect(args.actionMetadata.imageGenerationCount).toBe(3)
+      expect(args.actionMetadata.imageModels.sort()).toEqual(['gpt-image-1', 'imagen-4'])
     })
   })
 })

@@ -405,10 +405,14 @@ async function trackUsageFromStream(
   // upstream proxy cuts mid-turn (eofWithoutTurnComplete), discard the
   // session without charging — the auto-resuming-fetch client will reconnect
   // and the next successful turn will bill normally.
+  //
+  // Set quality signals BEFORE closing the session so they reach
+  // recordAgentCostMetric inside closeSession (closeSession deletes the
+  // session before reading quality, so a post-close set would be a no-op).
+  setQualitySignals(project.id, qualitySignals)
   const { billedUsd } = await closeSession(project.id, {
     discardPartial: eofWithoutTurnComplete,
   })
-  setQualitySignals(project.id, qualitySignals)
   if (billedUsd > 0) {
     console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }

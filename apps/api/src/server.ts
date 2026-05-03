@@ -46,6 +46,8 @@ import { aiProxyRoutes } from './routes/ai-proxy'
 import { voiceRoutes } from './routes/voice'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateUsageCost } from './lib/usage-cost'
+import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
+import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { adminMarketplaceRoutes } from './routes/admin-marketplace'
 import { marketplaceRoutes } from './routes/marketplace'
@@ -1987,6 +1989,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     path === '/agent/channels/webchat/session' ||
     path === '/agent/channels/webchat/message' ||
     path.startsWith('/agent/channels/webchat/events/')
+  let authedUserId: string | null = null
+  let authedWorkspaceId: string | null = null
   if (!isWebchatPath) {
     const userId = await getAuthUserId(c)
     if (!userId) {
@@ -1996,7 +2000,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     if (!workspaceId) {
       return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
     }
+    authedUserId = userId
+    authedWorkspaceId = workspaceId
   }
+
+  // Detect chat-stream calls so we can bracket them with a billing session.
+  // The runtime accumulates many AI proxy calls per turn; without a session
+  // each LLM round-trip would emit its own `ai_proxy_completion` row.
+  const isChatStream = c.req.method === 'POST' && path === '/agent/chat' && !!authedWorkspaceId && !!authedUserId
 
   let podUrl: string
 
@@ -2039,10 +2050,27 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const { deriveRuntimeToken } = await import('./lib/runtime-token')
   headers.set('x-runtime-token', deriveRuntimeToken(projectId))
 
+  // Forward the real billing user so the runtime can include it in AI proxy
+  // calls — same convention as `project-chat.ts`.
+  if (isChatStream && authedUserId) {
+    headers.set('x-billing-user-id', authedUserId)
+  }
+
   let requestBody: ArrayBuffer | undefined
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     requestBody = await c.req.arrayBuffer()
   }
+
+  // Open a billing session for this chat turn so the AI proxy accumulates
+  // tokens (and image-generation USD) across all calls in the agentic loop
+  // and emits a single `chat_message` `usage_events` row when the session
+  // closes after the stream ends.
+  let billingSessionHandedOff = false
+  if (isChatStream && authedWorkspaceId && authedUserId) {
+    openSession(projectId, authedWorkspaceId, authedUserId)
+  }
+
+  try {
 
   // Retry with exponential backoff for cold-start transient errors.
   // Knative pods can take 60-90s to cold start (S3 restore + deps install).
@@ -2112,11 +2140,20 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         (response.body && responseContentType.includes('text/plain'))
       if (isStreaming && response.body) {
         activeProxyConnections++
-        const trackedBody = response.body.pipeThrough(new TransformStream({
+        let outBody: ReadableStream<Uint8Array> = response.body.pipeThrough(new TransformStream({
           flush() { activeProxyConnections-- },
         }))
+        // For chat-stream calls, tee the body through the billing tracker
+        // so it sees the full SSE stream and closes the session exactly
+        // once when the runtime emits `data-turn-complete`. The tracker
+        // takes ownership of `closeSession`; mark the handoff so the
+        // finally guard below does not double-close.
+        if (isChatStream && response.ok) {
+          outBody = teeChatStreamForBilling(outBody, projectId)
+          billingSessionHandedOff = true
+        }
         proxyClientSignal?.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
-        return new Response(trackedBody, { status: response.status, headers: responseHeaders })
+        return new Response(outBody, { status: response.status, headers: responseHeaders })
       }
 
       return new Response(response.body, { status: response.status, headers: responseHeaders })
@@ -2159,6 +2196,18 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     { error: { code: 'proxy_error', message: lastError?.message || 'Agent runtime unavailable after retries', retryable: true } },
     502,
   )
+
+  } finally {
+    // Guard: discard the billing session if the chat handler exits without
+    // handing it off to the tracker (retry exhaustion, client disconnect,
+    // non-2xx response, thrown error). We pass `discardPartial: true` so
+    // we don't bill for a turn the client never saw.
+    if (isChatStream && !billingSessionHandedOff && hasSession(projectId)) {
+      closeSession(projectId, { discardPartial: true }).catch((err) =>
+        console.error(`[AgentProxy] Failed to close orphaned billing session for ${projectId}:`, err),
+      )
+    }
+  }
 })
 
 // =============================================================================
