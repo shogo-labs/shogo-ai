@@ -115,10 +115,10 @@
     "expo-gl": "^15.0.0",
     "expo-three": "^8.0.0",
     "mobx": "^6.13.5",
-    "mobx-state-tree": "^6.0.1",
+    "mobx-state-tree": "^7.2.0",
     "nodemailer": "^8.0.3",
-    "react-native": "^0.81.0",
-    "three": "^0.180.0",
+    "react-native": "^0.85.2",
+    "three": "^0.184.0",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },
