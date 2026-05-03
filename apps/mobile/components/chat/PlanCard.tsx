@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState } from "react"
+import { memo, useState } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, FileText } from "lucide-react-native"
@@ -26,7 +26,39 @@ interface PlanCardProps {
   isConfirmed?: boolean
 }
 
-export function PlanCard({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed }: PlanCardProps) {
+// `AssistantContent` rebuilds the `plan` object literal on every commit while
+// the `create_plan` tool's args stream in (the AI SDK reassembles the args
+// object on every chunk). With reference equality, `memo` would never bail
+// out, so PlanCard re-renders end-to-end on every partial token — which the
+// CPU profile shows as a 21 % `createElement` bottleneck. Compare on shallow
+// content equality of the fields PlanCard actually reads.
+function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
+  if (prev.isConfirmed !== next.isConfirmed) return false
+  if (prev.onBuild !== next.onBuild) return false
+  if (prev.onConfirm !== next.onConfirm) return false
+  if (prev.onOpenPlan !== next.onOpenPlan) return false
+  if (prev.onViewFull !== next.onViewFull) return false
+  const a = prev.plan
+  const b = next.plan
+  if (a === b) return true
+  if (
+    a.name !== b.name ||
+    a.overview !== b.overview ||
+    a.plan !== b.plan ||
+    a.filepath !== b.filepath ||
+    a.toolCallId !== b.toolCallId ||
+    a.todos.length !== b.todos.length
+  ) {
+    return false
+  }
+  for (let i = 0; i < a.todos.length; i++) {
+    if (a.todos[i].id !== b.todos[i].id) return false
+    if (a.todos[i].content !== b.todos[i].content) return false
+  }
+  return true
+}
+
+function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed }: PlanCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [tasksExpanded, setTasksExpanded] = useState(false)
   const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
@@ -135,3 +167,5 @@ export function PlanCard({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isC
     </View>
   )
 }
+
+export const PlanCard = memo(PlanCardImpl, planCardPropsEqual)

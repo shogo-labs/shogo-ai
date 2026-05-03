@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { useMemo } from "react"
+import React, { memo, useMemo } from "react"
 import Markdown from "react-native-marked"
 import type { MarkedStyles } from "react-native-marked"
 import { useColorScheme } from "nativewind"
@@ -98,7 +98,34 @@ const darkThinkingColors: ThemeColors = {
   border: "#444444",
 }
 
-export function MarkdownText({ children, variant = "default" }: MarkdownTextProps) {
+// `react-native-marked` re-parses the entire markdown body on every render, so
+// the streaming hot path on iOS / Android pays a parse cost for every token
+// even when neither the children string nor the variant changed (the parent
+// `AssistantContent` re-renders on each commit, which flows down here even
+// when the parts array reference was only swapped because a *different* part
+// further up the message changed).
+//
+// String comparison in JS is value-equal, so `prev.children === next.children`
+// returns true whenever the rendered text is identical — even across
+// reference-different allocations. We can short-circuit on length first to
+// keep the common "still streaming, body grew" case from doing a full
+// character compare on long bodies.
+function markdownPropsEqual(
+  prev: MarkdownTextProps,
+  next: MarkdownTextProps,
+) {
+  if (prev.variant !== next.variant) return false
+  if (prev.className !== next.className) return false
+  if (prev.isStreaming !== next.isStreaming) return false
+  const a = prev.children || ""
+  const b = next.children || ""
+  return a.length === b.length && a === b
+}
+
+export const MarkdownText = memo(function MarkdownText({
+  children,
+  variant = "default",
+}: MarkdownTextProps) {
   const { colorScheme } = useColorScheme()
 
   const isThinking = variant === "thinking"
@@ -117,4 +144,4 @@ export function MarkdownText({ children, variant = "default" }: MarkdownTextProp
       flatListProps={{ scrollEnabled: false, style: { backgroundColor: 'transparent' } }}
     />
   )
-}
+}, markdownPropsEqual)
