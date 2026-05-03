@@ -7,7 +7,7 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { memo, useMemo, useState, useCallback } from "react"
+import { memo, useState, useCallback } from "react"
 import { View, Text, Pressable, Platform, type ViewStyle } from "react-native"
 import { Motion } from "@legendapp/motion"
 import * as Clipboard from "expo-clipboard"
@@ -92,6 +92,29 @@ function LoadingDots() {
   )
 }
 
+// CSS containment for web only. `contain: layout style` makes each turn its
+// own layout context, so a streamed token that grows the bottom turn cannot
+// invalidate layout for any older turn on the page. This is the biggest
+// single fix for the long-history streaming pain on web — it collapses the
+// V8 `(program)` bucket (browser-internal layout / style recalc) from ~25 %
+// to ~4 % of total CPU during streaming.
+//
+// We previously also applied `content-visibility: auto` +
+// `contain-intrinsic-size: auto 300px` to non-streaming turns to skip paint
+// for offscreen turns, but that caused visible scroll jumps on initial load
+// and on stream-end — every offscreen turn would report the 300 px
+// placeholder height until first scrolled into view, and each "real
+// measurement" event re-anchored scroll position. The paint savings weren't
+// large enough to justify the jank.
+//
+// Native ignores `contain` (it's CSS-only). The cast through `ViewStyle` is
+// because react-native's strict types don't know about `contain`; the runtime
+// translates it to a regular DOM `style` on web.
+const WEB_CONTAIN_STYLE: ViewStyle | undefined =
+  Platform.OS === "web"
+    ? ({ contain: "layout style" } as unknown as ViewStyle)
+    : undefined
+
 /**
  * Memoized so ChatPanel re-renders (MobX reactions, tab switches, streaming
  * token deltas for the *last* turn) don't re-render every prior turn.
@@ -108,41 +131,12 @@ export const TurnGroup = memo(
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "")
 
-    // CSS containment for web only. Two complementary effects:
-    //   - `contain: layout style` makes each turn its own layout context, so a
-    //     streamed token that grows the bottom turn cannot invalidate layout
-    //     for any older turn on the page. This is the biggest single fix for
-    //     the long-history streaming pain on web.
-    //   - `content-visibility: auto` lets the browser skip layout & paint
-    //     entirely for offscreen turns. We only enable it for *non-streaming*
-    //     turns; the streaming turn must paint every commit, and skipping
-    //     paint on the active turn would visibly stutter.
-    //   - `contain-intrinsic-size` prevents the document height from jumping
-    //     on first scroll-into-view. 300px is a rough average of historical
-    //     turns observed in dev DBs; the `auto` keyword tells the browser to
-    //     remember the actual rendered size after first measurement.
-    //
-    // Native ignores these styles (they're CSS-only), so the conditional only
-    // exists to keep the prop value strictly equal across renders on native
-    // (preserves the `Motion.View` reference identity).
-    const webPerfStyle = useMemo<ViewStyle | undefined>(() => {
-      if (Platform.OS !== "web") return undefined
-      const base: Record<string, unknown> = {
-        contain: "layout style",
-      }
-      if (!turn.isStreaming) {
-        base.contentVisibility = "auto"
-        base.containIntrinsicSize = "auto 300px"
-      }
-      return base as ViewStyle
-    }, [turn.isStreaming])
-
   return (
     <Motion.View
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", damping: 20, stiffness: 150 }}
-      style={webPerfStyle}
+      style={WEB_CONTAIN_STYLE}
       className={cn(
         "gap-2",
         turn.assistantMessage ? colors.border : "border-primary/30",
