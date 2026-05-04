@@ -66,6 +66,7 @@ import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
+import internalE2eRoutes from './routes/internal-e2e'
 import { vmRoutes, triggerVMImageDownload } from './routes/vm'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -5719,6 +5720,12 @@ app.route('/api', integrationRoutes())
 
 // Internal routes for cluster-internal pod communication (not exposed externally)
 app.route('/api/internal', internalRoutes)
+
+// E2E bootstrap routes — gated by NODE_ENV + shared secret. See
+// apps/api/src/routes/internal-e2e.ts for the guardrails. Mounted under
+// /api/internal/e2e so it inherits the existing auth-skip for
+// /api/internal/* (handlers enforce their own secret-based auth).
+app.route('/api/internal/e2e', internalE2eRoutes)
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role

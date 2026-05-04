@@ -344,19 +344,82 @@ export function isLiveStripeEnv(): boolean {
   return false
 }
 
+/**
+ * Resolves the URL for the e2e bootstrap backdoor. Tests that call into
+ * `/api/internal/e2e/*` should target the same API host used elsewhere
+ * (`E2E_API_URL` → `STAGING_API_URL` → `E2E_TARGET_URL` → …).
+ */
+function bootstrapApiBase(): string {
+  return (
+    process.env.E2E_API_URL ||
+    process.env.STAGING_API_URL ||
+    process.env.E2E_TARGET_URL ||
+    process.env.STAGING_URL ||
+    "http://localhost:8081"
+  )
+}
+
+/**
+ * Upgrade a freshly-signed-up workspace to a paid plan by calling the
+ * API-side bootstrap backdoor (see apps/api/src/routes/internal-e2e.ts).
+ * The backdoor requires the `SHOGO_E2E_BOOTSTRAP_SECRET` env var and a
+ * shared header, so tests can opt in only when the infra is deployed.
+ *
+ * Returns `true` if the backdoor handled the upgrade, `false` if the
+ * env vars aren't set or the endpoint returned 5xx — caller should fall
+ * back to the UI-driven Stripe flow.
+ */
+export async function bootstrapProSubscriptionViaApi(
+  page: Page,
+  user: TestUser,
+  planId: "basic" | "pro" | "business" = "pro",
+): Promise<boolean> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return false
+
+  const base = bootstrapApiBase()
+  const res = await page.request
+    .post(`${base}/api/internal/e2e/bootstrap-subscription`, {
+      headers: {
+        "x-e2e-bootstrap-secret": secret,
+        "content-type": "application/json",
+      },
+      data: { userEmail: user.email, planId },
+    })
+    .catch(() => null)
+  if (!res) return false
+  if (res.status() === 503) {
+    // Endpoint present but disabled (NODE_ENV=production and override
+    // not set). Caller should fall back.
+    return false
+  }
+  if (!res.ok()) return false
+  const body = await res.json().catch(() => ({ ok: false }))
+  return body?.ok === true
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
-  // Hosted Stripe Checkout against live keys rejects test cards, so tests
-  // that rely on this helper can't run end-to-end against production.
-  // Skip cleanly with a message so the run is green instead of red —
-  // PR 5 adds an API-side bootstrap backdoor that removes this gap.
+  await signUpAndOnboard(page, user)
+
+  // Try the API bootstrap first — this works against any environment
+  // where the secret + feature flag are set (including production).
+  if (await bootstrapProSubscriptionViaApi(page, user, "pro")) {
+    // Give the client a moment to revalidate billing state on the next
+    // navigation; most callers go to /billing or / right after.
+    await page.waitForTimeout(500)
+    return
+  }
+
+  // Fall back to the UI-driven Stripe Checkout flow. Against live keys
+  // this will fail at the card-entry step, so we skip cleanly in that
+  // case — PR 5's backdoor is what unlocks prod coverage.
   test.skip(
     isLiveStripeEnv(),
-    "signUpAndUpgradeToPro drives Stripe hosted Checkout with a test " +
-      "card, which live Stripe rejects. Run against staging, or set " +
-      "E2E_STRIPE_MODE=test to override.",
+    "signUpAndUpgradeToPro fallback drives Stripe hosted Checkout " +
+      "with a test card, which live Stripe rejects. Set " +
+      "SHOGO_E2E_BOOTSTRAP_SECRET against an env that exposes the " +
+      "bootstrap backdoor, or run against staging.",
   )
-
-  await signUpAndOnboard(page, user)
 
   await page.goto("/billing")
   // Wait for workspace + billing data to load (not just the page header).
