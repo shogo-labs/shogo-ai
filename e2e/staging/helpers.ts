@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import type { Page } from "@playwright/test"
+import { test, type Page } from "@playwright/test"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -316,7 +316,46 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.waitForTimeout(1000)
 }
 
+/**
+ * Returns true when the Playwright suite is pointed at a live-Stripe
+ * environment (production). Live Stripe rejects the test card
+ * `4242424242424242`, so any test that drives hosted Checkout with a
+ * test card must skip when this returns true.
+ *
+ * Detection priority:
+ *   1. Explicit opt-in/opt-out via `E2E_STRIPE_MODE` (`live` | `test`).
+ *   2. URL heuristic — anything that looks like *.staging.shogo.ai or
+ *      localhost is test-mode; everything else is live.
+ *
+ * Override when needed with:
+ *   E2E_STRIPE_MODE=test npx playwright test ...     # force test mode
+ *   E2E_STRIPE_MODE=live npx playwright test ...     # force live mode
+ */
+export function isLiveStripeEnv(): boolean {
+  const explicit = process.env.E2E_STRIPE_MODE?.toLowerCase()
+  if (explicit === "live") return true
+  if (explicit === "test") return false
+
+  const url = process.env.STAGING_URL || process.env.E2E_TARGET_URL || ""
+  if (!url) return false
+  if (url.includes("localhost") || url.includes("127.0.0.1")) return false
+  if (url.includes("staging.shogo.ai")) return false
+  if (url.includes("shogo.ai")) return true
+  return false
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
+  // Hosted Stripe Checkout against live keys rejects test cards, so tests
+  // that rely on this helper can't run end-to-end against production.
+  // Skip cleanly with a message so the run is green instead of red —
+  // PR 5 adds an API-side bootstrap backdoor that removes this gap.
+  test.skip(
+    isLiveStripeEnv(),
+    "signUpAndUpgradeToPro drives Stripe hosted Checkout with a test " +
+      "card, which live Stripe rejects. Run against staging, or set " +
+      "E2E_STRIPE_MODE=test to override.",
+  )
+
   await signUpAndOnboard(page, user)
 
   await page.goto("/billing")
