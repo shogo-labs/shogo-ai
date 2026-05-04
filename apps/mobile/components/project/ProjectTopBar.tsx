@@ -73,6 +73,10 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
 import { ProjectExportModal } from './ProjectExportModal'
+import {
+  ideBottomPanelStore,
+  useBottomPanelState,
+} from '../../lib/ide-bottom-panel-store'
 
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
@@ -89,7 +93,9 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   ...(Platform.OS === 'web'
     ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
     : [{ id: 'files', label: 'Files', icon: FolderOpen }]),
-  // { id: 'terminal', label: 'Terminal', icon: Terminal },
+  ...(Platform.OS === 'web'
+    ? [{ id: 'terminal', label: 'Terminal', icon: Terminal }]
+    : []),
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },
   { id: 'agents', label: 'Agents', icon: Bot },
@@ -299,6 +305,26 @@ export function ProjectTopBar({
     }
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
+  // Terminal top-tab (web only): toggles the IDE bottom drawer (DrawerHost).
+  // It does not switch `previewTab`. Highlight while the drawer is open; click
+  // again to close. Opening selects the Terminal sub-tab inside the drawer.
+  const terminalDrawerActive = useBottomPanelState((st) => st.open)
+
+  const toggleTerminalDrawer = useCallback(() => {
+    const st = ideBottomPanelStore.getState()
+    if (st.open) {
+      ideBottomPanelStore.setOpen(false)
+      return
+    }
+    // The drawer is hidden in chat-fullscreen and in narrow chat-only mode
+    // (see DrawerHost#shouldShowDrawer). Move the user out of those modes
+    // first so the drawer actually surfaces.
+    if (onNarrowTabChange) onNarrowTabChange('canvas')
+    if (activeTab === 'chat-fullscreen') onTabChange?.('dynamic-app')
+    ideBottomPanelStore.setActiveTab('Terminal')
+    ideBottomPanelStore.setOpen(true)
+  }, [activeTab, onNarrowTabChange, onTabChange])
+
   const isCanvasActive = activeTab === 'dynamic-app'
   const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
   const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
@@ -313,6 +339,10 @@ export function ProjectTopBar({
   ]
 
   const handleTabPress = useCallback((tabId: string) => {
+    if (tabId === 'terminal') {
+      toggleTerminalDrawer()
+      return
+    }
     if (onNarrowTabChange) {
       if (tabId === 'chat-fullscreen') {
         onNarrowTabChange('chat')
@@ -323,15 +353,16 @@ export function ProjectTopBar({
     } else {
       onTabChange?.(tabId)
     }
-  }, [onNarrowTabChange, onTabChange])
+  }, [onNarrowTabChange, onTabChange, toggleTerminalDrawer])
 
   const getTabActive = useCallback((tabId: string) => {
+    if (tabId === 'terminal') return terminalDrawerActive
     if (onNarrowTabChange) {
       if (tabId === 'chat-fullscreen') return narrowActiveTab === 'chat'
       return narrowActiveTab === 'canvas' && narrowPreviewTab === tabId
     }
     return activeTab === tabId
-  }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab])
+  }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab, terminalDrawerActive])
 
   const chatPanelWidth = chatPanelWidthProp ?? 480
   const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
@@ -464,6 +495,8 @@ export function ProjectTopBar({
                     onPress={() => {
                       if (item.id === '_upgrade') {
                         router.push('/(app)/billing' as any)
+                      } else if (item.id === 'terminal') {
+                        toggleTerminalDrawer()
                       } else {
                         onNarrowTabChange?.('canvas')
                         onTabChange?.(item.id)
@@ -472,7 +505,8 @@ export function ProjectTopBar({
                     }}
                     className={cn(
                       'px-4 py-3 active:bg-muted',
-                      narrowPreviewTab === item.id && narrowActiveTab === 'canvas' && 'bg-accent',
+                      ((item.id === 'terminal' && terminalDrawerActive) ||
+                        (item.id !== 'terminal' && narrowPreviewTab === item.id && narrowActiveTab === 'canvas')) && 'bg-accent',
                     )}
                   >
                     <View className="flex-row items-center gap-2.5">
@@ -480,7 +514,8 @@ export function ProjectTopBar({
                       <Text
                         className={cn(
                           'text-sm',
-                          narrowPreviewTab === item.id && narrowActiveTab === 'canvas'
+                          ((item.id === 'terminal' && terminalDrawerActive) ||
+                            (item.id !== 'terminal' && narrowPreviewTab === item.id && narrowActiveTab === 'canvas'))
                             ? 'text-foreground font-medium'
                             : 'text-foreground',
                         )}

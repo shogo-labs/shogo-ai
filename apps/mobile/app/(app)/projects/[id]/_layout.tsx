@@ -115,8 +115,9 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-// `terminal` is intentionally absent — chat exec entries now appear in
-// the IDE bottom drawer's "Output" tab (filterable to "Exec").
+// `terminal` is intentionally absent — clicking the Terminal top-tab
+// toggles the IDE bottom drawer (DrawerHost) and focuses its Terminal
+// sub-tab; it is not a standalone preview tab.
 const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
