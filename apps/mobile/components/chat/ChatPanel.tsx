@@ -2862,13 +2862,23 @@ export const ChatPanel = observer(function ChatPanel({
     // (O(plan body × tokens) of main-thread work) and instead compare
     // the field sizes and identifiers that actually distinguish a
     // mid-stream plan snapshot from the previous one.
+    //
+    // Every read is type-guarded because partial-JSON parsing of the
+    // streaming `create_plan` args can hand us transient shapes — e.g.
+    // `todos: [{ id: "t1" }]` (no `content` yet) or `overview: {}`
+    // mid-key — that would otherwise throw inside this memo and trip
+    // the chat's error boundary.
     let sig = ""
     if (fresh) {
-      const lastTodo = fresh.todos[fresh.todos.length - 1]
-      const lastTodoLen = lastTodo ? lastTodo.content.length : 0
+      const overviewLen = typeof fresh.overview === "string" ? fresh.overview.length : 0
+      const planLen = typeof fresh.plan === "string" ? fresh.plan.length : 0
+      const todosArr = Array.isArray(fresh.todos) ? fresh.todos : []
+      const lastTodo = todosArr.length > 0 ? (todosArr[todosArr.length - 1] as any) : null
+      const lastTodoLen =
+        typeof lastTodo?.content === "string" ? lastTodo.content.length : 0
       sig =
-        `${fresh.name}|${fresh.overview.length}|${fresh.plan.length}|` +
-        `${fresh.todos.length}|${lastTodoLen}|${fresh.filepath ?? ""}|${fresh.toolCallId ?? ""}`
+        `${fresh.name}|${overviewLen}|${planLen}|` +
+        `${todosArr.length}|${lastTodoLen}|${fresh.filepath ?? ""}|${fresh.toolCallId ?? ""}`
     }
     if (sig === lastDerivedPlanRef.current.sig) {
       return lastDerivedPlanRef.current.plan
