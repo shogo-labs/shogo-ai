@@ -176,7 +176,7 @@ function parseSherpaOutput(stdout: string): TranscriptionResult {
 }
 
 // ---------------------------------------------------------------------------
-// Cloud transcription (OpenAI Whisper API) — unchanged
+// Cloud transcription (OpenAI Whisper API)
 // ---------------------------------------------------------------------------
 
 export async function transcribeCloud(
