@@ -1062,6 +1062,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
             console.warn(`[RuntimeManager] Failed to build security policy: ${err.message}`)
           }
         }
+
+        runtimeEnv.ENABLE_PTY = process.env.SHOGO_LOCAL_MODE === 'true'
+          ? process.env.ENABLE_PTY ?? '0'
+          : '0'
         
         const agentProc = spawn(pkg.bunBinary, ['run', runtimeServerPath], {
           cwd: projectDir,

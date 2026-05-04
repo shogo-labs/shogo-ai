@@ -42,7 +42,7 @@
     "mobile:ios": "cd apps/mobile && npx expo start --ios",
     "mobile:android": "cd apps/mobile && npx expo start --android",
     "mobile:web": "cd apps/mobile && npx expo start --web",
-    "desktop:build-web": "cd apps/mobile && EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:8002 npx expo export --platform web",
+    "desktop:build-web": "cd apps/mobile && EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_ENABLE_PTY=true EXPO_PUBLIC_API_URL=http://localhost:8002 npx expo export --platform web",
     "desktop:dev": "DATABASE_URL=file:./shogo-local.db bun run db:generate:all && SHOGO_LOCAL_MODE=true bun run desktop:build-web && cd apps/desktop && npx tsc && SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo-local.db npx electron .",
     "desktop:dev:clean": "rm -rf \"$HOME/Library/Application Support/Shogo/data\" && bun run desktop:dev",
     "docs:dev": "bun run --cwd apps/docs dev",

@@ -22,6 +22,7 @@ const ALLOWED_SOURCES: ReadonlyArray<RuntimeLogSource> = [
   'build',
   'canvas-error',
   'exec',
+  'terminal',
 ]
 
 export function parseSources(

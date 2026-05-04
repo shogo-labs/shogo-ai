@@ -145,6 +145,7 @@ export function BottomPanel({
         >
           <Terminal
             projectId={projectId}
+            agentUrl={agentUrl ?? null}
             visible={tab === "Terminal"}
             newSessionNonce={newSessionNonce}
             onRequestClose={onClose}

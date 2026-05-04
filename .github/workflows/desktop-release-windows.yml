@@ -48,6 +48,7 @@ jobs:
         run: bun run web:build
         env:
           EXPO_PUBLIC_LOCAL_MODE: 'true'
+          EXPO_PUBLIC_ENABLE_PTY: 'true'
           EXPO_PUBLIC_API_URL: 'http://localhost:8002'
 
       - name: Upload web build

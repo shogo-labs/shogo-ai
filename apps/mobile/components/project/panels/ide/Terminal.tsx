@@ -30,6 +30,7 @@ import {
   patchSession as patchSessionInList,
   type Session,
 } from "./terminal/session-reducer";
+import { PtyTerminal, type PtyTerminalHandle } from "./terminal/pty/PtyTerminal";
 
 /**
  * The IDE "Terminal" — a dual-mode runner for project workspaces.
@@ -92,11 +93,13 @@ const CATEGORY_ORDER: string[] = ["package", "database", "test", "build", "lint"
 
 export function Terminal({
   projectId,
+  agentUrl = null,
   visible,
   newSessionNonce,
   onRequestClose,
 }: {
   projectId: string | null | undefined;
+  agentUrl?: string | null;
   visible: boolean;
   /** Parent increments this to request a new terminal (keyboard ⌘⇧`). */
   newSessionNonce?: number;
@@ -114,10 +117,16 @@ export function Terminal({
   const [confirming, setConfirming] = useState<PresetCommandDto | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<HTMLInputElement>(null);
+  const ptyRef = useRef<PtyTerminalHandle>(null);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
 
   const apiBase = API_URL;
+  const ptyPreferred =
+    Platform.OS === "web" &&
+    isShogoDesktopApp() &&
+    !isRemoteInstanceAgentUrl(agentUrl) &&
+    (process.env.EXPO_PUBLIC_ENABLE_PTY === "1" || process.env.EXPO_PUBLIC_ENABLE_PTY === "true");
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
   // Labels are positional — derived on every render so closing tab #2 leaves
   // "Terminal 1, Terminal 2" instead of "Terminal 1, Terminal 3".
@@ -517,13 +526,21 @@ export function Terminal({
   );
 
   const stop = useCallback(() => {
+    if (ptyPreferred && active?.mode === "pty") {
+      ptyRef.current?.interrupt();
+      return;
+    }
     active?.abort?.abort();
-  }, [active]);
+  }, [active, ptyPreferred]);
 
   const clear = useCallback(() => {
     if (!active) return;
+    if (ptyPreferred && active.mode === "pty") {
+      ptyRef.current?.clear();
+      return;
+    }
     patchSession(active.id, (s) => ({ ...s, output: "" }));
-  }, [active, patchSession]);
+  }, [active, patchSession, ptyPreferred]);
 
   // ─── Early exits ────────────────────────────────────────────────────
   if (!projectId) {
@@ -575,8 +592,8 @@ export function Terminal({
         onAdd={addSession}
         onStop={stop}
         onClear={clear}
-        clearDisabled={!active?.output}
-        running={!!active?.runningCmdId}
+        clearDisabled={ptyPreferred && active?.mode === "pty" ? false : !active?.output}
+        running={ptyPreferred && active?.mode === "pty" ? false : !!active?.runningCmdId}
         presetGroups={presetGroups}
         presetsLoading={loading}
         presetsError={loadError}
@@ -591,26 +608,44 @@ export function Terminal({
         aria-label="Terminal output"
         className="flex-1 cursor-text overflow-auto bg-[#1e1e1e] px-3 py-2 font-mono text-[12px] leading-[1.5] text-[#d4d4d4]"
       >
-        {active?.output && (
-          <pre className="m-0 whitespace-pre-wrap break-words font-mono">
-            {active.output}
-          </pre>
-        )}
-        {/*
-         * Prompt lives inside the scroll region (VS Code / Cursor parity) so
-         * it sits flush against the last line of output and scrolls with it.
-         * While a command is running we hide the input — the running command
-         * owns the bottom of the log, and the user can hit Ctrl+C / Stop.
-         */}
-        {!active?.runningCmdId && (
-          <Prompt
-            ref={promptInputRef}
-            disabled={!projectId}
-            history={active?.history ?? []}
-            cwdLabel={formatPromptCwd(active?.cwd ?? null)}
-            onRun={(cmd) => void runFreeCommand(cmd)}
-            onClear={clear}
+        {ptyPreferred && active?.mode === "pty" ? (
+          <PtyTerminal
+            ref={ptyRef}
+            projectId={projectId}
+            sessionKey={active.id}
+            cwd={active.cwd}
+            onFallback={(reason) => {
+              patchSession(active.id, (s) => ({
+                ...s,
+                mode: "http",
+                output: `[PTY unavailable] ${reason}\n\n`,
+              }));
+            }}
           />
+        ) : (
+          <>
+            {active?.output && (
+              <pre className="m-0 whitespace-pre-wrap break-words font-mono">
+                {active.output}
+              </pre>
+            )}
+            {/*
+             * Prompt lives inside the scroll region (VS Code / Cursor parity) so
+             * it sits flush against the last line of output and scrolls with it.
+             * While a command is running we hide the input — the running command
+             * owns the bottom of the log, and the user can hit Ctrl+C / Stop.
+             */}
+            {!active?.runningCmdId && (
+              <Prompt
+                ref={promptInputRef}
+                disabled={!projectId}
+                history={active?.history ?? []}
+                cwdLabel={formatPromptCwd(active?.cwd ?? null)}
+                onRun={(cmd) => void runFreeCommand(cmd)}
+                onClear={clear}
+              />
+            )}
+          </>
         )}
       </div>
 
@@ -878,6 +913,19 @@ function SessionTabs({
       )}
     </div>
   );
+}
+
+function isShogoDesktopApp(): boolean {
+  return typeof window !== "undefined" && !!(window as any).shogoDesktop?.isDesktop;
+}
+
+function isRemoteInstanceAgentUrl(agentUrl: string | null | undefined): boolean {
+  if (!agentUrl) return false;
+  try {
+    return new URL(agentUrl, API_URL).pathname.includes("/api/instances/");
+  } catch {
+    return agentUrl.includes("/api/instances/");
+  }
 }
 
 function MenuItem({

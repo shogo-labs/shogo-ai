@@ -294,6 +294,7 @@ export async function startLocalServer(): Promise<void> {
     DATABASE_URL: `file:${getDbPath()}`,
     WORKSPACES_DIR: getWorkspacesDir(),
     S3_ENABLED: 'false',
+    ENABLE_PTY: '1',
     API_PORT: String(apiPort),
     PORT: String(apiPort),
     RUNTIME_BASE_PORT: String(RUNTIME_BASE_PORT),

@@ -19,7 +19,7 @@
  * keeps the dot meaningful instead of red-dotting on every reload.
  */
 
-export type RuntimeLogSource = 'console' | 'build' | 'canvas-error' | 'exec'
+export type RuntimeLogSource = 'console' | 'build' | 'canvas-error' | 'exec' | 'terminal'
 export type RuntimeLogLevel = 'info' | 'warn' | 'error'
 
 export interface RuntimeLogEntry {

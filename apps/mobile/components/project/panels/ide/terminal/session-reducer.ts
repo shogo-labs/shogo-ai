@@ -13,6 +13,12 @@
 
 export interface Session {
   id: string
+  /** Runtime mode for this terminal tab. PTY is preferred; HTTP is fallback. */
+  mode: 'pty' | 'http'
+  /** Last PTY session id stored by the server for reload/reattach. */
+  ptySessionId: string | null
+  /** Current PTY connection state used by the tab label/banner. */
+  ptyConnected: boolean
   output: string
   /** Non-null while a command (preset or free-form) is streaming. */
   runningCmdId: string | null
@@ -43,6 +49,9 @@ export function __resetSessionIdSeqForTest(): void {
 export function makeSession(): Session {
   return {
     id: `t-${Date.now().toString(36)}-${++_idSeq}`,
+    mode: 'pty',
+    ptySessionId: null,
+    ptyConnected: false,
     output: '',
     runningCmdId: null,
     abort: null,

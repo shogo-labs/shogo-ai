@@ -34,6 +34,7 @@ import {
 import { useRuntimeLogStream } from '../../../../lib/runtime-logs/useRuntimeLogStream'
 
 type SourceFilter = 'all' | RuntimeLogSource
+type LevelFilter = 'all' | LogLevel
 
 const SOURCE_FILTERS: ReadonlyArray<{ id: SourceFilter; label: string }> = [
   { id: 'all', label: 'All' },
@@ -41,6 +42,7 @@ const SOURCE_FILTERS: ReadonlyArray<{ id: SourceFilter; label: string }> = [
   { id: 'console', label: 'Console' },
   { id: 'canvas-error', label: 'Canvas' },
   { id: 'exec', label: 'Exec' },
+  { id: 'terminal', label: 'Terminal' },
 ]
 
 const LEVEL_BADGE_CLASS: Record<LogLevel, string> = {
@@ -103,6 +105,7 @@ export function OutputTab({
   })
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
   const [search, setSearch] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -119,12 +122,15 @@ export function OutputTab({
     if (sourceFilter !== 'all') {
       filtered = filtered.filter((e) => e.source === sourceFilter)
     }
+    if (levelFilter !== 'all') {
+      filtered = filtered.filter((e) => e.level === levelFilter)
+    }
     const q = search.trim().toLowerCase()
     if (q.length > 0) {
       filtered = filtered.filter((e) => e.text.toLowerCase().includes(q))
     }
     return filtered.map(deriveLogRow)
-  }, [entries, sourceFilter, search])
+  }, [entries, sourceFilter, levelFilter, search])
 
   // Auto-scroll to bottom when new rows land. We re-run when the filtered
   // length changes — not just `entries.length` — so toggling a filter
@@ -176,28 +182,34 @@ export function OutputTab({
         role="toolbar"
         aria-label="Output toolbar"
       >
-        <div role="group" aria-label="Filter by source" className="flex gap-1">
-          {SOURCE_FILTERS.map((f) => {
-            const active = sourceFilter === f.id
-            return (
-              <button
-                key={f.id}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                aria-label={`Filter by ${f.label}`}
-                onClick={() => setSourceFilter(f.id)}
-                className={`rounded-full px-2 py-0.5 text-[11px] ${
-                  active
-                    ? 'bg-zinc-600 text-white'
-                    : 'bg-zinc-800/60 text-zinc-400 hover:text-white'
-                }`}
-              >
-                {f.label}
-              </button>
-            )
-          })}
-        </div>
+        <label className="flex items-center gap-1 text-[11px] text-zinc-400">
+          Channel
+          <select
+            value={sourceFilter}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) => setSourceFilter(e.target.value as SourceFilter)}
+            aria-label="Output channel"
+            className="rounded border border-[#2a2a2a] bg-[#252526] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[#0078d4]"
+          >
+            {SOURCE_FILTERS.map((f) => (
+              <option key={f.id} value={f.id}>{f.label}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-1 text-[11px] text-zinc-400">
+          Level
+          <select
+            value={levelFilter}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) => setLevelFilter(e.target.value as LevelFilter)}
+            aria-label="Output level"
+            className="rounded border border-[#2a2a2a] bg-[#252526] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[#0078d4]"
+          >
+            <option value="all">All</option>
+            <option value="info">Info</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error</option>
+          </select>
+        </label>
 
         <div className="ml-auto flex items-center gap-2">
           <label className="flex items-center gap-1 text-[11px] text-zinc-400">

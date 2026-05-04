@@ -35,6 +35,13 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
+import {
+  handleTerminalPtyProxyClose,
+  handleTerminalPtyProxyMessage,
+  handleTerminalPtyProxyOpen,
+  prepareTerminalPtyUpgrade,
+  type TerminalPtyProxyData,
+} from './routes/terminal-pty-proxy'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
@@ -6366,6 +6373,13 @@ export default {
   hostname: "0.0.0.0",
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
+    const terminalPtyUpgrade = await prepareTerminalPtyUpgrade(req)
+    if (terminalPtyUpgrade instanceof Response) return terminalPtyUpgrade
+    if (terminalPtyUpgrade) {
+      const upgraded = server.upgrade(req, { data: terminalPtyUpgrade satisfies TerminalPtyProxyData })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
     if (url.pathname === '/api/instances/ws' && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const authResult = await authenticateInstanceWs(req)
       if (!authResult) {
@@ -6378,9 +6392,18 @@ export default {
     return app.fetch(req, server)
   },
   websocket: {
-    open: handleInstanceWsOpen,
-    message: handleInstanceWsMessage,
-    close: handleInstanceWsClose,
+    open(ws: WebSocket & { data?: any }) {
+      if (ws.data?.kind === 'terminal-pty-proxy') return handleTerminalPtyProxyOpen(ws)
+      return handleInstanceWsOpen(ws)
+    },
+    message(ws: WebSocket & { data?: any }, raw: string | Buffer) {
+      if (ws.data?.kind === 'terminal-pty-proxy') return handleTerminalPtyProxyMessage(ws, raw)
+      return handleInstanceWsMessage(ws, raw)
+    },
+    close(ws: WebSocket & { data?: any }) {
+      if (ws.data?.kind === 'terminal-pty-proxy') return handleTerminalPtyProxyClose(ws)
+      return handleInstanceWsClose(ws)
+    },
   },
   idleTimeout: 255,
 }

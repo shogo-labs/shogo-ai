@@ -14,7 +14,7 @@
  * back-compat for `/console-log/append`.
  */
 
-export type RuntimeLogSource = 'console' | 'build' | 'canvas-error' | 'exec'
+export type RuntimeLogSource = 'console' | 'build' | 'canvas-error' | 'exec' | 'terminal'
 export type RuntimeLogLevel = 'info' | 'warn' | 'error'
 
 export interface RuntimeLogEntry {

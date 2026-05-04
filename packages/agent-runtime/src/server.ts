@@ -30,6 +30,7 @@ import {
   cpSync,
   appendFileSync,
 } from 'fs'
+import { timingSafeEqual } from 'crypto'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -53,6 +54,14 @@ import {
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
+import {
+  createTerminalPtyRegistry,
+  handleTerminalPtyWsClose,
+  handleTerminalPtyWsMessage,
+  handleTerminalPtyWsOpen,
+  isPtyEnabled,
+  type TerminalPtyWsData,
+} from './pty/pty-ws-handler'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
@@ -80,6 +89,9 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
+const terminalPtyRegistry = createTerminalPtyRegistry(WORKSPACE_DIR)
+const RUNTIME_TOKEN_V1_PREFIX = 'rt_v1_'
+const RUNTIME_TOKEN_RE = /^rt_v1_.+_[0-9a-f]{64}$|^[0-9a-f]{64}$/
 
 async function reportHeartbeatComplete(projectId: string): Promise<void> {
   const apiUrl = deriveApiUrl()
@@ -95,6 +107,38 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`Heartbeat complete report failed: HTTP ${res.status}`)
   }
+}
+
+function validateTerminalPtyRuntimeAuth(req: Request): Response | null {
+  const expected = process.env.RUNTIME_AUTH_SECRET
+  if (!expected) {
+    if (process.env.NODE_ENV !== 'production') return null
+    console.error('[agent-runtime] RUNTIME_AUTH_SECRET not set — rejecting PTY upgrade')
+    return new Response('Unauthorized', { status: 401 })
+  }
+
+  const auth = req.headers.get('authorization') || ''
+  const bearerToken = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : ''
+  const presented = [req.headers.get('x-runtime-token') || '', bearerToken].filter(Boolean)
+  if (!isRuntimeTokenLike(expected) || !presented.some((token) => isRuntimeTokenLike(token) && safeTokenEqual(token, expected))) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+
+  return null
+}
+
+function isRuntimeTokenLike(token: string): boolean {
+  if (!RUNTIME_TOKEN_RE.test(token)) return false
+  if (!token.startsWith(RUNTIME_TOKEN_V1_PREFIX)) return true
+  const rest = token.slice(RUNTIME_TOKEN_V1_PREFIX.length)
+  const sepIdx = rest.length - 64 - 1
+  return sepIdx > 0 && rest.charAt(sepIdx) === '_'
+}
+
+function safeTokenEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8')
+  const bb = Buffer.from(b, 'utf8')
+  return ab.length === bb.length && timingSafeEqual(ab, bb)
 }
 
 // =============================================================================
@@ -3611,6 +3655,37 @@ if (state.isPoolMode && !state.poolAssigned) {
 
 export default {
   port: PORT,
-  fetch: app.fetch,
+  fetch: (req: Request, server: any) => {
+    const url = new URL(req.url)
+    if (url.pathname === '/terminal/pty' && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      if (!isPtyEnabled()) {
+        return new Response('PTY disabled', { status: 503 })
+      }
+      const authError = validateTerminalPtyRuntimeAuth(req)
+      if (authError) return authError
+      const upgraded = server.upgrade(req, {
+        data: {
+          kind: 'terminal-pty',
+          registry: terminalPtyRegistry,
+        } satisfies TerminalPtyWsData,
+      })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
+    return app.fetch(req, server)
+  },
+  websocket: {
+    open(ws: WebSocket & { data?: any }) {
+      if (ws.data?.kind === 'terminal-pty') handleTerminalPtyWsOpen(ws)
+    },
+    message(ws: WebSocket & { data?: any }, raw: string | Buffer) {
+      if (ws.data?.kind === 'terminal-pty') {
+        void handleTerminalPtyWsMessage(ws, raw)
+      }
+    },
+    close(ws: WebSocket & { data?: any }) {
+      if (ws.data?.kind === 'terminal-pty') handleTerminalPtyWsClose(ws)
+    },
+  },
   idleTimeout: 0,
 }

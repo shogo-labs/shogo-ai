@@ -988,6 +988,7 @@ export class KnativeProjectManager {
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       ...(projectRecord?.workspaceId ? [{ name: "WORKSPACE_ID", value: projectRecord.workspaceId }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
+      { name: "ENABLE_PTY", value: "0" },
     ]
 
     // AI Proxy configuration

@@ -31,6 +31,7 @@ import {
 } from "../../../../lib/diagnostics-api"
 
 const POLL_INTERVAL_MS = 6_000
+type SeverityFilter = "all" | Diagnostic["severity"]
 
 export interface ProblemsProps {
   projectId: string | null | undefined
@@ -106,6 +107,7 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<DiagnosticsApiError | Error | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all")
   const abortRef = useRef<AbortController | null>(null)
   const lastRunAtRef = useRef<string | undefined>(undefined)
   // Refs mirror the state values that `load` reads — kept out of the
@@ -175,9 +177,15 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
     return () => clearInterval(t)
   }, [visible, projectId, load])
 
+  const visibleDiagnostics = useMemo(() => {
+    const diagnostics = result?.diagnostics ?? []
+    return severityFilter === "all"
+      ? diagnostics
+      : diagnostics.filter((d) => d.severity === severityFilter)
+  }, [result, severityFilter])
   const groups = useMemo(
-    () => result ? groupByFile(result.diagnostics) : [],
-    [result],
+    () => groupByFile(visibleDiagnostics),
+    [visibleDiagnostics],
   )
   const totals = useMemo(() => {
     let errors = 0, warnings = 0
@@ -270,6 +278,42 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
           <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} aria-hidden />
         </button>
       </div>
+
+      {result && (
+        <div className="flex items-center gap-1 border-b border-[color:var(--ide-border)] px-3 py-1">
+          {(["all", "error", "warning", "info", "hint"] as const).map((filter) => {
+            const active = severityFilter === filter
+            return (
+              <button
+                key={filter}
+                type="button"
+                onClick={() => setSeverityFilter(filter)}
+                className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${
+                  active
+                    ? "bg-[color:var(--ide-hover)] text-[color:var(--ide-text-strong)]"
+                    : "text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text)]"
+                }`}
+              >
+                {filter}
+              </button>
+            )
+          })}
+          <button
+            type="button"
+            className="ml-auto rounded px-2 py-0.5 text-[10px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text)]"
+            onClick={() => setCollapsed(new Set())}
+          >
+            Expand all
+          </button>
+          <button
+            type="button"
+            className="rounded px-2 py-0.5 text-[10px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text)]"
+            onClick={() => setCollapsed(new Set(groups.map((g) => g.file)))}
+          >
+            Collapse all
+          </button>
+        </div>
+      )}
 
       {/* Notes (per-source banners) */}
       {result?.notes && result.notes.length > 0 && (
@@ -368,6 +412,10 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
                           <button
                             type="button"
                             onClick={() => onReveal?.(d.file, d.line, d.column)}
+                            onContextMenu={(event) => {
+                              event.preventDefault()
+                              void navigator.clipboard?.writeText(`${d.file}:${d.line}:${d.column} ${d.message}`)
+                            }}
                             disabled={!onReveal}
                             aria-label={`${d.severity} ${d.code ?? ""} ${d.message} at ${basenameOf(d.file)} line ${d.line} column ${d.column}`}
                             title={d.message}
