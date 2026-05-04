@@ -591,7 +591,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    disabled={disabled || isLoading}
+                    disabled={disabled}
                     className={cn(
                       "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                       interactionMode === "agent" && "bg-muted/50",
@@ -714,7 +714,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    disabled={disabled || isLoading}
+                    disabled={disabled}
                     className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                   >
                     <Text className="text-xs text-muted-foreground">
