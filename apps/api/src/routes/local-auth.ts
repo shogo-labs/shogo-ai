@@ -56,6 +56,11 @@ interface PendingState {
  * so a Map is sufficient — we don't want to persist unused nonces to disk. */
 const pendingStates = new Map<string, PendingState>()
 
+/** Tracks whether the cloud has rejected our key so the UI can show a
+ * degraded-connection banner without wiping credentials. Only an explicit
+ * user-initiated sign-out deletes the stored key. */
+let cloudKeyRejected = false
+
 function purgeExpiredStates(): void {
   const now = Date.now()
   for (const [state, record] of pendingStates) {
@@ -226,6 +231,7 @@ export function localAuthRoutes() {
     ])
 
     process.env.SHOGO_API_KEY = body.key
+    cloudKeyRejected = false
 
     // Restart the instance tunnel with the new key so inbound cloud-driven
     // remote control picks up fresh credentials immediately.
@@ -276,6 +282,7 @@ export function localAuthRoutes() {
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
     ])
     delete process.env.SHOGO_API_KEY
+    cloudKeyRejected = false
 
     import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
       stopInstanceTunnel()
@@ -306,18 +313,17 @@ export function localAuthRoutes() {
       })
       const data = await res.json().catch(() => ({} as any))
       if (!res.ok || data?.ok === false) {
-        // A 401 from cloud means our key was revoked (probably via the cloud
-        // Devices UI). Wipe locally so the UI flips to signed-out and the
-        // user is prompted to re-login.
         if (res.status === 401) {
-          await Promise.all([
-            localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
-            localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
-          ])
-          delete process.env.SHOGO_API_KEY
+          cloudKeyRejected = true
+          console.warn('[CloudLogin] Cloud rejected API key (401) — key may be revoked or expired. User must re-sign-in.')
         }
-        return c.json({ ok: false, error: data?.error || `HTTP ${res.status}`, revoked: res.status === 401 }, res.status as any)
+        return c.json({
+          ok: false,
+          error: data?.error || `HTTP ${res.status}`,
+          cloudKeyRejected: res.status === 401,
+        }, res.status as any)
       }
+      cloudKeyRejected = false
       return c.json({ ok: true })
     } catch (err: any) {
       return c.json({ ok: false, error: err?.message || 'Heartbeat failed' }, 502)
@@ -338,6 +344,7 @@ export function localAuthRoutes() {
       workspace: info?.workspace || null,
       deviceId: info?.deviceId || null,
       keyPrefix: storedKey.slice(0, 16),
+      cloudKeyRejected,
     })
   })
 
