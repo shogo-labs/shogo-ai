@@ -38,7 +38,7 @@ interface MeetingDetail {
   id: string
   title: string | null
   audioPath: string
-  transcript: string | null
+  transcript: string | object | null
   summary: string | null
   duration: number | null
   status: string
@@ -67,12 +67,21 @@ function getSpeakerColor(speaker: string, speakerMap: Map<string, number>) {
   return SPEAKER_COLORS[speakerMap.get(speaker)! % SPEAKER_COLORS.length]
 }
 
-function parseTranscript(raw: string | null): { text: string; segments: TranscriptSegment[]; numSpeakers?: number; error?: string } | null {
+function parseTranscript(raw: string | object | null): { text: string; segments: TranscriptSegment[]; numSpeakers?: number; error?: string } | null {
   if (!raw) return null
+  if (typeof raw === 'object') {
+    const obj = raw as any
+    return {
+      text: typeof obj.text === 'string' ? obj.text : '',
+      segments: Array.isArray(obj.segments) ? obj.segments : [],
+      numSpeakers: obj.numSpeakers,
+      error: typeof obj.error === 'string' ? obj.error : undefined,
+    }
+  }
   try {
     return JSON.parse(raw)
   } catch {
-    return { text: raw, segments: [] }
+    return { text: String(raw), segments: [] }
   }
 }
 
