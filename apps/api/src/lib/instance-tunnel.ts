@@ -12,6 +12,7 @@
 
 import { hostname as osHostname, platform, arch as osArch } from 'os'
 import { getRuntimeManager } from './runtime'
+import { wipeCloudKey } from './cloud-key-wipe'
 
 interface TunnelRequest {
   type: 'request'
@@ -331,10 +332,14 @@ async function heartbeatLoop() {
       lastHeartbeatError = err.message
     }
     if (consecutiveAuthFailures >= AUTH_FAILURE_THRESHOLD) {
+      // Self-heal: key revoked or superseded — wipe + stop instead of polling forever.
+      void wipeCloudKey(
+        `instance tunnel saw ${consecutiveAuthFailures} consecutive auth failures from Shogo Cloud`,
+      )
       if (currentPollInterval !== AUTH_FAILURE_BACKOFF_S) {
         console.warn(
-          `[InstanceTunnel] ${consecutiveAuthFailures} consecutive auth failures \u2014 backing off to ${AUTH_FAILURE_BACKOFF_S}s. ` +
-            `Run \`shogo login\` once you've issued a fresh API key.`
+          `[InstanceTunnel] ${consecutiveAuthFailures} consecutive auth failures \u2014 backing off to ${AUTH_FAILURE_BACKOFF_S}s and clearing local key. ` +
+            `Re-link from the desktop General settings once you've issued a fresh API key.`
         )
       }
       currentPollInterval = AUTH_FAILURE_BACKOFF_S

@@ -35,6 +35,7 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
+import { wipeCloudKey } from '../lib/cloud-key-wipe'
 
 const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
 /** Default deep-link the cloud bridge page redirects back to. Override with
@@ -306,15 +307,9 @@ export function localAuthRoutes() {
       })
       const data = await res.json().catch(() => ({} as any))
       if (!res.ok || data?.ok === false) {
-        // A 401 from cloud means our key was revoked (probably via the cloud
-        // Devices UI). Wipe locally so the UI flips to signed-out and the
-        // user is prompted to re-login.
+        // 401 ⇒ key revoked or superseded; delegate to the shared self-heal helper.
         if (res.status === 401) {
-          await Promise.all([
-            localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
-            localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
-          ])
-          delete process.env.SHOGO_API_KEY
+          await wipeCloudKey('cloud-login heartbeat got 401 from Shogo Cloud')
         }
         return c.json({ ok: false, error: data?.error || `HTTP ${res.status}`, revoked: res.status === 401 }, res.status as any)
       }
