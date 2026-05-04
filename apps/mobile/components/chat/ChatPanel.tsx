@@ -2456,10 +2456,18 @@ export const ChatPanel = observer(function ChatPanel({
     // effect) would cause finally() → setIsLoadingMessages(false) → effect
     // re-runs → refetch loop. 5s is short enough to still revalidate on tab
     // switches after a delay, long enough to absorb the state round-trip.
+    //
+    // Critical: the bailout is keyed on the timestamp ALONE, not on `hasCached`.
+    // Empty sessions have `hasCached === false` forever (the .then() below
+    // early-returns on `loaded.length === 0` so `cachedMessagesRef.current` is
+    // never assigned). If the bailout were gated on `hasCached`, every Effect 1
+    // re-run would refetch /chat-messages and the resulting isInitialLoadComplete
+    // false→true flip would re-fire useChat's resumeStream → /stream — exactly
+    // the ~700ms /stream + /chat-messages spam users saw on a fresh chat.
     const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId) ?? 0
     const cacheAgeMs = performance.now() - refreshedAt
-    if (hasCached && cacheAgeMs < 5000) {
-      if (messagesRef.current !== cachedMessagesRef.current) {
+    if (cacheAgeMs < 5000) {
+      if (hasCached && messagesRef.current !== cachedMessagesRef.current) {
         setMessages(cachedMessagesRef.current!)
       }
       setIsInitialLoadComplete(true)
