@@ -188,6 +188,59 @@ describe('Terminal — prompt built-ins', () => {
     await user.keyboard('{Control>}u{/Control}')
     expect(input).toHaveValue('')
   })
+
+  test('Tab completes cd directory prefixes and keeps focus in the prompt', async () => {
+    const user = userEvent.setup()
+    fetcher.setRoute('/terminal/complete', () =>
+      jsonOk({
+        ok: true,
+        base: '/workspace',
+        entries: [{ name: 'files', type: 'directory' }],
+      }),
+    )
+    render(<Terminal projectId="p1" visible />)
+
+    const input = screen.getByRole('textbox', { name: /command/i })
+    await user.type(input, 'cd f')
+    await user.keyboard('{Tab}')
+
+    await waitFor(() => {
+      expect(input).toHaveValue('cd files/')
+    })
+    expect(input).toHaveFocus()
+    const call = fetcher.calls.find((c) => c.url.includes('/terminal/complete'))
+    expect(call).toBeDefined()
+    expect(JSON.parse(String(call?.init?.body))).toMatchObject({
+      pathPrefix: 'f',
+      onlyDirectories: true,
+    })
+  })
+
+  test('repeated Tab cycles ambiguous cd completions without another fetch', async () => {
+    const user = userEvent.setup()
+    fetcher.setRoute('/terminal/complete', () =>
+      jsonOk({
+        ok: true,
+        base: '/workspace',
+        entries: [
+          { name: 'files', type: 'directory' },
+          { name: 'folders', type: 'directory' },
+        ],
+      }),
+    )
+    render(<Terminal projectId="p1" visible />)
+
+    const input = screen.getByRole('textbox', { name: /command/i })
+    await user.type(input, 'cd f')
+    await user.keyboard('{Tab}')
+    await waitFor(() => {
+      expect(input).toHaveValue('cd files/')
+    })
+
+    await user.keyboard('{Tab}')
+    expect(input).toHaveValue('cd folders/')
+    expect(fetcher.calls.filter((c) => c.url.includes('/terminal/complete'))).toHaveLength(1)
+  })
 })
 
 describe('Terminal — dangerous preset confirmation', () => {

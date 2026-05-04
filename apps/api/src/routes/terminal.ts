@@ -43,6 +43,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { isAbsolute, join, resolve } from "path"
 import { makeKillChild, spawnPresetShell, spawnRunShell } from "@shogo/agent-runtime/src/terminal-shell"
+import { completeTerminalPath } from "@shogo/agent-runtime/src/terminal-completion"
 
 /**
  * ASCII Record-Separator framed sentinel used to carry post-command metadata
@@ -199,6 +200,33 @@ export function terminalRoutes(config: TerminalRoutesConfig) {
     }, {} as Record<string, Array<{ id: string; label: string; description: string; category: string; dangerous: boolean }>>)
 
     return c.json({ commands: commandsByCategory }, 200)
+  })
+
+  /**
+   * POST /projects/:projectId/terminal/complete - List path completion entries.
+   */
+  router.post("/projects/:projectId/terminal/complete", async (c) => {
+    const projectId = c.req.param("projectId")
+    const projectDir = join(workspacesDir, projectId)
+
+    if (!existsSync(projectDir)) {
+      return c.json(
+        { error: { code: "project_not_found", message: "Project not found" } },
+        404,
+      )
+    }
+
+    let body: { cwd?: string; pathPrefix?: string; onlyDirectories?: boolean }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        { error: { code: "invalid_body", message: "Invalid request body" } },
+        400,
+      )
+    }
+
+    return c.json(completeTerminalPath(projectDir, body), 200)
   })
 
   /**

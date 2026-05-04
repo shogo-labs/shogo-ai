@@ -14,6 +14,7 @@ import { tmpdir } from 'os'
 import { isAbsolute, join, resolve } from 'path'
 import { Hono } from 'hono'
 import { makeKillChild, spawnPresetShell, spawnRunShell } from './terminal-shell'
+import { completeTerminalPath } from './terminal-completion'
 import { buildQuickCommands, groupQuickCommandsByCategory } from './quick-commands'
 
 const META_SENTINEL_PREFIX = '\u001eSHOGO_TERM_META:'
@@ -29,6 +30,21 @@ export function runtimeTerminalRoutes(config: { workspaceDir: string }) {
     // See `quick-commands.ts` for the layering rules.
     const commands = groupQuickCommandsByCategory(buildQuickCommands(workspaceDir))
     return c.json({ commands })
+  })
+
+  router.post('/terminal/complete', async (c) => {
+    if (!existsSync(workspaceDir)) {
+      return c.json({ error: { code: 'workspace_not_found', message: 'Workspace not found' } }, 404)
+    }
+
+    let body: { cwd?: string; pathPrefix?: string; onlyDirectories?: boolean }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'invalid_body', message: 'Invalid request body' } }, 400)
+    }
+
+    return c.json(completeTerminalPath(workspaceDir, body))
   })
 
   router.post('/terminal/exec', async (c) => {
