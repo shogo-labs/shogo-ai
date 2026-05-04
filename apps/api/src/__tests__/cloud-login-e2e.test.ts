@@ -868,25 +868,62 @@ describe('Cloud Login E2E', () => {
       expect(res.status).toBe(401)
     })
 
-    test('remote revoke: heartbeat against a revoked key wipes local config', async () => {
+    test('remote revoke: heartbeat returns cloudKeyRejected but never wipes local config', async () => {
       await signInHelper()
       // Simulate cloud-side revocation (via Devices UI)
       const deviceRow = [...apiKeys.values()].find((r) => r.kind === 'device')!
       deviceRow.revokedAt = new Date()
 
+      // Multiple heartbeats with a revoked key should never wipe local credentials.
+      // The user stays signed in; the UI shows a warning banner instead.
+      for (let i = 0; i < 5; i++) {
+        const res = await app.request('/api/local/cloud-login/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        expect(res.status).toBe(401)
+        const data = await res.json()
+        expect(data.cloudKeyRejected).toBe(true)
+        // Key is NEVER auto-deleted — only explicit sign-out wipes it
+        expect(localConfig.has('SHOGO_API_KEY')).toBe(true)
+        expect(localConfig.has('SHOGO_KEY_INFO')).toBe(true)
+        expect(process.env.SHOGO_API_KEY).toBeDefined()
+      }
+
+      // Status still reports signed in, with the rejection flag
+      const statusRes = await app.request('/api/local/cloud-login/status')
+      const status = await statusRes.json()
+      expect(status.signedIn).toBe(true)
+      expect(status.cloudKeyRejected).toBe(true)
+    })
+
+    test('cloudKeyRejected clears when heartbeat succeeds again', async () => {
+      await signInHelper()
+      const deviceRow = [...apiKeys.values()].find((r) => r.kind === 'device')!
+
+      // Trigger a rejection
+      deviceRow.revokedAt = new Date()
+      await app.request('/api/local/cloud-login/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+
+      // Cloud recovers (un-revoked)
+      deviceRow.revokedAt = null
       const res = await app.request('/api/local/cloud-login/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       })
-      expect(res.status).toBe(401)
-      const data = await res.json()
-      expect(data.revoked).toBe(true)
+      expect(res.status).toBe(200)
 
-      // Local credentials are wiped so the UI flips to signed-out on next poll.
-      expect(localConfig.has('SHOGO_API_KEY')).toBe(false)
-      expect(localConfig.has('SHOGO_KEY_INFO')).toBe(false)
-      expect(process.env.SHOGO_API_KEY).toBeUndefined()
+      // Status should no longer show rejection
+      const statusRes = await app.request('/api/local/cloud-login/status')
+      const status = await statusRes.json()
+      expect(status.signedIn).toBe(true)
+      expect(status.cloudKeyRejected).toBe(false)
     })
   })
 })

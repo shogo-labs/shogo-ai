@@ -226,4 +226,12 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   removeCloudLoginListener: () => {
     ipcRenderer.removeAllListeners('cloud-login-result')
   },
+  onCloudConnectionStatus: (
+    callback: (status: { connected: boolean; cloudKeyRejected: boolean; error?: string }) => void,
+  ) => {
+    ipcRenderer.on('cloud-connection-status', (_event, status) => callback(status))
+  },
+  removeCloudConnectionStatusListener: () => {
+    ipcRenderer.removeAllListeners('cloud-connection-status')
+  },
 })
