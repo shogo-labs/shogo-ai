@@ -160,21 +160,48 @@ export async function signUpAndOnboardWithAppTemplate(
  * `"Manual API keys (N) · advanced"` accordion. Tests that need to create
  * a manual key must expand the accordion first.
  *
+ * Prefers the stable `testID="manual-api-keys-toggle"` and falls back to
+ * role-based matching for revisions that predate the testID.
+ *
  * See apps/mobile/app/(app)/api-keys.tsx — the `showManualKeys` state.
  */
 export async function expandManualApiKeys(page: Page) {
-  const toggle = page.getByRole("button", { name: /Manual API keys/ })
+  const toggle = page
+    .getByTestId("manual-api-keys-toggle")
+    .or(page.getByRole("button", { name: /Manual API keys/ }))
+    .first()
   await toggle.waitFor({ state: "visible", timeout: 10_000 })
-  // Avoid re-collapsing if the accordion is already open.
   const expanded = await toggle.getAttribute("aria-expanded").catch(() => null)
   if (expanded !== "true") {
     await toggle.click()
   }
   // "Create Key" only renders after the accordion animates open.
-  await page
-    .getByText("Create Key")
+  const createBtn = page
+    .getByTestId("create-api-key-btn")
+    .or(page.getByText("Create Key").first())
     .first()
-    .waitFor({ state: "visible", timeout: 10_000 })
+  await createBtn.waitFor({ state: "visible", timeout: 10_000 })
+}
+
+/**
+ * Returns the "Create Key" button inside the expanded Manual API keys
+ * section, preferring the stable testID.
+ */
+export function createApiKeyButton(page: Page) {
+  return page
+    .getByTestId("create-api-key-btn")
+    .or(page.getByText("Create Key").first())
+    .first()
+}
+
+/**
+ * Returns the "Create Key" submit button inside the Create API Key modal.
+ */
+export function createApiKeySubmitButton(page: Page) {
+  return page
+    .getByTestId("create-api-key-submit")
+    .or(page.getByRole("dialog", { name: "Create API Key" }).getByText("Create Key", { exact: true }))
+    .first()
 }
 
 // ── Interaction mode helpers ─────────────────────────────────────────────────
@@ -223,16 +250,21 @@ export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" |
  * The home composer uses an animated typewriter placeholder
  * (`"Ask Shogo to " + rotating suggestion`), so the old
  * `getByPlaceholder("Ask Shogo to ...")` selector never matches.
- * `CompactChatInput` renders a stable `accessibilityLabel` we can target
- * regardless of interaction mode and placeholder churn.
+ * `CompactChatInput` exposes a stable `testID="home-composer-input"` we
+ * can target regardless of interaction mode and placeholder churn.
  *
- * See apps/mobile/components/chat/CompactChatInput.tsx — the TextInput
- * label "Describe the agent you want to build".
+ * Falls back to `accessibilityLabel` matching for revisions that predate
+ * the testID (e.g. long-lived staging sessions) so this helper works on
+ * any prod/staging tag.
+ *
+ * See apps/mobile/components/chat/CompactChatInput.tsx.
  */
 export function homeComposerInput(page: Page) {
-  return page.getByRole("textbox", {
-    name: "Describe the agent you want to build",
-  })
+  return page.getByTestId("home-composer-input").or(
+    page.getByRole("textbox", {
+      name: "Describe the agent you want to build",
+    }),
+  )
 }
 
 export async function sendChatMessage(page: Page, text: string) {

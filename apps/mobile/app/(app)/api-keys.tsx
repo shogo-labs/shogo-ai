@@ -279,6 +279,7 @@ export default observer(function ApiKeysPage() {
 
         {/* Manual API keys (advanced) */}
         <Pressable
+          testID="manual-api-keys-toggle"
           onPress={() => setShowManualKeys((v) => !v)}
           className="flex-row items-center gap-2 mb-3 py-1"
           accessibilityRole="button"
@@ -304,7 +305,11 @@ export default observer(function ApiKeysPage() {
               sign in via the desktop app instead.
             </Text>
             <View className="flex-row justify-end mb-3">
-              <Button size="sm" onPress={() => setShowCreateModal(true)}>
+              <Button
+                size="sm"
+                testID="create-api-key-btn"
+                onPress={() => setShowCreateModal(true)}
+              >
                 <View className="flex-row items-center gap-1.5">
                   <Plus size={14} color="#fff" />
                   <Text className="text-sm font-medium text-primary-foreground">Create Key</Text>
@@ -465,6 +470,7 @@ export default observer(function ApiKeysPage() {
                     Cancel
                   </Button>
                   <Button
+                    testID="create-api-key-submit"
                     onPress={handleCreate}
                     disabled={isCreating || !newKeyName.trim()}
                     className="flex-1"
