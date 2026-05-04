@@ -413,9 +413,9 @@ export default observer(function BillingPage() {
       </View>
 
       {/* Plan Cards — md row: equal-height columns; tier slot reserves space so CTAs align */}
-      <View className="gap-6 md:flex-row md:items-stretch">
+      <View className="gap-6 md:flex-row md:items-stretch" testID="plan-cards-row">
         {/* Basic Plan */}
-        <View className="md:flex-1 md:w-0 flex flex-col">
+        <View className="md:flex-1 md:w-0 flex flex-col" testID="plan-card-basic">
           <View className="hidden md:block md:min-h-8" />
           <Card className="md:flex-1 flex flex-col">
             <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
@@ -469,7 +469,7 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Pro Plan */}
-        <View className="md:flex-1 md:w-0 flex flex-col">
+        <View className="md:flex-1 md:w-0 flex flex-col" testID="plan-card-pro">
           <View className="hidden md:block md:min-h-8" />
           <Card className="md:flex-1 flex flex-col">
             <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
@@ -535,7 +535,7 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Business Plan */}
-        <View className="md:flex-1 md:w-0 flex flex-col">
+        <View className="md:flex-1 md:w-0 flex flex-col" testID="plan-card-business">
           <View className="min-h-8 items-center justify-center px-1">
             <Badge className="bg-primary">
               <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
@@ -602,7 +602,7 @@ export default observer(function BillingPage() {
         </View>
 
         {/* Enterprise Plan */}
-        <View className="md:flex-1 md:w-0 flex flex-col">
+        <View className="md:flex-1 md:w-0 flex flex-col" testID="plan-card-enterprise">
           <View className="hidden md:block md:min-h-8" />
           <Card className="md:flex-1 flex flex-col">
             <CardContent className="md:flex-1 flex flex-col p-5 gap-5">
