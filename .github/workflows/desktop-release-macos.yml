@@ -151,13 +151,10 @@ jobs:
       - name: Build shogo-sysaudio (macOS system audio helper)
         working-directory: apps/desktop/native/shogo-sysaudio
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            make build-arm64
-          else
-            make build-amd64
-          fi
+          SWIFT_ARCH=${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
+          make build-$SWIFT_ARCH
           mkdir -p ../../resources/shogo-sysaudio
-          cp shogo-sysaudio-${{ matrix.arch }} ../../resources/shogo-sysaudio/
+          cp shogo-sysaudio-$SWIFT_ARCH ../../resources/shogo-sysaudio/
           ls -la ../../resources/shogo-sysaudio/
 
       - name: Install monorepo dependencies
