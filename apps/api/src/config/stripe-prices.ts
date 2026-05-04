@@ -50,20 +50,21 @@ export const STRIPE_PRICES_STAGING: StripePriceConfig = {
 
 /**
  * Production (Live) environment Stripe price IDs.
- * Filled in by the production rollout step.
+ * Created 2026-05-04 as part of the v1.5.0 rollout (see
+ * `scripts/gate1-stripe-setup` in the release notes).
  */
 export const STRIPE_PRICES_PRODUCTION: StripePriceConfig = {
   basic: {
-    monthly: "price_basic_monthly_live_TODO",
-    annual: "price_basic_annual_live_TODO",
+    monthly: "price_1TEdi4ADDMNd95Ggym2MWpEQ",
+    annual: "price_1TEdi6ADDMNd95GgYZaoUHiQ",
   },
   pro: {
-    monthly: "price_pro_monthly_per_seat_live_TODO",
-    annual: "price_pro_annual_per_seat_live_TODO",
+    monthly: "price_1TTIOfADDMNd95GgDyGQlaqH",
+    annual: "price_1TTIOgADDMNd95GgwQGlpBLa",
   },
   business: {
-    monthly: "price_business_monthly_per_seat_live_TODO",
-    annual: "price_business_annual_per_seat_live_TODO",
+    monthly: "price_1TTIOgADDMNd95Gg5DgR006y",
+    annual: "price_1TTIOhADDMNd95Gg6JaJzKzZ",
   },
 }
 
@@ -295,8 +296,8 @@ export const OVERAGE_PRICE_STAGING: OveragePriceConfig = {
 }
 
 export const OVERAGE_PRICE_PRODUCTION: OveragePriceConfig = {
-  priceId: "price_overage_usd_metered_live",
-  meterId: "mtr_overage_usd_live",
+  priceId: "price_1TTIP5ADDMNd95GgJ1GcpCVA",
+  meterId: "mtr_61UcgM4v14tWWuwy541ADDMNd95GgJ4K",
   meterEventName: "usage_overage_cents",
   unitsPerDollar: 100,
 }
