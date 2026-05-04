@@ -174,6 +174,12 @@ resource "cloudflare_record" "india_studio" {
 # passthrough; the Knative Ingress (api-tunnel) inside each cluster routes
 # to the api revision pods' queue-proxy port 8012 and bypasses the
 # DomainMapping loopback that drops WS Upgrade.
+#
+# IMPORTANT: Regional tunnel hostnames use a single label (`eu-tunnel`,
+# `india-tunnel`) instead of nested subdomains (`eu.tunnel`, `india.tunnel`)
+# so that the existing `*.shogo.ai` Cloudflare wildcard certificate covers
+# them. SSL wildcards only match a single DNS label, so two-label hosts
+# like `eu.tunnel.shogo.ai` would fail the TLS handshake at the edge.
 
 resource "cloudflare_record" "us_tunnel" {
   zone_id = var.cloudflare_zone_id
@@ -185,7 +191,7 @@ resource "cloudflare_record" "us_tunnel" {
 
 resource "cloudflare_record" "eu_tunnel" {
   zone_id = var.cloudflare_zone_id
-  name    = "eu.tunnel"
+  name    = "eu-tunnel"
   content = var.eu_lb_ip
   type    = "A"
   proxied = true
@@ -193,7 +199,7 @@ resource "cloudflare_record" "eu_tunnel" {
 
 resource "cloudflare_record" "india_tunnel" {
   zone_id = var.cloudflare_zone_id
-  name    = "india.tunnel"
+  name    = "india-tunnel"
   content = var.india_lb_ip
   type    = "A"
   proxied = true

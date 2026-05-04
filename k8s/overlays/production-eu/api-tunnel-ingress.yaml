@@ -3,13 +3,17 @@
 # =============================================================================
 # See k8s/overlays/staging/api-tunnel-ingress.yaml for the full rationale.
 #
-# Routes `eu.tunnel.shogo.ai` → the EU api ksvc revision pods' queue-proxy
+# Routes `eu-tunnel.shogo.ai` → the EU api ksvc revision pods' queue-proxy
 # port, bypassing the Knative DomainMapping that drops WebSocket Upgrade.
 #
 # The regional hostname is intentional: the desktop must reach the same
 # region whose API issued its heartbeat, so each region advertises its own
 # SHOGO_TUNNEL_WS_URL (see api-service.yaml). Cloudflare resolves
-# `eu.tunnel.shogo.ai` to the Frankfurt OCI LB only.
+# `eu-tunnel.shogo.ai` to the Frankfurt OCI LB only.
+#
+# NOTE: A single-label subdomain (eu-tunnel) is used instead of a
+# two-label one (eu.tunnel) so that the existing `*.shogo.ai` Cloudflare
+# wildcard certificate covers it. Wildcards only match a single label.
 # =============================================================================
 
 apiVersion: v1
@@ -48,7 +52,7 @@ spec:
   httpOption: Enabled
   rules:
     - hosts:
-        - eu.tunnel.shogo.ai
+        - eu-tunnel.shogo.ai
       visibility: ExternalIP
       http:
         paths:

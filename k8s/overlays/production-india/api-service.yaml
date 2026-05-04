@@ -127,7 +127,7 @@ spec:
             # api-tunnel-ingress.yaml so the WS Upgrade bypasses the
             # DomainMapping loopback.
             - name: SHOGO_TUNNEL_WS_URL
-              value: "wss://india.tunnel.shogo.ai"
+              value: "wss://india-tunnel.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-production-system:6379"
             - name: DATABASE_URL
