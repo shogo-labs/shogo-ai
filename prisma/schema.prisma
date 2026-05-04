@@ -140,6 +140,7 @@ model Workspace {
   subagentModelOverrides SubagentModelOverride[]
   agentEvalResults       AgentEvalResult[]
   agentEvalSets          AgentEvalSet[]
+  grants                 WorkspaceGrant[]
 
   @@map("workspaces")
 }
@@ -565,6 +566,29 @@ enum UsageSource {
   daily
   monthly
   overage
+}
+
+/// Super-admin-managed credit grant. Each row gives a workspace a fixed
+/// number of free seats (deducted from the Stripe seat quantity, with a
+/// minimum of 1 paid seat) plus a monthly USD allotment that stacks on
+/// top of any plan-included USD. Multiple active grants on the same
+/// workspace are summed.
+model WorkspaceGrant {
+  id                 String    @id @default(uuid())
+  workspaceId        String
+  freeSeats          Int       @default(0)
+  monthlyIncludedUsd Float     @default(0)
+  startsAt           DateTime  @default(now())
+  expiresAt          DateTime?
+  note               String?
+  createdByUserId    String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, expiresAt])
+  @@map("workspace_grants")
 }
 
 // =============================================================================

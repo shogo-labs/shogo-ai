@@ -47,6 +47,14 @@ let subscriptions: Array<{
   seats?: number
 }> = []
 let members: Array<{ workspaceId: string | null; projectId: string | null; userId: string }> = []
+let grants: Array<{
+  id: string
+  workspaceId: string
+  freeSeats: number
+  monthlyIncludedUsd: number
+  startsAt: Date
+  expiresAt: Date | null
+}> = []
 
 function freshWallet(ws: string, overrides: Partial<Wallet> = {}): Wallet {
   const now = new Date()
@@ -154,14 +162,33 @@ mock.module('../lib/prisma', () => {
       )
     },
   }
+  function isGrantActiveAt(g: typeof grants[number], when: Date): boolean {
+    if (g.startsAt > when) return false
+    if (g.expiresAt && g.expiresAt <= when) return false
+    return true
+  }
+  const grantApi = {
+    findMany: async ({ where }: any) => {
+      const now: Date = where.startsAt?.lte ?? new Date()
+      return grants.filter((g) => {
+        if (where.workspaceId && g.workspaceId !== where.workspaceId) return false
+        if (where.monthlyIncludedUsd?.gt != null && g.monthlyIncludedUsd <= where.monthlyIncludedUsd.gt) {
+          return false
+        }
+        if (!isGrantActiveAt(g, now)) return false
+        return true
+      })
+    },
+  }
   return {
     prisma: {
       usageWallet: walletApi,
       usageEvent: eventApi,
       subscription: subApi,
       member: memberApi,
+      workspaceGrant: grantApi,
       $transaction: async (fn: any) =>
-        fn({ usageWallet: walletApi, usageEvent: eventApi }),
+        fn({ usageWallet: walletApi, usageEvent: eventApi, subscription: subApi }),
     },
     SubscriptionStatus: {},
     BillingInterval: {},
@@ -239,6 +266,7 @@ beforeEach(() => {
   usageEvents = []
   subscriptions = []
   members = []
+  grants = []
   stripeCalls.retrieve = []
   stripeCalls.subItemCreate = []
   stripeCalls.subItemUpdate = []
@@ -769,6 +797,198 @@ describe('syncSeatsFromMembership', () => {
 // =============================================================================
 // Legacy compat shim
 // =============================================================================
+
+// =============================================================================
+// Workspace credit grants — `WorkspaceGrant` integration
+// =============================================================================
+
+describe('workspace credit grants', () => {
+  test('getActiveGrantsForWorkspace sums freeSeats and monthlyIncludedUsd over active rows only', async () => {
+    const past = new Date('2020-01-01')
+    grants.push(
+      { id: 'g1', workspaceId: 'ws1', freeSeats: 5, monthlyIncludedUsd: 500, startsAt: past, expiresAt: null },
+      { id: 'g2', workspaceId: 'ws1', freeSeats: 1, monthlyIncludedUsd: 100, startsAt: past, expiresAt: null },
+      // Expired — must be ignored.
+      { id: 'g3', workspaceId: 'ws1', freeSeats: 99, monthlyIncludedUsd: 9999, startsAt: past, expiresAt: new Date('2021-01-01') },
+      // Different workspace — must be ignored.
+      { id: 'g4', workspaceId: 'wsX', freeSeats: 50, monthlyIncludedUsd: 50, startsAt: past, expiresAt: null },
+    )
+
+    const sum = await billing.getActiveGrantsForWorkspace('ws1')
+
+    expect(sum.freeSeats).toBe(6)
+    expect(sum.monthlyIncludedUsd).toBe(600)
+    expect(sum.rowCount).toBe(2)
+  })
+
+  test('allocateMonthlyIncluded stacks grant USD on top of plan-included USD', async () => {
+    const past = new Date('2020-01-01')
+    grants.push({
+      id: 'g1',
+      workspaceId: 'ws1',
+      freeSeats: 0,
+      monthlyIncludedUsd: 500,
+      startsAt: past,
+      expiresAt: null,
+    })
+
+    // Pro plan: $20/seat included × 3 paid seats = $60, plus the $500 grant.
+    await billing.allocateMonthlyIncluded('ws1', 'pro', 3)
+
+    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(560, 10)
+    expect(wallets.get('ws1')!.monthlyIncludedAllocationUsd).toBeCloseTo(560, 10)
+  })
+
+  test('allocateMonthlyIncluded credits per-seat USD for granted free seats too', async () => {
+    const past = new Date('2020-01-01')
+    grants.push({
+      id: 'g1',
+      workspaceId: 'ws1',
+      freeSeats: 5,
+      monthlyIncludedUsd: 0,
+      startsAt: past,
+      expiresAt: null,
+    })
+
+    // Pro plan: $20/seat × (1 paid + 5 granted) = $120 included USD.
+    await billing.allocateMonthlyIncluded('ws1', 'pro', 1)
+
+    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(120, 10)
+  })
+
+  test('expired grants are ignored by allocateMonthlyIncluded', async () => {
+    const past = new Date('2020-01-01')
+    grants.push({
+      id: 'g_expired',
+      workspaceId: 'ws1',
+      freeSeats: 99,
+      monthlyIncludedUsd: 9999,
+      startsAt: past,
+      expiresAt: new Date('2021-01-01'),
+    })
+
+    // Pro: $20 × 1 paid seat = $20, expired grant contributes nothing.
+    await billing.allocateMonthlyIncluded('ws1', 'pro', 1)
+
+    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(20, 10)
+  })
+
+  test('allocateFreeWallet seeds wallet with grant monthly USD on day one', async () => {
+    const past = new Date('2020-01-01')
+    grants.push({
+      id: 'g1',
+      workspaceId: 'ws_free',
+      freeSeats: 1,
+      monthlyIncludedUsd: 1000,
+      startsAt: past,
+      expiresAt: null,
+    })
+
+    const wallet = await billing.allocateFreeWallet('ws_free')
+
+    expect(wallet.monthlyIncludedUsd).toBeCloseTo(1000, 10)
+    expect(wallet.dailyIncludedUsd).toBeCloseTo(0.5, 10)
+  })
+
+  test('applyGrantMonthlyAllocation refills monthly USD from active grants', async () => {
+    const past = new Date('2020-01-01')
+    grants.push({
+      id: 'g1',
+      workspaceId: 'ws_free',
+      freeSeats: 0,
+      monthlyIncludedUsd: 500,
+      startsAt: past,
+      expiresAt: null,
+    })
+    wallets.set('ws_free', freshWallet('ws_free', { monthlyIncludedUsd: 0 }))
+
+    await billing.applyGrantMonthlyAllocation('ws_free')
+
+    expect(wallets.get('ws_free')!.monthlyIncludedUsd).toBeCloseTo(500, 10)
+    expect(wallets.get('ws_free')!.monthlyIncludedAllocationUsd).toBeCloseTo(500, 10)
+  })
+
+  test('syncSeatsFromMembership reduces Stripe quantity by free seats with min 1', async () => {
+    const past = new Date('2020-01-01')
+    subscriptions.push({
+      id: 'sub_pk_1',
+      workspaceId: 'ws1',
+      status: 'active',
+      stripeSubscriptionId: 'sub_123',
+      stripeCustomerId: 'cus_abc',
+      planId: 'pro',
+      seats: 1,
+    })
+    wallets.set('ws1', freshWallet('ws1'))
+    stripeSubResponse = {
+      items: {
+        data: [
+          { id: 'si_seat', price: { id: 'price_pro_monthly', recurring: { usage_type: 'licensed' } } },
+          { id: 'si_metered', price: { id: 'price_overage_metered', recurring: { usage_type: 'metered' } } },
+        ],
+      },
+    }
+    // 8 members, grant of 5 free seats → bill 3 paid seats.
+    for (const u of ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7', 'u8']) {
+      members.push({ workspaceId: 'ws1', projectId: null, userId: u })
+    }
+    grants.push({
+      id: 'g1',
+      workspaceId: 'ws1',
+      freeSeats: 5,
+      monthlyIncludedUsd: 0,
+      startsAt: past,
+      expiresAt: null,
+    })
+
+    const result = await billing.syncSeatsFromMembership('ws1')
+
+    expect(result.ok).toBe(true)
+    expect(result.seats).toBe(3)
+    expect(stripeCalls.subItemUpdate).toHaveLength(1)
+    expect(stripeCalls.subItemUpdate[0].quantity).toBe(3)
+    // Wallet still gets per-seat USD for total members ($20 × 8 = $160).
+    expect(wallets.get('ws1')!.monthlyIncludedUsd).toBeCloseTo(160, 10)
+  })
+
+  test('syncSeatsFromMembership enforces a minimum of 1 paid Stripe seat', async () => {
+    const past = new Date('2020-01-01')
+    subscriptions.push({
+      id: 'sub_pk_2',
+      workspaceId: 'ws2',
+      status: 'active',
+      stripeSubscriptionId: 'sub_222',
+      stripeCustomerId: 'cus_222',
+      planId: 'pro',
+      seats: 1,
+    })
+    wallets.set('ws2', freshWallet('ws2'))
+    stripeSubResponse = {
+      items: {
+        data: [
+          { id: 'si_seat', price: { id: 'price_pro_monthly', recurring: { usage_type: 'licensed' } } },
+        ],
+      },
+    }
+    // 1 member, grant of 5 free seats → would be 0 paid seats; clamp to 1.
+    members.push({ workspaceId: 'ws2', projectId: null, userId: 'only-user' })
+    grants.push({
+      id: 'g_big',
+      workspaceId: 'ws2',
+      freeSeats: 5,
+      monthlyIncludedUsd: 0,
+      startsAt: past,
+      expiresAt: null,
+    })
+
+    const result = await billing.syncSeatsFromMembership('ws2')
+
+    expect(result.ok).toBe(true)
+    expect(result.seats).toBe(1)
+    // Already in sync (sub.seats was already 1) → no Stripe update call.
+    expect(stripeCalls.subItemUpdate).toHaveLength(0)
+  })
+})
 
 describe('legacy consumeCredits shim', () => {
   test('converts credit cost to USD at $0.10/credit and exposes remainingCredits', async () => {

@@ -190,7 +190,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { projects: true, members: true, billingAccounts: true, invitations: true, inviteLinks: true, folders: true, subscriptions: true, usageWallets: true, usageEvents: true, starredProjects: true, apiKeys: true, instances: true, meetings: true, voiceProjectConfigs: true } },
+            _count: { select: { projects: true, members: true, billingAccounts: true, invitations: true, inviteLinks: true, folders: true, subscriptions: true, usageWallets: true, usageEvents: true, starredProjects: true, apiKeys: true, instances: true, meetings: true, voiceProjectConfigs: true, agentCostMetrics: true, budgetAlerts: true, modelExperiments: true, subagentModelOverrides: true, agentEvalResults: true, agentEvalSets: true, grants: true } },
           },
         }),
         prisma.workspace.count({ where }),
@@ -226,6 +226,13 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           instances: { take: 50 },
           meetings: { take: 50 },
           voiceProjectConfigs: { take: 50 },
+          agentCostMetrics: { take: 50 },
+          budgetAlerts: { take: 50 },
+          modelExperiments: { take: 50 },
+          subagentModelOverrides: { take: 50 },
+          agentEvalResults: { take: 50 },
+          agentEvalSets: { take: 50 },
+          grants: { take: 50 },
         },
       })
 
@@ -319,7 +326,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            _count: { select: { members: true, inviteLinks: true, featureSessions: true, chatSessions: true, usageEvents: true, checkpoints: true, starredBy: true, meetings: true } },
+            _count: { select: { members: true, inviteLinks: true, featureSessions: true, chatSessions: true, usageEvents: true, checkpoints: true, starredBy: true, meetings: true, agentCostMetrics: true, modelExperiments: true, subagentModelOverrides: true, agentEvalSets: true } },
           },
         }),
         prisma.project.count({ where }),
@@ -353,6 +360,10 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           checkpoints: { take: 50 },
           starredBy: { take: 50 },
           meetings: { take: 50 },
+          agentCostMetrics: { take: 50 },
+          modelExperiments: { take: 50 },
+          subagentModelOverrides: { take: 50 },
+          agentEvalSets: { take: 50 },
         },
       })
 
@@ -1331,6 +1342,108 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
     }
   })
 
+  // ========== WorkspaceGrant ==========
+
+  // LIST workspace-grants
+  router.get("/workspace-grants", async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"))
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get("limit") || "20")), 100)
+      const search = url.searchParams.get("search") || ""
+      const orderBy = url.searchParams.get("orderBy") || "createdAt"
+      const order = (url.searchParams.get("order") || "desc") as "asc" | "desc"
+
+      let where: any = {}
+      if (search) {
+        where = {
+          OR: [
+            { workspaceId: { contains: search, mode: "insensitive" } },
+            { note: { contains: search, mode: "insensitive" } },
+            { createdByUserId: { contains: search, mode: "insensitive" } },
+          ]
+        }
+      }
+
+      // Additional query param filters
+      const reserved = new Set(["page", "limit", "search", "orderBy", "order"])
+      for (const [key, value] of url.searchParams.entries()) {
+        if (!reserved.has(key) && value !== "") {
+          if (value === "true") where[key] = true
+          else if (value === "false") where[key] = false
+          else where[key] = value
+        }
+      }
+
+      const [items, total] = await Promise.all([
+        prisma.workspaceGrant.findMany({
+          where,
+          orderBy: { [orderBy]: order },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.workspaceGrant.count({ where }),
+      ])
+
+      return c.json({ ok: true, data: { workspaceGrants: items, total, page, limit } })
+    } catch (error: any) {
+      console.error("[Admin] List WorkspaceGrant error:", error)
+      return c.json({ error: { code: "list_failed", message: error.message } }, 500)
+    }
+  })
+
+  // GET workspace-grants/:id
+  router.get("/workspace-grants/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const item = await prisma.workspaceGrant.findUnique({
+        where: { id },
+        include: {
+          workspace: true,
+        },
+      })
+
+      if (!item) {
+        return c.json({ error: { code: "not_found", message: "WorkspaceGrant not found" } }, 404)
+      }
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[Admin] Get WorkspaceGrant error:", error)
+      return c.json({ error: { code: "get_failed", message: error.message } }, 500)
+    }
+  })
+
+  // PATCH workspace-grants/:id
+  router.patch("/workspace-grants/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      const body = await c.req.json()
+
+      const item = await prisma.workspaceGrant.update({
+        where: { id },
+        data: body,
+      })
+
+      return c.json({ ok: true, data: item })
+    } catch (error: any) {
+      console.error("[Admin] Update WorkspaceGrant error:", error)
+      return c.json({ error: { code: "update_failed", message: error.message } }, 500)
+    }
+  })
+
+  // DELETE workspace-grants/:id
+  router.delete("/workspace-grants/:id", async (c) => {
+    try {
+      const id = c.req.param("id")
+      await prisma.workspaceGrant.delete({ where: { id } })
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error("[Admin] Delete WorkspaceGrant error:", error)
+      return c.json({ error: { code: "delete_failed", message: error.message } }, 500)
+    }
+  })
+
   // ========== ChatSession ==========
 
   // LIST chat-sessions
@@ -1780,6 +1893,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
         subscriptionCount,
         usageWalletCount,
         usageEventCount,
+        workspaceGrantCount,
         chatSessionCount,
         chatMessageCount,
         toolCallLogCount,
@@ -1797,6 +1911,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
         prisma.subscription.count(),
         prisma.usageWallet.count(),
         prisma.usageEvent.count(),
+        prisma.workspaceGrant.count(),
         prisma.chatSession.count(),
         prisma.chatMessage.count(),
         prisma.toolCallLog.count(),
@@ -1818,6 +1933,7 @@ export function createAdminRoutes(config: AdminRoutesConfig): Hono {
           subscription: subscriptionCount,
           usageWallet: usageWalletCount,
           usageEvent: usageEventCount,
+          workspaceGrant: workspaceGrantCount,
           chatSession: chatSessionCount,
           chatMessage: chatMessageCount,
           toolCallLog: toolCallLogCount,

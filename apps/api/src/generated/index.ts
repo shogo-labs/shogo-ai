@@ -22,6 +22,7 @@ import { createNotificationRoutes, setPrisma as setPrismaNotification, setNotifi
 import { createSubscriptionRoutes, setPrisma as setPrismaSubscription, setSubscriptionHooks } from "./subscription.routes"
 import { createUsageWalletRoutes, setPrisma as setPrismaUsageWallet, setUsageWalletHooks } from "./usage-wallet.routes"
 import { createUsageEventRoutes, setPrisma as setPrismaUsageEvent, setUsageEventHooks } from "./usage-event.routes"
+import { createWorkspaceGrantRoutes, setPrisma as setPrismaWorkspaceGrant, setWorkspaceGrantHooks } from "./workspace-grant.routes"
 import { createChatSessionRoutes, setPrisma as setPrismaChatSession, setChatSessionHooks } from "./chat-session.routes"
 import { createChatMessageRoutes, setPrisma as setPrismaChatMessage, setChatMessageHooks } from "./chat-message.routes"
 import { createToolCallLogRoutes, setPrisma as setPrismaToolCallLog, setToolCallLogHooks } from "./tool-call-log.routes"
@@ -40,6 +41,7 @@ import { notificationHooks } from "./notification.hooks"
 import { subscriptionHooks } from "./subscription.hooks"
 import { usageWalletHooks } from "./usage-wallet.hooks"
 import { usageEventHooks } from "./usage-event.hooks"
+import { workspaceGrantHooks } from "./workspace-grant.hooks"
 import { chatSessionHooks } from "./chat-session.hooks"
 import { chatMessageHooks } from "./chat-message.hooks"
 import { toolCallLogHooks } from "./tool-call-log.hooks"
@@ -83,6 +85,9 @@ export {
   createUsageEventRoutes,
   setPrismaUsageEvent,
   setUsageEventHooks,
+  createWorkspaceGrantRoutes,
+  setPrismaWorkspaceGrant,
+  setWorkspaceGrantHooks,
   createChatSessionRoutes,
   setPrismaChatSession,
   setChatSessionHooks,
@@ -111,6 +116,7 @@ export {
   subscriptionHooks,
   usageWalletHooks,
   usageEventHooks,
+  workspaceGrantHooks,
   chatSessionHooks,
   chatMessageHooks,
   toolCallLogHooks,
@@ -130,6 +136,7 @@ export type { NotificationHooks } from "./notification.hooks"
 export type { SubscriptionHooks } from "./subscription.hooks"
 export type { UsageWalletHooks } from "./usage-wallet.hooks"
 export type { UsageEventHooks } from "./usage-event.hooks"
+export type { WorkspaceGrantHooks } from "./workspace-grant.hooks"
 export type { ChatSessionHooks } from "./chat-session.hooks"
 export type { ChatMessageHooks } from "./chat-message.hooks"
 export type { ToolCallLogHooks } from "./tool-call-log.hooks"
@@ -154,6 +161,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setPrismaSubscription(prisma)
   setPrismaUsageWallet(prisma)
   setPrismaUsageEvent(prisma)
+  setPrismaWorkspaceGrant(prisma)
   setPrismaChatSession(prisma)
   setPrismaChatMessage(prisma)
   setPrismaToolCallLog(prisma)
@@ -172,6 +180,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   setSubscriptionHooks(subscriptionHooks)
   setUsageWalletHooks(usageWalletHooks)
   setUsageEventHooks(usageEventHooks)
+  setWorkspaceGrantHooks(workspaceGrantHooks)
   setChatSessionHooks(chatSessionHooks)
   setChatMessageHooks(chatMessageHooks)
   setToolCallLogHooks(toolCallLogHooks)
@@ -190,6 +199,7 @@ export function createAllRoutes(prisma: PrismaClient): Hono {
   app.route("/subscriptions", createSubscriptionRoutes())
   app.route("/usage-wallets", createUsageWalletRoutes())
   app.route("/usage-events", createUsageEventRoutes())
+  app.route("/workspace-grants", createWorkspaceGrantRoutes())
   app.route("/chat-sessions", createChatSessionRoutes())
   app.route("/chat-messages", createChatMessageRoutes())
   app.route("/tool-call-logs", createToolCallLogRoutes())
