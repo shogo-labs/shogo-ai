@@ -94,11 +94,21 @@ export class RuntimeManager implements IRuntimeManager {
 
         const selfPid = String(process.pid)
         const parentPid = String(process.ppid)
-        const pids = result.split('\n').filter(p => p.trim() && p !== selfPid && p !== parentPid)
+        // Some lsof builds (notably inside the minimal runtime container
+        // images) silently ignore `-t` when another flag isn't honored and
+        // fall back to verbose tabular output. If any non-numeric tokens
+        // reach `kill -9`, sh will choke on unescaped characters like `(`
+        // and spray `/bin/sh: syntax error: unexpected "("` into the logs.
+        // Defensively keep only pure integer PIDs.
+        const pids = result
+          .split(/\s+/)
+          .map((p) => p.trim())
+          .filter((p) => /^\d+$/.test(p) && p !== selfPid && p !== parentPid && p !== '1')
 
         if (pids.length > 0) {
-          console.log(`[RuntimeManager] Cleaning up ${pids.length} stale process(es) on ports ${range.start}-${range.end}: ${pids.join(', ')}`)
-          for (const pid of pids) {
+          const uniquePids = [...new Set(pids)]
+          console.log(`[RuntimeManager] Cleaning up ${uniquePids.length} stale process(es) on ports ${range.start}-${range.end}: ${uniquePids.join(', ')}`)
+          for (const pid of uniquePids) {
             try { execSync(`kill -9 ${pid} 2>/dev/null || true`) } catch {}
           }
         }
@@ -149,7 +159,13 @@ export class RuntimeManager implements IRuntimeManager {
           return [...new Set(pids)]
         } else {
           const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
-          return result.trim().split('\n').filter(pid => pid.length > 0)
+          // Defensively accept only numeric PIDs — some lsof builds emit
+          // verbose output even with `-t`, which would cause sh to choke
+          // on unescaped `(` when fed to `kill`.
+          return result
+            .split(/\s+/)
+            .map((p) => p.trim())
+            .filter((pid) => /^\d+$/.test(pid))
         }
       } catch {
         return []

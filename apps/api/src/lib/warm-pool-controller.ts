@@ -107,6 +107,21 @@ export interface WarmPodInfo {
   nodeName?: string
 }
 
+/**
+ * Thrown by assign() when the Knative service backing the claimed warm pod
+ * no longer exists (e.g. another replica trimmed, recycled, or GC'd it
+ * between claim() and assign()). The caller should discard this pod and
+ * claim a different one — the claim was never durably completed, so no
+ * cleanup is required beyond what assign() already does internally.
+ */
+export class WarmPodGoneError extends Error {
+  readonly code = 'WARM_POD_GONE' as const
+  constructor(serviceName: string, reason: string) {
+    super(`Warm pod ${serviceName} is gone: ${reason}`)
+    this.name = 'WarmPodGoneError'
+  }
+}
+
 export interface PromotedPodInfo {
   serviceName: string
   projectId: string
@@ -430,9 +445,14 @@ export class WarmPoolController {
         .sort((a, b) => a.createdAt - b.createdAt)
         .slice(0, Math.min(excess, MAX_DELETIONS_PER_CYCLE))
       for (const pod of toRemove) {
-        console.log(`[WarmPool] Trimming excess pod ${pod.serviceName} (${trimmableAvailable.length} trimmable, target ${this.poolSize})`)
+        // Atomic trim: use a JSON-patch `test`-then-`replace` on the
+        // status label. If another replica has concurrently promoted the
+        // pod for a project claim (status transitioned available→promoted),
+        // the patch fails with 422 and we skip the delete — avoiding the
+        // production incident where a trim-on-replica-A deleted a pod that
+        // replica-B was actively assigning.
         this.available.delete(pod.id)
-        this.deleteWarmPodService(pod.serviceName).catch((err) => {
+        this.claimTrimAndDelete(pod).catch((err) => {
           console.error(`[WarmPool] Failed to trim pod ${pod.serviceName}:`, err.message)
         })
       }
@@ -580,8 +600,23 @@ export class WarmPoolController {
 
   /**
    * Assign a claimed warm pod to a specific project.
-   * Sends the /pool/assign request, patches Knative annotations for promotion,
-   * and saves the service name mapping in the database.
+   *
+   * Order matters — this is the only cross-replica serialization point:
+   *   1. PATCH the Knative service metadata (labels + annotations). The
+   *      K8s API itself is the serialization barrier between API replicas:
+   *      whichever replica PATCHes first "wins" the pod; others get 404
+   *      because a concurrent trim/recycle/GC already deleted the service.
+   *      On 404 we throw {@link WarmPodGoneError} so the caller can retry
+   *      with a different pod BEFORE any DomainMapping is written and
+   *      before any URL is returned to the user.
+   *   2. POST /pool/assign — reconfigure the pod with project-specific env.
+   *   3. Record the assignment in memory and (async) save DB mapping.
+   *
+   * The previous design did the PATCH in a background `promoteWarmPod`
+   * after returning the URL, which meant a lost race was discovered too
+   * late: the user had already been handed the URL of a dead service and
+   * the DomainMapping had been pointed at it. This caused the
+   * "Transient 404 from pod, retrying ... attempt N/30" storms in prod.
    */
   async assign(
     pod: WarmPodInfo,
@@ -596,6 +631,47 @@ export class WarmPoolController {
     }, async (span) => {
       const startTime = Date.now()
       try {
+        // STEP 1 (CRITICAL SERIALIZATION POINT): mark the pod as ours via
+        // a metadata PATCH on the Knative service. If another replica
+        // already deleted the service (trim, stale cleanup, namespace GC),
+        // this PATCH returns 404 and we abort — the caller's retry loop
+        // will claim a different pod. Must happen BEFORE /pool/assign so
+        // a lost race never returns a URL to a dead pod.
+        const { mergePatchKnativeService } = await import('./knative-project-manager')
+        const metadataPatch = {
+          metadata: {
+            annotations: {
+              'shogo.io/assigned-project': projectId,
+            },
+            labels: {
+              [POOL_STATUS_LABEL_KEY]: 'promoted',
+              'shogo.io/project': projectId,
+              [ACTIVE_LABEL_KEY]: 'true',
+            },
+          },
+        }
+        try {
+          await mergePatchKnativeService(this.namespace, pod.serviceName, metadataPatch)
+        } catch (patchErr: any) {
+          const msg = String(patchErr?.message || '')
+          const isGone =
+            patchErr?.code === 404 ||
+            patchErr?.response?.statusCode === 404 ||
+            msg.includes('404') ||
+            msg.includes('not found') ||
+            msg.includes('NotFound')
+          if (isGone) {
+            console.warn(
+              `[WarmPool] Lost race claiming ${pod.serviceName} for ${projectId} — service was deleted by another replica (trim/GC). Retrying with a different pod.`
+            )
+            this.claimedServiceNames.delete(pod.serviceName)
+            this.available.delete(pod.id)
+            span.setStatus({ code: SpanStatusCode.ERROR, message: 'warm_pod_gone' })
+            throw new WarmPodGoneError(pod.serviceName, 'service not found during promotion PATCH')
+          }
+          throw patchErr
+        }
+
         // Defensive: check if another project already maps to this service in DB.
         // This catches collisions from stale state after API restarts.
         try {
@@ -620,6 +696,7 @@ export class WarmPoolController {
           console.error(`[WarmPool] Collision check failed (non-fatal):`, dbErr.message)
         }
 
+        // STEP 2: reconfigure the pod runtime for this project.
         const response = await fetch(`${pod.url}/pool/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -642,22 +719,25 @@ export class WarmPoolController {
           `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${duration}ms`
         )
 
-        // Promote the warm pod: patch annotations and save DB mapping.
-        // This is non-blocking — the pod is already serving the project.
-        this.promoteWarmPod(pod, projectId).catch((err) => {
+        // STEP 3: save DB mapping (non-blocking, best-effort). The K8s
+        // labels are already authoritative for "this pod belongs to this
+        // project" — the DB row is a lookup cache for getProjectPodUrl().
+        this.saveProjectMapping(pod, projectId).catch((err) => {
           console.error(
-            `[WarmPool] Failed to promote ${pod.serviceName} for ${projectId} (non-fatal):`,
+            `[WarmPool] Failed to save knativeServiceName for ${projectId} (non-fatal):`,
             err.message
           )
         })
       } catch (err: any) {
         this.claimedServiceNames.delete(pod.serviceName)
-        span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
-        span.recordException(err)
-        console.error(
-          `[WarmPool] Failed to assign ${pod.serviceName} to ${projectId}:`,
-          err.message
-        )
+        if (!(err instanceof WarmPodGoneError)) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
+          span.recordException(err)
+          console.error(
+            `[WarmPool] Failed to assign ${pod.serviceName} to ${projectId}:`,
+            err.message
+          )
+        }
         throw err
       } finally {
         span.end()
@@ -666,94 +746,48 @@ export class WarmPoolController {
   }
 
   /**
-   * Promote a warm pod to a permanent project pod.
-   * Patches Knative Service annotations (no new Revision) and saves
-   * the service name mapping in the database for routing.
+   * Save the project → serviceName mapping in the database, clearing any
+   * stale mapping from a previous project that may have been assigned to
+   * this same service name (possible after API restarts or label drift).
    *
-   * The label patch is the critical gate: if it fails, we skip the DB save
-   * to avoid a state where the pod looks "available" to the reconciler but
-   * has a DB mapping — the root cause of warm-pool collisions.
+   * This is idempotent and safe to run async — the K8s service labels
+   * are the authoritative claim, and the DB row is a lookup cache read
+   * by getProjectPodUrl() on subsequent requests.
+   *
+   * NOTE: We intentionally do NOT patch the Knative spec.template here.
+   * Changing the spec creates a new Revision which replaces the running
+   * pod, destroying in-memory state. Paid instance sizes / min-scale are
+   * applied via instance.service.applyInstanceToRuntime() after the
+   * workspace upgrades, or by KnativeProjectManager.buildKnativeService()
+   * on cold start.
    */
-  private async promoteWarmPod(pod: WarmPodInfo, projectId: string): Promise<void> {
+  private async saveProjectMapping(pod: WarmPodInfo, projectId: string): Promise<void> {
     const t0 = Date.now()
-    const api = getCustomApi()
-    const { mergePatchKnativeService } = await import('./knative-project-manager')
+    const { prisma } = await import('./prisma')
 
-    // Step 1 (CRITICAL): patch metadata labels to mark this pod as promoted.
-    // If this fails, bail out entirely — leaving the label as "available" while
-    // saving a DB mapping causes collisions on API restart.
-    const metadataPatch = {
-      metadata: {
-        annotations: {
-          'shogo.io/assigned-project': projectId,
+    await prisma.$transaction(async (tx) => {
+      const stale = await tx.project.updateMany({
+        where: {
+          knativeServiceName: pod.serviceName,
+          id: { not: projectId },
         },
-        labels: {
-          [POOL_STATUS_LABEL_KEY]: 'promoted',
-          'shogo.io/project': projectId,
-          [ACTIVE_LABEL_KEY]: 'true',
-        },
-      },
-    }
-
-    try {
-      await mergePatchKnativeService(this.namespace, pod.serviceName, metadataPatch)
-      console.log(
-        `[WarmPool] Patched metadata on ${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
-      )
-    } catch (err: any) {
-      console.error(
-        `[WarmPool] CRITICAL: Failed to patch metadata on ${pod.serviceName} for ${projectId} — aborting promotion to prevent collision:`,
-        err.message
-      )
-      return
-    }
-
-    // NOTE: We intentionally do NOT patch the Knative spec.template here.
-    // Changing the spec creates a new Revision which replaces the running
-    // pod, destroying in-memory state.
-    //
-    // For paid instance sizes, resources and min-scale are applied via
-    // instance.service.applyInstanceToRuntime() after the workspace
-    // upgrades, or by KnativeProjectManager.buildKnativeService() on cold
-    // start. The warm pod serves as a fast bridge; the next scale-to-zero
-    // → scale-up cycle will use the correct spec.
-
-    // Step 2: save the DB mapping, clearing any stale mapping from a previous
-    // project that may have been assigned to this same service name.
-    try {
-      const { prisma } = await import('./prisma')
-
-      await prisma.$transaction(async (tx) => {
-        // Clear stale mappings: any OTHER project pointing to this service
-        // is no longer valid — set its knativeServiceName to null.
-        const stale = await tx.project.updateMany({
-          where: {
-            knativeServiceName: pod.serviceName,
-            id: { not: projectId },
-          },
-          data: { knativeServiceName: null },
-        })
-        if (stale.count > 0) {
-          console.warn(
-            `[WarmPool] Cleared stale knativeServiceName from ${stale.count} project(s) that previously mapped to ${pod.serviceName}`
-          )
-        }
-
-        await tx.project.update({
-          where: { id: projectId },
-          data: { knativeServiceName: pod.serviceName },
-        })
+        data: { knativeServiceName: null },
       })
+      if (stale.count > 0) {
+        console.warn(
+          `[WarmPool] Cleared stale knativeServiceName from ${stale.count} project(s) that previously mapped to ${pod.serviceName}`
+        )
+      }
 
-      console.log(
-        `[WarmPool] Saved knativeServiceName=${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
-      )
-    } catch (err: any) {
-      console.error(
-        `[WarmPool] Failed to save knativeServiceName for ${projectId}:`,
-        err.message
-      )
-    }
+      await tx.project.update({
+        where: { id: projectId },
+        data: { knativeServiceName: pod.serviceName },
+      })
+    })
+
+    console.log(
+      `[WarmPool] Saved knativeServiceName=${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
+    )
   }
 
   /**
@@ -1975,6 +2009,42 @@ export class WarmPoolController {
       createdAt: Date.now(),
       ready: false, // will be updated by discovery on next reconcile
     }
+  }
+
+  /**
+   * Atomically attempt to trim a warm pod: CAS its status label from
+   * `available` → `trimming` via JSON-patch test-and-replace. If the test
+   * op fails (label already transitioned to `promoted`/`assigned` by
+   * another replica's claim), skip deletion — the pod is in use. If it
+   * succeeds, proceed with deletion. Idempotent and safe to run in parallel
+   * across replicas.
+   */
+  private async claimTrimAndDelete(pod: WarmPodInfo): Promise<void> {
+    const { jsonPatchKnativeService } = await import('./knative-project-manager')
+    // Escape `/` in the label key for JSON-patch path (RFC 6901 §3).
+    const labelPath = `/metadata/labels/${POOL_STATUS_LABEL_KEY.replace(/~/g, '~0').replace(/\//g, '~1')}`
+    let won = false
+    try {
+      won = await jsonPatchKnativeService(this.namespace, pod.serviceName, [
+        { op: 'test', path: labelPath, value: 'available' },
+        { op: 'replace', path: labelPath, value: 'trimming' },
+      ])
+    } catch (err: any) {
+      const statusCode = err?.statusCode || err?.code
+      if (statusCode === 404) {
+        // Already deleted by someone else — nothing to do.
+        return
+      }
+      throw err
+    }
+    if (!won) {
+      console.log(
+        `[WarmPool] Skipping trim of ${pod.serviceName} — status label no longer 'available' (another replica promoted it)`
+      )
+      return
+    }
+    console.log(`[WarmPool] Trimming excess pod ${pod.serviceName} (CAS-won the trim claim)`)
+    await this.deleteWarmPodService(pod.serviceName)
   }
 
   /**
