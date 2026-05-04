@@ -59,6 +59,7 @@ import {
   MessageCircleQuestion,
   Check,
   Mic,
+  Sparkles,
 } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
@@ -74,6 +75,7 @@ import {
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
+import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -215,6 +217,10 @@ export function ChatInput({
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
+
+  const bridge = useChatBridgeOptional()
+  const shogoAvailable = Platform.OS === "web" && features.shogoMode && !!bridge
+  const shogoActive = bridge?.shogoModeActive ?? false
 
   const textInputRef = useRef<TextInput>(null)
   const dropZoneRef = useRef<View>(null)
@@ -1000,7 +1006,7 @@ export function ChatInput({
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="w-[280px] p-0">
+              <PopoverContent className="w-[140px] p-0">
                 <View className="py-1">
                   {INTERACTION_MODES.map((mode) => {
                     const isSelected = mode.id === interactionMode
@@ -1012,7 +1018,7 @@ export function ChatInput({
                           setInteractionModeOpen(false)
                         }}
                         className={cn(
-                          "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                          "flex-row items-center p-1 rounded-lg mb-1",
                           isSelected &&
                             mode.id === "agent" &&
                             "bg-accent",
@@ -1037,13 +1043,13 @@ export function ChatInput({
                               (!isSelected || mode.id === "agent") &&
                                 "text-muted-foreground"
                             )}
-                            size={14}
+                            size={6}
                           />
                         </View>
                         <View className="flex-1">
                           <Text
                             className={cn(
-                              "font-medium text-sm",
+                              "text-xs",
                               isSelected &&
                                 mode.id === "plan" &&
                                 "text-amber-400",
@@ -1056,13 +1062,51 @@ export function ChatInput({
                           >
                             {mode.label}
                           </Text>
-                          <Text className="text-xs text-muted-foreground">
-                            {mode.description}
-                          </Text>
                         </View>
                       </Pressable>
                     )
                   })}
+                  {shogoAvailable && (
+                    <>
+                      <View className="h-px bg-border/50 mx-2 my-1" />
+                      <Pressable
+                        testID="shogo-mode-toggle"
+                        onPress={() => {
+                          bridge?.toggleShogoMode()
+                          setInteractionModeOpen(false)
+                        }}
+                        className={cn(
+                          "flex-row items-center p-1 rounded-lg mb-1",
+                          shogoActive &&
+                            "border border-violet-500/35 bg-violet-500/12"
+                        )}
+                      >
+                        <View className="w-8 items-center">
+                          <Sparkles
+                            className={cn(
+                              "h-3.5 w-3.5",
+                              shogoActive
+                                ? "text-violet-400"
+                                : "text-muted-foreground"
+                            )}
+                            size={6}
+                          />
+                        </View>
+                        <View className="flex-1">
+                          <Text
+                            className={cn(
+                              "text-xs",
+                              shogoActive
+                                ? "text-violet-400"
+                                : "text-foreground"
+                            )}
+                          >
+                            Shogo Mode
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </>
+                  )}
                 </View>
               </PopoverContent>
             </Popover>

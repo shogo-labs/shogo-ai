@@ -6,7 +6,8 @@
  *
  *  1. Kill any process occupying the API port (best-effort).
  *  2. Run Prisma migrate deploy against the local SQLite DB.
- *  3. Start the API and web dev servers via concurrently.
+ *  3. Generate SDK routes/types/stores from the Prisma schema.
+ *  4. Start the API and web dev servers via concurrently.
  */
 
 import { spawn, spawnSync, type Subprocess } from "bun";
@@ -176,7 +177,28 @@ async function migrate() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Start API + web dev servers
+// 3. Generate SDK routes / types / stores from the Prisma schema
+// ---------------------------------------------------------------------------
+
+async function generateRoutes() {
+  console.log("[dev:all] Generating SDK routes…");
+  const proc = spawn({
+    cmd: ["bun", "run", "packages/sdk/bin/shogo.ts", "generate"],
+    cwd: ROOT,
+    stdout: "inherit",
+    stderr: "inherit",
+    env: { ...process.env },
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error("[dev:all] Route generation failed — aborting.");
+    process.exit(code);
+  }
+  console.log("[dev:all] Routes generated.");
+}
+
+// ---------------------------------------------------------------------------
+// 4. Start API + web dev servers
 // ---------------------------------------------------------------------------
 
 async function startDevServers() {
@@ -231,4 +253,5 @@ async function startDevServers() {
 
 await Promise.all([killProcessOnPort(API_PORT), killProcessOnPort(WEB_PORT)]);
 await migrate();
+await generateRoutes();
 await startDevServers();

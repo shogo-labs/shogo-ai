@@ -65,7 +65,6 @@ import {
   useChatBridge,
 } from '../../../../components/voice-mode/ChatBridgeContext'
 import { ShogoChatPanel } from '../../../../components/voice-mode/ShogoChatPanel'
-import { ShogoModeToggle } from '../../../../components/voice-mode/ShogoModeToggle'
 import type { InteractionMode } from '../../../../components/chat/ChatInput'
 import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
 import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
@@ -1830,18 +1829,6 @@ export default observer(function ProjectLayout() {
             </View>
           )}
 
-          {/* Floating Shogo Mode toggle — screen-level bottom-right so it's
-              reachable from every layout (wide split, narrow tabs, chat
-              fullscreen). Web-only for now; native renders a null stub.
-              Hidden entirely when the shogoMode feature flag is off. */}
-          {Platform.OS === 'web' && features.shogoMode && (
-            <View
-              className="absolute bottom-4 right-4 z-40"
-              pointerEvents="box-none"
-            >
-              <ShogoModeToggle />
-            </View>
-          )}
           </View>
 
         </View>
