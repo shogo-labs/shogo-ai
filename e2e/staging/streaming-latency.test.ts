@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test"
-import { makeTestUser, signUpAndOnboard } from "./helpers"
+import { expandManualApiKeys, makeTestUser, signUpAndOnboard } from "./helpers"
 
 /**
  * Streaming Relay Latency — E2E Tests
@@ -143,6 +143,9 @@ test.describe("Streaming Relay Latency — E2E", () => {
       .waitForSelector("text=Loading API keys...", { state: "hidden", timeout: 15_000 })
       .catch(() => {})
     await page.waitForTimeout(500)
+
+    // v1.5.0: "Create Key" lives behind the "Manual API keys" accordion on /api-keys
+    await expandManualApiKeys(page)
 
     const createBtn = page.getByText("Create Key").first()
     await createBtn.waitFor({ state: "visible", timeout: 10_000 })

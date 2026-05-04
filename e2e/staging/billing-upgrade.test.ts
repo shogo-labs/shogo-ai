@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
-import { makeTestUser, signUpAndOnboard } from "./helpers"
+import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
 
 /**
  * Billing & Upgrade Flow E2E Tests (USD pricing)
@@ -100,15 +100,22 @@ test.describe("Billing & Upgrade Flow", () => {
     ).toBeVisible()
   })
 
-  test("free plan: three pricing tiers displayed", async () => {
+  test("free plan: per-seat pricing tiers displayed (v1.5.0 USD)", async () => {
     await navigateToBilling(page)
 
+    // v1.5.0 pricing: Basic $8/mo, Pro $20/seat, Business $40/seat, Enterprise custom.
+    // Source: apps/mobile/app/(app)/billing.tsx → PLAN_PRICING.
+    await expect(page.getByText("Basic", { exact: true }).first()).toBeVisible()
     await expect(page.getByText("Pro").first()).toBeVisible()
-    await expect(page.getByText("$25")).toBeVisible()
     await expect(page.getByText("Business", { exact: true }).first()).toBeVisible()
-    await expect(page.getByText("$365")).toBeVisible()
     await expect(page.getByText("Enterprise", { exact: true }).first()).toBeVisible()
     await expect(page.getByText("Custom", { exact: true })).toBeVisible()
+    // The per-seat dollar labels appear on each plan card; each tier
+    // exposes its price in a "$X/seat" or "$X" badge.
+    await expect(page.getByText("$8").first()).toBeVisible()
+    await expect(page.getByText("$20").first()).toBeVisible()
+    await expect(page.getByText("$40").first()).toBeVisible()
+    await expect(page.getByText(/\/seat/).first()).toBeVisible()
   })
 
   // ── Phase 3: Stripe Checkout (Reach-Only) ────────────────────────
@@ -130,7 +137,9 @@ test.describe("Billing & Upgrade Flow", () => {
     expect(page.url()).toContain("checkout.stripe.com")
 
     await expect(page.getByText("Subscribe to Pro")).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText("$25.00")).toBeVisible()
+    // v1.5.0: Pro is $20/seat/month. The exact label on Stripe Checkout
+    // is "$20.00 per seat / month" so a partial "$20.00" match is enough.
+    await expect(page.getByText("$20.00")).toBeVisible()
   })
 
   // ── Phase 4: Post-Upgrade UI (skipped) ───────────────────────────
@@ -182,7 +191,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
 
-    const input = page.getByPlaceholder("Ask Shogo to ...")
+    const input = homeComposerInput(page)
     await input.click()
     await input.fill("Test model gating for Pro plan")
     await page.waitForTimeout(500)

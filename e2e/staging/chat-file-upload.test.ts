@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
-import { makeTestUser, signUpAndOnboard } from "./helpers"
+import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
 import * as path from "path"
 import * as fs from "fs"
 import * as os from "os"
@@ -41,7 +41,7 @@ async function createProjectAndWait(page: Page, prompt: string) {
   await page.goto("/")
   await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
 
-  const input = page.getByPlaceholder("Ask Shogo to ...")
+  const input = homeComposerInput(page)
   await input.click()
   await input.fill(prompt)
   await page.waitForTimeout(500)
