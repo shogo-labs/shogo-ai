@@ -34,6 +34,7 @@ import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
+import { PlansSkeleton } from "./PanelSkeletons"
 
 const PLAN_MODEL_GROUPS = getModelsByProvider().map((g) => ({
   label: g.label,
@@ -405,7 +406,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         {/* Detail body */}
         <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
           {!isStreamingDetail && detailLoading ? (
-            <ActivityIndicator className="mt-8" />
+            <PlansSkeleton />
           ) : (
             <>
               <MarkdownText>{body}</MarkdownText>
@@ -519,7 +520,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         )}
 
         {loading && !planStream?.isPlanStreaming ? (
-          <ActivityIndicator className="mt-8" />
+          <PlansSkeleton />
         ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
           <View className="items-center justify-center py-12 px-4">
             <ClipboardList className="h-8 w-8 text-muted-foreground/40 mb-3" size={32} />

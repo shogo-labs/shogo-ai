@@ -35,6 +35,7 @@ import {
   Settings,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { FileTreeSkeleton, FileContentSkeleton } from './PanelSkeletons'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -744,9 +745,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               )}
             </View>
           ) : isLoadingTree ? (
-            <View className="flex-1 items-center justify-center p-4">
-              <ActivityIndicator size="small" />
-            </View>
+            <FileTreeSkeleton />
           ) : (
             <View className="p-1">
               {/* General file tree */}
@@ -961,9 +960,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             )}
 
             {isLoadingFile ? (
-              <View className="flex-1 items-center justify-center">
-                <ActivityIndicator size="small" />
-              </View>
+              <FileContentSkeleton />
             ) : (
               <TextInput
                 value={content}

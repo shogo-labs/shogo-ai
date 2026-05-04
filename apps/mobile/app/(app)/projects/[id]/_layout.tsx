@@ -84,6 +84,7 @@ import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/Comp
 import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
+import { ProjectShellSkeleton } from '../../../../components/project/panels/PanelSkeletons'
 import {
   ChannelsPanel,
   FilesBrowserPanel,
@@ -1431,10 +1432,7 @@ export default observer(function ProjectLayout() {
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
-        <View className="flex-1 bg-background items-center justify-center">
-          <ActivityIndicator size="large" />
-          <Text className="text-muted-foreground mt-3 text-sm">Loading project...</Text>
-        </View>
+        <ProjectShellSkeleton />
       </>
     )
   }
