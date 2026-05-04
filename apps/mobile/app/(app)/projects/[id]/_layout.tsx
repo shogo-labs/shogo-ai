@@ -1353,6 +1353,9 @@ export default observer(function ProjectLayout() {
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
     activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    // Forward to ProjectTopBar so the Terminal drawer toggle knows when
+    // the IDE drawer is *visible* vs only "open in store" (see DrawerHost).
+    canvasAreaHidden,
     canvasThemeSupported,
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,

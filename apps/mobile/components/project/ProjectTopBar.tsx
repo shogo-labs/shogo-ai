@@ -76,7 +76,9 @@ import { ProjectExportModal } from './ProjectExportModal'
 import {
   ideBottomPanelStore,
   useBottomPanelState,
+  type BottomPanelTab,
 } from '../../lib/ide-bottom-panel-store'
+import { decideTerminalToggleAction } from './terminalToggle'
 
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
@@ -135,6 +137,12 @@ export interface ProjectTopBarProps {
   narrowActiveTab?: 'chat' | 'canvas'
   onNarrowTabChange?: (tab: 'chat' | 'canvas') => void
   narrowPreviewTab?: string
+  /** Mirrors the layout's `canvasAreaHidden` flag. The IDE bottom drawer
+   *  is invisible when this is true (narrow chat-only or chat-fullscreen),
+   *  even if `ideBottomPanelStore.open === true`. The Terminal top-tab
+   *  uses this to (a) keep its highlight honest and (b) treat a click as
+   *  *reveal* instead of *close* when the drawer is hidden. */
+  canvasAreaHidden?: boolean
   // Canvas edit controls
   isEditMode?: boolean
   onToggleEditMode?: () => void
@@ -186,12 +194,18 @@ function BarIconButton({
   active,
   title,
   size = 12,
+  accessibilityRole,
+  accessibilityState,
 }: {
   icon: React.ElementType
   onPress: () => void
   active?: boolean
   title?: string
   size?: number
+  /** ARIA role override. Most entries are tabs inside a tablist; the
+   *  Terminal drawer-toggle overrides to `'button'` with `aria-pressed`. */
+  accessibilityRole?: 'button' | 'tab' | 'link' | 'menuitem'
+  accessibilityState?: { selected?: boolean; expanded?: boolean; disabled?: boolean; checked?: boolean }
 }) {
   const tipRef = useWebTitle(title)
 
@@ -204,6 +218,12 @@ function BarIconButton({
         active ? 'bg-primary' : 'active:bg-muted',
       )}
       accessibilityLabel={title}
+      accessibilityRole={accessibilityRole}
+      accessibilityState={accessibilityState}
+      // RNW maps accessibilityState.checked → aria-pressed on web for buttons.
+      {...(Platform.OS === 'web' && accessibilityRole === 'button' && accessibilityState
+        ? ({ 'aria-pressed': !!accessibilityState.checked } as any)
+        : {})}
     >
       <Icon
         size={size}
@@ -239,6 +259,7 @@ export function ProjectTopBar({
   narrowActiveTab,
   onNarrowTabChange,
   narrowPreviewTab,
+  canvasAreaHidden = false,
   isEditMode,
   onToggleEditMode,
   showTreePanel,
@@ -305,25 +326,58 @@ export function ProjectTopBar({
     }
   }, [activeChatSessionId, chatRenameValue, onRenameChat])
 
-  // Terminal top-tab (web only): toggles the IDE bottom drawer (DrawerHost).
-  // It does not switch `previewTab`. Highlight while the drawer is open; click
-  // again to close. Opening selects the Terminal sub-tab inside the drawer.
-  const terminalDrawerActive = useBottomPanelState((st) => st.open)
+  // ----- Terminal top-tab → IDE bottom drawer (web-only) ---------------
+  // The Terminal entry is *not* a previewTab; it is a toggle for the
+  // existing IDE bottom drawer (DrawerHost / BottomPanel). Three sources of
+  // truth conspire here, so be explicit:
+  //   • `ideBottomPanelStore.open`  — drawer is open in store-state.
+  //   • `canvasAreaHidden`         — layout has hidden the canvas pane,
+  //                                   so even an "open" drawer is invisible
+  //                                   (mirrors DrawerHost#shouldShowDrawer).
+  //   • `Platform.OS === 'web'`    — drawer is web-only.
+  // The tab highlights only when the drawer is *visible*; clicking while
+  // visible closes it; clicking while hidden (or store-closed) reveals it.
+  const drawerStoreOpen = useBottomPanelState((st) => st.open)
+  const drawerVisible = Platform.OS === 'web' && !canvasAreaHidden
+  const terminalDrawerActive = drawerStoreOpen && drawerVisible
+
+  // Remember the user's last drawer sub-tab so re-opening via the top-tab
+  // doesn't silently overwrite their Problems / Output selection.
+  const lastDrawerSubTabRef = useRef<BottomPanelTab | null>(null)
+
+  // Track the last *non-fullscreen* preview tab so we can restore it when
+  // toggling out of chat-fullscreen, instead of hard-coding 'dynamic-app'.
+  const lastNonFullscreenPreviewRef = useRef<string>(
+    activeTab && activeTab !== 'chat-fullscreen' ? activeTab : 'dynamic-app',
+  )
+  useEffect(() => {
+    if (activeTab && activeTab !== 'chat-fullscreen') {
+      lastNonFullscreenPreviewRef.current = activeTab
+    }
+  }, [activeTab])
 
   const toggleTerminalDrawer = useCallback(() => {
     const st = ideBottomPanelStore.getState()
-    if (st.open) {
+    const action = decideTerminalToggleAction({
+      storeOpen: st.open,
+      storeActiveSubTab: st.activeTab,
+      isWeb: Platform.OS === 'web',
+      canvasAreaHidden,
+      isNarrow: !!onNarrowTabChange,
+      activeTab,
+      lastSubTab: lastDrawerSubTabRef.current,
+      lastNonFullscreenPreview: lastNonFullscreenPreviewRef.current,
+    })
+    if (action.kind === 'close') {
+      lastDrawerSubTabRef.current = action.rememberSubTab
       ideBottomPanelStore.setOpen(false)
       return
     }
-    // The drawer is hidden in chat-fullscreen and in narrow chat-only mode
-    // (see DrawerHost#shouldShowDrawer). Move the user out of those modes
-    // first so the drawer actually surfaces.
-    if (onNarrowTabChange) onNarrowTabChange('canvas')
-    if (activeTab === 'chat-fullscreen') onTabChange?.('dynamic-app')
-    ideBottomPanelStore.setActiveTab('Terminal')
+    if (action.narrowTo) onNarrowTabChange?.(action.narrowTo)
+    if (action.previewTo) onTabChange?.(action.previewTo)
+    if (action.setSubTab) ideBottomPanelStore.setActiveTab(action.setSubTab)
     ideBottomPanelStore.setOpen(true)
-  }, [activeTab, onNarrowTabChange, onTabChange])
+  }, [activeTab, canvasAreaHidden, onNarrowTabChange, onTabChange])
 
   const isCanvasActive = activeTab === 'dynamic-app'
   const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
@@ -356,6 +410,11 @@ export function ProjectTopBar({
   }, [onNarrowTabChange, onTabChange, toggleTerminalDrawer])
 
   const getTabActive = useCallback((tabId: string) => {
+    // `'terminal'` is the only id whose highlight is sourced from a global
+    // store (ideBottomPanelStore) instead of from the previewTab/narrowTab
+    // props, because it represents drawer-open state, not a preview tab.
+    // Consequently `hiddenTabs` controls *visibility* of the icon but not
+    // its highlight — that is managed by the drawer itself.
     if (tabId === 'terminal') return terminalDrawerActive
     if (onNarrowTabChange) {
       if (tabId === 'chat-fullscreen') return narrowActiveTab === 'chat'
@@ -461,6 +520,16 @@ export function ProjectTopBar({
               onPress={() => handleTabPress(tab.id)}
               active={getTabActive(tab.id)}
               title={tab.label}
+              // Terminal is a toggle, not a tab. Override ARIA accordingly
+              // so screen readers announce it as a press-button with
+              // pressed state, while the rest of the entries inherit the
+              // tablist's default `tab` role.
+              {...(tab.id === 'terminal'
+                ? {
+                    accessibilityRole: 'button' as const,
+                    accessibilityState: { checked: terminalDrawerActive },
+                  }
+                : {})}
             />
           ))}
         </View>
@@ -508,6 +577,16 @@ export function ProjectTopBar({
                       ((item.id === 'terminal' && terminalDrawerActive) ||
                         (item.id !== 'terminal' && narrowPreviewTab === item.id && narrowActiveTab === 'canvas')) && 'bg-accent',
                     )}
+                    accessibilityLabel={item.label}
+                    {...(item.id === 'terminal'
+                      ? {
+                          accessibilityRole: 'button' as const,
+                          accessibilityState: { checked: terminalDrawerActive },
+                          ...(Platform.OS === 'web'
+                            ? ({ 'aria-pressed': terminalDrawerActive } as any)
+                            : {}),
+                        }
+                      : {})}
                   >
                     <View className="flex-row items-center gap-2.5">
                       {item.id === '_upgrade' && <Zap size={14} className="text-muted-foreground" />}
@@ -700,6 +779,16 @@ export function ProjectTopBar({
               onPress={() => handleTabPress(tab.id)}
               active={getTabActive(tab.id)}
               title={tab.label}
+              // Terminal is a toggle, not a tab. Override ARIA accordingly
+              // so screen readers announce it as a press-button with
+              // pressed state, while the rest of the entries inherit the
+              // tablist's default `tab` role.
+              {...(tab.id === 'terminal'
+                ? {
+                    accessibilityRole: 'button' as const,
+                    accessibilityState: { checked: terminalDrawerActive },
+                  }
+                : {})}
             />
           ))}
         </View>
