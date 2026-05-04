@@ -3,14 +3,22 @@
 import { defineConfig, devices } from "@playwright/test"
 
 /**
- * Playwright E2E config for hosted environment tests.
+ * Playwright E2E config for hosted-environment tests.
  *
- * Point STAGING_URL at the environment you want to validate. By default the
- * config uses a local web app URL.
+ * Point `E2E_TARGET_URL` at the environment you want to validate
+ * (staging, production, a preview deployment, …). The legacy
+ * `STAGING_URL` env var is still honored so existing CI jobs keep
+ * working while they migrate.
  *
- * Run with:
- *   npx playwright test --config e2e/playwright.config.ts
+ * Run:
+ *   E2E_TARGET_URL=https://studio.staging.shogo.ai \
+ *     npx playwright test --config e2e/playwright.config.ts
  *   npx playwright test --config e2e/playwright.config.ts --ui
+ *
+ * Production runs additionally honor `E2E_STRIPE_MODE=live|test` so
+ * that tests which drive Stripe hosted Checkout with a test card can
+ * be skipped cleanly when pointed at live keys. See
+ * e2e/staging/helpers.ts → isLiveStripeEnv().
  */
 export default defineConfig({
   testDir: "./staging",
@@ -24,7 +32,10 @@ export default defineConfig({
   outputDir: "../test-results/e2e-artifacts",
 
   use: {
-    baseURL: process.env.STAGING_URL || "http://localhost:8081",
+    baseURL:
+      process.env.E2E_TARGET_URL ||
+      process.env.STAGING_URL ||
+      "http://localhost:8081",
     trace: "retain-on-failure",
     screenshot: "on",
     video: "retain-on-failure",
