@@ -821,17 +821,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const FETCH_TIMEOUT_MS = parseInt(process.env.CHAT_UPSTREAM_FETCH_TIMEOUT_MS || '14400000', 10)
       let lastError: Error | null = null
       let consecutiveConnectionErrors = 0
-      let consecutive404s = 0
       // Threshold for forcing a runtime restart when the same URL keeps
       // refusing connections (likely the runtime process died but the
       // RuntimeManager hasn't observed it yet via health checks).
       const FORCE_RUNTIME_RESTART_AFTER = 3
-      // After this many consecutive 404s from the pod, re-resolve the
-      // project URL. In a warm-pool claim/trim race, the DomainMapping
-      // and DB mapping point at a Knative service another replica just
-      // deleted — retrying the same dead URL is pointless. Re-resolving
-      // forces a fresh claim that gives us a live pod.
-      const REFRESH_URL_AFTER_404S = 3
 
       // Do NOT include clientSignal in fetchSignal. A client disconnect
       // (e.g. page refresh) must NOT abort the upstream fetch — the runtime
@@ -870,14 +863,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // 404 means the runtime hasn't registered routes yet after assignment.
             const isTransientAuthError = (response.status === 401 || response.status === 403 || response.status === 404) && attempt < MAX_RETRIES
 
-            // Reset or increment the 404 streak; used to decide when to
-            // re-resolve the pod URL (see below).
-            if (response.status === 404) {
-              consecutive404s++
-            } else {
-              consecutive404s = 0
-            }
-
             // Detect permanently broken pods: "RUNTIME_AUTH_SECRET not configured"
             // means the container restarted and lost its assignment. Evict after
             // a grace period to allow self-assign to complete on the pod.
@@ -902,32 +887,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
             if (isTransientAuthError) {
               const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
-
-              // If we've seen several 404s in a row, the Knative service
-              // backing this podUrl was likely deleted by a concurrent
-              // warm-pool trim/GC mid-claim. Hammering the same dead URL
-              // for 30 attempts (~45s) will never succeed — evict the
-              // stale mapping and re-resolve so the next claim gives us
-              // a live pod.
-              if (response.status === 404 && consecutive404s >= REFRESH_URL_AFTER_404S) {
-                console.warn(
-                  `[ProjectChat] ${consecutive404s} consecutive 404s against ${podUrl} for ${projectId} — evicting stale mapping and re-resolving`
-                )
-                try {
-                  const { getWarmPoolController } = await import('../lib/warm-pool-controller')
-                  const warmPool = getWarmPoolController()
-                  await warmPool.evictProject(projectId)
-                  const refreshed = await getProjectUrl(projectId)
-                  if (refreshed && refreshed !== podUrl) {
-                    console.log(`[ProjectChat] Re-resolved pod URL: ${podUrl} -> ${refreshed}`)
-                    podUrl = refreshed
-                  }
-                } catch (rerouteErr: any) {
-                  console.warn(`[ProjectChat] Failed to re-resolve pod URL after repeated 404s: ${rerouteErr?.message || rerouteErr}`)
-                }
-                consecutive404s = 0
-              }
-
               console.log(`[ProjectChat] Transient ${response.status} from pod, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`)
               await new Promise(resolve => setTimeout(resolve, delay))
               continue
