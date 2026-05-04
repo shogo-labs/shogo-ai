@@ -18,6 +18,7 @@ import { SubscriptionModel } from "./subscription.model"
 import { UsageWalletModel } from "./usage-wallet.model"
 import { UsageEventModel } from "./usage-event.model"
 import { StarredProjectModel } from "./starred-project.model"
+import { WorkspaceGrantModel } from "./workspace-grant.model"
 
 // ============================================================================
 // Workspace Model
@@ -42,6 +43,7 @@ export const WorkspaceModel = types
     usageWallets: types.optional(types.array(types.safeReference(types.late(() => UsageWalletModel))), []),
     usageEvents: types.optional(types.array(types.safeReference(types.late(() => UsageEventModel))), []),
     starredProjects: types.optional(types.array(types.safeReference(types.late(() => StarredProjectModel))), []),
+    grants: types.optional(types.array(types.safeReference(types.late(() => WorkspaceGrantModel))), []),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

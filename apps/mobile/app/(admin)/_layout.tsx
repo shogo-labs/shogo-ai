@@ -31,6 +31,7 @@ import {
   Mic,
   Monitor,
   ScrollText,
+  Gift,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -44,6 +45,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+  { href: '/(admin)/grants', icon: Gift, label: 'Credit grants' },
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
@@ -343,6 +345,8 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/users') || pathname === '/users') return 'Users'
   if (pathname.startsWith('/workspaces/')) return 'Workspace Detail'
   if (pathname.includes('workspaces')) return 'Workspaces'
+  if (pathname.startsWith('/grants/')) return 'Grant Detail'
+  if (pathname.includes('grants')) return 'Credit grants'
   if (pathname.startsWith('/projects/')) return 'Project Detail'
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'

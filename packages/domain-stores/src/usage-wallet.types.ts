@@ -16,6 +16,7 @@ export interface UsageWalletType {
   overageEnabled: boolean
   overageHardLimitUsd?: number
   overageAccumulatedUsd: number
+  overageBilledUsd: number
   stripeMeteredItemId?: string
   anniversaryDay: number
   lastDailyReset: Date
@@ -33,6 +34,7 @@ export interface UsageWalletCreateInput {
   overageEnabled?: boolean
   overageHardLimitUsd?: number
   overageAccumulatedUsd?: number
+  overageBilledUsd?: number
   stripeMeteredItemId?: string
   anniversaryDay: number
   lastDailyReset: Date
@@ -48,6 +50,7 @@ export interface UsageWalletUpdateInput {
   overageEnabled?: boolean
   overageHardLimitUsd?: number
   overageAccumulatedUsd?: number
+  overageBilledUsd?: number
   stripeMeteredItemId?: string
   anniversaryDay?: number
   lastDailyReset?: Date

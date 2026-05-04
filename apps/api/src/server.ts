@@ -5648,6 +5648,51 @@ app.delete('/api/admin/users/:id', authMiddleware, requireAuth, requireSuperAdmi
   return c.json({ ok: true })
 })
 
+// Apply a workspace credit grant to its wallet immediately (without
+// waiting for the next monthly cycle / Stripe invoice). Useful right
+// after a super-admin creates or edits a grant.
+app.post(
+  '/api/admin/workspace-grants/:id/apply',
+  authMiddleware,
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    const id = c.req.param('id')
+    const grant = await prisma.workspaceGrant.findUnique({ where: { id } })
+    if (!grant) {
+      return c.json({ error: { code: 'not_found', message: 'Grant not found' } }, 404)
+    }
+    const workspaceId = grant.workspaceId
+
+    const paidSub = await prisma.subscription.findFirst({
+      where: { workspaceId, status: { in: ['active', 'trialing'] } },
+      select: { planId: true, seats: true },
+    })
+
+    if (paidSub) {
+      // Paid path: re-allocate using current plan + paid seat count;
+      // grant USD/seats are stacked inside `allocateMonthlyIncluded`.
+      await billingService.allocateMonthlyIncluded(workspaceId, paidSub.planId, paidSub.seats)
+      // Push the new effective Stripe seat quantity (members - freeSeats).
+      const sync = await billingService.syncSeatsFromMembership(workspaceId)
+      return c.json({
+        ok: true,
+        path: 'paid',
+        planId: paidSub.planId,
+        seats: paidSub.seats,
+        sync,
+      })
+    }
+
+    const wallet = await billingService.applyGrantMonthlyAllocation(workspaceId)
+    return c.json({
+      ok: true,
+      path: 'free',
+      monthlyIncludedUsd: wallet.monthlyIncludedUsd,
+    })
+  },
+)
+
 // Generated admin CRUD routes - full model CRUD with pagination/search/sorting
 // Protected by auth + requireSuperAdmin middleware stack
 app.route('/api/admin', createAdminRoutes({
@@ -6515,6 +6560,25 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error(
         '[VoiceRebill] failed to schedule monthly rebill (non-fatal):',
+        err?.message ?? err,
+      )
+    }
+  })()
+}
+
+// Super-admin grant monthly refill — refills `monthlyIncludedUsd` on
+// free-tier workspaces with active `WorkspaceGrant` rows. Paid plans
+// are refilled by the Stripe `invoice.payment_succeeded` webhook.
+{
+  ;(async () => {
+    try {
+      const { startGrantMonthlyRefillCron } = await import(
+        './jobs/grant-monthly-refill'
+      )
+      startGrantMonthlyRefillCron()
+    } catch (err: any) {
+      console.error(
+        '[GrantRefill] failed to schedule grant refill (non-fatal):',
         err?.message ?? err,
       )
     }

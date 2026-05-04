@@ -16,7 +16,8 @@
     "ChatSession",
     "ChatMessage",
     "ToolCallLog",
-    "FeatureSession"
+    "FeatureSession",
+    "WorkspaceGrant"
   ],
   "outputs": [
     {

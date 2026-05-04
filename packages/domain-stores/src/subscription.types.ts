@@ -16,6 +16,7 @@ export interface SubscriptionType {
   stripeSubscriptionId: string
   stripeCustomerId: string
   planId: string
+  seats: number
   status: SubscriptionStatus
   billingInterval: BillingInterval
   currentPeriodStart: Date
@@ -30,6 +31,7 @@ export interface SubscriptionCreateInput {
   stripeSubscriptionId: string
   stripeCustomerId: string
   planId: string
+  seats?: number
   status: SubscriptionStatus
   billingInterval: BillingInterval
   currentPeriodStart: Date
@@ -42,6 +44,7 @@ export interface SubscriptionUpdateInput {
   stripeSubscriptionId?: string
   stripeCustomerId?: string
   planId?: string
+  seats?: number
   status?: SubscriptionStatus
   billingInterval?: BillingInterval
   currentPeriodStart?: Date

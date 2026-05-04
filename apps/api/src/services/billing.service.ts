@@ -61,7 +61,36 @@ export async function getUsageWallet(workspaceId: string) {
 }
 
 /**
+ * Sum the active super-admin-managed credit grants for a workspace.
+ * "Active" means `startsAt <= now AND (expiresAt IS NULL OR expiresAt > now)`.
+ * Multiple grants are summed so an admin can stack (e.g. a base 5 free
+ * seats grant plus a one-off $500 promo).
+ */
+export async function getActiveGrantsForWorkspace(
+  workspaceId: string,
+  now: Date = new Date(),
+): Promise<{ freeSeats: number; monthlyIncludedUsd: number; rowCount: number }> {
+  const rows = await prisma.workspaceGrant.findMany({
+    where: {
+      workspaceId,
+      startsAt: { lte: now },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    select: { freeSeats: true, monthlyIncludedUsd: true },
+  })
+  let freeSeats = 0
+  let monthlyIncludedUsd = 0
+  for (const r of rows) {
+    freeSeats += r.freeSeats
+    monthlyIncludedUsd += r.monthlyIncludedUsd
+  }
+  return { freeSeats, monthlyIncludedUsd, rowCount: rows.length }
+}
+
+/**
  * Allocate free-tier wallet for a new workspace (daily included, no monthly).
+ * If active super-admin grants exist for the workspace, their summed
+ * `monthlyIncludedUsd` seeds the wallet on day one.
  */
 export async function allocateFreeWallet(workspaceId: string) {
   const now = new Date();
@@ -71,16 +100,65 @@ export async function allocateFreeWallet(workspaceId: string) {
   });
   if (existing) return existing;
 
+  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  const monthlyIncludedUsd = PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd
+
   return prisma.usageWallet.create({
     data: {
       workspaceId,
-      monthlyIncludedUsd: PLAN_INCLUDED_USD.free,
+      monthlyIncludedUsd,
+      monthlyIncludedAllocationUsd: monthlyIncludedUsd,
       dailyIncludedUsd: DAILY_INCLUDED_USD,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
     },
   });
+}
+
+/**
+ * Refill a workspace's wallet from its active super-admin grants. Used by
+ * the monthly-refill cron and by `consumeUsage` as a safety net for free
+ * workspaces that wouldn't otherwise receive a Stripe invoice. Paid
+ * workspaces normally pick up grants via `allocateMonthlyIncluded` on the
+ * Stripe webhook; this function is intentionally idempotent and safe to
+ * call repeatedly.
+ *
+ * Behavior:
+ * - Resets `monthlyIncludedUsd` / `monthlyIncludedAllocationUsd` to
+ *   `PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd` (the grant value
+ *   alone for free workspaces, since `PLAN_INCLUDED_USD.free === 0`).
+ * - Resets `dailyUsedThisMonthUsd`, `overageAccumulatedUsd`,
+ *   `overageBilledUsd` so the new period starts clean.
+ * - Advances `lastMonthlyReset` to `now`.
+ */
+export async function applyGrantMonthlyAllocation(
+  workspaceId: string,
+  now: Date = new Date(),
+) {
+  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  const monthlyIncludedUsd = PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd
+
+  return prisma.usageWallet.upsert({
+    where: { workspaceId },
+    create: {
+      workspaceId,
+      monthlyIncludedUsd,
+      monthlyIncludedAllocationUsd: monthlyIncludedUsd,
+      dailyIncludedUsd: DAILY_INCLUDED_USD,
+      anniversaryDay: now.getDate(),
+      lastDailyReset: now,
+      lastMonthlyReset: now,
+    },
+    update: {
+      monthlyIncludedUsd,
+      monthlyIncludedAllocationUsd: monthlyIncludedUsd,
+      dailyUsedThisMonthUsd: 0,
+      overageAccumulatedUsd: 0,
+      overageBilledUsd: 0,
+      lastMonthlyReset: now,
+    },
+  })
 }
 
 
@@ -119,18 +197,26 @@ export function nextOverageBlockUsd(overageBilledUsd: number): number {
 
 /**
  * Allocate the monthly included USD for a subscription plan and seat count.
- * `seats` is the number of paying seats on the subscription (Pro/Business
- * are per-seat plans; Basic is always 1). Resets accumulated overage so the
- * upcoming period starts clean (any flushed overage should have already
- * been billed via `chargeOverageBlocks` mid-cycle).
+ * `seats` is the number of *paying* seats on the Stripe subscription
+ * (Pro/Business are per-seat plans; Basic is always 1). Resets accumulated
+ * overage so the upcoming period starts clean (any flushed overage should
+ * have already been billed via `chargeOverageBlocks` mid-cycle).
+ *
+ * Super-admin grants stack on top: free-seat counts contribute their
+ * per-seat plan-included USD (Pro/Business only) and the grant's flat
+ * `monthlyIncludedUsd` is added on top.
  */
 export async function allocateMonthlyIncluded(
   workspaceId: string,
   planId: string,
   seats: number = 1,
 ) {
-  const monthlyIncludedUsd = getMonthlyIncludedForPlan(planId, seats);
   const now = new Date();
+  const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+  // Free seats from a grant get the same per-seat plan included USD.
+  const totalSeats = Math.max(1, Math.floor(seats || 1)) + grant.freeSeats
+  const monthlyIncludedUsd =
+    getMonthlyIncludedForPlan(planId, totalSeats) + grant.monthlyIncludedUsd;
 
   return prisma.usageWallet.upsert({
     where: { workspaceId },
@@ -405,6 +491,24 @@ async function _consumeUsageTransaction(
     const needsDailyReset = now.toDateString() !== new Date(wallet.lastDailyReset).toDateString();
     const needsMonthlyReset = isNewMonth(now, wallet.lastMonthlyReset);
 
+    // Free-tier safety net: paid plans are refilled by `allocateMonthlyIncluded`
+    // on `invoice.payment_succeeded`, but workspaces without a Stripe
+    // subscription would otherwise drift forever. On a month rollover, refill
+    // `monthlyIncludedUsd` from the active grants for free workspaces. We
+    // skip paid workspaces here so we don't double-allocate over the
+    // webhook (which has authoritative seat counts).
+    let monthlyIncludedRefill: number | null = null
+    if (needsMonthlyReset) {
+      const paidSub = await tx.subscription.findFirst({
+        where: { workspaceId, status: { in: ['active', 'trialing'] } },
+        select: { id: true },
+      })
+      if (!paidSub) {
+        const grant = await getActiveGrantsForWorkspace(workspaceId, now)
+        monthlyIncludedRefill = PLAN_INCLUDED_USD.free + grant.monthlyIncludedUsd
+      }
+    }
+
     let dailyUsedThisMonthUsd = needsMonthlyReset ? 0 : wallet.dailyUsedThisMonthUsd;
     let dailyIncludedUsd: number;
 
@@ -419,7 +523,8 @@ async function _consumeUsageTransaction(
       dailyIncludedUsd = wallet.dailyIncludedUsd;
     }
 
-    let monthlyIncludedUsd = wallet.monthlyIncludedUsd;
+    let monthlyIncludedUsd =
+      monthlyIncludedRefill != null ? monthlyIncludedRefill : wallet.monthlyIncludedUsd;
     let overageAccumulatedUsd = needsMonthlyReset ? 0 : wallet.overageAccumulatedUsd;
 
     // Deduction order: daily -> monthly -> overage (if enabled).
@@ -472,6 +577,12 @@ async function _consumeUsageTransaction(
         dailyUsedThisMonthUsd,
         ...(needsDailyReset ? { lastDailyReset: now } : {}),
         ...(needsMonthlyReset ? { lastMonthlyReset: now } : {}),
+        ...(monthlyIncludedRefill != null
+          ? {
+              monthlyIncludedAllocationUsd: monthlyIncludedRefill,
+              overageBilledUsd: 0,
+            }
+          : {}),
       },
     });
 
@@ -796,10 +907,19 @@ export async function syncSeatsFromMembership(
       return { ok: false, reason: 'basic_plan_single_seat' }
     }
 
-    const desiredSeats = await countActiveWorkspaceMembers(workspaceId)
-    if (desiredSeats === sub.seats) {
+    const totalMembers = await countActiveWorkspaceMembers(workspaceId)
+    const grant = await getActiveGrantsForWorkspace(workspaceId)
+    // v1: enforce a minimum of 1 paid Stripe seat. If a grant exceeds the
+    // member count we still bill 1 seat so the Stripe subscription stays
+    // active. Revisit later by pausing the seat item entirely when a
+    // grant fully covers all members.
+    const desiredStripeSeats = Math.max(1, totalMembers - grant.freeSeats)
+    // The wallet's included USD reflects total seats (paid + granted).
+    const includedUsd =
+      getMonthlyIncludedForPlan(sub.planId, totalMembers) + grant.monthlyIncludedUsd
+
+    if (desiredStripeSeats === sub.seats) {
       // Already in sync — still ensure the wallet allocation matches.
-      const includedUsd = getMonthlyIncludedForPlan(sub.planId, desiredSeats)
       await prisma.usageWallet.updateMany({
         where: { workspaceId },
         data: {
@@ -807,7 +927,7 @@ export async function syncSeatsFromMembership(
           monthlyIncludedAllocationUsd: includedUsd,
         },
       })
-      return { ok: true, planId: sub.planId, seats: desiredSeats }
+      return { ok: true, planId: sub.planId, seats: desiredStripeSeats }
     }
 
     const stripeKey = process.env.STRIPE_SECRET_KEY
@@ -815,9 +935,8 @@ export async function syncSeatsFromMembership(
       console.warn('[billing] STRIPE_SECRET_KEY unset; updating local seats only')
       await prisma.subscription.update({
         where: { id: sub.id },
-        data: { seats: desiredSeats },
+        data: { seats: desiredStripeSeats },
       })
-      const includedUsd = getMonthlyIncludedForPlan(sub.planId, desiredSeats)
       await prisma.usageWallet.updateMany({
         where: { workspaceId },
         data: {
@@ -825,7 +944,7 @@ export async function syncSeatsFromMembership(
           monthlyIncludedAllocationUsd: includedUsd,
         },
       })
-      return { ok: true, planId: sub.planId, seats: desiredSeats, reason: 'stripe_unconfigured' }
+      return { ok: true, planId: sub.planId, seats: desiredStripeSeats, reason: 'stripe_unconfigured' }
     }
 
     const { default: Stripe } = await import('stripe') as unknown as {
@@ -848,7 +967,7 @@ export async function syncSeatsFromMembership(
     }
 
     await stripe.subscriptionItems.update(seatItem.id, {
-      quantity: desiredSeats,
+      quantity: desiredStripeSeats,
       // Bill the difference immediately on add, credit on remove. This matches
       // Cursor-style "billing adjusts immediately" behavior and avoids
       // surprise lump sums at period end.
@@ -857,10 +976,9 @@ export async function syncSeatsFromMembership(
 
     await prisma.subscription.update({
       where: { id: sub.id },
-      data: { seats: desiredSeats },
+      data: { seats: desiredStripeSeats },
     })
 
-    const includedUsd = getMonthlyIncludedForPlan(sub.planId, desiredSeats)
     await prisma.usageWallet.updateMany({
       where: { workspaceId },
       data: {
@@ -873,9 +991,11 @@ export async function syncSeatsFromMembership(
       workspaceId,
       planId: sub.planId,
       previousSeats: sub.seats,
-      newSeats: desiredSeats,
+      newStripeSeats: desiredStripeSeats,
+      totalMembers,
+      grantedFreeSeats: grant.freeSeats,
     })
-    return { ok: true, planId: sub.planId, seats: desiredSeats }
+    return { ok: true, planId: sub.planId, seats: desiredStripeSeats }
   } catch (err: any) {
     console.error('[billing] syncSeatsFromMembership failed:', err?.message ?? err)
     return { ok: false, reason: 'error' }
