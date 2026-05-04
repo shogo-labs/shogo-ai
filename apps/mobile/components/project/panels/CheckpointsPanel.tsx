@@ -32,6 +32,7 @@ import {
 } from 'lucide-react-native'
 import { API_URL } from '../../../lib/api'
 import { authClient } from '../../../lib/auth-client'
+import { CheckpointsSkeleton } from './PanelSkeletons'
 
 interface CheckpointsPanelProps {
   projectId: string
@@ -126,10 +127,7 @@ export function CheckpointsPanel({ projectId, visible }: CheckpointsPanelProps) 
 
       {/* Content */}
       {isLoading ? (
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" />
-          <Text className="text-muted-foreground text-sm mt-3">Loading checkpoints...</Text>
-        </View>
+        <CheckpointsSkeleton />
       ) : error ? (
         <View className="flex-1 items-center justify-center px-6">
           <AlertTriangle size={24} className="text-destructive mb-2" />

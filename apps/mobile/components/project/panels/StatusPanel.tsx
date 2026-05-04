@@ -27,6 +27,7 @@ import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { MarkdownText } from '../../chat/MarkdownText'
+import { StatusSkeleton } from './PanelSkeletons'
 
 const CONTEXT_FILES = [
   { id: 'AGENTS.md', label: 'Agent' },
@@ -357,10 +358,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
       {/* Dashboard Content */}
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
         {isLoading && !status ? (
-          <View className="items-center justify-center py-16 gap-3">
-            <ActivityIndicator size="large" />
-            <Text className="text-sm text-muted-foreground">Loading agent status...</Text>
-          </View>
+          <StatusSkeleton />
         ) : !status ? (
           <View className="items-center justify-center py-16 gap-4">
             <Activity size={32} className="text-muted-foreground" />

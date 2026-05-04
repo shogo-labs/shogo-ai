@@ -5,6 +5,7 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 
 import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { SkillsSkeleton } from './PanelSkeletons'
 
 interface Skill {
   name: string
@@ -265,10 +266,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
 
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
         {isLoading ? (
-          <View className="items-center py-8">
-            <ActivityIndicator size="small" />
-            <Text className="text-sm text-muted-foreground mt-2">Loading skills...</Text>
-          </View>
+          <SkillsSkeleton />
         ) : showLibrary ? (
           <View className="gap-3">
             {/* Library tabs */}

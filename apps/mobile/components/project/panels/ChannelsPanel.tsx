@@ -26,6 +26,7 @@ import * as Clipboard from 'expo-clipboard'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { PhonePanel } from './PhonePanel'
+import { ChannelsSkeleton } from './PanelSkeletons'
 
 interface ChannelInfo {
   type: string
@@ -317,9 +318,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAc
 
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
         {isLoading && channels.length === 0 ? (
-          <View className="items-center py-8">
-            <ActivityIndicator size="small" />
-          </View>
+          <ChannelsSkeleton />
         ) : (
           <View className="gap-2">
             {Object.entries(CHANNEL_DEFS).map(([type, def]) => {
