@@ -2,13 +2,19 @@ import { test, expect } from "@playwright/test"
 
 /**
  * Local-mode test for API Key dialog accessibility and integrations endpoints.
- * 
- * Run:
- *   STAGING_URL=http://localhost:8081 \
- *     npx playwright test --config e2e/playwright.config.ts local-api-key-dialog
+ *
+ * Start the local stack (SHOGO_LOCAL_MODE=true) on localhost:8002 +
+ * localhost:8081, then:
+ *
+ *   npx playwright test --config e2e/local/playwright.config.ts
+ *
+ * Override the API host with E2E_API_URL (or the legacy STAGING_API_URL).
  */
 
-const API_BASE = process.env.STAGING_API_URL || "http://localhost:8002"
+const API_BASE =
+  process.env.E2E_API_URL ||
+  process.env.STAGING_API_URL ||
+  "http://localhost:8002"
 
 test.describe("Local Mode — API Key Dialog & Integrations", () => {
   test.describe.configure({ mode: "serial" })

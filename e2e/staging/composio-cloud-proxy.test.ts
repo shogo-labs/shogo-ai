@@ -59,7 +59,11 @@ import {
  */
 
 const API_BASE =
-  process.env.STAGING_API_URL || process.env.STAGING_URL || "http://localhost:8081"
+  process.env.E2E_API_URL ||
+  process.env.STAGING_API_URL ||
+  process.env.E2E_TARGET_URL ||
+  process.env.STAGING_URL ||
+  "http://localhost:8081"
 
 const TEST_USER = makeTestUser("ApiKeyE2E")
 
