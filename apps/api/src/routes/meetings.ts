@@ -238,45 +238,203 @@ meetingRoutes.post('/api/local/meetings/install-sherpa', async (c) => {
 // Recording (server-side, for dev mode without Electron)
 // =============================================================================
 
+// In-memory state for browser-based recordings (no Electron bridge needed).
+let browserRecordingState: { isRecording: boolean; id: string | null; startedAt: number } = {
+  isRecording: false,
+  id: null,
+  startedAt: 0,
+}
+
+function getRecordingsDir(): string {
+  const home = process.env.HOME || process.env.USERPROFILE || require('os').homedir()
+  const dataDir = process.env.SHOGO_DATA_DIR || join(home, '.shogo')
+  const dir = join(dataDir, 'recordings')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 meetingRoutes.get('/api/local/meetings/recording/status', async (c) => {
-  return c.json(await getRecStatus())
+  // Try Electron bridge first; fall back to browser recording state
+  try {
+    const bridgeStatus = await getRecStatus()
+    if (bridgeStatus.isRecording) return c.json(bridgeStatus)
+  } catch {}
+
+  const duration = browserRecordingState.isRecording
+    ? Math.round((Date.now() - browserRecordingState.startedAt) / 1000)
+    : 0
+
+  return c.json({
+    isRecording: browserRecordingState.isRecording,
+    id: browserRecordingState.id,
+    duration,
+    audioPath: null,
+  })
 })
 
 meetingRoutes.post('/api/local/meetings/recording/start', async (c) => {
+  // Try Electron bridge first
   try {
     const result = await startRec()
     return c.json(result)
   } catch (err: any) {
-    const status = err instanceof BridgeUnavailableError ? 503 : 400
-    return c.json({ error: err.message }, status)
+    if (!(err instanceof BridgeUnavailableError)) {
+      return c.json({ error: err.message }, 400)
+    }
   }
+
+  // Fallback: browser-based recording. The actual audio capture happens in the
+  // browser via MediaRecorder; the API just tracks state so polling works.
+  if (browserRecordingState.isRecording) {
+    return c.json({ error: 'Already recording' }, 400)
+  }
+
+  const id = `brec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  browserRecordingState = { isRecording: true, id, startedAt: Date.now() }
+
+  return c.json({ id, audioPath: null, mode: 'browser' })
 })
 
 meetingRoutes.post('/api/local/meetings/recording/stop', async (c) => {
+  // Try Electron bridge first
   try {
     const result = await stopRec()
-    if (!result) return c.json({ error: 'Not recording' }, 400)
+    if (result) {
+      const workspace = await db.workspace.findFirst()
+      if (workspace) {
+        const title = formatMeetingTitle(new Date())
+        const meeting = await db.meeting.create({
+          data: {
+            title,
+            audioPath: result.audioPath,
+            duration: result.duration,
+            status: 'transcribing',
+            workspaceId: workspace.id,
+          },
+        })
 
-    const workspace = await db.workspace.findFirst()
-    if (workspace) {
-      const title = formatMeetingTitle(new Date())
-      const meeting = await db.meeting.create({
-        data: {
-          title,
-          audioPath: result.audioPath,
-          duration: result.duration,
-          status: 'transcribing',
-          workspaceId: workspace.id,
-        },
-      })
+        transcribeMeeting(meeting.id, result.audioPath).catch((err) => {
+          console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
+        })
+      }
+      return c.json(result)
+    }
+  } catch (err: any) {
+    if (!(err instanceof BridgeUnavailableError)) {
+      return c.json({ error: err.message }, 500)
+    }
+  }
 
-      transcribeMeeting(meeting.id, result.audioPath).catch((err) => {
-        console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
-      })
+  // Fallback: browser-based recording stop (audio upload handled by /upload)
+  if (!browserRecordingState.isRecording) {
+    return c.json({ error: 'Not recording' }, 400)
+  }
+
+  const duration = Math.round((Date.now() - browserRecordingState.startedAt) / 1000)
+  const id = browserRecordingState.id
+  browserRecordingState = { isRecording: false, id: null, startedAt: 0 }
+
+  return c.json({ id, duration, mode: 'browser' })
+})
+
+// Upload browser-recorded audio and create a meeting
+meetingRoutes.post('/api/local/meetings/recording/upload', async (c) => {
+  try {
+    const contentType = c.req.header('content-type') || ''
+
+    let audioBuffer: Buffer
+    let duration = 0
+
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await c.req.formData()
+      const file = formData.get('audio') as File | null
+      if (!file) return c.json({ error: 'No audio file provided' }, 400)
+      audioBuffer = Buffer.from(await file.arrayBuffer())
+      duration = parseInt(formData.get('duration') as string || '0', 10)
+    } else {
+      audioBuffer = Buffer.from(await c.req.arrayBuffer())
+      duration = parseInt(c.req.header('x-recording-duration') || '0', 10)
     }
 
-    return c.json(result)
+    if (audioBuffer.length === 0) {
+      return c.json({ error: 'Empty audio data' }, 400)
+    }
+
+    const headerHex = audioBuffer.slice(0, 4).toString('hex')
+    console.log(`[Meetings] Upload received: ${audioBuffer.length} bytes, header: ${headerHex}`)
+
+    const recDir = getRecordingsDir()
+    const id = `brec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const sessionDir = join(recDir, id)
+    mkdirSync(sessionDir, { recursive: true })
+    const audioPath = join(sessionDir, 'audio.wav')
+
+    const isWav = audioBuffer.length > 4 &&
+      audioBuffer[0] === 0x52 && audioBuffer[1] === 0x49 &&
+      audioBuffer[2] === 0x46 && audioBuffer[3] === 0x46
+
+    if (isWav) {
+      console.log(`[Meetings] File is WAV, saving directly: ${audioBuffer.length} bytes`)
+      writeFileSync(audioPath, audioBuffer)
+    } else {
+      // The browser client should already convert to WAV before uploading, but
+      // if for some reason we receive a non-WAV file (e.g. WebM), try ffmpeg.
+      const rawPath = join(sessionDir, 'upload.webm')
+      writeFileSync(rawPath, audioBuffer)
+      try {
+        execSync(
+          `ffmpeg -y -i "${rawPath}" -ar 16000 -ac 1 -sample_fmt s16 "${audioPath}"`,
+          { stdio: 'pipe', timeout: 120_000 },
+        )
+      } catch (ffErr: any) {
+        console.warn('[Meetings] ffmpeg not available, saving as-is. Cloud transcription can handle webm.')
+        // Save the raw upload as the audio file — cloud Whisper API supports webm
+        const webmPath = join(sessionDir, 'audio.webm')
+        writeFileSync(webmPath, audioBuffer)
+        // Point audioPath at the webm so transcription can still attempt cloud
+        const workspace = await db.workspace.findFirst()
+        if (!workspace) return c.json({ error: 'No workspace found' }, 400)
+
+        const title = formatMeetingTitle(new Date())
+        const meeting = await db.meeting.create({
+          data: {
+            title,
+            audioPath: webmPath,
+            duration: duration || null,
+            status: 'transcribing',
+            workspaceId: workspace.id,
+          },
+        })
+
+        transcribeMeeting(meeting.id, webmPath, { preferLocal: false }).catch((err) => {
+          console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
+        })
+
+        return c.json({ meeting }, 201)
+      }
+    }
+
+    const workspace = await db.workspace.findFirst()
+    if (!workspace) return c.json({ error: 'No workspace found' }, 400)
+
+    const title = formatMeetingTitle(new Date())
+    const meeting = await db.meeting.create({
+      data: {
+        title,
+        audioPath,
+        duration: duration || null,
+        status: 'transcribing',
+        workspaceId: workspace.id,
+      },
+    })
+
+    transcribeMeeting(meeting.id, audioPath).catch((err) => {
+      console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
+    })
+
+    return c.json({ meeting }, 201)
   } catch (err: any) {
+    console.error('[Meetings] Upload error:', err)
     return c.json({ error: err.message }, 500)
   }
 })
@@ -503,17 +661,26 @@ async function transcribeMeeting(
       return
     }
 
+    const fileSize = statSync(audioPath).size
     const duration = getAudioDuration(audioPath)
+    // duration === -1 means non-WAV file (e.g. webm) — skip the length check
+    // and let the transcription service handle it
     if (duration >= 0 && duration < MIN_AUDIO_DURATION_SECONDS) {
-      console.warn(`[Meetings] Audio too short for ${meetingId}: ${duration.toFixed(2)}s (need >=${MIN_AUDIO_DURATION_SECONDS}s)`)
-      await db.meeting.update({
-        where: { id: meetingId },
-        data: {
-          status: 'ready',
-          transcript: JSON.stringify({ text: '', segments: [], language: 'en', error: 'Audio file is empty or too short to transcribe' }),
-        },
-      }).catch(() => {})
-      return
+      console.warn(`[Meetings] Audio too short for ${meetingId}: ${duration.toFixed(2)}s (need >=${MIN_AUDIO_DURATION_SECONDS}s), file size: ${fileSize} bytes`)
+      // Only reject if the file is actually tiny (< 1KB). A valid WAV with
+      // real audio will have a meaningful file size even if header parsing
+      // computes a short duration due to edge cases.
+      if (fileSize < 1024) {
+        await db.meeting.update({
+          where: { id: meetingId },
+          data: {
+            status: 'ready',
+            transcript: JSON.stringify({ text: '', segments: [], language: 'en', error: 'Audio file is empty or too short to transcribe' }),
+          },
+        }).catch(() => {})
+        return
+      }
+      console.log(`[Meetings] File is ${fileSize} bytes — proceeding with transcription despite short WAV duration`)
     }
 
     const config = await getMeetingConfig()
@@ -644,3 +811,4 @@ function formatMeetingTitle(date: Date): string {
   }
   return `Meeting - ${date.toLocaleDateString('en-US', options)}`
 }
+
