@@ -122,8 +122,9 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-// `terminal` is intentionally absent — chat exec entries now appear in
-// the IDE bottom drawer's "Output" tab (filterable to "Exec").
+// `terminal` is intentionally absent — clicking the Terminal top-tab
+// toggles the IDE bottom drawer (DrawerHost) and focuses its Terminal
+// sub-tab; it is not a standalone preview tab.
 const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents', 'monitor', 'plans', 'checkpoints']
 
 const DEFAULT_CHAT_PANEL_WIDTH = 480
@@ -1552,6 +1553,9 @@ export default observer(function ProjectLayout() {
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
     activeChatSessionName: isChatFullscreen ? (openChatTabs.find(t => t.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    // Forward to ProjectTopBar so the Terminal drawer toggle knows when
+    // the IDE drawer is *visible* vs only "open in store" (see DrawerHost).
+    canvasAreaHidden,
     canvasThemeSupported,
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
