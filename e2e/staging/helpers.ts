@@ -152,6 +152,31 @@ export async function signUpAndOnboardWithAppTemplate(
  *
  * Leaves the browser on the app after the Stripe redirect.
  */
+// ── API Keys page helpers ────────────────────────────────────────────────────
+
+/**
+ * The `/api-keys` page was redesigned in v1.5.0: the "Devices" section is
+ * primary, and manual workspace API keys live behind a collapsed
+ * `"Manual API keys (N) · advanced"` accordion. Tests that need to create
+ * a manual key must expand the accordion first.
+ *
+ * See apps/mobile/app/(app)/api-keys.tsx — the `showManualKeys` state.
+ */
+export async function expandManualApiKeys(page: Page) {
+  const toggle = page.getByRole("button", { name: /Manual API keys/ })
+  await toggle.waitFor({ state: "visible", timeout: 10_000 })
+  // Avoid re-collapsing if the accordion is already open.
+  const expanded = await toggle.getAttribute("aria-expanded").catch(() => null)
+  if (expanded !== "true") {
+    await toggle.click()
+  }
+  // "Create Key" only renders after the accordion animates open.
+  await page
+    .getByText("Create Key")
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 })
+}
+
 // ── Interaction mode helpers ─────────────────────────────────────────────────
 
 export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" | "Ask") {
@@ -194,8 +219,24 @@ export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" |
   await page.waitForTimeout(300)
 }
 
+/**
+ * The home composer uses an animated typewriter placeholder
+ * (`"Ask Shogo to " + rotating suggestion`), so the old
+ * `getByPlaceholder("Ask Shogo to ...")` selector never matches.
+ * `CompactChatInput` renders a stable `accessibilityLabel` we can target
+ * regardless of interaction mode and placeholder churn.
+ *
+ * See apps/mobile/components/chat/CompactChatInput.tsx — the TextInput
+ * label "Describe the agent you want to build".
+ */
+export function homeComposerInput(page: Page) {
+  return page.getByRole("textbox", {
+    name: "Describe the agent you want to build",
+  })
+}
+
 export async function sendChatMessage(page: Page, text: string) {
-  const chatInput = page.getByPlaceholder(/Ask Shogo|Describe what|Ask a question/)
+  const chatInput = homeComposerInput(page)
   await chatInput.click()
   await chatInput.fill(text)
   await page.waitForTimeout(300)
@@ -221,7 +262,7 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.goto("/")
   await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
 
-  const input = page.getByPlaceholder("Ask Shogo to ...")
+  const input = homeComposerInput(page)
   await input.click()
   await input.fill(prompt)
   await page.waitForTimeout(500)
