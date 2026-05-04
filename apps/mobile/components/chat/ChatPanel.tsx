@@ -2529,10 +2529,18 @@ export const ChatPanel = observer(function ChatPanel({
           // later in-flight mutations (status flips, etc.) don't drift.
           sessionMessageCache.set(currentSessionId, aiMessages)
         }
-        cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
       })
       .catch((err: any) => console.error("[ChatPanel] Failed to load messages:", err))
       .finally(() => {
+        // Stamp the cache freshness on every completion path (empty results,
+        // populated results, and errors). Without this, an empty session would
+        // skip the stamp via the `loaded.length === 0` early return above and
+        // then loop: Effect 1 re-runs on the isLoadingMessages flip, the
+        // `cacheAgeMs < 5000` bailout misses, a new fetch starts, and the
+        // resulting isInitialLoadComplete flip fires `useChat`'s resumeStream
+        // every cycle (visible as `[AgentChat] Stream reconnect ... snapshot=none`
+        // spam plus a flickering "Loading conversation..." indicator).
+        cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
         isLoadingMessagesRef.current = false
         setIsLoadingMessages(false)
         setIsInitialLoadComplete(true)

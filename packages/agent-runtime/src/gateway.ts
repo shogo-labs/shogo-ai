@@ -1786,28 +1786,261 @@ export class AgentGateway {
 
       // Prompt breakdown: compute tool schema size and emit per-section breakdown
       if (this.lastPromptBreakdown) {
-        const toolSchemaChars = tools.reduce((sum, t) => {
+        // ---- 1) Per-tool schema sizing ----
+        const toolSizes = tools.map(t => {
           const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
-          return sum + schema.length
-        }, 0)
+          return { name: t.name, chars: schema.length }
+        })
+        const toolSchemaChars = toolSizes.reduce((s, t) => s + t.chars, 0)
         const toolSchemaEstTokens = Math.ceil(toolSchemaChars / 4)
+        const toolSchemasPerTool = toolSizes
+          .map(t => ({ name: t.name, chars: t.chars, estTokens: Math.ceil(t.chars / 4) }))
+          .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
 
+        // ---- 2) Chat-context (history + prompt) sizing ----
+        // Walks `history` and aggregates char counts per category, with per-tool
+        // sub-buckets for assistant tool_use blocks and toolResult messages.
+        // Mirrors the sizing approach used in prefix-fingerprint.approxMessageChars.
+        const compactedSummaryChars = session.compactedSummary?.length ?? 0
+        let userMessagesChars = 0
+        let userMessagesCount = 0
+        let assistantTextChars = 0
+        let assistantTextCount = 0
+        let assistantThinkingChars = 0
+        let assistantToolCallsChars = 0
+        let assistantToolCallsCount = 0
+        let toolResultsChars = 0
+        let toolResultsCount = 0
+        const perToolUse = new Map<string, { chars: number; count: number }>()
+        const perToolResult = new Map<string, { chars: number; count: number }>()
+
+        // The synthesized "[Previous conversation summary]" user message and its
+        // assistant ack inserted by SessionManager.buildHistory get counted under
+        // `compacted-summary` instead of user/assistant categories so the source
+        // summary length isn't reported twice.
+        const SUMMARY_USER_PREFIX = '[Previous conversation summary]'
+        const SUMMARY_ACK_PREFIX = 'Understood, I have the context'
+
+        for (const msg of history) {
+          if (msg.role === 'user') {
+            const content = (msg as any).content
+            if (typeof content === 'string') {
+              if (content.startsWith(SUMMARY_USER_PREFIX)) continue
+              userMessagesChars += content.length
+              userMessagesCount++
+            } else if (Array.isArray(content)) {
+              let chars = 0
+              let isSummary = false
+              for (const block of content) {
+                if (block?.type === 'text') {
+                  const t: string = block.text ?? ''
+                  if (t.startsWith(SUMMARY_USER_PREFIX)) { isSummary = true; break }
+                  chars += t.length
+                }
+              }
+              if (isSummary) continue
+              userMessagesChars += chars
+              userMessagesCount++
+            }
+            continue
+          }
+          if (msg.role === 'assistant') {
+            const content = ((msg as any).content as any[]) || []
+            let isSummaryAck = false
+            let textChars = 0
+            let toolCallChars = 0
+            let toolCallsHere = 0
+            let thinkingChars = 0
+            const localToolUse: Array<{ name: string; chars: number }> = []
+            for (const block of content) {
+              if (block?.type === 'text') {
+                const t: string = block.text ?? ''
+                if (t.startsWith(SUMMARY_ACK_PREFIX)) { isSummaryAck = true; break }
+                textChars += t.length
+              } else if (block?.type === 'toolCall') {
+                const argsStr = JSON.stringify(block.arguments ?? {})
+                const c = argsStr.length
+                toolCallChars += c
+                toolCallsHere++
+                const name: string = block.name ?? '<unknown>'
+                localToolUse.push({ name, chars: c })
+              } else if (block?.type === 'thinking') {
+                thinkingChars += ((block as any).thinking ?? '').length
+              }
+            }
+            if (isSummaryAck) continue
+            assistantTextChars += textChars
+            assistantThinkingChars += thinkingChars
+            assistantToolCallsChars += toolCallChars
+            assistantToolCallsCount += toolCallsHere
+            if (textChars > 0) assistantTextCount++
+            for (const t of localToolUse) {
+              const cur = perToolUse.get(t.name) ?? { chars: 0, count: 0 }
+              cur.chars += t.chars
+              cur.count += 1
+              perToolUse.set(t.name, cur)
+            }
+            continue
+          }
+          if (msg.role === 'toolResult') {
+            const tr = msg as any
+            const content = (tr.content as any[]) || []
+            let chars = 0
+            for (const c of content) {
+              if (c?.type === 'text') chars += (c.text?.length ?? 0)
+            }
+            toolResultsChars += chars
+            toolResultsCount++
+            const name: string = tr.toolName ?? '<unknown>'
+            const cur = perToolResult.get(name) ?? { chars: 0, count: 0 }
+            cur.chars += chars
+            cur.count += 1
+            perToolResult.set(name, cur)
+            continue
+          }
+        }
+
+        const currentPromptChars = prompt.length
+        const chatContextChars = compactedSummaryChars
+          + userMessagesChars
+          + assistantTextChars
+          + assistantThinkingChars
+          + assistantToolCallsChars
+          + toolResultsChars
+          + currentPromptChars
+        const chatContextEstTokens = Math.ceil(chatContextChars / 4)
+
+        // ---- 3) System prompt totals (existing) ----
         const breakdown = this.lastPromptBreakdown
         const totalChars = breakdown.reduce((s, sec) => s + sec.chars, 0)
         const totalEstTokens = breakdown.reduce((s, sec) => s + sec.estTokens, 0)
-        const grandEstTokens = totalEstTokens + toolSchemaEstTokens
+        const grandEstTokens = totalEstTokens + toolSchemaEstTokens + chatContextEstTokens
+
+        // ---- 4) Render log lines ----
+        // Keep the colon column fixed across hierarchy levels so columns align.
+        // Parent labels live at 2-space indent (`  label    :`), children at 4-space
+        // (`    label    :`), sub-children at 6-space (`      label    :`).
+        const candidateLabels = [
+          ...breakdown.map(s => s.label.length),
+          'tool-schemas (XX)'.length,
+          `Tool schemas (${tools.length})`.length,
+          `Chat context (${history.length} msgs)`.length,
+          'assistant-tool-calls (XXX)'.length + 2, // children sit 2 chars deeper
+          'compacted-summary'.length + 2,
+        ]
+        // Also factor in the longest top-tool name (top 10) so child rows don't overflow
+        for (const t of toolSchemasPerTool.slice(0, 10)) {
+          candidateLabels.push(t.name.length + 2)
+        }
+        for (const [name, v] of perToolUse) {
+          candidateLabels.push(`${name} (${v.count})`.length + 4)
+        }
+        for (const [name, v] of perToolResult) {
+          candidateLabels.push(`${name} (${v.count})`.length + 4)
+        }
+        const maxLabel = Math.max(...candidateLabels)
+        const childLabelWidth = maxLabel - 2
+        const subChildLabelWidth = maxLabel - 4
 
         const lines = ['[AgentGateway] Prompt breakdown:']
-        const maxLabel = Math.max(...breakdown.map(s => s.label.length), 'tool-schemas (XX)'.length)
         for (const sec of breakdown) {
           const tag = sec.zone === 'stable' ? 'S' : 'D'
           lines.push(`  ${sec.label.padEnd(maxLabel)} [${tag}]: ${sec.chars.toLocaleString().padStart(7)} chars ~${sec.estTokens.toLocaleString().padStart(6)} tok`)
         }
         lines.push(`  ${''.padEnd(maxLabel + 30, '─')}`)
         lines.push(`  ${'System prompt total'.padEnd(maxLabel)}    : ${totalChars.toLocaleString().padStart(7)} chars ~${totalEstTokens.toLocaleString().padStart(6)} tok`)
-        lines.push(`  ${`Tool schemas (${tools.length})`.padEnd(maxLabel)}    : ${toolSchemaChars.toLocaleString().padStart(7)} chars ~${toolSchemaEstTokens.toLocaleString().padStart(6)} tok`)
+
+        const fmtParent = (label: string, chars: number, estTokens: number) =>
+          `  ${label.padEnd(maxLabel)}    : ${chars.toLocaleString().padStart(7)} chars ~${estTokens.toLocaleString().padStart(6)} tok`
+        const fmtChild = (label: string, chars: number) =>
+          `    ${label.padEnd(childLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
+        const fmtSubChild = (label: string, chars: number) =>
+          `      ${label.padEnd(subChildLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
+
+        // Tool schemas: parent + per-tool top 10 + other
+        lines.push(fmtParent(`Tool schemas (${tools.length})`, toolSchemaChars, toolSchemaEstTokens))
+        const TOP_SCHEMAS = 10
+        const topSchemas = toolSchemasPerTool.slice(0, TOP_SCHEMAS)
+        const restSchemas = toolSchemasPerTool.slice(TOP_SCHEMAS)
+        for (const t of topSchemas) {
+          lines.push(fmtChild(t.name, t.chars))
+        }
+        if (restSchemas.length > 0) {
+          const rChars = restSchemas.reduce((s, t) => s + t.chars, 0)
+          lines.push(fmtChild(`other (${restSchemas.length} tools)`, rChars))
+        }
+
+        // Chat context: parent + per-category children, with per-tool sub-children
+        lines.push(fmtParent(`Chat context (${history.length} msgs)`, chatContextChars, chatContextEstTokens))
+        if (compactedSummaryChars > 0) lines.push(fmtChild('compacted-summary', compactedSummaryChars))
+        if (userMessagesCount > 0) lines.push(fmtChild(`user-messages (${userMessagesCount})`, userMessagesChars))
+        if (assistantTextCount > 0) lines.push(fmtChild(`assistant-text (${assistantTextCount})`, assistantTextChars))
+        if (assistantThinkingChars > 0) lines.push(fmtChild('assistant-thinking', assistantThinkingChars))
+        const TOP_PER_TOOL = 5
+        if (assistantToolCallsCount > 0) {
+          lines.push(fmtChild(`assistant-tool-calls (${assistantToolCallsCount})`, assistantToolCallsChars))
+          const sortedUse = [...perToolUse.entries()]
+            .map(([name, v]) => ({ name, ...v }))
+            .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+          const topUse = sortedUse.slice(0, TOP_PER_TOOL)
+          const restUse = sortedUse.slice(TOP_PER_TOOL)
+          for (const t of topUse) lines.push(fmtSubChild(`${t.name} (${t.count})`, t.chars))
+          if (restUse.length > 0) {
+            const rChars = restUse.reduce((s, t) => s + t.chars, 0)
+            lines.push(fmtSubChild(`other (${restUse.length} tools)`, rChars))
+          }
+        }
+        if (toolResultsCount > 0) {
+          lines.push(fmtChild(`tool-results (${toolResultsCount})`, toolResultsChars))
+          const sortedTr = [...perToolResult.entries()]
+            .map(([name, v]) => ({ name, ...v }))
+            .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+          const topTr = sortedTr.slice(0, TOP_PER_TOOL)
+          const restTr = sortedTr.slice(TOP_PER_TOOL)
+          for (const t of topTr) lines.push(fmtSubChild(`${t.name} (${t.count})`, t.chars))
+          if (restTr.length > 0) {
+            const rChars = restTr.reduce((s, t) => s + t.chars, 0)
+            lines.push(fmtSubChild(`other (${restTr.length} tools)`, rChars))
+          }
+        }
+        if (currentPromptChars > 0) lines.push(fmtChild('current-prompt', currentPromptChars))
+
+        lines.push(`  ${''.padEnd(maxLabel + 30, '─')}`)
         lines.push(`  ${'Grand total'.padEnd(maxLabel)}    :                ~${grandEstTokens.toLocaleString().padStart(6)} tok`)
         console.log(lines.join('\n'))
+
+        const sortedToolUseEntries = [...perToolUse.entries()]
+          .map(([name, v]) => ({ name, count: v.count, chars: v.chars, estTokens: Math.ceil(v.chars / 4) }))
+          .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+        const sortedToolResultEntries = [...perToolResult.entries()]
+          .map(([name, v]) => ({ name, count: v.count, chars: v.chars, estTokens: Math.ceil(v.chars / 4) }))
+          .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
+
+        const chatContextCategories: Array<{
+          key: string
+          count?: number
+          chars: number
+          estTokens: number
+          perTool?: Array<{ name: string; count: number; chars: number; estTokens: number }>
+        }> = []
+        if (compactedSummaryChars > 0) chatContextCategories.push({ key: 'compacted-summary', chars: compactedSummaryChars, estTokens: Math.ceil(compactedSummaryChars / 4) })
+        if (userMessagesCount > 0) chatContextCategories.push({ key: 'user-messages', count: userMessagesCount, chars: userMessagesChars, estTokens: Math.ceil(userMessagesChars / 4) })
+        if (assistantTextCount > 0) chatContextCategories.push({ key: 'assistant-text', count: assistantTextCount, chars: assistantTextChars, estTokens: Math.ceil(assistantTextChars / 4) })
+        if (assistantThinkingChars > 0) chatContextCategories.push({ key: 'assistant-thinking', chars: assistantThinkingChars, estTokens: Math.ceil(assistantThinkingChars / 4) })
+        if (assistantToolCallsCount > 0) chatContextCategories.push({
+          key: 'assistant-tool-calls',
+          count: assistantToolCallsCount,
+          chars: assistantToolCallsChars,
+          estTokens: Math.ceil(assistantToolCallsChars / 4),
+          perTool: sortedToolUseEntries,
+        })
+        if (toolResultsCount > 0) chatContextCategories.push({
+          key: 'tool-results',
+          count: toolResultsCount,
+          chars: toolResultsChars,
+          estTokens: Math.ceil(toolResultsChars / 4),
+          perTool: sortedToolResultEntries,
+        })
 
         const breakdownPayload = {
           sections: breakdown,
@@ -1816,6 +2049,15 @@ export class AgentGateway {
           toolSchemaChars,
           toolSchemaEstTokens,
           toolCount: tools.length,
+          toolSchemasPerTool,
+          chatContext: {
+            totalChars: chatContextChars,
+            totalEstTokens: chatContextEstTokens,
+            messageCount: history.length,
+            categories: chatContextCategories,
+            currentPromptChars,
+            currentPromptEstTokens: Math.ceil(currentPromptChars / 4),
+          },
           grandEstTokens,
         }
 
@@ -1885,7 +2127,7 @@ export class AgentGateway {
           return result.messages
         },
         onToolCall: (name, input) => {
-          console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
+          console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
         onThinkingStart: () => {
           if (uiWriter) {
