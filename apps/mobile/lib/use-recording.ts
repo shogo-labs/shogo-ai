@@ -60,6 +60,8 @@ export function useRecording() {
       setRecordingId(null)
       setDuration(0)
 
+      // In the Electron IPC flow, we create the meeting here because the API's
+      // /recording/stop endpoint is not called (only IPC is used).
       const http = createHttpClient()
       http.post('/api/local/meetings', {
         audioPath: data.audioPath,
@@ -277,14 +279,18 @@ export function useRecording() {
             setRecordingId(null)
             setDuration(0)
 
-            // Notify API of stop
+            // Notify API of stop — if the bridge handled it, audio is already
+            // on disk and a meeting record was created server-side; skip upload.
+            let bridgeHandled = false
             try {
               const http = createHttpClient()
-              await http.post('/api/local/meetings/recording/stop', {})
+              const { data } = await http.post<{ mode?: string }>('/api/local/meetings/recording/stop', {})
+              if (data && data.mode !== 'browser') bridgeHandled = true
             } catch {}
 
-            // Upload the recorded audio
-            await uploadAudio(blob, recDuration)
+            if (!bridgeHandled) {
+              await uploadAudio(blob, recDuration)
+            }
             resolve()
           }
           recorder.stop()
