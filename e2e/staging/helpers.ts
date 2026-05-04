@@ -336,7 +336,7 @@ export function isLiveStripeEnv(): boolean {
   if (explicit === "live") return true
   if (explicit === "test") return false
 
-  const url = process.env.STAGING_URL || process.env.E2E_TARGET_URL || ""
+  const url = process.env.E2E_TARGET_URL || process.env.STAGING_URL || ""
   if (!url) return false
   if (url.includes("localhost") || url.includes("127.0.0.1")) return false
   if (url.includes("staging.shogo.ai")) return false

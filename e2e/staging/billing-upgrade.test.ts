@@ -19,7 +19,8 @@ import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
  * post-upgrade test cases are skipped until the Checkout interaction is
  * automated (or replaced with a direct Stripe API subscription bootstrap).
  *
- * Targets the deployed staging environment (set STAGING_URL env var).
+ * Targets the deployed environment (set E2E_TARGET_URL or the legacy
+ * STAGING_URL env var).
  *
  * Run: npx playwright test --config e2e/playwright.config.ts billing-upgrade
  */
