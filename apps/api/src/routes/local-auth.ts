@@ -35,6 +35,7 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
+import { wipeCloudKey } from '../lib/cloud-key-wipe'
 
 const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
 /** Default deep-link the cloud bridge page redirects back to. Override with
@@ -313,6 +314,7 @@ export function localAuthRoutes() {
       })
       const data = await res.json().catch(() => ({} as any))
       if (!res.ok || data?.ok === false) {
+        // 401 ⇒ key revoked or superseded; delegate to the shared self-heal helper.
         if (res.status === 401) {
           cloudKeyRejected = true
           console.warn('[CloudLogin] Cloud rejected API key (401) — key may be revoked or expired. User must re-sign-in.')
