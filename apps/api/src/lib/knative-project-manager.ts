@@ -822,10 +822,21 @@ export class KnativeProjectManager {
    * Perform an active health check on a project's pod.
    * Returns true if the pod is responding and ready to handle requests.
    * Uses /ready endpoint which verifies the project directory exists.
+   *
+   * Resolves the actual Knative Service via the DB so warm-pool-promoted
+   * projects (whose service name is `warm-pool-*`, not `project-{id}`) are
+   * probed at the correct hostname. Using the legacy `project-{id}`
+   * convention here causes NXDOMAIN and waitForReady() loops until timeout.
    */
   async healthCheck(projectId: string): Promise<boolean> {
+    let url: string
     try {
-      const url = this.getProjectPodUrl(projectId)
+      url = await this.resolveProjectPodUrl(projectId)
+    } catch (error: any) {
+      console.warn(`[KnativeProjectManager] healthCheck: failed to resolve pod URL for ${projectId}: ${error?.message || error}`)
+      return false
+    }
+    try {
       const response = await fetch(`${url}/ready`, {
         method: "GET",
         signal: AbortSignal.timeout(5000), // 5 second timeout
