@@ -166,6 +166,40 @@ resource "cloudflare_record" "india_studio" {
 }
 
 # =============================================================================
+# Desktop Tunnel WebSocket — regional A records (NOT load-balanced)
+# =============================================================================
+# The desktop tunnel WebSocket must stay in the same region whose API
+# issued its heartbeat, so each region gets a direct A record to its own
+# OCI LB. Cloudflare proxying is kept on for TLS termination + WS
+# passthrough; the Knative Ingress (api-tunnel) inside each cluster routes
+# to the api revision pods' queue-proxy port 8012 and bypasses the
+# DomainMapping loopback that drops WS Upgrade.
+
+resource "cloudflare_record" "us_tunnel" {
+  zone_id = var.cloudflare_zone_id
+  name    = "tunnel"
+  content = var.us_lb_ip
+  type    = "A"
+  proxied = true
+}
+
+resource "cloudflare_record" "eu_tunnel" {
+  zone_id = var.cloudflare_zone_id
+  name    = "eu.tunnel"
+  content = var.eu_lb_ip
+  type    = "A"
+  proxied = true
+}
+
+resource "cloudflare_record" "india_tunnel" {
+  zone_id = var.cloudflare_zone_id
+  name    = "india.tunnel"
+  content = var.india_lb_ip
+  type    = "A"
+  proxied = true
+}
+
+# =============================================================================
 # Outputs
 # =============================================================================
 
@@ -173,6 +207,9 @@ output "studio_lb_id" { value = cloudflare_load_balancer.studio.id }
 output "docs_lb_id"   { value = cloudflare_load_balancer.docs.id }
 output "eu_studio_record" { value = cloudflare_record.eu_studio.hostname }
 output "india_studio_record" { value = cloudflare_record.india_studio.hostname }
+output "us_tunnel_record"    { value = cloudflare_record.us_tunnel.hostname }
+output "eu_tunnel_record"    { value = cloudflare_record.eu_tunnel.hostname }
+output "india_tunnel_record" { value = cloudflare_record.india_tunnel.hostname }
 output "pool_ids" {
   value = {
     us = cloudflare_load_balancer_pool.us.id
