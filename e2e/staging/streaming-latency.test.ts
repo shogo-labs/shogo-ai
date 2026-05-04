@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test"
-import { expandManualApiKeys, makeTestUser, signUpAndOnboard } from "./helpers"
+import {
+  createApiKeyButton,
+  createApiKeySubmitButton,
+  expandManualApiKeys,
+  makeTestUser,
+  signUpAndOnboard,
+} from "./helpers"
 
 /**
  * Streaming Relay Latency — E2E Tests
@@ -147,14 +153,14 @@ test.describe("Streaming Relay Latency — E2E", () => {
     // v1.5.0: "Create Key" lives behind the "Manual API keys" accordion on /api-keys
     await expandManualApiKeys(page)
 
-    const createBtn = page.getByText("Create Key").first()
+    const createBtn = createApiKeyButton(page)
     await createBtn.waitFor({ state: "visible", timeout: 10_000 })
     await createBtn.click()
 
     await page.waitForSelector("text=Create API Key", { timeout: 5_000 })
     const modal = page.getByRole("dialog", { name: "Create API Key" })
     await modal.waitFor({ state: "visible", timeout: 5_000 })
-    await modal.getByText("Create Key", { exact: true }).click()
+    await createApiKeySubmitButton(page).click()
 
     await page.waitForSelector("text=API Key Created", { timeout: 15_000 })
     const createdDialog = page.getByRole("dialog", { name: "API Key Created" })

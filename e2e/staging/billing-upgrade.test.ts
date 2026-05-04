@@ -105,16 +105,28 @@ test.describe("Billing & Upgrade Flow", () => {
 
     // v1.5.0 pricing: Basic $8/mo, Pro $20/seat, Business $40/seat, Enterprise custom.
     // Source: apps/mobile/app/(app)/billing.tsx → PLAN_PRICING.
-    await expect(page.getByText("Basic", { exact: true }).first()).toBeVisible()
-    await expect(page.getByText("Pro").first()).toBeVisible()
-    await expect(page.getByText("Business", { exact: true }).first()).toBeVisible()
-    await expect(page.getByText("Enterprise", { exact: true }).first()).toBeVisible()
+    // Each plan Card is wrapped in a View with a stable testID; fall back
+    // to role/name matching if the app predates the testIDs.
+    const basicCard = page.getByTestId("plan-card-basic")
+    const proCard = page.getByTestId("plan-card-pro")
+    const businessCard = page.getByTestId("plan-card-business")
+    const enterpriseCard = page.getByTestId("plan-card-enterprise")
+
+    await expect(basicCard.or(page.getByText("Basic", { exact: true }).first())).toBeVisible()
+    await expect(proCard.or(page.getByText("Pro").first())).toBeVisible()
+    await expect(businessCard.or(page.getByText("Business", { exact: true }).first())).toBeVisible()
+    await expect(enterpriseCard.or(page.getByText("Enterprise", { exact: true }).first())).toBeVisible()
     await expect(page.getByText("Custom", { exact: true })).toBeVisible()
-    // The per-seat dollar labels appear on each plan card; each tier
-    // exposes its price in a "$X/seat" or "$X" badge.
-    await expect(page.getByText("$8").first()).toBeVisible()
-    await expect(page.getByText("$20").first()).toBeVisible()
-    await expect(page.getByText("$40").first()).toBeVisible()
+    // Dollar labels live inside each plan card (prefer testID scoping).
+    await expect(
+      basicCard.getByText("$8").first().or(page.getByText("$8").first()),
+    ).toBeVisible()
+    await expect(
+      proCard.getByText("$20").first().or(page.getByText("$20").first()),
+    ).toBeVisible()
+    await expect(
+      businessCard.getByText("$40").first().or(page.getByText("$40").first()),
+    ).toBeVisible()
     await expect(page.getByText(/\/seat/).first()).toBeVisible()
   })
 

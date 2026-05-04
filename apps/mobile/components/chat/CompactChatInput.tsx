@@ -553,6 +553,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
           <TextInput
             ref={textInputRef}
+            testID="home-composer-input"
             placeholder={placeholderText}
             placeholderTextColor="#9ca3af"
             accessibilityLabel="Describe the agent you want to build"
