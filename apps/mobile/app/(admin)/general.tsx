@@ -55,6 +55,7 @@ export default function AdminGeneralPage() {
   const [loginStatus, setLoginStatus] = useState<'idle' | 'connecting' | 'error'>('idle')
   const [loginError, setLoginError] = useState('')
   const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [cloudKeyRejected, setCloudKeyRejected] = useState(false)
   // Cloud URL is read-only; it reflects the API server's `SHOGO_CLOUD_URL`
   // env var (default https://studio.shogo.ai) and is not user-editable.
   const [cloudUrl, setCloudUrl] = useState(SHOGO_CLOUD_URL_DEFAULT)
@@ -85,6 +86,7 @@ export default function AdminGeneralPage() {
       setShogoEmail(status.email || '')
       setShogoWorkspaceName(status.workspace?.name || '')
       setShogoKeyMask(status.keyPrefix ? `${status.keyPrefix}…` : '')
+      setCloudKeyRejected(!!status.cloudKeyRejected)
       if (status.cloudUrl) {
         setCloudUrl(status.cloudUrl)
       }
@@ -132,9 +134,19 @@ export default function AdminGeneralPage() {
       }
     })
 
+    // Listen for periodic cloud-connection health updates from the
+    // desktop heartbeat. This surfaces key-rejected warnings without
+    // signing the user out.
+    const desktopExt = desktop as any
+    desktopExt?.onCloudConnectionStatus?.((status: { connected: boolean; cloudKeyRejected: boolean; error?: string }) => {
+      if (cancelled) return
+      setCloudKeyRejected(status.cloudKeyRejected)
+    })
+
     return () => {
       cancelled = true
       desktop?.removeCloudLoginListener?.()
+      desktopExt?.removeCloudConnectionStatusListener?.()
     }
   }, [platform, fetchInstanceInfo, loadStatus])
 
@@ -238,6 +250,7 @@ export default function AdminGeneralPage() {
       setShogoKeyMask('')
       setShogoWorkspaceName('')
       setShogoEmail('')
+      setCloudKeyRejected(false)
       setLoginStatus('idle')
       setInstanceInfo(null)
     } catch (err) {
@@ -295,8 +308,15 @@ export default function AdminGeneralPage() {
         >
           {shogoKeyConnected ? (
             <View className="gap-3">
-              <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
-                <CheckCircle size={16} className="text-green-500" />
+              <View className={cn(
+                'flex-row items-center gap-2 rounded-lg p-3',
+                cloudKeyRejected ? 'bg-orange-500/10 border border-orange-500/20' : 'bg-green-500/10',
+              )}>
+                {cloudKeyRejected ? (
+                  <AlertTriangle size={16} className="text-orange-500" />
+                ) : (
+                  <CheckCircle size={16} className="text-green-500" />
+                )}
                 <View className="flex-1">
                   <Text className="text-sm font-medium text-foreground">
                     Signed in{shogoEmail ? ` as ${shogoEmail}` : ''}
@@ -308,6 +328,20 @@ export default function AdminGeneralPage() {
                   ) : null}
                 </View>
               </View>
+              {cloudKeyRejected && (
+                <View className="flex-row items-start gap-2 bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
+                  <AlertTriangle size={16} className="text-orange-500 mt-0.5" />
+                  <View className="flex-1">
+                    <Text className="text-sm font-medium text-foreground">
+                      Cloud connection issue
+                    </Text>
+                    <Text className="text-xs text-muted-foreground mt-0.5">
+                      Your API key may have been revoked or expired on the cloud.
+                      Sign out and sign in again to refresh your connection.
+                    </Text>
+                  </View>
+                </View>
+              )}
               <View className="flex-row items-center gap-2">
                 {shogoKeyMask ? (
                   <Text className="text-xs text-muted-foreground font-mono flex-1">

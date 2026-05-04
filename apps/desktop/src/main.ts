@@ -35,6 +35,7 @@ interface CloudLoginBody {
   workspace?: string
   authUrl?: string
   revoked?: boolean
+  cloudKeyRejected?: boolean
 }
 
 // --- Persistent file logging ---
@@ -211,9 +212,11 @@ function notifyRendererLoginResult(payload: { ok: boolean; error?: string; email
 // Keep the cloud-minted device key fresh by pinging the local heartbeat
 // endpoint periodically. The local API forwards this to the cloud
 // `/api/api-keys/heartbeat`, which updates `lastSeenAt` / `deviceAppVersion`
-// for the Devices UI, and tells us to sign out if the key was revoked
-// remotely. The AI proxy also updates `lastSeenAt` on every authenticated
-// call, so this only matters when the device is idle.
+// for the Devices UI. If the cloud rejects the key (revoked / expired),
+// we push `cloudKeyRejected` to the renderer so Settings can show a
+// warning banner — but we never auto-sign the user out. The AI proxy
+// also updates `lastSeenAt` on every authenticated call, so this only
+// matters when the device is idle.
 const HEARTBEAT_INTERVAL_MS = 5 * 60_000
 let heartbeatTimer: NodeJS.Timeout | null = null
 
@@ -226,13 +229,17 @@ function startCloudLoginHeartbeat(): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceAppVersion: app.getVersion() }),
       })
-      if (!res.ok) return
       const body = (await res.json().catch(() => ({}))) as CloudLoginBody
-      if (body?.revoked) {
-        console.warn('[Desktop] Cloud key was revoked remotely, signing out')
-        notifyRendererLoginResult({
-          ok: false,
-          error: 'Signed out from Shogo Cloud (key revoked)',
+      if (body?.cloudKeyRejected) {
+        console.warn('[Desktop] Cloud rejected API key — notifying renderer of connection issue')
+      }
+      // Push current cloud-connection health to the renderer so the
+      // Settings UI can show a warning banner without signing out.
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('cloud-connection-status', {
+          connected: body?.ok === true,
+          cloudKeyRejected: !!body?.cloudKeyRejected,
+          error: body?.error,
         })
       }
     } catch {
