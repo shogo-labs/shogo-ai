@@ -2067,7 +2067,10 @@ const WORKSPACE_TREE_EXCLUDE_DIRS = new Set([
   'node_modules', 'dist', '.next', '.cache', '.turbo', '.parcel-cache',
   'coverage', '.nyc_output', '__pycache__', '.venv', 'venv',
   'memory', 'scripts',
+  'server', 'generated',
 ])
+
+const DOT_DIR_ALLOWLIST = new Set(['.shogo'])
 
 const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
   'bun.lock', '.virtfs_metadata',
@@ -2075,7 +2078,11 @@ const WORKSPACE_TREE_EXCLUDE_FILES = new Set([
   'package.json', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts',
   'postcss.config.js', 'postcss.config.mjs', 'components.json',
   'pyrightconfig.json', 'LICENSE', 'README.md',
-  '.app-template',
+  '.app-template', '__lsp_warmup__.ts',
+])
+
+const WORKSPACE_TREE_EXCLUDE_EXTENSIONS = new Set([
+  '.db', '.db-shm', '.db-wal', '.db-journal',
 ])
 
 function walkFilesTree(
@@ -2087,7 +2094,7 @@ function walkFilesTree(
   if (!existsSync(dir)) return []
   const results: any[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
+    if (entry.name.startsWith('.') && !DOT_DIR_ALLOWLIST.has(entry.name)) continue
     const absPath = join(dir, entry.name)
     // Always emit POSIX-style separators so Windows runtimes don't surface
     // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
@@ -2104,6 +2111,8 @@ function walkFilesTree(
       })
     } else {
       if (excludeFiles?.has(entry.name)) continue
+      const dotIdx = entry.name.indexOf('.')
+      if (dotIdx >= 0 && WORKSPACE_TREE_EXCLUDE_EXTENSIONS.has(entry.name.slice(dotIdx))) continue
       results.push({
         name: entry.name,
         path: relPath,
