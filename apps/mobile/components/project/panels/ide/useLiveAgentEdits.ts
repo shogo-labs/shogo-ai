@@ -39,6 +39,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { EditorGroup, OpenFile } from "./types";
 import type { WorkspaceService } from "./workspace/types";
 import { isImagePath } from "./ImagePreview";
+import { upsertModelFromContent } from "./monaco/workspaceModels";
 
 const AGENT_ROOT_ID = "agent";
 const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
@@ -300,6 +301,9 @@ export function useLiveAgentEdits({
           const file = await service.readFile(path);
           if (cancelled) return;
           applyIncomingRef.current(path, file.content, file.mtime, false);
+          // Keep Monaco's background model in sync too, so cross-file
+          // IntelliSense reflects what's on disk after a reconnect.
+          upsertModelFromContent(AGENT_ROOT_ID, path, file.content);
         } catch {
           /* transient — poller or next SSE event will retry */
         }
@@ -356,6 +360,12 @@ export function useLiveAgentEdits({
         } catch {
           return;
         }
+        // Refresh the background Monaco model so cross-file IntelliSense
+        // (go-to-def, rename, imports) sees the agent's edit even when the
+        // file isn't currently open in a tab. This used to happen via a
+        // full `loadWorkspaceModels` re-walk inside `refreshTree`, which
+        // burst hundreds of `readFile`s through agent-proxy on every edit.
+        upsertModelFromContent(AGENT_ROOT_ID, path, content);
         const touched = applyIncomingRef.current(path, content, mtime, true);
         if (touched) refreshTree();
       })();

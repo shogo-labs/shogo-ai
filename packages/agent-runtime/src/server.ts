@@ -2089,7 +2089,9 @@ function walkFilesTree(
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.')) continue
     const absPath = join(dir, entry.name)
-    const relPath = absPath.slice(rootDir.length + 1)
+    // Always emit POSIX-style separators so Windows runtimes don't surface
+    // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
+    const relPath = absPath.slice(rootDir.length + 1).replace(/\\/g, '/')
     const stat = statSync(absPath)
     if (entry.isDirectory()) {
       if (excludeDirs?.has(entry.name)) continue

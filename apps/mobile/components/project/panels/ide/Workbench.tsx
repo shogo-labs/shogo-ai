@@ -246,9 +246,28 @@ export function Workbench({
 
   // Keep open editors in sync with agent filesystem writes (Cursor-style).
   // Only hooks into the "agent" workspace; local folders never emit events.
+  //
+  // Trailing-edge debounced so a flurry of `file.changed` events from the
+  // agent (e.g. a multi-file edit) collapses into a single `listTree` round
+  // trip instead of N. The Monaco model contents are handled separately by
+  // the SSE handler in `useLiveAgentEdits` (per-file `upsertModel`), so the
+  // tree refresh here is purely for sidebar shape (adds/removes/renames).
+  const refreshTreeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshAgentTree = useCallback(() => {
-    void loadRoot("agent");
+    if (refreshTreeTimerRef.current) clearTimeout(refreshTreeTimerRef.current);
+    refreshTreeTimerRef.current = setTimeout(() => {
+      refreshTreeTimerRef.current = null;
+      void loadRoot("agent");
+    }, 250);
   }, [loadRoot]);
+  useEffect(() => {
+    return () => {
+      if (refreshTreeTimerRef.current) {
+        clearTimeout(refreshTreeTimerRef.current);
+        refreshTreeTimerRef.current = null;
+      }
+    };
+  }, []);
   // Try to animate a live-edit in-place for the currently-active editor/file.
   // Returns true if the animation owned the content update (and React state
   // only needs savedContent/dirty updated), false otherwise.
