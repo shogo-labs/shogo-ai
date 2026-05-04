@@ -14,7 +14,7 @@
  */
 
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
-import { resolve, dirname, join, extname } from 'path'
+import { resolve, dirname, join, extname, relative } from 'path'
 import {
   existsSync,
   readFileSync,
@@ -3276,6 +3276,44 @@ app.route('/', runtimeDiagnosticsRoutes({
 function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
+
+function collectDistFiles(dir: string, root = dir): Array<{ path: string; content: string }> {
+  const files: Array<{ path: string; content: string }> = []
+
+  for (const entry of readdirSync(dir)) {
+    const entryPath = join(dir, entry)
+
+    try {
+      const stat = statSync(entryPath)
+      if (stat.isDirectory()) {
+        files.push(...collectDistFiles(entryPath, root))
+        continue
+      }
+
+      if (!stat.isFile()) continue
+
+      files.push({
+        path: relative(root, entryPath).replace(/\\/g, '/'),
+        content: readFileSync(entryPath).toString('base64'),
+      })
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') continue
+      throw err
+    }
+  }
+
+  return files
+}
+
+app.get('/api/dist-files', (c) => {
+  const distDir = getDistDir()
+
+  if (!existsSync(distDir)) {
+    return c.json({ error: 'dist_not_found' }, 404)
+  }
+
+  return c.json(collectDistFiles(distDir))
+})
 
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
