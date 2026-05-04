@@ -34,6 +34,12 @@ mock.module('../runtime', () => ({
   }),
 }))
 
+const wipeCloudKeyMock = mock(async () => ({ wiped: true }))
+mock.module('../cloud-key-wipe', () => ({
+  wipeCloudKey: wipeCloudKeyMock,
+  _testing: { reset: () => {} },
+}))
+
 describe('Instance Tunnel Client', () => {
   beforeEach(() => {
     globalThis.fetch = mockFetch as any
@@ -170,5 +176,25 @@ describe('Instance Tunnel Client', () => {
   test('DEFAULT_POLL_INTERVAL_S is 60', async () => {
     const mod = await import('../instance-tunnel')
     expect(mod._testing.DEFAULT_POLL_INTERVAL_S).toBe(60)
+  })
+
+  test('heartbeat self-heals after AUTH_FAILURE_THRESHOLD consecutive 401s', async () => {
+    // 3 cloud 401s in a row should fire wipeCloudKey, not just back off forever.
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(new Response('Unauthorized', { status: 401 })),
+    )
+    wipeCloudKeyMock.mockClear()
+
+    const mod = await import('../instance-tunnel')
+    for (let i = 0; i < 3; i++) {
+      await mod._testing.heartbeatLoop()
+    }
+
+    expect(wipeCloudKeyMock).toHaveBeenCalled()
+    const reason = (wipeCloudKeyMock.mock.calls[0] as any)?.[0] as string
+    expect(reason).toContain('instance tunnel')
+    expect(reason).toContain('consecutive auth failures')
+
+    mod.stopInstanceTunnel()
   })
 })

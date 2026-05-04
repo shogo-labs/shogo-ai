@@ -35,6 +35,7 @@ import {
   type ProxyTokenPayload,
 } from '../lib/ai-proxy-token'
 import { resolveApiKey } from './api-keys'
+import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import {
   MODEL_CATALOG,
   MODEL_ALIASES,
@@ -1787,6 +1788,11 @@ export function aiProxyRoutes() {
       signal,
     })
 
+    // Self-heal on revoked / superseded device key.
+    if (response.status === 401) {
+      void wipeCloudKey('AI proxy chat-completions got 401 from Shogo Cloud')
+    }
+
     if (request.stream) {
       if (!response.body) {
         return c.json({ error: { message: 'Cloud proxy returned no stream body', type: 'server_error' } }, 502)
@@ -1836,6 +1842,11 @@ export function aiProxyRoutes() {
       },
       { label: 'shogo-cloud', signal },
     )
+
+    // Self-heal on revoked / superseded device key.
+    if (response.status === 401) {
+      void wipeCloudKey('AI proxy Anthropic messages got 401 from Shogo Cloud')
+    }
 
     if (isStream) {
       if (!response.body) {
@@ -2625,6 +2636,10 @@ export function aiProxyRoutes() {
         },
         { label: 'shogo-cloud', signal: c.req.raw.signal },
       )
+      // Self-heal on revoked / superseded device key.
+      if (response.status === 401) {
+        void wipeCloudKey('AI proxy count_tokens got 401 from Shogo Cloud')
+      }
       const responseBody = await response.text()
       return new Response(responseBody, {
         status: response.status,
