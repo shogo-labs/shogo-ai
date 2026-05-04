@@ -95,7 +95,14 @@ import {
   CheckpointsPanel,
 } from '../../../../components/project/panels'
 import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
-import { RefreshCw, MessageSquare, Sparkles } from 'lucide-react-native'
+import { RefreshCw, MessageSquare, Sparkles, Bug, X as XIcon } from 'lucide-react-native'
+import {
+  useToast,
+  Toast,
+  ToastTitle,
+  ToastDescription,
+} from '../../../../components/ui/toast'
+import { getEntries as getRuntimeLogEntries } from '../../../../lib/runtime-logs/runtime-log-store'
 import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
@@ -123,6 +130,72 @@ const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
 const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
 
+/** Suppress duplicate "[canvas-error]" toasts within this many ms. */
+const CANVAS_ERROR_DEDUP_MS = 10_000
+/** How many recent runtime log entries to attach to a debug-with-Shogo prompt. */
+const CANVAS_ERROR_LOG_TAIL = 30
+/** Cap any single error / log line so the seed prompt stays bounded. */
+const CANVAS_ERROR_MAX_LINE = 1200
+
+/**
+ * Build the seed message that gets auto-sent into a fresh chat when the
+ * user clicks "Debug" on a `[canvas-error]` toast.
+ *
+ * The prompt deliberately includes everything the agent would otherwise
+ * have to hunt down: the surface, the phase (compile vs runtime), the
+ * full error string, and the tail of the runtime log buffer so it can
+ * see the build output / console lines that led up to the crash.
+ */
+function buildCanvasErrorDebugPrompt(args: {
+  surfaceId: string
+  surfaceTitle?: string | null
+  phase: 'compile' | 'runtime'
+  error: string
+  recentLogs: ReadonlyArray<{
+    source: string
+    level: string
+    text: string
+    ts: number
+  }>
+}): string {
+  const { surfaceId, surfaceTitle, phase, error, recentLogs } = args
+  const truncate = (s: string, n: number) =>
+    s.length <= n ? s : `${s.slice(0, n - 1)}…`
+  const phaseLabel = phase === 'compile' ? 'compile-time' : 'runtime'
+  const surfaceLabel = surfaceTitle
+    ? `\`${surfaceTitle}\` (\`${surfaceId}\`)`
+    : `\`${surfaceId}\``
+
+  const lines: string[] = []
+  lines.push(
+    `🐞 The canvas just hit a ${phaseLabel} error on ${surfaceLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
+  )
+  lines.push('')
+  lines.push('**Error**')
+  lines.push('```')
+  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE))
+  lines.push('```')
+
+  if (recentLogs.length > 0) {
+    lines.push('')
+    lines.push(`**Recent runtime logs** (last ${recentLogs.length}, oldest first)`)
+    lines.push('```')
+    for (const e of recentLogs) {
+      const ts = new Date(e.ts).toISOString().slice(11, 23)
+      lines.push(
+        `${ts} [${e.source}] ${e.level !== 'info' ? `${e.level.toUpperCase()} ` : ''}${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`,
+      )
+    }
+    lines.push('```')
+  }
+
+  lines.push('')
+  lines.push(
+    'Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong.',
+  )
+  return lines.join('\n')
+}
+
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
     id: string
@@ -145,6 +218,7 @@ export default observer(function ProjectLayout() {
   const liftIntegrationsAboveComposer = nativePhone && !isWide
   const { user } = useAuth()
   const http = useDomainHttp()
+  const toast = useToast()
 
   const router = useRouter()
   const store = useSDKDomain() as IDomainStore
@@ -568,6 +642,12 @@ export default observer(function ProjectLayout() {
   const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([])
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
   const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<string | null>(null)
+  /**
+   * Per-tab seed messages auto-sent when a freshly-created chat session mounts.
+   * Used by the canvas-error → "Debug" flow to spawn a new chat that opens
+   * pre-loaded with a debug prompt. Cleaned up when the tab closes.
+   */
+  const [debugInitMessages, setDebugInitMessages] = useState<Record<string, string>>({})
   const openTabsRestoredRef = useRef(false)
 
   // Restore open tabs from AsyncStorage on mount
@@ -609,6 +689,12 @@ export default observer(function ProjectLayout() {
       if (!prev.has(tabId)) return prev
       const next = new Set(prev)
       next.delete(tabId)
+      return next
+    })
+    setDebugInitMessages((prev) => {
+      if (!(tabId in prev)) return prev
+      const next = { ...prev }
+      delete next[tabId]
       return next
     })
     setOpenChatTabIds((prev) => {
@@ -1062,6 +1148,118 @@ export default observer(function ProjectLayout() {
     }
   }, [actions, projectId])
 
+  // ─── Canvas-error → "Debug" toast ───────────────────────────────────────
+  // The canvas iframe (and its ShogoErrorBoundary) postMessage `canvas-error`
+  // back to the parent on uncaught render / runtime / compile failures. We
+  // surface a toast with a "Debug" button that spins up a fresh chat
+  // pre-loaded with the error + recent runtime-log tail.
+  const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null)
+  const openDebugChatForCanvasError = useCallback(
+    async (surfaceId: string, phase: 'compile' | 'runtime', error: string) => {
+      if (!projectId) return
+      try {
+        const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
+        const recentLogs = getRuntimeLogEntries(projectId).slice(-CANVAS_ERROR_LOG_TAIL)
+        const prompt = buildCanvasErrorDebugPrompt({
+          surfaceId,
+          surfaceTitle,
+          phase,
+          error,
+          recentLogs,
+        })
+
+        const newSession = await actions.createChatSession({
+          inferredName: `Debug: ${phase} error`,
+          contextType: 'project',
+          contextId: projectId,
+        })
+        if (!newSession?.id) return
+        const newId = newSession.id
+
+        setDebugInitMessages((prev) => ({ ...prev, [newId]: prompt }))
+        setOpenChatTabIds((prev) =>
+          prev.includes(newId) ? prev : [...prev, newId],
+        )
+        setChatSessionId(newId)
+        // Narrow layouts hide the chat column behind the canvas tab, so flip
+        // back to it. Wide layouts already show the chat column alongside the
+        // canvas — leave the preview pane (canvas / IDE / etc.) untouched.
+        if (!isWide) setActiveTab('chat')
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to open debug chat:', err)
+      }
+    },
+    [projectId, surfaces, actions, isWide],
+  )
+
+  const handleCanvasError = useCallback(
+    (surfaceId: string, phase: 'compile' | 'runtime', error: string) => {
+      if (!projectId) return
+      // Dedup: the canvas iframe re-throws the same error on every retry /
+      // HMR loop. One toast per unique error within the dedup window.
+      const key = `${surfaceId}|${phase}|${error}`
+      const now = Date.now()
+      const last = lastCanvasErrorRef.current
+      if (last && last.key === key && now - last.ts < CANVAS_ERROR_DEDUP_MS) {
+        return
+      }
+      lastCanvasErrorRef.current = { key, ts: now }
+
+      const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
+      const description = surfaceTitle
+        ? `${phase === 'compile' ? 'Compile-time' : 'Runtime'} error on “${surfaceTitle}”.`
+        : `${phase === 'compile' ? 'Compile-time' : 'Runtime'} error in the canvas.`
+      const toastId = `canvas-error-${surfaceId}-${now}`
+
+      toast.show({
+        id: toastId,
+        placement: 'top',
+        duration: 12_000,
+        render: ({ id: tId }: { id: string }) => (
+          <Toast nativeID={tId} variant="solid" action="error">
+            <View className="flex-row items-start gap-2">
+              <View className="mt-0.5">
+                <Bug size={16} className="text-typography-0" />
+              </View>
+              <View className="flex-1">
+                <ToastTitle>Canvas error</ToastTitle>
+                <ToastDescription>{description}</ToastDescription>
+              </View>
+            </View>
+            <View className="mt-2 flex-row gap-2">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Debug this canvas error in a new chat"
+                onPress={() => {
+                  toast.close(tId)
+                  void openDebugChatForCanvasError(surfaceId, phase, error)
+                }}
+                className="flex-row items-center gap-1.5 rounded-md bg-white/95 px-3 py-1.5 active:opacity-80"
+              >
+                <Bug size={12} className="text-error-700" />
+                <Text className="text-xs font-semibold text-error-700">
+                  Debug
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss canvas error"
+                onPress={() => toast.close(tId)}
+                className="flex-row items-center gap-1 rounded-md border border-white/30 px-3 py-1.5 active:opacity-80"
+              >
+                <XIcon size={12} className="text-typography-0" />
+                <Text className="text-xs font-medium text-typography-0">
+                  Dismiss
+                </Text>
+              </Pressable>
+            </View>
+          </Toast>
+        ),
+      })
+    },
+    [projectId, surfaces, toast, openDebugChatForCanvasError],
+  )
+
   const handleRenameChatSession = useCallback(
     async (sessionId: string, newName: string) => {
       try {
@@ -1246,6 +1444,7 @@ export default observer(function ProjectLayout() {
       {openChatTabIds.map((tabId) => {
         const isActive = tabId === chatSessionId
         const isInitialSession = tabId === initialPropsSessionId
+        const debugSeed = debugInitMessages[tabId]
         return (
           <View
             key={tabId}
@@ -1266,7 +1465,7 @@ export default observer(function ProjectLayout() {
                 projectType="unified"
                 isActive={isActive}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
-                initialMessage={isInitialSession ? capturedInitialMessage : undefined}
+                initialMessage={isInitialSession ? capturedInitialMessage : (debugSeed ?? undefined)}
                 initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
                 initialFiles={isInitialSession ? capturedInitialFiles : undefined}
                 billingData={billingDataResolved}
@@ -1303,6 +1502,7 @@ export default observer(function ProjectLayout() {
       canvasMode={canvasMode}
       iframeRefreshKey={iframeRefreshKey}
       onCanvasCapabilities={handleCanvasCapabilities}
+      onCanvasError={handleCanvasError}
     />
   ) : null
 
@@ -1355,6 +1555,13 @@ export default observer(function ProjectLayout() {
     canvasThemeSupported,
     effectiveSurfaceId,
     onCanvasRefresh: canvasMode === 'code' ? () => setIframeRefreshKey(k => k + 1) : undefined,
+    onCanvasOpenInNewTab:
+      canvasMode === 'code' && Platform.OS === 'web' && (canvasBaseUrl || agentUrl)
+        ? () => {
+            const base = canvasBaseUrl || agentUrl
+            if (base) window.open(`${base}/`, '_blank', 'noopener,noreferrer')
+          }
+        : undefined,
   }
 
   return (
@@ -1934,6 +2141,7 @@ function CanvasPanel({
   canvasMode = 'json',
   iframeRefreshKey = 0,
   onCanvasCapabilities,
+  onCanvasError,
 }: {
   surface: any | null
   surfaces: Map<string, any>
@@ -1950,6 +2158,7 @@ function CanvasPanel({
   canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
   onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
+  onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -2013,7 +2222,7 @@ function CanvasPanel({
   if (canvasMode === 'code') {
     return (
       <View className="flex-1 overflow-hidden rounded-2xl mx-2 mb-2">
-        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} />
+        <CanvasWebView agentUrl={agentUrl} canvasBaseUrl={readyCanvasBaseUrl} activeSurfaceId={activeSurfaceId} refreshKey={iframeRefreshKey} onCanvasCapabilities={onCanvasCapabilities} onCanvasError={onCanvasError} />
       </View>
     )
   }

@@ -62,6 +62,7 @@ import {
   Terminal,
   ClipboardList,
   RefreshCw,
+  ExternalLink,
   GitCommit,
   Upload,
 } from 'lucide-react-native'
@@ -161,6 +162,7 @@ export interface ProjectTopBarProps {
   canvasThemePicker?: React.ReactNode
   canvasThemeSupported?: boolean | null
   onCanvasRefresh?: () => void
+  onCanvasOpenInNewTab?: () => void
 }
 
 /** Set the native HTML `title` tooltip on the DOM element via ref. */
@@ -259,6 +261,7 @@ export function ProjectTopBar({
   canvasThemePicker,
   canvasThemeSupported,
   onCanvasRefresh,
+  onCanvasOpenInNewTab,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width, height } = useWindowDimensions()
@@ -770,6 +773,9 @@ export function ProjectTopBar({
         {isCanvasActive && canvasThemePicker}
         {isCanvasActive && onCanvasRefresh && (
           <BarIconButton icon={RefreshCw} onPress={onCanvasRefresh} title="Refresh preview" />
+        )}
+        {isCanvasActive && onCanvasOpenInNewTab && (
+          <BarIconButton icon={ExternalLink} onPress={onCanvasOpenInNewTab} title="Open preview in new tab" />
         )}
 
         {/* Right actions */}
