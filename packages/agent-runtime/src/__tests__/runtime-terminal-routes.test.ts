@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { runtimeTerminalRoutes } from '../runtime-terminal-routes'
@@ -63,6 +63,93 @@ describe('runtimeTerminalRoutes', () => {
       const body = await res.json() as { commands: Record<string, Array<{ id: string }>> }
       const all = Object.values(body.commands).flat()
       expect(all.some((c) => c.id === 'bun-install')).toBe(false)
+    })
+  })
+
+  test('serves cd completion entries from the workspace root', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      mkdirSync(join(workspaceDir, 'files'))
+      mkdirSync(join(workspaceDir, 'fixtures'))
+      writeFileSync(join(workspaceDir, 'final.txt'), 'nope', 'utf-8')
+      const app = runtimeTerminalRoutes({ workspaceDir })
+
+      const res = await app.request('/terminal/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pathPrefix: 'fi', onlyDirectories: true }),
+      })
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as { entries: Array<{ name: string; type: string }> }
+      expect(body.entries).toEqual([
+        { name: 'files', type: 'directory' },
+        { name: 'fixtures', type: 'directory' },
+      ])
+    })
+  })
+
+  test('keeps terminal completion bounded to the workspace', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      mkdirSync(join(workspaceDir, 'files'))
+      const app = runtimeTerminalRoutes({ workspaceDir })
+
+      const res = await app.request('/terminal/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pathPrefix: '../', onlyDirectories: true }),
+      })
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as { entries: unknown[] }
+      expect(body.entries).toEqual([])
+    })
+  })
+
+  test('hides dot directories unless the prefix starts with a dot', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      mkdirSync(join(workspaceDir, '.config'))
+      mkdirSync(join(workspaceDir, 'components'))
+      const app = runtimeTerminalRoutes({ workspaceDir })
+
+      const hidden = await app.request('/terminal/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pathPrefix: 'c', onlyDirectories: true }),
+      })
+      const hiddenBody = await hidden.json() as { entries: Array<{ name: string }> }
+      expect(hiddenBody.entries.map((entry) => entry.name)).toEqual(['components'])
+
+      const dot = await app.request('/terminal/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pathPrefix: '.c', onlyDirectories: true }),
+      })
+      const dotBody = await dot.json() as { entries: Array<{ name: string }> }
+      expect(dotBody.entries.map((entry) => entry.name)).toEqual(['.config'])
+    })
+  })
+
+  test('includes symlinked directories only when they stay inside the workspace', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      mkdirSync(join(workspaceDir, 'real-dir'))
+      symlinkSync(join(workspaceDir, 'real-dir'), join(workspaceDir, 'real-link'))
+      const outside = mkdtempSync(join(tmpdir(), 'shogo-runtime-terminal-outside-'))
+      try {
+        symlinkSync(outside, join(workspaceDir, 'outside-link'))
+        const app = runtimeTerminalRoutes({ workspaceDir })
+
+        const res = await app.request('/terminal/complete', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pathPrefix: '', onlyDirectories: true }),
+        })
+
+        const body = await res.json() as { entries: Array<{ name: string }> }
+        expect(body.entries.map((entry) => entry.name)).toContain('real-link')
+        expect(body.entries.map((entry) => entry.name)).not.toContain('outside-link')
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
     })
   })
 

@@ -13,6 +13,13 @@ import {
 } from "lucide-react-native";
 import { API_URL } from "../../../../lib/api";
 import { agentFetch } from "../../../../lib/agent-fetch";
+import {
+  advanceCdCompletion,
+  applyCdCompletion,
+  parseCdCompletion,
+  type CdCompletionState,
+  type TerminalCompletionEntry,
+} from "./terminal/completion";
 import { formatPromptCwd } from "./terminal/cwd-format";
 import { readTerminalError } from "./terminal/error-reader";
 import { pushHistory, walkHistory } from "./terminal/history";
@@ -525,6 +532,30 @@ export function Terminal({
     patchSession(active.id, (s) => ({ ...s, output: "" }));
   }, [active, patchSession]);
 
+  const completeCdPath = useCallback(
+    async (pathPrefix: string): Promise<TerminalCompletionEntry[]> => {
+      if (!projectId) return [];
+      const target = sessionsRef.current.find((s) => s.id === activeId);
+      const res = await agentFetch(`${apiBase}/api/projects/${projectId}/terminal/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cwd: target?.cwd ?? undefined,
+          pathPrefix,
+          onlyDirectories: true,
+        }),
+      });
+      if (!res.ok) return [];
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) return [];
+      const json = (await res.json()) as {
+        entries?: TerminalCompletionEntry[];
+      };
+      return Array.isArray(json.entries) ? json.entries : [];
+    },
+    [apiBase, projectId, activeId],
+  );
+
   // ─── Early exits ────────────────────────────────────────────────────
   if (!projectId) {
     return (
@@ -610,6 +641,7 @@ export function Terminal({
             cwdLabel={formatPromptCwd(active?.cwd ?? null)}
             onRun={(cmd) => void runFreeCommand(cmd)}
             onClear={clear}
+            onCompleteCdPath={completeCdPath}
           />
         )}
       </div>
@@ -923,79 +955,155 @@ const Prompt = React.forwardRef<
     cwdLabel: string;
     onRun: (cmd: string) => void;
     onClear: () => void;
+    onCompleteCdPath: (pathPrefix: string) => Promise<TerminalCompletionEntry[]>;
   }
->(function Prompt({ disabled, history, cwdLabel, onRun, onClear }, ref) {
+>(function Prompt({ disabled, history, cwdLabel, onRun, onClear, onCompleteCdPath }, ref) {
   const [value, setValue] = useState("");
   const [histIdx, setHistIdx] = useState<number | null>(null);
+  const [completionState, setCompletionState] = useState<CdCompletionState | null>(null);
+  const [completionCandidates, setCompletionCandidates] = useState<TerminalCompletionEntry[]>([]);
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   // Reset history cursor when the underlying history changes (e.g. after
   // submitting a new command).
   useEffect(() => {
     setHistIdx(null);
+    setCompletionState(null);
+    setCompletionCandidates([]);
   }, [history]);
 
+  const resetCompletion = () => {
+    setCompletionState(null);
+    setCompletionCandidates([]);
+  };
+
   return (
-    <form
-      className="flex items-center gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (disabled) return;
-        const v = value.trim();
-        if (!v) return;
-        onRun(v);
-        setValue("");
-        setHistIdx(null);
-      }}
-    >
-      {cwdLabel && (
-        <span className="shrink-0 select-none text-[#6a9955]">{cwdLabel}</span>
+    <div className="relative">
+      {completionCandidates.length > 1 && (
+        <div className="absolute bottom-full left-0 z-10 mb-1 max-w-[min(520px,90vw)] rounded border border-[#2a2a2a] bg-[#252526] px-2 py-1 text-[11px] text-[#cccccc] shadow-lg">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-[#6a6a6a]">Tab completions</div>
+          <div className="flex max-h-28 flex-wrap gap-x-3 gap-y-1 overflow-auto">
+            {completionCandidates.map((entry) => (
+              <span key={`${entry.type}:${entry.name}`} className="whitespace-nowrap text-[#d4d4d4]">
+                {entry.name}{entry.type === "directory" ? "/" : ""}
+              </span>
+            ))}
+          </div>
+        </div>
       )}
-      <span className="shrink-0 select-none text-[#4ec9b0]">$</span>
-      <input
-        ref={ref}
-        value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (disabled) return;
+          const v = value.trim();
+          if (!v) return;
+          onRun(v);
+          valueRef.current = "";
+          setValue("");
           setHistIdx(null);
+          resetCompletion();
         }}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-            const dir = e.key === "ArrowUp" ? "up" : "down";
-            const result = walkHistory(history, histIdx, dir);
-            if (!result) return;
-            e.preventDefault();
-            setHistIdx(result.index);
-            setValue(result.value);
-          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
-            // Ctrl+L / ⌘K parity with a real shell: clear the buffer but
-            // preserve whatever the user was typing. We swallow the event so
-            // the browser doesn't focus the URL bar on Ctrl+L.
-            e.preventDefault();
-            onClear();
-          } else if (e.ctrlKey && e.key.toLowerCase() === "c" && !value) {
-            // Empty-line Ctrl+C in a real shell just reprints the prompt.
-            // With text selected we let the browser handle copy normally.
-            const sel = window.getSelection?.()?.toString();
-            if (!sel) {
+      >
+        {cwdLabel && (
+          <span className="shrink-0 select-none text-[#6a9955]">{cwdLabel}</span>
+        )}
+        <span className="shrink-0 select-none text-[#4ec9b0]">$</span>
+        <input
+          ref={ref}
+          value={value}
+          onChange={(e) => {
+            const next = e.target.value;
+            valueRef.current = next;
+            setValue(next);
+            setHistIdx(null);
+            resetCompletion();
+          }}
+          onKeyDown={(e) => {
+            const currentValue = e.currentTarget.value;
+            if (e.key === "Tab") {
+              const cycled = advanceCdCompletion(currentValue, completionState);
+              if (cycled) {
+                e.preventDefault();
+                valueRef.current = cycled.value;
+                setValue(cycled.value);
+                setCompletionState(cycled.state);
+                setCompletionCandidates(cycled.candidates);
+                return;
+              }
+
+              const cursor = e.currentTarget.selectionStart ?? currentValue.length;
+              const context = parseCdCompletion(currentValue, cursor);
+              if (!context) {
+                resetCompletion();
+                return;
+              }
+
               e.preventDefault();
+              void (async () => {
+                try {
+                  const line = currentValue;
+                  const entries = await onCompleteCdPath(context.pathPrefix);
+                  if (valueRef.current !== line) return;
+                  const completed = applyCdCompletion(line, context, entries);
+                  if (!completed) {
+                    resetCompletion();
+                    return;
+                  }
+                  valueRef.current = completed.value;
+                  setValue(completed.value);
+                  setCompletionState(completed.state);
+                  setCompletionCandidates(completed.candidates);
+                } catch {
+                  resetCompletion();
+                }
+              })();
+            } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+              const dir = e.key === "ArrowUp" ? "up" : "down";
+              const result = walkHistory(history, histIdx, dir);
+              if (!result) return;
+              e.preventDefault();
+              setHistIdx(result.index);
+              valueRef.current = result.value;
+              setValue(result.value);
+              resetCompletion();
+            } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
+              // Ctrl+L / ⌘K parity with a real shell: clear the buffer but
+              // preserve whatever the user was typing. We swallow the event so
+              // the browser doesn't focus the URL bar on Ctrl+L.
+              e.preventDefault();
+              resetCompletion();
+              onClear();
+            } else if (e.ctrlKey && e.key.toLowerCase() === "c" && !currentValue) {
+              // Empty-line Ctrl+C in a real shell just reprints the prompt.
+              // With text selected we let the browser handle copy normally.
+              const sel = window.getSelection?.()?.toString();
+              if (!sel) {
+                e.preventDefault();
+                valueRef.current = "";
+                setValue("");
+                setHistIdx(null);
+                resetCompletion();
+              }
+            } else if (e.ctrlKey && e.key.toLowerCase() === "u") {
+              // Ctrl+U: kill line (shell parity).
+              e.preventDefault();
+              valueRef.current = "";
               setValue("");
               setHistIdx(null);
+              resetCompletion();
             }
-          } else if (e.ctrlKey && e.key.toLowerCase() === "u") {
-            // Ctrl+U: kill line (shell parity).
-            e.preventDefault();
-            setValue("");
-            setHistIdx(null);
-          }
-        }}
-        disabled={disabled}
-        aria-label="Command"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        className="no-focus-ring flex-1 border-0 bg-transparent p-0 font-mono text-[12px] text-[#d4d4d4] outline-none focus:ring-0 disabled:opacity-50"
-      />
-    </form>
+          }}
+          disabled={disabled}
+          aria-label="Command"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          className="no-focus-ring flex-1 border-0 bg-transparent p-0 font-mono text-[12px] text-[#d4d4d4] outline-none focus:ring-0 disabled:opacity-50"
+        />
+      </form>
+    </div>
   );
 });
 

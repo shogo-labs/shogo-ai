@@ -2558,6 +2558,95 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
   return router.fetch(newReq)
 })
 
+// List path completion entries for the free-form terminal prompt.
+app.post('/api/projects/:projectId/terminal/complete', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/terminal/complete`
+
+      const body = await c.req.text()
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+          'x-runtime-token': deriveRuntimeToken(projectId),
+        },
+        body,
+        signal: c.req.raw.signal,
+      })
+
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+
+        const errorCode = response.status === 503
+          ? 'service_starting'
+          : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+        const headers = new Headers({ 'Content-Type': 'application/json' })
+        if (response.status === 503) headers.set('Retry-After', '5')
+        return new Response(JSON.stringify({
+          error: { code: errorCode, message: `Terminal completion unavailable (${response.status})` },
+        }), { status: response.status, headers })
+      }
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      const isPodNotReady = error.message?.includes('not ready') ||
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' },
+        }, 503)
+      }
+
+      console.error('[TerminalProxy] Completion error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to complete terminal path' },
+      }, 502)
+    }
+  }
+
+  // Local development: Use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = terminalRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/terminal/complete`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+    // @ts-expect-error - required when forwarding a streaming request body in Node
+    duplex: 'half',
+    signal: c.req.raw.signal,
+  })
+  return router.fetch(newReq)
+})
+
 // Execute a preset command
 app.post('/api/projects/:projectId/terminal/exec', async (c) => {
   const projectId = c.req.param('projectId')
