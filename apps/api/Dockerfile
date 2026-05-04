@@ -47,6 +47,9 @@ COPY prisma ./prisma
 COPY prisma.config.ts ./prisma.config.ts
 COPY prisma.config.local.ts ./prisma.config.local.ts
 
+# Copy shogo SDK config (drives `bun run generate:routes` later in this stage)
+COPY shogo.config.json ./shogo.config.json
+
 # Install all dependencies (postinstall generates Prisma client)
 RUN bun install
 
@@ -61,6 +64,17 @@ COPY templates/runtime-template ./templates/runtime-template
 # Build SDK first (dependency of api)
 WORKDIR /app/packages/sdk
 RUN bun run build
+
+# Regenerate Hono routes/hooks/admin-routes from prisma/schema.prisma so that
+# adding a model (e.g. WorkspaceGrant) only requires committing the schema
+# change — the per-model `*.routes.ts` and `*.hooks.ts` files under
+# `apps/api/src/generated/` are reproduced from the schema here. Without this
+# step, anything ignored by `**/src/generated/` in .gitignore (i.e. any file
+# generated after that rule was added) silently never reaches the image and
+# crash-loops the API on first import. Outputs are governed by
+# shogo.config.json.
+WORKDIR /app
+RUN bun run generate:routes
 
 # Pre-build per-template canvas dist/ bundles so the API's
 # `RuntimeManager.ensureProjectDirectory` ships them into every project

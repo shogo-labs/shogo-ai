@@ -35,3 +35,22 @@ if (!skipBrowserDownload) {
 }
 
 execSync("bun scripts/db-generate-all.ts", { stdio: "inherit" });
+
+// Regenerate Hono routes/hooks/admin-routes from prisma/schema.prisma. Mirrors
+// the same step that runs in apps/api/Dockerfile so a developer who adds a
+// model + runs `bun install` ends up with the new `*.routes.ts` files locally
+// without needing to remember `bun run generate:routes`. The generator is
+// idempotent (no-op when the schema and outputs are already in sync) and
+// `*.hooks.ts` files are skipped if they already exist, so manual hook
+// business logic is preserved.
+//
+// Skipped when the SDK package isn't present (e.g. published-package consumers
+// of `shogo-ai` that don't ship the generator).
+if (existsSync("packages/sdk/bin/shogo.ts") && existsSync("shogo.config.json")) {
+  try {
+    execSync("bun run generate:routes", { stdio: "inherit" });
+  } catch {
+    // Non-fatal — `bun run generate:routes` can be run manually if this fails
+    // (e.g. transient TS errors during schema migration).
+  }
+}
