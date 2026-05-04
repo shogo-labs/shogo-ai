@@ -1076,7 +1076,7 @@ export const ChatPanel = observer(function ChatPanel({
     transport: chatTransport,
     id: currentSessionId || undefined,
     resume: isInitialLoadComplete,
-    experimental_throttle: 50,
+    experimental_throttle: 120,
     onError: (err) => {
       console.error("[ChatPanel] Stream error:", err)
 
@@ -2858,11 +2858,17 @@ export const ChatPanel = observer(function ChatPanel({
       })
     }
     const fresh = computeFresh()
+    // Cheap structural signature: avoid `JSON.stringify` on every chunk
+    // (O(plan body × tokens) of main-thread work) and instead compare
+    // the field sizes and identifiers that actually distinguish a
+    // mid-stream plan snapshot from the previous one.
     let sig = ""
-    try {
-      sig = fresh ? JSON.stringify(fresh) : ""
-    } catch {
-      sig = `__nonserializable__:${Math.random()}`
+    if (fresh) {
+      const lastTodo = fresh.todos[fresh.todos.length - 1]
+      const lastTodoLen = lastTodo ? lastTodo.content.length : 0
+      sig =
+        `${fresh.name}|${fresh.overview.length}|${fresh.plan.length}|` +
+        `${fresh.todos.length}|${lastTodoLen}|${fresh.filepath ?? ""}|${fresh.toolCallId ?? ""}`
     }
     if (sig === lastDerivedPlanRef.current.sig) {
       return lastDerivedPlanRef.current.plan
@@ -2871,20 +2877,79 @@ export const ChatPanel = observer(function ChatPanel({
     return fresh
   }, [isStreaming, messages])
 
+  // Throttle the publish to the shared `PlanStreamContext` so a long
+  // `create_plan` stream doesn't notify every `usePlanStream()` consumer
+  // on every chunk. The context is consumed across the project layout —
+  // each unthrottled publish was contributing to the per-chunk re-render
+  // storm that triggers `Maximum update depth exceeded` in long chats.
+  // We publish immediately when the plan transitions to/from null
+  // (start, end) and coalesce the in-between updates.
+  const PLAN_PUBLISH_THROTTLE_MS = 150
+  const lastPlanPublishAtRef = useRef(0)
+  const planPublishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingPlanPublishRef = useRef<{
+    plan: PlanData | null
+    filepath: string | null
+  } | null>(null)
+  useEffect(() => {
+    return () => {
+      if (planPublishTimerRef.current) {
+        clearTimeout(planPublishTimerRef.current)
+        planPublishTimerRef.current = null
+      }
+    }
+  }, [])
   useEffect(() => {
     const ctx = planStreamRef.current
     if (!ctx) return
-    if (ctx.streamingPlan !== derivedStreamingPlan) {
-      ctx.setStreamingPlan(derivedStreamingPlan)
-    }
+
     const nextFilepath = derivedStreamingPlan
       ? (derivedStreamingPlan.filepath ?? null)
       : !isStreaming
         ? null
         : ctx.streamingPlanFilepath
-    if (ctx.streamingPlanFilepath !== nextFilepath) {
-      ctx.setStreamingPlanFilepath(nextFilepath)
+
+    const planChanged = ctx.streamingPlan !== derivedStreamingPlan
+    const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath
+    if (!planChanged && !filepathChanged) return
+
+    const publish = () => {
+      const c = planStreamRef.current
+      if (!c) return
+      const pending = pendingPlanPublishRef.current
+      if (!pending) return
+      pendingPlanPublishRef.current = null
+      lastPlanPublishAtRef.current = Date.now()
+      if (c.streamingPlan !== pending.plan) c.setStreamingPlan(pending.plan)
+      if (c.streamingPlanFilepath !== pending.filepath) {
+        c.setStreamingPlanFilepath(pending.filepath)
+      }
     }
+
+    pendingPlanPublishRef.current = { plan: derivedStreamingPlan, filepath: nextFilepath }
+
+    // Edge events (stream start where the plan first appears, and the
+    // null-flip when it ends) bypass the throttle so the UI reacts
+    // immediately to lifecycle transitions.
+    const isEdge =
+      derivedStreamingPlan === null ||
+      ctx.streamingPlan === null
+    if (isEdge) {
+      if (planPublishTimerRef.current) {
+        clearTimeout(planPublishTimerRef.current)
+        planPublishTimerRef.current = null
+      }
+      publish()
+      return
+    }
+
+    if (planPublishTimerRef.current) return
+    const elapsed = Date.now() - lastPlanPublishAtRef.current
+    const wait = elapsed >= PLAN_PUBLISH_THROTTLE_MS ? 0 : PLAN_PUBLISH_THROTTLE_MS - elapsed
+    planPublishTimerRef.current = setTimeout(() => {
+      planPublishTimerRef.current = null
+      publish()
+    }, wait)
     // `planStream` intentionally omitted: we read it via `planStreamRef` so
     // its identity churn (fixed independently in PlanStreamContext) cannot
     // cause this effect to re-run and re-publish the same value.
