@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
-import { makeTestUser, signUpAndUpgradeToPro } from "./helpers"
+import { homeComposerInput, makeTestUser, signUpAndUpgradeToPro } from "./helpers"
 
 /**
  * Usage Tracking E2E Tests (USD pricing)
@@ -58,7 +58,7 @@ test.describe("Usage Tracking", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
 
-    const input = page.getByPlaceholder("Ask Shogo to ...")
+    const input = homeComposerInput(page)
     await input.click()
     await input.fill("Quick usage tracking test")
     await page.waitForTimeout(500)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect } from "@playwright/test"
-import { makeTestUser, signUpAndOnboard } from "./helpers"
+import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
 
 /**
  * Composio Integration E2E Tests
@@ -50,7 +50,7 @@ test.describe("Composio Integrations", () => {
   })
 
   test("MCP catalog includes composio authType fields", async () => {
-    const input = page.getByPlaceholder("Ask Shogo to ...")
+    const input = homeComposerInput(page)
     await input.click()
     await input.fill("Test composio integrations")
     await page.waitForTimeout(500)
