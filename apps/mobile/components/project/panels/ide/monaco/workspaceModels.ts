@@ -15,6 +15,7 @@ import type * as Monaco from "monaco-editor";
 import type { WorkspaceService, WsNode } from "../workspace/types";
 
 type MonacoT = typeof Monaco;
+type Service = Pick<WorkspaceService, "readFile">;
 
 let monacoRef: MonacoT | null = null;
 const modelsByRoot: Map<string, Set<string>> = new Map();
@@ -32,6 +33,13 @@ const inFlightLoads: Map<string, Promise<void>> = new Map();
 
 const MAX_MODELS_PER_ROOT = 1000;
 const SUPPORTED_EXTS = /\.(tsx?|jsx?|d\.ts|json)$/;
+
+/**
+ * Initial-walk concurrency. Kept low enough that even a 1000-file project
+ * stays well below the API server's 600 req/min global rate limit during
+ * the cold-start preload (otherwise we'd flood agent-proxy and trip 429s).
+ */
+const BATCH = 6;
 
 export function setMonacoRef(m: MonacoT) {
   const wasNull = monacoRef === null;
@@ -122,10 +130,24 @@ async function doLoad(
     paths = paths.slice(0, MAX_MODELS_PER_ROOT);
   }
 
+  // Skip files we've already loaded into Monaco — their content is kept in
+  // sync incrementally via `upsertModelFromContent` from the SSE
+  // `file.changed` handler. Re-reading every TS/JS file on every tree
+  // refresh would burst hundreds of `readFile`s through agent-proxy and
+  // trip the API server's global rate limit.
+  const tracked = modelsByRoot.get(rootId);
+  const newPaths = tracked
+    ? paths.filter((p) => !tracked.has(uriFor(m, rootId, p).toString()))
+    : paths;
+
   const seen = new Set<string>();
-  const BATCH = 16;
-  for (let i = 0; i < paths.length; i += BATCH) {
-    const slice = paths.slice(i, i + BATCH);
+  for (const p of paths) {
+    if (tracked?.has(uriFor(m, rootId, p).toString())) {
+      seen.add(uriFor(m, rootId, p).toString());
+    }
+  }
+  for (let i = 0; i < newPaths.length; i += BATCH) {
+    const slice = newPaths.slice(i, i + BATCH);
     await Promise.all(
       slice.map(async (p) => {
         try {
@@ -140,15 +162,51 @@ async function doLoad(
   }
 
   // Dispose any stale models for this root that no longer exist on disk.
-  const tracked = modelsByRoot.get(rootId);
-  if (tracked) {
-    for (const uriStr of [...tracked]) {
+  const trackedAfter = modelsByRoot.get(rootId);
+  if (trackedAfter) {
+    for (const uriStr of [...trackedAfter]) {
       if (!seen.has(uriStr)) {
         const model = m.editor.getModel(m.Uri.parse(uriStr));
         if (model) model.dispose();
-        tracked.delete(uriStr);
+        trackedAfter.delete(uriStr);
       }
     }
+  }
+}
+
+/**
+ * Refresh a single Monaco model with already-fetched content. No-op for
+ * files Monaco doesn't care about (non-TS/JS/JSON). The hot path for live
+ * agent edits — the SSE handler in `useLiveAgentEdits` already reads the
+ * file once for the open-editor buffer, so we plumb that same content
+ * through here instead of re-fetching.
+ */
+export function upsertModelFromContent(
+  rootId: string,
+  path: string,
+  content: string,
+): void {
+  if (!SUPPORTED_EXTS.test(path)) return;
+  upsertModel(rootId, path, content);
+}
+
+/**
+ * Refresh a single Monaco model by reading the file from the workspace
+ * service. Used when content isn't already in hand. Caller decides whether
+ * to await; failures are swallowed so transient read errors don't bubble
+ * into the SSE handler.
+ */
+export async function upsertModelFromService(
+  svc: Service,
+  rootId: string,
+  path: string,
+): Promise<void> {
+  if (!SUPPORTED_EXTS.test(path)) return;
+  try {
+    const f = await svc.readFile(path);
+    upsertModel(rootId, path, f.content);
+  } catch {
+    // Best-effort — next file.changed event or tree refresh will retry.
   }
 }
 

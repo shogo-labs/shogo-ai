@@ -114,7 +114,10 @@ describe("workspaceModels — in-flight dedup (#4)", () => {
     expect(counter.reads).toBe(3);
   });
 
-  test("sequential loads are NOT deduped (each starts fresh)", async () => {
+  test("sequential loads skip files whose models already exist", async () => {
+    // The Monaco preloader keeps already-loaded models hot via the live SSE
+    // upsert path, so a second tree refresh must NOT re-fetch every file —
+    // otherwise an agent edit storm would flood agent-proxy and trip 429s.
     const counter = { reads: 0 };
     const svc = makeService({ counter });
     const tree = makeTree(["src/a.ts", "src/b.ts"]);
@@ -122,7 +125,23 @@ describe("workspaceModels — in-flight dedup (#4)", () => {
     await mod.loadWorkspaceModels(svc, "root1", tree);
     await mod.loadWorkspaceModels(svc, "root1", tree);
 
-    expect(counter.reads).toBe(4); // 2 paths × 2 sequential loads
+    expect(counter.reads).toBe(2); // both files only fetched on first load
+  });
+
+  test("sequential load reads only newly-added paths", async () => {
+    const counter = { reads: 0 };
+    const svc = makeService({ counter });
+
+    await mod.loadWorkspaceModels(svc, "root1", makeTree(["src/a.ts", "src/b.ts"]));
+    expect(counter.reads).toBe(2);
+
+    // Second walk adds one new file; only the new one should be fetched.
+    await mod.loadWorkspaceModels(
+      svc,
+      "root1",
+      makeTree(["src/a.ts", "src/b.ts", "src/c.ts"]),
+    );
+    expect(counter.reads).toBe(3);
   });
 
   test("parallel loads for DIFFERENT rootIds run in parallel", async () => {
