@@ -198,6 +198,81 @@ describe("decideMessagesPropagation — streaming text tokens", () => {
     expect(propagations).toEqual([0])
   })
 
+  test("intermediate tool-input states (running → running) DO NOT propagate", () => {
+    // The AI SDK fires `tool-input-delta` chunks that flip the part state
+    // through `partial-call` / `input-streaming` / `input-available` before
+    // the tool finally runs. The parent only cares about the start (running)
+    // → end (result/error) transitions, so these intra-running flips must be
+    // collapsed by the gate. Letting them through used to wake every sibling
+    // ChatPanel on every chunk and was a primary contributor to the
+    // "Maximum update depth exceeded" crash in long chats.
+    const u = userMsg("u1", "make a plan")
+    const make = (state: string) =>
+      assistantMsg("a1", "", [
+        {
+          type: "tool-invocation",
+          toolInvocation: {
+            toolCallId: "tc-plan",
+            toolName: "create_plan",
+            state,
+            args: { name: state }, // arg churn must NOT trigger propagation
+          },
+        },
+      ])
+
+    const { propagations } = runGate([
+      { messages: [u, make("partial-call")], isStreaming: true }, // 0 first appearance
+      { messages: [u, make("partial-call")], isStreaming: true }, // 1 same bucket
+      { messages: [u, make("input-streaming")], isStreaming: true }, // 2 still running
+      { messages: [u, make("input-available")], isStreaming: true }, // 3 still running
+      { messages: [u, make("output-available")], isStreaming: true }, // 4 terminal — propagate
+    ])
+
+    expect(propagations).toEqual([0, 4])
+  })
+
+  test("dynamic-tool intermediate states are also collapsed", () => {
+    const u = userMsg("u1", "edit a file")
+    const make = (state: string) =>
+      assistantMsg("a1", "", [
+        {
+          type: "dynamic-tool",
+          toolName: "edit_file",
+          toolCallId: "tc-edit",
+          state,
+          input: { path: "/tmp/x", text: state },
+        },
+      ])
+
+    const { propagations } = runGate([
+      { messages: [u, make("input-streaming")], isStreaming: true }, // 0 first
+      { messages: [u, make("input-streaming")], isStreaming: true }, // 1 same bucket
+      { messages: [u, make("input-available")], isStreaming: true }, // 2 same bucket
+      { messages: [u, make("output-available")], isStreaming: true }, // 3 terminal
+    ])
+
+    expect(propagations).toEqual([0, 3])
+  })
+
+  test("running → error terminal transition propagates", () => {
+    const u = userMsg("u1", "do a risky thing")
+    const make = (state: string) =>
+      assistantMsg("a1", "", [
+        {
+          type: "tool-invocation",
+          toolInvocation: { toolCallId: "tc1", toolName: "tool_x", state },
+        },
+      ])
+
+    const { propagations } = runGate([
+      { messages: [u, make("input-streaming")], isStreaming: true }, // 0 first
+      { messages: [u, make("input-available")], isStreaming: true }, // 1 collapsed
+      { messages: [u, make("error")], isStreaming: true }, // 2 terminal
+    ])
+
+    expect(propagations).toEqual([0, 2])
+  })
+
   test("two-turn conversation: 200 tokens → 400 tokens, only meaningful events propagate", () => {
     const u1 = userMsg("u1", "a")
     let a1 = assistantMsg("a1", "")
