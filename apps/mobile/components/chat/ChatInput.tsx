@@ -276,11 +276,11 @@ export function ChatInput({
   )
 
   const cycleInteractionMode = useCallback(() => {
-    if (disabled || isStreaming) return
+    if (disabled) return
     const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode)
     const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length
     handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex])
-  }, [disabled, handleInteractionModeChange, interactionMode, isStreaming])
+  }, [disabled, handleInteractionModeChange, interactionMode])
 
   const currentInteractionConfig = useMemo(
     () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
@@ -957,7 +957,7 @@ export function ChatInput({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
-                  disabled={disabled || isStreaming}
+                  disabled={disabled}
                   className={cn(
                     "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                     interactionMode === "agent" && "bg-muted/50",
@@ -1079,7 +1079,7 @@ export function ChatInput({
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    disabled={disabled || isStreaming}
+                    disabled={disabled}
                     className={cn(
                       "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
                       quickActionsOpen
@@ -1155,7 +1155,7 @@ export function ChatInput({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
-                  disabled={disabled || isStreaming}
+                  disabled={disabled}
                   className="h-[22px] flex-row items-center gap-1 rounded-md px-1.5"
                 >
                   <Text className="text-xs text-muted-foreground">
