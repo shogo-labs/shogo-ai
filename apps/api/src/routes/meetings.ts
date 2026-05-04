@@ -302,22 +302,28 @@ meetingRoutes.post('/api/local/meetings/recording/stop', async (c) => {
     if (result) {
       const workspace = await db.workspace.findFirst()
       if (workspace) {
-        const title = formatMeetingTitle(new Date())
-        const meeting = await db.meeting.create({
-          data: {
-            title,
-            audioPath: result.audioPath,
-            duration: result.duration,
-            status: 'transcribing',
-            workspaceId: workspace.id,
-          },
+        // Deduplicate: the frontend's onStopped IPC listener may also create a meeting
+        const existing = await db.meeting.findFirst({
+          where: { audioPath: result.audioPath, workspaceId: workspace.id },
         })
+        if (!existing) {
+          const title = formatMeetingTitle(new Date())
+          const meeting = await db.meeting.create({
+            data: {
+              title,
+              audioPath: result.audioPath,
+              duration: result.duration,
+              status: 'transcribing',
+              workspaceId: workspace.id,
+            },
+          })
 
-        transcribeMeeting(meeting.id, result.audioPath).catch((err) => {
-          console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
-        })
+          transcribeMeeting(meeting.id, result.audioPath).catch((err) => {
+            console.error(`[Meetings] Transcription failed for ${meeting.id}:`, err)
+          })
+        }
       }
-      return c.json(result)
+      return c.json({ ...result, mode: 'bridge' })
     }
   } catch (err: any) {
     if (!(err instanceof BridgeUnavailableError)) {
@@ -470,6 +476,16 @@ meetingRoutes.post('/api/local/meetings', async (c) => {
 
     const workspace = await db.workspace.findFirst()
     if (!workspace) return c.json({ error: 'No workspace found' }, 400)
+
+    // Deduplicate: if a meeting with this audioPath already exists, return it
+    if (body.audioPath) {
+      const existing = await db.meeting.findFirst({
+        where: { audioPath: body.audioPath, workspaceId: workspace.id },
+      })
+      if (existing) {
+        return c.json({ meeting: existing }, 200)
+      }
+    }
 
     const title = body.title || formatMeetingTitle(new Date())
 
