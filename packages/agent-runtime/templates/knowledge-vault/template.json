@@ -1,0 +1,45 @@
+{
+  "id": "knowledge-vault",
+  "name": "Knowledge Vault",
+  "description": "Personal second brain — captures, summarizes, and semantically searches everything you read, watch, and highlight. Notes rewrite themselves as new sources arrive. Contradictions reconcile automatically.",
+  "category": "research",
+  "icon": "Brain",
+  "tags": [
+    "knowledge",
+    "notes",
+    "research",
+    "second-brain",
+    "synthesis",
+    "memory",
+    "learning",
+    "wiki",
+    "vault"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "productivity",
+      "description": "Ingest notes, bookmarks, and highlights from read-later apps"
+    },
+    {
+      "categoryId": "calendar",
+      "description": "Pull meeting context for daily notes and decision logging"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Surface relevant vault knowledge in Slack threads"
+    }
+  ],
+  "techStack": "react-app"
+}
