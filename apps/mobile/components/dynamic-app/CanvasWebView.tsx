@@ -17,13 +17,33 @@ interface CanvasCapabilities {
   supportsTheme: boolean
 }
 
+/** Recent user-interaction breadcrumb captured by canvas-bridge.js. */
+export interface CanvasErrorAction {
+  ts: number
+  kind: string
+  target?: string
+  route?: string
+}
+
+export interface CanvasErrorContext {
+  /** Iframe's current `pathname + search + hash` when the error fired. */
+  route?: string
+  /** Last ~10 user actions in the iframe, oldest first. */
+  recentActions?: CanvasErrorAction[]
+}
+
 interface CanvasWebViewProps {
   agentUrl: string | null
   /** Direct runtime URL for the canvas iframe. When set, the iframe loads from
    *  here so fetch('/api/...') resolves same-origin — no proxy needed. */
   canvasBaseUrl?: string | null
   activeSurfaceId?: string | null
-  onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
+  onCanvasError?: (
+    surfaceId: string,
+    phase: 'compile' | 'runtime',
+    error: string,
+    context?: CanvasErrorContext,
+  ) => void
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
   /** Incremented externally to force the iframe to reload. */
   refreshKey?: number
@@ -47,7 +67,13 @@ function postCanvasAction(
 
 function postCanvasError(
   agentUrl: string,
-  payload: { surfaceId: string; phase: string; error: string },
+  payload: {
+    surfaceId: string
+    phase: string
+    error: string
+    route?: string
+    recentActions?: CanvasErrorAction[]
+  },
 ) {
   fetch(`${agentUrl}/agent/canvas/error`, {
     method: 'POST',
@@ -108,7 +134,12 @@ interface BridgeProps {
   agentUrl: string
   activeSurfaceId?: string | null
   themeMessage: ThemeMessage | null
-  onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
+  onCanvasError?: (
+    surfaceId: string,
+    phase: 'compile' | 'runtime',
+    error: string,
+    context?: CanvasErrorContext,
+  ) => void
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
 }
 
@@ -153,8 +184,23 @@ function CanvasIframe({ url, agentUrl, activeSurfaceId, themeMessage, onCanvasEr
           context: msg.context,
         })
       } else if (msg.type === 'canvas-error') {
-        postCanvasError(agentUrl, { surfaceId: msg.surfaceId as string, phase: msg.phase as string, error: msg.error as string })
-        onCanvasError?.(msg.surfaceId as string, msg.phase as 'compile' | 'runtime', msg.error as string)
+        const route = typeof msg.route === 'string' ? (msg.route as string) : undefined
+        const recentActions = Array.isArray(msg.recentActions)
+          ? (msg.recentActions as CanvasErrorAction[])
+          : undefined
+        postCanvasError(agentUrl, {
+          surfaceId: msg.surfaceId as string,
+          phase: msg.phase as string,
+          error: msg.error as string,
+          route,
+          recentActions,
+        })
+        onCanvasError?.(
+          msg.surfaceId as string,
+          msg.phase as 'compile' | 'runtime',
+          msg.error as string,
+          { route, recentActions },
+        )
       }
     }
 
@@ -220,8 +266,23 @@ function CanvasNativeWebView({ url, agentUrl, activeSurfaceId, themeMessage, onC
           context: msg.context,
         })
       } else if (msg.type === 'canvas-error') {
-        postCanvasError(agentUrl, { surfaceId: msg.surfaceId as string, phase: msg.phase as string, error: msg.error as string })
-        onCanvasError?.(msg.surfaceId as string, msg.phase as 'compile' | 'runtime', msg.error as string)
+        const route = typeof msg.route === 'string' ? (msg.route as string) : undefined
+        const recentActions = Array.isArray(msg.recentActions)
+          ? (msg.recentActions as CanvasErrorAction[])
+          : undefined
+        postCanvasError(agentUrl, {
+          surfaceId: msg.surfaceId as string,
+          phase: msg.phase as string,
+          error: msg.error as string,
+          route,
+          recentActions,
+        })
+        onCanvasError?.(
+          msg.surfaceId as string,
+          msg.phase as 'compile' | 'runtime',
+          msg.error as string,
+          { route, recentActions },
+        )
       }
     } catch {}
   }, [agentUrl, sendToWebView, themeMessage, onCanvasError, onCanvasCapabilities])

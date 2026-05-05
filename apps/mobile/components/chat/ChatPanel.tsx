@@ -265,6 +265,8 @@ export interface ChatPanelProps {
   onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
   buildPlanRequest?: { plan: PlanData; modelId: string; nonce: number } | null
+  /** Notifies the parent that a build request has been consumed so it can clear state. */
+  onBuildPlanConsumed?: (nonce: number) => void
   /** Opens the saved plan artifact in the Plans panel. */
   onOpenPlan?: (filepath?: string | null) => void
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
@@ -669,6 +671,7 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
   buildPlanRequest,
+  onBuildPlanConsumed,
   onOpenPlan,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
@@ -3374,7 +3377,8 @@ export const ChatPanel = observer(function ChatPanel({
     confirmDismissTimerRef.current = setTimeout(() => {
       setConfirmedPlan(null)
     }, 4000)
-  }, [buildPlanRequest, handleInteractionModeChange, handleSendMessage])
+    onBuildPlanConsumed?.(buildPlanRequest.nonce)
+  }, [buildPlanRequest, handleInteractionModeChange, handleSendMessage, onBuildPlanConsumed])
 
   useEffect(() => {
     return () => {

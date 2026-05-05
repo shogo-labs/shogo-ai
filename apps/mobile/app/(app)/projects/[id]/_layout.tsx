@@ -141,15 +141,29 @@ const CANVAS_ERROR_MAX_LINE = 1200
  * user clicks "Debug" on a `[canvas-error]` toast.
  *
  * The prompt deliberately includes everything the agent would otherwise
- * have to hunt down: the surface, the phase (compile vs runtime), the
- * full error string, and the tail of the runtime log buffer so it can
- * see the build output / console lines that led up to the crash.
+ * have to hunt down: the iframe's current page, the phase (compile vs
+ * runtime), the full error string, the breadcrumb of recent user actions
+ * (clicks / navigations / form submits) leading up to the crash, and the
+ * tail of the runtime log buffer (build output / console lines).
+ *
+ * The surface label is only included when the canvas actually exposes a
+ * Shogo surface — workspace canvases (Vite/Expo apps with their own
+ * router) don't, and the page route is the meaningful identifier there.
  */
 function buildCanvasErrorDebugPrompt(args: {
   surfaceId: string
   surfaceTitle?: string | null
   phase: 'compile' | 'runtime'
   error: string
+  /** Iframe `pathname + search + hash` at the moment of the error. */
+  route?: string
+  /** Recent user-interaction breadcrumb from `canvas-bridge.js`, oldest first. */
+  recentActions?: ReadonlyArray<{
+    ts: number
+    kind: string
+    target?: string
+    route?: string
+  }>
   recentLogs: ReadonlyArray<{
     source: string
     level: string
@@ -157,23 +171,45 @@ function buildCanvasErrorDebugPrompt(args: {
     ts: number
   }>
 }): string {
-  const { surfaceId, surfaceTitle, phase, error, recentLogs } = args
+  const { surfaceId, surfaceTitle, phase, error, route, recentActions, recentLogs } = args
   const truncate = (s: string, n: number) =>
     s.length <= n ? s : `${s.slice(0, n - 1)}…`
   const phaseLabel = phase === 'compile' ? 'compile-time' : 'runtime'
+  // Only call out the surface when one is actually known — for plain
+  // workspace canvases `surfaceId` is empty/`undefined` and the old
+  // wording ("on `undefined`") was actively confusing.
+  const hasSurface = !!surfaceTitle || (!!surfaceId && surfaceId !== 'undefined')
   const surfaceLabel = surfaceTitle
-    ? `\`${surfaceTitle}\` (\`${surfaceId}\`)`
-    : `\`${surfaceId}\``
+    ? ` on \`${surfaceTitle}\``
+    : hasSurface
+      ? ` on \`${surfaceId}\``
+      : ''
+  const pageLabel = route ? ` (page \`${route}\`)` : ''
 
   const lines: string[] = []
   lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error on ${surfaceLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
+    `🐞 The canvas just hit a ${phaseLabel} error${surfaceLabel}${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
   )
   lines.push('')
   lines.push('**Error**')
   lines.push('```')
   lines.push(truncate(error, CANVAS_ERROR_MAX_LINE))
   lines.push('```')
+
+  if (recentActions && recentActions.length > 0) {
+    lines.push('')
+    lines.push(
+      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`,
+    )
+    lines.push('```')
+    for (const a of recentActions) {
+      const ts = Number.isFinite(a.ts) ? new Date(a.ts).toISOString().slice(11, 23) : '--:--:--.---'
+      const target = a.target ? ` ${a.target}` : ''
+      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : ''
+      lines.push(truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE))
+    }
+    lines.push('```')
+  }
 
   if (recentLogs.length > 0) {
     lines.push('')
@@ -1109,6 +1145,10 @@ export default observer(function ProjectLayout() {
     }
   }, [canvasEnabled])
 
+  const handleBuildPlanConsumed = useCallback((nonce: number) => {
+    setBuildPlanRequest((curr) => (curr && curr.nonce === nonce ? null : curr))
+  }, [])
+
   const handleOpenPlan = useCallback((filepath?: string | null) => {
     openPlanNonceRef.current += 1
     setRequestedPlanPath({ filepath: filepath ?? null, nonce: openPlanNonceRef.current })
@@ -1226,7 +1266,15 @@ export default observer(function ProjectLayout() {
   // pre-loaded with the error + recent runtime-log tail.
   const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null)
   const openDebugChatForCanvasError = useCallback(
-    async (surfaceId: string, phase: 'compile' | 'runtime', error: string) => {
+    async (
+      surfaceId: string,
+      phase: 'compile' | 'runtime',
+      error: string,
+      context?: {
+        route?: string
+        recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
+      },
+    ) => {
       if (!projectId) return
       try {
         const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
@@ -1236,6 +1284,8 @@ export default observer(function ProjectLayout() {
           surfaceTitle,
           phase,
           error,
+          route: context?.route,
+          recentActions: context?.recentActions,
           recentLogs,
         })
 
@@ -1264,7 +1314,15 @@ export default observer(function ProjectLayout() {
   )
 
   const handleCanvasError = useCallback(
-    (surfaceId: string, phase: 'compile' | 'runtime', error: string) => {
+    (
+      surfaceId: string,
+      phase: 'compile' | 'runtime',
+      error: string,
+      context?: {
+        route?: string
+        recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
+      },
+    ) => {
       if (!projectId) return
       // Dedup: the canvas iframe re-throws the same error on every retry /
       // HMR loop. One toast per unique error within the dedup window.
@@ -1277,9 +1335,15 @@ export default observer(function ProjectLayout() {
       lastCanvasErrorRef.current = { key, ts: now }
 
       const surfaceTitle = surfaces.get(surfaceId)?.title ?? null
-      const description = surfaceTitle
-        ? `${phase === 'compile' ? 'Compile-time' : 'Runtime'} error on “${surfaceTitle}”.`
-        : `${phase === 'compile' ? 'Compile-time' : 'Runtime'} error in the canvas.`
+      const phaseWord = phase === 'compile' ? 'Compile-time' : 'Runtime'
+      const where = surfaceTitle
+        ? ` on “${surfaceTitle}”`
+        : context?.route
+          ? ` on ${context.route}`
+          : ''
+      const description = where
+        ? `${phaseWord} error${where}.`
+        : `${phaseWord} error in the canvas.`
       const toastId = `canvas-error-${surfaceId}-${now}`
 
       toast.show({
@@ -1303,7 +1367,7 @@ export default observer(function ProjectLayout() {
                 accessibilityLabel="Debug this canvas error in a new chat"
                 onPress={() => {
                   toast.close(tId)
-                  void openDebugChatForCanvasError(surfaceId, phase, error)
+                  void openDebugChatForCanvasError(surfaceId, phase, error, context)
                 }}
                 className="flex-row items-center gap-1.5 rounded-md bg-white/95 px-3 py-1.5 active:opacity-80"
               >
@@ -1576,6 +1640,7 @@ export default observer(function ProjectLayout() {
                 onMessagesChange={isActive ? setChatMessages : undefined}
                 onStreamingChange={getStreamingChangeHandler(tabId)}
                 buildPlanRequest={isActive ? buildPlanRequest : null}
+                onBuildPlanConsumed={isActive ? handleBuildPlanConsumed : undefined}
                 onOpenPlan={handleOpenPlan}
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
@@ -2276,7 +2341,15 @@ function CanvasPanel({
   canvasMode?: 'json' | 'code'
   iframeRefreshKey?: number
   onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
-  onCanvasError?: (surfaceId: string, phase: 'compile' | 'runtime', error: string) => void
+  onCanvasError?: (
+    surfaceId: string,
+    phase: 'compile' | 'runtime',
+    error: string,
+    context?: {
+      route?: string
+      recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
+    },
+  ) => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false

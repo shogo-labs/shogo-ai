@@ -104,9 +104,15 @@ node_modules/
 
 # Build outputs
 dist/
+dist.staging/
+dist.prev/
 build/
 .output/
 .nitro/
+
+# Shogo agent runtime state (SQLite databases, per-checkpoint snapshots).
+# Held open by the agent runtime and managed out-of-band, not project content.
+.shogo/
 
 # Environment
 .env
@@ -208,6 +214,29 @@ function ensureCheckpointSafeGitConfig(workspacePath: string): void {
 const REQUIRED_IGNORE_ENTRIES = [
   'node_modules/',
   '.bun/',
+  // Build outputs from the agent-runtime canvas builder. Vite/Expo stacks
+  // emit into `dist.staging/`, then `commitBuildOutput` rotates the old
+  // `dist/` to `dist.prev/` and renames the staging dir into place. All
+  // three are regenerated on every build and should never be checkpointed:
+  // leaving them tracked bloats every commit, slows rollbacks, lets a
+  // rollback restore stale build artifacts that no longer match source,
+  // and — most acutely — races `git add -A` against the bundler renaming
+  // files mid-walk, leaving a stale `.git/index.lock` that breaks every
+  // subsequent checkpoint. See `packages/agent-runtime/src/build-output-commit.ts`.
+  'dist/',
+  'dist.staging/',
+  'dist.prev/',
+  'build/',
+  '.output/',
+  '.nitro/',
+  // Shogo agent runtime state. `.shogo/` holds SQLite databases (with
+  // memory-mapped `-shm`/`-wal` companions held open by the runtime),
+  // per-checkpoint database snapshots, and bookkeeping metadata. None
+  // of it is project content. Tracking it is actively harmful: on
+  // Windows the SQLite handles can't be unlinked while open, so any
+  // `git checkout` (most importantly the rollback path) errors out
+  // with `unable to unlink old '.shogo/index.db-shm': Invalid argument`.
+  '.shogo/',
   // Windows reserved device names. These can be created via Git Bash / WSL
   // (which use the MSYS POSIX layer where `nul` is just a filename), but
   // the Win32 `git.exe` then refuses to add them with `error: invalid
@@ -217,6 +246,26 @@ const REQUIRED_IGNORE_ENTRIES = [
   'prn',
   'aux',
 ] as const;
+
+/**
+ * Subset of REQUIRED_IGNORE_ENTRIES that should also be untracked from the
+ * git index when discovered. Adding an entry to `.gitignore` does not
+ * untrack an already-tracked path; we have to actively `git rm --cached`
+ * it. Limited to build/dependency outputs (not Win32 reserved names,
+ * which are basenames not paths) so we never accidentally untrack
+ * something the user actually wrote.
+ */
+const UNTRACK_IF_TRACKED: readonly string[] = [
+  'node_modules',
+  '.bun',
+  'dist',
+  'dist.staging',
+  'dist.prev',
+  'build',
+  '.output',
+  '.nitro',
+  '.shogo',
+];
 
 /**
  * Basenames the Win32 layer reserves as device names. Matched
@@ -340,6 +389,89 @@ function ensureGitignoreIgnoresDeps(workspacePath: string): void {
 }
 
 /**
+ * Maximum age (ms) of a `.git/index.lock` we'll consider stale and
+ * forcibly remove. Five seconds is well above any synchronous git
+ * command we issue here (status, add, commit, rm --cached, checkout)
+ * and well below any human-noticeable delay, so we recover from leaked
+ * locks without ever fighting a real concurrent git process.
+ */
+const STALE_INDEX_LOCK_MS = 5_000;
+
+/**
+ * Remove `.git/index.lock` if it appears to be stale. The agent
+ * workspace is single-writer (only this API process touches it), but a
+ * crashed git command — most commonly `git add -A` racing the canvas
+ * builder renaming files in `dist.prev/` mid-walk — can leave the lock
+ * behind and wedge every subsequent checkpoint with:
+ *
+ *   fatal: Unable to create '.../.git/index.lock': File exists.
+ *
+ * Once we've ignored `dist*` (see UNTRACK_IF_TRACKED) the underlying
+ * race goes away, but legacy workspaces will still have a leaked lock
+ * sitting on disk from earlier crashes; this helper unsticks them.
+ *
+ * Stale = older than STALE_INDEX_LOCK_MS. Anything younger is assumed
+ * to belong to a real in-flight git command and left alone.
+ */
+function evictStaleIndexLock(workspacePath: string): void {
+  if (!isGitRepo(workspacePath)) return;
+  const lockPath = join(workspacePath, '.git', 'index.lock');
+  let stat;
+  try {
+    stat = statSync(lockPath);
+  } catch {
+    return; // No lock — nothing to do.
+  }
+  const ageMs = Date.now() - stat.mtimeMs;
+  if (ageMs < STALE_INDEX_LOCK_MS) return;
+  try {
+    unlinkSync(lockPath);
+    console.warn(
+      `[git.service] Removed stale .git/index.lock (age ${Math.round(ageMs / 1000)}s) at ${workspacePath}`
+    );
+  } catch (err: any) {
+    // Lock may have been released between stat and unlink — that's fine.
+    // Anything else (permissions, locked by Win32 file handle) we surface
+    // implicitly when the next `git` command fails with a clearer error.
+    if (err?.code !== 'ENOENT') {
+      console.warn(`[git.service] Could not remove .git/index.lock: ${err?.message ?? err}`);
+    }
+  }
+}
+
+/**
+ * Untrack any paths in UNTRACK_IF_TRACKED that are currently in the git
+ * index. Files stay on disk; only the index entry is removed, so the
+ * next commit records a deletion and subsequent runs find nothing to
+ * untrack. Idempotent and safe to call before every commit.
+ *
+ * Why this exists: agent-runtime's canvas builder writes to
+ * `dist.staging/` and `dist/`, and projects created before those entries
+ * lived in `.gitignore` ended up with the build artifacts committed.
+ * Just appending to `.gitignore` doesn't fix existing tracking — we
+ * have to actively evict them from the index.
+ */
+function untrackNowIgnoredPaths(workspacePath: string): void {
+  if (!isGitRepo(workspacePath)) return;
+  // Each `git rm --cached` takes the index lock. If a stale lock is
+  // sitting around from a crashed earlier op, every iteration here would
+  // fail without this — defeating the whole point of the cleanup pass.
+  evictStaleIndexLock(workspacePath);
+  for (const path of UNTRACK_IF_TRACKED) {
+    try {
+      execFileSync(
+        'git',
+        ['rm', '-r', '--cached', '--ignore-unmatch', '--quiet', '--', path],
+        { cwd: workspacePath, stdio: 'pipe' }
+      );
+    } catch {
+      // Best-effort: a missing path or a git version that lacks one of
+      // these flags shouldn't block the checkpoint.
+    }
+  }
+}
+
+/**
  * Initialize a git repository in the workspace.
  * Creates .gitignore and initial commit if not already a repo.
  */
@@ -356,6 +488,8 @@ export async function initRepo(
     // node_modules, or spam CRLF warnings on every checkpoint.
     ensureCheckpointSafeGitConfig(workspacePath);
     ensureGitignoreIgnoresDeps(workspacePath);
+    evictStaleIndexLock(workspacePath);
+    untrackNowIgnoredPaths(workspacePath);
     const branch = await getCurrentBranch(workspacePath);
     return { created: false, branch };
   }
@@ -518,6 +652,19 @@ export async function commit(
   // warnings on every auto-checkpoint.
   ensureCheckpointSafeGitConfig(workspacePath);
   ensureGitignoreIgnoresDeps(workspacePath);
+
+  // Recover from a stale `.git/index.lock` left behind by a crashed
+  // earlier git command. Without this, a single failed `git add -A`
+  // (e.g. racing the canvas builder rotating `dist.prev/`) wedges
+  // every subsequent checkpoint with `Unable to create index.lock`.
+  evictStaleIndexLock(workspacePath);
+
+  // Evict any build/dependency outputs that legacy projects committed
+  // before we started ignoring them (most importantly `dist.staging/`,
+  // `dist.prev/`, and `dist/` from the canvas builder). Files stay on
+  // disk; the index entry is removed so this commit records a clean
+  // deletion and future runs find nothing to evict.
+  untrackNowIgnoredPaths(workspacePath);
 
   // Sweep Win32-reserved-name files (`nul`, `con`, …) out of the working
   // tree before staging. These are virtually always shell-redirect garbage
@@ -772,26 +919,70 @@ export async function checkout(
   requireGit();
   const { createBranch, force } = options || {};
 
+  // checkout takes the index lock; recover from any stale lock before
+  // attempting it so a leftover .git/index.lock from a crashed earlier
+  // op can't permanently block rollback.
+  evictStaleIndexLock(workspacePath);
+
+  const args = ['checkout'];
+  if (force) {
+    args.push('-f');
+  }
+  if (createBranch) {
+    args.push('-b', createBranch);
+  }
+  args.push(ref);
+
   try {
-    const args = ['checkout'];
-    if (force) {
-      args.push('-f');
-    }
-    if (createBranch) {
-      args.push('-b', createBranch);
-    }
-    args.push(ref);
-
     execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
-
-    const branch = await getCurrentBranch(workspacePath);
-    return { success: true, branch };
   } catch (err: any) {
+    // git checkout exits non-zero if it fails to remove some working-tree
+    // files (most commonly memory-mapped SQLite files in `.shogo/` that
+    // the agent runtime is holding open on Windows), but the checkout
+    // itself — index update plus best-effort working-tree update — does
+    // still complete and HEAD does move. If we ignore this case the
+    // rollback flow surfaces a hard failure to the user even though the
+    // source tree is now actually at the requested commit. Verify HEAD
+    // and treat unlink-only errors as a soft warning.
+    const output = `${err?.stderr?.toString?.() ?? ''}${err?.stdout?.toString?.() ?? ''}${err?.message ?? ''}`;
+    const onlyUnlinkWarnings =
+      /error: unable to unlink old/.test(output) && !/^fatal:/m.test(output);
+    if (onlyUnlinkWarnings) {
+      const headSha = await resolveRef(workspacePath, 'HEAD');
+      const targetSha = await resolveRef(workspacePath, ref);
+      if (headSha && targetSha && headSha === targetSha) {
+        console.warn(
+          `[git.service] checkout(${ref}): treating unlink warnings as non-fatal — HEAD is at target commit. ` +
+            `Locked working-tree files (typically .shogo/*.db-shm) were left in place; they are now ignored.`
+        );
+        return { success: true, branch: await getCurrentBranch(workspacePath) };
+      }
+    }
     return {
       success: false,
       branch: await getCurrentBranch(workspacePath),
-      error: err.message || 'Checkout failed',
+      error: err?.message || 'Checkout failed',
     };
+  }
+
+  return { success: true, branch: await getCurrentBranch(workspacePath) };
+}
+
+/**
+ * Resolve any ref (sha, branch, tag, HEAD) to its full commit sha.
+ * Returns null if the ref does not exist.
+ */
+async function resolveRef(workspacePath: string, ref: string): Promise<string | null> {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], {
+      cwd: workspacePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    const sha = out.trim();
+    return sha.length === 40 ? sha : null;
+  } catch {
+    return null;
   }
 }
 

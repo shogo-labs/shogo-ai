@@ -3155,25 +3155,60 @@ app.get('/agent/canvas/stream', (c) => {
 
 app.post('/agent/canvas/error', async (c) => {
   try {
-    const body = await c.req.json() as { surfaceId?: string; phase?: string; error?: string }
+    const body = await c.req.json() as {
+      surfaceId?: string
+      phase?: string
+      error?: string
+      route?: string
+      recentActions?: Array<{ ts?: number; kind?: string; target?: string; route?: string }>
+    }
     if (!body.error) return c.json({ error: 'Missing error field' }, 400)
+
+    // Sanitize recentActions — the bridge serializes its own ring buffer
+    // but we don't fully trust the shape since this endpoint is reachable
+    // from the iframe. Drop anything that isn't a plain `{ ts, kind, ... }`.
+    const recentActions = Array.isArray(body.recentActions)
+      ? body.recentActions
+          .filter((a): a is { ts: number; kind: string; target?: string; route?: string } =>
+            !!a && typeof a.ts === 'number' && typeof a.kind === 'string',
+          )
+          .map((a) => ({
+            ts: a.ts,
+            kind: a.kind,
+            target: typeof a.target === 'string' ? a.target : undefined,
+            route: typeof a.route === 'string' ? a.route : undefined,
+          }))
+      : undefined
+
+    const route = typeof body.route === 'string' ? body.route : undefined
 
     pushCanvasRuntimeError({
       surfaceId: body.surfaceId || 'unknown',
       phase: body.phase || 'unknown',
       error: body.error,
       timestamp: Date.now(),
+      route,
+      recentActions,
     })
 
     // Mirror into the typed runtime-log dispatcher so the Output tab
     // surfaces canvas errors alongside build/console output and the
-    // unseen-error counter ticks correctly.
+    // unseen-error counter ticks correctly. We append a compact suffix
+    // for page + last action so a glance at the Output tab still shows
+    // useful repro context without expanding into the chat seed.
+    const lastAction = recentActions && recentActions.length > 0
+      ? recentActions[recentActions.length - 1]
+      : null
+    const suffixParts: string[] = []
+    if (route) suffixParts.push(`page=${route}`)
+    if (lastAction) suffixParts.push(`lastAction=${lastAction.kind}${lastAction.target ? ' ' + lastAction.target : ''}`)
+    const suffix = suffixParts.length > 0 ? ` (${suffixParts.join(', ')})` : ''
     recordCanvasErrorEntry(
-      `[${body.phase || 'unknown'}] ${body.error}`,
+      `[${body.phase || 'unknown'}] ${body.error}${suffix}`,
       body.surfaceId,
     )
 
-    console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}: ${body.error.slice(0, 200)}`)
+    console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}${suffix}: ${body.error.slice(0, 200)}`)
     return c.json({ ok: true })
   } catch {
     return c.json({ error: 'Invalid request body' }, 400)

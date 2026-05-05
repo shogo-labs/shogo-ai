@@ -254,6 +254,151 @@
   }
 
   // -------------------------------------------------------------------------
+  // Recent-action breadcrumb buffer — captures the last few user
+  // interactions (clicks, form submits/changes, route navigations) so an
+  // error report can show what the user did immediately before the
+  // crash. Lives only in iframe memory and is shipped only as part of a
+  // canvas-error postMessage. Input *values* are deliberately omitted to
+  // avoid leaking passwords / PII into the chat seed.
+  // -------------------------------------------------------------------------
+
+  var RECENT_ACTIONS_CAP = 10
+  var ACTION_TARGET_MAX = 120
+  var recentActions = []
+  var lastRoute = (function () {
+    try { return location.pathname + location.search + location.hash }
+    catch (_err) { return '' }
+  })()
+
+  function currentRoute() {
+    try { return location.pathname + location.search + location.hash }
+    catch (_err) { return '' }
+  }
+
+  function truncateAction(s) {
+    if (typeof s !== 'string') return ''
+    if (s.length <= ACTION_TARGET_MAX) return s
+    return s.slice(0, ACTION_TARGET_MAX - 1) + '\u2026'
+  }
+
+  function pushAction(entry) {
+    if (!entry) return
+    entry.ts = Date.now()
+    entry.route = currentRoute()
+    if (entry.target) entry.target = truncateAction(entry.target)
+    recentActions.push(entry)
+    if (recentActions.length > RECENT_ACTIONS_CAP) {
+      recentActions.splice(0, recentActions.length - RECENT_ACTIONS_CAP)
+    }
+  }
+
+  function describeClickTarget(el) {
+    // Walk up to the closest interactive ancestor so a click on an icon
+    // inside a button reports the button.
+    var node = el
+    var depth = 0
+    while (node && node !== document.body && depth < 8) {
+      var tag = node.tagName ? node.tagName.toLowerCase() : ''
+      var role = node.getAttribute && node.getAttribute('role')
+      var isInteractive =
+        tag === 'button' ||
+        tag === 'a' ||
+        tag === 'input' ||
+        tag === 'select' ||
+        tag === 'textarea' ||
+        tag === 'label' ||
+        tag === 'summary' ||
+        role === 'button' ||
+        role === 'link' ||
+        role === 'menuitem' ||
+        role === 'tab' ||
+        role === 'option'
+      if (isInteractive) {
+        var label =
+          (node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) ||
+          (node.textContent || '').trim().replace(/\s+/g, ' ') ||
+          (node.getAttribute && node.getAttribute('name')) ||
+          (node.id ? '#' + node.id : '')
+        var descriptor = label ? '"' + label + '"' : ''
+        var typeAttr = tag === 'input' && node.getAttribute ? node.getAttribute('type') : ''
+        var tagDesc = typeAttr ? tag + '[' + typeAttr + ']' : tag
+        return (descriptor ? descriptor + ' (' + tagDesc + ')' : tagDesc)
+      }
+      node = node.parentNode
+      depth++
+    }
+    return null
+  }
+
+  function describeFormTarget(form) {
+    if (!form) return null
+    var id = form.id ? '#' + form.id : ''
+    var name = form.getAttribute && form.getAttribute('name')
+    var action = form.getAttribute && form.getAttribute('action')
+    return id || (name ? '[name=' + name + ']' : '') || (action ? action : 'form')
+  }
+
+  function describeFieldTarget(field) {
+    if (!field) return null
+    var tag = field.tagName ? field.tagName.toLowerCase() : 'field'
+    var name = field.getAttribute && field.getAttribute('name')
+    var id = field.id ? '#' + field.id : ''
+    var type = tag === 'input' && field.getAttribute ? field.getAttribute('type') : ''
+    var key = name ? '[name=' + name + ']' : id || ''
+    var tagDesc = type ? tag + '[' + type + ']' : tag
+    return key ? key + ' (' + tagDesc + ')' : tagDesc
+  }
+
+  // Click — capture phase so we record the interaction even if a handler
+  // calls stopPropagation before it bubbles back to window.
+  window.addEventListener('click', function (e) {
+    var target = e.target
+    var desc = target && target.nodeType === 1 ? describeClickTarget(target) : null
+    if (!desc) return
+    pushAction({ kind: 'click', target: desc })
+  }, true)
+
+  window.addEventListener('submit', function (e) {
+    var desc = describeFormTarget(e.target)
+    if (!desc) return
+    pushAction({ kind: 'submit', target: desc })
+  }, true)
+
+  window.addEventListener('change', function (e) {
+    var desc = describeFieldTarget(e.target)
+    if (!desc) return
+    pushAction({ kind: 'change', target: desc })
+  }, true)
+
+  // Navigation — pushState/replaceState don't fire any event, so monkey
+  // patch them. popstate / hashchange cover back/forward + hash routers.
+  function recordNavigation(to) {
+    var from = lastRoute
+    var dest = to || currentRoute()
+    if (dest === from) return
+    pushAction({ kind: 'navigate', target: (from || '/') + ' -> ' + (dest || '/') })
+    lastRoute = dest
+  }
+
+  try {
+    var origPush = history.pushState
+    var origReplace = history.replaceState
+    history.pushState = function () {
+      var ret = origPush.apply(this, arguments)
+      recordNavigation(currentRoute())
+      return ret
+    }
+    history.replaceState = function () {
+      var ret = origReplace.apply(this, arguments)
+      recordNavigation(currentRoute())
+      return ret
+    }
+  } catch (_err) { /* sealed history — skip */ }
+
+  window.addEventListener('popstate', function () { recordNavigation(currentRoute()) })
+  window.addEventListener('hashchange', function () { recordNavigation(currentRoute()) })
+
+  // -------------------------------------------------------------------------
   // Async error reporting — React error boundaries don't catch errors from
   // event handlers, setTimeout, async functions, or promise rejections.
   // Forward them to the parent so the agent can surface/fix them.
@@ -266,6 +411,8 @@
         type: 'canvas-error',
         phase: phase || 'runtime',
         error: error,
+        route: currentRoute(),
+        recentActions: recentActions.slice(),
       }, '*')
     } catch (_err) { /* ignore */ }
   }
