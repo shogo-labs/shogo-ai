@@ -47,6 +47,12 @@ const poolAssignedCounter = meter.createCounter('warm_pool.assignments', {
 const poolColdStartCounter = meter.createCounter('warm_pool.cold_starts', {
   description: 'Times a pod was requested but no warm pod was available',
 })
+const poolBrokenDetectedCounter = meter.createCounter('warm_pool.broken_detected', {
+  description: 'Warm pool services detected as broken (image pull, scheduling, or revision failure)',
+})
+const poolCircuitBreakerOpenGauge = meter.createObservableGauge('warm_pool.circuit_breaker_open', {
+  description: '1 if the warm-pool creation circuit breaker is currently open, else 0',
+})
 
 // =============================================================================
 // Configuration
@@ -266,14 +272,36 @@ export class WarmPoolController {
   private burstReconcileTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
-   * Circuit breaker: tracks consecutive creation failures to prevent a death
-   * spiral where the controller endlessly creates Knative services into a
-   * cluster with no schedulable capacity (e.g. Insufficient CPU).
+   * Circuit breaker: tracks consecutive creation/health failures to prevent a
+   * death spiral where the controller endlessly creates Knative services into
+   * a cluster with no schedulable capacity (Insufficient CPU/memory) or where
+   * every new revision is dead-on-arrival (image pull failure, RevisionFailed,
+   * etc.). Failures are counted from BOTH:
+   *   - synchronous create errors from the Knative API
+   *   - post-create health checks: a service that becomes "broken" (pod-level
+   *     ImagePullBackOff/ErrImagePull/CreateContainerError, or
+   *     Revision Ready=False with reason RevisionFailed/RevisionMissing/
+   *     ContainerMissing, or Unschedulable past grace) within
+   *     `CIRCUIT_BREAKER_HEALTH_WINDOW_MS` of creation.
+   * Tunable at runtime via env (see top of file).
    */
   private consecutiveCreationFailures = 0
   private circuitBreakerOpenUntil = 0
-  private static readonly CIRCUIT_BREAKER_THRESHOLD = 3
-  private static readonly CIRCUIT_BREAKER_BACKOFF_MS = 60_000
+  private static readonly CIRCUIT_BREAKER_THRESHOLD = parseInt(
+    process.env.WARM_POOL_CIRCUIT_BREAKER_THRESHOLD || '5',
+    10
+  )
+  private static readonly CIRCUIT_BREAKER_BACKOFF_MS = parseInt(
+    process.env.WARM_POOL_CIRCUIT_BREAKER_BACKOFF_MS || String(5 * 60_000),
+    10
+  )
+  /** Window after creation during which broken-pod detection counts toward the breaker. */
+  private static readonly CIRCUIT_BREAKER_HEALTH_WINDOW_MS = parseInt(
+    process.env.WARM_POOL_CIRCUIT_BREAKER_HEALTH_WINDOW_MS || String(10 * 60_000),
+    10
+  )
+  /** Service names whose broken-state we've already counted, so each broken pod only trips once. */
+  private brokenAlreadyCounted = new Set<string>()
 
   constructor(config: WarmPoolConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
@@ -304,6 +332,9 @@ export class WarmPoolController {
     poolTargetGauge.addCallback((result) => {
       result.observe(self.poolSize)
     })
+    poolCircuitBreakerOpenGauge.addCallback((result) => {
+      result.observe(Date.now() < self.circuitBreakerOpenUntil ? 1 : 0)
+    })
 
     // Initial reconciliation
     await this.reconcile().catch((err) => {
@@ -329,6 +360,33 @@ export class WarmPoolController {
       this.burstReconcileTimer = null
     }
     console.log('[WarmPool] Stopped warm pool controller')
+  }
+
+  /**
+   * Record a post-creation broken-pod observation against the circuit breaker.
+   * Bookkeeping is per-service so a single broken revision can only count once;
+   * it persists for `CIRCUIT_BREAKER_HEALTH_WINDOW_MS` so that a steady stream
+   * of brand-new dead-on-arrival revisions trips the breaker quickly.
+   */
+  private recordBrokenForBreaker(serviceName: string, reason: string, ageMs: number): void {
+    if (this.brokenAlreadyCounted.has(serviceName)) return
+    if (ageMs > WarmPoolController.CIRCUIT_BREAKER_HEALTH_WINDOW_MS) return
+    this.brokenAlreadyCounted.add(serviceName)
+    this.consecutiveCreationFailures++
+    poolBrokenDetectedCounter.add(1, { reason })
+    if (this.consecutiveCreationFailures >= WarmPoolController.CIRCUIT_BREAKER_THRESHOLD) {
+      this.circuitBreakerOpenUntil = Date.now() + WarmPoolController.CIRCUIT_BREAKER_BACKOFF_MS
+      console.warn(
+        `[WarmPool] Circuit breaker TRIPPED after ${this.consecutiveCreationFailures} consecutive failures (last: ${serviceName} → ${reason}) — pausing creation for ${WarmPoolController.CIRCUIT_BREAKER_BACKOFF_MS / 1000}s`
+      )
+    }
+  }
+
+  /** Forget broken-pod records for services that no longer exist, so the set doesn't grow. */
+  private pruneBrokenSet(existingNames: Set<string>): void {
+    for (const name of this.brokenAlreadyCounted) {
+      if (!existingNames.has(name)) this.brokenAlreadyCounted.delete(name)
+    }
   }
 
   /**
@@ -500,7 +558,11 @@ export class WarmPoolController {
         .then((pod) => {
           if (pod) {
             this.available.set(pod.id, pod)
-            this.consecutiveCreationFailures = 0
+            // Note: we DON'T reset consecutiveCreationFailures here — Knative
+            // accepting the Service create says nothing about whether the
+            // resulting pod can actually pull its image or be scheduled.
+            // The reset happens in discoverExistingPods when we observe an
+            // actually-Ready pod (see resetBreakerIfHealthy).
             console.log(
               `[WarmPool] Created warm pod ${pod.serviceName} (now available: ${this.countAvailable()}/${this.poolSize})`
             )
@@ -520,6 +582,24 @@ export class WarmPoolController {
           this.pendingCreations.delete(creationKey)
         })
     }
+  }
+
+  /**
+   * Reset the creation circuit breaker when at least one warm pod is observed
+   * Ready=True. Called by discoverExistingPods. The signal is intentionally
+   * conservative: a single healthy pod proves both image pullability and
+   * cluster schedulability, which is the failure mode the breaker guards.
+   */
+  private resetBreakerIfHealthy(anyReady: boolean): void {
+    if (!anyReady) return
+    if (this.consecutiveCreationFailures === 0 && this.circuitBreakerOpenUntil === 0) return
+    if (this.consecutiveCreationFailures > 0) {
+      console.log(
+        `[WarmPool] Healthy warm pod observed — resetting circuit breaker (was: failures=${this.consecutiveCreationFailures})`
+      )
+    }
+    this.consecutiveCreationFailures = 0
+    this.circuitBreakerOpenUntil = 0
   }
 
   /**
@@ -1552,7 +1632,13 @@ export class WarmPoolController {
 
       // Build service-name -> nodeName map from actual running pods.
       // Knative pods carry a `serving.knative.dev/service` label.
+      // Also collect per-service pod-level brokenness signals (image pull
+      // errors, container creation errors, etc) — these are NOT visible in
+      // the Knative Service.status.conditions when the service was previously
+      // Ready=True but its pods got recycled and now can't pull. The classic
+      // "manifest unknown" / OCIR pruned the digest case.
       const serviceToNode = new Map<string, string>()
+      const podBrokenReason = new Map<string, string>()
       try {
         const coreApi = getCoreApi()
         const podList = await coreApi.listNamespacedPod({
@@ -1561,9 +1647,27 @@ export class WarmPoolController {
         })
         for (const pod of podList.items || []) {
           const svcName = pod.metadata?.labels?.['serving.knative.dev/service']
+          if (!svcName) continue
           const nodeName = pod.spec?.nodeName
-          if (svcName && nodeName) {
-            serviceToNode.set(svcName, nodeName)
+          if (nodeName) serviceToNode.set(svcName, nodeName)
+
+          // Image-pull / container-create errors: never transient, treat as broken immediately.
+          const allStatuses = [
+            ...(pod.status?.containerStatuses || []),
+            ...(pod.status?.initContainerStatuses || []),
+          ]
+          for (const cs of allStatuses) {
+            const wait = cs.state?.waiting?.reason
+            if (
+              wait === 'ImagePullBackOff' ||
+              wait === 'ErrImagePull' ||
+              wait === 'InvalidImageName' ||
+              wait === 'CreateContainerError' ||
+              wait === 'CreateContainerConfigError'
+            ) {
+              podBrokenReason.set(svcName, wait)
+              break
+            }
           }
         }
       } catch (err: any) {
@@ -1640,6 +1744,12 @@ export class WarmPoolController {
         const readyCondition = conditions.find((c: any) => c.type === 'Ready')
         const ready = readyCondition?.status === 'True'
 
+        // POD-LEVEL broken detection. Image-pull/create errors are never
+        // transient and are NOT reflected in the Knative service's Ready
+        // condition once it's been Ready=True at least once. We catch these
+        // by inspecting actual pod containerStatuses (collected above).
+        const podLevelReason = podBrokenReason.get(name)
+
         // Detect permanently broken services (e.g. wrong image, RevisionMissing)
         // and clean them up so the pool can replace them
         const isBroken =
@@ -1657,11 +1767,21 @@ export class WarmPoolController {
         const unschedulableGraceExpired =
           isUnschedulable && createdAt > 0 && (Date.now() - createdAt) > NAMESPACE_GC_CREATION_GRACE_MS
 
-        if (isBroken || unschedulableGraceExpired) {
+        const ageMs = createdAt > 0 ? Date.now() - createdAt : 0
+        const breakerReason =
+          podLevelReason ?? (isBroken ? readyCondition?.reason : undefined) ?? (unschedulableGraceExpired ? 'Unschedulable' : undefined)
+
+        // Always treat image-pull errors as immediately broken — no grace
+        // period. These caused the staging incident on 2026-05-04 (OCIR
+        // cleanup pruned the pinned digest, every new pod got
+        // `manifest unknown`). With grace, the pool kept minting fresh
+        // dead-on-arrival revisions faster than this loop deleted them.
+        if (podLevelReason || isBroken || unschedulableGraceExpired) {
           console.warn(
-            `[WarmPool] Deleting broken warm pod ${name} (reason: ${readyCondition?.reason}, age: ${Math.round((Date.now() - createdAt) / 1000)}s)`
+            `[WarmPool] Deleting broken warm pod ${name} (reason: ${breakerReason}, age: ${Math.round(ageMs / 1000)}s)`
           )
           this.available.delete(id)
+          this.recordBrokenForBreaker(name, breakerReason ?? 'unknown', ageMs)
           this.deleteWarmPodService(name).catch((err) => {
             console.error(`[WarmPool] Failed to delete broken pod ${name}:`, err.message)
           })
@@ -1696,6 +1816,10 @@ export class WarmPoolController {
         }
       }
 
+      // Forget broken-pod records for services that are now gone, so the
+      // circuit-breaker bookkeeping doesn't grow unbounded.
+      this.pruneBrokenSet(discoveredIds)
+
       this.promotedPods = newPromotedPods
 
       // Drop soft-eviction records for services that no longer exist or
@@ -1712,6 +1836,7 @@ export class WarmPoolController {
       }
 
       const readyCount = [...this.available.values()].filter(p => p.ready).length
+      this.resetBreakerIfHealthy(readyCount > 0)
       if (this.available.size > 0) {
         console.log(
           `[WarmPool] Discovered ${this.available.size} warm pods (${readyCount} ready, ${this.available.size - readyCount} starting), ${newPromotedPods.length} promoted`
