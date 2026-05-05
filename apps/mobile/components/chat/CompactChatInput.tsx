@@ -85,6 +85,9 @@ import { AttachSourceSheet } from "./AttachSourceSheet"
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 
+const MIN_INPUT_HEIGHT = 80
+const MAX_INPUT_HEIGHT = 200
+
 interface AttachedFile {
   id: string
   dataUrl: string
@@ -144,6 +147,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const effectiveIsPro = features.billing ? isPro : true
 
     const [internalValue, setInternalValue] = useState("")
+    const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
     const textInputRef = useRef<TextInput>(null)
     const pasteHandledRef = useRef(false)
 
@@ -415,6 +419,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         return
       }
       setValue("")
+      setInputHeight(MIN_INPUT_HEIGHT)
       setPendingFiles([])
       setFileError(null)
       setPastedTexts([])
@@ -439,6 +444,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           return
         }
         setValue(next)
+        if (next.length === 0) {
+          setInputHeight(MIN_INPUT_HEIGHT)
+        }
       },
       [setValue, addPastedText]
     )
@@ -569,6 +577,14 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             editable={!disabled && !isLoading && !voiceInput.isRecording}
             multiline
             blurOnSubmit={false}
+            onContentSizeChange={(e) => {
+              const h = e.nativeEvent.contentSize.height
+              const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))
+              if (clamped !== inputHeight) {
+                setInputHeight(clamped)
+              }
+            }}
+            style={{ height: inputHeight }}
             className={cn(
               "min-h-[80px] max-h-[200px] w-full",
               "px-4 pt-4 text-xs text-foreground",
