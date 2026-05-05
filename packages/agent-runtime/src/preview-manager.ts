@@ -19,6 +19,11 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
+import {
+  commitBuildOutput,
+  cleanupStagingOutput,
+  DEFAULT_STAGING_DIR,
+} from './build-output-commit'
 
 /**
  * Append a line to the on-disk `.build.log` *and* dispatch it through
@@ -1101,6 +1106,73 @@ export class PreviewManager {
     this.onConsoleLogReset?.()
   }
 
+  /**
+   * One-shot `vite build --outDir dist.staging` used to seed `dist/`
+   * before the long-running watcher takes over. Atomically swaps the
+   * staging output into place on success and cleans it up on failure.
+   * Best-effort: the watcher still spawns even if this fails — the
+   * watcher's own first build will eventually populate `dist/` (just
+   * with the historical 404 window we're trying to avoid).
+   */
+  private async runViteOneShotBuild(
+    viteBin: string,
+    cwd: string,
+    buildLogPath: string,
+    isWindows: boolean,
+  ): Promise<void> {
+    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    console.log(`[${LOG_PREFIX}] Seeding dist/ via one-shot vite build (staging)...`)
+    const exitCode = await new Promise<number | null>((resolveBuild) => {
+      let proc: ChildProcess
+      try {
+        proc = spawn(
+          viteBin,
+          ['build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir'],
+          {
+            cwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              VITE_RUNTIME_PORT: String(this.runtimePort),
+              CI: '1',
+            },
+          },
+        )
+      } catch (err: any) {
+        console.error(`[${LOG_PREFIX}] Failed to spawn one-shot vite build: ${err?.message ?? err}`)
+        resolveBuild(null)
+        return
+      }
+      proc.on('error', (err: Error) => {
+        console.error(`[${LOG_PREFIX}] One-shot vite build error: ${err.message}`)
+        resolveBuild(null)
+      })
+      proc.stdout?.on('data', (data: Buffer) => {
+        const line = data.toString().trim()
+        emitBuildLine(buildLogPath, '[stdout]', line, 'stdout')
+      })
+      proc.stderr?.on('data', (data: Buffer) => {
+        const line = data.toString().trim()
+        emitBuildLine(buildLogPath, '[stderr]', line, 'stderr')
+      })
+      proc.on('exit', (code) => resolveBuild(code))
+    })
+
+    if (exitCode === 0) {
+      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+      if (!committed) {
+        console.warn(
+          `[${LOG_PREFIX}] One-shot vite build succeeded but commit into dist/ failed`,
+        )
+      }
+    } else {
+      console.warn(`[${LOG_PREFIX}] One-shot vite build failed (code=${exitCode})`)
+      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    }
+  }
+
   private async startBuildWatch(): Promise<void> {
     const cwd = this.bundlerCwd
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
@@ -1120,11 +1192,21 @@ export class PreviewManager {
       return
     }
 
-    console.log(`[${LOG_PREFIX}] Starting vite build --watch...`)
+    // Vite's default `--watch` mode empties `dist/` on its initial pass,
+    // which would briefly 404 every refresh during that window and leave
+    // the live preview broken if the very first build failed. Do a
+    // one-shot `vite build --outDir dist.staging` instead and atomically
+    // promote the result; the subsequent watch then runs with
+    // `--emptyOutDir false` so it only ever rewrites files in place.
+    if (!existsSync(join(cwd, 'dist', 'index.html'))) {
+      await this.runViteOneShotBuild(viteBin, cwd, buildLogPath, isWindows)
+    }
+
+    console.log(`[${LOG_PREFIX}] Starting vite build --watch (no empty)...`)
 
     let viteProcess: ChildProcess
     try {
-      viteProcess = spawn(viteBin, ['build', '--watch'], {
+      viteProcess = spawn(viteBin, ['build', '--watch', '--emptyOutDir', 'false'], {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         // `.CMD` shims must go through cmd.exe on Windows.
@@ -1523,10 +1605,15 @@ export class PreviewManager {
   }
 
   /**
-   * Run `expo export --platform web --output-dir dist` once. The resulting
-   * `dist/` is served by the runtime at the root, just like a Vite build.
-   * This gives Studio's iframe preview a working web rendering of the RN
-   * app via `react-native-web`. Re-run on demand via `restart()`.
+   * Run `expo export --platform web --output-dir dist.staging` once,
+   * then atomically promote `dist.staging/` into `dist/`. Writing to a
+   * staging directory keeps the live `dist/` serveable while the export
+   * runs (typically several seconds) and leaves the previous good
+   * build intact if the export fails — without this, `expo export`
+   * would clear `dist/` first and any refresh during the build window
+   * would 404.
+   *
+   * Re-run on demand via `restart()`.
    */
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
     const expoBin = this.resolveExpoBin(cwd)
@@ -1541,12 +1628,17 @@ export class PreviewManager {
     // workspace root. `resolveBundlerCwd()` is the single source of truth.
     const buildLogPath = join(cwd, BUILD_LOG_FILE)
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
+    // A leftover staging dir from a prior crashed build would confuse
+    // expo export (it expects a clean output dir or none). Drop it
+    // before spawning.
+    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+
     const t0 = Date.now()
-    console.log(`[${LOG_PREFIX}] Running expo export --platform web...`)
-    await new Promise<void>((resolveExport) => {
+    console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
+    const exitCode = await new Promise<number | null>((resolveExport) => {
       let proc: ChildProcess
       try {
-        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', 'dist'], {
+        proc = spawn(expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           // `.CMD` shims must go through cmd.exe on Windows.
@@ -1560,7 +1652,7 @@ export class PreviewManager {
         })
       } catch (err: any) {
         console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
-        resolveExport()
+        resolveExport(null)
         return
       }
       // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
@@ -1568,7 +1660,7 @@ export class PreviewManager {
       // tears down the entire agent runtime process.
       proc.on('error', (err: Error) => {
         console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
-        resolveExport()
+        resolveExport(null)
       })
       proc.stdout?.on('data', (data: Buffer) => {
         const text = data.toString()
@@ -1592,9 +1684,24 @@ export class PreviewManager {
         if (code !== 0) {
           console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
         }
-        resolveExport()
+        resolveExport(code)
       })
     })
+
+    if (exitCode === 0) {
+      const committed = commitBuildOutput(cwd, DEFAULT_STAGING_DIR)
+      if (!committed) {
+        console.warn(
+          `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
+            `previous build (if any) remains live`,
+        )
+      }
+    } else {
+      // Failed build: drop the partial staging output so it can't poison
+      // the next swap.
+      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    }
+
     timings.expoExport = Date.now() - t0
   }
 

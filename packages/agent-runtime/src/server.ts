@@ -3279,6 +3279,76 @@ function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
 
+/**
+ * Phases during which a build is plausibly in flight and `dist/` may
+ * legitimately be missing. When a navigation request would otherwise
+ * 404 we render a small "Building..." placeholder instead so the user
+ * sees a self-refreshing message rather than a hard error during the
+ * first-ever build of a fresh workspace. (The atomic-swap commit logic
+ * in `build-output-commit.ts` keeps `dist/` populated through every
+ * subsequent rebuild, so this only fires before the first successful
+ * build has landed.)
+ */
+const BUILDING_PHASES = new Set([
+  'installing',
+  'generating-prisma',
+  'pushing-db',
+  'building',
+  'starting-api',
+])
+
+function isBuildLikelyInFlight(): boolean {
+  // Avoid accidentally constructing a PreviewManager just to peek at
+  // its phase — the fallback is only meaningful once one already exists
+  // (i.e. a preview start has been requested somewhere).
+  if (!previewManager) return false
+  const phase = previewManager.phase
+  return BUILDING_PHASES.has(phase)
+}
+
+function renderBuildingPlaceholder(): Response {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="refresh" content="2" />
+<title>Building preview…</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #555; background: #fafafa;
+  }
+  .card { text-align: center; }
+  .spinner {
+    width: 28px; height: 28px; margin: 0 auto 12px;
+    border: 3px solid #e0e0e0; border-top-color: #5b8def;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hint { font-size: 13px; color: #888; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>Building preview…</div>
+    <div class="hint">This page will refresh automatically.</div>
+  </div>
+</body>
+</html>`
+  return new Response(html, {
+    status: 503,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Retry-After': '2',
+    },
+  })
+}
+
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
 
@@ -3322,6 +3392,15 @@ app.get('*', (c) => {
     return new Response(html, {
       headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
     })
+  }
+
+  // No dist yet. If a build is in flight, render a self-refreshing
+  // "Building..." placeholder so the user doesn't stare at a raw 404
+  // during the first build of a fresh workspace. After the first
+  // successful build the atomic-swap pipeline keeps `dist/` populated,
+  // so this only matters pre-first-build (or after a fresh wipe).
+  if (isBuildLikelyInFlight()) {
+    return renderBuildingPlaceholder()
   }
 
   return c.notFound()
