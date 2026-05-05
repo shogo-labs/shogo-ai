@@ -128,6 +128,10 @@ const STANDALONE_PANELS = ['ide', 'files', 'capabilities', 'channels', 'agents',
 const DEFAULT_CHAT_PANEL_WIDTH = 480
 const MIN_CHAT_PANEL_WIDTH = 320
 const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
+const CHAT_AUTO_CLOSE_THRESHOLD = 280
+const CANVAS_AUTO_CLOSE_THRESHOLD = 200
+const DRAG_FLOOR = 100
+const DRAG_CEILING_OFFSET = 100
 
 /** Suppress duplicate "[canvas-error]" toasts within this many ms. */
 const CANVAS_ERROR_DEDUP_MS = 10_000
@@ -462,6 +466,7 @@ export default observer(function ProjectLayout() {
   const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
   const mountTimeRef = useRef(Date.now())
   const splitRowRef = useRef<View>(null)
+  const chatColumnRef = useRef<View>(null)
 
   // Restore last-viewed surface from AsyncStorage
   useEffect(() => {
@@ -881,7 +886,6 @@ export default observer(function ProjectLayout() {
 
   // Resizable chat panel width (wide split mode only)
   const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
-  const maxChatPanelWidth = Math.floor(width * 0.5)
   const clampChatWidth = useCallback((w: number) =>
     Math.max(MIN_CHAT_PANEL_WIDTH, Math.min(w, Math.floor(width * 0.5))),
     [width],
@@ -899,6 +903,17 @@ export default observer(function ProjectLayout() {
   const persistChatPanelWidth = useCallback((w: number) => {
     setChatPanelWidth(w)
     AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
+  }, [])
+
+  const [autoCloseHint, setAutoCloseHint] = useState<'chat' | 'canvas' | null>(null)
+
+  const handleAutoCollapseChat = useCallback(() => {
+    setChatCollapsed(true)
+    persistChatPanelWidth(DEFAULT_CHAT_PANEL_WIDTH)
+  }, [persistChatPanelWidth])
+
+  const handleAutoCollapseCanvas = useCallback(() => {
+    setPreviewTab('chat-fullscreen')
   }, [])
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['dynamic-app', 'chat-fullscreen', 'app-preview']), [])
@@ -1712,6 +1727,7 @@ export default observer(function ProjectLayout() {
             <View className={cn('flex-1', isWide && 'flex-row')} ref={splitRowRef}>
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
               <View
+                ref={chatColumnRef}
                 className={cn(
                   'flex min-h-0 flex-col',
                   isChatFullscreen
@@ -1721,7 +1737,11 @@ export default observer(function ProjectLayout() {
                       : 'relative flex-1',
                   !isChatFullscreen && chatHidden && 'hidden',
                 )}
-                style={!isChatFullscreen && isWide && !chatHidden ? { width: clampChatWidth(chatPanelWidth) } : undefined}
+                style={!isChatFullscreen && isWide && !chatHidden ? {
+                  width: clampChatWidth(chatPanelWidth),
+                  opacity: autoCloseHint === 'chat' ? 0.4 : 1,
+                  transition: 'opacity 150ms',
+                } as any : undefined}
               >
                 {isChatFullscreen && (
                   <View className="w-[280px] bg-muted/50 dark:bg-black/30">
@@ -1828,11 +1848,12 @@ export default observer(function ProjectLayout() {
               {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
                 <ChatPanelResizeHandle
                   splitRowRef={splitRowRef}
+                  chatColumnRef={chatColumnRef}
                   chatPanelWidth={clampChatWidth(chatPanelWidth)}
-                  minWidth={MIN_CHAT_PANEL_WIDTH}
-                  maxWidth={maxChatPanelWidth}
-                  onResize={setChatPanelWidth}
                   onResizeEnd={persistChatPanelWidth}
+                  onAutoCollapseChat={handleAutoCollapseChat}
+                  onAutoCollapseCanvas={handleAutoCollapseCanvas}
+                  onAutoCloseHintChange={setAutoCloseHint}
                   defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
                 />
               )}
@@ -1844,6 +1865,10 @@ export default observer(function ProjectLayout() {
               canvasAreaHidden && 'hidden',
               Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
             )}
+            style={autoCloseHint === 'canvas' ? {
+              opacity: 0.4,
+              transition: 'opacity 150ms',
+            } as any : undefined}
           >
             <DrawerHost
               projectId={projectId ?? null}
@@ -2066,19 +2091,21 @@ function ShogoAwareChatPanels({ children }: { children: React.ReactNode }) {
 
 function ChatPanelResizeHandle({
   splitRowRef,
+  chatColumnRef,
   chatPanelWidth,
-  minWidth,
-  maxWidth,
-  onResize,
   onResizeEnd,
+  onAutoCollapseChat,
+  onAutoCollapseCanvas,
+  onAutoCloseHintChange,
   defaultWidth,
 }: {
   splitRowRef: React.RefObject<View | null>
+  chatColumnRef: React.RefObject<View | null>
   chatPanelWidth: number
-  minWidth: number
-  maxWidth: number
-  onResize: (w: number) => void
   onResizeEnd: (w: number) => void
+  onAutoCollapseChat: () => void
+  onAutoCollapseCanvas: () => void
+  onAutoCloseHintChange: (hint: 'chat' | 'canvas' | null) => void
   defaultWidth: number
 }) {
   const [dragging, setDragging] = useState(false)
@@ -2092,11 +2119,25 @@ function ChatPanelResizeHandle({
     const container = splitRowRef.current as unknown as HTMLElement | null
     if (!container) return
     const containerRect = container.getBoundingClientRect()
+    const chatCol = chatColumnRef.current as unknown as HTMLElement | null
 
     const onPointerMove = (ev: PointerEvent) => {
-      const newWidth = Math.max(minWidth, Math.min(maxWidth, ev.clientX - containerRect.left))
-      latestWidthRef.current = newWidth
-      onResize(newWidth)
+      const rawWidth = ev.clientX - containerRect.left
+      const clampedWidth = Math.max(
+        DRAG_FLOOR,
+        Math.min(rawWidth, containerRect.width - DRAG_CEILING_OFFSET),
+      )
+      latestWidthRef.current = clampedWidth
+
+      if (chatCol) chatCol.style.width = `${clampedWidth}px`
+
+      if (clampedWidth < CHAT_AUTO_CLOSE_THRESHOLD) {
+        onAutoCloseHintChange('chat')
+      } else if (containerRect.width - clampedWidth < CANVAS_AUTO_CLOSE_THRESHOLD) {
+        onAutoCloseHintChange('canvas')
+      } else {
+        onAutoCloseHintChange(null)
+      }
     }
 
     const onPointerUp = () => {
@@ -2105,14 +2146,28 @@ function ChatPanelResizeHandle({
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       setDragging(false)
-      onResizeEnd(latestWidthRef.current)
+      onAutoCloseHintChange(null)
+
+      const finalWidth = latestWidthRef.current
+      const containerWidth = containerRect.width
+
+      if (finalWidth < CHAT_AUTO_CLOSE_THRESHOLD) {
+        if (chatCol) chatCol.style.width = ''
+        onAutoCollapseChat()
+      } else if (containerWidth - finalWidth < CANVAS_AUTO_CLOSE_THRESHOLD) {
+        if (chatCol) chatCol.style.width = ''
+        onAutoCollapseCanvas()
+      } else {
+        if (chatCol) chatCol.style.width = ''
+        onResizeEnd(finalWidth)
+      }
     }
 
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
-  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd])
+  }, [splitRowRef, chatColumnRef, onResizeEnd, onAutoCollapseChat, onAutoCollapseCanvas, onAutoCloseHintChange])
 
   const handleDoubleClick = useCallback(() => {
     onResizeEnd(defaultWidth)
