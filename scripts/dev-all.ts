@@ -6,8 +6,10 @@
  *
  *  1. Kill any process occupying the API port (best-effort).
  *  2. Run Prisma migrate deploy against the local SQLite DB.
- *  3. Generate SDK routes/types/stores from the Prisma schema.
- *  4. Start the API and web dev servers via concurrently.
+ *  3. Regenerate the Prisma client(s) so any new models added to the
+ *     schema since the last `bun install` are visible at runtime.
+ *  4. Generate SDK routes/types/stores from the Prisma schema.
+ *  5. Start the API and web dev servers via concurrently.
  */
 
 import { spawn, spawnSync, type Subprocess } from "bun";
@@ -177,7 +179,37 @@ async function migrate() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Generate SDK routes / types / stores from the Prisma schema
+// 3. Regenerate Prisma client(s)
+//
+// The SDK route generator also tries to run `prisma generate` internally,
+// but on Windows that step has historically failed silently (e.g. when
+// the shell-resolution bug in shared-runtime's platform-pkg leaks through).
+// Running our own copy here first means the API always boots against an
+// up-to-date `apps/api/src/generated/prisma-{pg,sqlite}` client — without
+// it, adding a new model to `prisma/schema.prisma` would crash the API at
+// runtime with `TypeError: undefined is not an object` until the dev
+// remembered to re-run `bun install` or `bun run db:generate:all`.
+// ---------------------------------------------------------------------------
+
+async function generatePrismaClients() {
+  console.log("[dev:all] Regenerating Prisma client(s)…");
+  const proc = spawn({
+    cmd: ["bun", "scripts/db-generate-all.ts"],
+    cwd: ROOT,
+    stdout: "inherit",
+    stderr: "inherit",
+    env: { ...process.env },
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error("[dev:all] Prisma client generation failed — aborting.");
+    process.exit(code);
+  }
+  console.log("[dev:all] Prisma client(s) regenerated.");
+}
+
+// ---------------------------------------------------------------------------
+// 4. Generate SDK routes / types / stores from the Prisma schema
 // ---------------------------------------------------------------------------
 
 async function generateRoutes() {
@@ -198,7 +230,7 @@ async function generateRoutes() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Start API + web dev servers
+// 5. Start API + web dev servers
 // ---------------------------------------------------------------------------
 
 async function startDevServers() {
@@ -253,5 +285,6 @@ async function startDevServers() {
 
 await Promise.all([killProcessOnPort(API_PORT), killProcessOnPort(WEB_PORT)]);
 await migrate();
+await generatePrismaClients();
 await generateRoutes();
 await startDevServers();

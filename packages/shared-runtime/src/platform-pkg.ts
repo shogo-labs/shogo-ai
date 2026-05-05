@@ -78,17 +78,44 @@ export class PlatformPackageManager {
     return process.env.SHOGO_BUN_PATH || 'bun'
   }
 
-  private shellOpt(): string | undefined {
-    return IS_WINDOWS ? 'cmd.exe' : undefined
+  private shellOpt(): string | boolean | undefined {
+    // On Windows we used to return the bare string 'cmd.exe' here, but
+    // Bun's child_process can fail to resolve that name and crash with
+    // `Executable not found in $PATH: "cmd.exe"` even when System32 is
+    // on PATH. Returning `true` lets Node/Bun pick the platform default
+    // shell via `process.env.ComSpec`, which is always an absolute path
+    // (e.g. `C:\Windows\System32\cmd.exe`) and works regardless of how
+    // PATH happens to be cased in the inherited environment.
+    return IS_WINDOWS ? true : undefined
   }
 
   private spawnEnv(base?: NodeJS.ProcessEnv): Record<string, string> {
-    const env = { ...(base ?? process.env) } as Record<string, string>
+    const source = base ?? process.env
+    const env: Record<string, string> = {}
+    // Windows env keys are case-insensitive at the OS level, but a plain
+    // spread of `process.env` preserves whatever casing Bun/Node used
+    // internally. On Windows-Bun that ends up as `Path`, so a later
+    // `env.PATH = ...` assignment creates a *second* key — and the child
+    // process inherits both, with Bun picking the lexicographically-later
+    // `PATH` (containing only what we just set, missing System32). The
+    // visible symptom is `Executable not found in $PATH: "cmd.exe"`.
+    //
+    // Normalise on the way in: collapse all PATH-like keys into a single
+    // canonical `PATH`, dropping the duplicates so spawn() sees one entry.
+    let pathValue = ''
+    for (const [k, v] of Object.entries(source)) {
+      if (v === undefined) continue
+      if (IS_WINDOWS && k.toLowerCase() === 'path') {
+        if (v) pathValue = v
+        continue
+      }
+      env[k] = v
+    }
     if (IS_WINDOWS) {
       const nodePath = 'C:\\Program Files\\nodejs'
-      if (!env.PATH?.includes(nodePath)) {
-        env.PATH = `${nodePath};${env.PATH || ''}`
-      }
+      env.PATH = pathValue.includes(nodePath)
+        ? pathValue
+        : `${nodePath};${pathValue}`
     }
     return env
   }
