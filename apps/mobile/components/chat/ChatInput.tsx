@@ -233,6 +233,30 @@ export function ChatInput({
   // the same clipboard event, which would create duplicate chips.
   const pasteHandledRef = useRef(false)
 
+  const MIN_INPUT_HEIGHT = 60
+  const MAX_INPUT_VH = 40
+
+  const getDOMNode = useCallback(() => {
+    const ref = textInputRef.current as any
+    return ref?._node || ref?.getHostNode?.() || ref
+  }, [])
+
+  const resizeTextarea = useCallback(() => {
+    if (Platform.OS !== "web") return
+    const node = getDOMNode()
+    if (!node?.style) return
+
+    const maxPx = Math.min(window.innerHeight * (MAX_INPUT_VH / 100), 230)
+    node.style.height = "auto"
+    const scrollH = node.scrollHeight
+    const newHeight = Math.max(MIN_INPUT_HEIGHT, Math.min(scrollH, maxPx))
+
+    if (node.style.height !== `${newHeight}px`) {
+      node.style.height = `${newHeight}px`
+    }
+    node.style.overflowY = scrollH > maxPx ? "auto" : "hidden"
+  }, [getDOMNode])
+
   const [inputValue, setInputValue] = useState("")
   const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
@@ -248,6 +272,12 @@ export function ChatInput({
   useEffect(() => {
     inputValueRef.current = inputValue
   }, [inputValue])
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      requestAnimationFrame(resizeTextarea)
+    }
+  }, [inputValue, resizeTextarea])
 
   const [internalModel, setInternalModel] = useState<string>(
     effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
@@ -956,7 +986,7 @@ export function ChatInput({
           }}
           style={{ height: inputHeight }}
           className={cn(
-            "min-h-[60px] max-h-[200px] w-full",
+            "min-h-[60px] w-full overflow-hidden",
             "bg-transparent",
             "px-4 pt-4 text-xs text-foreground",
             disabled && dimWhenDisabled && "opacity-50",
