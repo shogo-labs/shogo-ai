@@ -113,6 +113,11 @@ spec:
                   fi
 
                   echo "--- Publication Completeness ---"
+                  # With `tablesInSchema: public` (see platform-publication.yaml)
+                  # this should always be 0 — Postgres auto-includes new tables.
+                  # Non-zero means someone reverted the publication to a
+                  # hand-listed `objects[].table` set; the CI guard
+                  # `bun run check:publication` should have prevented that.
                   UNPUBLISHED=$(psql -X -t -A -c "
                     SELECT count(*)
                     FROM pg_tables t
@@ -139,6 +144,38 @@ spec:
                         AND pt.tablename IS NULL
                       ORDER BY t.tablename;
                     "
+                  fi
+
+                  echo "--- Subscription Refresh Staleness ---"
+                  # Each subscription tracks the publisher's table set as of
+                  # the last `ALTER SUBSCRIPTION ... REFRESH PUBLICATION`. If
+                  # a subscription's row count in pg_subscription_rel is less
+                  # than the local publication's table count, this region
+                  # almost certainly missed a REFRESH after a peer migrated.
+                  # Heuristic: assumes all regions run the same schema (true
+                  # by design — `prisma migrate deploy` runs in every region).
+                  LOCAL_PUB_COUNT=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_publication_tables
+                    WHERE pubname = 'shogo_all_pub';
+                  ")
+
+                  STALE_SUBS=$(psql -X -t -A -F'|' -c "
+                    SELECT s.subname,
+                           count(sr.srrelid) AS subscribed_tables,
+                           ${LOCAL_PUB_COUNT} - count(sr.srrelid) AS missing
+                    FROM pg_subscription s
+                    LEFT JOIN pg_subscription_rel sr ON sr.srsubid = s.oid
+                    WHERE s.subname LIKE 'sub_from_%'
+                    GROUP BY s.subname
+                    HAVING count(sr.srrelid) < ${LOCAL_PUB_COUNT}
+                    ORDER BY s.subname;
+                  ")
+
+                  if [ -n "$STALE_SUBS" ]; then
+                    echo "WARNING: subscription(s) trail the local publication by 1+ tables."
+                    echo "Run: ALTER SUBSCRIPTION <subname> REFRESH PUBLICATION;"
+                    echo "$STALE_SUBS"
                   fi
 
                   echo "=== Monitor complete ==="
