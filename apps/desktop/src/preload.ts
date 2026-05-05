@@ -184,10 +184,17 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('navigate')
   },
 
-  // App updates
+  // App updates — downloads are user-gated. The main process probes the
+  // feed and broadcasts `status: 'available'` with a version; the renderer
+  // shows a banner and only calls `downloadUpdate()` after the user
+  // explicitly opts in.
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
+  dismissUpdate: () => ipcRenderer.invoke('dismiss-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
-  onUpdateStatus: (callback: (data: { status: string; releaseName: string | null }) => void) => {
+  onUpdateStatus: (
+    callback: (data: { status: string; releaseName: string | null; availableVersion: string | null }) => void,
+  ) => {
     ipcRenderer.on('desktop-update-status', (_event, data) => callback(data))
   },
   removeUpdateListener: () => {
