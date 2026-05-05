@@ -230,6 +230,17 @@ export function ChatInput({
   // the same clipboard event, which would create duplicate chips.
   const pasteHandledRef = useRef(false)
 
+  const INPUT_MIN_HEIGHT = 60
+  const INPUT_MAX_HEIGHT = 200
+  const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT)
+
+  const handleContentSizeChange = useCallback((e: any) => {
+    const contentHeight = e?.nativeEvent?.contentSize?.height
+    if (contentHeight) {
+      setInputHeight(Math.min(Math.max(contentHeight, INPUT_MIN_HEIGHT), INPUT_MAX_HEIGHT))
+    }
+  }, [])
+
   const [inputValue, setInputValue] = useState("")
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
@@ -579,6 +590,7 @@ export function ChatInput({
 
     onSubmit(trimmedContent, fileData, currentModelId)
     setInputValue("")
+    setInputHeight(INPUT_MIN_HEIGHT)
     setPendingFiles([])
     setPastedTexts([])
     setViewingPastedId(null)
@@ -921,6 +933,7 @@ export function ChatInput({
           ref={textInputRef}
           value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : inputValue}
           onChangeText={handleChangeText}
+          onContentSizeChange={handleContentSizeChange}
           onSubmitEditing={handleSubmit}
           onKeyPress={(e: any) => {
             if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
@@ -938,9 +951,11 @@ export function ChatInput({
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
+          scrollEnabled={inputHeight >= INPUT_MAX_HEIGHT}
           blurOnSubmit={false}
+          style={{ height: inputHeight }}
           className={cn(
-            "min-h-[60px] max-h-[200px] w-full",
+            "w-full",
             "bg-transparent",
             "px-4 pt-4 text-xs text-foreground",
             disabled && dimWhenDisabled && "opacity-50",

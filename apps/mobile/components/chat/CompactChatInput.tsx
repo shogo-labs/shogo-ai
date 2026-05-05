@@ -147,6 +147,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const textInputRef = useRef<TextInput>(null)
     const pasteHandledRef = useRef(false)
 
+    const INPUT_MIN_HEIGHT = 80
+    const INPUT_MAX_HEIGHT = 200
+    const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT)
+
+    const handleContentSizeChange = useCallback((e: any) => {
+      const contentHeight = e?.nativeEvent?.contentSize?.height
+      if (contentHeight) {
+        setInputHeight(Math.min(Math.max(contentHeight, INPUT_MIN_HEIGHT), INPUT_MAX_HEIGHT))
+      }
+    }, [])
+
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
     const [attachSheetOpen, setAttachSheetOpen] = useState(false)
@@ -415,6 +426,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         return
       }
       setValue("")
+      setInputHeight(INPUT_MIN_HEIGHT)
       setPendingFiles([])
       setFileError(null)
       setPastedTexts([])
@@ -559,6 +571,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             accessibilityLabel="Describe the agent you want to build"
             value={voiceInput.isRecording && voiceInput.liveTranscript ? voiceInput.liveTranscript : value}
             onChangeText={handleChangeText}
+            onContentSizeChange={handleContentSizeChange}
             onSubmitEditing={handleSubmit}
             onKeyPress={(e: any) => {
               if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
@@ -568,9 +581,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             }}
             editable={!disabled && !isLoading && !voiceInput.isRecording}
             multiline
+            scrollEnabled={inputHeight >= INPUT_MAX_HEIGHT}
             blurOnSubmit={false}
+            style={{ height: inputHeight }}
             className={cn(
-              "min-h-[80px] max-h-[200px] w-full",
+              "w-full",
               "px-4 pt-4 text-xs text-foreground",
               disabled && dimWhenDisabled && "opacity-50",
               Platform.OS === "web" && "outline-none no-focus-ring"
