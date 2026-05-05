@@ -33,13 +33,14 @@ model User {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  sessions        Session[]
-  accounts        Account[]
-  members         Member[]
-  notifications   Notification[]
-  starredProjects StarredProject[]
-  apiKeys         ApiKey[]
-  creatorProfile  CreatorProfile?
+  sessions          Session[]
+  accounts          Account[]
+  members           Member[]
+  notifications     Notification[]
+  starredProjects   StarredProject[]
+  apiKeys           ApiKey[]
+  creatorProfile    CreatorProfile?
+  signupAttribution SignupAttribution?
 
   @@map("users")
 }
@@ -130,6 +131,7 @@ model Workspace {
   subagentModelOverrides SubagentModelOverride[]
   agentEvalResults       AgentEvalResult[]
   agentEvalSets          AgentEvalSet[]
+  grants                 WorkspaceGrant[]
 
   @@map("workspaces")
 }
@@ -150,7 +152,6 @@ model Project {
   publishedAt        DateTime?
   accessLevel        String    @default("anyone")
   category           String?
-  type               String    @default("APP")
   siteTitle          String?
   siteDescription    String?
   thumbnailUrl       String?
@@ -195,7 +196,7 @@ model AgentConfig {
   quietHoursTimezone String?
   channels           String    @default("[]")
   modelProvider      String    @default("anthropic")
-  modelName          String    @default("claude-sonnet-4-5")
+  modelName          String    @default("claude-haiku-4-5")
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -387,6 +388,29 @@ model Notification {
   @@map("notifications")
 }
 
+/// Captures UTM parameters and referrer info at signup time. One row
+/// per user. Mirrors prisma/schema.prisma SignupAttribution.
+model SignupAttribution {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmContent   String?
+  utmTerm      String?
+  referrer     String?
+  landingPage  String?
+  signupMethod String?
+  sourceTag    String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sourceTag])
+  @@index([createdAt])
+  @@map("signup_attributions")
+}
+
 // =============================================================================
 // BILLING (Subscriptions & Usage)
 // =============================================================================
@@ -397,6 +421,8 @@ model Subscription {
   stripeSubscriptionId String   @unique
   stripeCustomerId     String
   planId               String
+  // Number of paying seats. Basic is always 1; Pro/Business are per-seat.
+  seats                Int      @default(1)
   status               String
   billingInterval      String
   currentPeriodStart   DateTime
@@ -411,6 +437,29 @@ model Subscription {
   @@map("subscriptions")
 }
 
+/// Super-admin-managed credit grant. Each row gives a workspace a fixed
+/// number of free seats (deducted from the Stripe seat quantity, with a
+/// minimum of 1 paid seat) plus a monthly USD allotment that stacks on
+/// top of any plan-included USD. Multiple active grants on the same
+/// workspace are summed. Mirrors prisma/schema.prisma WorkspaceGrant.
+model WorkspaceGrant {
+  id                 String    @id @default(uuid())
+  workspaceId        String
+  freeSeats          Int       @default(0)
+  monthlyIncludedUsd Float     @default(0)
+  startsAt           DateTime  @default(now())
+  expiresAt          DateTime?
+  note               String?
+  createdByUserId    String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, expiresAt])
+  @@map("workspace_grants")
+}
+
 model UsageWallet {
   id                           String   @id @default(uuid())
   workspaceId                  String   @unique
@@ -418,9 +467,10 @@ model UsageWallet {
   dailyIncludedUsd             Float    @default(0)
   monthlyIncludedAllocationUsd Float    @default(0)
   dailyUsedThisMonthUsd        Float    @default(0)
-  overageEnabled               Boolean  @default(false)
+  overageEnabled               Boolean  @default(true)
   overageHardLimitUsd          Float?
   overageAccumulatedUsd        Float    @default(0)
+  overageBilledUsd             Float    @default(0)
   stripeMeteredItemId          String?
   anniversaryDay               Int
   lastDailyReset               DateTime
@@ -1071,7 +1121,7 @@ model EvalRun {
   workers     Int       @default(1)
   status      String    @default("pending")
   label       String?
-  tags        String?
+  tags        String    @default("[]")
   triggeredBy String?
   pid         Int?
   jobName     String?

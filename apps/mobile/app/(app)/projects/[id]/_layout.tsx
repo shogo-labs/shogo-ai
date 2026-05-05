@@ -647,31 +647,58 @@ export default observer(function ProjectLayout() {
    * pre-loaded with a debug prompt. Cleaned up when the tab closes.
    */
   const [debugInitMessages, setDebugInitMessages] = useState<Record<string, string>>({})
+  /**
+   * Tri-state hydration status for the open-tabs list:
+   * - 'loading': haven't read AsyncStorage yet
+   * - 'restored-with-tabs': storage had a non-empty list, restored it
+   * - 'restored-empty': storage had an explicit `[]` (user previously closed everything)
+   * - 'fresh': no storage key — first visit to this project, OK to auto-create
+   * Distinguishing 'restored-empty' from 'fresh' is what prevents the auto-select
+   * effect from resurrecting a tab the user just closed.
+   */
+  type TabsHydration = 'loading' | 'restored-with-tabs' | 'restored-empty' | 'fresh'
+  const [tabsHydration, setTabsHydration] = useState<TabsHydration>('loading')
   const openTabsRestoredRef = useRef(false)
 
   // Restore open tabs from AsyncStorage on mount
   useEffect(() => {
     if (!projectId || openTabsRestoredRef.current) return
     AsyncStorage.getItem(`shogo:chatTabs:${projectId}`).then((raw) => {
-      if (raw) {
-        try {
-          const ids = JSON.parse(raw)
-          if (Array.isArray(ids) && ids.length > 0) {
+      if (raw === null) {
+        openTabsRestoredRef.current = true
+        setTabsHydration('fresh')
+        return
+      }
+      try {
+        const ids = JSON.parse(raw)
+        if (Array.isArray(ids)) {
+          if (ids.length > 0) {
             setOpenChatTabIds(ids)
             openTabsRestoredRef.current = true
+            setTabsHydration('restored-with-tabs')
             return
           }
-        } catch { /* ignore malformed data */ }
-      }
+          openTabsRestoredRef.current = true
+          setTabsHydration('restored-empty')
+          return
+        }
+      } catch { /* ignore malformed data */ }
+      // Malformed payload — treat as fresh so we still auto-create.
       openTabsRestoredRef.current = true
-    }).catch(() => { openTabsRestoredRef.current = true })
+      setTabsHydration('fresh')
+    }).catch(() => {
+      openTabsRestoredRef.current = true
+      setTabsHydration('fresh')
+    })
   }, [projectId])
 
-  // Persist open tabs to AsyncStorage when they change
+  // Persist open tabs to AsyncStorage on every change, including `[]`.
+  // Storing the explicit empty array is what lets the next mount distinguish
+  // "user closed everything" from "first-ever visit".
   useEffect(() => {
-    if (!projectId || !openTabsRestoredRef.current || openChatTabIds.length === 0) return
+    if (!projectId || tabsHydration === 'loading') return
     AsyncStorage.setItem(`shogo:chatTabs:${projectId}`, JSON.stringify(openChatTabIds)).catch(() => {})
-  }, [projectId, openChatTabIds])
+  }, [projectId, openChatTabIds, tabsHydration])
 
   // Ensure the active session is always in the open tabs list
   useEffect(() => {
@@ -705,10 +732,13 @@ export default observer(function ProjectLayout() {
           setChatSessionId(neighbor)
         } else {
           setChatSessionId(null)
+          // Belt-and-suspenders: clear the "last chat session" pointer so a
+          // future visit (or a stray run of the auto-select effect) can't
+          // resurrect the just-closed session id.
+          if (projectId) {
+            AsyncStorage.removeItem(`shogo:lastChatSession:${projectId}`).catch(() => {})
+          }
         }
-      }
-      if (next.length === 0 && projectId) {
-        AsyncStorage.removeItem(`shogo:chatTabs:${projectId}`).catch(() => {})
       }
       return next
     })
@@ -724,8 +754,11 @@ export default observer(function ProjectLayout() {
   const seededProjectsRef = useRef<Set<string>>(new Set())
 
   // Seed the chat session collection and, when no session is selected yet,
-  // auto-select or create one. The seed runs once per projectId; the
-  // auto-select/create branch only runs when chatSessionId is still null.
+  // auto-select or create one. The seed always runs once per projectId; the
+  // auto-select/create branch only runs on a *fresh* visit (no prior tabs in
+  // storage). For 'restored-with-tabs' the dedicated effect below picks an
+  // active tab from the restored list, and 'restored-empty' is honored as a
+  // user-intent "no tabs open" state — we deliberately do NOT auto-select.
   useEffect(() => {
     if (!projectId || !store?.chatSessionCollection) return
 
@@ -746,6 +779,12 @@ export default observer(function ProjectLayout() {
       }
 
       if (chatSessionId) return
+      // Wait for restore to finish so we know which branch to take.
+      if (tabsHydration === 'loading') return
+      // Only auto-select / auto-create on a truly fresh visit. On
+      // 'restored-with-tabs' the picker effect handles it; on 'restored-empty'
+      // we honor the user's explicit close.
+      if (tabsHydration !== 'fresh') return
 
       try {
         const existing = store.chatSessionCollection.all.filter(
@@ -780,7 +819,40 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true
     }
-  }, [projectId, store, chatSessionId, actions])
+  }, [projectId, store, chatSessionId, actions, tabsHydration])
+
+  // After a 'restored-with-tabs' hydration, choose which restored tab is
+  // active. Prefer the persisted `lastChatSession` if it's still in the list,
+  // otherwise the first restored tab. Tracked per-project so navigating
+  // between projects in the same mount still works.
+  const pickedFromRestoreRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!projectId) return
+    if (pickedFromRestoreRef.current.has(projectId)) return
+    if (tabsHydration !== 'restored-with-tabs') return
+    if (chatSessionId) {
+      pickedFromRestoreRef.current.add(projectId)
+      return
+    }
+    if (openChatTabIds.length === 0) return
+    let cancelled = false
+    AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`).then((lastId) => {
+      if (cancelled) return
+      const pick = lastId && openChatTabIds.includes(lastId) ? lastId : openChatTabIds[0]
+      if (pick) {
+        pickedFromRestoreRef.current.add(projectId)
+        setChatSessionId(pick)
+      }
+    }).catch(() => {
+      if (cancelled) return
+      const pick = openChatTabIds[0]
+      if (pick) {
+        pickedFromRestoreRef.current.add(projectId)
+        setChatSessionId(pick)
+      }
+    })
+    return () => { cancelled = true }
+  }, [projectId, tabsHydration, openChatTabIds, chatSessionId])
 
   const handleChatSessionChange = useCallback((sessionId: string) => {
     setChatSessionId(sessionId)
@@ -1438,6 +1510,38 @@ export default observer(function ProjectLayout() {
     )
   }
 
+  /**
+   * No tabs are open and we've finished hydrating from storage. This is the
+   * post-fix "user closed everything" state — show the chat history list so
+   * they can pick an existing session or start a new one. While
+   * `tabsHydration === 'loading'` we render nothing extra to avoid flashing
+   * the empty state for one frame on every mount.
+   */
+  const showEmptyChatState = tabsHydration !== 'loading' && openChatTabIds.length === 0
+
+  const renderEmptyChatList = (onSelectClose?: () => void) => (
+    <ChatSessionSidebar
+      sessions={chatSessions}
+      currentSessionId={undefined}
+      onSelect={(sessionId) => {
+        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
+        setChatSessionId(sessionId)
+        onSelectClose?.()
+      }}
+      onCreate={() => {
+        void handleCreateNewSession()
+        onSelectClose?.()
+      }}
+      onRename={handleRenameChatSession}
+      onLoadMore={handleLoadMoreSessions}
+      hasMore={store?.chatSessionCollection?.hasMore ?? false}
+      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+      hideHeader
+      searchOpen={sidebarSearchOpen}
+      onSearchClose={() => setSidebarSearchOpen(false)}
+    />
+  )
+
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
@@ -1639,7 +1743,23 @@ export default observer(function ProjectLayout() {
                   </View>
                 )}
                 {isChatFullscreen ? (
-                  <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                  <View className="flex-1 min-h-0 relative">
+                    <View
+                      className="absolute inset-0"
+                      style={showEmptyChatState ? { opacity: 0 } : undefined}
+                      pointerEvents={showEmptyChatState ? 'none' : 'auto'}
+                    >
+                      <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
+                    </View>
+                    {showEmptyChatState && (
+                      <View className="absolute inset-0 bg-background items-center justify-center px-8">
+                        <MessageSquare size={28} className="text-muted-foreground" />
+                        <Text className="text-sm text-muted-foreground mt-3 text-center">
+                          No chat open. Pick one from the list on the left, or start a new chat.
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                 ) : (
                   <>
                     {isWide && (
@@ -1659,11 +1779,22 @@ export default observer(function ProjectLayout() {
                     <View className="flex-1 min-h-0 relative">
                       <View
                         className="absolute inset-0"
-                        style={isWide && showChatSessions ? { opacity: 0 } : undefined}
-                        pointerEvents={isWide && showChatSessions ? 'none' : 'auto'}
+                        style={
+                          (isWide && showChatSessions) || showEmptyChatState
+                            ? { opacity: 0 }
+                            : undefined
+                        }
+                        pointerEvents={
+                          (isWide && showChatSessions) || showEmptyChatState ? 'none' : 'auto'
+                        }
                       >
                         <ShogoAwareChatPanels>{chatPanels}</ShogoAwareChatPanels>
                       </View>
+                      {showEmptyChatState && !(isWide && showChatSessions) && (
+                        <View className="absolute inset-0 bg-background">
+                          {renderEmptyChatList()}
+                        </View>
+                      )}
                       {isWide && showChatSessions && (
                         <View className="absolute inset-0 bg-background">
                           <ChatSessionSidebar

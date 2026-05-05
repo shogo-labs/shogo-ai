@@ -35,6 +35,7 @@
     "db:studio": "npx prisma studio",
     "db:generate": "npx prisma generate",
     "db:generate:all": "bun scripts/db-generate-all.ts",
+    "check:schema-parity": "bun scripts/check-schema-parity.ts",
     "db:reset": "npx prisma migrate reset",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",

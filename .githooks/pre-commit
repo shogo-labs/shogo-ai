@@ -78,4 +78,20 @@ rc=0
 check_schema "$CLOUD_SCHEMA" "$CLOUD_MIGRATIONS" "Cloud" || rc=1
 check_schema "$LOCAL_SCHEMA" "$LOCAL_MIGRATIONS" "Local" || rc=1
 
+# When either schema changes, also verify the two stay in sync at the
+# field level. Catches the common drift mode where a column is added to
+# prisma/schema.prisma but the SQLite mirror is forgotten — which then
+# crashes the API at runtime in local mode (see scripts/check-schema-parity.ts
+# for details and the allow-list of intentional differences).
+if printf '%s\n' "$staged_files" | grep -qxE "${CLOUD_SCHEMA}|${LOCAL_SCHEMA}"; then
+  echo "[pre-commit] Schema change detected — checking PG ↔ SQLite parity..."
+  if command -v bun >/dev/null 2>&1; then
+    if ! bun scripts/check-schema-parity.ts --quiet; then
+      rc=1
+    fi
+  else
+    echo "[pre-commit] WARN: bun not on PATH — skipping schema parity check."
+  fi
+fi
+
 exit $rc
