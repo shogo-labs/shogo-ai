@@ -163,6 +163,8 @@ export function marketplaceRoutes() {
       const sort = parseSort(c.req.query('sort') ?? undefined)
       const page = parseIntParam(c.req.query('page') ?? undefined, 1)
       const limit = parseIntParam(c.req.query('limit') ?? undefined, 20)
+      const creatorId = c.req.query('creatorId') || undefined
+      const excludeSlug = c.req.query('excludeSlug') || undefined
       const result = await marketplaceService.browseListings({
         category,
         pricingModel,
@@ -170,6 +172,8 @@ export function marketplaceRoutes() {
         sort,
         page,
         limit,
+        creatorId,
+        excludeSlug,
       })
       return c.json(result)
     } catch (err) {

@@ -37,6 +37,7 @@
     "db:generate:all": "bun scripts/db-generate-all.ts",
     "check:schema-parity": "bun scripts/check-schema-parity.ts",
     "db:reset": "npx prisma migrate reset",
+    "seed:marketplace": "bun scripts/seed-marketplace.ts",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
     "docker:prod:down": "docker-compose down",
