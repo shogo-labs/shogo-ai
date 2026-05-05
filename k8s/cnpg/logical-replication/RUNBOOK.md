@@ -284,6 +284,43 @@ done
 
 ---
 
+## Schema Evolution: Adding a New Table
+
+The publication is **self-maintaining** — it uses
+`CREATE PUBLICATION ... FOR TABLES IN SCHEMA public` (driven by
+`tablesInSchema: public` in the CNPG `Publication` CR), so any table created
+in the `public` schema is automatically part of the publication on the
+publisher side. There is **no per-region YAML to update** when migrations
+add a new table.
+
+What still has to happen:
+
+1. `prisma migrate deploy` runs in every region (handled automatically by
+   the deploy workflow — US via the API pod entrypoint, EU/India via
+   `kubectl run prisma-migrate-*` jobs in `.github/workflows/deploy.yml`).
+2. Each subscriber must `ALTER SUBSCRIPTION <name> REFRESH PUBLICATION`
+   once after the publisher has applied the migration, so the new table is
+   added to its subscription's table set. The deploy workflow does this
+   automatically at the end of each region's deploy job
+   (`Refresh logical replication subscriptions`).
+
+If a region's deploy fails between migration and refresh, or two regions'
+parallel deploys race so a refresh runs before the peer's migration, the
+hourly `replication-monitor` CronJob will log a `Subscription Refresh
+Staleness` warning. The fix is one command per stale subscription:
+
+```bash
+kubectl --context <ctx> exec -n shogo-production-system platform-pg-1 -c postgres -- \
+  psql -U postgres -d shogo -c "ALTER SUBSCRIPTION <subname> REFRESH PUBLICATION;"
+```
+
+### Do not revert the publication to a hand-listed table set
+
+The CI guard `bun run check:publication` rejects any PR that puts
+`- table: { name: ... }` entries back into the publication YAML. The
+hand-list is what caused incident #501 (api_keys + 25 other tables silently
+absent from EU/India for weeks). The shape is intentionally non-negotiable.
+
 ## Monitoring Queries
 
 Run these on any region to check health:

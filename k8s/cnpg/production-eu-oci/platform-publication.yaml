@@ -1,5 +1,20 @@
 # Publication for bidirectional logical replication — EU region.
-# Publishes all 68 application tables (excludes _prisma_migrations).
+#
+# Self-maintaining: `tablesInSchema: public` makes Postgres publish every
+# current and future table in the `public` schema (CREATE PUBLICATION ...
+# FOR TABLES IN SCHEMA public). New tables created by `prisma migrate deploy`
+# are picked up automatically — no edit to this YAML is required when the
+# schema grows.
+#
+# `_prisma_migrations` is technically published too but is never written by
+# application traffic and is filtered/ignored on the subscriber side. Do not
+# revert to a hand-listed `objects[].table` set: the CI guard
+# (`bun run check:publication`) will reject any PR that does, and the
+# replication-monitor CronJob warns on drift in production.
+#
+# After a migration adds a new table, each subscriber must run
+# `ALTER SUBSCRIPTION <name> REFRESH PUBLICATION` once. The deploy workflow
+# does this automatically; see `.github/workflows/deploy.yml`.
 apiVersion: postgresql.cnpg.io/v1
 kind: Publication
 metadata:
@@ -13,73 +28,4 @@ spec:
   publicationReclaimPolicy: retain
   target:
     objects:
-      - table: { name: accounts }
-      - table: { name: agent_configs }
-      - table: { name: agent_cost_metrics }
-      - table: { name: agent_eval_results }
-      - table: { name: agent_eval_sets }
-      - table: { name: analysis_findings }
-      - table: { name: analytics_digests }
-      - table: { name: api_keys }
-      - table: { name: billing_accounts }
-      - table: { name: budget_alerts }
-      - table: { name: chat_messages }
-      - table: { name: chat_sessions }
-      - table: { name: classification_decisions }
-      - table: { name: component_definitions }
-      - table: { name: component_specs }
-      - table: { name: compositions }
-      - table: { name: creator_badges }
-      - table: { name: creator_profiles }
-      - table: { name: credit_ledgers }
-      - table: { name: design_decisions }
-      - table: { name: eval_run_results }
-      - table: { name: eval_runs }
-      - table: { name: feature_sessions }
-      - table: { name: folders }
-      - table: { name: github_connections }
-      - table: { name: implementation_runs }
-      - table: { name: implementation_tasks }
-      - table: { name: infra_snapshots }
-      - table: { name: instance_subscriptions }
-      - table: { name: instances }
-      - table: { name: integration_points }
-      - table: { name: invitations }
-      - table: { name: invite_links }
-      - table: { name: layout_templates }
-      - table: { name: marketplace_installs }
-      - table: { name: marketplace_listing_versions }
-      - table: { name: marketplace_listings }
-      - table: { name: marketplace_reviews }
-      - table: { name: marketplace_transactions }
-      - table: { name: meetings }
-      - table: { name: members }
-      - table: { name: model_experiments }
-      - table: { name: notifications }
-      - table: { name: platform_settings }
-      - table: { name: project_checkpoints }
-      - table: { name: projects }
-      - table: { name: push_subscriptions }
-      - table: { name: registries }
-      - table: { name: remote_actions }
-      - table: { name: renderer_bindings }
-      - table: { name: requirements }
-      - table: { name: sessions }
-      - table: { name: signup_attributions }
-      - table: { name: starred_projects }
-      - table: { name: storage_usage }
-      - table: { name: subagent_model_overrides }
-      - table: { name: subscriptions }
-      - table: { name: task_dependencies }
-      - table: { name: task_executions }
-      - table: { name: test_cases }
-      - table: { name: test_specifications }
-      - table: { name: tool_call_logs }
-      - table: { name: usage_events }
-      - table: { name: usage_wallets }
-      - table: { name: users }
-      - table: { name: verifications }
-      - table: { name: voice_call_meters }
-      - table: { name: voice_project_configs }
-      - table: { name: workspace_grants }
-      - table: { name: workspaces }
+      - tablesInSchema: public
