@@ -689,6 +689,34 @@ jobs:
             service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
             --overwrite || true
 
+      - name: Verify configured node pool matches running nodes
+        env:
+          NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
+        run: |
+          if [ -z "$NODE_POOL_OCID" ]; then
+            echo "NODE_POOL_OCID not set, skipping verification"
+            exit 0
+          fi
+          # OKE node displayName is `oke-<cluster-hash>-<nodepool-hash>-<svchash>-N`.
+          # Cross-check that the configured NODE_POOL_OCID's hash appears in
+          # at least one node's displayName. If not, the cluster-autoscaler
+          # would silently sit inert (the staging incident on 2026-05-04).
+          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
+          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
+          if [ -z "$NODE_NAMES" ]; then
+            echo "::warning::Could not list nodes for pool verification — skipping"
+            exit 0
+          fi
+          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
+            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
+            echo "::error::Running nodes:"
+            echo "$NODE_NAMES" | sed 's/^/  /'
+            echo "::error::This means the cluster-autoscaler would silently fail to scale up. Update the GitHub Actions"
+            echo "::error::variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }} to the correct node-pool OCID."
+            exit 1
+          fi
+          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+
       - name: Deploy Cluster Autoscaler
         env:
           NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
@@ -697,14 +725,51 @@ jobs:
             echo "NODE_POOL_OCID not set, skipping"
           else
             sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+            # Force a reload so a stale OCID rolls out immediately, not next pod restart
+            kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
+            kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
             kubectl get pods -n kube-system -l app=cluster-autoscaler
           fi
 
-      - name: Deploy Image Prepuller DaemonSet
+      - name: Resolve runtime image to immutable tag
+        id: runtime-tag
         env:
           OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
         run: |
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${{ needs.resolve-config.outputs.environment }}-latest"
+          # Maintain a ConfigMap `shogo-runtime-version` recording the
+          # last-known-good runtime image SHA tag. If runtime was rebuilt
+          # this deploy, write the current github.sha; otherwise carry forward
+          # whatever is already there. This becomes the immutable RUNTIME_IMAGE
+          # used by the warm-pool controller for newly minted ksvc, replacing
+          # the old `:${env}-latest` tag that was vulnerable to OCIR cleanup.
+          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
+                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "$RUNTIME_CHANGED" = "true" ]; then
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+            echo "Runtime was rebuilt this deploy — pinning to $NEW_TAG"
+          elif [ -n "$PREV" ]; then
+            NEW_TAG="$PREV"
+            echo "Runtime unchanged — keeping previously pinned $NEW_TAG"
+          else
+            # Bootstrap: no prior pin and runtime unchanged. Fall back to
+            # the current SHA tag (the build pipeline always pushes one).
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+            echo "Bootstrap: no prior runtime pin — using $NEW_TAG"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
+          kubectl create configmap shogo-runtime-version \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --from-literal=image_tag="$NEW_TAG" \
+            --from-literal=image="$RUNTIME_IMAGE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Deploy Image Prepuller DaemonSet
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+        run: |
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
@@ -740,21 +805,33 @@ jobs:
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
       - name: Sync API environment variables
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
         run: |
-          EXPECTED_AUTH_URL="https://${{ env.DOMAIN }}"
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next(i for i,e in enumerate(envs) if e['name']=='BETTER_AUTH_URL'))" 2>/dev/null) || true
-          if [ -z "$IDX" ]; then
-            echo "BETTER_AUTH_URL not found, skipping"
-          else
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$EXPECTED_AUTH_URL" ]; then
-              echo "Updating BETTER_AUTH_URL: $CURRENT -> $EXPECTED_AUTH_URL"
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${EXPECTED_AUTH_URL}\"}
-              ]"
+          patch_env() {
+            local var_name="$1" expected="$2"
+            IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+              python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='${var_name}'), -1))" 2>/dev/null) || IDX="-1"
+            if [ -z "$IDX" ] || [ "$IDX" = "-1" ]; then
+              echo "  $var_name not found in api ksvc env — skipping"
+              return
             fi
-          fi
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$expected" ]; then
+              echo "  Updating $var_name: $CURRENT -> $expected"
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${expected}\"}
+              ]"
+            else
+              echo "  $var_name already correct"
+            fi
+          }
+          patch_env BETTER_AUTH_URL "https://${{ env.DOMAIN }}"
+          # Pin RUNTIME_IMAGE to the immutable SHA-tagged build resolved above.
+          # This is what the warm-pool controller uses for newly minted ksvc;
+          # see the staging incident postmortem (2026-05-04) for why we no
+          # longer use the mutable `:${env}-latest` tag here.
+          patch_env RUNTIME_IMAGE "$RUNTIME_IMAGE"
 
       - name: Wait for rollout
         run: |
@@ -973,16 +1050,57 @@ jobs:
               apiVersion: serving.knative.dev/v1
           EOF
 
+      - name: Verify configured node pool matches running nodes
+        run: |
+          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
+          if [ -z "$NODE_POOL_OCID" ]; then echo "NODE_POOL_OCID not set, skipping"; exit 0; fi
+          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
+          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
+          if [ -z "$NODE_NAMES" ]; then echo "::warning::Could not list nodes for pool verification"; exit 0; fi
+          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
+            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
+            echo "::error::Running nodes:"; echo "$NODE_NAMES" | sed 's/^/  /'
+            echo "::error::Update the GitHub Actions variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }}."
+            exit 1
+          fi
+          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+
       - name: Deploy Cluster Autoscaler
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
           if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
           sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+          kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
+          kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
+
+      - name: Resolve runtime image to immutable tag
+        id: runtime-tag
+        env:
+          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
+        run: |
+          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
+                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "$RUNTIME_CHANGED" = "true" ]; then
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV" ]; then
+            NEW_TAG="$PREV"
+          else
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
+          kubectl create configmap shogo-runtime-version \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --from-literal=image_tag="$NEW_TAG" \
+            --from-literal=image="$RUNTIME_IMAGE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
       - name: Deploy Image Prepuller
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
         run: |
-          OCIR_REGISTRY="${{ needs.resolve-config.outputs.ocir_registry }}"
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
@@ -990,6 +1108,7 @@ jobs:
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
@@ -1012,6 +1131,18 @@ jobs:
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
+          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
+          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
+              ]"
+            fi
+          fi
 
       - name: Wait for rollout and health check
         run: |
@@ -1235,16 +1366,57 @@ jobs:
             --command -- sh -c "cd /app && bunx prisma migrate deploy" \
             --timeout=120s || echo "::warning::EU migration completed with warnings"
 
+      - name: Verify configured node pool matches running nodes
+        run: |
+          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
+          if [ -z "$NODE_POOL_OCID" ]; then echo "NODE_POOL_OCID not set, skipping"; exit 0; fi
+          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
+          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
+          if [ -z "$NODE_NAMES" ]; then echo "::warning::Could not list nodes for pool verification"; exit 0; fi
+          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
+            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
+            echo "::error::Running nodes:"; echo "$NODE_NAMES" | sed 's/^/  /'
+            echo "::error::Update the GitHub Actions variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }}."
+            exit 1
+          fi
+          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+
       - name: Deploy Cluster Autoscaler
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
           if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
           sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+          kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
+          kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
+
+      - name: Resolve runtime image to immutable tag
+        id: runtime-tag
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
+        run: |
+          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
+                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "$RUNTIME_CHANGED" = "true" ]; then
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV" ]; then
+            NEW_TAG="$PREV"
+          else
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
+          kubectl create configmap shogo-runtime-version \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --from-literal=image_tag="$NEW_TAG" \
+            --from-literal=image="$RUNTIME_IMAGE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
       - name: Deploy Image Prepuller
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
         run: |
-          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
@@ -1252,6 +1424,7 @@ jobs:
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
@@ -1274,6 +1447,18 @@ jobs:
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
+          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
+          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
+              ]"
+            fi
+          fi
 
       - name: Wait for rollout and health check
         run: |
@@ -1476,16 +1661,57 @@ jobs:
             --command -- sh -c "cd /app && bunx prisma migrate deploy" \
             --timeout=120s || echo "::warning::India migration completed with warnings"
 
+      - name: Verify configured node pool matches running nodes
+        run: |
+          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
+          if [ -z "$NODE_POOL_OCID" ]; then echo "NODE_POOL_OCID not set, skipping"; exit 0; fi
+          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
+          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
+          if [ -z "$NODE_NAMES" ]; then echo "::warning::Could not list nodes for pool verification"; exit 0; fi
+          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
+            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
+            echo "::error::Running nodes:"; echo "$NODE_NAMES" | sed 's/^/  /'
+            echo "::error::Update the GitHub Actions variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }}."
+            exit 1
+          fi
+          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+
       - name: Deploy Cluster Autoscaler
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
           if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
           sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+          kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
+          kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
+
+      - name: Resolve runtime image to immutable tag
+        id: runtime-tag
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
+        run: |
+          PREV=$(kubectl get configmap shogo-runtime-version -n ${{ env.NS_SYSTEM }} \
+                  -o jsonpath='{.data.image_tag}' 2>/dev/null || echo "")
+          if [ "$RUNTIME_CHANGED" = "true" ]; then
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV" ]; then
+            NEW_TAG="$PREV"
+          else
+            NEW_TAG="${{ env.IMAGE_TAG }}"
+          fi
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${NEW_TAG}"
+          kubectl create configmap shogo-runtime-version \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --from-literal=image_tag="$NEW_TAG" \
+            --from-literal=image="$RUNTIME_IMAGE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "image=$RUNTIME_IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
       - name: Deploy Image Prepuller
+        env:
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
         run: |
-          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
@@ -1493,6 +1719,7 @@ jobs:
       - name: Deploy Knative services
         env:
           OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
@@ -1515,6 +1742,18 @@ jobs:
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
           patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
+          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
+          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
+              ]"
+            fi
+          fi
 
       - name: Wait for rollout and health check
         run: |
