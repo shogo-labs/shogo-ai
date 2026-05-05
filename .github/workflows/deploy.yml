@@ -1175,6 +1175,35 @@ jobs:
           kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
           echo "US deploy verified"
 
+      # ----------------------------------------------------------------------
+      # Logical replication: keep the cross-region publication in sync.
+      #
+      # The publication YAML uses `tablesInSchema: public`, so Postgres itself
+      # automatically publishes any table created by `prisma migrate deploy`
+      # — no YAML edits needed when the schema grows. We still re-apply the
+      # CR every deploy (idempotent) so a manual edit on the cluster can't
+      # silently survive, and we issue `REFRESH PUBLICATION` on each local
+      # subscription so any new tables added on EU/India become visible to
+      # US within minutes instead of waiting for the hourly monitor.
+      #
+      # Background: incident #501 — 26 tables (incl. api_keys) were silently
+      # missing from this publication for weeks because the old hand-list
+      # had drifted. See `k8s/cnpg/logical-replication/RUNBOOK.md`.
+      # ----------------------------------------------------------------------
+      - name: Reconcile logical replication publication
+        run: |
+          kubectl apply -f k8s/cnpg/production-us-oci/platform-publication.yaml
+
+      - name: Refresh logical replication subscriptions
+        run: |
+          for SUB in sub_from_eu sub_from_india; do
+            echo "Refreshing $SUB on US..."
+            kubectl exec -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
+              || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on US (subscription may not exist yet)"
+          done
+
       - name: Summary
         run: |
           echo "## US Production Deploy" >> $GITHUB_STEP_SUMMARY
@@ -1380,6 +1409,27 @@ jobs:
             exit 1
           fi
           echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+
+      # ----------------------------------------------------------------------
+      # Logical replication: keep the cross-region publication in sync.
+      # See the matching block in the deploy-us job for full rationale (#501).
+      # On EU we refresh sub_from_us and sub_from_india so any new tables
+      # added by this migration on US (or in parallel on India) become
+      # visible here without waiting for the hourly monitor.
+      # ----------------------------------------------------------------------
+      - name: Reconcile logical replication publication
+        run: |
+          kubectl apply -f k8s/cnpg/production-eu-oci/platform-publication.yaml
+
+      - name: Refresh logical replication subscriptions
+        run: |
+          for SUB in sub_from_us sub_from_india; do
+            echo "Refreshing $SUB on EU..."
+            kubectl exec -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
+              || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on EU (subscription may not exist yet)"
+          done
 
       - name: Deploy Cluster Autoscaler
         run: |
@@ -1675,6 +1725,24 @@ jobs:
             exit 1
           fi
           echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
+
+      # ----------------------------------------------------------------------
+      # Logical replication: keep the cross-region publication in sync.
+      # See the matching block in the deploy-us job for full rationale (#501).
+      # ----------------------------------------------------------------------
+      - name: Reconcile logical replication publication
+        run: |
+          kubectl apply -f k8s/cnpg/production-india-oci/platform-publication.yaml
+
+      - name: Refresh logical replication subscriptions
+        run: |
+          for SUB in sub_from_us sub_from_eu; do
+            echo "Refreshing $SUB on India..."
+            kubectl exec -n ${{ env.NS_SYSTEM }} platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
+              || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on India (subscription may not exist yet)"
+          done
 
       - name: Deploy Cluster Autoscaler
         run: |
