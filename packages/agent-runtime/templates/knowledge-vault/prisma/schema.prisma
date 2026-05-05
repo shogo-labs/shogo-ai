@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+//
+// Knowledge Vault — persistence schema
+//
+// Surfaces (Vault, Synthesis, Research, Health) read and write against the
+// auto-generated CRUD routes served from `server.tsx` on top of these models.
+// Run `bun run generate` after editing to regenerate routes/types.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---- Vault Notes ------------------------------------------------------------
+
+/// Core knowledge vault note with AI-first frontmatter fields.
+model Note {
+  id           String   @id @default(cuid())
+  title        String
+  content      String
+  entityType   String   @default("concept") @map("entity_type")
+  source       String
+  sourceUrl    String   @default("") @map("source_url")
+  confidence   String   @default("medium")
+  lastVerified String   @map("last_verified")
+  entities     String   @default("[]")
+  relatedNotes String   @default("[]") @map("related_notes")
+  factTrueFrom String   @default("") @map("fact_true_from")
+  factTrueUntil String  @default("present") @map("fact_true_until")
+  vaultLearned String   @map("vault_learned")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([entityType])
+  @@index([confidence])
+  @@index([updatedAt])
+  @@map("notes")
+}
+
+// ---- Citations --------------------------------------------------------------
+
+/// Source citations attached to vault notes.
+model Citation {
+  id         String   @id @default(cuid())
+  noteId     String   @map("note_id")
+  source     String
+  url        String
+  date       String
+  confidence String   @default("medium")
+  claim      String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([noteId])
+  @@map("citations")
+}
+
+// ---- Synthesis --------------------------------------------------------------
+
+/// Cross-source pattern synthesis linking multiple evidence notes.
+model Synthesis {
+  id            String   @id @default(cuid())
+  title         String
+  pattern       String
+  evidence      String   @default("[]")
+  evidenceCount Int      @default(0) @map("evidence_count")
+  confidence    String   @default("medium")
+  patternType   String   @default("theme") @map("pattern_type")
+  timeWindow    String   @default("7 days") @map("time_window")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([patternType])
+  @@index([createdAt])
+  @@map("syntheses")
+}
+
+// ---- Contradictions ---------------------------------------------------------
+
+/// Flagged contradictions between two vault notes.
+model Contradiction {
+  id         String   @id @default(cuid())
+  noteAId    String   @map("note_a_id")
+  noteBId    String   @map("note_b_id")
+  claimA     String   @map("claim_a")
+  claimB     String   @map("claim_b")
+  status     String   @default("unresolved")
+  resolution String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("contradictions")
+}
+
+// ---- Research ---------------------------------------------------------------
+
+/// Research findings with citations and vault impact tracking.
+model Research {
+  id                  String   @id @default(cuid())
+  title               String
+  query               String
+  mode                String   @default("quick")
+  findings            String
+  citations           String   @default("[]")
+  status              String   @default("in_progress")
+  confidence          String   @default("medium")
+  gapsFilled          Int      @default(0) @map("gaps_filled")
+  contradictionsFound Int      @default(0) @map("contradictions_found")
+  notesUpdated        Int      @default(0) @map("notes_updated")
+  notesCreated        Int      @default(0) @map("notes_created")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("researches")
+}
+
+// ---- Vault Metrics ----------------------------------------------------------
+
+/// Daily vault health snapshots for the Health surface.
+model VaultMetric {
+  id                       String   @id @default(cuid())
+  date                     String   @unique
+  totalNotes               Int      @default(0) @map("total_notes")
+  notesThisWeek            Int      @default(0) @map("notes_this_week")
+  orphanCount              Int      @default(0) @map("orphan_count")
+  contradictionCount       Int      @default(0) @map("contradiction_count")
+  unresolvedContradictions Int      @default(0) @map("unresolved_contradictions")
+  synthesisCount           Int      @default(0) @map("synthesis_count")
+  staleNotes               Int      @default(0) @map("stale_notes")
+  averageConfidence        Float    @default(0) @map("average_confidence")
+  totalSources             Int      @default(0) @map("total_sources")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  @@map("vault_metrics")
+}
+
+// ---- Daily Notes ------------------------------------------------------------
+
+/// Daily digest entries capturing what happened each day.
+model DailyNote {
+  id              String   @id @default(cuid())
+  date            String   @unique
+  summary         String
+  decisionsCount  Int      @default(0) @map("decisions_count")
+  sourcesIngested Int      @default(0) @map("sources_ingested")
+  tasksCreated    Int      @default(0) @map("tasks_created")
+  contradictions  String   @default("[]")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("daily_notes")
+}
