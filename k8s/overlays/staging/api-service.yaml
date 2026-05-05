@@ -129,8 +129,17 @@ spec:
               value: "0"
             - name: PROJECT_NAMESPACE
               value: "shogo-staging-workspaces"
+            # RUNTIME_IMAGE is patched per-deploy to an immutable
+            # `:staging-<git-sha>` tag by the workflow's "Sync API environment
+            # variables" step (which reads the `shogo-runtime-version`
+            # ConfigMap written earlier in the deploy). The placeholder below
+            # is only used on a brand-new cluster bootstrap before the first
+            # deploy patch lands. NEVER set this to a mutable tag like
+            # `:staging-latest` — the OCIR cleanup workflow's cross-reference
+            # cannot keep that digest alive once the tag moves to a newer
+            # push. See the staging incident postmortem (2026-05-04).
             - name: RUNTIME_IMAGE
-              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:staging-latest"
+              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:staging-bootstrap"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT

@@ -100,8 +100,11 @@ spec:
               value: "0"
             - name: PROJECT_NAMESPACE
               value: "shogo-production-workspaces"
+            # RUNTIME_IMAGE is patched per-deploy to an immutable
+            # `:production-<git-sha>` tag. NEVER use a mutable tag here.
+            # See the staging incident postmortem (2026-05-04).
             - name: RUNTIME_IMAGE
-              value: "ap-mumbai-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-latest"
+              value: "ap-mumbai-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-bootstrap"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
