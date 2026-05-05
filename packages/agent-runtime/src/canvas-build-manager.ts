@@ -203,7 +203,7 @@ export class CanvasBuildManager {
       // Failed build: drop the partial staging output so it doesn't
       // poison the next swap, and leave `dist/` untouched.
       cleanupStagingOutput(this.workspaceDir, DEFAULT_STAGING_DIR)
-      console.error(`${LOG_PREFIX} Build error:`, err.message)
+      console.error(`${LOG_PREFIX} Build error:`, err.message.slice(0, 200))
       this.callbacks.onBuildError(err.message)
     } finally {
       this.building = false
