@@ -291,6 +291,21 @@ resource "oci_containerengine_node_pool" "main" {
   ssh_public_key = var.ssh_public_key != "" ? var.ssh_public_key : null
 
   freeform_tags = var.tags
+
+  # The cluster-autoscaler is wired to this node pool's OCID via the
+  # GitHub Actions variable NODE_POOL_OCID for the matching environment.
+  # If Terraform replaces this resource, the OCID changes and the CA
+  # silently sits inert (logs `node pool not found for instance`),
+  # because OCID-typed args don't trigger a CA rollout. This caused the
+  # staging incident on 2026-05-04 — the deploy workflow's
+  # "Verify configured node pool matches running nodes" step fails fast
+  # in that case, but the safer fix is to disallow accidental
+  # replacement here. To intentionally replace the pool: temporarily
+  # remove this lifecycle block, plan/apply, then update the
+  # NODE_POOL_OCID GH Actions var BEFORE the next deploy.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -357,6 +372,12 @@ resource "oci_containerengine_node_pool" "workloads" {
   }
 
   freeform_tags = var.tags
+
+  # See note on `oci_containerengine_node_pool.main.lifecycle`. Same rule:
+  # silent CA breakage if the OCID changes, so disallow accidental replace.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -390,4 +411,23 @@ output "system_node_pool_id" {
 output "workload_node_pool_id" {
   description = "Workload node pool OCID (null if disabled)"
   value       = var.enable_workload_pool ? oci_containerengine_node_pool.workloads[0].id : null
+}
+
+# Operator-facing reminder: these are the values that MUST be kept in sync
+# with the matching GitHub Actions environment variables. If they ever
+# diverge (e.g. you replaced a node pool out-of-band), the cluster-autoscaler
+# silently fails to scale and warm-pool admissions wedge. The deploy
+# workflow's `Verify configured node pool matches running nodes` step will
+# fail fast in that case — but it's much better not to drift in the first
+# place. After a `terraform apply` that touches the cluster or pools, copy
+# the values below into the matching GitHub Actions environment variables
+# (Settings → Environments → <env> → Variables):
+#   - OKE_CLUSTER_OCID  ← cluster_id
+#   - NODE_POOL_OCID    ← system_node_pool_id (CA scales the system pool today)
+output "github_actions_vars" {
+  description = "Values that must be mirrored into GitHub Actions env vars"
+  value = {
+    OKE_CLUSTER_OCID = oci_containerengine_cluster.main.id
+    NODE_POOL_OCID   = oci_containerengine_node_pool.main.id
+  }
 }
