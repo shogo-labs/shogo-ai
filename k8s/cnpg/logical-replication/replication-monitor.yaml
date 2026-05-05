@@ -112,6 +112,35 @@ spec:
                     echo "CRITICAL: $WAL_BLOAT slot(s) with > 1GB WAL lag!"
                   fi
 
+                  echo "--- Publication Completeness ---"
+                  UNPUBLISHED=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_tables t
+                    LEFT JOIN pg_publication_tables pt
+                      ON pt.tablename = t.tablename
+                      AND pt.schemaname = t.schemaname
+                      AND pt.pubname = 'shogo_all_pub'
+                    WHERE t.schemaname = 'public'
+                      AND t.tablename NOT LIKE '_prisma%'
+                      AND pt.tablename IS NULL;
+                  ")
+
+                  if [ "$UNPUBLISHED" -gt 0 ]; then
+                    echo "WARNING: $UNPUBLISHED table(s) missing from publication!"
+                    psql -X -t -A -c "
+                      SELECT t.tablename
+                      FROM pg_tables t
+                      LEFT JOIN pg_publication_tables pt
+                        ON pt.tablename = t.tablename
+                        AND pt.schemaname = t.schemaname
+                        AND pt.pubname = 'shogo_all_pub'
+                      WHERE t.schemaname = 'public'
+                        AND t.tablename NOT LIKE '_prisma%'
+                        AND pt.tablename IS NULL
+                      ORDER BY t.tablename;
+                    "
+                  fi
+
                   echo "=== Monitor complete ==="
               resources:
                 requests:
