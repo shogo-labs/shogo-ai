@@ -20,6 +20,7 @@ beforeAll(() => {
 })
 
 afterAll(async () => {
+  await cleanupTestRows(env, "api_keys", '"keyPrefix"', TEST_MARKER)
   await cleanupTestRows(env, "sessions", '"userId"', TEST_MARKER)
   await cleanupTestRows(env, "platform_settings", "key", TEST_MARKER)
   await cleanupTestRows(env, "users", "email", TEST_MARKER)
@@ -255,6 +256,80 @@ describe("replication lag", () => {
     const elapsed = Date.now() - start
     console.log(`Replication lag (US -> EU + India): ${elapsed}ms`)
     expect(elapsed).toBeLessThan(5_000)
+  })
+})
+
+describe("api_keys replication", () => {
+  test("API key created in US replicates to EU and India", async () => {
+    const id = generateCuid()
+    const userId = generateCuid()
+    const workspaceId = generateCuid()
+    const keyHash = `test_hash_${TEST_MARKER}_${id}`
+    const keyPrefix = `shogo_sk_${TEST_MARKER.slice(0, 8)}`
+
+    await pool(env, "us").query(
+      `INSERT INTO users (id, email, name, "emailVerified", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, false, NOW(), NOW())`,
+      [userId, `apikey_owner_${TEST_MARKER}@test.shogo.dev`, "API Key Owner"]
+    )
+    await sleep(2000)
+
+    await pool(env, "us").query(
+      `INSERT INTO api_keys (id, name, "keyHash", "keyPrefix", "workspaceId", "userId", kind, "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, 'user', NOW(), NOW())`,
+      [id, "Test Key", keyHash, keyPrefix, workspaceId, userId]
+    )
+
+    const [euRow, indiaRow] = await Promise.all([
+      waitForReplication<{ id: string; keyHash: string }>({
+        sourcePool: pool(env, "us"),
+        targetPool: pool(env, "eu"),
+        query: 'SELECT id, "keyHash" FROM api_keys WHERE id = $1',
+        params: [id],
+        timeoutMs: 10_000,
+      }),
+      waitForReplication<{ id: string; keyHash: string }>({
+        sourcePool: pool(env, "us"),
+        targetPool: pool(env, "india"),
+        query: 'SELECT id, "keyHash" FROM api_keys WHERE id = $1',
+        params: [id],
+        timeoutMs: 10_000,
+      }),
+    ])
+
+    expect(euRow.keyHash).toBe(keyHash)
+    expect(indiaRow.keyHash).toBe(keyHash)
+  })
+})
+
+describe("publication completeness", () => {
+  test("all application tables are published in every region", async () => {
+    const regions = ["us", "eu", "india"] as const
+
+    for (const region of regions) {
+      const pubResult = await pool(env, region).query(`
+        SELECT schemaname, tablename
+        FROM pg_publication_tables
+        WHERE pubname = 'shogo_all_pub'
+        ORDER BY tablename
+      `)
+      const publishedTables = pubResult.rows.map((r: any) => r.tablename)
+
+      const allTablesResult = await pool(env, region).query(`
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = 'public'
+          AND tablename NOT LIKE '_prisma%'
+        ORDER BY tablename
+      `)
+      const allTables = allTablesResult.rows.map((r: any) => r.tablename)
+
+      const missing = allTables.filter((t: string) => !publishedTables.includes(t))
+      if (missing.length > 0) {
+        console.error(`[${region}] Tables missing from publication: ${missing.join(", ")}`)
+      }
+      expect(missing).toEqual([])
+    }
   })
 })
 
