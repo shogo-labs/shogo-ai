@@ -1129,20 +1129,42 @@ jobs:
             fi
           }
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
-          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
-          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
-              ]"
-            fi
+      # -----------------------------------------------------------------------
+      # Declarative reconciliation of the api ksvc + RBAC from the overlay YAML.
+      #
+      # The api-service.yaml is the source of truth for ALL env vars, resource
+      # limits, RBAC, and service topology. We inject the correct image tag and
+      # RUNTIME_IMAGE before applying so there is exactly one revision rollout
+      # and every env var/config change committed to the YAML is automatically
+      # picked up - no more manual `patch_env` per variable.
+      #
+      # Background: incident where SHOGO_TUNNEL_WS_URL was committed to the
+      # YAML but never reached the cluster because the old pipeline only
+      # patched the image tag. This pattern makes that class of bug impossible.
+      # -----------------------------------------------------------------------
+      - name: Reconcile api service from overlay YAML
+        env:
+          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+        run: |
+          if [ "$API_CHANGED" = "true" ]; then
+            API_IMAGE="${OCIR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_API_IMAGE" ]; then
+            API_IMAGE="$PREV_API_IMAGE"
+          else
+            API_IMAGE="${OCIR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
           fi
+
+          sed -e "s|image: .*shogo/shogo-api:.*|image: ${API_IMAGE}|" \
+              -e "s|value: \".*shogo/shogo-runtime:production-bootstrap\"|value: \"${RUNTIME_IMAGE}\"|" \
+              k8s/overlays/production-us/api-service.yaml \
+            | kubectl apply --server-side --force-conflicts -f -
+
+          echo "Applied api-service.yaml with image=${API_IMAGE} runtime=${RUNTIME_IMAGE}"
 
       - name: Wait for rollout and health check
         run: |
@@ -1203,6 +1225,12 @@ jobs:
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on US (subscription may not exist yet)"
           done
+
+      # Tunnel ingress: dedicated route bypassing Knative DomainMapping for
+      # WebSocket Upgrade. See api-tunnel-ingress.yaml for full rationale.
+      - name: Reconcile tunnel ingress
+        run: |
+          kubectl apply -f k8s/overlays/production-us/api-tunnel-ingress.yaml
 
       - name: Summary
         run: |
@@ -1495,20 +1523,35 @@ jobs:
             fi
           }
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
-          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
-          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
-              ]"
-            fi
+      # Declarative api ksvc reconciliation - see deploy-us for full rationale.
+      - name: Reconcile api service from overlay YAML
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+        run: |
+          if [ "$API_CHANGED" = "true" ]; then
+            API_IMAGE="${OCIR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_API_IMAGE" ]; then
+            API_IMAGE="$PREV_API_IMAGE"
+          else
+            API_IMAGE="${OCIR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
           fi
+
+          sed -e "s|image: .*shogo/shogo-api:.*|image: ${API_IMAGE}|" \
+              -e "s|value: \".*shogo/shogo-runtime:production-bootstrap\"|value: \"${RUNTIME_IMAGE}\"|" \
+              k8s/overlays/production-eu/api-service.yaml \
+            | kubectl apply --server-side --force-conflicts -f -
+
+          echo "Applied api-service.yaml with image=${API_IMAGE} runtime=${RUNTIME_IMAGE}"
+
+      # Tunnel ingress - see deploy-us for full rationale.
+      - name: Reconcile tunnel ingress
+        run: |
+          kubectl apply -f k8s/overlays/production-eu/api-tunnel-ingress.yaml
 
       - name: Wait for rollout and health check
         run: |
@@ -1808,20 +1851,35 @@ jobs:
             fi
           }
           patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
-          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
           patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
-          # Pin RUNTIME_IMAGE on api ksvc to the immutable SHA tag
-          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
-            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next((i for i,e in enumerate(envs) if e['name']=='RUNTIME_IMAGE'), -1))" 2>/dev/null) || IDX="-1"
-          if [ -n "$IDX" ] && [ "$IDX" != "-1" ]; then
-            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
-            if [ "$CURRENT" != "$RUNTIME_IMAGE" ]; then
-              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${RUNTIME_IMAGE}\"}
-              ]"
-            fi
+      # Declarative api ksvc reconciliation - see deploy-us for full rationale.
+      - name: Reconcile api service from overlay YAML
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          RUNTIME_IMAGE: ${{ steps.runtime-tag.outputs.image }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+        run: |
+          if [ "$API_CHANGED" = "true" ]; then
+            API_IMAGE="${OCIR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
+          elif [ -n "$PREV_API_IMAGE" ]; then
+            API_IMAGE="$PREV_API_IMAGE"
+          else
+            API_IMAGE="${OCIR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}"
           fi
+
+          sed -e "s|image: .*shogo/shogo-api:.*|image: ${API_IMAGE}|" \
+              -e "s|value: \".*shogo/shogo-runtime:production-bootstrap\"|value: \"${RUNTIME_IMAGE}\"|" \
+              k8s/overlays/production-india/api-service.yaml \
+            | kubectl apply --server-side --force-conflicts -f -
+
+          echo "Applied api-service.yaml with image=${API_IMAGE} runtime=${RUNTIME_IMAGE}"
+
+      # Tunnel ingress - see deploy-us for full rationale.
+      - name: Reconcile tunnel ingress
+        run: |
+          kubectl apply -f k8s/overlays/production-india/api-tunnel-ingress.yaml
 
       - name: Wait for rollout and health check
         run: |
