@@ -1,0 +1,257 @@
+# =============================================================================
+# CI - CNPG Publication self-maintains
+# =============================================================================
+# Spins up a kind cluster + the same CNPG operator version we run in
+# production, applies the regional `platform-publication.yaml`, and
+# asserts:
+#
+#   1. CNPG reconciles the Publication CR to `ready=true`
+#   2. The resulting Postgres publication is `FOR TABLES IN SCHEMA public`
+#      (NOT `FOR ALL TABLES`, NOT a hand-listed table set)
+#   3. A new table created after the publication exists is auto-included,
+#      with no `ALTER PUBLICATION` call
+#
+# This is the test that proves the prevention fix from #506 actually works
+# end-to-end. It's the only check that catches a CNPG operator regression
+# in `tablesInSchema` translation, and the only one that proves the
+# auto-include behavior on the version of Postgres we actually run (18.3).
+#
+# Skip-conditions: only runs when files in the publication's blast radius
+# change, so it doesn't slow down unrelated PRs.
+# =============================================================================
+
+name: CI - CNPG Publication
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'k8s/cnpg/**/platform-publication.yaml'
+      - 'scripts/check-publication-drift.ts'
+      - '.github/workflows/ci-cnpg.yml'
+
+permissions: {}
+
+concurrency:
+  group: ci-cnpg-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  cnpg-publication:
+    name: Publication self-maintains under CNPG ${{ matrix.cnpg_chart }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Chart 0.23.0 == operator v1.25.x — the version pinned in
+        # `terraform/modules/cnpg/main.tf` and running in all production
+        # regions. Add newer versions here when bumping the prod pin.
+        cnpg_chart: ['0.23.0']
+
+    env:
+      # Match production: PG 18.3, same image CNPG uses on OCI.
+      PG_IMAGE: 'ghcr.io/cloudnative-pg/postgresql:18.3'
+      NS: 'shogo-production-system'
+      PUB_NAME: 'shogo_all_pub'
+      MANIFEST: 'k8s/cnpg/production-us-oci/platform-publication.yaml'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          cluster_name: cnpg-test
+          wait: 120s
+
+      - name: Install CNPG operator (matches prod chart version)
+        run: |
+          helm repo add cnpg https://cloudnative-pg.github.io/charts
+          helm repo update
+          # `--wait` blocks until the operator deployment is Available, so
+          # there's no need for a separate kubectl wait step here.
+          helm install cnpg-operator cnpg/cloudnative-pg \
+            --version "${{ matrix.cnpg_chart }}" \
+            --namespace cnpg-system --create-namespace \
+            --set monitoring.podMonitorEnabled=false \
+            --wait --timeout 5m
+          # Confirm the Publication CRD this PR depends on is installed.
+          kubectl get crd publications.postgresql.cnpg.io \
+            -o jsonpath='{.spec.versions[*].name}' && echo
+
+      - name: Create minimal Cluster CR
+        # Don't apply the prod cluster YAML — it references externalClusters
+        # with hardcoded IPs and an OCI-only storage class. This minimal CR
+        # exercises the same Publication reconciliation code path on the
+        # same Postgres image (18.3) as prod.
+        run: |
+          kubectl create namespace "${NS}"
+          cat <<EOF | kubectl apply -f -
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: platform-pg
+            namespace: ${NS}
+          spec:
+            instances: 1
+            imageName: ${PG_IMAGE}
+            postgresql:
+              parameters:
+                wal_level: "logical"
+            bootstrap:
+              initdb:
+                database: shogo
+                owner: shogo
+            storage:
+              size: 1Gi
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          EOF
+          echo "Waiting for cluster to be Ready..."
+          kubectl wait --for=condition=Ready cluster/platform-pg -n "${NS}" --timeout=5m
+
+      - name: Apply publication manifest under test
+        run: |
+          kubectl apply -f "${MANIFEST}"
+
+      - name: Wait for Publication CR to reconcile
+        run: |
+          for i in $(seq 1 30); do
+            APPLIED=$(kubectl get publication platform-pg-pub -n "${NS}" \
+              -o jsonpath='{.status.applied}' 2>/dev/null || echo "")
+            if [ "${APPLIED}" = "true" ]; then
+              echo "Publication CR reached applied=true"
+              exit 0
+            fi
+            echo "[$i/30] applied=${APPLIED:-<unset>}, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Publication CR did not reach applied=true within 150s"
+          kubectl get publication platform-pg-pub -n "${NS}" -o yaml
+          exit 1
+
+      - name: Assert publication shape (FOR TABLES IN SCHEMA public)
+        run: |
+          PSQL() {
+            kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -t -A -v ON_ERROR_STOP=1 "$@"
+          }
+
+          # `FOR ALL TABLES` would set puballtables=t. We don't want that —
+          # we want `FOR TABLES IN SCHEMA public`, which sets puballtables=f
+          # and adds a row to pg_publication_namespace.
+          PUBALLTABLES=$(PSQL -c "SELECT puballtables FROM pg_publication WHERE pubname = '${PUB_NAME}'")
+          if [ "${PUBALLTABLES}" != "f" ]; then
+            echo "::error::publication is FOR ALL TABLES (puballtables=${PUBALLTABLES}); expected FOR TABLES IN SCHEMA public"
+            PSQL -c "\dRp+ ${PUB_NAME}"
+            exit 1
+          fi
+
+          IN_SCHEMA=$(PSQL -c "
+            SELECT n.nspname
+            FROM pg_publication_namespace pn
+            JOIN pg_publication p ON p.oid = pn.pnpubid
+            JOIN pg_namespace n ON n.oid = pn.pnnspid
+            WHERE p.pubname = '${PUB_NAME}'
+          ")
+          if [ "${IN_SCHEMA}" != "public" ]; then
+            echo "::error::publication does not target schema 'public', got: '${IN_SCHEMA}'"
+            PSQL -c "\dRp+ ${PUB_NAME}"
+            exit 1
+          fi
+
+          echo "Publication shape OK: FOR TABLES IN SCHEMA public"
+          PSQL -c "\dRp+ ${PUB_NAME}"
+
+      - name: Assert auto-include — new table is published without ALTER
+        # This is the regression test for #501. A migration that adds a
+        # table must propagate to the publication automatically. If this
+        # step ever fails, do NOT merge the PR — Postgres or CNPG has
+        # broken the assumption this whole prevention fix relies on.
+        run: |
+          PSQL() {
+            kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+              psql -U postgres -d shogo -t -A -v ON_ERROR_STOP=1 "$@"
+          }
+
+          BEFORE=$(PSQL -c "SELECT count(*) FROM pg_publication_tables WHERE pubname='${PUB_NAME}'")
+          echo "Tables published before: ${BEFORE}"
+
+          # Simulate `prisma migrate deploy` adding a new model.
+          # No ALTER PUBLICATION call — the test is whether Postgres
+          # auto-includes it.
+          PSQL -c "CREATE TABLE drift_canary (id int PRIMARY KEY, marker text);"
+
+          AFTER=$(PSQL -c "SELECT count(*) FROM pg_publication_tables WHERE pubname='${PUB_NAME}'")
+          echo "Tables published after: ${AFTER}"
+
+          IN_PUB=$(PSQL -c "
+            SELECT count(*) FROM pg_publication_tables
+            WHERE pubname='${PUB_NAME}' AND tablename='drift_canary'
+          ")
+          if [ "${IN_PUB}" != "1" ]; then
+            echo "::error::drift_canary was NOT auto-included in ${PUB_NAME}"
+            echo "::error::This means CNPG/Postgres did not honor FOR TABLES IN SCHEMA — the prevention fix is broken."
+            PSQL -c "SELECT tablename FROM pg_publication_tables WHERE pubname='${PUB_NAME}' ORDER BY 1"
+            exit 1
+          fi
+
+          echo "Auto-include works: drift_canary was published without an ALTER PUBLICATION call."
+
+      - name: Assert all 3 regional manifests behave identically
+        # Quick paranoia check: the CI guard already enforces that the EU
+        # and India YAMLs are byte-identical to US (modulo the leading
+        # comment), but apply each one in turn here too so we know CNPG
+        # accepts all three. Cheap because they reconcile to the same CR.
+        run: |
+          for region in eu india; do
+            echo "::group::Apply ${region} manifest"
+            kubectl apply -f "k8s/cnpg/production-${region}-oci/platform-publication.yaml"
+            for i in $(seq 1 10); do
+              APPLIED=$(kubectl get publication platform-pg-pub -n "${NS}" \
+                -o jsonpath='{.status.applied}' 2>/dev/null || echo "")
+              if [ "${APPLIED}" = "true" ]; then break; fi
+              sleep 3
+            done
+            if [ "${APPLIED}" != "true" ]; then
+              echo "::error::${region} manifest did not reconcile to applied=true"
+              kubectl get publication platform-pg-pub -n "${NS}" -o yaml
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+          echo "All three regional manifests reconcile cleanly."
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "::group::Cluster"
+          kubectl get cluster platform-pg -n "${NS}" -o yaml || true
+          echo "::endgroup::"
+          echo "::group::Publication"
+          kubectl get publication platform-pg-pub -n "${NS}" -o yaml || true
+          echo "::endgroup::"
+          echo "::group::Pods"
+          kubectl get pods -n "${NS}" || true
+          kubectl describe pod platform-pg-1 -n "${NS}" || true
+          echo "::endgroup::"
+          echo "::group::CNPG operator logs"
+          kubectl logs -n cnpg-system -l app.kubernetes.io/name=cloudnative-pg --tail=300 || true
+          echo "::endgroup::"
+          echo "::group::pg_publication state"
+          kubectl exec -n "${NS}" platform-pg-1 -c postgres -- \
+            psql -U postgres -d shogo -c "
+              SELECT pubname, puballtables FROM pg_publication;
+              SELECT * FROM pg_publication_namespace;
+              SELECT * FROM pg_publication_tables;
+            " || true
+          echo "::endgroup::"
