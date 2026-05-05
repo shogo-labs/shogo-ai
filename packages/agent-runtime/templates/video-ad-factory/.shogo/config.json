@@ -1,0 +1,10 @@
+{
+  "heartbeatInterval": 3600,
+  "heartbeatEnabled": false,
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-sonnet-4-6"
+  },
+  "activeMode": "canvas",
+  "canvasMode": "code"
+}

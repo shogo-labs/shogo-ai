@@ -1,0 +1,45 @@
+{
+  "id": "qa-automation-hub",
+  "name": "QA Automation Hub",
+  "description": "Generate E2E test plans, Playwright scripts, and visual regression baselines. Triage CI failures automatically. Browser-first testing with real-time observation and screenshot comparison.",
+  "category": "development",
+  "icon": "TestTube",
+  "tags": [
+    "testing",
+    "qa",
+    "e2e",
+    "playwright",
+    "automation",
+    "ci",
+    "visual-regression",
+    "browser",
+    "screenshots"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "integrations": [
+    {
+      "categoryId": "development",
+      "description": "Monitor CI pipelines for test failures and flaky tests"
+    },
+    {
+      "categoryId": "project-management",
+      "description": "Create tickets for failing tests and regressions"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Alert team on critical test failures and regression reports"
+    }
+  ],
+  "techStack": "react-app"
+}
