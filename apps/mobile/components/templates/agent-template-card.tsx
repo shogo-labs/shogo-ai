@@ -32,6 +32,10 @@ const SPINNER_COLOR: Record<string, string> = {
   'dividend-income-builder': '#22c55e',
   'macro-market-briefing': '#0ea5e9',
   'travel-concierge': '#0ea5e9',
+  'video-ad-factory': '#e11d48',
+  'uiux-design-studio': '#8b5cf6',
+  'knowledge-vault': '#6366f1',
+  'qa-automation-hub': '#22c55e',
 }
 
 const POPULAR_IDS = new Set([
@@ -863,6 +867,183 @@ function AgentTemplatePreview({
                   Phone-only spot
                 </Text>
                 <Text className={cn(muted, 'text-amber-600 dark:text-amber-400')}>Want me to call?</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'video-ad-factory':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Ad Pipeline</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-500/20">
+              <Text className="text-[8px] font-semibold text-rose-700 dark:text-rose-300">3 variants</Text>
+            </View>
+          </View>
+          <PreviewRow className="bg-rose-50 dark:bg-rose-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  UGC Selfie — Seedance 2.0
+                </Text>
+                <Text className={muted}>15s · 0.9 credits · Ready</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Product Hero — Veo 3.1
+                </Text>
+                <Text className={muted}>8s · 4 credits · Generating</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  B-roll Splash — Kling 3.0
+                </Text>
+                <Text className={muted}>10s · 2 credits · Queued</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'uiux-design-studio':
+      return (
+        <View>
+          <Text className={h}>Design System</Text>
+          <View className="flex-row gap-1.5 mb-2">
+            {[
+              { color: 'bg-violet-400', label: 'Primary' },
+              { color: 'bg-teal-400', label: 'Secondary' },
+              { color: 'bg-amber-400', label: 'CTA' },
+              { color: 'bg-slate-700 dark:bg-slate-300', label: 'Text' },
+            ].map((swatch) => (
+              <View key={swatch.label} className="flex-1 items-center">
+                <View className={cn('w-full rounded-md mb-0.5', swatch.color, compact ? 'h-4' : 'h-5')} />
+                <Text className={cn(compact ? 'text-[7px]' : 'text-[8px]', muted)}>{swatch.label}</Text>
+              </View>
+            ))}
+          </View>
+          <PreviewRow className="bg-violet-50 dark:bg-violet-500/10">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Glassmorphism + Bento Grid
+                </Text>
+                <Text className={muted}>SaaS Dashboard · WCAG AA</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center justify-between">
+              <Text className={fsN} numberOfLines={1}>
+                Inter / Space Grotesk
+              </Text>
+              <Text className={cn(muted, 'font-semibold text-violet-700 dark:text-violet-300')}>Pair #12</Text>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'knowledge-vault':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Vault Status</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-500/20">
+              <Text className="text-[8px] font-semibold text-indigo-700 dark:text-indigo-300">247 notes</Text>
+            </View>
+          </View>
+          <PreviewRow className="bg-indigo-50 dark:bg-indigo-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Synthesis: AI agent patterns
+                </Text>
+                <Text className={muted}>5 sources · High confidence</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Contradiction: pricing model
+                </Text>
+                <Text className={cn(muted, 'text-amber-600 dark:text-amber-400')}>Needs reconciliation</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Ingested: Y Combinator talk
+                </Text>
+                <Text className={muted}>Rewrote 3 notes · 12 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'qa-automation-hub':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Test Results</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-500/20">
+              <Text className="text-[8px] font-semibold text-green-700 dark:text-green-300">96.4%</Text>
+            </View>
+          </View>
+          <View className="flex-row gap-2 mb-2">
+            {[
+              ['142', 'Passed'],
+              ['5', 'Failed'],
+              ['2', 'Flaky'],
+            ].map(([n, l]) => (
+              <View key={l} className={cn('flex-1 items-center py-1 rounded-md', box)}>
+                <Text
+                  className={cn(
+                    compact ? 'text-xs' : 'text-sm',
+                    'font-bold text-slate-900 dark:text-white/90',
+                  )}
+                >
+                  {n}
+                </Text>
+                <Text className={cn(compact ? 'text-[8px]' : 'text-[9px]', muted)}>{l}</Text>
+              </View>
+            ))}
+          </View>
+          <PreviewRow className="bg-red-50 dark:bg-red-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-red-500" />
+              <View className="flex-1">
+                <Text className={cn(fs, 'text-red-700 dark:text-red-400')} numberOfLines={1}>
+                  Login redirect — regression
+                </Text>
+                <Text className={muted}>Desktop · 1920x1080 · 2 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Cart checkout — flaky (3/10)
+                </Text>
+                <Text className={muted}>Mobile · 375x667 · CI #847</Text>
               </View>
             </View>
           </PreviewRow>
