@@ -131,6 +131,9 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
 
+const MIN_INPUT_HEIGHT = 60
+const MAX_INPUT_HEIGHT = 200
+
 interface AttachedFile {
   id: string
   dataUrl: string
@@ -231,6 +234,7 @@ export function ChatInput({
   const pasteHandledRef = useRef(false)
 
   const [inputValue, setInputValue] = useState("")
+  const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT)
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
@@ -579,6 +583,7 @@ export function ChatInput({
 
     onSubmit(trimmedContent, fileData, currentModelId)
     setInputValue("")
+    setInputHeight(MIN_INPUT_HEIGHT)
     setPendingFiles([])
     setPastedTexts([])
     setViewingPastedId(null)
@@ -609,6 +614,9 @@ export function ChatInput({
       }
 
       setInputValue(text)
+      if (text.length === 0) {
+        setInputHeight(MIN_INPUT_HEIGHT)
+      }
 
       if (text.startsWith("/") && !text.includes(" ")) {
         setShowSkillPicker(true)
@@ -939,6 +947,14 @@ export function ChatInput({
           editable={!disabled && !voiceInput.isRecording}
           multiline
           blurOnSubmit={false}
+          onContentSizeChange={(e) => {
+            const h = e.nativeEvent.contentSize.height
+            const clamped = Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, h))
+            if (clamped !== inputHeight) {
+              setInputHeight(clamped)
+            }
+          }}
+          style={{ height: inputHeight }}
           className={cn(
             "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
