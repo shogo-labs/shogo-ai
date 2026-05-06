@@ -85,6 +85,7 @@ import {
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
 import { CompactChatInput } from "./CompactChatInput"
+import { invalidateProjectFiles } from "../../hooks/useProjectFiles"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -1720,12 +1721,13 @@ export const ChatPanel = observer(function ChatPanel({
             })
           }
 
-          if (onFilesChanged) {
+          {
             const modifiedPaths = getModifiedFilePaths(toolCalls)
             if (modifiedPaths.length > 0) {
               console.log("[ChatPanel] Files modified by agent:", modifiedPaths)
               filesChangedFiredRef.current = true
-              onFilesChanged(modifiedPaths)
+              if (projectId) invalidateProjectFiles(projectId)
+              onFilesChanged?.(modifiedPaths)
             }
           }
         }
@@ -2220,14 +2222,15 @@ export const ChatPanel = observer(function ChatPanel({
     const wasStreaming = prevStreamingForScanRef.current
     prevStreamingForScanRef.current = isStreaming
 
-    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current && onFilesChanged) {
+    if (wasStreaming && !isStreaming && !filesChangedFiredRef.current) {
       const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant")
       if (latestAssistant) {
         const toolCalls = extractToolCalls(latestAssistant)
         const modifiedPaths = getModifiedFilePaths(toolCalls)
         if (modifiedPaths.length > 0) {
           console.log("[ChatPanel] Fallback: Files modified by agent (onFinish missed):", modifiedPaths)
-          onFilesChanged(modifiedPaths)
+          if (projectId) invalidateProjectFiles(projectId)
+          onFilesChanged?.(modifiedPaths)
         }
       }
     }
@@ -2236,7 +2239,7 @@ export const ChatPanel = observer(function ChatPanel({
       filesChangedFiredRef.current = false
       setToolErrorBanner(null)
     }
-  }, [isStreaming, messages, onFilesChanged])
+  }, [isStreaming, messages, onFilesChanged, projectId])
 
   // Process progress events from message parts
   useEffect(() => {
@@ -3085,6 +3088,10 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn("[ChatPanel] bridge.emitTurnStart threw", err)
       }
 
+      const mentionRecords = fileArray
+        .filter((f) => f.source === "mention" && f.path)
+        .map((f) => ({ path: f.path!, displayName: f.name }))
+
       actions
         .addMessage({
           sessionId: currentSessionId,
@@ -3092,6 +3099,7 @@ export const ChatPanel = observer(function ChatPanel({
           content: trimmedContent,
           imageData: fileArray.length > 0 ? fileArray[0].dataUrl : undefined,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+          ...(mentionRecords.length > 0 ? { mentions: mentionRecords } : {}),
         })
         .catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
@@ -3584,6 +3592,7 @@ export const ChatPanel = observer(function ChatPanel({
         value={compactValue}
         onChange={onCompactValueChange}
         className={className}
+        projectId={projectId}
       />
     )
   }
@@ -3967,6 +3976,7 @@ export const ChatPanel = observer(function ChatPanel({
               quickActions={quickActions}
               onQuickActionClick={(prompt) => handleSendMessage(prompt)}
               restoreDraftRequest={restoreDraftRequest}
+              projectId={projectId}
             />
           </View>
         </KeyboardAvoidingView>

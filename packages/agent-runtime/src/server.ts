@@ -3211,6 +3211,7 @@ app.post('/agent/canvas/error', async (c) => {
       body.surfaceId,
     )
 
+    console.warn(`[canvas-error] ${body.phase} error in ${body.surfaceId}${suffix}: ${body.error.slice(0, 200)}`)
     return c.json({ ok: true })
   } catch {
     return c.json({ error: 'Invalid request body' }, 400)

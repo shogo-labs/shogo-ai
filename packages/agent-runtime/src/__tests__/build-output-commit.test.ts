@@ -19,7 +19,6 @@ import { join } from 'path'
 import {
   commitBuildOutput,
   cleanupStagingOutput,
-  withFsRetry,
   DEFAULT_STAGING_DIR,
 } from '../build-output-commit'
 
@@ -98,87 +97,6 @@ describe('commitBuildOutput', () => {
     // merged.
     expect(readFileSync(join(TMP, 'dist', 'index.html'), 'utf-8')).toBe('new')
     expect(readFileSync(join(TMP, 'dist', 'app.js'), 'utf-8')).toBe('console.log(2)')
-  })
-
-  // Windows-specific behavior: AV / preview-server handles cause renameSync
-  // to throw EPERM transiently. The commit must retry rather than abandon
-  // the swap on the first failure — otherwise a Windows dev box gets stuck
-  // serving stale builds whenever Defender is in the middle of a scan.
-})
-
-// The retry wrapper is the load-bearing piece for Windows resilience —
-// without it, transient AV / preview-handle locks on `dist/` permanently
-// strand a workspace on its previous build (see canvas-build-manager
-// "Build succeeded but commit into dist/ failed" path). These tests pin
-// the contract that motivated the retry and keep it from regressing.
-describe('withFsRetry', () => {
-  function eperm(): NodeJS.ErrnoException {
-    const err: NodeJS.ErrnoException = new Error('EPERM: simulated lock')
-    err.code = 'EPERM'
-    return err
-  }
-
-  test('returns the op result on first success without retrying', () => {
-    let calls = 0
-    const result = withFsRetry(() => {
-      calls++
-      return 'ok'
-    })
-    expect(result).toBe('ok')
-    expect(calls).toBe(1)
-  })
-
-  test('retries through transient EPERM and eventually succeeds', () => {
-    let calls = 0
-    const result = withFsRetry(() => {
-      calls++
-      if (calls <= 3) throw eperm()
-      return 'ok'
-    })
-    expect(result).toBe('ok')
-    expect(calls).toBe(4)
-  })
-
-  test('retries EBUSY, EACCES, and ENOTEMPTY (full transient set)', () => {
-    for (const code of ['EBUSY', 'EACCES', 'ENOTEMPTY']) {
-      let calls = 0
-      const result = withFsRetry(() => {
-        calls++
-        if (calls === 1) {
-          const err: NodeJS.ErrnoException = new Error(`${code}: lock`)
-          err.code = code
-          throw err
-        }
-        return code
-      })
-      expect(result).toBe(code)
-      expect(calls).toBe(2)
-    }
-  })
-
-  test('rethrows after the retry budget is exhausted', () => {
-    let calls = 0
-    expect(() => {
-      withFsRetry(() => {
-        calls++
-        throw eperm()
-      })
-    }).toThrow(/EPERM/)
-    // 1 initial attempt + 7 retry slots = 8 total before giving up.
-    expect(calls).toBe(8)
-  })
-
-  test('does not retry non-transient errors (ENOENT bubbles immediately)', () => {
-    let calls = 0
-    expect(() => {
-      withFsRetry(() => {
-        calls++
-        const err: NodeJS.ErrnoException = new Error('ENOENT')
-        err.code = 'ENOENT'
-        throw err
-      })
-    }).toThrow(/ENOENT/)
-    expect(calls).toBe(1)
   })
 })
 

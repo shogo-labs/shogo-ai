@@ -23,6 +23,7 @@ export const ChatMessageModel = types
     content: types.string,
     imageData: types.optional(types.string, ""),
     parts: types.optional(types.string, ""),
+    mentions: types.optional(types.frozen(), {}),
     createdAt: types.optional(types.number, 0),
     agent: types.optional(types.string, ""),
     session: types.safeReference(types.late(() => ChatSessionModel)),

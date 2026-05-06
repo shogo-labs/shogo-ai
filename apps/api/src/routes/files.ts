@@ -204,11 +204,43 @@ export function filesRoutes(config: FilesRoutesConfig) {
   }
 
   /**
+   * Server-side fuzzy score for file search. Same ranking as the client
+   * (basename exact > prefix > contains > path contains > subsequence)
+   * to keep results consistent when the client delegates filtering.
+   */
+  function fuzzyScore(path: string, query: string): number {
+    if (!query) return 1
+    const p = path.toLowerCase()
+    const q = query.toLowerCase()
+    const slash = p.lastIndexOf('/')
+    const base = slash === -1 ? p : p.slice(slash + 1)
+
+    if (base === q) return 110
+    if (p.endsWith(q)) return 100
+    if (base.startsWith(q)) return 80
+    if (base.includes(q)) return 60
+    if (p.includes(q)) return 40
+
+    let qi = 0
+    for (let i = 0; i < p.length && qi < q.length; i++) {
+      if (p[i] === q[qi]) qi++
+    }
+    return qi === q.length ? 20 : 0
+  }
+
+  /**
    * GET /projects/:projectId/files - List all source files
+   *
+   * Optional query params:
+   *   ?q=<search>  — server-side fuzzy filter (for large projects)
+   *   ?limit=<n>   — cap number of results (default: unlimited, max: 500)
    */
   router.get("/projects/:projectId/files", async (c) => {
     try {
       const projectId = c.req.param("projectId")
+      const searchQuery = (c.req.query("q") || "").trim()
+      const limitParam = parseInt(c.req.query("limit") || "0", 10)
+      const limit = limitParam > 0 ? Math.min(limitParam, 500) : 0
 
       const projectPath = await getProjectPath(projectId)
       if (!projectPath) {
@@ -256,6 +288,21 @@ export function filesRoutes(config: FilesRoutesConfig) {
         } catch {
           // File doesn't exist, skip
         }
+      }
+
+      if (searchQuery) {
+        const scored = files
+          .map((f) => ({ file: f, score: fuzzyScore(f.path, searchQuery) }))
+          .filter((s) => s.score > 0)
+          .sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score
+            return a.file.path.length - b.file.path.length
+          })
+        files = scored.map((s) => s.file)
+      }
+
+      if (limit > 0) {
+        files = files.slice(0, limit)
       }
 
       return c.json({ ok: true, files }, 200)
@@ -336,6 +383,163 @@ export function filesRoutes(config: FilesRoutesConfig) {
       return c.json(
         { error: { code: "read_failed", message: error.message || "Failed to read file" } },
         500
+      )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/files/batch-read
+   *
+   * Read up to 20 project files in a single round-trip. Used by the chat
+   * @-mention feature to attach tagged file contents to a message.
+   *
+   * Request body: { paths: string[]; maxBytes?: number }
+   * Response: { ok: true, files: Array<{
+   *   path: string
+   *   content?: string
+   *   truncated?: boolean
+   *   size?: number
+   *   error?: 'not_found' | 'too_large' | 'read_failed' | 'invalid_path' | 'binary'
+   * }> }
+   *
+   * Per-file body is capped at maxBytes (default 256 KB). Binary extensions
+   * are rejected with `error: 'binary'` so callers know to send a path-only
+   * reference.
+   */
+  router.post("/projects/:projectId/files/batch-read", async (c) => {
+    try {
+      const projectId = c.req.param("projectId")
+      const projectPath = await getProjectPath(projectId)
+      if (!projectPath) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404,
+        )
+      }
+
+      const body = await c.req.json<{ paths?: unknown; maxBytes?: unknown }>()
+      const rawPaths = Array.isArray(body.paths) ? body.paths : []
+      const paths = rawPaths
+        .filter((p): p is string => typeof p === "string" && p.length > 0)
+        .slice(0, 20)
+      const maxBytes =
+        typeof body.maxBytes === "number" && body.maxBytes > 0
+          ? Math.min(body.maxBytes, 1024 * 1024)
+          : 256 * 1024
+
+      if (paths.length === 0) {
+        return c.json({ ok: true, files: [] }, 200)
+      }
+
+      const MAX_DIR_FILES = 30
+      const MAX_DIR_TOTAL_BYTES = maxBytes * 2
+
+      async function readSingleFile(filePath: string, cap: number) {
+        if (!validateFilePath(filePath)) {
+          return { path: filePath, error: "invalid_path" as const }
+        }
+        const ext = extname(filePath).toLowerCase()
+        if (BINARY_MIME_TYPES[ext] && ext !== ".svg") {
+          return { path: filePath, error: "binary" as const }
+        }
+        const fullPath = join(projectPath, filePath)
+        try {
+          const stats = await stat(fullPath)
+          if (stats.size > cap * 8) {
+            return { path: filePath, error: "too_large" as const, size: stats.size }
+          }
+          const buf = await readFile(fullPath)
+          const truncated = buf.byteLength > cap
+          const content = (truncated ? buf.subarray(0, cap) : buf).toString("utf-8")
+          return { path: filePath, content, truncated, size: stats.size }
+        } catch (err: any) {
+          if (err?.code === "ENOENT") {
+            return { path: filePath, error: "not_found" as const }
+          }
+          console.error("[Files] batch-read error:", filePath, err)
+          return { path: filePath, error: "read_failed" as const }
+        }
+      }
+
+      async function readDirectory(dirPath: string) {
+        const fullDirPath = join(projectPath, dirPath)
+        try {
+          const stats = await stat(fullDirPath)
+          if (!stats.isDirectory()) {
+            return readSingleFile(dirPath, maxBytes)
+          }
+        } catch (err: any) {
+          if (err?.code === "ENOENT") {
+            return { path: dirPath, error: "not_found" as const }
+          }
+          return { path: dirPath, error: "read_failed" as const }
+        }
+
+        const childFiles = await listFilesRecursive(fullDirPath, fullDirPath)
+        const textFiles = childFiles
+          .filter((f) => f.type === "file")
+          .slice(0, MAX_DIR_FILES)
+
+        if (textFiles.length === 0) {
+          return { path: dirPath, content: `// Directory: ${dirPath} (empty)\n`, size: 0 }
+        }
+
+        const parts: string[] = [`// Directory: ${dirPath} (${textFiles.length} files)\n`]
+        let totalBytes = 0
+        let wasTruncated = false
+
+        for (const child of textFiles) {
+          const childPath = join(dirPath, child.path)
+          const result = await readSingleFile(childPath, maxBytes)
+          if (result.error || !result.content) continue
+          const header = `\n// --- ${child.path} ---\n`
+          const chunk = header + result.content
+          if (totalBytes + chunk.length > MAX_DIR_TOTAL_BYTES) {
+            wasTruncated = true
+            break
+          }
+          parts.push(chunk)
+          totalBytes += chunk.length
+          if (result.truncated) wasTruncated = true
+        }
+
+        return {
+          path: dirPath,
+          content: parts.join(""),
+          truncated: wasTruncated,
+          size: totalBytes,
+        }
+      }
+
+      const files = await Promise.all(
+        paths.map(async (filePath: string) => {
+          if (!validateFilePath(filePath)) {
+            return { path: filePath, error: "invalid_path" as const }
+          }
+          const fullPath = join(projectPath, filePath)
+          try {
+            const stats = await stat(fullPath)
+            if (stats.isDirectory()) {
+              return readDirectory(filePath)
+            }
+          } catch {
+            // Fall through to single-file read which handles ENOENT
+          }
+          return readSingleFile(filePath, maxBytes)
+        }),
+      )
+
+      return c.json({ ok: true, files }, 200)
+    } catch (error: any) {
+      console.error("[Files] batch-read error:", error)
+      return c.json(
+        {
+          error: {
+            code: "batch_read_failed",
+            message: error.message || "Failed to batch read files",
+          },
+        },
+        500,
       )
     }
   })

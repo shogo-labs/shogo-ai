@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  Alert,
   View,
   Text,
   TextInput,
@@ -60,6 +61,7 @@ import {
   Check,
   Mic,
   Sparkles,
+  AtSign,
 } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
 import { useVoiceInput } from "./useVoiceInput"
@@ -76,6 +78,13 @@ import {
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
+import { FileMentionPicker } from "./FileMentionPicker"
+import { FileMentionChip } from "./FileMentionChip"
+import { type FileMention } from "./file-mention-utils"
+import {
+  formatMentionIssueSummary,
+  useChatFileMentions,
+} from "./useChatFileMentions"
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
@@ -146,12 +155,17 @@ export interface FileAttachment {
   dataUrl: string
   name: string
   type: string
+  /** Distinguishes manual uploads from @-mentioned project files. */
+  source?: "upload" | "mention"
+  /** Project-relative path when source === 'mention'. */
+  path?: string
 }
 
 export type RestoreDraftRequest = {
   nonce: number
   content: string
   files?: FileAttachment[]
+  mentions?: FileMention[]
 }
 
 function estimateDataUrlSize(dataUrl: string): number {
@@ -194,6 +208,11 @@ export interface ChatInputProps {
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
   dimWhenDisabled?: boolean
+  /**
+   * Project id used to populate the @-file mention picker. When omitted the
+   * picker shows a "no project connected" empty state.
+   */
+  projectId?: string
 }
 
 export function ChatInput({
@@ -217,6 +236,7 @@ export function ChatInput({
   onQuickActionClick,
   restoreDraftRequest,
   dimWhenDisabled = true,
+  projectId,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
@@ -325,6 +345,7 @@ export function ChatInput({
     setPastedTexts([])
     setViewingPastedId(null)
     setFileError(null)
+    setMentions(restoreDraftRequest.mentions ?? [])
     setTimeout(() => textInputRef.current?.focus(), 0)
   }, [restoreDraftRequest])
 
@@ -359,6 +380,43 @@ export function ChatInput({
   const [showSkillPicker, setShowSkillPicker] = useState(false)
   const [filterText, setFilterText] = useState("")
   const [selectedIndex, setSelectedIndex] = useState(0)
+
+  // ─── @-file mention state ────────────────────────────────────────────────
+  const mentionsFeatureEnabled = features.fileMentions !== false // default-on
+  const fileMentions = useChatFileMentions({
+    projectId,
+    enabled: mentionsFeatureEnabled,
+    disabled: disabled || isStreaming,
+    valueRef: inputValueRef,
+    setValue: setInputValue,
+    inputRef: textInputRef,
+    setError: setFileError,
+  })
+  const {
+    mentions,
+    setMentions,
+    pickerOpen: mentionPickerOpen,
+    query: mentionQuery,
+    results: mentionResults,
+    selectedIndex: mentionSelectedIndex,
+    setSelectedIndex: setMentionSelectedIndex,
+    projectFiles,
+    isResolving: isResolvingMentions,
+    isResolvingRef: isResolvingMentionsRef,
+    closePicker: closeMentionPicker,
+    openPicker: openMentionPicker,
+    clearQuery: clearMentionQuery,
+    insertMention,
+    removeMention,
+    handleTextChange: handleMentionTextChange,
+    onSelectionChange: handleMentionSelectionChange,
+    setIsComposingFromKeyEvent,
+    handlePickerKey,
+    popLastMentionIfAtStart,
+    validateBeforeSend: validateMentionsBeforeSend,
+    resolveForSend: resolveMentionsForSend,
+    resetMentions,
+  } = fileMentions
 
   const filteredSkills = useMemo(() => {
     if (!filterText) return SKILLS
@@ -560,37 +618,126 @@ export function ChatInput({
     [inputValue]
   )
 
-  const handleSubmit = useCallback(() => {
+  const commitSend = useCallback(
+    (
+      trimmedContent: string,
+      mentionAttachments: FileAttachment[],
+      mentionFailures: { path: string; error: string }[],
+      mentionTruncated: string[],
+    ) => {
+      const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
+      const combinedFiles: FileAttachment[] = [
+        ...pendingFiles.map((f) => ({
+          dataUrl: f.dataUrl,
+          name: f.name,
+          type: f.type,
+          source: "upload" as const,
+        })),
+        ...pastedAttachments,
+        ...mentionAttachments,
+      ]
+      const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
+
+      onSubmit(trimmedContent, fileData, currentModelId)
+      setInputValue("")
+      setInputHeight(MIN_INPUT_HEIGHT)
+      setPendingFiles([])
+      setPastedTexts([])
+      setViewingPastedId(null)
+      resetMentions()
+      setFileError(formatMentionIssueSummary(mentionFailures, mentionTruncated))
+
+      textInputRef.current?.focus()
+    },
+    [
+      onSubmit,
+      pendingFiles,
+      pastedTexts,
+      currentModelId,
+      resetMentions,
+    ],
+  )
+
+  const handleSubmit = useCallback(async () => {
     const trimmedContent = inputValue.trim()
     if (
-      (!trimmedContent && pendingFiles.length === 0 && pastedTexts.length === 0) ||
+      (!trimmedContent &&
+        pendingFiles.length === 0 &&
+        pastedTexts.length === 0 &&
+        mentions.length === 0) ||
       disabled ||
       isProcessingFiles ||
-      voiceInput.isBusy
+      voiceInput.isBusy ||
+      isResolvingMentionsRef.current
     ) {
       return
     }
 
-    // Pasted long-text blocks are shipped as file attachments (ChatGPT-style).
-    // The typed text is sent as the message body; the model receives both the
-    // text part and the file parts so it sees everything.
-    const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
-    const combinedFiles: FileAttachment[] = [
-      ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
-      ...pastedAttachments,
-    ]
-    const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
+    const validMentions = validateMentionsBeforeSend()
+    if (validMentions === null) {
+      Alert.alert(
+        "Tagged files removed",
+        "The tagged files no longer exist in the project.\n\nSend without file context?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Send anyway",
+            onPress: () => {
+              resetMentions()
+              commitSend(trimmedContent, [], [], [])
+            },
+          },
+        ],
+      )
+      return
+    }
 
-    onSubmit(trimmedContent, fileData, currentModelId)
-    setInputValue("")
-    setInputHeight(MIN_INPUT_HEIGHT)
-    setPendingFiles([])
-    setPastedTexts([])
-    setViewingPastedId(null)
-    setFileError(null)
+    let mentionAttachments: FileAttachment[] = []
+    let mentionFailures: { path: string; error: string }[] = []
+    let mentionTruncated: string[] = []
+    if (validMentions.length > 0) {
+      const resolved = await resolveMentionsForSend(validMentions)
+      mentionAttachments = resolved.attachments as FileAttachment[]
+      mentionFailures = resolved.failures
+      mentionTruncated = resolved.truncated
+    }
 
-    textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, inputValue, pastedTexts, voiceInput.isBusy])
+    const allMentionsFailed =
+      validMentions.length > 0 &&
+      mentionAttachments.length === 0 &&
+      mentionFailures.length === validMentions.length
+
+    if (allMentionsFailed) {
+      const failedNames = mentionFailures.map((f) => f.path.split("/").pop()).join(", ")
+      Alert.alert(
+        "File content unavailable",
+        `Could not load: ${failedNames}.\n\nSend without file context?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Send anyway",
+            onPress: () =>
+              commitSend(trimmedContent, [], mentionFailures, mentionTruncated),
+          },
+        ],
+      )
+      return
+    }
+
+    commitSend(trimmedContent, mentionAttachments, mentionFailures, mentionTruncated)
+  }, [
+    disabled,
+    pendingFiles,
+    isProcessingFiles,
+    inputValue,
+    pastedTexts,
+    voiceInput.isBusy,
+    mentions,
+    validateMentionsBeforeSend,
+    resolveMentionsForSend,
+    resetMentions,
+    commitSend,
+  ])
 
   const handleChangeText = useCallback(
     (text: string) => {
@@ -625,8 +772,13 @@ export function ChatInput({
       } else {
         setShowSkillPicker(false)
       }
+
+      handleMentionTextChange(text)
     },
-    [addPastedText]
+    [
+      addPastedText,
+      handleMentionTextChange,
+    ],
   )
 
   const getFileIcon = useCallback((fileType: string) => {
@@ -703,6 +855,12 @@ export function ChatInput({
       {isProcessingFiles && (
         <Text className="text-xs text-muted-foreground mb-2">
           Processing files...
+        </Text>
+      )}
+
+      {isResolvingMentions && (
+        <Text className="text-xs text-muted-foreground mb-2">
+          Loading tagged file contents…
         </Text>
       )}
 
@@ -867,11 +1025,33 @@ export function ChatInput({
       <View
         ref={dropZoneRef as any}
         className={cn(
-          "relative border bg-muted/30 overflow-hidden",
+          "relative border bg-muted/30",
+          // Web: mention popover is `absolute bottom-full`; parent overflow must not clip it.
+          Platform.OS === "web" ? "overflow-visible z-10" : "overflow-hidden",
           queuedMessages.length > 0 ? "rounded-b-xl" : "rounded-xl",
           isDragOver ? "border-primary border-dashed" : "border-border/60"
         )}
       >
+        {/* @-mention picker (web popover / native sheet) */}
+        {mentionsFeatureEnabled && (
+          <FileMentionPicker
+            open={mentionPickerOpen}
+            query={mentionQuery}
+            results={mentionResults}
+            status={projectFiles.status}
+            selectedIndex={mentionSelectedIndex}
+            onChangeSelectedIndex={setMentionSelectedIndex}
+            onSelect={(file) =>
+              insertMention({ path: file.path, extension: file.extension })
+            }
+            onClose={closeMentionPicker}
+            onClearQuery={clearMentionQuery}
+            onRetry={projectFiles.refresh}
+            variant={Platform.OS === "web" ? "popover" : "sheet"}
+            mentionedPaths={mentions.map((m) => m.path)}
+          />
+        )}
+
         {/* Skill picker dropdown */}
         {showSkillPicker && filteredSkills.length > 0 && (
           <View className="absolute bottom-full left-0 right-0 mb-1 max-h-[200px] rounded-md border border-border bg-popover shadow-md z-50">
@@ -911,6 +1091,26 @@ export function ChatInput({
           />
         )}
 
+        {/* @-file mention chips (above pasted-text chips). */}
+        {mentions.length > 0 && (
+          <View
+            className="flex-row flex-wrap gap-2 px-3 pt-3"
+            accessibilityLabel={`${mentions.length} tagged file${mentions.length > 1 ? "s" : ""}: ${mentions.map((m) => m.displayName).join(", ")}`}
+            accessibilityRole="summary"
+            {...(Platform.OS === "web"
+              ? ({ "aria-live": "polite", "aria-atomic": "true" } as any)
+              : { accessibilityLiveRegion: "polite" })}
+          >
+            {mentions.map((m) => (
+              <FileMentionChip
+                key={m.id}
+                mention={m}
+                onRemove={() => removeMention(m.id)}
+              />
+            ))}
+          </View>
+        )}
+
         {/* Pasted long-text chips (ChatGPT-style). Multiple allowed. */}
         {pastedTexts.length > 0 && (
           <View className="flex-row flex-wrap gap-2 px-3 pt-3">
@@ -931,16 +1131,30 @@ export function ChatInput({
           onChangeText={handleChangeText}
           onSubmitEditing={handleSubmit}
           onKeyPress={(e: any) => {
-            if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
+            const key = e.nativeEvent.key
+            setIsComposingFromKeyEvent(e)
+
+            if (handlePickerKey(key)) {
+              e.preventDefault?.()
+              return
+            }
+
+            if (key === "Backspace" && popLastMentionIfAtStart()) {
+              e.preventDefault?.()
+              return
+            }
+
+            if (Platform.OS === "web" && key === "Tab" && e.nativeEvent.shiftKey) {
               e.preventDefault()
               cycleInteractionMode()
               return
             }
-            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+            if (Platform.OS === "web" && key === "Enter" && !e.nativeEvent.shiftKey) {
               e.preventDefault()
               handleSubmit()
             }
           }}
+          onSelectionChange={handleMentionSelectionChange}
           placeholder={placeholder}
           placeholderTextColor="#9ca3af"
           accessibilityLabel="Chat message input"
@@ -964,7 +1178,6 @@ export function ChatInput({
           )}
           textAlignVertical="top"
         />
-
         {/* Bottom toolbar */}
         <View className="flex-row items-center justify-between p-1.5">
           {/* Left side buttons */}
@@ -1313,9 +1526,35 @@ export function ChatInput({
               />
             )}
 
+            {mentionsFeatureEnabled && (
+              <Pressable
+                onPress={openMentionPicker}
+                disabled={disabled || isStreaming || isProcessingFiles || isResolvingMentions}
+                role="button"
+                accessibilityLabel="Tag project file"
+                className={cn(
+                  "min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70",
+                  mentionPickerOpen && "bg-primary/10",
+                )}
+                android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+              >
+                <AtSign
+                  className={cn(
+                    "h-4 w-4",
+                    disabled || isStreaming || isProcessingFiles || isResolvingMentions
+                      ? "text-muted-foreground/40"
+                      : mentionPickerOpen
+                        ? "text-primary"
+                        : "text-muted-foreground",
+                  )}
+                  size={12}
+                />
+              </Pressable>
+            )}
+
             <Pressable
               onPress={handleAttachClick}
-              disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
+              disabled={disabled || isProcessingFiles || isResolvingMentions || pendingFiles.length >= MAX_FILES}
               role="button"
               accessibilityLabel="Attach file"
               className="min-h-5 min-w-5 rounded-full items-center justify-center active:opacity-70"
@@ -1324,7 +1563,7 @@ export function ChatInput({
               <Plus
                 className={cn(
                   "h-4 w-4",
-                  disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES
+                  disabled || isProcessingFiles || isResolvingMentions || pendingFiles.length >= MAX_FILES
                     ? "text-muted-foreground/40"
                     : "text-muted-foreground"
                 )}
@@ -1345,10 +1584,10 @@ export function ChatInput({
                     size={10}
                   />
                 </Pressable>
-                {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
+                {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || mentions.length > 0) && (
                   <Pressable
                     onPress={handleSubmit}
-                    disabled={disabled || isProcessingFiles}
+                    disabled={disabled || isProcessingFiles || isResolvingMentions}
                     role="button"
                     accessibilityLabel="Queue message"
                     className="h-5 w-5 rounded-full items-center justify-center bg-primary"
@@ -1357,15 +1596,15 @@ export function ChatInput({
                   </Pressable>
                 )}
               </>
-            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) ? (
+            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || mentions.length > 0) ? (
               <Pressable
                 onPress={handleSubmit}
-                disabled={disabled || isProcessingFiles}
+                    disabled={disabled || isProcessingFiles || isResolvingMentions}
                 role="button"
                 accessibilityLabel="Send message"
                 className={cn(
                   "h-5 w-5 rounded-full items-center justify-center bg-primary",
-                  (disabled || isProcessingFiles) && "opacity-50"
+                  (disabled || isProcessingFiles || isResolvingMentions) && "opacity-50"
                 )}
               >
                 <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
@@ -1376,7 +1615,7 @@ export function ChatInput({
                   voiceInput.clearError()
                   voiceInput.toggleRecording().catch(() => {})
                 }}
-                disabled={disabled || isProcessingFiles}
+                disabled={disabled || isProcessingFiles || isResolvingMentions}
                 role="button"
                 accessibilityLabel="Start voice recording"
                 className="h-5 w-5 rounded-full items-center justify-center active:opacity-70"
@@ -1384,7 +1623,7 @@ export function ChatInput({
                 <Mic
                   className={cn(
                     "h-4 w-4",
-                    disabled || isProcessingFiles
+                    disabled || isProcessingFiles || isResolvingMentions
                       ? "text-muted-foreground/40"
                       : "text-muted-foreground"
                   )}

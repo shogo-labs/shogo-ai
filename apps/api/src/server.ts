@@ -2358,6 +2358,51 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
   return router.fetch(newReq)
 })
 
+// Batch-read multiple project files in a single request (used by @-file mentions)
+app.post('/api/projects/:projectId/files/batch-read', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/files/batch-read`
+      const body = await c.req.text()
+
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': c.req.header('Content-Type') || 'application/json' },
+        body,
+      })
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      return new Response(response.body, { status: response.status, headers: responseHeaders })
+    } catch (error: any) {
+      console.error('[FilesProxy] Error batch-reading files:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to batch-read files' },
+      }, 502)
+    }
+  }
+
+  // Local development: delegate to filesRoutes router
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/files/batch-read`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
 // Download project source code as tar.gz archive
 app.get('/api/projects/:projectId/download', async (c) => {
   const projectId = c.req.param('projectId')

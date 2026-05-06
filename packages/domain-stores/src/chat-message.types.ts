@@ -15,6 +15,7 @@ export interface ChatMessageType {
   content: string
   imageData?: string
   parts?: string
+  mentions?: Record<string, unknown>
   createdAt: Date
   agent: string
 }
@@ -25,6 +26,7 @@ export interface ChatMessageCreateInput {
   content: string
   imageData?: string
   parts?: string
+  mentions?: Record<string, unknown>
   agent?: string
 }
 
@@ -34,5 +36,6 @@ export interface ChatMessageUpdateInput {
   content?: string
   imageData?: string
   parts?: string
+  mentions?: Record<string, unknown>
   agent?: string
 }

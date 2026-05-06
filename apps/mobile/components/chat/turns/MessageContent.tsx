@@ -11,13 +11,14 @@
 import { useState, useCallback } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { FileText } from "lucide-react-native"
+import { AtSign, FileText, File, Folder, Image as ImageIcon } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { extractTextContent } from "@shogo/shared-app/chat"
 import { MarkdownText } from "../MarkdownText"
 import { analyzeContent } from "../long-text-utils"
 import { LongTextPreviewCard } from "../LongTextPreviewCard"
 import { FileViewerModal } from "../FileViewerModal"
+import { basename, extOf } from "../file-mention-utils"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -83,6 +84,29 @@ function extractImageParts(message: UIMessage): ImagePart[] {
     }))
 }
 
+interface MentionPart {
+  name: string
+  path: string
+}
+
+function extractMentionParts(message: UIMessage): MentionPart[] {
+  if (!("parts" in message) || !Array.isArray((message as any).parts)) {
+    return []
+  }
+
+  return ((message as any).parts as any[])
+    .filter(
+      (part) =>
+        part.type === "file" &&
+        part.mediaType === "text/x-mention" &&
+        part.name
+    )
+    .map((part) => ({
+      name: part.name,
+      path: part.name,
+    }))
+}
+
 function extractFileParts(message: UIMessage): FilePart[] {
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
     return []
@@ -93,6 +117,7 @@ function extractFileParts(message: UIMessage): FilePart[] {
       (part) =>
         part.type === "file" &&
         !part.mediaType?.startsWith("image/") &&
+        part.mediaType !== "text/x-mention" &&
         part.url
     )
     .map((part) => ({
@@ -100,6 +125,41 @@ function extractFileParts(message: UIMessage): FilePart[] {
       mediaType: part.mediaType || "application/octet-stream",
       ...(part.name ? { name: part.name } : {}),
     }))
+}
+
+function mentionIcon(ext: string | undefined) {
+  if (!ext) return <Folder size={10} className="text-primary" />
+  const e = ext.toLowerCase()
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(e)) {
+    return <ImageIcon size={10} className="text-primary" />
+  }
+  if ([".md", ".txt", ".json"].includes(e)) {
+    return <FileText size={10} className="text-primary" />
+  }
+  return <File size={10} className="text-primary" />
+}
+
+function MentionBadge({ mention }: { mention: MentionPart }) {
+  const ext = extOf(mention.path) || undefined
+  const display = basename(mention.path)
+
+  return (
+    <View
+      className="flex-row items-center gap-1 rounded-full border border-border/60 bg-muted/50 px-1.5 py-0.5 max-w-[180px]"
+      accessibilityLabel={`Tagged file ${mention.path}`}
+    >
+      <AtSign size={9} className="text-muted-foreground" />
+      <View className="h-3.5 w-3.5 items-center justify-center rounded-sm bg-primary/15">
+        {mentionIcon(ext)}
+      </View>
+      <Text
+        className="text-[10px] font-medium text-foreground flex-shrink"
+        numberOfLines={1}
+      >
+        {display}
+      </Text>
+    </View>
+  )
 }
 
 function ImageThumbnail({
@@ -238,11 +298,12 @@ export function MessageContent({
   const content = extractTextContent(message)
   const images = extractImageParts(message)
   const files = extractFileParts(message)
+  const mentions = extractMentionParts(message)
   const isUser = message.role === "user"
   // Only show the preview card when there's genuinely long typed text and no
   // file attachments. When file chips are present the text body is just the
   // typed portion (short) so we always render it inline — matching ChatGPT.
-  const hasAttachments = files.length > 0 || images.length > 0
+  const hasAttachments = files.length > 0 || images.length > 0 || mentions.length > 0
   const isLongText = isUser && content && !hasAttachments
     ? analyzeContent(content).isLong
     : false
@@ -258,6 +319,16 @@ export function MessageContent({
   if (isUser) {
     return (
       <View className={cn(baseClasses, "gap-2")}>
+        {mentions.length > 0 && (
+          <View className="flex-row flex-wrap gap-1.5">
+            {mentions.map((m, i) => (
+              <MentionBadge
+                key={`${message.id}-mention-${i}`}
+                mention={m}
+              />
+            ))}
+          </View>
+        )}
         {images.length > 0 && (
           <View className="flex-row flex-wrap gap-2">
             {images.map((img, i) => (

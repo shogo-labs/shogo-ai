@@ -676,6 +676,11 @@ model ChatMessage {
   content   String
   imageData String?  @db.Text
   parts     String?  @db.Text
+  /// Structured @-file mentions attached to this message. JSON array of
+  /// `{ path: string, displayName: string }` objects, written at send time.
+  /// Enables querying which files were referenced in a conversation without
+  /// parsing the `parts` blob.
+  mentions  Json?
   createdAt DateTime @default(now())
   /// Which agent authored this row:
   ///   "technical" — the main technical agent (default; preserves legacy rows).

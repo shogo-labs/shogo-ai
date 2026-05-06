@@ -19,6 +19,12 @@ export interface PlatformConfig {
     marketplace: boolean
     shogoMode: boolean
     phoneChannel: boolean
+    /**
+     * @-file mention picker in the chat composer. Default-on. When the
+     * platform config returns `false` the composer hides the picker entirely
+     * (typing `@` becomes a literal character).
+     */
+    fileMentions?: boolean
   }
 }
 
@@ -34,6 +40,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     marketplace: true,
     shogoMode: true,
     phoneChannel: true,
+    fileMentions: true,
   },
 }
 
@@ -49,6 +56,7 @@ const LOCAL_CONFIG: PlatformConfig = {
     marketplace: false,
     shogoMode: true,
     phoneChannel: false,
+    fileMentions: true,
   },
 }
 
