@@ -284,10 +284,21 @@ export async function startLocalServer(): Promise<void> {
   const bunDir = path.dirname(bunPath)
   const pathSep = isWindows ? ';' : ':'
   const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+
+  // Bundled FFmpeg directory — so the API subprocess can find ffmpeg without
+  // the user needing to install it system-wide.
+  const ffmpegDir = IS_DEV
+    ? path.join(projectRoot, 'apps', 'desktop', 'resources', 'ffmpeg')
+    : path.join(projectRoot, 'ffmpeg')
+  const hasBundledFfmpeg = existsSync(ffmpegDir)
+  if (hasBundledFfmpeg) {
+    console.log(`[Desktop] Bundled FFmpeg found at ${ffmpegDir}`)
+  }
+
   const { app } = require('electron') as typeof import('electron')
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
-    PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
+    PATH: [bunDir, ...(hasBundledFfmpeg ? [ffmpegDir] : []), process.env.PATH || defaultPath].join(pathSep),
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
     APP_VERSION: app.getVersion(),

@@ -55,7 +55,8 @@ export function isDiarizationAvailable(): boolean {
 
 function whichSync(cmd: string): string | null {
   try {
-    return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() || null
+    const lookup = process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`
+    return execSync(lookup, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\r?\n/)[0] || null
   } catch {
     return null
   }
@@ -155,7 +156,12 @@ async function ensureResampled(audioPath: string): Promise<string> {
   } catch { /* proceed to resample */ }
 
   if (!whichSync('ffmpeg')) {
-    throw new Error('ffmpeg is required for diarization (audio resampling). Install it with: brew install ffmpeg')
+    throw new Error(
+      'ffmpeg is required for diarization (audio resampling). ' +
+      (process.platform === 'win32'
+        ? 'Install it with: winget install Gyan.FFmpeg'
+        : 'Install it with: brew install ffmpeg'),
+    )
   }
 
   const resampledPath = audioPath.replace(/\.wav$/, '-16k.wav')
