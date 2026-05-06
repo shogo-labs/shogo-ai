@@ -114,6 +114,13 @@ model Workspace {
   description  String?
   ssoSettings  Json?
   instanceSize InstanceSize @default(micro)
+  // Whether Composio OAuth connections are stored at workspace scope
+  // (one auth per toolkit shared across every project) or project
+  // scope (each project gets its own isolated connections). New
+  // workspaces default to "workspace"; existing workspaces are
+  // back-filled to "project" by the matching migration so behavior
+  // for already-connected accounts is preserved.
+  composioScope String      @default("workspace")
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 

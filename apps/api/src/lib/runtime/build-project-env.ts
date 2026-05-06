@@ -30,12 +30,30 @@ export async function buildProjectEnv(
     const { prisma } = await import('../prisma')
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { workspaceId: true, templateId: true, name: true, settings: true },
-    })
+      select: {
+        workspaceId: true,
+        templateId: true,
+        name: true,
+        settings: true,
+        workspace: { select: { composioScope: true } },
+      } as any,
+    }) as (Record<string, any> & {
+      workspaceId?: string | null
+      templateId?: string | null
+      name?: string | null
+      settings?: unknown
+      workspace?: { composioScope?: string | null } | null
+    }) | null
     if (project) {
       if (project.workspaceId) env.WORKSPACE_ID = project.workspaceId
       if (project.templateId) env.TEMPLATE_ID = project.templateId
       if (project.name) env.AGENT_NAME = project.name
+
+      // Tell the runtime which scope to use for Composio user IDs.
+      // Falls back to 'workspace' (the new default) when the workspace
+      // row is missing the column or the join didn't return a value.
+      const scope = project.workspace?.composioScope
+      env.COMPOSIO_USER_SCOPE = scope === 'project' || scope === 'workspace' ? scope : 'workspace'
 
       const settings = project.settings as Record<string, unknown> | null
 

@@ -32,6 +32,7 @@ export const WorkspaceModel = types
     description: types.optional(types.string, ""),
     ssoSettings: types.optional(types.frozen(), {}),
     instanceSize: types.enumeration("InstanceSize", ["micro", "small", "medium", "large", "xlarge"]),
+    composioScope: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),

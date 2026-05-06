@@ -1025,8 +1025,24 @@ export class KnativeProjectManager {
     const { prisma } = await import('./prisma')
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { templateId: true, name: true, workspaceId: true, settings: true },
-    })
+      select: {
+        templateId: true,
+        name: true,
+        workspaceId: true,
+        settings: true,
+        workspace: { select: { composioScope: true } },
+      } as any,
+    }) as (Record<string, any> & {
+      templateId?: string | null
+      name?: string | null
+      workspaceId?: string | null
+      settings?: unknown
+      workspace?: { composioScope?: string | null } | null
+    }) | null
+    const composioScope: 'workspace' | 'project' = (() => {
+      const value = projectRecord?.workspace?.composioScope
+      return value === 'project' || value === 'workspace' ? value : 'workspace'
+    })()
     const projectTechStackId = (() => {
       const s = projectRecord?.settings as { techStackId?: string } | null | undefined
       return s?.techStackId ?? null
@@ -1053,6 +1069,9 @@ export class KnativeProjectManager {
       ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       ...(projectRecord?.workspaceId ? [{ name: "WORKSPACE_ID", value: projectRecord.workspaceId }] : []),
+      // Tell the runtime which Composio scope to use for OAuth user IDs.
+      // See packages/agent-runtime/src/composio.ts (`ComposioScope`).
+      { name: "COMPOSIO_USER_SCOPE", value: composioScope },
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
     ]
 

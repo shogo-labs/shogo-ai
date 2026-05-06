@@ -15,6 +15,7 @@ export interface WorkspaceType {
   description?: string
   ssoSettings?: Record<string, unknown>
   instanceSize: InstanceSize
+  composioScope: string
   createdAt: Date
   updatedAt: Date
 }
@@ -25,6 +26,7 @@ export interface WorkspaceCreateInput {
   description?: string
   ssoSettings?: Record<string, unknown>
   instanceSize?: InstanceSize
+  composioScope?: string
 }
 
 export interface WorkspaceUpdateInput {
@@ -33,4 +35,5 @@ export interface WorkspaceUpdateInput {
   description?: string
   ssoSettings?: Record<string, unknown>
   instanceSize?: InstanceSize
+  composioScope?: string
 }

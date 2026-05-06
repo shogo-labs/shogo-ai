@@ -2985,7 +2985,10 @@ function createToolInstallTool(ctx: ToolContext): AgentTool {
         if (composioToolkit) {
           const userId = ctx.userId || process.env.USER_ID || 'default'
           const workspaceId = process.env.WORKSPACE_ID || 'default'
-          const initialized = await initComposioSession(userId, workspaceId, ctx.projectId)
+          const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+          const scope: 'workspace' | 'project' =
+            scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+          const initialized = await initComposioSession(userId, workspaceId, ctx.projectId, scope)
           if (initialized) {
             const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
             const auth = await checkComposioAuth(composioToolkit.slug)
