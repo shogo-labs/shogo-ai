@@ -9,13 +9,14 @@ if (handleSquirrelEvent()) {
   process.exit(0)
 }
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
 import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
+import { buildBugReportZip, submitToDiscord, submitToGitHub, collectSystemInfo, type BugReportPayload } from './bug-report'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import {
   registerRecordingIpcHandlers,
@@ -324,6 +325,26 @@ function buildAppMenu(): void {
         ]),
       ],
     },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Documentation',
+          click: () => { shell.openExternal('https://docs.shogo.ai') },
+        },
+        { type: 'separator' },
+        {
+          label: 'Report Bug...',
+          click: () => {
+            if (mainWindow) {
+              if (mainWindow.isMinimized()) mainWindow.restore()
+              mainWindow.focus()
+              mainWindow.webContents.send('navigate', '/settings?tab=support')
+            }
+          },
+        },
+      ],
+    },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -497,6 +518,82 @@ function registerIpcHandlers(): void {
       return { available: false, currentVersion: null, latestVersion: '' }
     }
   })
+
+  // --- Bug report / log sharing ---
+
+  ipcMain.handle('capture-screenshot', async () => {
+    if (!mainWindow) return { ok: false, error: 'No window available' }
+    try {
+      const image = await mainWindow.webContents.capturePage()
+      return { ok: true, base64: image.toPNG().toString('base64') }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Screenshot capture failed' }
+    }
+  })
+
+  ipcMain.handle('export-bug-report', async (_event, payload: BugReportPayload) => {
+    try {
+      const bundle = buildBugReportZip(payload)
+      const result = await dialog.showSaveDialog({
+        title: 'Save Bug Report',
+        defaultPath: bundle.filename,
+        filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
+      })
+      if (result.canceled || !result.filePath) {
+        return { ok: false, error: 'Cancelled' }
+      }
+      fs.writeFileSync(result.filePath, bundle.zipBuffer)
+      return { ok: true, path: result.filePath }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Export failed' }
+    }
+  })
+
+  ipcMain.handle('submit-bug-report', async (_event, payload: BugReportPayload) => {
+    try {
+      const config = readConfig()
+      const bundle = buildBugReportZip(payload)
+      const results: { discord?: { ok: boolean; error?: string }; github?: { ok: boolean; error?: string; issueUrl?: string } } = {}
+
+      if (config.bugReport?.discordWebhookUrl) {
+        results.discord = await submitToDiscord(config.bugReport.discordWebhookUrl, payload, bundle)
+      }
+
+      if (config.bugReport?.githubRepo && config.bugReport?.githubToken) {
+        results.github = await submitToGitHub(config.bugReport.githubRepo, config.bugReport.githubToken, payload)
+      }
+
+      if (!results.discord && !results.github) {
+        return { ok: false, error: 'No submission targets configured. Use "Export" to save locally.' }
+      }
+
+      const anyFailed = (results.discord && !results.discord.ok) || (results.github && !results.github.ok)
+      if (anyFailed) {
+        const errors = [results.discord?.error, results.github?.error].filter(Boolean).join('; ')
+        return { ok: false, error: errors }
+      }
+      return { ok: true, ...results }
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message || 'Submission failed' }
+    }
+  })
+
+  ipcMain.handle('get-bug-report-config', () => {
+    const config = readConfig()
+    return {
+      hasDiscord: !!config.bugReport?.discordWebhookUrl,
+      hasGitHub: !!(config.bugReport?.githubRepo && config.bugReport?.githubToken),
+      maxLogLines: config.bugReport?.maxLogLines ?? 500,
+    }
+  })
+
+  ipcMain.handle('set-bug-report-config', (_event, bugReport: { discordWebhookUrl?: string; githubRepo?: string; githubToken?: string; maxLogLines?: number }) => {
+    const current = readConfig()
+    writeConfig({ bugReport: { ...current.bugReport, ...bugReport } })
+    return { ok: true }
+  })
+
+  ipcMain.handle('get-system-info', () => collectSystemInfo())
 }
 
 function createWindow(): void {
@@ -767,6 +864,14 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     initAutoUpdater()
+  } else {
+    // In dev mode, register no-op handlers so the renderer doesn't crash
+    // when it invokes update-related IPC (initAutoUpdater registers these
+    // only in packaged builds).
+    ipcMain.handle('get-update-status', () => ({ status: 'idle', releaseName: null, availableVersion: null }))
+    ipcMain.handle('download-update', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
+    ipcMain.handle('dismiss-update', () => ({ ok: true }))
+    ipcMain.handle('install-update', () => {})
   }
 
   if (!isCloudMode) {
