@@ -8,7 +8,7 @@
  * Expands to show full args and result.
  */
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, memo } from "react"
 import { View, Text, Pressable, ScrollView, Image } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { CheckCircle2, XCircle, Loader2, AlertTriangle, ChevronRight } from "lucide-react-native"
@@ -45,7 +45,46 @@ export interface InlineToolWidgetProps {
   className?: string
 }
 
-export function InlineToolWidget({
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+// Memo equality: `extractOrderedParts` rebuilds the outer `tool` wrapper
+// on every streaming-throttle tick (~20Hz), so plain shallow memo never
+// bails. Cheap primitive checks first; for terminal-state tools we skip
+// the deep compare entirely (their args/result can't change after the
+// AI SDK marks them complete). Only streaming tools fall through to the
+// JSON.stringify content compare. This is what stops the spinning
+// `exec_wait` (and every other inline tool) from re-rendering per token.
+function inlineToolPropsEqual(
+  prev: InlineToolWidgetProps,
+  next: InlineToolWidgetProps,
+) {
+  if (
+    prev.isExpanded !== next.isExpanded ||
+    prev.onToggle !== next.onToggle ||
+    prev.className !== next.className
+  ) {
+    return false
+  }
+  if (prev.tool.state !== next.tool.state) return false
+  if (prev.tool.error !== next.tool.error) return false
+  if (prev.tool.toolName !== next.tool.toolName) return false
+  if (
+    prev.tool.id === next.tool.id &&
+    next.tool.state !== "streaming"
+  ) {
+    return true
+  }
+  return (
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
+  )
+}
+
+function InlineToolWidgetImpl({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -245,5 +284,7 @@ export function InlineToolWidget({
     </View>
   )
 }
+
+export const InlineToolWidget = memo(InlineToolWidgetImpl, inlineToolPropsEqual)
 
 export default InlineToolWidget

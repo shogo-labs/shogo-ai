@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
 import {
   View,
   Text,
@@ -39,7 +39,6 @@ import {
 import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-preference'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { useTypingPlaceholder, AGENT_PLACEHOLDER_PREFIX } from '../../hooks/useTypingPlaceholder'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
@@ -106,7 +105,7 @@ function generateProjectNameFromPrompt(prompt: string): string {
   return nameWords.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")
 }
 
-function LovableGradient({ isDark }: { isDark: boolean }) {
+const LovableGradient = memo(function LovableGradient({ isDark }: { isDark: boolean }) {
   if (Platform.OS !== 'web') {
     const o = isDark ? 0.35 : 1
     return (
@@ -189,7 +188,33 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
       />
     </View>
   )
-}
+})
+
+// Tab descriptors are static — keep them at module scope so the array
+// reference doesn't churn on every render of HomeScreen.
+const TAB_ITEMS = [
+  { key: 'templates' as const, label: 'Templates' },
+  { key: 'projects' as const, label: 'My projects' },
+  { key: 'shared' as const, label: 'Shared with me' },
+]
+
+// Static style fragments. The composer-wrapper variants below are a
+// per-theme ✕ per-platform decision tree, so we precompute the four
+// possibilities once and pick by index instead of building a new object
+// literal on every render.
+const TAB_BAR_CONTENT_STYLE = { alignItems: 'center' as const, gap: 2 }
+const SCROLL_VIEW_CONTENT_STYLE = { flexGrow: 1 }
+const COMPOSER_WRAPPER_NATIVE = { maxWidth: 680 }
+const COMPOSER_WRAPPER_WEB_LIGHT = {
+  maxWidth: 680,
+  boxShadow:
+    '0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
+} as const
+const COMPOSER_WRAPPER_WEB_DARK = {
+  maxWidth: 680,
+  boxShadow:
+    '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.3)',
+} as const
 
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
@@ -382,16 +407,12 @@ const HomeScreen = observer(function HomeScreen() {
     void saveModelPreference(modelId)
   }, [])
 
-  const typingPlaceholder = useTypingPlaceholder(undefined, {
-    enabled: interactionMode === 'agent' && !prompt,
-  })
-
   const homeComposerPlaceholder =
     interactionMode === 'plan'
       ? 'Describe what you want to plan...'
       : interactionMode === 'ask'
         ? 'Ask a question...'
-        : `${AGENT_PLACEHOLDER_PREFIX}${typingPlaceholder}`
+        : undefined
 
   /**
    * Single-flight: create the draft project + chat session for the home
@@ -685,6 +706,71 @@ const HomeScreen = observer(function HomeScreen() {
 
   // APP_MODE_DISABLED: handleAppTemplatePress removed
 
+  // Memoized style fragments. These only flip on screen-size or theme
+  // boundaries, so caching them gives every memoized child the same
+  // identity-equal style across renders driven by other state (input
+  // value, mobx ticks, etc.).
+  const heroOuterStyle = useMemo(
+    () => ({ minHeight: isMobile ? 340 : 420 }),
+    [isMobile],
+  )
+  const heroInnerStyle = useMemo(
+    () => ({
+      paddingHorizontal: isMobile ? 16 : 24,
+      paddingTop: isMobile ? 48 : 64,
+      paddingBottom: isMobile ? 32 : 48,
+    }),
+    [isMobile],
+  )
+  const heroTitleStyle = useMemo(
+    () => ({
+      fontSize: isMobile ? 26 : 36,
+      lineHeight: isMobile ? 34 : 44,
+      letterSpacing: -0.5,
+    }),
+    [isMobile],
+  )
+  const heroSubtitleStyle = useMemo(
+    () => ({ fontSize: isMobile ? 14 : 16 }),
+    [isMobile],
+  )
+  const composerWrapperStyle =
+    Platform.OS === 'web'
+      ? isDark
+        ? COMPOSER_WRAPPER_WEB_DARK
+        : COMPOSER_WRAPPER_WEB_LIGHT
+      : COMPOSER_WRAPPER_NATIVE
+  const bottomSectionStyle = useMemo(
+    () => ({
+      marginTop: -24,
+      paddingTop: 20,
+      marginLeft: isMobile ? 8 : 20,
+      marginRight: isMobile ? 8 : 20,
+    }),
+    [isMobile],
+  )
+  const tabBarRowStyle = useMemo(
+    () => ({ paddingHorizontal: isMobile ? 12 : 24, gap: 4 }),
+    [isMobile],
+  )
+  const tabContentPaddingStyle = useMemo(
+    () => ({ paddingHorizontal: isMobile ? 12 : 24, paddingBottom: 40 }),
+    [isMobile],
+  )
+  const gridContainerStyle = useMemo(
+    () =>
+      Platform.OS === 'web'
+        ? ({
+            display: 'grid' as any,
+            gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
+            gap: isMobile ? 10 : 16,
+            maxWidth: 1100,
+            marginHorizontal: 'auto',
+          } as any)
+        : {},
+    [gridColumns, isMobile],
+  )
+
   if (!isAuthenticated) {
     if (localMode) {
       router.replace('/')
@@ -705,59 +791,39 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
-  const TAB_ITEMS = [
-    { key: 'templates' as const, label: 'Templates' },
-    { key: 'projects' as const, label: 'My projects' },
-    { key: 'shared' as const, label: 'Shared with me' },
-  ]
-
   return (
     <View className="flex-1 bg-background">
-      <ScrollView className="flex-1" contentContainerStyle={{ flexGrow: 1 }}>
+      <ScrollView className="flex-1" contentContainerStyle={SCROLL_VIEW_CONTENT_STYLE}>
         {/* Hero section with gradient */}
-        <View className="relative" style={{ minHeight: isMobile ? 340 : 420 }}>
+        <View className="relative" style={heroOuterStyle}>
           <LovableGradient isDark={isDark} />
 
           <View
             className="relative items-center justify-center"
-            style={{
-              paddingHorizontal: isMobile ? 16 : 24,
-              paddingTop: isMobile ? 48 : 64,
-              paddingBottom: isMobile ? 32 : 48,
-            }}
+            style={heroInnerStyle}
           >
             <Text
               className="text-center font-bold mb-2 text-foreground"
-              style={{
-                fontSize: isMobile ? 26 : 36,
-                lineHeight: isMobile ? 34 : 44,
-                letterSpacing: -0.5,
-              }}
+              style={heroTitleStyle}
             >
               What's on your mind, {firstName}?
             </Text>
             <Text
               className="text-center mb-8 text-muted-foreground"
-              style={{ fontSize: isMobile ? 14 : 16 }}
+              style={heroSubtitleStyle}
             >
               Build agents by chatting with AI
             </Text>
 
             <View
               className="w-full rounded-2xl"
-              style={Platform.OS === 'web' ? {
-                maxWidth: 680,
-                boxShadow: isDark
-                  ? '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.3)'
-                  : '0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
-              } as any : {
-                maxWidth: 680,
-              }}
+              style={composerWrapperStyle}
             >
               <CompactChatInput
                 onSubmit={handlePromptSubmit}
                 isLoading={isCreating}
                 placeholder={homeComposerPlaceholder}
+                agentPlaceholderActive={interactionMode === 'agent'}
                 value={prompt}
                 onChange={handlePromptChange}
                 interactionMode={interactionMode}
@@ -777,21 +843,16 @@ const HomeScreen = observer(function HomeScreen() {
         {/* Bottom section: tab bar + template cards */}
         <View
           className="flex-1 rounded-t-3xl bg-card border-t border-border"
-          style={{
-            marginTop: -24,
-            paddingTop: 20,
-            marginLeft: isMobile ? 8 : 20,
-            marginRight: isMobile ? 8 : 20,
-          }}
+          style={bottomSectionStyle}
         >
           <View
             className="flex-row items-center mb-5"
-            style={{ paddingHorizontal: isMobile ? 12 : 24, gap: 4 }}
+            style={tabBarRowStyle}
           >
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ alignItems: 'center', gap: 2 }}
+              contentContainerStyle={TAB_BAR_CONTENT_STYLE}
               className="flex-1"
             >
               {TAB_ITEMS.map((tab) => (
@@ -842,19 +903,10 @@ const HomeScreen = observer(function HomeScreen() {
             )}
           </View>
 
-          <View style={{ paddingHorizontal: isMobile ? 12 : 24, paddingBottom: 40 }}>
+          <View style={tabContentPaddingStyle}>
             {activeTab === 'templates' && (
               homeTemplates.length > 0 ? (
-                <View
-                  className="gap-3"
-                  style={Platform.OS === 'web' ? {
-                    display: 'grid' as any,
-                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
-                    gap: isMobile ? 10 : 16,
-                    maxWidth: 1100,
-                    marginHorizontal: 'auto',
-                  } as any : {}}
-                >
+                <View className="gap-3" style={gridContainerStyle}>
                   {homeTemplates.map((template) => (
                     <AgentTemplateGalleryCard
                       key={template.id}
@@ -875,16 +927,7 @@ const HomeScreen = observer(function HomeScreen() {
 
             {activeTab === 'projects' && (
               myProjects.length > 0 ? (
-                <View
-                  className="gap-3"
-                  style={Platform.OS === 'web' ? {
-                    display: 'grid' as any,
-                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
-                    gap: isMobile ? 10 : 16,
-                    maxWidth: 1100,
-                    marginHorizontal: 'auto',
-                  } as any : {}}
-                >
+                <View className="gap-3" style={gridContainerStyle}>
                   {myProjects.map((project) => (
                     <ProjectCard
                       key={project.id}
@@ -907,16 +950,7 @@ const HomeScreen = observer(function HomeScreen() {
 
             {activeTab === 'shared' && (
               sharedProjects.length > 0 ? (
-                <View
-                  className="gap-3"
-                  style={Platform.OS === 'web' ? {
-                    display: 'grid' as any,
-                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
-                    gap: isMobile ? 10 : 16,
-                    maxWidth: 1100,
-                    marginHorizontal: 'auto',
-                  } as any : {}}
-                >
+                <View className="gap-3" style={gridContainerStyle}>
                   {sharedProjects.map((project) => (
                     <ProjectCard
                       key={project.id}

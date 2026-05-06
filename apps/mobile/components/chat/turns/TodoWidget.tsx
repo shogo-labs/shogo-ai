@@ -7,7 +7,7 @@
  * Shows task list with status indicators, collapsible details, and progress tracking.
  */
 
-import { useMemo } from "react"
+import { useMemo, memo } from "react"
 import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -113,7 +113,7 @@ function getStatusColors(status: TodoStatus) {
   }
 }
 
-function TodoItemRow({ todo }: { todo: TodoItem; index: number }) {
+function TodoItemRowImpl({ todo }: { todo: TodoItem; index: number }) {
   const StatusIcon = getStatusIcon(todo.status)
   const colorClass = getStatusColors(todo.status)
 
@@ -145,7 +145,17 @@ function TodoItemRow({ todo }: { todo: TodoItem; index: number }) {
   )
 }
 
-function ProgressBar({ todos }: { todos: TodoItem[] }) {
+// `parseTodos` re-allocates each TodoItem on every TodoWidget render, so
+// reference-based memo never bails. Compare the only three fields that
+// affect rendering. This isolates the spinning `in_progress` row from
+// the otherwise-stable completed/pending rows above and below it.
+const TodoItemRow = memo(TodoItemRowImpl, (prev, next) =>
+  prev.todo.id === next.todo.id &&
+  prev.todo.content === next.todo.content &&
+  prev.todo.status === next.todo.status,
+)
+
+function ProgressBarImpl({ todos }: { todos: TodoItem[] }) {
   const total = todos.length
   const completed = todos.filter((t) => t.status === "completed").length
   const inProgress = todos.filter((t) => t.status === "in_progress").length
@@ -188,7 +198,69 @@ function ProgressBar({ todos }: { todos: TodoItem[] }) {
   )
 }
 
-export function TodoWidget({
+// ProgressBar only depends on the counts of each status. Compare the
+// derived numbers so we skip the bar's flexbox layout work whenever
+// status counts haven't moved (e.g., during text streaming after the
+// todo list was last updated).
+const ProgressBar = memo(ProgressBarImpl, (prev, next) => {
+  const a = prev.todos
+  const b = next.todos
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  let aCompleted = 0, aInProgress = 0, aCancelled = 0
+  let bCompleted = 0, bInProgress = 0, bCancelled = 0
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].status === "completed") aCompleted++
+    else if (a[i].status === "in_progress") aInProgress++
+    else if (a[i].status === "cancelled") aCancelled++
+    if (b[i].status === "completed") bCompleted++
+    else if (b[i].status === "in_progress") bInProgress++
+    else if (b[i].status === "cancelled") bCancelled++
+  }
+  return (
+    aCompleted === bCompleted &&
+    aInProgress === bInProgress &&
+    aCancelled === bCancelled
+  )
+})
+
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+// Same memo strategy as InlineToolWidget / EditFileWidget. AssistantContent
+// rebuilds the outer `tool` wrapper on every 50ms streaming-throttle tick,
+// so reference equality on `tool` is useless. Cheap primitives first, then
+// a terminal-state fast path, then JSON content compare for the actively-
+// streaming todo list.
+function todoToolPropsEqual(
+  prev: TodoWidgetProps,
+  next: TodoWidgetProps,
+) {
+  if (
+    prev.isExpanded !== next.isExpanded ||
+    prev.onToggle !== next.onToggle ||
+    prev.className !== next.className
+  ) {
+    return false
+  }
+  if (prev.tool.state !== next.tool.state) return false
+  if (prev.tool.error !== next.tool.error) return false
+  if (
+    prev.tool.id === next.tool.id &&
+    next.tool.state !== "streaming"
+  ) {
+    return true
+  }
+  return (
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
+  )
+}
+
+function TodoWidgetImpl({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -321,5 +393,7 @@ export function TodoWidget({
     </View>
   )
 }
+
+export const TodoWidget = memo(TodoWidgetImpl, todoToolPropsEqual)
 
 export default TodoWidget
