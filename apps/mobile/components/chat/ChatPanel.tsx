@@ -88,7 +88,17 @@ import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
-import { ChatContextProvider, type ChatContextValue } from "./ChatContext"
+import {
+  ChatContextProvider,
+  type ChatContextValue,
+  type ChatMessage,
+} from "./ChatContext"
+
+// Stable empty array we hand to the chat context's `messages` field.
+// See the long comment near `contextValue` below — we intentionally do
+// not plumb the live message list through context, so this constant
+// satisfies the type without flipping per token.
+const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
 import { PhaseEmptyState } from "./empty"
 import {
@@ -3487,15 +3497,6 @@ export const ChatPanel = observer(function ChatPanel({
   const handleRetryRef = useRef<(() => void) | null>(null)
   handleRetryRef.current = handleRetry
 
-  const messageListMessages = messages.map((msg) => ({
-    id: msg.id,
-    role: msg.role as "user" | "assistant",
-    content:
-      (msg as any).content ||
-      msg.parts?.map((p: any) => p.text || "").join("") ||
-      "",
-  }))
-
   const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
 
   const handleSaveToolOutput = useCallback(
@@ -3548,30 +3549,83 @@ export const ChatPanel = observer(function ChatPanel({
     [setMessages, sessionMessages]
   )
 
-  const contextValue: ChatContextValue = {
-    currentSession: currentSession
-      ? { id: currentSession.id, name: currentSession.name }
-      : null,
-    messages: messageListMessages,
-    sendMessage: handleSendMessage,
-    isLoading: isStreaming,
-    isPolling,
-    error: error?.message ?? null,
-    agentUrl: resolvedAgentUrl,
-    addToolOutput: (params) => addToolOutput(params as any),
-    saveToolOutput: handleSaveToolOutput,
-    buildPlan: pendingPlan ? handleConfirmPlan : null,
-    confirmPlan: pendingPlan ? handleConfirmPlan : null,
-    pendingPlan,
-    confirmedPlan,
-    openPlan: onOpenPlan,
-  }
+  // Stable session summary so a new object literal isn't allocated each
+  // render even when the underlying session id/name haven't changed.
+  const sessionSummary = useMemo(
+    () =>
+      currentSession
+        ? { id: currentSession.id, name: currentSession.name }
+        : null,
+    [currentSession?.id, currentSession?.name],
+  )
+
+  // Wrap the AI SDK's addToolOutput so we hand a stable reference to
+  // context consumers — without this every render produced a fresh
+  // `(params) => addToolOutput(params as any)` closure.
+  const stableAddToolOutput = useCallback(
+    (params: { toolCallId: string; output: string }) =>
+      addToolOutput(params as any),
+    [addToolOutput],
+  )
+
+  const errorMessage = error?.message ?? null
+
+  // Memoizing the context value is the single biggest win for streaming
+  // re-renders. Previously this was a fresh object literal on every
+  // ChatPanel commit, so every `useChatContext()` consumer re-rendered
+  // on every token even when nothing they read had actually changed.
+  //
+  // Note: `messages` is intentionally NOT plumbed through the context
+  // (we hand a stable empty array). A grep across the codebase shows no
+  // consumer reads `chatContext.messages` — they read `sendMessage`,
+  // `agentUrl`, `saveToolOutput`, `pendingPlan` etc. which are stable.
+  // Including the live message list flipped the value's identity per
+  // token (because `useChat`'s `messages` array is a new reference every
+  // delta), defeating every downstream memo. Components that genuinely
+  // need the message list receive it as a prop instead.
+  const contextValue = useMemo<ChatContextValue>(
+    () => ({
+      currentSession: sessionSummary,
+      messages: EMPTY_CONTEXT_MESSAGES,
+      sendMessage: handleSendMessage,
+      isLoading: isStreaming,
+      isPolling,
+      error: errorMessage,
+      agentUrl: resolvedAgentUrl,
+      addToolOutput: stableAddToolOutput,
+      saveToolOutput: handleSaveToolOutput,
+      buildPlan: pendingPlan ? handleConfirmPlan : null,
+      confirmPlan: pendingPlan ? handleConfirmPlan : null,
+      pendingPlan,
+      confirmedPlan,
+      openPlan: onOpenPlan,
+    }),
+    [
+      sessionSummary,
+      handleSendMessage,
+      isStreaming,
+      isPolling,
+      errorMessage,
+      resolvedAgentUrl,
+      stableAddToolOutput,
+      handleSaveToolOutput,
+      pendingPlan,
+      handleConfirmPlan,
+      confirmedPlan,
+      onOpenPlan,
+    ],
+  )
 
   const handleCompactSubmit = useCallback(
     (prompt: string, files?: FileAttachment[]) => {
       onCompactSubmit?.(prompt, files)
     },
     [onCompactSubmit]
+  )
+
+  const handleQuickActionClick = useCallback(
+    (prompt: string) => handleSendMessage(prompt),
+    [handleSendMessage],
   )
 
   // Render compact mode (homepage)
@@ -3965,7 +4019,7 @@ export const ChatPanel = observer(function ChatPanel({
               onInteractionModeChange={handleInteractionModeChange}
               contextUsage={contextUsage}
               quickActions={quickActions}
-              onQuickActionClick={(prompt) => handleSendMessage(prompt)}
+              onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={restoreDraftRequest}
             />
           </View>

@@ -5,7 +5,7 @@ import { View, Text, Pressable } from 'react-native'
 import { Image } from 'react-native'
 import { FolderOpen, Star, Check, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 
 // Deterministic accent colors for project cards (hex, matches template card style)
 const PROJECT_ACCENT_COLORS = [
@@ -61,7 +61,7 @@ export interface ProjectCardProps {
   renderLeading?: () => ReactNode
 }
 
-export function ProjectCard({
+export const ProjectCard = memo(function ProjectCard({
   name,
   description,
   updatedAt,
@@ -257,7 +257,7 @@ export function ProjectCard({
       </View>
     </Pressable>
   )
-}
+})
 
 function formatDistanceAgo(timestamp: string | number): string {
   try {

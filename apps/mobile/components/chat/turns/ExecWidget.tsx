@@ -8,7 +8,7 @@
  * into what the agent is executing.
  */
 
-import { useState } from "react"
+import { useState, memo } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Terminal, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
@@ -56,7 +56,43 @@ function truncateOutput(text: string): { display: string; truncated: boolean } {
   }
 }
 
-export function ExecWidget({
+function stableStringify(val: unknown): string {
+  if (val === null || val === undefined) return ""
+  if (typeof val === "string") return val
+  try { return JSON.stringify(val) } catch { return "" }
+}
+
+// See InlineToolWidget for the full rationale. Streaming exec calls
+// (long-running scripts, build pipelines) commit at the throttled
+// 50ms cadence of `useThrottledWhileStreaming`; without a content-aware
+// comparator the entire terminal panel re-renders per delta even when
+// stdout/stderr haven't changed.
+function execToolPropsEqual(
+  prev: ExecWidgetProps,
+  next: ExecWidgetProps,
+) {
+  if (
+    prev.isExpanded !== next.isExpanded ||
+    prev.onToggle !== next.onToggle ||
+    prev.className !== next.className
+  ) {
+    return false
+  }
+  if (prev.tool.state !== next.tool.state) return false
+  if (prev.tool.error !== next.tool.error) return false
+  if (
+    prev.tool.id === next.tool.id &&
+    next.tool.state !== "streaming"
+  ) {
+    return true
+  }
+  return (
+    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
+    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
+  )
+}
+
+function ExecWidgetImpl({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
@@ -196,5 +232,7 @@ export function ExecWidget({
     </View>
   )
 }
+
+export const ExecWidget = memo(ExecWidgetImpl, execToolPropsEqual)
 
 export default ExecWidget
