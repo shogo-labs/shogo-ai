@@ -1,0 +1,392 @@
+# =============================================================================
+# iOS Build & Update Pipeline
+# =============================================================================
+# Mirrors android.yml but uses EAS Build cloud for the native build (iOS
+# builds require macOS — instead of paying for a GitHub macos-latest runner
+# we delegate to EAS Build, which provisions its own Mac and returns the IPA).
+#
+# Environments:
+#   staging    — push to main branch (auto OTA to staging channel)
+#   production — push ios-v* tag or manual dispatch with environment=production
+#
+# Automatic (push to main):
+#   - Resolves native fingerprint to detect if native deps changed
+#   - If fingerprint matches the last successful build → OTA update (eas update)
+#   - If fingerprint changed → full native build via EAS Build cloud
+#
+# Manual (workflow_dispatch):
+#   mode=full → fingerprint check, then build or OTA, with TestFlight submit
+#   mode=ota  → fingerprint check, OTA update only (skips build)
+#   environment=staging|production → controls OTA branch + EAS build profile
+#   Production builds always auto-submit to App Store Connect.
+#   Staging builds also submit to TestFlight (can be toggled off with submit=false).
+#
+# Required GitHub Secrets:
+#   EXPO_TOKEN                  - Expo token for eas build / update / submit
+#   APPLE_ID                    - Apple ID email for App Store Connect
+#   APPLE_ID_PASSWORD           - App-specific password (account.apple.com > App-Specific Passwords)
+#   APPLE_TEAM_ID               - 10-char Apple Developer Team ID
+#   EXPO_PUBLIC_SENTRY_DSN      - (optional) Sentry DSN for runtime
+#   SENTRY_AUTH_TOKEN           - (optional) Sentry auth token for source maps
+# =============================================================================
+
+name: iOS Build & Update
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'ios-v*'
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/domain-stores/**'
+      - 'packages/shared-app/**'
+      - 'packages/shared-ui/**'
+      - 'packages/ui-kit/**'
+      - 'packages/sdk/**'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'full = build or OTA + submit · ota = OTA update only'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - ota
+      environment:
+        description: 'Target environment (staging or production)'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      submit:
+        description: 'Submit to App Store Connect / TestFlight — full mode only'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # ===========================================================================
+  # Check if native code changed
+  # ===========================================================================
+  check-fingerprint:
+    name: Check Native Fingerprint
+    runs-on: ubuntu-latest
+    outputs:
+      needs_build: ${{ steps.decide.outputs.needs_build }}
+      runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
+      environment: ${{ steps.resolve-env.outputs.environment }}
+      app_version: ${{ steps.resolve-version.outputs.version }}
+
+    steps:
+      - name: Resolve environment
+        id: resolve-env
+        run: |
+          if [ -n "${{ github.event.inputs.environment }}" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == refs/tags/ios-v* ]]; then
+            ENV="production"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENV="staging"
+          else
+            ENV="staging"
+          fi
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "Resolved environment: $ENV"
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve app version from app.json
+        id: resolve-version
+        run: |
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using app.json version: $VERSION"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Resolve fingerprint
+        id: fingerprint
+        working-directory: apps/mobile
+        run: |
+          RAW=$(npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null || echo "")
+
+          if [ -z "$RAW" ]; then
+            echo "Could not resolve runtime version"
+            echo "runtime_version=unknown" >> $GITHUB_OUTPUT
+          else
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
+            echo "Raw output: $RAW"
+            echo "Fingerprint hash: $RUNTIME_VERSION"
+            echo "runtime_version=$RUNTIME_VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore cached fingerprint
+        if: steps.fingerprint.outputs.runtime_version != 'unknown'
+        id: cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: .fingerprint-ios
+          key: ios-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
+
+      - name: Determine if build is needed
+        id: decide
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/ios-v* ]]; then
+            echo "Tag push (ios-v*) → release event, forcing full build + submit"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
+            echo "Could not resolve fingerprint → forcing full build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Fingerprint cached from a previous successful build → OTA update only"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.mode }}" = "ota" ]; then
+            echo "OTA mode: trusting no native changes"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New fingerprint → full build required"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  # ===========================================================================
+  # OTA Update — JS/asset changes only (no native changes)
+  # ===========================================================================
+  update:
+    name: EAS Update (OTA)
+    runs-on: ubuntu-latest
+    needs: check-fingerprint
+    if: >
+      needs.check-fingerprint.result == 'success' &&
+      needs.check-fingerprint.outputs.needs_build == 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Sync app version
+        working-directory: apps/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+              fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            } else {
+              console.log('Version already matches: ' + appJson.expo.version);
+            }
+          "
+
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Resolve API URL for environment
+        id: api-url
+        run: |
+          if [ "${{ needs.check-fingerprint.outputs.environment }}" = "production" ]; then
+            echo "url=https://studio.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://studio.staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish OTA update
+        working-directory: apps/mobile
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+        run: |
+          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          eas update \
+            --branch ${{ needs.check-fingerprint.outputs.environment }} \
+            --platform ios \
+            --message "$SUBJECT" \
+            --non-interactive
+
+      - name: Summary
+        run: |
+          echo "## iOS OTA Update Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Full Native Build — delegated to EAS Build cloud
+  # ===========================================================================
+  build:
+    name: iOS Build (EAS Cloud)
+    runs-on: ubuntu-latest
+    needs: check-fingerprint
+    if: >
+      needs.check-fingerprint.outputs.needs_build == 'true' &&
+      github.event.inputs.mode != 'ota'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            node_modules
+            ~/.bun/install/cache
+          key: bun-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Sync app version and bump buildNumber
+        working-directory: apps/mobile
+        env:
+          BUILD_NUMBER_OFFSET: 100
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+            }
+            const buildNumber = String(${{ github.run_number }} + parseInt(process.env.BUILD_NUMBER_OFFSET));
+            appJson.expo.ios = appJson.expo.ios || {};
+            appJson.expo.ios.buildNumber = buildNumber;
+            fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            console.log('Set version=' + appJson.expo.version + ' buildNumber=' + buildNumber);
+          "
+
+      - name: Trigger EAS Build (iOS)
+        id: eas-build
+        working-directory: apps/mobile
+        env:
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          PROFILE="${{ needs.check-fingerprint.outputs.environment }}"
+          echo "Triggering EAS Build for profile: $PROFILE"
+          eas build \
+            --platform ios \
+            --profile "$PROFILE" \
+            --non-interactive \
+            --json > eas-build.json
+          BUILD_ID=$(node -p "JSON.parse(require('fs').readFileSync('eas-build.json','utf8'))[0].id")
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "EAS build id: $BUILD_ID"
+
+      - name: Save fingerprint to cache
+        run: |
+          RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
+          if [ -z "$RUNTIME_VERSION" ] || [ "$RUNTIME_VERSION" = "unknown" ]; then
+            RAW=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null || echo "manual-build")
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
+          fi
+          echo "$RUNTIME_VERSION" > .fingerprint-ios
+
+      - name: Cache fingerprint
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: .fingerprint-ios
+          key: ios-fingerprint-${{ needs.check-fingerprint.outputs.environment }}-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
+
+      - name: Resolve submit decision
+        id: submit-decision
+        run: |
+          ENV="${{ needs.check-fingerprint.outputs.environment }}"
+          SUBMIT_INPUT="${{ github.event.inputs.submit }}"
+          if [ "$ENV" = "production" ]; then
+            echo "should_submit=true" >> $GITHUB_OUTPUT
+            echo "Production build → always submitting to App Store Connect"
+          elif [ "$SUBMIT_INPUT" != "false" ]; then
+            echo "should_submit=true" >> $GITHUB_OUTPUT
+            echo "Staging build → submitting to TestFlight"
+          else
+            echo "should_submit=false" >> $GITHUB_OUTPUT
+            echo "Submit skipped by user"
+          fi
+
+      - name: Submit to App Store Connect
+        if: steps.submit-decision.outputs.should_submit == 'true'
+        working-directory: apps/mobile
+        env:
+          EXPO_APPLE_ID_USERNAME: ${{ secrets.APPLE_ID }}
+          EXPO_APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          PROFILE="${{ needs.check-fingerprint.outputs.environment }}"
+          echo "Submitting build ${{ steps.eas-build.outputs.build_id }} via profile $PROFILE"
+          eas submit \
+            --platform ios \
+            --profile "$PROFILE" \
+            --id "${{ steps.eas-build.outputs.build_id }}" \
+            --non-interactive
+
+      - name: Summary
+        run: |
+          echo "## iOS Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **EAS Build ID:** \`${{ steps.eas-build.outputs.build_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **buildNumber:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'App Store Connect / TestFlight' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+
+
+# Manual triggers (after this lands on a branch GitHub knows about):
+#
+# Staging OTA
+# gh workflow run ios.yml --ref main -f mode=ota -f environment=staging
+#
+# Staging full build + submit (TestFlight)
+# gh workflow run ios.yml --ref main -f mode=full -f environment=staging
+#
+# Production full build + submit (App Store Connect)
+# gh workflow run ios.yml --ref main -f mode=full -f environment=production
+#
+# Full build, skip TestFlight submit
+# gh workflow run ios.yml --ref main -f mode=full -f environment=staging -f submit=false
