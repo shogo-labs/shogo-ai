@@ -49,12 +49,22 @@
       "android": {
         "serviceAccountKeyPath": "./google-services.json",
         "track": "internal"
+      },
+      "ios": {
+        "appleId": "ashutosh.ojha@getodin.ai",
+        "ascAppId": "6766839930",
+        "appleTeamId": "X8XU4RM2WY"
       }
     },
     "production": {
       "android": {
         "serviceAccountKeyPath": "./google-services.json",
         "track": "production"
+      },
+      "ios": {
+        "appleId": "ashutosh.ojha@getodin.ai",
+        "ascAppId": "6766839930",
+        "appleTeamId": "X8XU4RM2WY"
       }
     }
   }
