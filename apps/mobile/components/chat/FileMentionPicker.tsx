@@ -88,6 +88,27 @@ function ParentPath({ path }: { path: string }) {
   )
 }
 
+function HighlightedName({ path, query }: { path: string; query: string }) {
+  const name = basename(path)
+  const trimmed = query.trim().toLowerCase()
+  const index = trimmed ? name.toLowerCase().indexOf(trimmed) : -1
+  if (index === -1) {
+    return (
+      <Text className="text-xs font-medium text-foreground" numberOfLines={1}>
+        {name}
+      </Text>
+    )
+  }
+
+  return (
+    <Text className="text-xs font-medium text-foreground" numberOfLines={1}>
+      {name.slice(0, index)}
+      <Text className="text-primary">{name.slice(index, index + trimmed.length)}</Text>
+      {name.slice(index + trimmed.length)}
+    </Text>
+  )
+}
+
 export const FileMentionPicker = memo(function FileMentionPicker({
   open,
   query,
@@ -122,6 +143,7 @@ export const FileMentionPicker = memo(function FileMentionPicker({
 
   if (!open) return null
   const ranked = results
+  const title = query ? `Search "${query}"` : "Add Project Context"
 
   const containerCls =
     variant === "sheet"
@@ -147,14 +169,14 @@ export const FileMentionPicker = memo(function FileMentionPicker({
             accessibilityLabel: `File picker, ${ranked.length} results`,
           })}
     >
-      <View className="border-b border-border/60 px-3 py-2">
+      <View className="border-b border-border/60 bg-muted/20 px-3 py-2">
         <View className="flex-row items-center gap-2">
-          <View className="h-6 w-6 items-center justify-center rounded-md bg-primary/10">
+          <View className="h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
             <Search size={13} className="text-primary" />
           </View>
           <View className="flex-1 min-w-0">
             <Text className="text-xs font-semibold text-foreground">
-              Add project context
+              {title}
             </Text>
             <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
               {status === "ready" || status === "idle"
@@ -168,6 +190,13 @@ export const FileMentionPicker = memo(function FileMentionPicker({
                     : "Couldn't load project files"}
             </Text>
           </View>
+        {status === "ready" || status === "idle" ? (
+          <View className="rounded-full bg-primary/10 px-2 py-0.5">
+            <Text className="text-[10px] font-medium text-primary">
+              {ranked.length}
+            </Text>
+          </View>
+        ) : null}
         {isNative ? (
           <Pressable
             onPress={onClose}
@@ -180,7 +209,7 @@ export const FileMentionPicker = memo(function FileMentionPicker({
           </Pressable>
         ) : (
           <Text className="text-[10px] text-muted-foreground">
-            ↑↓ ↵ esc
+            ↑↓ enter esc
           </Text>
         )}
         </View>
@@ -267,8 +296,10 @@ export const FileMentionPicker = memo(function FileMentionPicker({
                 }}
                 style={{ height: ROW_HEIGHT }}
                 className={cn(
-                  "flex-row items-center gap-2 px-3",
-                  isSelected && "bg-accent",
+                  "flex-row items-center gap-2 border-l-2 px-3",
+                  isSelected
+                    ? "border-l-primary bg-accent"
+                    : "border-l-transparent",
                   isMentioned && "opacity-65",
                 )}
                 accessibilityRole="button"
@@ -282,25 +313,28 @@ export const FileMentionPicker = memo(function FileMentionPicker({
                     } as any)
                   : {})}
               >
-                <View className="h-6 w-6 items-center justify-center rounded-md bg-muted/60">
+                <View
+                  className={cn(
+                    "h-7 w-7 items-center justify-center rounded-lg",
+                    isSelected ? "bg-primary/10" : "bg-muted/60",
+                  )}
+                >
                   {getIcon(item)}
                 </View>
                 <View className="flex-1 min-w-0">
-                  <Text
-                    className={cn(
-                      "text-xs font-medium",
-                      isMentioned ? "text-muted-foreground" : "text-foreground",
-                    )}
-                    numberOfLines={1}
-                  >
-                    {basename(item.path)}
-                  </Text>
+                  {isMentioned ? (
+                    <Text className="text-xs font-medium text-muted-foreground" numberOfLines={1}>
+                      {basename(item.path)}
+                    </Text>
+                  ) : (
+                    <HighlightedName path={item.path} query={query} />
+                  )}
                   <View className="flex-row items-center gap-1 min-w-0">
                     <View className="flex-1 min-w-0">
                       <ParentPath path={item.path} />
                     </View>
                     {sizeLabel && (
-                      <Text className="text-[10px] text-muted-foreground">
+                      <Text className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         {sizeLabel}
                       </Text>
                     )}

@@ -116,10 +116,15 @@ async function loadInto(projectId: string): Promise<ProjectFileEntry[]> {
       return files
     })
     .catch((err) => {
-      // Drop inflight so next call retries.
+      // Drop only inflight so next call retries while stale files remain usable.
       const cur = cache.get(projectId)
       if (cur?.inflight === inflight) {
-        cache.delete(projectId)
+        const staleEntry: CacheEntry = {
+          fetchedAt: cur.fetchedAt,
+          files: cur.files,
+        }
+        cache.set(projectId, staleEntry)
+        notify(projectId, staleEntry)
       }
       throw err
     })
@@ -168,7 +173,13 @@ export function useProjectFiles(
         setError(undefined)
       } catch (err: any) {
         if (!mountedRef.current) return
-        setStatus("error")
+        const staleFiles = projectId ? cache.get(projectId)?.files ?? [] : []
+        if (staleFiles.length > 0) {
+          setFiles(staleFiles)
+          setStatus("ready")
+        } else {
+          setStatus("error")
+        }
         setError(err?.message || "Failed to load files")
       }
     },
@@ -209,7 +220,6 @@ export function useProjectFiles(
 
   const refresh = useCallback(async () => {
     if (!projectId) return
-    invalidateProjectFiles(projectId)
     await load(true)
   }, [projectId, load])
 

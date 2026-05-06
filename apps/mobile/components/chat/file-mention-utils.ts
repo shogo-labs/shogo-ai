@@ -201,7 +201,7 @@ export interface FileMentionContent {
   content?: string
   truncated?: boolean
   size?: number
-  error?: "not_found" | "too_large" | "read_failed" | "binary"
+  error?: "not_found" | "too_large" | "read_failed" | "binary" | "budget_exceeded" | "invalid_path"
 }
 
 export interface MentionAttachmentLike {
@@ -237,6 +237,31 @@ function summarizeFailure(error: string): string {
     default:
       return "couldn't be read"
   }
+}
+
+function utf8ByteLength(input: string): number {
+  return new TextEncoder().encode(input).byteLength
+}
+
+function truncateUtf8(input: string, maxBytes: number): string {
+  const bytes = new TextEncoder().encode(input)
+  if (bytes.byteLength <= maxBytes) return input
+
+  if (typeof TextDecoder === "function") {
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes))
+  }
+
+  // Old React Native runtimes may lack TextDecoder; this conservative
+  // fallback preserves the cap for ASCII and only over-trims multibyte text.
+  let used = 0
+  let out = ""
+  for (const ch of input) {
+    const n = new TextEncoder().encode(ch).byteLength
+    if (used + n > maxBytes) break
+    out += ch
+    used += n
+  }
+  return out
 }
 
 export function formatMentionIssueSummary(
@@ -324,13 +349,9 @@ export function buildMentionAttachments(
     }
     let body = c.content ?? ""
     let trimmed = false
-    if (body.length > MAX_MENTION_BYTES) {
-      body = body.slice(0, MAX_MENTION_BYTES) + "\n…[truncated]"
+    if (utf8ByteLength(body) > MAX_MENTION_BYTES) {
+      body = truncateUtf8(body, MAX_MENTION_BYTES) + "\n...[truncated]"
       trimmed = true
-    }
-    if (result.totalBytes + body.length > MAX_TOTAL_MENTION_BYTES) {
-      result.failures.push({ path: c.path, error: "budget_exceeded" })
-      continue
     }
     if (c.truncated) trimmed = true
     if (trimmed) result.truncated.push(c.path)
@@ -340,8 +361,17 @@ export function buildMentionAttachments(
       (trimmed ? " (truncated)" : "") +
       "\n"
     const text = header + body
+    const textBytes = utf8ByteLength(text)
 
-    result.totalBytes += text.length
+    if (result.totalBytes + textBytes > MAX_TOTAL_MENTION_BYTES) {
+      result.failures.push({ path: c.path, error: "budget_exceeded" })
+      if (trimmed) {
+        result.truncated = result.truncated.filter((path) => path !== c.path)
+      }
+      continue
+    }
+
+    result.totalBytes += textBytes
     result.attachments.push({
       dataUrl: `data:text/plain;base64,${b64encode(text)}`,
       name: c.path,

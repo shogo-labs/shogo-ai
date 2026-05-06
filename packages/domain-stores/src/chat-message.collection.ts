@@ -9,6 +9,7 @@
 
 import { types, flow, getEnv, getSnapshot, applySnapshot, Instance } from "mobx-state-tree"
 import { ChatMessageModel, type IChatMessage, type IChatMessageSnapshotIn } from "./chat-message.model"
+import { parseMentions } from "./chat-message.types"
 import type { ISDKEnvironment } from "@shogo-ai/sdk"
 
 // ============================================================================
@@ -436,6 +437,8 @@ function transformForMST(obj: any): any {
       result[key] = value
     }
   }
+
+  result.mentions = parseMentions(result.mentions)
 
   return result
 }

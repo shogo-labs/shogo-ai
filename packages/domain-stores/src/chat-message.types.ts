@@ -8,6 +8,11 @@
 
 export type ChatRole = 'user' | 'assistant'
 
+export interface MentionRef {
+  path: string
+  displayName: string
+}
+
 export interface ChatMessageType {
   id: string
   sessionId: string
@@ -15,7 +20,7 @@ export interface ChatMessageType {
   content: string
   imageData?: string
   parts?: string
-  mentions?: Record<string, unknown>
+  mentions?: MentionRef[]
   createdAt: Date
   agent: string
 }
@@ -26,7 +31,7 @@ export interface ChatMessageCreateInput {
   content: string
   imageData?: string
   parts?: string
-  mentions?: Record<string, unknown>
+  mentions?: MentionRef[]
   agent?: string
 }
 
@@ -36,6 +41,33 @@ export interface ChatMessageUpdateInput {
   content?: string
   imageData?: string
   parts?: string
-  mentions?: Record<string, unknown>
+  mentions?: MentionRef[]
   agent?: string
+}
+
+export function parseMentions(value: unknown): MentionRef[] {
+  const raw = typeof value === 'string' ? safeJsonParse(value) : value
+  if (!Array.isArray(raw)) return []
+
+  return raw
+    .filter((item): item is MentionRef => (
+      !!item &&
+      typeof item === 'object' &&
+      typeof (item as MentionRef).path === 'string' &&
+      typeof (item as MentionRef).displayName === 'string'
+    ))
+    .map((item) => ({ path: item.path, displayName: item.displayName }))
+}
+
+export function serializeMentions(value: MentionRef[] | undefined): MentionRef[] | undefined {
+  if (!value || value.length === 0) return undefined
+  return parseMentions(value)
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return []
+  }
 }

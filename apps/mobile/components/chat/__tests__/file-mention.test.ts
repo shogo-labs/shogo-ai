@@ -192,6 +192,17 @@ describe("buildMentionAttachments", () => {
     expect(out.totalBytes).toBeLessThanOrEqual(MAX_TOTAL_MENTION_BYTES + 1024)
     expect(out.failures.some((f) => f.error === "budget_exceeded")).toBe(true)
   })
+
+  test("counts UTF-8 bytes instead of UTF-16 characters", () => {
+    const cjk = "界".repeat(500 * 1024)
+    const out = buildMentionAttachments([
+      { path: "src/cjk.txt", content: cjk },
+    ])
+
+    expect(out.attachments).toHaveLength(1)
+    expect(out.truncated).toContain("src/cjk.txt")
+    expect(out.totalBytes).toBeLessThanOrEqual(MAX_TOTAL_MENTION_BYTES)
+  })
 })
 
 describe("formatMentionIssueSummary", () => {

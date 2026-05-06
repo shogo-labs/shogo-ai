@@ -17,8 +17,8 @@
  */
 
 import { Hono } from "hono"
-import { readdir, readFile, writeFile, mkdir, stat } from "fs/promises"
-import { join, relative, extname } from "path"
+import { readdir, readFile, writeFile, mkdir, stat, open, realpath } from "fs/promises"
+import { join, relative, extname, isAbsolute } from "path"
 import { prisma } from "../lib/prisma"
 import {
   getPresignedReadUrl,
@@ -201,6 +201,25 @@ export function filesRoutes(config: FilesRoutesConfig) {
       }
     }
     return true
+  }
+
+  /**
+   * Resolve a project-relative path after following symlinks and ensure it
+   * remains contained inside the project workspace.
+   */
+  async function resolveContainedProjectPath(
+    projectPath: string,
+    filePath: string,
+  ): Promise<string | null> {
+    if (!validateFilePath(filePath)) return null
+
+    const projectRoot = await realpath(projectPath)
+    const candidate = await realpath(join(projectPath, filePath))
+    const rel = relative(projectRoot, candidate)
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+      return null
+    }
+    return candidate
   }
 
   /**
@@ -399,12 +418,12 @@ export function filesRoutes(config: FilesRoutesConfig) {
    *   content?: string
    *   truncated?: boolean
    *   size?: number
-   *   error?: 'not_found' | 'too_large' | 'read_failed' | 'invalid_path' | 'binary'
+   *   error?: 'not_found' | 'too_large' | 'read_failed' | 'invalid_path' | 'binary' | 'budget_exceeded'
    * }> }
    *
-   * Per-file body is capped at maxBytes (default 256 KB). Binary extensions
-   * are rejected with `error: 'binary'` so callers know to send a path-only
-   * reference.
+   * Per-file body is capped at maxBytes (default 256 KB), and the full
+   * response body is capped at 1 MB. Binary extensions are rejected with
+   * `error: 'binary'` so callers know to send a path-only reference.
    */
   router.post("/projects/:projectId/files/batch-read", async (c) => {
     try {
@@ -416,6 +435,7 @@ export function filesRoutes(config: FilesRoutesConfig) {
           404,
         )
       }
+      const projectRoot = projectPath
 
       const body = await c.req.json<{ paths?: unknown; maxBytes?: unknown }>()
       const rawPaths = Array.isArray(body.paths) ? body.paths : []
@@ -431,8 +451,7 @@ export function filesRoutes(config: FilesRoutesConfig) {
         return c.json({ ok: true, files: [] }, 200)
       }
 
-      const MAX_DIR_FILES = 30
-      const MAX_DIR_TOTAL_BYTES = maxBytes * 2
+      const MAX_TOTAL_BYTES = 1024 * 1024
 
       async function readSingleFile(filePath: string, cap: number) {
         if (!validateFilePath(filePath)) {
@@ -442,15 +461,32 @@ export function filesRoutes(config: FilesRoutesConfig) {
         if (BINARY_MIME_TYPES[ext] && ext !== ".svg") {
           return { path: filePath, error: "binary" as const }
         }
-        const fullPath = join(projectPath, filePath)
         try {
+          const fullPath = await resolveContainedProjectPath(projectRoot, filePath)
+          if (!fullPath) {
+            return { path: filePath, error: "invalid_path" as const }
+          }
           const stats = await stat(fullPath)
+          if (stats.isDirectory()) {
+            return { path: filePath, error: "invalid_path" as const }
+          }
           if (stats.size > cap * 8) {
             return { path: filePath, error: "too_large" as const, size: stats.size }
           }
-          const buf = await readFile(fullPath)
-          const truncated = buf.byteLength > cap
-          const content = (truncated ? buf.subarray(0, cap) : buf).toString("utf-8")
+          const bytesToRead = Math.min(stats.size, cap)
+          const buf = Buffer.alloc(bytesToRead)
+          const handle = await open(fullPath, "r")
+          let bytesRead = 0
+          try {
+            if (bytesToRead > 0) {
+              const result = await handle.read(buf, 0, bytesToRead, 0)
+              bytesRead = result.bytesRead
+            }
+          } finally {
+            await handle.close()
+          }
+          const truncated = stats.size > cap
+          const content = buf.subarray(0, bytesRead).toString("utf-8")
           return { path: filePath, content, truncated, size: stats.size }
         } catch (err: any) {
           if (err?.code === "ENOENT") {
@@ -461,73 +497,28 @@ export function filesRoutes(config: FilesRoutesConfig) {
         }
       }
 
-      async function readDirectory(dirPath: string) {
-        const fullDirPath = join(projectPath, dirPath)
-        try {
-          const stats = await stat(fullDirPath)
-          if (!stats.isDirectory()) {
-            return readSingleFile(dirPath, maxBytes)
+      const encoder = new TextEncoder()
+      const files = []
+      let totalBytes = 0
+
+      for (const filePath of paths) {
+        if (totalBytes >= MAX_TOTAL_BYTES) {
+          files.push({ path: filePath, error: "budget_exceeded" as const })
+          continue
+        }
+
+        const result = await readSingleFile(filePath, maxBytes)
+        if ("content" in result && typeof result.content === "string") {
+          const contentBytes = encoder.encode(result.content).byteLength
+          if (totalBytes + contentBytes > MAX_TOTAL_BYTES) {
+            files.push({ path: filePath, error: "budget_exceeded" as const, size: result.size })
+            totalBytes = MAX_TOTAL_BYTES
+            continue
           }
-        } catch (err: any) {
-          if (err?.code === "ENOENT") {
-            return { path: dirPath, error: "not_found" as const }
-          }
-          return { path: dirPath, error: "read_failed" as const }
+          totalBytes += contentBytes
         }
-
-        const childFiles = await listFilesRecursive(fullDirPath, fullDirPath)
-        const textFiles = childFiles
-          .filter((f) => f.type === "file")
-          .slice(0, MAX_DIR_FILES)
-
-        if (textFiles.length === 0) {
-          return { path: dirPath, content: `// Directory: ${dirPath} (empty)\n`, size: 0 }
-        }
-
-        const parts: string[] = [`// Directory: ${dirPath} (${textFiles.length} files)\n`]
-        let totalBytes = 0
-        let wasTruncated = false
-
-        for (const child of textFiles) {
-          const childPath = join(dirPath, child.path)
-          const result = await readSingleFile(childPath, maxBytes)
-          if (result.error || !result.content) continue
-          const header = `\n// --- ${child.path} ---\n`
-          const chunk = header + result.content
-          if (totalBytes + chunk.length > MAX_DIR_TOTAL_BYTES) {
-            wasTruncated = true
-            break
-          }
-          parts.push(chunk)
-          totalBytes += chunk.length
-          if (result.truncated) wasTruncated = true
-        }
-
-        return {
-          path: dirPath,
-          content: parts.join(""),
-          truncated: wasTruncated,
-          size: totalBytes,
-        }
+        files.push(result)
       }
-
-      const files = await Promise.all(
-        paths.map(async (filePath: string) => {
-          if (!validateFilePath(filePath)) {
-            return { path: filePath, error: "invalid_path" as const }
-          }
-          const fullPath = join(projectPath, filePath)
-          try {
-            const stats = await stat(fullPath)
-            if (stats.isDirectory()) {
-              return readDirectory(filePath)
-            }
-          } catch {
-            // Fall through to single-file read which handles ENOENT
-          }
-          return readSingleFile(filePath, maxBytes)
-        }),
-      )
 
       return c.json({ ok: true, files }, 200)
     } catch (error: any) {

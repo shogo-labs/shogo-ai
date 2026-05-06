@@ -9,6 +9,7 @@
 
 import { flow, getEnv } from "mobx-state-tree"
 import type { IDomainStore, ISDKEnvironment } from "./domain"
+import type { MentionRef } from "./chat-message.types"
 
 // ============================================================================
 // Domain Action Helpers
@@ -326,6 +327,7 @@ export function createDomainActions(store: IDomainStore) {
       content: string
       imageData?: string
       parts?: string
+      mentions?: MentionRef[]
     }) => {
       return store.chatMessageCollection.create(data)
     },

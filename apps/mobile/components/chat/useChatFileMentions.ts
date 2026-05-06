@@ -62,7 +62,11 @@ export function useChatFileMentions({
   const projectFiles = useProjectFiles(projectId, {
     enabled: !!projectId && enabled,
   })
-  const isLargeProject = projectFiles.files.length >= LARGE_PROJECT_THRESHOLD
+  const mentionableFiles = useMemo(
+    () => projectFiles.files.filter((file) => file.type === "file"),
+    [projectFiles.files],
+  )
+  const isLargeProject = mentionableFiles.length >= LARGE_PROJECT_THRESHOLD
 
   const closePicker = useCallback(() => {
     setPickerOpen(false)
@@ -137,10 +141,10 @@ export function useChatFileMentions({
   const results = useMemo(() => {
     if (!pickerOpen) return []
     if (isLargeProject && query && serverSearchResults.length > 0) {
-      return serverSearchResults
+      return serverSearchResults.filter((file) => file.type === "file")
     }
-    return rankFiles(projectFiles.files, query, 50)
-  }, [pickerOpen, projectFiles.files, query, isLargeProject, serverSearchResults])
+    return rankFiles(mentionableFiles, query, 50)
+  }, [pickerOpen, mentionableFiles, query, isLargeProject, serverSearchResults])
 
   useEffect(() => {
     if (!pickerOpen) return
@@ -231,8 +235,8 @@ export function useChatFileMentions({
   }, [mentions.length])
 
   const validateBeforeSend = useCallback((): FileMention[] | null => {
-    if (mentions.length === 0 || projectFiles.files.length === 0) return mentions
-    const knownPaths = new Set(projectFiles.files.map((f) => f.path))
+    if (mentions.length === 0 || mentionableFiles.length === 0) return mentions
+    const knownPaths = new Set(mentionableFiles.map((f) => f.path))
     const gone = mentions.filter((m) => !knownPaths.has(m.path))
     if (gone.length === 0) return mentions
 
@@ -246,7 +250,7 @@ export function useChatFileMentions({
     setMentions(validMentions)
     setError(`${goneNames} no longer found; removed from tagged files`)
     return validMentions
-  }, [mentions, projectFiles.files, setError])
+  }, [mentions, mentionableFiles, setError])
 
   const resolveMentionContents = useCallback(
     async (toResolve: FileMention[]): Promise<FileMentionContent[]> => {

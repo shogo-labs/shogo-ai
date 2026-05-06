@@ -386,7 +386,7 @@ export function ChatInput({
   const fileMentions = useChatFileMentions({
     projectId,
     enabled: mentionsFeatureEnabled,
-    disabled: disabled || isStreaming,
+    disabled,
     valueRef: inputValueRef,
     setValue: setInputValue,
     inputRef: textInputRef,
@@ -1106,6 +1106,7 @@ export function ChatInput({
                 key={m.id}
                 mention={m}
                 onRemove={() => removeMention(m.id)}
+                status={isResolvingMentions ? "resolving" : "ready"}
               />
             ))}
           </View>
@@ -1529,7 +1530,7 @@ export function ChatInput({
             {mentionsFeatureEnabled && (
               <Pressable
                 onPress={openMentionPicker}
-                disabled={disabled || isStreaming || isProcessingFiles || isResolvingMentions}
+                disabled={disabled || isProcessingFiles || isResolvingMentions}
                 role="button"
                 accessibilityLabel="Tag project file"
                 className={cn(
@@ -1541,7 +1542,7 @@ export function ChatInput({
                 <AtSign
                   className={cn(
                     "h-4 w-4",
-                    disabled || isStreaming || isProcessingFiles || isResolvingMentions
+                    disabled || isProcessingFiles || isResolvingMentions
                       ? "text-muted-foreground/40"
                       : mentionPickerOpen
                         ? "text-primary"

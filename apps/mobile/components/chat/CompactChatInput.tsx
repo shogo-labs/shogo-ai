@@ -710,6 +710,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   key={m.id}
                   mention={m}
                   onRemove={() => removeMention(m.id)}
+                  status={isResolvingMentions ? "resolving" : "ready"}
                 />
               ))}
             </View>
