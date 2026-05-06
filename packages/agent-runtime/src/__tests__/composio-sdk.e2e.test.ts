@@ -233,13 +233,79 @@ describe('checkComposioAuth', () => {
 // ---------------------------------------------------------------------------
 
 describe('error handling', () => {
-  test.skipIf(SKIP)('buildComposioUserId formats correctly', () => {
+  test.skipIf(SKIP)('buildComposioUserId formats correctly (default = project)', () => {
+    // No-arg default preserves the historical behavior so existing
+    // call sites that haven't been updated to read workspace.composioScope
+    // keep producing project-scoped IDs.
     const id = buildComposioUserId('user123', 'workspace789', 'project456')
     expect(id).toBe('shogo_user123_workspace789_project456')
+  })
+
+  test.skipIf(SKIP)('buildComposioUserId(scope=project) is project-scoped', () => {
+    const id = buildComposioUserId('user123', 'workspace789', 'project456', 'project')
+    expect(id).toBe('shogo_user123_workspace789_project456')
+  })
+
+  test.skipIf(SKIP)('buildComposioUserId(scope=workspace) drops the projectId suffix', () => {
+    // workspace scope = one Composio identity per (user, workspace),
+    // shared across every project in the workspace.
+    const id = buildComposioUserId('user123', 'workspace789', 'project456', 'workspace')
+    expect(id).toBe('shogo_user123_workspace789')
   })
 
   test.skipIf(SKIP)('buildLegacyComposioUserId formats correctly', () => {
     const id = buildLegacyComposioUserId('user123', 'project456')
     expect(id).toBe('shogo_user123_project456')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Composio scope (workspace vs project)
+// ---------------------------------------------------------------------------
+
+describe('composio scope', () => {
+  test.skipIf(SKIP)('initComposioSession with scope=workspace creates workspace-scoped session', async () => {
+    const result = await initComposioSession(
+      TEST_USER_ID,
+      TEST_WORKSPACE_ID,
+      TEST_PROJECT_ID,
+      'workspace',
+    )
+    expect(result).toBe(true)
+    expect(isComposioInitialized()).toBe(true)
+  })
+
+  test.skipIf(SKIP)('initComposioSession with scope=project creates project-scoped session', async () => {
+    const result = await initComposioSession(
+      TEST_USER_ID,
+      TEST_WORKSPACE_ID,
+      TEST_PROJECT_ID,
+      'project',
+    )
+    expect(result).toBe(true)
+    expect(isComposioInitialized()).toBe(true)
+  })
+
+  test.skipIf(SKIP)('switching scope re-initializes the session', async () => {
+    // First init under workspace scope.
+    const r1 = await initComposioSession(
+      TEST_USER_ID,
+      TEST_WORKSPACE_ID,
+      TEST_PROJECT_ID,
+      'workspace',
+    )
+    expect(r1).toBe(true)
+
+    // Switch to project scope — the stored userId changes, so the
+    // helper should treat this as a new session and call into the SDK
+    // again rather than no-oping on the cached identity.
+    const r2 = await initComposioSession(
+      TEST_USER_ID,
+      TEST_WORKSPACE_ID,
+      TEST_PROJECT_ID,
+      'project',
+    )
+    expect(r2).toBe(true)
+    expect(isComposioInitialized()).toBe(true)
   })
 })

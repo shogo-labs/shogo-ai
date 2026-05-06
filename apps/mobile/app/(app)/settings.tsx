@@ -46,6 +46,7 @@ import {
   Cloud,
   Server,
   Coins,
+  Plug,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -65,6 +66,7 @@ import { getIncludedUsdCapacityForDisplay, formatUsd, PLAN_PRICING } from '../..
 import { usePlatformConfig } from '../../lib/platform-config'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
+import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -95,9 +97,9 @@ import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../li
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs'
+type TabId = 'workspace' | 'people' | 'integrations' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'security', 'billing', 'compute', 'analytics', 'costs']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'integrations', 'account', 'security', 'billing', 'compute', 'analytics', 'costs']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = 768
@@ -111,6 +113,7 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'account', label: 'Account', icon: User },
   { id: 'compute', label: 'Compute', icon: Server },
   { id: 'billing', label: 'Billing', icon: CreditCard },
@@ -120,6 +123,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'analytics', label: 'Usage', icon: BarChart3 },
@@ -209,6 +213,7 @@ function SettingsSidebar({
   const workspaceItems: SidebarItem[] = [
     { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
+    { id: 'integrations' as TabId, label: 'Integrations' },
     ...(showBilling
       ? [
           { id: 'compute' as TabId, label: 'Compute' },
@@ -2831,6 +2836,7 @@ const SettingsContent = observer(function SettingsContent({
     <>
       {activeTab === 'workspace' && <WorkspaceSettingsTab />}
       {activeTab === 'people' && !isLocal && <PeopleTab />}
+      {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'compute' && !isLocal && <ComputeTab />}

@@ -2762,7 +2762,10 @@ app.post('/agent/tools/install', async (c) => {
         const userId = c.req.header('X-User-Id') || process.env.USER_ID || 'default'
         const workspaceId = process.env.WORKSPACE_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
-        await initComposioSession(userId, workspaceId, projectId)
+        const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+        const scope: 'workspace' | 'project' =
+          scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+        await initComposioSession(userId, workspaceId, projectId, scope)
         const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
         return c.json({
           ok: true,

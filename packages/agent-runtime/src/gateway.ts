@@ -1163,7 +1163,10 @@ export class AgentGateway {
       this.currentUserId = options.userId
       if (isComposioEnabled()) {
         const workspaceId = process.env.WORKSPACE_ID || 'default'
-        await initComposioSession(options.userId, workspaceId, this.projectId)
+        const scopeEnv = process.env.COMPOSIO_USER_SCOPE
+        const scope: 'workspace' | 'project' =
+          scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+        await initComposioSession(options.userId, workspaceId, this.projectId, scope)
       }
     }
 

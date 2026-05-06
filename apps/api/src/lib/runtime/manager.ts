@@ -723,6 +723,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * Read the workspace's `composioScope` setting for a project.
+   * Returns `'workspace'` (the new default) when the project, workspace,
+   * or column is missing — matches the API route's defaulting logic.
+   */
+  private async getProjectComposioScope(projectId: string): Promise<'workspace' | 'project'> {
+    try {
+      const { prisma } = await import('../prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspace: { select: { composioScope: true } } } as any,
+      }) as { workspace?: { composioScope?: string | null } | null } | null
+      const value = project?.workspace?.composioScope
+      if (value === 'project' || value === 'workspace') return value
+      return 'workspace'
+    } catch {
+      return 'workspace'
+    }
+  }
+
+  /**
    * Build a merged security policy for a project runtime (local mode only).
    * Reads user-level preference from LocalConfig and project-level overrides
    * from Project.settings, merges with escalation protection, and returns
@@ -1032,6 +1052,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
 
         runtimeEnv.WORKSPACE_ID = workspaceId
+
+        // Tell the runtime which Composio scope to use for OAuth user IDs.
+        // Defaults to 'workspace' (the new default) for any project where
+        // the workspace row is missing the column.
+        runtimeEnv.COMPOSIO_USER_SCOPE = await this.getProjectComposioScope(projectId)
 
         // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId).
         // Gotchas around rotation / leak response / synthetic userId live in

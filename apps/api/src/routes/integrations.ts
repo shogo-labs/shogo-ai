@@ -157,8 +157,26 @@ function getComposio(): Composio | null {
   return composioClient
 }
 
-function buildComposioUserId(userId: string, workspaceId: string, projectId: string): string {
-  return `shogo_${userId}_${workspaceId}_${projectId}`
+/**
+ * Per-workspace OAuth scope. See packages/agent-runtime/src/composio.ts
+ * (`ComposioScope`) for the same type — duplicated here so this route
+ * file doesn't pull the entire agent-runtime barrel into the API
+ * server's bundle.
+ */
+type ComposioScope = 'workspace' | 'project'
+
+/** Default for any code path that doesn't know the workspace's setting. */
+const DEFAULT_COMPOSIO_SCOPE: ComposioScope = 'workspace'
+
+function buildComposioUserId(
+  userId: string,
+  workspaceId: string,
+  projectId: string,
+  scope: ComposioScope = 'project',
+): string {
+  return scope === 'workspace'
+    ? `shogo_${userId}_${workspaceId}`
+    : `shogo_${userId}_${workspaceId}_${projectId}`
 }
 
 /** TODO: Remove after all existing connections have been re-authenticated under the new format. */
@@ -177,6 +195,111 @@ async function getProjectWorkspaceId(projectId: string): Promise<string | null> 
   } catch {
     return null
   }
+}
+
+/**
+ * Read the workspace's `composioScope` setting. Defaults to
+ * `DEFAULT_COMPOSIO_SCOPE` if the workspace is missing or the column
+ * isn't present (e.g. pre-migration sqlite DBs).
+ */
+async function getWorkspaceComposioScope(workspaceId: string): Promise<ComposioScope> {
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const ws = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { composioScope: true } as any,
+    }) as { composioScope?: string | null } | null
+    const value = ws?.composioScope
+    if (value === 'workspace' || value === 'project') return value
+    return DEFAULT_COMPOSIO_SCOPE
+  } catch {
+    return DEFAULT_COMPOSIO_SCOPE
+  }
+}
+
+/**
+ * Resolve a Composio auth context from the request. Callers may pass
+ * either a `projectId` (legacy / project-scoped flows) or a
+ * `workspaceId` (workspace-scope flow used by the Settings →
+ * Integrations panel). Workspace-scope is only valid when the
+ * workspace is configured for `composioScope='workspace'`; project-
+ * scoped workspaces still need a project context to disambiguate.
+ *
+ * Returns `{ workspaceId, projectId, scope }`. `projectId` is set to
+ * the literal string `"workspace"` when the caller only provided a
+ * workspace and the scope is workspace — that keeps downstream code
+ * (e.g. `buildComposioUserId`, `buildLookupCandidates`) happy and
+ * makes the intent obvious in logs without fabricating a real project
+ * id. Throws via the returned `error` shape when the request can't
+ * be resolved.
+ */
+async function resolveComposioAuthContext(
+  authUserId: string,
+  authWorkspaceId: string | undefined,
+  query: { projectId?: string; workspaceId?: string },
+): Promise<
+  | { ok: true; workspaceId: string; projectId: string; scope: ComposioScope }
+  | { ok: false; status: 400; error: string }
+> {
+  const explicitProject = query.projectId?.trim()
+  const explicitWorkspace = query.workspaceId?.trim()
+
+  if (explicitProject) {
+    const workspaceId =
+      authWorkspaceId || (await getProjectWorkspaceId(explicitProject)) || 'default'
+    const scope = await getWorkspaceComposioScope(workspaceId)
+    return { ok: true, workspaceId, projectId: explicitProject, scope }
+  }
+
+  if (explicitWorkspace) {
+    const scope = await getWorkspaceComposioScope(explicitWorkspace)
+    if (scope !== 'workspace') {
+      return {
+        ok: false,
+        status: 400,
+        error:
+          'workspaceId-only requests require composioScope="workspace". ' +
+          'Pass projectId for project-scoped workspaces.',
+      }
+    }
+    return { ok: true, workspaceId: explicitWorkspace, projectId: 'workspace', scope }
+  }
+
+  return { ok: false, status: 400, error: 'projectId or workspaceId is required' }
+}
+
+/**
+ * Build the set of Composio user IDs we should consult when reading
+ * connected accounts. Asymmetric by design:
+ *   * `'workspace'` scope ⇒ primary workspace-scoped ID + project-scoped
+ *     ID + legacy ID. So a workspace migrated from `'project'` keeps
+ *     resolving its old connections without forcing re-OAuth.
+ *   * `'project'` scope ⇒ project-scoped ID + legacy ID only. Strict
+ *     isolation: workspace-scoped IDs never bleed into project-scoped
+ *     workspaces.
+ *
+ * The historical `'default'` userId entries (for deployments where the
+ * authed user was missing) are kept in `buildLookupCandidatesWithDefaults`
+ * for the status route.
+ */
+function buildLookupCandidates(
+  userId: string,
+  workspaceId: string,
+  projectId: string,
+  scope: ComposioScope,
+): string[] {
+  const candidates =
+    scope === 'workspace'
+      ? [
+          buildComposioUserId(userId, workspaceId, projectId, 'workspace'),
+          buildComposioUserId(userId, workspaceId, projectId, 'project'),
+          buildLegacyComposioUserId(userId, projectId),
+        ]
+      : [
+          buildComposioUserId(userId, workspaceId, projectId, 'project'),
+          buildLegacyComposioUserId(userId, projectId),
+        ]
+  return Array.from(new Set(candidates))
 }
 
 export function integrationRoutes() {
@@ -217,14 +340,15 @@ export function integrationRoutes() {
 
     const body = await c.req.json() as {
       toolkit: string
-      projectId: string
+      projectId?: string
+      workspaceId?: string
       callbackUrl?: string
     }
 
-    const { toolkit, projectId, callbackUrl } = body
+    const { toolkit, projectId, workspaceId: bodyWorkspaceId, callbackUrl } = body
 
-    if (!toolkit || !projectId) {
-      return c.json({ error: 'toolkit and projectId are required' }, 400)
+    if (!toolkit) {
+      return c.json({ error: 'toolkit is required' }, 400)
     }
 
     if (shouldForwardToCloud()) {
@@ -235,7 +359,7 @@ export function integrationRoutes() {
         'POST',
         'integrations/connect',
         c.req.raw,
-        JSON.stringify({ toolkit, projectId, callbackUrl: cloudCallbackUrl }),
+        JSON.stringify({ toolkit, projectId, workspaceId: bodyWorkspaceId, callbackUrl: cloudCallbackUrl }),
       )
     }
 
@@ -255,8 +379,12 @@ export function integrationRoutes() {
       }
     }
 
-    const workspaceId = auth.workspaceId || await getProjectWorkspaceId(projectId) || 'default'
-    const composioUserId = buildComposioUserId(auth.userId, workspaceId, projectId)
+    const ctx = await resolveComposioAuthContext(auth.userId, auth.workspaceId, {
+      projectId,
+      workspaceId: bodyWorkspaceId,
+    })
+    if (!ctx.ok) return c.json({ error: ctx.error }, ctx.status)
+    const composioUserId = buildComposioUserId(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
     const authConfigOverride = TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit]
 
     try {
@@ -294,14 +422,18 @@ export function integrationRoutes() {
     }
 
     const projectId = c.req.query('projectId')
-    if (!projectId) {
-      return c.json({ error: 'projectId query parameter required' }, 400)
+    const workspaceIdParam = c.req.query('workspaceId')
+    if (!projectId && !workspaceIdParam) {
+      return c.json({ error: 'projectId or workspaceId query parameter required' }, 400)
     }
 
     if (shouldForwardToCloud()) {
+      const qs = projectId
+        ? `projectId=${encodeURIComponent(projectId)}`
+        : `workspaceId=${encodeURIComponent(workspaceIdParam!)}`
       return forwardIntegrationsToCloud(
         'GET',
-        `integrations/connections?projectId=${encodeURIComponent(projectId)}`,
+        `integrations/connections?${qs}`,
         c.req.raw,
       )
     }
@@ -311,11 +443,14 @@ export function integrationRoutes() {
       return c.json({ ok: true, data: [] })
     }
 
-    const workspaceId = auth.workspaceId || await getProjectWorkspaceId(projectId) || 'default'
-    const composioUserId = buildComposioUserId(auth.userId, workspaceId, projectId)
-    // TODO: Remove legacy ID lookup after all connections migrated to new format
-    const legacyId = buildLegacyComposioUserId(auth.userId, projectId)
-    const userIds = legacyId !== composioUserId ? [composioUserId, legacyId] : [composioUserId]
+    const ctx = await resolveComposioAuthContext(auth.userId, auth.workspaceId, {
+      projectId,
+      workspaceId: workspaceIdParam,
+    })
+    if (!ctx.ok) return c.json({ error: ctx.error }, ctx.status)
+    const composioUserId = buildComposioUserId(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
+    // Asymmetric fallback (see buildLookupCandidates jsdoc).
+    const userIds = buildLookupCandidates(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
 
     try {
       const accounts = await composio.connectedAccounts.list({ userIds })
@@ -382,14 +517,18 @@ export function integrationRoutes() {
 
     const toolkit = c.req.param('toolkit')
     const projectId = c.req.query('projectId')
-    if (!projectId) {
-      return c.json({ error: 'projectId query parameter required' }, 400)
+    const workspaceIdParam = c.req.query('workspaceId')
+    if (!projectId && !workspaceIdParam) {
+      return c.json({ error: 'projectId or workspaceId query parameter required' }, 400)
     }
 
     if (shouldForwardToCloud()) {
+      const qs = projectId
+        ? `projectId=${encodeURIComponent(projectId)}`
+        : `workspaceId=${encodeURIComponent(workspaceIdParam!)}`
       return forwardIntegrationsToCloud(
         'GET',
-        `integrations/status/${encodeURIComponent(toolkit)}?projectId=${encodeURIComponent(projectId)}`,
+        `integrations/status/${encodeURIComponent(toolkit)}?${qs}`,
         c.req.raw,
       )
     }
@@ -399,15 +538,22 @@ export function integrationRoutes() {
       return c.json({ ok: true, data: { connected: false, enabled: false } })
     }
 
-    const workspaceId = auth.workspaceId || await getProjectWorkspaceId(projectId) || 'default'
-    // TODO: Remove legacy ID lookups after all connections migrated to new format
-    const candidateIds = [
-      buildComposioUserId(auth.userId, workspaceId, projectId),
-      buildComposioUserId('default', workspaceId, projectId),
-      buildLegacyComposioUserId(auth.userId, projectId),
-      buildLegacyComposioUserId('default', projectId),
-    ]
-    const uniqueIds = [...new Set(candidateIds)]
+    const ctx = await resolveComposioAuthContext(auth.userId, auth.workspaceId, {
+      projectId,
+      workspaceId: workspaceIdParam,
+    })
+    if (!ctx.ok) return c.json({ error: ctx.error }, ctx.status)
+    // The status route additionally consults the historical
+    // `'default'` userId because some pre-2026-04 deployments authed
+    // anonymously when the request lacked an authenticated user.
+    // Combine the asymmetric candidate set for both the real userId and
+    // the `'default'` placeholder.
+    const uniqueIds = Array.from(
+      new Set([
+        ...buildLookupCandidates(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope),
+        ...buildLookupCandidates('default', ctx.workspaceId, ctx.projectId, ctx.scope),
+      ]),
+    )
 
     try {
       const accounts = await composio.connectedAccounts.list({

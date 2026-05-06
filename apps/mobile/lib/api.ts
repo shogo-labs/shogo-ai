@@ -484,12 +484,51 @@ export const api = {
     return Array.isArray(data) ? data : []
   },
 
+  /**
+   * Workspace-scope variant — only valid when the workspace's
+   * `composioScope === 'workspace'` (returns 400 otherwise). Used by
+   * the Settings → Integrations panel where there's no specific
+   * project context.
+   */
+  async getWorkspaceIntegrationConnections(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ data: Array<{ id: string; toolkit?: string; status: string; statusReason?: string | null; createdAt?: string; accountIdentifier?: string | null }> }>(
+      '/api/integrations/connections',
+      { workspaceId },
+    )
+    const data = res.data?.data
+    return Array.isArray(data) ? data : []
+  },
+
   async connectIntegration(http: HttpClient, toolkit: string, projectId: string, callbackUrl: string) {
     const res = await http.post<{ data?: { redirectUrl?: string } }>(
       '/api/integrations/connect',
       { toolkit, projectId, callbackUrl },
     )
     return res.data
+  },
+
+  /** Workspace-scope variant of `connectIntegration`. */
+  async connectWorkspaceIntegration(http: HttpClient, toolkit: string, workspaceId: string, callbackUrl: string) {
+    const res = await http.post<{ data?: { redirectUrl?: string } }>(
+      '/api/integrations/connect',
+      { toolkit, workspaceId, callbackUrl },
+    )
+    return res.data
+  },
+
+  /**
+   * List every Composio toolkit available to this account. Powers the
+   * "browse all" picker on the Integrations settings tab.
+   */
+  async getIntegrationProviders(http: HttpClient) {
+    const res = await http.get<{ data: Array<{ toolkit: string; name: string; whiteLabeled?: boolean; available?: boolean }>; enabled?: boolean }>(
+      '/api/integrations/providers',
+    )
+    const data = res.data?.data
+    return {
+      providers: Array.isArray(data) ? data : [],
+      enabled: res.data?.enabled !== false,
+    }
   },
 
   async getIntegrationStatus(http: HttpClient, toolkit: string, projectId: string) {
