@@ -24,6 +24,8 @@ export interface TranscriptionResult {
 // Path resolution
 // ---------------------------------------------------------------------------
 
+const SHERPA_BIN_EXT = process.platform === 'win32' ? '.exe' : ''
+
 function getSherpaDir(): string {
   const candidates = [
     // Explicit override from desktop local-server (packaged app writable path)
@@ -36,14 +38,14 @@ function getSherpaDir(): string {
     join((process as any).resourcesPath || '', 'sherpa-onnx'),
   ].filter(Boolean) as string[]
   for (const dir of candidates) {
-    if (existsSync(join(dir, 'bin', 'sherpa-onnx-offline'))) return dir
+    if (existsSync(join(dir, 'bin', `sherpa-onnx-offline${SHERPA_BIN_EXT}`))) return dir
   }
   return candidates[0]
 }
 
 export function getSherpaOfflinePath(): string | null {
   const dir = getSherpaDir()
-  const binPath = join(dir, 'bin', 'sherpa-onnx-offline')
+  const binPath = join(dir, 'bin', `sherpa-onnx-offline${SHERPA_BIN_EXT}`)
   return existsSync(binPath) ? binPath : null
 }
 
@@ -102,6 +104,9 @@ export async function transcribeLocal(
   const env = { ...process.env }
   if (process.platform === 'darwin') {
     env.DYLD_LIBRARY_PATH = [libDir, env.DYLD_LIBRARY_PATH].filter(Boolean).join(':')
+  } else if (process.platform === 'win32') {
+    const binDir = join(getSherpaDir(), 'bin')
+    env.PATH = [binDir, libDir, env.PATH].filter(Boolean).join(';')
   } else {
     env.LD_LIBRARY_PATH = [libDir, env.LD_LIBRARY_PATH].filter(Boolean).join(':')
   }
