@@ -268,11 +268,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      - name: Select latest Xcode (require 26+ for App Store Connect)
+        # Apple began rejecting App Store Connect uploads built with iOS SDK
+        # < 26 in 2026 ("This app was built with the iOS 18.5 SDK. All iOS
+        # and iPadOS apps must be built with the iOS 26 SDK or later").
+        # macos-latest installs multiple Xcode versions side by side at
+        # /Applications/Xcode_*.app — pick the highest-versioned one and
+        # fail loudly here (cheap) instead of 15 minutes later in altool.
+        run: |
+          set -euo pipefail
 
-      - name: Print Xcode version
-        run: xcodebuild -version
+          echo "Available Xcode installations:"
+          ls /Applications/ | grep -E '^Xcode' || true
+
+          XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$XCODE" ]; then
+            XCODE="/Applications/Xcode.app"
+          fi
+
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
+          XC_MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          if [ "$XC_MAJOR" -lt 26 ]; then
+            echo "::error title=Xcode SDK too old::Selected Xcode major version $XC_MAJOR is < 26. Apple now requires Xcode 26+/iOS 26 SDK for App Store Connect submissions."
+            echo "Available Xcodes on this runner:"
+            ls /Applications/ | grep -E '^Xcode' || true
+            exit 1
+          fi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
