@@ -1,0 +1,657 @@
+# =============================================================================
+# iOS Build & Update Pipeline
+# =============================================================================
+# Mirrors android.yml. Native build runs on macos-latest with xcodebuild,
+# using a Distribution Certificate + Provisioning Profile injected from
+# GitHub Secrets — no EAS Build dependency, no Expo project access required
+# for the build. EAS Update is still used for OTA JS-only updates.
+#
+# Environments:
+#   staging    — push to main branch (auto OTA to staging channel)
+#   production — push v* (unified release tag, e.g. v1.0.0) or ios-v* (iOS-only)
+#                or manual dispatch with environment=production
+#
+# Decision matrix (same logic as android.yml):
+#   - Tag push (v* or ios-v*) → always full build + submit
+#   - Cache hit on fingerprint → OTA update only
+#   - mode=ota dispatch → OTA only
+#   - Otherwise → full build
+#
+# Required GitHub Secrets:
+#   EXPO_TOKEN                          - Expo token (only used by OTA update job)
+#   APPLE_ID                            - Apple ID email
+#   APPLE_ID_PASSWORD                   - App-specific password (account.apple.com)
+#   APPLE_TEAM_ID                       - 10-char Apple Developer Team ID
+#   APPLE_CERTIFICATE_BASE64            - Base64 of the iOS Distribution .p12
+#   APPLE_CERTIFICATE_PASSWORD          - Password for the .p12
+#   APPLE_PROVISIONING_PROFILE_BASE64   - Base64 of the App Store .mobileprovision
+#   EXPO_PUBLIC_SENTRY_DSN              - (optional) Sentry DSN for runtime
+#   SENTRY_AUTH_TOKEN                   - (optional) Sentry auth token. When set,
+#                                          the post-archive job uploads dSYMs to
+#                                          Sentry (org=shogo, project=shogo-mobile).
+#                                          When unset, the upload step skips
+#                                          silently and the rest of the pipeline
+#                                          still completes.
+# =============================================================================
+
+name: iOS Build & Update
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'ios-v*'
+      - 'v[0-9]*'
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/domain-stores/**'
+      - 'packages/shared-app/**'
+      - 'packages/shared-ui/**'
+      - 'packages/ui-kit/**'
+      - 'packages/sdk/**'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'full = build or OTA + submit · ota = OTA update only'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - ota
+      environment:
+        description: 'Target environment (staging or production)'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      submit:
+        description: 'Submit to App Store Connect / TestFlight — full mode only'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # ===========================================================================
+  # Check if native code changed
+  # ===========================================================================
+  check-fingerprint:
+    name: Check Native Fingerprint
+    runs-on: ubuntu-latest
+    outputs:
+      needs_build: ${{ steps.decide.outputs.needs_build }}
+      runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
+      environment: ${{ steps.resolve-env.outputs.environment }}
+      app_version: ${{ steps.resolve-version.outputs.version }}
+
+    steps:
+      - name: Resolve environment
+        id: resolve-env
+        run: |
+          if [ -n "${{ github.event.inputs.environment }}" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
+            ENV="production"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENV="staging"
+          else
+            ENV="staging"
+          fi
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "Resolved environment: $ENV"
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve app version from app.json
+        id: resolve-version
+        run: |
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('apps/mobile/app.json','utf8')).expo.version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using app.json version: $VERSION"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install
+
+      - name: Resolve fingerprint
+        id: fingerprint
+        working-directory: apps/mobile
+        run: |
+          RAW=$(npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null || echo "")
+
+          if [ -z "$RAW" ]; then
+            echo "Could not resolve runtime version"
+            echo "runtime_version=unknown" >> $GITHUB_OUTPUT
+          else
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
+            echo "Raw output: $RAW"
+            echo "Fingerprint hash: $RUNTIME_VERSION"
+            echo "runtime_version=$RUNTIME_VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore cached fingerprint
+        if: steps.fingerprint.outputs.runtime_version != 'unknown'
+        id: cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: .fingerprint-ios
+          key: ios-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
+
+      - name: Determine if build is needed
+        id: decide
+        run: |
+          if [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
+            echo "Tag push (${{ github.ref_name }}) → release event, forcing full build + submit"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
+            echo "Could not resolve fingerprint → forcing full build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Fingerprint cached from a previous successful build → OTA update only"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.mode }}" = "ota" ]; then
+            echo "OTA mode: trusting no native changes"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New fingerprint → full build required"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  # ===========================================================================
+  # OTA Update — JS/asset changes only (no native changes)
+  # ===========================================================================
+  update:
+    name: EAS Update (OTA)
+    runs-on: ubuntu-latest
+    needs: check-fingerprint
+    if: >
+      needs.check-fingerprint.result == 'success' &&
+      needs.check-fingerprint.outputs.needs_build == 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install
+
+      - name: Sync app version
+        working-directory: apps/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+              fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            } else {
+              console.log('Version already matches: ' + appJson.expo.version);
+            }
+          "
+
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Resolve API URL for environment
+        id: api-url
+        run: |
+          if [ "${{ needs.check-fingerprint.outputs.environment }}" = "production" ]; then
+            echo "url=https://studio.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://studio.staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish OTA update
+        working-directory: apps/mobile
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+        run: |
+          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          eas update \
+            --branch ${{ needs.check-fingerprint.outputs.environment }} \
+            --platform ios \
+            --message "$SUBJECT" \
+            --non-interactive
+
+      - name: Summary
+        run: |
+          echo "## iOS OTA Update Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Full Native Build — macOS runner with xcodebuild
+  # ===========================================================================
+  build:
+    name: iOS Build (xcodebuild)
+    runs-on: macos-latest
+    needs: check-fingerprint
+    if: >
+      needs.check-fingerprint.outputs.needs_build == 'true' &&
+      github.event.inputs.mode != 'ota'
+
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve API URL for environment
+        # Mirrors the OTA job + the android.yml build job. Without this the
+        # JS bundle baked into the IPA falls back to `http://localhost:3000`
+        # (see apps/mobile/lib/api.ts → nativeApiUrlWithoutEnv) and every
+        # network call from the device fails with "Network request failed".
+        # That was the root cause of the App Store rejection on submission
+        # 85609ca0-1c38-40be-a090-b92a680ed722 (Guideline 2.1(a)).
+        id: api-url
+        run: |
+          if [ "${{ needs.check-fingerprint.outputs.environment }}" = "production" ]; then
+            echo "url=https://studio.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://studio.staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+          echo "Resolved API URL for ${{ needs.check-fingerprint.outputs.environment }}: $(grep url= $GITHUB_OUTPUT | tail -1)"
+
+      - name: Select latest Xcode (require 26+ for App Store Connect)
+        # Apple began rejecting App Store Connect uploads built with iOS SDK
+        # < 26 in 2026 ("This app was built with the iOS 18.5 SDK. All iOS
+        # and iPadOS apps must be built with the iOS 26 SDK or later").
+        # macos-latest installs multiple Xcode versions side by side at
+        # /Applications/Xcode_*.app — pick the highest-versioned one and
+        # fail loudly here (cheap) instead of 15 minutes later in altool.
+        run: |
+          set -euo pipefail
+
+          echo "Available Xcode installations:"
+          ls /Applications/ | grep -E '^Xcode' || true
+
+          XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$XCODE" ]; then
+            XCODE="/Applications/Xcode.app"
+          fi
+
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
+          XC_MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          if [ "$XC_MAJOR" -lt 26 ]; then
+            echo "::error title=Xcode SDK too old::Selected Xcode major version $XC_MAJOR is < 26. Apple now requires Xcode 26+/iOS 26 SDK for App Store Connect submissions."
+            echo "Available Xcodes on this runner:"
+            ls /Applications/ | grep -E '^Xcode' || true
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install
+
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Sync app version and bump buildNumber
+        working-directory: apps/mobile
+        env:
+          BUILD_NUMBER_OFFSET: 100
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const newVersion = '${{ needs.check-fingerprint.outputs.app_version }}';
+            if (newVersion && appJson.expo.version !== newVersion) {
+              console.log('Syncing version: ' + appJson.expo.version + ' → ' + newVersion);
+              appJson.expo.version = newVersion;
+            }
+            const buildNumber = String(${{ github.run_number }} + parseInt(process.env.BUILD_NUMBER_OFFSET));
+            appJson.expo.ios = appJson.expo.ios || {};
+            appJson.expo.ios.buildNumber = buildNumber;
+            fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            console.log('Set version=' + appJson.expo.version + ' buildNumber=' + buildNumber);
+          "
+
+      - name: Expo prebuild iOS
+        working-directory: apps/mobile
+        env:
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
+        run: bunx expo prebuild --platform ios --clean
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install --repo-update
+
+      - name: Strip Sentry build phases from Xcode project
+        # The @sentry/react-native/expo plugin injects two build phases into
+        # the main app target during prebuild:
+        #   1. "Upload Debug Symbols to Sentry"
+        #   2. A sentry-cli wrapper around "Bundle React Native code and images"
+        # Both run sentry-cli under `set -e` and try to resolve @sentry/cli via
+        # Node BEFORE they honour SENTRY_DISABLE_AUTO_UPLOAD, so any transitive
+        # failure (Bun strict-hoisted node_modules, missing token, transient
+        # network) aborts the whole archive. We strip them and run the dSYM
+        # upload as a clearly-scoped post-archive step instead.
+        # The xcodeproj gem ships with the cocoapods gem already installed on
+        # macos-latest runners.
+        working-directory: apps/mobile
+        run: ruby scripts/strip-sentry-build-phases.rb
+
+      - name: Decode and install signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 -d > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Make new keychain the default
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | xargs)
+
+          rm -f "$CERT_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> $GITHUB_ENV
+
+          echo "--- Available signing identities ---"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Decode and install provisioning profile
+        env:
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+
+          PROFILE_TMP="$RUNNER_TEMP/profile.mobileprovision"
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 -d > "$PROFILE_TMP"
+
+          # Extract metadata from the profile
+          PROFILE_PLIST=$(security cms -D -i "$PROFILE_TMP")
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<< "$PROFILE_PLIST")
+
+          cp "$PROFILE_TMP" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+          rm -f "$PROFILE_TMP"
+
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+          echo "PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
+          echo "Installed provisioning profile: $PROFILE_NAME ($PROFILE_UUID)"
+
+      - name: Build archive
+        working-directory: apps/mobile/ios
+        env:
+          BUNDLE_ID: com.odin.ai
+          # JS bundling runs inside xcodebuild's "Bundle React Native code
+          # and images" build phase, which calls Metro. Metro reads
+          # EXPO_PUBLIC_* from process.env at bundle time and bakes them
+          # into the JS that ships in the IPA. These MUST be set here, on
+          # the xcodebuild step, or the bundled app will fall back to
+          # localhost. See android.yml "Build AAB" for the parallel.
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace Shogo.xcworkspace \
+            -scheme Shogo \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Shogo.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            | xcbeautify || exit ${PIPESTATUS[0]}
+
+      - name: Upload dSYMs to Sentry (optional, non-fatal)
+        # Best-effort symbolication. This step is intentionally non-fatal: a
+        # misconfigured Sentry org/project, an expired token, or a transient
+        # Sentry outage must not block an otherwise-good release. The native
+        # IPA is independent of Sentry — symbolication is observability, not
+        # a release artifact.
+        #
+        # Skips silently when SENTRY_AUTH_TOKEN is unset (forks / branches
+        # without the secret), and emits a `::warning::` annotation when the
+        # upload itself fails, so failures stay loud and visible.
+        #
+        # Org defaults to "shogo-ai" to match the slug embedded in the auth
+        # token; override at the repo level via SENTRY_ORG if it ever moves.
+        # Bun strict-hoists transitive deps so we use the bin shim Bun does
+        # write for every dep with `bin`, with `bunx` as a clean fallback.
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo-ai
+          SENTRY_PROJECT: shogo-mobile
+          SENTRY_LOG_LEVEL: info
+        run: |
+          set +e
+
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice title=Sentry dSYM upload::SENTRY_AUTH_TOKEN secret not configured — skipping."
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "_Skipped — \`SENTRY_AUTH_TOKEN\` secret not configured._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          DSYM_DIR="$RUNNER_TEMP/Shogo.xcarchive/dSYMs"
+          if [ ! -d "$DSYM_DIR" ]; then
+            echo "::warning title=Sentry dSYM upload::dSYM directory not found at $DSYM_DIR — skipping."
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "_Skipped — dSYM directory not found at \`$DSYM_DIR\`._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ -x "./node_modules/.bin/sentry-cli" ]; then
+            echo "Using sentry-cli: ./node_modules/.bin/sentry-cli"
+            ./node_modules/.bin/sentry-cli debug-files upload --include-sources "$DSYM_DIR"
+            UPLOAD_RC=$?
+          else
+            echo "Local sentry-cli shim not found; falling back to bunx @sentry/cli"
+            bunx @sentry/cli debug-files upload --include-sources "$DSYM_DIR"
+            UPLOAD_RC=$?
+          fi
+
+          if [ "$UPLOAD_RC" -eq 0 ]; then
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "Uploaded dSYMs from \`$DSYM_DIR\` to Sentry (org=\`$SENTRY_ORG\`, project=\`$SENTRY_PROJECT\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Sentry dSYM upload::sentry-cli exited $UPLOAD_RC — release continuing without symbolication. Check SENTRY_ORG ($SENTRY_ORG) / SENTRY_PROJECT ($SENTRY_PROJECT) and the auth token."
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "_Failed (sentry-cli exit $UPLOAD_RC) — release proceeded without symbolication. Check \`SENTRY_ORG\` (\`$SENTRY_ORG\`) / \`SENTRY_PROJECT\` (\`$SENTRY_PROJECT\`) and the auth token._"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit 0
+
+      - name: Create exportOptions.plist
+        run: |
+          cat > "$RUNNER_TEMP/exportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>teamID</key>
+            <string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.odin.ai</key>
+              <string>$PROFILE_NAME</string>
+            </dict>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>uploadBitcode</key>
+            <false/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>destination</key>
+            <string>export</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+          cat "$RUNNER_TEMP/exportOptions.plist"
+
+      - name: Export IPA
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Shogo.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
+            -allowProvisioningUpdates \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            | xcbeautify || exit ${PIPESTATUS[0]}
+
+          ls -la "$RUNNER_TEMP/export/"
+          IPA_PATH=$(ls "$RUNNER_TEMP/export/"*.ipa | head -1)
+          echo "IPA_PATH=$IPA_PATH" >> $GITHUB_ENV
+          echo "Built IPA: $IPA_PATH"
+
+      - name: Save fingerprint to cache
+        run: |
+          RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
+          if [ -z "$RUNTIME_VERSION" ] || [ "$RUNTIME_VERSION" = "unknown" ]; then
+            RAW=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null || echo "manual-build")
+            RUNTIME_VERSION=$(echo "$RAW" | shasum -a 256 | cut -d' ' -f1)
+          fi
+          echo "$RUNTIME_VERSION" > .fingerprint-ios
+
+      - name: Cache fingerprint
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: .fingerprint-ios
+          key: ios-fingerprint-${{ needs.check-fingerprint.outputs.environment }}-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Resolve submit decision
+        id: submit-decision
+        run: |
+          ENV="${{ needs.check-fingerprint.outputs.environment }}"
+          SUBMIT_INPUT="${{ github.event.inputs.submit }}"
+          if [ "$ENV" = "production" ]; then
+            echo "should_submit=true" >> $GITHUB_OUTPUT
+          elif [ "$SUBMIT_INPUT" != "false" ]; then
+            echo "should_submit=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_submit=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to App Store Connect (TestFlight)
+        if: steps.submit-decision.outputs.should_submit == 'true'
+        run: |
+          xcrun altool --upload-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            -u "$APPLE_ID" \
+            -p "$APPLE_ID_PASSWORD" \
+            --verbose
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+      - name: Summary
+        run: |
+          echo "## iOS Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **buildNumber:** $((${{ github.run_number }} + 100))" >> $GITHUB_STEP_SUMMARY
+          echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'TestFlight (App Store Connect)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+
+
+# Manual triggers:
+#
+# Staging OTA
+# gh workflow run ios.yml --ref main -f mode=ota -f environment=staging
+#
+# Staging full build + submit (TestFlight)
+# gh workflow run ios.yml --ref main -f mode=full -f environment=staging
+#
+# Production full build + submit (App Store Connect)
+# gh workflow run ios.yml --ref main -f mode=full -f environment=production
+#
+# Or via tag (auto-triggers production build + submit):
+#   git tag v1.0.0 && git push origin v1.0.0          # unified release: triggers iOS + Android + macOS desktop + Windows desktop
+#   git tag ios-v1.0.0 && git push origin ios-v1.0.0  # iOS-only release
