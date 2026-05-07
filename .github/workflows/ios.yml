@@ -8,10 +8,11 @@
 #
 # Environments:
 #   staging    — push to main branch (auto OTA to staging channel)
-#   production — push ios-v* tag or manual dispatch with environment=production
+#   production — push v* (unified release tag, e.g. v1.0.0) or ios-v* (iOS-only)
+#                or manual dispatch with environment=production
 #
 # Decision matrix (same logic as android.yml):
-#   - Tag push (ios-v*) → always full build + submit
+#   - Tag push (v* or ios-v*) → always full build + submit
 #   - Cache hit on fingerprint → OTA update only
 #   - mode=ota dispatch → OTA only
 #   - Otherwise → full build
@@ -41,6 +42,7 @@ on:
       - main
     tags:
       - 'ios-v*'
+      - 'v[0-9]*'
     paths:
       - 'apps/mobile/**'
       - 'packages/domain-stores/**'
@@ -91,7 +93,7 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.environment }}" ]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [[ "${{ github.ref }}" == refs/tags/ios-v* ]]; then
+          elif [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
             ENV="production"
           elif [ "${{ github.ref_name }}" = "main" ]; then
             ENV="staging"
@@ -148,8 +150,8 @@ jobs:
       - name: Determine if build is needed
         id: decide
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/ios-v* ]]; then
-            echo "Tag push (ios-v*) → release event, forcing full build + submit"
+          if [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
+            echo "Tag push (${{ github.ref_name }}) → release event, forcing full build + submit"
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"
@@ -623,4 +625,5 @@ jobs:
 # gh workflow run ios.yml --ref main -f mode=full -f environment=production
 #
 # Or via tag (auto-triggers production build + submit):
-# git tag ios-v0.1.1 && git push origin ios-v0.1.1
+#   git tag v1.0.0 && git push origin v1.0.0          # unified release: triggers iOS + Android + macOS desktop + Windows desktop
+#   git tag ios-v1.0.0 && git push origin ios-v1.0.0  # iOS-only release
