@@ -24,6 +24,7 @@ import {
   HostedTelephonyClient,
   type TelephonyClient,
 } from './voice/telephony.js'
+import { MockTelephonyClient, isVoiceMockEnv } from './voice/mock-telephony.js'
 import type { ShogoClientConfig } from './types.js'
 
 export interface ShogoVoiceModule {
@@ -153,6 +154,16 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     shogoApiKey: string | undefined | null,
   ): TelephonyClient | null {
     const { projectId, elevenlabs, twilio, apiUrl } = this.config
+
+    // Mock mode short-circuits everything else. When SHOGO_VOICE_MODE=mock
+    // is set (typically in demo recordings), every method on the returned
+    // client returns deterministic fixture data and zero network requests
+    // are made — Twilio + EL accounts are never touched and the workspace
+    // usage wallet is not debited. Used by the Playwright demo suite to
+    // record Scene 7 (cold-call agent) without dialing real numbers.
+    if (isVoiceMockEnv()) {
+      return new MockTelephonyClient({ projectId: projectId ?? undefined })
+    }
 
     // Runtime-token mode (pod-native). Checked first because every
     // Shogo-managed pod already has `RUNTIME_AUTH_SECRET` + `PROJECT_ID`

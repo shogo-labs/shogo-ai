@@ -199,3 +199,9 @@ apps/desktop/prisma/local.db
 
 apps/desktop/resources/whisper/
 apps/desktop/resources/sherpa-onnx/
+
+# Demo recording suite (Playwright specs + per-scene assets + recorded videos).
+# Relocated from shogo-website/demo. Kept untracked locally per user policy
+# (large recordings-archive/, regenerable node_modules/, ephemeral state.json
+# with auth tokens).
+demo/

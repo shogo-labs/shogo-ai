@@ -1788,58 +1788,11 @@ app.post('/agent/tool-mocks', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
-  const body = await c.req.json() as {
-    mocks: Record<string, {
-      type: 'static'
-      response: any
-      description?: string
-      paramKeys?: string[]
-      hidden?: boolean
-    } | {
-      type: 'pattern'
-      patterns: Array<{ match: Record<string, string>; response: any }>
-      default?: any
-      description?: string
-      paramKeys?: string[]
-      hidden?: boolean
-    }>
-  }
-
-  const fns: Record<string, (params: Record<string, any>) => any> = {}
-  const syntheticDefs: Record<string, { description: string; paramKeys: string[] }> = {}
-  const hiddenTools = new Set<string>()
-
-  for (const [toolName, spec] of Object.entries(body.mocks)) {
-    if (spec.type === 'static') {
-      const resp = spec.response
-      fns[toolName] = () => resp
-    } else if (spec.type === 'pattern') {
-      const patterns = spec.patterns
-      const defaultResp = spec.default ?? { ok: true }
-      fns[toolName] = (params: Record<string, any>) => {
-        const paramsStr = JSON.stringify(params).toLowerCase()
-        for (const p of patterns) {
-          const allMatch = Object.values(p.match).every(
-            substr => paramsStr.includes(substr.toLowerCase())
-          )
-          if (allMatch) return p.response
-        }
-        return defaultResp
-      }
-    }
-
-    if (spec.description || spec.paramKeys) {
-      syntheticDefs[toolName] = {
-        description: spec.description || `External integration tool: ${toolName}`,
-        paramKeys: spec.paramKeys || [],
-      }
-    }
-    if ((spec as any).hidden) {
-      hiddenTools.add(toolName)
-    }
-  }
-  agentGateway.setToolMocks(fns, syntheticDefs, hiddenTools)
-  return c.json({ ok: true, mockedTools: Object.keys(fns) })
+  const raw = await c.req.json()
+  const { compileInstallBody } = await import('./evals/tool-mocks-runtime')
+  const compiled = compileInstallBody(raw)
+  agentGateway.setToolMocks(compiled.fns, compiled.syntheticDefs, compiled.hiddenTools)
+  return c.json({ ok: true, mockedTools: Object.keys(compiled.fns), defaults: compiled.defaults })
 })
 
 app.delete('/agent/tool-mocks', (c) => {

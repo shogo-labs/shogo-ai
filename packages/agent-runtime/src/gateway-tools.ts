@@ -2191,6 +2191,66 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
   })
 }
 
+/**
+ * Optional capture tap for the `browser` tool. When SHOGO_MOCK_CAPTURE_DIR
+ * is set the runtime writes every browser-action call (params + response,
+ * plus PNG bytes for screenshots) into that directory so the demo
+ * fixture loader can replay them later.
+ *
+ * Format on disk:
+ *   <dir>/manifest.json                    — ordered step list
+ *   <dir>/step-001.json                    — { idx, action, params, response, screenshotFile? }
+ *   <dir>/screenshots/step-001.png         — full screenshot bytes (only for screenshot)
+ *
+ * The replay loader (loadBrowserFixturesFromDir, see tool-mocks-demo.ts)
+ * keys each call by JSON-stringified params so the replay survives
+ * agent re-runs as long as the agent makes the same calls in the same
+ * order. If the agent diverges we fall back to the closest action match
+ * inside the loader.
+ */
+function captureBrowserCall(
+  dir: string,
+  entry: {
+    idx: number
+    action: string
+    params: Record<string, any>
+    response: any
+    screenshotBuffer?: Buffer
+  },
+): void {
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const idxPad = String(entry.idx).padStart(3, '0')
+    let screenshotFile: string | undefined
+    if (entry.screenshotBuffer) {
+      const screenshotsDir = join(dir, 'screenshots')
+      if (!existsSync(screenshotsDir)) mkdirSync(screenshotsDir, { recursive: true })
+      screenshotFile = `screenshots/step-${idxPad}.png`
+      writeFileSync(join(dir, screenshotFile), entry.screenshotBuffer)
+    }
+    const stepFile = join(dir, `step-${idxPad}.json`)
+    writeFileSync(stepFile, JSON.stringify({
+      idx: entry.idx,
+      action: entry.action,
+      params: entry.params,
+      response: entry.response,
+      screenshotFile,
+      ts: Date.now(),
+    }, null, 2))
+    // Maintain manifest.json so the loader doesn't have to scandir.
+    const manifestPath = join(dir, 'manifest.json')
+    let manifest: { steps: Array<{ idx: number; action: string; file: string }> } = { steps: [] }
+    if (existsSync(manifestPath)) {
+      try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {}
+    }
+    manifest.steps.push({ idx: entry.idx, action: entry.action, file: `step-${idxPad}.json` })
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+  } catch (err) {
+    // Capture is best-effort; never break the tool call if capture I/O fails.
+    console.warn(`[browser-capture] failed to write step ${entry.idx}: ${(err as any)?.message}`)
+  }
+}
+
 export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let page: any = null
@@ -2387,7 +2447,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     return null
   }
 
-  return {
+  // Capture mode: when SHOGO_MOCK_CAPTURE_DIR is set, every browser
+  // tool call is dumped to disk for later replay by the demo mock
+  // system. The wrapper at the bottom of this function (before the
+  // final `return tool`) intercepts execute() and writes step files.
+  const captureDir = process.env.SHOGO_MOCK_CAPTURE_DIR || ''
+  let browserCaptureCounter = 0
+
+  const tool: AgentTool = {
     name: 'browser',
     description:
       'Control a browser. MUST snapshot before any interaction to get element refs. ' +
@@ -2656,6 +2723,45 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       }
     },
   }
+
+  if (captureDir) {
+    const innerExecute = tool.execute
+    tool.execute = async (toolCallId: string, params: any, signal?: any, onUpdate?: any) => {
+      const result: any = await innerExecute(toolCallId, params, signal, onUpdate)
+      const idx = ++browserCaptureCounter
+      const action = String(params?.action ?? 'unknown')
+      // For screenshots the response envelope embeds base64 PNG data we
+      // can strip out and write as raw bytes — replay then loads the
+      // PNG, base64-encodes it, and resurfaces the same multipart shape
+      // (see loadBrowserFixturesFromDir in tool-mocks-demo.ts).
+      let screenshotBuffer: Buffer | undefined
+      let responseToWrite: any = result
+      if (action === 'screenshot' && result && Array.isArray(result.content)) {
+        const img = result.content.find((c: any) => c?.type === 'image' && typeof c?.data === 'string')
+        if (img) {
+          try { screenshotBuffer = Buffer.from(img.data, 'base64') } catch {}
+          // Trim the inline base64 from what we serialize to JSON; replay
+          // will rehydrate from screenshotFile so JSON stays small.
+          responseToWrite = {
+            ...result,
+            content: result.content.map((c: any) =>
+              c?.type === 'image' ? { type: 'image', mimeType: c.mimeType, dataInFile: true } : c,
+            ),
+          }
+        }
+      }
+      captureBrowserCall(captureDir, {
+        idx,
+        action,
+        params,
+        response: responseToWrite,
+        screenshotBuffer,
+      })
+      return result
+    }
+  }
+
+  return tool
 }
 
 function createSendMessageTool(ctx: ToolContext): AgentTool {

@@ -125,6 +125,31 @@ export async function buildProjectEnv(
     if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
   }
 
+  // Voice mock mode for demo recordings. When the API server has
+  // SHOGO_VOICE_MODE=mock (or SHOGO_DEMO_VOICE=mock as a more obvious
+  // alias), forward it into the pod env so `createClient().voice.telephony`
+  // resolves to MockTelephonyClient inside the runtime. Effect: the agent
+  // generates real `shogo.voice.telephony.outboundCall(...)` code, the SDK
+  // returns canned data, no real Twilio/EL traffic, no usage-wallet debit.
+  // See packages/sdk/src/voice/mock-telephony.ts.
+  const voiceMode = process.env.SHOGO_VOICE_MODE || process.env.SHOGO_DEMO_VOICE
+  if (voiceMode) {
+    env.SHOGO_VOICE_MODE = voiceMode
+  }
+
+  // Browser-tool capture mode for demo recordings. When set, every
+  // `browser` tool call dumps params + (for screenshots) PNG bytes to
+  // this directory inside the pod. The Playwright capture script
+  // (demo/playwright/scripts/capture-scene-1.ts) sets it to a path
+  // mounted into the pod's workspace so the captured fixtures persist
+  // out to the host filesystem. OFF in normal operation. Replay
+  // happens in Playwright via loadBrowserFixturesFromDir() — the
+  // runtime never reads the captured files itself.
+  const captureDir = process.env.SHOGO_MOCK_CAPTURE_DIR
+  if (captureDir) {
+    env.SHOGO_MOCK_CAPTURE_DIR = captureDir
+  }
+
   console.log(`[${prefix}] total ${Date.now() - startTime}ms for ${projectId}`)
   return env
 }

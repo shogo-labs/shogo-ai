@@ -152,7 +152,7 @@ export interface ListCallsOptions {
 }
 
 export interface TelephonyClient {
-  readonly mode: 'hosted' | 'direct'
+  readonly mode: 'hosted' | 'direct' | 'mock'
   provisionNumber(opts?: ProvisionNumberOptions): Promise<ProvisionNumberResult>
   outboundCall(opts: OutboundCallOptions): Promise<OutboundCallResult>
   releaseNumber(): Promise<ReleaseNumberResult>

@@ -8,17 +8,98 @@
  * per-tool mocks via the `toolMocks` field on AgentEval; this module
  * provides the reusable fixture data and a `buildMockPayload()` helper
  * that merges eval-specific mocks with sensible defaults.
+ *
+ * SCOPE — eval suite vs. demo recordings:
+ *   Fixtures in this file are owned by the eval suite. Some
+ *   (`STRIPE_REVENUE_MOCKS`, etc.) are *also* used by the Playwright
+ *   demo recordings; if you change one, double-check that the demo
+ *   script.md narratives still match.
+ *   Demo-specific fixtures (`DEMO_*`) live in
+ *   `./tool-mocks-demo.ts` so they can evolve independently without
+ *   churning eval test outputs. See ../../../demo/playwright/MOCKING.md
+ *   for the full demo-mocking model.
  */
 
 // ---------------------------------------------------------------------------
 // Serializable mock spec types (sent over HTTP to POST /agent/tool-mocks)
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional latency knobs on a mock spec. When omitted at every level the
+ * runtime falls back to install-body `defaults.delayMs` and then to
+ * tool-class defaults (browser-navigate ~2200ms, click/fill ~600ms,
+ * tool_install ~1800ms, etc.) so demo recordings don't return in 0ms.
+ *
+ * Resolution order (per call):
+ *   per-pattern.delayMs > spec.delayMs > install-body defaults.delayMs
+ *   > tool-class default > runtime fallback (1200ms)
+ *
+ * Set `delayMs: 0` at any level to opt OUT of pacing entirely (eval
+ * suite sets this so test cases run as fast as possible).
+ */
+export type MockLatency = {
+  /** Override the resolved delay for this spec. Use 0 to disable pacing. */
+  delayMs?: number
+}
+
+/**
+ * Multipart response marker. Some tools (notably `browser screenshot`)
+ * return `{ content: [{ type: 'image', data: <base64>, mimeType }, ...], details }`
+ * instead of a plain JSON value, and the chat UI renders the inline
+ * image from that envelope. A mock spec can opt into the same shape by
+ * returning `{ __multipart: true, content: [...], details? }` — the
+ * runtime strips the marker and bypasses textResult() so the image
+ * lands at the UI intact. Used by the captured browser fixtures for
+ * Scene 1 (real OpenTable / Booking screenshots).
+ */
+export type MultipartMockResponse = {
+  __multipart: true
+  content: Array<
+    | { type: 'image'; data: string; mimeType: string }
+    | { type: 'text'; text: string }
+  >
+  details?: unknown
+}
+
 export type ToolMockSpec =
-  | { type: 'static'; response: any; description?: string; paramKeys?: string[]; hidden?: boolean }
-  | { type: 'pattern'; patterns: Array<{ match: Record<string, string>; response: any }>; default?: any; description?: string; paramKeys?: string[]; hidden?: boolean }
+  | {
+      type: 'static'
+      response: any | MultipartMockResponse
+      description?: string
+      paramKeys?: string[]
+      hidden?: boolean
+      delayMs?: number
+    }
+  | {
+      type: 'pattern'
+      patterns: Array<{
+        match: Record<string, string>
+        response: any | MultipartMockResponse
+        /** Per-pattern latency — beats spec.delayMs and install defaults. */
+        delayMs?: number
+      }>
+      default?: any | MultipartMockResponse
+      description?: string
+      paramKeys?: string[]
+      hidden?: boolean
+      /** Spec-level fallback delay; per-pattern delayMs overrides this. */
+      delayMs?: number
+      /** Latency for the `default` arm specifically. */
+      defaultDelayMs?: number
+    }
 
 export type ToolMockMap = Record<string, ToolMockSpec>
+
+/** Install-body envelope for POST /agent/tool-mocks. */
+export type ToolMockInstallBody = {
+  mocks: ToolMockMap
+  defaults?: {
+    /** Default delay (ms) when no spec / pattern / class override. Default 1200. */
+    delayMs?: number
+    /** Plus-or-minus ms jitter applied to every delay. Default 400. */
+    jitterMs?: number
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Default mock responses (safe fallbacks)

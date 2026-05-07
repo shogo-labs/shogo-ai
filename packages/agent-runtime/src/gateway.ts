@@ -228,6 +228,34 @@ export interface GatewayConfig {
   coordinatorMode?: boolean
 }
 
+/**
+ * Run a tool mock and convert its return value into the agent-tool
+ * result envelope.
+ *
+ * Mocks are awaited (they may sleep for the demo latency model). When
+ * the resolved value carries the `__multipart: true` marker we strip
+ * the marker and return the raw `{ content, details? }` envelope so
+ * tools like `browser screenshot` can return inline images directly
+ * (otherwise textResult() would JSON-stringify the base64). All other
+ * shapes go through textResult() as before. Sentinel `__passthrough`
+ * is preserved for the dispatch site to fall through to the real impl.
+ *
+ * Used by demo recordings so canned screenshots show as actual images
+ * in the chat panel.
+ */
+async function runMockAndUnwrap(
+  mockFn: (params: Record<string, any>) => any | Promise<any>,
+  params: Record<string, any>,
+): Promise<any> {
+  const result = await mockFn(params)
+  if (result === '__passthrough') return result
+  if (result && typeof result === 'object' && (result as any).__multipart === true) {
+    const { __multipart: _m, ...rest } = result as any
+    return rest
+  }
+  return textResult(result)
+}
+
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -405,9 +433,15 @@ export class AgentGateway {
     return this.permissionEngine
   }
 
-  /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
+  /**
+   * Install tool-level execute overrides (for eval mocking + demo
+   * recordings). Preserves tool schema. Mock functions may be sync or
+   * async; the dispatch sites await the result either way. Async fns
+   * power the demo latency model (sleep before resolving) so demo
+   * recordings don't return in 0ms.
+   */
   setToolMocks(
-    mocks: Record<string, (params: Record<string, any>) => any>,
+    mocks: Record<string, (params: Record<string, any>) => any | Promise<any>>,
     syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
     hiddenTools?: Set<string>,
   ): void {
@@ -461,10 +495,7 @@ export class AgentGateway {
         description: synDef?.description || `External integration tool: ${toolName}`,
         label: toolName.replace(/__/g, ' > ').replace(/_/g, ' '),
         parameters: Type.Object(paramProps),
-        execute: async (_id: string, params: any) => {
-          const r = mockFn(params)
-          return textResult(r)
-        },
+        execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
       })
       this.hiddenMockTools.delete(toolName)
     }
@@ -1583,8 +1614,12 @@ export class AgentGateway {
           return {
             ...tool,
             execute: async (_id: string, params: any) => {
-              const result = mockFn(params)
+              const result = await mockFn(params)
               gateway._promoteHiddenMocksFromInstall(result)
+              if (result && typeof result === 'object' && (result as any).__multipart === true) {
+                const { __multipart: _m, ...rest } = result as any
+                return rest
+              }
               return textResult(result)
             },
           }
@@ -1594,8 +1629,12 @@ export class AgentGateway {
         return {
           ...tool,
           execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
-            const result = mockFn(params)
+            const result = await mockFn(params)
             if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
+            if (result && typeof result === 'object' && (result as any).__multipart === true) {
+              const { __multipart: _m, ...rest } = result as any
+              return rest
+            }
             return textResult(result)
           },
         }
@@ -1619,10 +1658,7 @@ export class AgentGateway {
           description: synDef?.description || `External integration tool: ${name}`,
           label: name.replace(/__/g, ' > ').replace(/_/g, ' '),
           parameters: Type.Object(paramProps),
-          execute: async (_id: string, params: any) => {
-            const result = mockFn(params)
-            return textResult(result)
-          },
+          execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
         }
         staticTools.push(syntheticTool)
       }
