@@ -401,22 +401,30 @@ jobs:
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             | xcbeautify || exit ${PIPESTATUS[0]}
 
-      - name: Upload dSYMs to Sentry (optional)
-        # Self-skips silently when SENTRY_AUTH_TOKEN is not configured, so
-        # forks / branches without the secret still get a green build.
-        # Uses the workspace's @sentry/cli (pulled in transitively by
-        # @sentry/react-native), with sentry-cli's own non-zero exits surfaced
-        # so a misconfigured secret never silently swallows symbolication.
-        # Bun strict-hoists transitive deps under node_modules/.bun and only
-        # exposes direct deps at the package root, so we resolve through the
-        # workspace bin shim that Bun does write for every dep with `bin`.
+      - name: Upload dSYMs to Sentry (optional, non-fatal)
+        # Best-effort symbolication. This step is intentionally non-fatal: a
+        # misconfigured Sentry org/project, an expired token, or a transient
+        # Sentry outage must not block an otherwise-good release. The native
+        # IPA is independent of Sentry — symbolication is observability, not
+        # a release artifact.
+        #
+        # Skips silently when SENTRY_AUTH_TOKEN is unset (forks / branches
+        # without the secret), and emits a `::warning::` annotation when the
+        # upload itself fails, so failures stay loud and visible.
+        #
+        # Org defaults to "shogo-ai" to match the slug embedded in the auth
+        # token; override at the repo level via SENTRY_ORG if it ever moves.
+        # Bun strict-hoists transitive deps so we use the bin shim Bun does
+        # write for every dep with `bin`, with `bunx` as a clean fallback.
         working-directory: apps/mobile
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: shogo
+          SENTRY_ORG: shogo-ai
           SENTRY_PROJECT: shogo-mobile
           SENTRY_LOG_LEVEL: info
         run: |
+          set +e
+
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
             echo "::notice title=Sentry dSYM upload::SENTRY_AUTH_TOKEN secret not configured — skipping."
             {
@@ -429,23 +437,41 @@ jobs:
 
           DSYM_DIR="$RUNNER_TEMP/Shogo.xcarchive/dSYMs"
           if [ ! -d "$DSYM_DIR" ]; then
-            echo "::error title=Sentry dSYM upload::Expected dSYM directory not found at $DSYM_DIR"
-            exit 1
+            echo "::warning title=Sentry dSYM upload::dSYM directory not found at $DSYM_DIR — skipping."
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "_Skipped — dSYM directory not found at \`$DSYM_DIR\`._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
           if [ -x "./node_modules/.bin/sentry-cli" ]; then
             echo "Using sentry-cli: ./node_modules/.bin/sentry-cli"
             ./node_modules/.bin/sentry-cli debug-files upload --include-sources "$DSYM_DIR"
+            UPLOAD_RC=$?
           else
             echo "Local sentry-cli shim not found; falling back to bunx @sentry/cli"
             bunx @sentry/cli debug-files upload --include-sources "$DSYM_DIR"
+            UPLOAD_RC=$?
           fi
 
-          {
-            echo "## Sentry dSYM upload"
-            echo ""
-            echo "Uploaded dSYMs from \`$DSYM_DIR\` to Sentry (org=\`$SENTRY_ORG\`, project=\`$SENTRY_PROJECT\`)."
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$UPLOAD_RC" -eq 0 ]; then
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "Uploaded dSYMs from \`$DSYM_DIR\` to Sentry (org=\`$SENTRY_ORG\`, project=\`$SENTRY_PROJECT\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Sentry dSYM upload::sentry-cli exited $UPLOAD_RC — release continuing without symbolication. Check SENTRY_ORG ($SENTRY_ORG) / SENTRY_PROJECT ($SENTRY_PROJECT) and the auth token."
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "_Failed (sentry-cli exit $UPLOAD_RC) — release proceeded without symbolication. Check \`SENTRY_ORG\` (\`$SENTRY_ORG\`) / \`SENTRY_PROJECT\` (\`$SENTRY_PROJECT\`) and the auth token._"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit 0
 
       - name: Create exportOptions.plist
         run: |
