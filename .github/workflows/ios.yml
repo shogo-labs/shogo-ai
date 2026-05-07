@@ -112,6 +112,8 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun install
 
       - name: Resolve fingerprint
@@ -179,6 +181,8 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun install
 
       - name: Sync app version
@@ -271,6 +275,8 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun install
 
       - name: Build workspace packages
