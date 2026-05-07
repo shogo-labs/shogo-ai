@@ -161,6 +161,47 @@ describe('LSP smoke test', () => {
     const diags = server.getDiagnostics('file:///nonexistent/file.ts')
     expect(diags.size).toBe(0)
   })
+
+  test('hover() returns content for a known canvas global', async () => {
+    // GOOD_CANVAS_CODE is what's currently on disk (written by the previous
+    // test). Hover the literal "Activity" reference on line 4 — it lives
+    // inside the metrics array initializer.
+    const filePath = join(WORKSPACE, 'canvas', 'dashboard.ts')
+    const text = readFileSync(filePath, 'utf-8')
+    const lines = text.split('\n')
+    const lineIdx = lines.findIndex(l => l.includes('Activity'))
+    expect(lineIdx).toBeGreaterThan(-1)
+    const charIdx = lines[lineIdx]!.indexOf('Activity') + 1
+    const hover = await server.hover(filePath, lineIdx, charIdx) as any
+    expect(hover).toBeTruthy()
+    expect(hover.contents).toBeTruthy()
+  }, 15_000)
+
+  test('definition() resolves an in-workspace reference to a Location', async () => {
+    // Add a tiny file that imports from a sibling and verify go-to-def
+    // returns a workspace location. Uses real disk + tsserver — no mocks.
+    const helperPath = join(WORKSPACE, 'canvas', 'helper.ts')
+    writeFileSync(helperPath, 'export function add(a: number, b: number) { return a + b }\n', 'utf-8')
+
+    const consumerPath = join(WORKSPACE, 'canvas', 'consumer.ts')
+    const consumerSrc = `import { add } from './helper'\nvar _x = add(1, 2)\n`
+    writeFileSync(consumerPath, consumerSrc, 'utf-8')
+    server.notifyFileChanged(consumerPath, consumerSrc)
+
+    // Wait for tsserver to pick up the new files.
+    await new Promise(r => setTimeout(r, 800))
+
+    // Position points at the `add` identifier on the second line.
+    const lineIdx = 1
+    const charIdx = consumerSrc.split('\n')[1]!.indexOf('add') + 1
+    const def = await server.definition(consumerPath, lineIdx, charIdx) as any
+    expect(def).toBeTruthy()
+    const arr = Array.isArray(def) ? def : [def]
+    expect(arr.length).toBeGreaterThan(0)
+    const target = (arr[0] as any).uri ?? (arr[0] as any).targetUri
+    expect(typeof target).toBe('string')
+    expect(target).toContain('helper.ts')
+  }, 20_000)
 })
 
 async function poll(

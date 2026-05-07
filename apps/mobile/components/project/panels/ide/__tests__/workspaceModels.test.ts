@@ -1,15 +1,16 @@
 /**
- * Tests for workspaceModels.ts — the cross-file IntelliSense pre-loader.
+ * Tests for workspaceModels.ts — the on-demand Monaco model registry.
  *
- * Covers the high-priority bugs from PR #466 review:
- *   • In-flight dedup for parallel loadWorkspaceModels on same rootId (#4)
- *   • removeModel disposes the right Monaco model (#2)
- *   • removeModelsUnderPath sweeps an entire directory subtree
- *   • disposeWorkspaceModels clears all state for a root
+ * Covers the surviving surface after the bulk-preload removal (PR that
+ * wired Monaco to the backend typescript-language-server). The pre-load
+ * walker, in-flight dedup, and stale-cleanup phases are gone — replaced
+ * by per-tab on-demand model creation, so the only behaviors left to
+ * test are the upsert/remove primitives that `useLiveAgentEdits` and the
+ * IDE file lifecycle handlers depend on.
  *
  * Uses a minimal Monaco mock — only the surface workspaceModels.ts touches.
  */
-import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { describe, expect, test, beforeEach } from "bun:test";
 
 // ─── Minimal Monaco mock ──────────────────────────────────────────────────
 type MockUri = { _str: string; toString: () => string; path: string };
@@ -60,20 +61,13 @@ function makeMonacoMock() {
   };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
-function makeTree(paths: string[]) {
-  // Root tree of files (no nested dirs needed for these tests).
-  return paths.map((p) => ({ path: p, name: p, kind: "file" as const }));
-}
-
-function makeService(opts: { delayMs?: number; counter?: { reads: number } } = {}) {
+function makeService(opts: { counter?: { reads: number } } = {}) {
   const reads = opts.counter ?? { reads: 0 };
   return {
     reads,
     listTree: async () => [],
     readFile: async (path: string) => {
       reads.reads += 1;
-      if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
       return { content: `// ${path}`, mtime: Date.now(), size: 8 };
     },
     writeFile: async () => ({ mtime: Date.now(), size: 0 }),
@@ -98,72 +92,62 @@ beforeEach(async () => {
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────
-describe("workspaceModels — in-flight dedup (#4)", () => {
-  test("parallel loads for the same rootId share a single walk", async () => {
-    const counter = { reads: 0 };
-    const svc = makeService({ delayMs: 10, counter });
-    const tree = makeTree(["src/a.ts", "src/b.ts", "src/c.ts"]);
+describe("workspaceModels — upsertModelFromContent", () => {
+  test("creates a model on first call and reuses it on subsequent calls", () => {
+    mod.upsertModelFromContent("root1", "src/a.ts", "// version 1");
+    expect(monacoMock.editor.getModels()).toHaveLength(1);
+    expect(monacoMock.editor.getModels()[0]!.getValue()).toBe("// version 1");
 
-    // Fire three loads in parallel — without dedup we'd see 9 reads.
-    await Promise.all([
-      mod.loadWorkspaceModels(svc, "root1", tree),
-      mod.loadWorkspaceModels(svc, "root1", tree),
-      mod.loadWorkspaceModels(svc, "root1", tree),
-    ]);
-
-    expect(counter.reads).toBe(3);
+    mod.upsertModelFromContent("root1", "src/a.ts", "// version 2");
+    expect(monacoMock.editor.getModels()).toHaveLength(1);
+    expect(monacoMock.editor.getModels()[0]!.getValue()).toBe("// version 2");
   });
 
-  test("sequential loads skip files whose models already exist", async () => {
-    // The Monaco preloader keeps already-loaded models hot via the live SSE
-    // upsert path, so a second tree refresh must NOT re-fetch every file —
-    // otherwise an agent edit storm would flood agent-proxy and trip 429s.
-    const counter = { reads: 0 };
-    const svc = makeService({ counter });
-    const tree = makeTree(["src/a.ts", "src/b.ts"]);
-
-    await mod.loadWorkspaceModels(svc, "root1", tree);
-    await mod.loadWorkspaceModels(svc, "root1", tree);
-
-    expect(counter.reads).toBe(2); // both files only fetched on first load
+  test("ignores files Monaco doesn't care about (binary, unknown ext)", () => {
+    mod.upsertModelFromContent("root1", "logo.png", "garbage");
+    mod.upsertModelFromContent("root1", "notes.md", "# title");
+    expect(monacoMock.editor.getModels()).toHaveLength(0);
   });
 
-  test("sequential load reads only newly-added paths", async () => {
-    const counter = { reads: 0 };
-    const svc = makeService({ counter });
-
-    await mod.loadWorkspaceModels(svc, "root1", makeTree(["src/a.ts", "src/b.ts"]));
-    expect(counter.reads).toBe(2);
-
-    // Second walk adds one new file; only the new one should be fetched.
-    await mod.loadWorkspaceModels(
-      svc,
-      "root1",
-      makeTree(["src/a.ts", "src/b.ts", "src/c.ts"]),
-    );
-    expect(counter.reads).toBe(3);
-  });
-
-  test("parallel loads for DIFFERENT rootIds run in parallel", async () => {
-    const counter = { reads: 0 };
-    const svc = makeService({ delayMs: 5, counter });
-    const tree1 = makeTree(["src/a.ts"]);
-    const tree2 = makeTree(["lib/b.ts"]);
-
-    await Promise.all([
-      mod.loadWorkspaceModels(svc, "root-A", tree1),
-      mod.loadWorkspaceModels(svc, "root-B", tree2),
-    ]);
-
-    expect(counter.reads).toBe(2);
+  test("isolates rootIds — same path under different roots → distinct models", () => {
+    mod.upsertModelFromContent("root1", "a.ts", "// in root1");
+    mod.upsertModelFromContent("root2", "a.ts", "// in root2");
+    expect(monacoMock.editor.getModels()).toHaveLength(2);
   });
 });
 
-describe("workspaceModels — removeModel (#2)", () => {
-  test("removeModel disposes the right model and leaves siblings intact", async () => {
-    const svc = makeService();
-    const tree = makeTree(["src/a.ts", "src/b.ts", "src/c.ts"]);
-    await mod.loadWorkspaceModels(svc, "root1", tree);
+describe("workspaceModels — upsertModelFromService", () => {
+  test("reads the file once and creates a Monaco model from its content", async () => {
+    const counter = { reads: 0 };
+    const svc = makeService({ counter });
+    await mod.upsertModelFromService(svc, "root1", "src/a.ts");
+    expect(counter.reads).toBe(1);
+    expect(monacoMock.editor.getModels()).toHaveLength(1);
+    expect(monacoMock.editor.getModels()[0]!.getValue()).toBe("// src/a.ts");
+  });
+
+  test("swallows readFile errors so SSE handler can keep going", async () => {
+    const svc = {
+      readFile: async () => { throw new Error("boom") },
+    } as any;
+    await expect(mod.upsertModelFromService(svc, "root1", "src/a.ts")).resolves.toBeUndefined();
+    expect(monacoMock.editor.getModels()).toHaveLength(0);
+  });
+
+  test("no-op for unsupported extensions — never reads the file", async () => {
+    const counter = { reads: 0 };
+    const svc = makeService({ counter });
+    await mod.upsertModelFromService(svc, "root1", "image.png");
+    expect(counter.reads).toBe(0);
+    expect(monacoMock.editor.getModels()).toHaveLength(0);
+  });
+});
+
+describe("workspaceModels — removeModel", () => {
+  test("disposes the right model and leaves siblings intact", () => {
+    mod.upsertModelFromContent("root1", "src/a.ts", "// a");
+    mod.upsertModelFromContent("root1", "src/b.ts", "// b");
+    mod.upsertModelFromContent("root1", "src/c.ts", "// c");
     expect(monacoMock.editor.getModels()).toHaveLength(3);
 
     mod.removeModel("root1", "src/b.ts");
@@ -175,24 +159,19 @@ describe("workspaceModels — removeModel (#2)", () => {
     expect(remaining).not.toContain("/src/b.ts");
   });
 
-  test("removeModel for an unknown path is a no-op", async () => {
-    const svc = makeService();
-    await mod.loadWorkspaceModels(svc, "root1", makeTree(["a.ts"]));
+  test("removeModel for an unknown path is a no-op", () => {
+    mod.upsertModelFromContent("root1", "a.ts", "// a");
     expect(() => mod.removeModel("root1", "does-not-exist.ts")).not.toThrow();
     expect(monacoMock.editor.getModels()).toHaveLength(1);
   });
 });
 
 describe("workspaceModels — removeModelsUnderPath", () => {
-  test("sweeps every model under a directory prefix", async () => {
-    const svc = makeService();
-    const tree = makeTree([
-      "src/components/A.ts",
-      "src/components/B.ts",
-      "src/utils/x.ts",
-      "lib/y.ts",
-    ]);
-    await mod.loadWorkspaceModels(svc, "root1", tree);
+  test("sweeps every model under a directory prefix", () => {
+    mod.upsertModelFromContent("root1", "src/components/A.ts", "// A");
+    mod.upsertModelFromContent("root1", "src/components/B.ts", "// B");
+    mod.upsertModelFromContent("root1", "src/utils/x.ts", "// x");
+    mod.upsertModelFromContent("root1", "lib/y.ts", "// y");
     expect(monacoMock.editor.getModels()).toHaveLength(4);
 
     mod.removeModelsUnderPath("root1", "src/components");
@@ -201,14 +180,10 @@ describe("workspaceModels — removeModelsUnderPath", () => {
     expect(remaining).toEqual(["/lib/y.ts", "/src/utils/x.ts"]);
   });
 
-  test("does not match siblings whose name starts with the prefix", async () => {
-    const svc = makeService();
+  test("does not match siblings whose name starts with the prefix", () => {
     // src/components vs src/components-old — only the first should be swept.
-    const tree = makeTree([
-      "src/components/A.ts",
-      "src/components-old/B.ts",
-    ]);
-    await mod.loadWorkspaceModels(svc, "root1", tree);
+    mod.upsertModelFromContent("root1", "src/components/A.ts", "// A");
+    mod.upsertModelFromContent("root1", "src/components-old/B.ts", "// B");
 
     mod.removeModelsUnderPath("root1", "src/components");
 
@@ -218,10 +193,10 @@ describe("workspaceModels — removeModelsUnderPath", () => {
 });
 
 describe("workspaceModels — disposeWorkspaceModels", () => {
-  test("disposes every model for the rootId", async () => {
-    const svc = makeService();
-    await mod.loadWorkspaceModels(svc, "root1", makeTree(["a.ts", "b.ts"]));
-    await mod.loadWorkspaceModels(svc, "root2", makeTree(["c.ts"]));
+  test("disposes every model for the rootId", () => {
+    mod.upsertModelFromContent("root1", "a.ts", "// a");
+    mod.upsertModelFromContent("root1", "b.ts", "// b");
+    mod.upsertModelFromContent("root2", "c.ts", "// c");
     expect(monacoMock.editor.getModels()).toHaveLength(3);
 
     mod.disposeWorkspaceModels("root1");
