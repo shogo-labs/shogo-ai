@@ -407,6 +407,9 @@ jobs:
         # Uses the workspace's @sentry/cli (pulled in transitively by
         # @sentry/react-native), with sentry-cli's own non-zero exits surfaced
         # so a misconfigured secret never silently swallows symbolication.
+        # Bun strict-hoists transitive deps under node_modules/.bun and only
+        # exposes direct deps at the package root, so we resolve through the
+        # workspace bin shim that Bun does write for every dep with `bin`.
         working-directory: apps/mobile
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -430,13 +433,13 @@ jobs:
             exit 1
           fi
 
-          # Resolve sentry-cli without relying on Bun's strict-hoisted .bin
-          # symlinks. Going through the package's own bin entry is the most
-          # portable path in a workspace.
-          SENTRY_CLI=$(node --print "require.resolve('@sentry/cli/bin/sentry-cli')")
-          echo "Using sentry-cli: $SENTRY_CLI"
-
-          "$SENTRY_CLI" debug-files upload --include-sources "$DSYM_DIR"
+          if [ -x "./node_modules/.bin/sentry-cli" ]; then
+            echo "Using sentry-cli: ./node_modules/.bin/sentry-cli"
+            ./node_modules/.bin/sentry-cli debug-files upload --include-sources "$DSYM_DIR"
+          else
+            echo "Local sentry-cli shim not found; falling back to bunx @sentry/cli"
+            bunx @sentry/cli debug-files upload --include-sources "$DSYM_DIR"
+          fi
 
           {
             echo "## Sentry dSYM upload"
