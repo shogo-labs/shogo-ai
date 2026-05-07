@@ -1337,7 +1337,10 @@ export class AgentGateway {
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
-    // reads a fully-updated session history (critical for "continue" after stop).
+    // reads a fully-updated session history (important for "continue" after a
+    // clean turn-end). On user-initiated abort the lock is dropped eagerly in
+    // `abortCurrentTurn`, so a new message right after Stop won't queue behind
+    // the aborted turn's cleanup.
     const prevTurn = this.turnLocks.get(sessionId)
     if (prevTurn) {
       await prevTurn.catch(() => {})
@@ -3691,10 +3694,23 @@ export class AgentGateway {
   private turnAbortControllers = new Map<string, AbortController>()
 
   /** Per-session turn lock: ensures sequential turn execution so a "continue"
-   *  after stop always sees the interrupted turn's messages in the session. */
+   *  after stop always sees the interrupted turn's messages in the session.
+   *  On abort, the lock is released eagerly (see `abortCurrentTurn`) so the
+   *  next user message doesn't have to wait for the aborted turn's loop /
+   *  in-flight tool calls to finish unwinding. The aborted turn's late
+   *  message additions land in the SessionManager whenever they finish and
+   *  become visible to subsequent turns; we accept a small chance the next
+   *  turn's prompt is built before the abortee's last few messages settle.
+   */
   private turnLocks = new Map<string, Promise<unknown>>()
 
   abortCurrentTurn(sessionId: string): boolean {
+    // Release the lock so a new user message on this session can start
+    // immediately instead of queueing behind the aborted turn's
+    // post-abort cleanup (which can take minutes when in-flight tool
+    // calls or the iterative loop's wind-down don't honor the signal
+    // synchronously).
+    this.turnLocks.delete(sessionId)
     const controller = this.turnAbortControllers.get(sessionId)
     if (controller) {
       controller.abort()
