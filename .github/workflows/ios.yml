@@ -25,7 +25,12 @@
 #   APPLE_CERTIFICATE_PASSWORD          - Password for the .p12
 #   APPLE_PROVISIONING_PROFILE_BASE64   - Base64 of the App Store .mobileprovision
 #   EXPO_PUBLIC_SENTRY_DSN              - (optional) Sentry DSN for runtime
-#   SENTRY_AUTH_TOKEN                   - (optional) Sentry auth token for source maps
+#   SENTRY_AUTH_TOKEN                   - (optional) Sentry auth token. When set,
+#                                          the post-archive job uploads dSYMs to
+#                                          Sentry (org=shogo, project=shogo-mobile).
+#                                          When unset, the upload step skips
+#                                          silently and the rest of the pipeline
+#                                          still completes.
 # =============================================================================
 
 name: iOS Build & Update
@@ -312,6 +317,21 @@ jobs:
         working-directory: apps/mobile/ios
         run: pod install --repo-update
 
+      - name: Strip Sentry build phases from Xcode project
+        # The @sentry/react-native/expo plugin injects two build phases into
+        # the main app target during prebuild:
+        #   1. "Upload Debug Symbols to Sentry"
+        #   2. A sentry-cli wrapper around "Bundle React Native code and images"
+        # Both run sentry-cli under `set -e` and try to resolve @sentry/cli via
+        # Node BEFORE they honour SENTRY_DISABLE_AUTO_UPLOAD, so any transitive
+        # failure (Bun strict-hoisted node_modules, missing token, transient
+        # network) aborts the whole archive. We strip them and run the dSYM
+        # upload as a clearly-scoped post-archive step instead.
+        # The xcodeproj gem ships with the cocoapods gem already installed on
+        # macos-latest runners.
+        working-directory: apps/mobile
+        run: ruby scripts/strip-sentry-build-phases.rb
+
       - name: Decode and install signing certificate
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -366,13 +386,6 @@ jobs:
         working-directory: apps/mobile/ios
         env:
           BUNDLE_ID: com.odin.ai
-          # Skip Sentry dSYM upload during archive. The @sentry/react-native pod
-          # injects an "Upload Debug Symbols to Sentry" build phase that needs
-          # a working sentry-cli + SENTRY_ORG/SENTRY_PROJECT/SENTRY_AUTH_TOKEN.
-          # SENTRY_DISABLE_AUTO_UPLOAD=true is Sentry's officially supported
-          # escape hatch for CI envs that don't auto-upload. dSYM upload can
-          # be wired up as a dedicated post-build step later.
-          SENTRY_DISABLE_AUTO_UPLOAD: "true"
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -386,8 +399,50 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
-            SENTRY_DISABLE_AUTO_UPLOAD=true \
             | xcbeautify || exit ${PIPESTATUS[0]}
+
+      - name: Upload dSYMs to Sentry (optional)
+        # Self-skips silently when SENTRY_AUTH_TOKEN is not configured, so
+        # forks / branches without the secret still get a green build.
+        # Uses the workspace's @sentry/cli (pulled in transitively by
+        # @sentry/react-native), with sentry-cli's own non-zero exits surfaced
+        # so a misconfigured secret never silently swallows symbolication.
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: shogo
+          SENTRY_PROJECT: shogo-mobile
+          SENTRY_LOG_LEVEL: info
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice title=Sentry dSYM upload::SENTRY_AUTH_TOKEN secret not configured — skipping."
+            {
+              echo "## Sentry dSYM upload"
+              echo ""
+              echo "_Skipped — \`SENTRY_AUTH_TOKEN\` secret not configured._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          DSYM_DIR="$RUNNER_TEMP/Shogo.xcarchive/dSYMs"
+          if [ ! -d "$DSYM_DIR" ]; then
+            echo "::error title=Sentry dSYM upload::Expected dSYM directory not found at $DSYM_DIR"
+            exit 1
+          fi
+
+          # Resolve sentry-cli without relying on Bun's strict-hoisted .bin
+          # symlinks. Going through the package's own bin entry is the most
+          # portable path in a workspace.
+          SENTRY_CLI=$(node --print "require.resolve('@sentry/cli/bin/sentry-cli')")
+          echo "Using sentry-cli: $SENTRY_CLI"
+
+          "$SENTRY_CLI" debug-files upload --include-sources "$DSYM_DIR"
+
+          {
+            echo "## Sentry dSYM upload"
+            echo ""
+            echo "Uploaded dSYMs from \`$DSYM_DIR\` to Sentry (org=\`$SENTRY_ORG\`, project=\`$SENTRY_PROJECT\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create exportOptions.plist
         run: |
