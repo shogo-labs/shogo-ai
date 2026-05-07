@@ -33,6 +33,12 @@ interface FailureEntry {
   backoffUntil: number
 }
 
+export interface BreakerSnapshotEntry {
+  projectId: string
+  count: number
+  backoffUntil: number
+}
+
 export class CircuitBreaker {
   private failures = new Map<string, FailureEntry>()
 
@@ -61,6 +67,14 @@ export class CircuitBreaker {
     if (!entry) return false
     return Date.now() < entry.backoffUntil
   }
+
+  snapshot(): BreakerSnapshotEntry[] {
+    const out: BreakerSnapshotEntry[] = []
+    for (const [projectId, entry] of this.failures.entries()) {
+      out.push({ projectId, count: entry.count, backoffUntil: entry.backoffUntil })
+    }
+    return out
+  }
 }
 
 // ─── DueAgent type ───────────────────────────────────────────────────────────
@@ -72,6 +86,25 @@ export interface DueAgent {
   quietHoursStart?: string | null
   quietHoursEnd?: string | null
   quietHoursTimezone?: string | null
+}
+
+// ─── Scheduler stats ─────────────────────────────────────────────────────────
+
+export interface SchedulerStats {
+  running: boolean
+  paused: boolean
+  startedAt: Date | null
+  lastTickAt: Date | null
+  lastBatchSize: number
+  lastTickDurationMs: number
+  totalTicks: number
+  totalTriggered: number
+  totalFailed: number
+  totalQuietSkips: number
+  pollIntervalMs: number
+  batchSize: number
+  triggerTimeoutMs: number
+  logPrefix: string
 }
 
 // ─── Base Scheduler ──────────────────────────────────────────────────────────
@@ -87,8 +120,19 @@ export abstract class BaseHeartbeatScheduler {
   private timer: ReturnType<typeof setInterval> | null = null
   private tickInProgress = false
   protected running = false
+  protected paused = false
   protected readonly breaker: CircuitBreaker
   protected readonly config: BaseSchedulerConfig
+
+  // Stats
+  protected startedAt: Date | null = null
+  protected lastTickAt: Date | null = null
+  protected lastBatchSize = 0
+  protected lastTickDurationMs = 0
+  protected totalTicks = 0
+  protected totalTriggered = 0
+  protected totalFailed = 0
+  protected totalQuietSkips = 0
 
   constructor(config: BaseSchedulerConfig) {
     this.config = config
@@ -98,6 +142,7 @@ export abstract class BaseHeartbeatScheduler {
   async start(): Promise<void> {
     if (this.running) return
     this.running = true
+    this.startedAt = new Date()
 
     console.log(
       `[${this.config.logPrefix}] Starting (poll every ${this.config.pollIntervalMs}ms, batch ${this.config.batchSize})`
@@ -120,6 +165,68 @@ export abstract class BaseHeartbeatScheduler {
     console.log(`[${this.config.logPrefix}] Stopped`)
   }
 
+  pause(): void {
+    if (this.paused) return
+    this.paused = true
+    console.log(`[${this.config.logPrefix}] Paused (in-memory, this instance only)`)
+  }
+
+  resume(): void {
+    if (!this.paused) return
+    this.paused = false
+    console.log(`[${this.config.logPrefix}] Resumed`)
+  }
+
+  isPaused(): boolean {
+    return this.paused
+  }
+
+  isRunning(): boolean {
+    return this.running
+  }
+
+  getStats(): SchedulerStats {
+    return {
+      running: this.running,
+      paused: this.paused,
+      startedAt: this.startedAt,
+      lastTickAt: this.lastTickAt,
+      lastBatchSize: this.lastBatchSize,
+      lastTickDurationMs: this.lastTickDurationMs,
+      totalTicks: this.totalTicks,
+      totalTriggered: this.totalTriggered,
+      totalFailed: this.totalFailed,
+      totalQuietSkips: this.totalQuietSkips,
+      pollIntervalMs: this.config.pollIntervalMs,
+      batchSize: this.config.batchSize,
+      triggerTimeoutMs: this.config.triggerTimeoutMs,
+      logPrefix: this.config.logPrefix,
+    }
+  }
+
+  getBreakerSnapshot(): BreakerSnapshotEntry[] {
+    return this.breaker.snapshot()
+  }
+
+  /**
+   * Manually fire a heartbeat for a project, bypassing schedule and pause/breaker
+   * gating. Used by the super-admin "Trigger now" action. Resolves with `ok: true`
+   * if the runtime accepted the trigger, `ok: false` with `error` otherwise.
+   */
+  async triggerNow(projectId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this.triggerAgent(projectId)
+      return { ok: true }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message ?? err) }
+    }
+  }
+
+  /** Clear circuit-breaker state for a single project. */
+  clearFailures(projectId: string): void {
+    this.breaker.clearFailure(projectId)
+  }
+
   async tick(): Promise<void> {
     if (!this.running || this.tickInProgress) return
     this.tickInProgress = true
@@ -140,10 +247,20 @@ export abstract class BaseHeartbeatScheduler {
   }
 
   protected async processBatch(): Promise<void> {
+    if (this.paused) return
+
+    const tickStart = Date.now()
     const { prisma } = await import('./prisma')
     const dueAgents = await this.fetchDueAgents()
 
-    if (dueAgents.length === 0) return
+    this.totalTicks++
+    this.lastTickAt = new Date()
+    this.lastBatchSize = dueAgents.length
+
+    if (dueAgents.length === 0) {
+      this.lastTickDurationMs = Date.now() - tickStart
+      return
+    }
 
     console.log(`[${this.config.logPrefix}] Found ${dueAgents.length} due heartbeat(s)`)
 
@@ -155,6 +272,7 @@ export abstract class BaseHeartbeatScheduler {
       const jitter = computeJitter(agent.heartbeatInterval)
 
       if (isInQuietHours(agent.quietHoursStart ?? null, agent.quietHoursEnd ?? null, agent.quietHoursTimezone ?? null)) {
+        this.totalQuietSkips++
         this.onQuietHoursSkip(agent)
         await prisma.agentConfig.update({
           where: { id: agent.id },
@@ -176,10 +294,27 @@ export abstract class BaseHeartbeatScheduler {
     }
 
     await Promise.allSettled(triggers)
+    this.lastTickDurationMs = Date.now() - tickStart
   }
 
   /** Override to record metrics when a heartbeat is skipped due to quiet hours. */
   protected onQuietHoursSkip(_agent: DueAgent): void {}
+
+  /**
+   * Subclasses MUST call this from their triggerAgent on a successful trigger
+   * so the scheduler stats stay accurate. Cloud subclass also bumps OTel counters.
+   */
+  protected onTriggerSuccess(_projectId: string): void {
+    this.totalTriggered++
+  }
+
+  /**
+   * Subclasses MUST call this from their triggerAgent on a failed trigger.
+   * Cloud subclass also bumps OTel counters.
+   */
+  protected onTriggerFailure(_projectId: string, _error?: unknown): void {
+    this.totalFailed++
+  }
 
   /**
    * Query the database for agents whose heartbeat is due.

@@ -379,6 +379,343 @@ export function adminRoutes(): Hono {
     }
   })
 
+  // --------------------------------------------------------------------------
+  // Heartbeats — observability + control of the autonomous-agent scheduler
+  //
+  // Note: the scheduler is per-API-process state (running flag, paused flag,
+  // circuit-breaker map, tick counters). In multi-pod production deployments
+  // each pod has its own scheduler instance, so pause/resume and stats only
+  // reflect the API pod that handled the request. The DB-backed AgentConfig
+  // edits below are global.
+  // --------------------------------------------------------------------------
+
+  /**
+   * GET /heartbeats/overview - Scheduler health + aggregate counts.
+   */
+  router.get('/heartbeats/overview', async (c) => {
+    try {
+      const { getActiveHeartbeatScheduler, getSchedulerKind } = await import('../lib/admin-heartbeat')
+      const scheduler = await getActiveHeartbeatScheduler()
+      const stats = scheduler.getStats()
+      const breaker = scheduler.getBreakerSnapshot()
+
+      const [enabledCount, totalCount, dueNow] = await Promise.all([
+        prisma.agentConfig.count({ where: { heartbeatEnabled: true } }),
+        prisma.agentConfig.count(),
+        prisma.agentConfig.count({
+          where: {
+            heartbeatEnabled: true,
+            nextHeartbeatAt: { lte: new Date() },
+          },
+        }),
+      ])
+
+      // Hydrate breaker snapshot with project + workspace names for display.
+      let backoff: Array<{
+        projectId: string
+        projectName: string | null
+        workspaceName: string | null
+        count: number
+        backoffUntil: number
+      }> = []
+      if (breaker.length > 0) {
+        const projects = await prisma.project.findMany({
+          where: { id: { in: breaker.map((b) => b.projectId) } },
+          select: { id: true, name: true, workspace: { select: { name: true } } },
+        })
+        const byId = new Map(projects.map((p) => [p.id, p]))
+        backoff = breaker
+          .map((b) => ({
+            projectId: b.projectId,
+            projectName: byId.get(b.projectId)?.name ?? null,
+            workspaceName: byId.get(b.projectId)?.workspace?.name ?? null,
+            count: b.count,
+            backoffUntil: b.backoffUntil,
+          }))
+          .sort((a, b) => b.count - a.count)
+      }
+
+      return c.json({
+        ok: true,
+        data: {
+          kind: getSchedulerKind(),
+          stats,
+          counts: {
+            enabled: enabledCount,
+            total: totalCount,
+            dueNow,
+            inBackoff: breaker.length,
+          },
+          backoff,
+        },
+      })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats overview error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * GET /heartbeats - Paginated list of agent configs with breaker state.
+   *
+   * Query params:
+   *   - page (default 1)
+   *   - pageSize (default 50, max 200)
+   *   - search (matches project or workspace name, case-insensitive)
+   *   - enabledOnly=true
+   *   - dueWithinSec=N (only configs whose nextHeartbeatAt <= now + N seconds)
+   *   - inBackoff=true (intersects with current circuit-breaker snapshot)
+   *   - sort=nextHeartbeatAt|lastHeartbeatAt|projectName (default nextHeartbeatAt)
+   */
+  router.get('/heartbeats', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10))
+      const pageSize = Math.min(
+        200,
+        Math.max(1, parseInt(url.searchParams.get('pageSize') || '50', 10))
+      )
+      const search = url.searchParams.get('search')?.trim() || ''
+      const enabledOnly = url.searchParams.get('enabledOnly') === 'true'
+      const dueWithinSec = parseInt(url.searchParams.get('dueWithinSec') || '', 10)
+      const inBackoffFilter = url.searchParams.get('inBackoff') === 'true'
+      const sortKey = url.searchParams.get('sort') || 'nextHeartbeatAt'
+
+      const { getActiveHeartbeatScheduler } = await import('../lib/admin-heartbeat')
+      const scheduler = await getActiveHeartbeatScheduler()
+      const breaker = scheduler.getBreakerSnapshot()
+      const breakerById = new Map(breaker.map((b) => [b.projectId, b]))
+
+      const where: any = {}
+      if (enabledOnly) where.heartbeatEnabled = true
+      if (Number.isFinite(dueWithinSec)) {
+        where.nextHeartbeatAt = { lte: new Date(Date.now() + dueWithinSec * 1000) }
+      }
+      if (inBackoffFilter) {
+        if (breaker.length === 0) {
+          return c.json({
+            ok: true,
+            data: { rows: [], page, pageSize, total: 0 },
+          })
+        }
+        where.projectId = { in: breaker.map((b) => b.projectId) }
+      }
+      if (search) {
+        where.project = {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { workspace: { name: { contains: search, mode: 'insensitive' } } },
+          ],
+        }
+      }
+
+      let orderBy: any
+      switch (sortKey) {
+        case 'lastHeartbeatAt':
+          orderBy = { lastHeartbeatAt: 'desc' }
+          break
+        case 'projectName':
+          orderBy = { project: { name: 'asc' } }
+          break
+        case 'nextHeartbeatAt':
+        default:
+          orderBy = { nextHeartbeatAt: 'asc' }
+          break
+      }
+
+      const [total, rows] = await Promise.all([
+        prisma.agentConfig.count({ where }),
+        prisma.agentConfig.findMany({
+          where,
+          orderBy,
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          select: {
+            id: true,
+            projectId: true,
+            heartbeatEnabled: true,
+            heartbeatInterval: true,
+            nextHeartbeatAt: true,
+            lastHeartbeatAt: true,
+            quietHoursStart: true,
+            quietHoursEnd: true,
+            quietHoursTimezone: true,
+            modelProvider: true,
+            modelName: true,
+            updatedAt: true,
+            project: {
+              select: {
+                id: true,
+                name: true,
+                workspaceId: true,
+                workspace: { select: { id: true, name: true, slug: true } },
+              },
+            },
+          },
+        }),
+      ])
+
+      const enriched = rows.map((row) => {
+        const b = breakerById.get(row.projectId)
+        return {
+          ...row,
+          breaker: b ? { count: b.count, backoffUntil: b.backoffUntil } : null,
+        }
+      })
+
+      return c.json({
+        ok: true,
+        data: { rows: enriched, page, pageSize, total },
+      })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats list error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /heartbeats/scheduler/pause - Pause the in-process scheduler tick loop.
+   * Effect is local to this API instance only (see file header note).
+   */
+  router.post('/heartbeats/scheduler/pause', async (c) => {
+    try {
+      const { getActiveHeartbeatScheduler } = await import('../lib/admin-heartbeat')
+      const scheduler = await getActiveHeartbeatScheduler()
+      scheduler.pause()
+      return c.json({ ok: true, data: { paused: scheduler.isPaused() } })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats pause error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /heartbeats/scheduler/resume - Resume the in-process scheduler.
+   */
+  router.post('/heartbeats/scheduler/resume', async (c) => {
+    try {
+      const { getActiveHeartbeatScheduler } = await import('../lib/admin-heartbeat')
+      const scheduler = await getActiveHeartbeatScheduler()
+      scheduler.resume()
+      return c.json({ ok: true, data: { paused: scheduler.isPaused() } })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats resume error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /heartbeats/projects/:projectId/trigger - Force-fire a heartbeat now.
+   */
+  router.post('/heartbeats/projects/:projectId/trigger', async (c) => {
+    const projectId = c.req.param('projectId')
+    try {
+      const config = await prisma.agentConfig.findUnique({ where: { projectId } })
+      if (!config) {
+        return c.json({ error: { code: 'not_found', message: 'Agent config not found' } }, 404)
+      }
+      const { getActiveHeartbeatScheduler } = await import('../lib/admin-heartbeat')
+      const scheduler = await getActiveHeartbeatScheduler()
+      const result = await scheduler.triggerNow(projectId)
+      return c.json({ ok: true, data: result })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats trigger error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * PATCH /heartbeats/projects/:projectId - Admin override for AgentConfig
+   * heartbeat fields. Bypasses the paid-plan gate enforced on the user-facing
+   * route; recomputes nextHeartbeatAt with jitter when enabling or when the
+   * interval changes.
+   */
+  router.patch('/heartbeats/projects/:projectId', async (c) => {
+    const projectId = c.req.param('projectId')
+    try {
+      const body = await c.req.json()
+      const data: Record<string, any> = {}
+
+      if (typeof body.heartbeatEnabled === 'boolean') {
+        data.heartbeatEnabled = body.heartbeatEnabled
+      }
+      if (typeof body.heartbeatInterval === 'number') {
+        if (body.heartbeatInterval < 60) {
+          return c.json(
+            { error: { code: 'invalid_interval', message: 'heartbeatInterval must be >= 60 seconds' } },
+            400
+          )
+        }
+        data.heartbeatInterval = body.heartbeatInterval
+      }
+      if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+      if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+      if (body.quietHoursTimezone !== undefined) {
+        data.quietHoursTimezone = body.quietHoursTimezone || null
+      }
+
+      const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
+      if (!existing) {
+        return c.json({ error: { code: 'not_found', message: 'Agent config not found' } }, 404)
+      }
+
+      const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
+      const interval = data.heartbeatInterval ?? existing.heartbeatInterval
+      const intervalChanged =
+        typeof data.heartbeatInterval === 'number' && data.heartbeatInterval !== existing.heartbeatInterval
+      const enabledFlipped =
+        typeof data.heartbeatEnabled === 'boolean' && data.heartbeatEnabled !== existing.heartbeatEnabled
+
+      if (!enabled) {
+        data.nextHeartbeatAt = null
+      } else if (enabledFlipped || intervalChanged) {
+        const { computeJitter } = await import('../lib/base-heartbeat-scheduler')
+        const jitter = computeJitter(interval)
+        data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
+      }
+
+      const updated = await prisma.agentConfig.update({
+        where: { projectId },
+        data,
+        select: {
+          id: true,
+          projectId: true,
+          heartbeatEnabled: true,
+          heartbeatInterval: true,
+          nextHeartbeatAt: true,
+          lastHeartbeatAt: true,
+          quietHoursStart: true,
+          quietHoursEnd: true,
+          quietHoursTimezone: true,
+          modelProvider: true,
+          modelName: true,
+        },
+      })
+
+      return c.json({ ok: true, data: updated })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats patch error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /heartbeats/projects/:projectId/clear-failures - Reset the in-memory
+   * circuit breaker entry for one project so it leaves backoff on the next tick.
+   */
+  router.post('/heartbeats/projects/:projectId/clear-failures', async (c) => {
+    const projectId = c.req.param('projectId')
+    try {
+      const { getActiveHeartbeatScheduler } = await import('../lib/admin-heartbeat')
+      const scheduler = await getActiveHeartbeatScheduler()
+      scheduler.clearFailures(projectId)
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error('[Admin] Heartbeats clear-failures error:', error)
+      return c.json({ error: { code: 'heartbeats_failed', message: error.message } }, 500)
+    }
+  })
+
   return router
 }
 
