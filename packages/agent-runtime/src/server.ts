@@ -51,6 +51,7 @@ import {
   getTechStackPath,
 } from './workspace-defaults'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
+import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
@@ -3259,6 +3260,23 @@ function injectCanvasBridge(html: string): string {
 app.route('/', runtimeDiagnosticsRoutes({
   workspaceDir: WORKSPACE_DIR,
   getCurrentProjectId: () => state.currentProjectId,
+}))
+
+// =============================================================================
+// LSP routes (Monaco IDE) — mounted alongside diagnostics.
+//
+// The browser-side Monaco editor delegates hover, completion, go-to-def,
+// references, document-symbol, signature-help, and rename to the
+// typescript-language-server already running inside this pod. This eliminates
+// the 1000-file Monaco bulk preload that used to be required for cross-file
+// IntelliSense.
+//
+// Auth: covered by the existing `/agent` authPrefix in createRuntimeApp.
+// SPA fallback skip: also covered by the existing `/agent` startsWith check.
+// =============================================================================
+app.route('/', runtimeLspRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  getLspManager: () => agentGateway?.getLspManager?.() ?? null,
 }))
 
 // =============================================================================

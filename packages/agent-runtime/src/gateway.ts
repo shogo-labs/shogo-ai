@@ -3537,6 +3537,16 @@ export class AgentGateway {
   // Status
   // ---------------------------------------------------------------------------
 
+  /**
+   * Returns the live workspace LSP manager (or null if not started yet).
+   * Exposed so the runtime HTTP layer can serve Monaco IDE traffic from
+   * the same warmed-up tsserver instance the agent already uses for
+   * read_lints diagnostics — no second process, no duplicate state.
+   */
+  getLspManager(): WorkspaceLSPManager | null {
+    return this.lspManager
+  }
+
   getStatus(): AgentStatus {
     // Hot-reload config so the UI always reflects the latest config.json
     this.reloadConfig()

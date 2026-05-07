@@ -445,6 +445,59 @@ export class TSLanguageServer {
     }
   }
 
+  /**
+   * Mark a document as open with caller-supplied version. Idempotent —
+   * sending didOpen twice would confuse tsserver, so we collapse a repeat
+   * didOpen to a didChange. This is the entry point for IDE clients (Monaco)
+   * that drive document state explicitly via dedicated open/change/close
+   * notifications, separate from the version-incrementing
+   * `notifyFileChanged` used by the workspace file-watcher path.
+   */
+  didOpenDocument(filePath: string, languageId: string, version: number, text: string): void {
+    if (!this.isInitialized || !this.isRunning()) return
+    const uri = `file://${filePath}`
+    if (this.openDocVersions.has(uri)) {
+      // Already open — treat as a full-text didChange so tsserver stays in sync.
+      this.didChangeDocument(filePath, version, text)
+      return
+    }
+    this.openDocVersions.set(uri, version)
+    this.send({
+      jsonrpc: '2.0',
+      method: 'textDocument/didOpen',
+      params: { textDocument: { uri, languageId, version, text } },
+    })
+  }
+
+  /**
+   * Caller-driven didChange — sends a full-document replacement. Suitable
+   * for Monaco's onDidChangeContent firehose where the editor already owns
+   * versioning and we don't want to fight it with auto-incremented versions.
+   */
+  didChangeDocument(filePath: string, version: number, text: string): void {
+    if (!this.isInitialized || !this.isRunning()) return
+    const uri = `file://${filePath}`
+    if (!this.openDocVersions.has(uri)) {
+      // Server has no open doc — synthesize the implicit didOpen first.
+      this.didOpenDocument(filePath, this.inferLanguageId(filePath), version, text)
+      return
+    }
+    this.openDocVersions.set(uri, version)
+    this.send({
+      jsonrpc: '2.0',
+      method: 'textDocument/didChange',
+      params: {
+        textDocument: { uri, version },
+        contentChanges: [{ text }],
+      },
+    })
+  }
+
+  /** Caller-driven didClose — same wire format as `notifyFileDeleted` but named for the IDE editor-close path. */
+  didCloseDocument(filePath: string): void {
+    this.notifyFileDeleted(filePath)
+  }
+
   notifyFileSaved(filePath: string): void {
     if (!this.isInitialized || !this.isRunning()) return
     const uri = `file://${filePath}`
@@ -478,6 +531,87 @@ export class TSLanguageServer {
       return result
     }
     return new Map(this.diagnosticsByUri)
+  }
+
+  // -------------------------------------------------------------------------
+  // Typed request helpers — thin wrappers over `request()` so callers don't
+  // have to remember exact LSP method names or param shapes. Return values
+  // are passed through verbatim from tsserver; the consumer (Monaco-side
+  // adapter or the JSON HTTP route) decides how to convert.
+  // -------------------------------------------------------------------------
+
+  async hover(filePath: string, line: number, character: number): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    return this.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line, character },
+    })
+  }
+
+  async completion(
+    filePath: string,
+    line: number,
+    character: number,
+    context?: { triggerKind?: number; triggerCharacter?: string },
+  ): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    const params: Record<string, unknown> = {
+      textDocument: { uri },
+      position: { line, character },
+    }
+    if (context) params.context = context
+    return this.request('textDocument/completion', params)
+  }
+
+  async definition(filePath: string, line: number, character: number): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    return this.request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line, character },
+    })
+  }
+
+  async references(
+    filePath: string,
+    line: number,
+    character: number,
+    includeDeclaration = true,
+  ): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    return this.request('textDocument/references', {
+      textDocument: { uri },
+      position: { line, character },
+      context: { includeDeclaration },
+    })
+  }
+
+  async documentSymbol(filePath: string): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    return this.request('textDocument/documentSymbol', { textDocument: { uri } })
+  }
+
+  async signatureHelp(filePath: string, line: number, character: number): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    return this.request('textDocument/signatureHelp', {
+      textDocument: { uri },
+      position: { line, character },
+    })
+  }
+
+  async rename(filePath: string, line: number, character: number, newName: string): Promise<unknown> {
+    if (!this.isInitialized || !this.isRunning()) return null
+    const uri = `file://${filePath}`
+    return this.request('textDocument/rename', {
+      textDocument: { uri },
+      position: { line, character },
+      newName,
+    })
   }
 
   onMessage(handler: (msg: LSPMessage) => void): () => void {
@@ -736,6 +870,92 @@ export class WorkspaceLSPManager {
       const uri = `file://${filePath}`
       this.pyCachedDiags.delete(uri)
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // IDE-driven document sync — explicit didOpen/didChange/didClose so the
+  // Monaco-side LSP adapter can keep tsserver in sync with the live editor
+  // buffer (separate from `notifyFileChanged`, which is used by the
+  // workspace file-watcher to track on-disk changes).
+  // -------------------------------------------------------------------------
+  didOpenDocument(filePath: string, languageId: string, version: number, text: string): void {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return
+    this.tsServer?.didOpenDocument(filePath, languageId, version, text)
+  }
+
+  didChangeDocument(filePath: string, version: number, text: string): void {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return
+    this.tsServer?.didChangeDocument(filePath, version, text)
+  }
+
+  didCloseDocument(filePath: string): void {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return
+    this.tsServer?.didCloseDocument(filePath)
+  }
+
+  // -------------------------------------------------------------------------
+  // Typed request helpers — only TS files are routed; non-TS extensions
+  // return null so the caller doesn't need to switch on language.
+  // -------------------------------------------------------------------------
+
+  async hover(filePath: string, line: number, character: number): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.hover(filePath, line, character) ?? null
+  }
+
+  async completion(
+    filePath: string,
+    line: number,
+    character: number,
+    context?: { triggerKind?: number; triggerCharacter?: string },
+  ): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.completion(filePath, line, character, context) ?? null
+  }
+
+  async definition(filePath: string, line: number, character: number): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.definition(filePath, line, character) ?? null
+  }
+
+  async references(
+    filePath: string,
+    line: number,
+    character: number,
+    includeDeclaration = true,
+  ): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.references(filePath, line, character, includeDeclaration) ?? null
+  }
+
+  async documentSymbol(filePath: string): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.documentSymbol(filePath) ?? null
+  }
+
+  async signatureHelp(filePath: string, line: number, character: number): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.signatureHelp(filePath, line, character) ?? null
+  }
+
+  async rename(filePath: string, line: number, character: number, newName: string): Promise<unknown> {
+    const ext = extOf(filePath)
+    if (!TS_EXTENSIONS.has(ext)) return null
+    return this.tsServer?.rename(filePath, line, character, newName) ?? null
+  }
+
+  /** Returns true once the TS LSP has finished its warmup pass. */
+  isTSReady(): boolean {
+    return !!this.tsServer?.isRunning()
   }
 
   /**
