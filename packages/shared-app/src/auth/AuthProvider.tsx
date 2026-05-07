@@ -38,6 +38,17 @@ export interface AuthContextValue {
   signIn: (email: string, password: string) => Promise<void>
   signUp: (name: string, email: string, password: string) => Promise<SignUpResult>
   signInWithGoogle: () => void
+  /**
+   * Sign in with Apple using a native Apple identity token.
+   *
+   * The caller (mobile app) is responsible for invoking the native
+   * `expo-apple-authentication` flow to obtain `idToken` (and optionally
+   * a SHA-256 hex `nonce` it generated client-side); this provider stays
+   * platform-agnostic and never imports any native module. Backend
+   * (better-auth `apple` social provider) verifies issuer / audience /
+   * signature against Apple's JWKS.
+   */
+  signInWithApple: (params: { idToken: string; nonce?: string }) => Promise<void>
   signOut: () => Promise<void>
   updateUser: (fields: { name?: string; image?: string }) => Promise<void>
   refreshSession: () => Promise<void>
@@ -148,6 +159,37 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
+  const handleSignInWithApple = useCallback(async ({ idToken, nonce }: { idToken: string; nonce?: string }) => {
+    setError(null)
+    setIsLoading(true)
+    try {
+      // better-auth supports verifying a native-app Apple identity token via
+      // `signIn.social` with the `idToken` payload. The server-side `apple`
+      // provider validates the JWT (iss = https://appleid.apple.com,
+      // aud = bundle id, signature against Apple JWKS, optional nonce match).
+      const result = await (authClient as any).signIn.social({
+        provider: 'apple',
+        idToken: { token: idToken, ...(nonce ? { nonce } : {}) },
+      })
+      if (result?.error) {
+        const msg = result.error.message || 'Apple sign-in failed'
+        setError(msg)
+        throw new Error(msg)
+      }
+      if (result?.data?.user) {
+        setUser(result.data.user as AuthUser)
+        return
+      }
+      const { data } = await authClient.getSession()
+      if (data?.user) setUser(data.user as AuthUser)
+    } catch (e: any) {
+      setError(e?.message || 'Apple sign-in failed')
+      throw e
+    } finally {
+      setIsLoading(false)
+    }
+  }, [authClient])
+
   const handleSignOut = useCallback(async () => {
     try { await authClient.signOut() } finally { setUser(null) }
   }, [authClient])
@@ -179,7 +221,7 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
   return (
     <AuthContext.Provider value={{
       user, isLoading, isAuthenticated: !!user, error,
-      signIn: handleSignIn, signUp: handleSignUp, signInWithGoogle: handleSignInWithGoogle, signOut: handleSignOut,
+      signIn: handleSignIn, signUp: handleSignUp, signInWithGoogle: handleSignInWithGoogle, signInWithApple: handleSignInWithApple, signOut: handleSignOut,
       updateUser: handleUpdateUser,
       refreshSession: handleRefreshSession,
       sendVerificationEmail: handleSendVerificationEmail,
