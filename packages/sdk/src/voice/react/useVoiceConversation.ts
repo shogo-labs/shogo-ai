@@ -19,7 +19,7 @@
  * `@shogo-ai/sdk/voice/native` instead.
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 // `@elevenlabs/react` is an optional peer dep. The import is a type-only path
 // at compile time; at runtime the host app must have it installed.
 import { useConversation } from '@elevenlabs/react'
@@ -62,6 +62,7 @@ export function useVoiceConversation(
     fetchCredentials = shogoApiKey ? 'omit' : 'same-origin',
     onError,
     onMessage,
+    conversationId: optionConversationId,
   } = options
 
   const authHeaders = useCallback((): Record<string, string> => {
@@ -73,6 +74,13 @@ export function useVoiceConversation(
   const transcriptRef = useRef<string[]>([])
   const lastInjectedRef = useRef<string>('')
   const weStartedSessionRef = useRef(false)
+  /**
+   * Live convai conversation id. Set on `onConnect` (when EL hands us
+   * `{ conversationId }`) and cleared on disconnect. Surfaced verbatim
+   * via `result.convaiConversationId`; `result.conversationId` prefers
+   * the caller-supplied option when set.
+   */
+  const [convaiConversationId, setConvaiConversationId] = useState<string | null>(null)
   // Set to `true` between `endSession()` and the subsequent `startSession()`
   // inside `restart(...)`. While true, the disconnect handler skips the
   // transcript flush and `onConnect` leaves the transcript buffer intact
@@ -120,13 +128,28 @@ export function useVoiceConversation(
 
   const conversation = useConversation({
     clientTools: mergedClientTools as never,
-    onConnect: () => {
+    onConnect: (info: unknown) => {
+      // EL ≥1.1 invokes `onConnect({ conversationId })` once the
+      // session is fully established. Capture the id so consumers
+      // can correlate the voice transport with a sibling text thread.
+      const id = (info as { conversationId?: unknown })?.conversationId
+      if (typeof id === 'string' && id.length > 0) {
+        setConvaiConversationId(id)
+      }
       if (!isRestartingRef.current) {
         transcriptRef.current = []
         lastInjectedRef.current = ''
       }
     },
-    onDisconnect: handleTranscriptOnDisconnect,
+    onDisconnect: () => {
+      // Clear the convai id on disconnect so a stale id doesn't leak
+      // across reconnects. The wrapped transcript handler runs first
+      // so existing consumers see identical flush behaviour.
+      handleTranscriptOnDisconnect()
+      if (!isRestartingRef.current) {
+        setConvaiConversationId(null)
+      }
+    },
     onError: (e: unknown) => {
       onError?.(e)
     },
@@ -203,6 +226,7 @@ export function useVoiceConversation(
         userContext: ctx,
         agentPromptOverride: data.agentPromptOverride,
         suppressFirstMessage: opts?.suppressFirstMessage,
+        conversationId: optionConversationId,
       })
       await startSession(sessionPayload as never)
     },
@@ -214,6 +238,7 @@ export function useVoiceConversation(
       startSession,
       characterName,
       authHeaders,
+      optionConversationId,
     ],
   )
 
@@ -299,5 +324,7 @@ export function useVoiceConversation(
     sendContextualUpdate,
     sendUserMessage,
     sendUserActivity,
+    conversationId: optionConversationId ?? convaiConversationId,
+    convaiConversationId,
   }
 }

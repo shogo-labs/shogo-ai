@@ -40,3 +40,11 @@ export type {
   BaseVoiceConversationOptions,
   BaseVoiceConversationResult,
 } from './types.js'
+
+export type {
+  BaseChatConversationOptions,
+  BaseChatConversationResult,
+  ChatClientToolFn,
+  ChatConversationStatus,
+  ChatToolDescriptor,
+} from './chatTypes.js'

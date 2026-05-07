@@ -52,5 +52,7 @@ export default defineConfig({
     '@ai-sdk/openai-compatible',
     '@ai-sdk/provider',
     '@ai-sdk/provider-utils',
+    '@ai-sdk/react',
+    'ai',
   ],
 })
