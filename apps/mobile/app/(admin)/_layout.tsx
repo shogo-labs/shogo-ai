@@ -32,6 +32,7 @@ import {
   Monitor,
   ScrollText,
   Gift,
+  Heart,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -49,6 +50,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
+  { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
   { href: '/(admin)/general', icon: Settings, label: 'General' },
 ] as const
@@ -58,6 +60,7 @@ const AI_NAV_ITEM = { href: '/(admin)/settings' as const, icon: BrainCircuit, la
 const LOCAL_MAIN_ITEMS = [
   { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/heartbeats', icon: Heart, label: 'Heartbeats' },
   { href: '/(admin)/evals', icon: FlaskConical, label: 'Evals' },
 ] as const
 
@@ -351,6 +354,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
+  if (pathname.includes('heartbeats')) return 'Heartbeats'
   if (pathname.startsWith('/evals/')) return 'Eval Detail'
   if (pathname.includes('evals')) return 'Evals'
   if (pathname.includes('/logs')) return 'Logs'

@@ -115,9 +115,11 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
       }
 
       this.breaker.clearFailure(projectId)
+      this.onTriggerSuccess(projectId)
       console.log(`[LocalHeartbeat] Triggered heartbeat for ${projectId}`)
     } catch (err: any) {
       this.breaker.recordFailure(projectId)
+      this.onTriggerFailure(projectId, err)
       console.error(`[LocalHeartbeat] Failed to trigger ${projectId}:`, err.message)
     }
   }
