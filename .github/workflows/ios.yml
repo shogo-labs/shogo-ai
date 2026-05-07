@@ -362,23 +362,17 @@ jobs:
           echo "PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
           echo "Installed provisioning profile: $PROFILE_NAME ($PROFILE_UUID)"
 
-      - name: Stub sentry-cli if missing
-        run: |
-          if ! command -v sentry-cli &> /dev/null && [ ! -f node_modules/@sentry/cli/sentry-cli ]; then
-            echo "sentry-cli not available — creating no-op stub"
-            mkdir -p apps/mobile/ios/Pods/Sentry/scripts
-            cat > apps/mobile/ios/sentry-cli-stub.sh <<'EOF'
-          #!/bin/bash
-          echo "[sentry-cli stub] skipping: $@"
-          exit 0
-          EOF
-            chmod +x apps/mobile/ios/sentry-cli-stub.sh
-          fi
-
       - name: Build archive
         working-directory: apps/mobile/ios
         env:
-          BUNDLE_ID: ai.shogo.mobile
+          BUNDLE_ID: com.odin.ai
+          # Skip Sentry dSYM upload during archive. The @sentry/react-native pod
+          # injects an "Upload Debug Symbols to Sentry" build phase that needs
+          # a working sentry-cli + SENTRY_ORG/SENTRY_PROJECT/SENTRY_AUTH_TOKEN.
+          # SENTRY_DISABLE_AUTO_UPLOAD=true is Sentry's officially supported
+          # escape hatch for CI envs that don't auto-upload. dSYM upload can
+          # be wired up as a dedicated post-build step later.
+          SENTRY_DISABLE_AUTO_UPLOAD: "true"
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -411,7 +405,7 @@ jobs:
             <string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>ai.shogo.mobile</key>
+              <key>com.odin.ai</key>
               <string>$PROFILE_NAME</string>
             </dict>
             <key>uploadSymbols</key>
