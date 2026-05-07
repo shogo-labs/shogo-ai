@@ -76,6 +76,31 @@
       "types": "./dist/voice/native/index.d.ts",
       "import": "./dist/voice/native/index.js",
       "require": "./dist/voice/native/index.cjs"
+    },
+    "./voice/route": {
+      "types": "./dist/voice/route/index.d.ts",
+      "import": "./dist/voice/route/index.js",
+      "require": "./dist/voice/route/index.cjs"
+    },
+    "./voice/route/signed-url": {
+      "types": "./dist/voice/route/signed-url.d.ts",
+      "import": "./dist/voice/route/signed-url.js",
+      "require": "./dist/voice/route/signed-url.cjs"
+    },
+    "./voice/route/tts-preview": {
+      "types": "./dist/voice/route/tts-preview.d.ts",
+      "import": "./dist/voice/route/tts-preview.js",
+      "require": "./dist/voice/route/tts-preview.cjs"
+    },
+    "./voice/route/agent": {
+      "types": "./dist/voice/route/agent.d.ts",
+      "import": "./dist/voice/route/agent.js",
+      "require": "./dist/voice/route/agent.cjs"
+    },
+    "./voice/route/audio-tags": {
+      "types": "./dist/voice/route/audio-tags.d.ts",
+      "import": "./dist/voice/route/audio-tags.js",
+      "require": "./dist/voice/route/audio-tags.cjs"
     }
   },
   "bin": {
