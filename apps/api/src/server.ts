@@ -3943,6 +3943,110 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
   return router.fetch(newReq)
 })
 
+// =============================================================================
+// Demo tool-mocks proxy
+// =============================================================================
+// POST/DELETE /api/projects/:projectId/agent/tool-mocks
+//
+// Forwards to the project's agent-runtime `/agent/tool-mocks` endpoint so
+// Playwright demo specs (and the eval runner via the same path) can install
+// deterministic tool mocks before driving the agent. The runtime endpoint is
+// defined in packages/agent-runtime/src/server.ts and merely populates the
+// in-memory `AgentGateway.toolMocks` map.
+//
+// Gated by `DEMO_MODE_ENABLED`. Local dev defaults this on; production stays
+// off. There is no user/session auth on top of the gate because the only
+// caller is the local Playwright recorder talking to its own runtime, and
+// installing mocks has no externally visible side effects beyond the project
+// pod itself.
+async function resolveAgentRuntimeUrl(projectId: string): Promise<string | null> {
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      return await getProjectPodUrl(projectId)
+    } catch (err: any) {
+      console.warn(`[ToolMocks] Failed to resolve k8s pod URL for ${projectId}: ${err?.message ?? err}`)
+      return null
+    }
+  }
+  const manager = getRuntimeManager()
+  let runtime = manager.status(projectId)
+  if (!runtime || runtime.status === 'stopped' || runtime.status === 'error') {
+    runtime = await manager.start(projectId)
+  }
+  if (!runtime?.url) return null
+  const agentPort = runtime.agentPort || (runtime.port + 1000)
+  const host = new URL(runtime.url).hostname
+  return `http://${host}:${agentPort}`
+}
+
+function demoModeEnabled(): boolean {
+  // On in local dev unless explicitly disabled. Off in any deployed
+  // environment (k8s, staging, production) unless explicitly turned on.
+  if (process.env.DEMO_MODE_ENABLED === '1' || process.env.DEMO_MODE_ENABLED === 'true') return true
+  if (process.env.DEMO_MODE_ENABLED === '0' || process.env.DEMO_MODE_ENABLED === 'false') return false
+  return !isKubernetes() && process.env.NODE_ENV !== 'production'
+}
+
+app.post('/api/projects/:projectId/agent/tool-mocks', async (c) => {
+  if (!demoModeEnabled()) {
+    return c.json({ error: 'tool-mocks proxy disabled (set DEMO_MODE_ENABLED=1 to enable)' }, 403)
+  }
+  const projectId = c.req.param('projectId')
+  const body = await c.req.text()
+
+  const baseUrl = await resolveAgentRuntimeUrl(projectId)
+  if (!baseUrl) {
+    return c.json({ error: 'Project runtime is not available' }, 503)
+  }
+
+  try {
+    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-runtime-token': deriveRuntimeToken(projectId),
+      },
+      body,
+    })
+    const text = await resp.text()
+    return new Response(text, {
+      status: resp.status,
+      headers: { 'Content-Type': resp.headers.get('content-type') ?? 'application/json' },
+    })
+  } catch (err: any) {
+    return c.json({ error: `Failed to install tool mocks: ${err?.message ?? err}` }, 502)
+  }
+})
+
+app.delete('/api/projects/:projectId/agent/tool-mocks', async (c) => {
+  if (!demoModeEnabled()) {
+    return c.json({ error: 'tool-mocks proxy disabled (set DEMO_MODE_ENABLED=1 to enable)' }, 403)
+  }
+  const projectId = c.req.param('projectId')
+
+  const baseUrl = await resolveAgentRuntimeUrl(projectId)
+  if (!baseUrl) {
+    return c.json({ error: 'Project runtime is not available' }, 503)
+  }
+
+  try {
+    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    const resp = await fetch(`${baseUrl}/agent/tool-mocks`, {
+      method: 'DELETE',
+      headers: { 'x-runtime-token': deriveRuntimeToken(projectId) },
+    })
+    const text = await resp.text()
+    return new Response(text, {
+      status: resp.status,
+      headers: { 'Content-Type': resp.headers.get('content-type') ?? 'application/json' },
+    })
+  } catch (err: any) {
+    return c.json({ error: `Failed to clear tool mocks: ${err?.message ?? err}` }, 502)
+  }
+})
+
 // GET /api/projects/:projectId/chat/:chatSessionId/stream - Resume active stream
 // URL pattern matches AI SDK's default: ${api}/${chatId}/stream
 app.get('/api/projects/:projectId/chat/:chatSessionId/stream', async (c) => {
