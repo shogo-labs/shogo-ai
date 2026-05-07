@@ -9,7 +9,7 @@ import {
   ScrollView,
   TextInput,
   ActivityIndicator,
-  Alert,
+  Modal,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import {
@@ -131,6 +131,7 @@ export default function MeetingDetailScreen() {
   const [titleDraft, setTitleDraft] = useState('')
   const [copied, setCopied] = useState(false)
   const [retranscribing, setRetranscribing] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const fetchMeeting = useCallback(async () => {
     try {
@@ -166,23 +167,17 @@ export default function MeetingDetailScreen() {
     }
   }
 
-  const handleDelete = () => {
-    Alert.alert('Delete Meeting', 'This will permanently delete the recording and transcript.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            const http = createHttpClient()
-            await http.delete(`/api/local/meetings/${id}`)
-            router.back()
-          } catch (err) {
-            console.error('Failed to delete meeting:', err)
-          }
-        },
-      },
-    ])
+  const handleDelete = () => setShowDeleteConfirm(true)
+
+  const confirmDelete = async () => {
+    setShowDeleteConfirm(false)
+    try {
+      const http = createHttpClient()
+      await http.delete(`/api/local/meetings/${id}`)
+      router.back()
+    } catch (err) {
+      console.error('Failed to delete meeting:', err)
+    }
   }
 
   const handleRetranscribe = async () => {
@@ -396,6 +391,48 @@ export default function MeetingDetailScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        visible={showDeleteConfirm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDeleteConfirm(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setShowDeleteConfirm(false)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center gap-3 mb-3">
+              <View className="w-10 h-10 rounded-full bg-destructive/10 items-center justify-center">
+                <Trash2 size={20} className="text-destructive" />
+              </View>
+              <Text className="text-base font-semibold text-foreground">Delete meeting</Text>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-5">
+              This will permanently delete the recording and transcript. This action cannot be undone.
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setShowDeleteConfirm(false)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmDelete}
+                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
+              >
+                <Text className="text-sm text-white font-medium">Delete</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 }
