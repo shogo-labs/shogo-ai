@@ -26,6 +26,15 @@
  * app.delete('/voice/agent',     (c) => voice.agent.delete(c.req.raw))
  * app.get('/voice/audio-tags',   (c) => voice.audioTags(c.req.raw))
  * ```
+ *
+ * Drop-in route handlers
+ * ----------------------
+ * For Web-Standard routers that dispatch by HTTP method export
+ * (Expo Router `+api.ts`, Next.js App Router `route.ts`, Cloudflare
+ * Workers, Bun.serve), use the `@shogo-ai/sdk/voice/route/*`
+ * sub-modules instead — they re-export pre-instantiated `GET`/
+ * `POST`/`PATCH`/`DELETE` so each route file is a one-line
+ * re-export. See {@link ./route/index.ts}.
  */
 
 import {
