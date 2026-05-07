@@ -270,6 +270,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Resolve API URL for environment
+        # Mirrors the OTA job + the android.yml build job. Without this the
+        # JS bundle baked into the IPA falls back to `http://localhost:3000`
+        # (see apps/mobile/lib/api.ts → nativeApiUrlWithoutEnv) and every
+        # network call from the device fails with "Network request failed".
+        # That was the root cause of the App Store rejection on submission
+        # 85609ca0-1c38-40be-a090-b92a680ed722 (Guideline 2.1(a)).
+        id: api-url
+        run: |
+          if [ "${{ needs.check-fingerprint.outputs.environment }}" = "production" ]; then
+            echo "url=https://studio.shogo.ai" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://studio.staging.shogo.ai" >> $GITHUB_OUTPUT
+          fi
+          echo "Resolved API URL for ${{ needs.check-fingerprint.outputs.environment }}: $(grep url= $GITHUB_OUTPUT | tail -1)"
+
       - name: Select latest Xcode (require 26+ for App Store Connect)
         # Apple began rejecting App Store Connect uploads built with iOS SDK
         # < 26 in 2026 ("This app was built with the iOS 18.5 SDK. All iOS
@@ -335,7 +351,10 @@ jobs:
       - name: Expo prebuild iOS
         working-directory: apps/mobile
         env:
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
         run: bunx expo prebuild --platform ios --clean
 
       - name: Install CocoaPods
@@ -411,6 +430,15 @@ jobs:
         working-directory: apps/mobile/ios
         env:
           BUNDLE_ID: com.odin.ai
+          # JS bundling runs inside xcodebuild's "Bundle React Native code
+          # and images" build phase, which calls Metro. Metro reads
+          # EXPO_PUBLIC_* from process.env at bundle time and bakes them
+          # into the JS that ships in the IPA. These MUST be set here, on
+          # the xcodebuild step, or the bundled app will fall back to
+          # localhost. See android.yml "Build AAB" for the parallel.
+          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
+          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
         run: |
           set -o pipefail
           xcodebuild archive \
