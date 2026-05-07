@@ -79,6 +79,24 @@ export interface BaseVoiceConversationOptions {
 
   /** Called on each message (user or agent) for debugging / custom UI. */
   onMessage?: (message: { source: string; message: string }) => void
+
+  /**
+   * Stable conversation id used to correlate this voice session with
+   * a sibling text thread (see `BaseChatConversationOptions.conversationId`).
+   *
+   * When set, forwarded to ElevenLabs as a `conversation_id` dynamic
+   * variable so the agent's prompt can reference it (`{{conversation_id}}`),
+   * and surfaced on `BaseVoiceConversationResult.conversationId` so a
+   * single bridge component can read the same value from either hook.
+   *
+   * Independent of the convai-side conversation id — see
+   * `BaseVoiceConversationResult.convaiConversationId` for that. The
+   * caller-supplied value wins on `result.conversationId` so consumers
+   * who keep their own thread store don't have to special-case the
+   * default. Optional; when omitted, `result.conversationId` mirrors
+   * the convai conversation id once the session connects.
+   */
+  conversationId?: string
 }
 
 export interface BaseVoiceConversationResult {
@@ -141,4 +159,24 @@ export interface BaseVoiceConversationResult {
    * want to keep the session "warm" without forcing a full turn.
    */
   sendUserActivity: () => void
+
+  /**
+   * Stable conversation id for cross-transport correlation. Returns the
+   * caller-supplied `BaseVoiceConversationOptions.conversationId` when
+   * one was provided; otherwise mirrors the convai conversation id once
+   * the session connects (and is `null` while disconnected).
+   *
+   * Pass this same value to `useChatConversation({ conversationId })`
+   * to stitch a text thread onto the same logical conversation.
+   */
+  conversationId: string | null
+
+  /**
+   * The convai-side conversation id reported by ElevenLabs on connect.
+   * Always reflects the underlying transport id (or `null` while
+   * disconnected) regardless of whether the consumer supplied an id.
+   * Useful for log correlation against ElevenLabs dashboards even
+   * when the consumer is using their own ids on `conversationId`.
+   */
+  convaiConversationId: string | null
 }

@@ -44,6 +44,7 @@ import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { voiceRoutes } from './routes/voice'
+import { chatRoutes } from './routes/chat'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateUsageCost } from './lib/usage-cost'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
@@ -5713,6 +5714,14 @@ app.route('/api', toolsProxy)
 // above). Keeps ELEVENLABS_API_KEY on the server and serves the shared
 // translator persona for both voice (signed URL) and text (streaming chat).
 app.route('/api', voiceRoutes())
+
+// Public streaming chat route — text-only sibling of the voice signed-
+// URL endpoint. Lets external SDK consumers (`useShogoChat`) drive the
+// project's persona over a plain HTTPS POST without opening an
+// ElevenLabs Convai websocket. Stateless in V1; auth via bearer
+// (`shogo_sk_*`) or session cookie. Runtime-token callers are
+// rejected — see runtime-token.md §7 for the rationale.
+app.route('/api', chatRoutes())
 
 // =============================================================================
 // Domain API routes - For APIPersistence layer

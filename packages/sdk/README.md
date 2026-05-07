@@ -673,7 +673,7 @@ so your `ELEVENLABS_API_KEY` never touches the browser.
 
 - `@shogo-ai/sdk/voice` — framework-agnostic helpers (`ElevenLabsClient`, `composeAgentPrompt`, `stripAudioTags`, `AUDIO_TAGS`, expressivity block composer).
 - `@shogo-ai/sdk/voice/server` — `createVoiceHandlers(...)` factory returning Web-standard `Request → Response` functions for `signedUrl`, `tts`, `agent.{create,patch,delete}`, and `audioTags`.
-- `@shogo-ai/sdk/voice/react` — web React hook (`useVoiceConversation`, `useShogoVoice`) + `<ShogoVoiceProvider>` + `<OrganicSphere>` / `<OrganicParticles>` visualizations, all wrapping `@elevenlabs/react`.
+- `@shogo-ai/sdk/voice/react` — web React hook (`useVoiceConversation`, `useShogoVoice`, `useChatConversation`, `useShogoChat`) + `<ShogoVoiceProvider>` + `<OrganicSphere>` / `<OrganicParticles>` visualizations, all wrapping `@elevenlabs/react` (voice) and `@ai-sdk/react` (chat).
 - `@shogo-ai/sdk/voice/native` — React Native (Expo) sister export with the same API surface, wrapping `@elevenlabs/react-native` and rendering visualizations through `expo-gl` + `expo-three`. See [Voice on React Native](#voice-on-react-native) below.
 
 ### Install peer deps
@@ -681,11 +681,16 @@ so your `ELEVENLABS_API_KEY` never touches the browser.
 ```bash
 # Web:
 npm install @elevenlabs/react three
+# Add `@ai-sdk/react` and `ai` if you also want the audio-free
+# `useShogoChat` / `useChatConversation` text path:
+npm install @ai-sdk/react ai
 
 # React Native (Expo):
 npm install \
   @elevenlabs/react-native @livekit/react-native @livekit/react-native-webrtc \
   expo-gl expo-three three
+# Add `@ai-sdk/react` and `ai` for text chat on native:
+npm install @ai-sdk/react ai
 ```
 
 All voice peer deps are optional from the SDK's POV — only install the
@@ -826,6 +831,136 @@ place, so you can leave the component mounted across connect/disconnect
 cycles.
 
 Requires the host app to have `three` installed (optional peer dep).
+
+### Text chat (audio-free path)
+
+For surfaces where opening a microphone is unwanted (mobile companions
+in libraries / on transit / with kids asleep, accessibility flows,
+background tabs), drive the same agent persona over a plain streaming
+HTTPS POST instead of an ElevenLabs Convai websocket.
+
+`useShogoChat` (and the lower-level `useChatConversation`) is the
+audio-free sibling of `useShogoVoice`. Same auth surface
+(`shogoApiKey` + `projectId` or session cookie), same client-tool
+registration shape — but no `getUserMedia`, no audio context, no
+websocket.
+
+> **Status: experimental.** The hook surface may evolve before V1
+> promotion. Pin a SDK version if you embed it in production.
+
+```bash
+# Add the AI SDK peer deps:
+npm install @ai-sdk/react ai
+```
+
+```tsx
+import { useShogoChat } from '@shogo-ai/sdk/voice/react'
+
+function ChatBox({ shogoApiKey, projectId }: { shogoApiKey: string; projectId: string }) {
+  const chat = useShogoChat({ shogoApiKey, projectId })
+  const [draft, setDraft] = useState('')
+  return (
+    <div>
+      {chat.messages.map((m) => (
+        <div key={m.id}>
+          <strong>{m.role === 'user' ? 'You' : 'Agent'}: </strong>
+          {m.parts
+            .filter((p) => p.type === 'text')
+            .map((p) => p.text)
+            .join('')}
+        </div>
+      ))}
+      <input value={draft} onChange={(e) => setDraft(e.target.value)} />
+      <button
+        disabled={chat.status === 'streaming' || !draft.trim()}
+        onClick={() => {
+          void chat.sendMessage(draft)
+          setDraft('')
+        }}
+      >
+        Send
+      </button>
+    </div>
+  )
+}
+```
+
+What's persistent: long-lived memory writes via the existing
+`/api/memory/{add,retrieve,ingest}` endpoints. The chat route itself
+is **stateless in V1** — every request re-sends the full `messages`
+array. Persist `chat.messages` yourself if you want durable threads
+and rehydrate via `chat.setMessages(...)` on next mount.
+
+#### Voice + text bridge
+
+The two hooks expose enough surface area that you can compose a
+single logical conversation across both transports yourself. The
+SDK does NOT merge transcripts for you — but the four primitives
+you need are already there:
+
+| Need | Surface |
+| --- | --- |
+| Stable id linking the two threads | `voice.conversationId` + `chat.conversationId` (consumer-supplied option) |
+| Inject typed text into a live voice session | `voice.sendContextualUpdate(text)` |
+| Observe each voice turn as it happens | `useShogoVoice({ onMessage })` |
+| Insert a synthetic message into the text thread without a model call | `chat.appendAssistantMessage(text)` / `chat.appendUserMessage(text)` |
+
+```tsx
+import {
+  ShogoVoiceProvider,
+  useShogoVoice,
+  useShogoChat,
+} from '@shogo-ai/sdk/voice/react'
+
+function Companion({ shogoApiKey, projectId }: { shogoApiKey: string; projectId: string }) {
+  // Pick a stable conversationId for the lifetime of the screen and
+  // hand it to BOTH hooks. Voice mirrors it verbatim; chat threads it
+  // through the request body + URL.
+  const conversationId = useMemo(() => crypto.randomUUID(), [])
+
+  const chat = useShogoChat({ shogoApiKey, projectId, conversationId })
+  const voice = useShogoVoice({
+    shogoApiKey,
+    projectId,
+    conversationId,
+    // Mirror each voice turn into the text thread so scrollback is
+    // unified.
+    onMessage: ({ source, message }) => {
+      if (source === 'agent') chat.appendAssistantMessage(message)
+      else if (source === 'user') chat.appendUserMessage(message)
+    },
+  })
+
+  // When the user types while voice is active, feed the text into
+  // the live voice agent as context — no model call, no extra cost.
+  // Otherwise, dispatch a normal text turn.
+  const send = useCallback(
+    async (text: string) => {
+      if (voice.status === 'connected') {
+        voice.sendContextualUpdate(text)
+        chat.appendUserMessage(text) // local-only echo for the bubble
+        return
+      }
+      await chat.sendMessage(text)
+    },
+    [voice, chat],
+  )
+
+  return (/* your UI */)
+}
+```
+
+Two things to know:
+
+- `voice.conversationId` falls back to the convai-side id once the
+  voice session connects, so even if you don't supply one yourself,
+  the value is non-`null` while the voice session is live. Read
+  `voice.convaiConversationId` if you specifically want the EL id
+  for log correlation.
+- `appendUserMessage` / `appendAssistantMessage` only mutate the
+  local thread — they don't round-trip to the server. Use them
+  for hydration and for echoing voice turns into the bubble; use
+  `sendMessage` when you want the model to respond.
 
 ### Voice on React Native
 

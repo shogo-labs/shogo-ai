@@ -27,17 +27,29 @@ export interface BuildSessionPayloadOptions {
   agentPromptOverride?: string
   /** When true, sets `overrides.agent.firstMessage = ''`. */
   suppressFirstMessage?: boolean
+  /**
+   * Stable conversation id (consumer-supplied, e.g. from a sibling
+   * text hook). Forwarded as the `conversation_id` dynamic variable
+   * so the agent's prompt can reference it via `{{conversation_id}}`.
+   * Omitted from the payload when `undefined`, so the agent's
+   * configured default (or no value at all) is used.
+   */
+  conversationId?: string
 }
 
 export function buildSessionPayload(
   opts: BuildSessionPayloadOptions,
 ): Record<string, unknown> {
+  const dynamicVariables: Record<string, string> = {
+    character_name: opts.characterName,
+    user_context: opts.userContext,
+  }
+  if (typeof opts.conversationId === 'string' && opts.conversationId.length > 0) {
+    dynamicVariables.conversation_id = opts.conversationId
+  }
   const payload: Record<string, unknown> = {
     signedUrl: opts.signedUrl,
-    dynamicVariables: {
-      character_name: opts.characterName,
-      user_context: opts.userContext,
-    },
+    dynamicVariables,
   }
 
   const agentOverrides: Record<string, unknown> = {}
