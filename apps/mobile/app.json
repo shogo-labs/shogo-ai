@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "ai.shogo.mobile",
+      "bundleIdentifier": "com.odin.ai",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
