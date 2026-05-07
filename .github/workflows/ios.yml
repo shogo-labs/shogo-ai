@@ -386,6 +386,7 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            SENTRY_DISABLE_AUTO_UPLOAD=true \
             | xcbeautify || exit ${PIPESTATUS[0]}
 
       - name: Create exportOptions.plist
