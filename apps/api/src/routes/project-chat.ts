@@ -68,7 +68,7 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
 /**
  * Scan a teed copy of the AI SDK stream for usage/tool-call data.
  *
- * The Vercel AI SDK UI protocol uses newline-delimited messages.  Key prefixes:
+ * The Vercel AI SDK UI protocol uses newline-delimited messages. Key prefixes:
  *   e: (finish)  — JSON with usage { promptTokens, completionTokens }
  *   9: (tool_call) — tool invocations
  *   d: (finish_message/finish_step) — JSON with usage
@@ -76,16 +76,40 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
  * We consume the entire tracking stream, count tool calls, and extract the
  * final usage object. Then we charge marked-up USD via the billing service
  * and log a `ToolCallLog` entry per tool call.
+ *
+ * EOF-without-turn-complete handling:
+ *   The runtime emits `data-turn-complete` exactly once at the tail of every
+ *   turn it brings to a terminal state. If our reader EOFs before seeing that
+ *   marker, the API↔runtime body was cut while the agent was still working.
+ *   Two real triggers:
+ *     1. Knative activator's 5-min request timeout — the buffer on the
+ *        runtime's `streamBufferStore` is still alive and growing.
+ *     2. User clicked Stop — `/agent/stop` aborts the buffer; the resume
+ *        endpoint returns 204.
+ *   We try server-side auto-resume against `/agent/chat/:id/stream?fromSeq=0`
+ *   to drain the full turn from the runtime's buffer when it's still alive
+ *   (case 1). If the resume returns 204 / errors (case 2 + crashes), we fall
+ *   back to persisting whatever was accumulated when the original cut hit,
+ *   so the user's truncated turn still lands in DB.
  */
-async function trackUsageFromStream(
+export async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
   requestBody: any,
   project: { id: string; workspaceId: string },
+  options: {
+    /**
+     * Reconnect to the runtime's stream buffer for `fromSeq=N`. Returns null
+     * (or a non-200 Response) if the buffer is gone — caller falls back to
+     * partial persistence in that case. Wired by the route handler via
+     * `fetchFromRuntime` so the request hits the same pod that owns the
+     * buffer.
+     */
+    resume?: (fromSeq: number) => Promise<Response | null>
+  } = {},
 ) {
   const decoder = new TextDecoder()
-  const reader = stream.getReader()
-  let buffer = ''
-  let lastUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
+  type UsageSnapshot = { promptTokens?: number; completionTokens?: number; totalTokens?: number }
+  const usageRef: { value: UsageSnapshot | null } = { value: null }
 
   // Accumulate tool call data incrementally as stream events arrive.
   // Keyed by toolCallId so args, result, and duration are captured correctly.
@@ -97,24 +121,25 @@ async function trackUsageFromStream(
     startedAt: number
     duration: number | null
   }
-  const toolCallMap = new Map<string, ToolCallRecord>()
+  let toolCallMap = new Map<string, ToolCallRecord>()
 
   // server-side-persistence: Accumulate ordered parts for DB persistence.
   // We maintain the natural interleaving of text and tool calls so that
   // on page refresh the parts array faithfully reproduces the original order.
   let accumulatedText = ''
-  const orderedParts: any[] = []
+  let orderedParts: any[] = []
   // Index into orderedParts by toolCallId so we can back-fill output later
-  const toolPartIndex = new Map<string, any>()
+  let toolPartIndex = new Map<string, any>()
   let currentTextPart: { type: 'text'; text: string } | null = null
   let currentReasoningPart: { type: 'reasoning'; text: string; durationMs?: number } | null = null
   let reasoningStartedAt: number | null = null
-  let streamInterrupted = false
+  // True iff the original POST stream errored (chunk read threw / idle
+  // timeout fired) before any clean EOF. Used to gate auto-checkpoint —
+  // a hard read error means file edits the agent reported may not have
+  // actually persisted.
+  let originalStreamErrored = false
   // True iff we observed the runtime's terminal `data-turn-complete` SSE
-  // frame. Stream EOF without this marker means the upstream proxy
-  // (typically Knative activator's hardcoded 5-min request timeout) cut
-  // the body mid-turn — we should NOT bill or persist a partial message,
-  // and the client's auto-resuming-fetch will reconnect via ?fromSeq=N.
+  // frame. Used to decide whether to attempt auto-resume after EOF.
   let observedTurnComplete = false
   let turnCompleteStatus: 'completed' | 'failed' | null = null
   let qualitySignals: {
@@ -124,315 +149,395 @@ async function trackUsageFromStream(
     escalated?: boolean
     responseEmpty?: boolean
   } = {}
+  // Highest seq the runtime has reported via `data-turn-seq` heartbeats.
+  // Currently we resume with fromSeq=0 (full replay) for simplicity, but
+  // we keep this around for diagnostics and for future delta-resume.
+  let lastObservedSeq = 0
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
-  try {
-    while (true) {
-      let idleTimer: ReturnType<typeof setTimeout> | undefined
-      const idleTimeout = new Promise<{ done: true; value: undefined }>((_, reject) => {
-        idleTimer = setTimeout(() => reject(new Error('chunk idle timeout')), PER_CHUNK_IDLE_TIMEOUT_MS)
-      })
-      let result: { done: boolean; value: Uint8Array | undefined }
-      try {
-        result = await Promise.race([reader.read(), idleTimeout]) as any
-      } finally {
-        clearTimeout(idleTimer)
+  /**
+   * Reset all turn-scoped accumulators. Used before re-consuming a full
+   * replay from the runtime's buffer so a successful resume produces a
+   * coherent, non-duplicated message instead of appending replayed
+   * text-deltas onto the partial we already had.
+   */
+  function resetAccumulatedState() {
+    toolCallMap = new Map()
+    orderedParts = []
+    toolPartIndex = new Map()
+    accumulatedText = ''
+    currentTextPart = null
+    currentReasoningPart = null
+    reasoningStartedAt = null
+    observedTurnComplete = false
+    turnCompleteStatus = null
+    usageRef.value = null
+    qualitySignals = {}
+  }
+
+  /**
+   * Process one SSE line (already \n-split). Updates the closure-scoped
+   * accumulator state in place. Tolerant of legacy (`9:`, `e:`, `d:`)
+   * data-stream prefixes alongside the modern `data: {json}` SSE format.
+   */
+  function processLine(line: string) {
+    if (!line.trim()) return
+
+    // The project runtime uses toUIMessageStreamResponse() which produces
+    // Server-Sent Events (SSE) format: "data: {json}\n\n"
+    let payload = line
+    if (line.startsWith('data: ')) {
+      payload = line.slice(6)
+    } else if (line.startsWith('data:')) {
+      payload = line.slice(5)
+    }
+
+    if (payload === '[DONE]' || line.startsWith('event:') || line.startsWith('id:') || line.startsWith('retry:')) {
+      return
+    }
+
+    let data: any
+    try {
+      data = JSON.parse(payload)
+    } catch {
+      const prefix = line.slice(0, 2)
+      if (prefix === '9:' || prefix === 'e:' || prefix === 'd:') {
+        try { data = JSON.parse(line.slice(2)) } catch { return }
+        if (prefix === '9:' && !data.type) data.type = 'tool-call'
+        if ((prefix === 'e:' || prefix === 'd:') && !data.type) data.type = 'finish'
+      } else {
+        return
       }
-      const { done, value } = result!
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
+    }
 
-      // Process complete lines
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || '' // Keep the incomplete last line
+    if (!data || typeof data !== 'object') return
 
-      for (const line of lines) {
-        if (!line.trim()) continue
+    const type = data.type
 
-        // The project runtime uses toUIMessageStreamResponse() which produces
-        // Server-Sent Events (SSE) format: "data: {json}\n\n"
-        // Parse SSE data lines
-        let payload = line
-        if (line.startsWith('data: ')) {
-          payload = line.slice(6) // Strip "data: " prefix
-        } else if (line.startsWith('data:')) {
-          payload = line.slice(5)
+    if (type === 'reasoning-start') {
+      currentTextPart = null
+      reasoningStartedAt = Date.now()
+      currentReasoningPart = { type: 'reasoning', text: '' }
+      orderedParts.push(currentReasoningPart)
+    }
+    if (type === 'reasoning-delta' && data.delta && currentReasoningPart) {
+      currentReasoningPart.text += data.delta
+    }
+    if (type === 'reasoning-end') {
+      if (currentReasoningPart && reasoningStartedAt) {
+        currentReasoningPart.durationMs = Date.now() - reasoningStartedAt
+      }
+      currentReasoningPart = null
+      reasoningStartedAt = null
+    }
+
+    if (type === 'text-delta' && data.delta) {
+      currentReasoningPart = null
+      accumulatedText += data.delta
+      if (!currentTextPart) {
+        currentTextPart = { type: 'text', text: '' }
+        orderedParts.push(currentTextPart)
+      }
+      currentTextPart.text += data.delta
+    }
+
+    if (type === 'tool-input-start' || type === 'tool-call-start' || type === 'tool-call') {
+      const toolCallId = data.toolCallId || `tool-${Date.now()}-${toolCallMap.size}`
+      if (!toolCallMap.has(toolCallId)) {
+        toolCallMap.set(toolCallId, {
+          toolCallId,
+          toolName: data.toolName || data.name || 'unknown',
+          args: data.args || data.input || null,
+          result: null,
+          startedAt: Date.now(),
+          duration: null,
+        })
+      }
+    }
+
+    if (type === 'tool-input-available') {
+      const toolCallId = data.toolCallId || ''
+      const record = toolCallMap.get(toolCallId)
+      if (record) {
+        record.args = data.input ?? record.args
+      } else {
+        toolCallMap.set(toolCallId, {
+          toolCallId,
+          toolName: data.toolName || 'unknown',
+          args: data.input || null,
+          result: null,
+          startedAt: Date.now(),
+          duration: null,
+        })
+      }
+
+      currentTextPart = null
+      currentReasoningPart = null
+      // NOTE: do NOT set `output` here. Some tools (notably `ask_user`)
+      // intentionally never emit `tool-output-available`; baking
+      // `output: null` + `state: 'output-available'` into the persisted
+      // part makes the widget render as already-answered after a cold
+      // hydration, since `null !== undefined`.
+      const part: {
+        type: 'dynamic-tool'
+        toolCallId: string
+        toolName: string
+        input: any
+        state: string
+        output?: any
+      } = {
+        type: 'dynamic-tool',
+        toolCallId,
+        toolName: data.toolName || toolCallMap.get(toolCallId)?.toolName || 'unknown',
+        input: data.input || {},
+        state: 'input-available',
+      }
+      orderedParts.push(part)
+      toolPartIndex.set(toolCallId, part)
+    }
+
+    if (type === 'tool-output-available') {
+      const toolCallId = data.toolCallId || ''
+      const record = toolCallMap.get(toolCallId)
+      if (record) {
+        record.result = data.output ?? null
+        record.duration = Date.now() - record.startedAt
+      }
+      const part = toolPartIndex.get(toolCallId)
+      if (part) {
+        part.output = data.output ?? { success: true }
+        part.state = 'output-available'
+      }
+    }
+
+    // The runtime writes `data-turn-complete` exactly once at the tail
+    // of every successfully-streamed turn (including failed turns it
+    // caught and reported). Its presence confirms the agent reached a
+    // terminal state; its absence on EOF identifies an upstream cut
+    // (activator timeout, pod restart, network drop, stop button).
+    if (type === 'data-turn-complete') {
+      observedTurnComplete = true
+      const status = data?.data?.status
+      if (status === 'completed' || status === 'failed') {
+        turnCompleteStatus = status
+      }
+    }
+
+    // Heartbeat the runtime emits every ~250ms with the buffer's lastSeq.
+    // Lets us know how far the buffer has progressed for resume diagnostics.
+    if (type === 'data-turn-seq') {
+      const seq = data?.data?.seq
+      if (typeof seq === 'number' && seq > lastObservedSeq) {
+        lastObservedSeq = seq
+      }
+    }
+
+    if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
+      const usageData = data.usage || data.data
+      if (usageData && (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens || usageData.totalTokens)) {
+        usageRef.value = {
+          // Support both v5 (promptTokens) and v6 (inputTokens) naming
+          promptTokens: usageData.promptTokens || usageData.inputTokens || 0,
+          completionTokens: usageData.completionTokens || usageData.outputTokens || 0,
+          totalTokens: usageData.totalTokens || ((usageData.promptTokens || usageData.inputTokens || 0) + (usageData.completionTokens || usageData.outputTokens || 0)),
         }
-
-        // Skip SSE control lines and [DONE] marker
-        if (payload === '[DONE]' || line.startsWith('event:') || line.startsWith('id:') || line.startsWith('retry:')) {
-          continue
+        qualitySignals = {
+          success: usageData.success === undefined ? undefined : usageData.success === true,
+          hitMaxTurns: usageData.hitMaxTurns === true,
+          loopDetected: usageData.loopDetected === true,
+          escalated: usageData.escalated === true,
+          responseEmpty: usageData.responseEmpty === true,
         }
-
-        // Try to parse as JSON
-        let data: any
-        try {
-          data = JSON.parse(payload)
-        } catch {
-          // Also try legacy data stream protocol (e.g. "e:{json}", "9:{json}")
-          const prefix = line.slice(0, 2)
-          if (prefix === '9:' || prefix === 'e:' || prefix === 'd:') {
-            try { data = JSON.parse(line.slice(2)) } catch { continue }
-            // Legacy data stream: mark type based on prefix
-            if (prefix === '9:' && !data.type) data.type = 'tool-call'
-            if ((prefix === 'e:' || prefix === 'd:') && !data.type) data.type = 'finish'
-          } else {
-            continue
-          }
+      }
+      if (data.promptTokens || data.completionTokens || data.inputTokens || data.outputTokens) {
+        usageRef.value = {
+          promptTokens: data.promptTokens || data.inputTokens || 0,
+          completionTokens: data.completionTokens || data.outputTokens || 0,
+          totalTokens: data.totalTokens || ((data.promptTokens || data.inputTokens || 0) + (data.completionTokens || data.outputTokens || 0)),
         }
-
-        if (!data || typeof data !== 'object') continue
-
-        // UI Message Stream protocol uses { type: "..." } format
-        const type = data.type
-
-        // server-side-persistence: Accumulate reasoning/thinking content
-        if (type === 'reasoning-start') {
-          currentTextPart = null
-          reasoningStartedAt = Date.now()
-          currentReasoningPart = { type: 'reasoning', text: '' }
-          orderedParts.push(currentReasoningPart)
+        qualitySignals = {
+          success: data.success === undefined ? undefined : data.success === true,
+          hitMaxTurns: data.hitMaxTurns === true,
+          loopDetected: data.loopDetected === true,
+          escalated: data.escalated === true,
+          responseEmpty: data.responseEmpty === true,
         }
-        if (type === 'reasoning-delta' && data.delta && currentReasoningPart) {
-          currentReasoningPart.text += data.delta
-        }
-        if (type === 'reasoning-end') {
-          if (currentReasoningPart && reasoningStartedAt) {
-            currentReasoningPart.durationMs = Date.now() - reasoningStartedAt
-          }
-          currentReasoningPart = null
-          reasoningStartedAt = null
-        }
+      }
+    }
 
-        // server-side-persistence: Accumulate text content from stream
-        if (type === 'text-delta' && data.delta) {
-          currentReasoningPart = null
-          accumulatedText += data.delta
-          if (!currentTextPart) {
-            currentTextPart = { type: 'text', text: '' }
-            orderedParts.push(currentTextPart)
-          }
-          currentTextPart.text += data.delta
-        }
-
-        // Track tool calls: create record at start, fill in args/result as they arrive
-        if (type === 'tool-input-start' || type === 'tool-call-start' || type === 'tool-call') {
-          const toolCallId = data.toolCallId || `tool-${Date.now()}-${toolCallMap.size}`
+    // Legacy: handle array-style tool calls (data stream protocol "9:[{...}]")
+    if (Array.isArray(data)) {
+      for (const tc of data) {
+        if (tc.toolName || tc.name) {
+          const toolCallId = tc.toolCallId || `legacy-${Date.now()}-${toolCallMap.size}`
           if (!toolCallMap.has(toolCallId)) {
             toolCallMap.set(toolCallId, {
               toolCallId,
-              toolName: data.toolName || data.name || 'unknown',
-              args: data.args || data.input || null,
+              toolName: tc.toolName || tc.name || 'unknown',
+              args: tc.args || null,
               result: null,
               startedAt: Date.now(),
               duration: null,
             })
-          }
-        }
-
-        // Finalized tool input: capture the real args
-        if (type === 'tool-input-available') {
-          const toolCallId = data.toolCallId || ''
-          const record = toolCallMap.get(toolCallId)
-          if (record) {
-            record.args = data.input ?? record.args
-          } else {
-            toolCallMap.set(toolCallId, {
-              toolCallId,
-              toolName: data.toolName || 'unknown',
-              args: data.input || null,
-              result: null,
-              startedAt: Date.now(),
-              duration: null,
-            })
-          }
-
-          currentTextPart = null
-          currentReasoningPart = null
-          // NOTE: do NOT set `output` here. Some tools (notably `ask_user`)
-          // intentionally never emit `tool-output-available`; baking
-          // `output: null` + `state: 'output-available'` into the persisted
-          // part makes the widget render as already-answered after a cold
-          // hydration, since `null !== undefined`.
-          const part: {
-            type: 'dynamic-tool'
-            toolCallId: string
-            toolName: string
-            input: any
-            state: string
-            output?: any
-          } = {
-            type: 'dynamic-tool',
-            toolCallId,
-            toolName: data.toolName || toolCallMap.get(toolCallId)?.toolName || 'unknown',
-            input: data.input || {},
-            state: 'input-available',
-          }
-          orderedParts.push(part)
-          toolPartIndex.set(toolCallId, part)
-        }
-
-        // Finalized tool output: capture the real result and compute duration
-        if (type === 'tool-output-available') {
-          const toolCallId = data.toolCallId || ''
-          const record = toolCallMap.get(toolCallId)
-          if (record) {
-            record.result = data.output ?? null
-            record.duration = Date.now() - record.startedAt
-          }
-          const part = toolPartIndex.get(toolCallId)
-          if (part) {
-            part.output = data.output ?? { success: true }
-            part.state = 'output-available'
-          }
-        }
-
-        // The runtime writes `data-turn-complete` exactly once at the
-        // tail of every successfully-streamed turn (including failed
-        // turns that the runtime caught and reported). Its presence
-        // confirms the agent reached the end of its work; its absence
-        // is what identifies an upstream cut (activator timeout, pod
-        // restart, network drop) vs a clean finish.
-        if (type === 'data-turn-complete') {
-          observedTurnComplete = true
-          const status = data?.data?.status
-          if (status === 'completed' || status === 'failed') {
-            turnCompleteStatus = status
-          }
-        }
-
-        // Track usage from finish events or dedicated usage events
-        if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
-          // Custom data-usage event from runtime puts data in `data` field
-          const usageData = data.usage || data.data
-          if (usageData && (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens || usageData.totalTokens)) {
-            lastUsage = {
-              // Support both v5 (promptTokens) and v6 (inputTokens) naming
-              promptTokens: usageData.promptTokens || usageData.inputTokens || 0,
-              completionTokens: usageData.completionTokens || usageData.outputTokens || 0,
-              totalTokens: usageData.totalTokens || ((usageData.promptTokens || usageData.inputTokens || 0) + (usageData.completionTokens || usageData.outputTokens || 0)),
-            }
-            qualitySignals = {
-              success: usageData.success === undefined ? undefined : usageData.success === true,
-              hitMaxTurns: usageData.hitMaxTurns === true,
-              loopDetected: usageData.loopDetected === true,
-              escalated: usageData.escalated === true,
-              responseEmpty: usageData.responseEmpty === true,
-            }
-          }
-          // Sometimes usage is at top level
-          if (data.promptTokens || data.completionTokens || data.inputTokens || data.outputTokens) {
-            lastUsage = {
-              promptTokens: data.promptTokens || data.inputTokens || 0,
-              completionTokens: data.completionTokens || data.outputTokens || 0,
-              totalTokens: data.totalTokens || ((data.promptTokens || data.inputTokens || 0) + (data.completionTokens || data.outputTokens || 0)),
-            }
-            qualitySignals = {
-              success: data.success === undefined ? undefined : data.success === true,
-              hitMaxTurns: data.hitMaxTurns === true,
-              loopDetected: data.loopDetected === true,
-              escalated: data.escalated === true,
-              responseEmpty: data.responseEmpty === true,
-            }
-          }
-        }
-
-        // Legacy: handle array-style tool calls (data stream protocol "9:[{...}]")
-        if (Array.isArray(data)) {
-          for (const tc of data) {
-            if (tc.toolName || tc.name) {
-              const toolCallId = tc.toolCallId || `legacy-${Date.now()}-${toolCallMap.size}`
-              if (!toolCallMap.has(toolCallId)) {
-                toolCallMap.set(toolCallId, {
-                  toolCallId,
-                  toolName: tc.toolName || tc.name || 'unknown',
-                  args: tc.args || null,
-                  result: null,
-                  startedAt: Date.now(),
-                  duration: null,
-                })
-              }
-            }
           }
         }
       }
     }
-  } catch (streamErr: any) {
-    streamInterrupted = true
-    console.warn(`[ProjectChat] Stream interrupted (${streamErr.code || streamErr.message}), persisting ${accumulatedText.length} chars accumulated so far`)
-  } finally {
-    reader.releaseLock()
   }
+
+  /**
+   * Drain a reader to EOF, parsing SSE frames into the closure-scoped
+   * accumulators. Returns true on clean EOF; false if a chunk read threw
+   * or the per-chunk idle timeout fired.
+   */
+  async function consumeStream(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<boolean> {
+    let buffer = ''
+    try {
+      while (true) {
+        let idleTimer: ReturnType<typeof setTimeout> | undefined
+        const idleTimeout = new Promise<{ done: true; value: undefined }>((_, reject) => {
+          idleTimer = setTimeout(() => reject(new Error('chunk idle timeout')), PER_CHUNK_IDLE_TIMEOUT_MS)
+        })
+        let result: { done: boolean; value: Uint8Array | undefined }
+        try {
+          result = await Promise.race([reader.read(), idleTimeout]) as any
+        } finally {
+          clearTimeout(idleTimer)
+        }
+        const { done, value } = result!
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          processLine(line)
+        }
+      }
+      return true
+    } catch (streamErr: any) {
+      console.warn(`[ProjectChat] Stream interrupted (${streamErr.code || streamErr.message}), persisting ${accumulatedText.length} chars accumulated so far`)
+      return false
+    } finally {
+      try { reader.releaseLock() } catch { /* already released */ }
+    }
+  }
+
+  // First pass: consume the original tee'd tracking stream.
+  const firstOk = await consumeStream(stream.getReader())
+  if (!firstOk) originalStreamErrored = true
 
   // Extract context
   const chatSessionId = requestBody?.chatSessionId || null
   const agentMode = requestBody?.agentMode || 'advanced'
 
-  const inputTokens = lastUsage?.promptTokens || 0
-  const outputTokens = lastUsage?.completionTokens || 0
-  const totalTokens = lastUsage?.totalTokens || (inputTokens + outputTokens)
+  // Auto-resume drive: when the original stream EOF'd cleanly but the runtime
+  // never emitted `data-turn-complete`, the upstream proxy cut us off mid-turn.
+  // The runtime keeps appending to its `streamBufferStore` independent of the
+  // HTTP connection, so we reconnect via `/agent/chat/:id/stream?fromSeq=0`
+  // and drain the full turn from the buffer. We use fromSeq=0 (full replay)
+  // rather than fromSeq=lastObservedSeq because the seq the heartbeat reports
+  // lags the actual chunks, and a full reset+replay avoids any text-delta
+  // duplication. If the buffer is gone (stop button or pod crash → 204), or
+  // the resume itself errors, we fall through to persisting whatever the
+  // original stream gave us.
+  let resumeOutcome: 'not-attempted' | 'recovered' | 'buffer-gone' | 'failed' = 'not-attempted'
+  const eofWithoutTurnComplete = !originalStreamErrored && !observedTurnComplete
 
-  const toolCallCount = toolCallMap.size
+  if (eofWithoutTurnComplete && chatSessionId && options.resume) {
+    console.log(
+      `[ProjectChat] EOF without turn-complete for session ${chatSessionId} (lastObservedSeq=${lastObservedSeq}) — server-side resume from buffer`
+    )
+    let resumeRes: Response | null = null
+    try {
+      resumeRes = await options.resume(0)
+    } catch (err: any) {
+      resumeOutcome = 'failed'
+      console.warn(`[ProjectChat] Resume fetch threw: ${err?.message || err}`)
+    }
 
-  // Stream EOF without the runtime's terminal `data-turn-complete` marker
-  // means the upstream proxy cut the response mid-turn. Treat this as
-  // interrupted so we (a) skip the partial DB persistence (the resume
-  // path on `/agent/chat/:chatSessionId/stream` will replay the buffer
-  // and the next clean turn will persist the full message), and (b)
-  // discard the billing session instead of charging for a turn the
-  // user never saw the end of.
-  const eofWithoutTurnComplete = !streamInterrupted && !observedTurnComplete
-  if (eofWithoutTurnComplete) {
-    streamInterrupted = true
+    if (resumeRes) {
+      if (resumeRes.status === 200 && resumeRes.body) {
+        // Reset state — we're going to re-consume the entire turn from the
+        // buffer's full replay, so any text/tool data we accumulated from
+        // the original stream needs to be cleared to avoid duplication.
+        resetAccumulatedState()
+        const resumeOk = await consumeStream(resumeRes.body.getReader())
+        if (observedTurnComplete) {
+          resumeOutcome = 'recovered'
+        } else {
+          resumeOutcome = 'failed'
+          console.warn(
+            `[ProjectChat] Resume drained without seeing data-turn-complete (resumeOk=${resumeOk}) — persisting whatever was replayed`
+          )
+        }
+      } else if (resumeRes.status === 204) {
+        // Buffer aborted (stop button), expired, or pod restarted between
+        // the original cut and our resume. Keep the partial we have.
+        resumeOutcome = 'buffer-gone'
+        console.log(
+          `[ProjectChat] Resume returned 204 for session ${chatSessionId} — persisting partial (likely stop button or pod crash)`
+        )
+      } else {
+        resumeOutcome = 'failed'
+        console.warn(
+          `[ProjectChat] Resume returned unexpected status ${resumeRes.status} — persisting partial`
+        )
+        try { resumeRes.body?.cancel() } catch { /* noop */ }
+      }
+    }
   }
+
+  const inputTokens = usageRef.value?.promptTokens || 0
+  const outputTokens = usageRef.value?.completionTokens || 0
+  const totalTokens = usageRef.value?.totalTokens || (inputTokens + outputTokens)
+  const toolCallCount = toolCallMap.size
 
   let streamOutcome: string
   if (observedTurnComplete) {
-    streamOutcome = `complete (status=${turnCompleteStatus ?? 'unknown'})`
-  } else if (eofWithoutTurnComplete) {
-    streamOutcome = 'eof-without-turn-complete'
-  } else {
+    streamOutcome = resumeOutcome === 'recovered'
+      ? `complete via resume (status=${turnCompleteStatus ?? 'unknown'})`
+      : `complete (status=${turnCompleteStatus ?? 'unknown'})`
+  } else if (originalStreamErrored) {
     streamOutcome = 'interrupted'
+  } else if (resumeOutcome === 'buffer-gone') {
+    streamOutcome = 'partial (stop-or-crash)'
+  } else if (resumeOutcome === 'failed') {
+    streamOutcome = 'partial (resume-failed)'
+  } else if (resumeOutcome === 'not-attempted') {
+    streamOutcome = 'partial (no-resume-hook)'
+  } else {
+    streamOutcome = 'partial'
   }
 
   console.log(
     `[ProjectChat] 📊 Stream ${streamOutcome} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
-  // Usage billing is handled by the AI proxy billing session (opened before
-  // proxying, closed after stream completes in the route handler). When the
-  // upstream proxy cuts mid-turn (eofWithoutTurnComplete), discard the
-  // session without charging — the auto-resuming-fetch client will reconnect
-  // and the next successful turn will bill normally.
+  // Always close the billing session and charge what the AI proxy already
+  // counted in this session. When auto-resume succeeds, the resumed stream's
+  // continued AI proxy calls have accumulated into the same session before
+  // we close it, so the full turn bills correctly. When it returns 204 (stop
+  // button), we charge what the user actually consumed up to the cut.
   //
   // Set quality signals BEFORE closing the session so they reach
   // recordAgentCostMetric inside closeSession (closeSession deletes the
   // session before reading quality, so a post-close set would be a no-op).
   setQualitySignals(project.id, qualitySignals)
-  const { billedUsd } = await closeSession(project.id, {
-    discardPartial: eofWithoutTurnComplete,
-  })
+  const { billedUsd } = await closeSession(project.id, { discardPartial: false })
   if (billedUsd > 0) {
     console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
   }
 
-  // Persist assistant message first so we have a messageId for tool call logs.
+  // Persist whatever we accumulated. Partial rows are fine: the agent's
+  // next-turn context comes from the runtime's in-memory SessionManager
+  // (and its on-disk persistence), NOT from this `ChatMessage` table, so
+  // a truncated row only affects what the user sees on page reload — and
+  // that should be what they actually saw.
   let assistantMessageId: string | null = null
-
-  // When the stream EOF'd without a turn-complete marker we deliberately
-  // SKIP persistence: the runtime's `streamBufferStore` still holds the
-  // full turn, the client's auto-resuming-fetch reconnects via
-  // `?fromSeq=N`, and the resume path (which runs to completion or to a
-  // genuine error) will be the one that records the final assistant
-  // message. Persisting a "PARTIAL" row here just creates duplicate
-  // history entries that confuse the next turn.
-  if (eofWithoutTurnComplete) {
-    console.warn(
-      `[ProjectChat] Skipping partial persist for session ${chatSessionId ?? 'unknown'} — ` +
-      `awaiting client resume via /agent/chat/${chatSessionId ?? '<id>'}/stream?fromSeq=N`
-    )
-  } else if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
+  if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
     try {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (session) {
@@ -450,7 +555,10 @@ async function trackUsageFromStream(
           },
         })
         assistantMessageId = message.id
-        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
+        const partialTag = observedTurnComplete ? '' : ', partial'
+        console.log(
+          `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`
+        )
 
         prisma.project.update({
           where: { id: project.id },
@@ -463,9 +571,8 @@ async function trackUsageFromStream(
   }
 
   // Log tool calls with real args, results, duration, and the correct messageId.
-  // Skip logging when we abandoned persistence (eofWithoutTurnComplete) — the
-  // resume path will redo the same tool calls and we don't want duplicates.
-  if (toolCallMap.size > 0 && chatSessionId && !eofWithoutTurnComplete) {
+  // We log in the partial case too so debugging shows what the user actually saw.
+  if (toolCallMap.size > 0 && chatSessionId) {
     try {
       const session = assistantMessageId
         ? true
@@ -491,10 +598,12 @@ async function trackUsageFromStream(
   }
 
   // Auto-checkpoint: create a git snapshot when the agent modified files.
+  // Only checkpoint on a fully-completed turn — partials may have left the
+  // workspace in an inconsistent state if the agent was killed mid file-edit.
   // In Kubernetes the workspace lives on the agent pod, not on the API pod,
-  // so the local path doesn't exist. Skip silently instead of logging a warning
-  // on every streamed response.
-  if (hasFileModifyingTools(toolCallMap) && !streamInterrupted && isGitAvailable()) {
+  // so the local path doesn't exist. Skip silently instead of logging a
+  // warning on every streamed response.
+  if (hasFileModifyingTools(toolCallMap) && observedTurnComplete && !originalStreamErrored && isGitAvailable()) {
     const workspacePath = resolve(WORKSPACES_DIR, project.id)
     if (existsSync(workspacePath)) {
       const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')
@@ -1023,7 +1132,30 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // closeSession after the stream finishes. Mark the handoff so
           // our finally guard doesn't double-close.
           billingSessionHandedOff = true
-          trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
+          trackUsageFromStream(trackingStream, parsedBody, project, {
+            // Server-side auto-resume hook. When the original POST stream
+            // EOFs before `data-turn-complete`, the tracker reconnects
+            // here to drain the rest of the turn from the runtime's
+            // in-memory `streamBufferStore` so the full message lands in
+            // DB even if the client never reconnects (closed tab, etc.).
+            // `fetchFromRuntime` reuses the same project URL resolution +
+            // runtime token, so the resume hits the same pod that owns
+            // the buffer.
+            resume: async (fromSeq) => {
+              const sessionId = parsedBody?.chatSessionId
+              if (!sessionId) return null
+              try {
+                return await fetchFromRuntime(
+                  projectId,
+                  `/agent/chat/${encodeURIComponent(sessionId)}/stream?fromSeq=${fromSeq}`,
+                  { method: 'GET' },
+                )
+              } catch (err: any) {
+                console.warn(`[ProjectChat] Resume fetch failed for ${projectId}/${sessionId}:`, err?.message || err)
+                return null
+              }
+            },
+          }).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           )
 
