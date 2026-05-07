@@ -1,33 +1,31 @@
 # =============================================================================
 # iOS Build & Update Pipeline
 # =============================================================================
-# Mirrors android.yml but uses EAS Build cloud for the native build (iOS
-# builds require macOS — instead of paying for a GitHub macos-latest runner
-# we delegate to EAS Build, which provisions its own Mac and returns the IPA).
+# Mirrors android.yml. Native build runs on macos-latest with xcodebuild,
+# using a Distribution Certificate + Provisioning Profile injected from
+# GitHub Secrets — no EAS Build dependency, no Expo project access required
+# for the build. EAS Update is still used for OTA JS-only updates.
 #
 # Environments:
 #   staging    — push to main branch (auto OTA to staging channel)
 #   production — push ios-v* tag or manual dispatch with environment=production
 #
-# Automatic (push to main):
-#   - Resolves native fingerprint to detect if native deps changed
-#   - If fingerprint matches the last successful build → OTA update (eas update)
-#   - If fingerprint changed → full native build via EAS Build cloud
-#
-# Manual (workflow_dispatch):
-#   mode=full → fingerprint check, then build or OTA, with TestFlight submit
-#   mode=ota  → fingerprint check, OTA update only (skips build)
-#   environment=staging|production → controls OTA branch + EAS build profile
-#   Production builds always auto-submit to App Store Connect.
-#   Staging builds also submit to TestFlight (can be toggled off with submit=false).
+# Decision matrix (same logic as android.yml):
+#   - Tag push (ios-v*) → always full build + submit
+#   - Cache hit on fingerprint → OTA update only
+#   - mode=ota dispatch → OTA only
+#   - Otherwise → full build
 #
 # Required GitHub Secrets:
-#   EXPO_TOKEN                  - Expo token for eas build / update / submit
-#   APPLE_ID                    - Apple ID email for App Store Connect
-#   APPLE_ID_PASSWORD           - App-specific password (account.apple.com > App-Specific Passwords)
-#   APPLE_TEAM_ID               - 10-char Apple Developer Team ID
-#   EXPO_PUBLIC_SENTRY_DSN      - (optional) Sentry DSN for runtime
-#   SENTRY_AUTH_TOKEN           - (optional) Sentry auth token for source maps
+#   EXPO_TOKEN                          - Expo token (only used by OTA update job)
+#   APPLE_ID                            - Apple ID email
+#   APPLE_ID_PASSWORD                   - App-specific password (account.apple.com)
+#   APPLE_TEAM_ID                       - 10-char Apple Developer Team ID
+#   APPLE_CERTIFICATE_BASE64            - Base64 of the iOS Distribution .p12
+#   APPLE_CERTIFICATE_PASSWORD          - Password for the .p12
+#   APPLE_PROVISIONING_PROFILE_BASE64   - Base64 of the App Store .mobileprovision
+#   EXPO_PUBLIC_SENTRY_DSN              - (optional) Sentry DSN for runtime
+#   SENTRY_AUTH_TOKEN                   - (optional) Sentry auth token for source maps
 # =============================================================================
 
 name: iOS Build & Update
@@ -242,45 +240,41 @@ jobs:
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
-  # Full Native Build — delegated to EAS Build cloud
+  # Full Native Build — macOS runner with xcodebuild
   # ===========================================================================
   build:
-    name: iOS Build (EAS Cloud)
-    runs-on: ubuntu-latest
+    name: iOS Build (xcodebuild)
+    runs-on: macos-latest
     needs: check-fingerprint
     if: >
       needs.check-fingerprint.outputs.needs_build == 'true' &&
       github.event.inputs.mode != 'ota'
 
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Print Xcode version
+        run: xcodebuild -version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
-      - name: Cache bun dependencies
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            node_modules
-            ~/.bun/install/cache
-          key: bun-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-
-
       - name: Install dependencies
         run: bun install
 
       - name: Build workspace packages
         run: bun run build
-
-      - name: Setup EAS
-        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Sync app version and bump buildNumber
         working-directory: apps/mobile
@@ -302,30 +296,155 @@ jobs:
             console.log('Set version=' + appJson.expo.version + ' buildNumber=' + buildNumber);
           "
 
-      - name: Trigger EAS Build (iOS)
-        id: eas-build
+      - name: Expo prebuild iOS
         working-directory: apps/mobile
         env:
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: bunx expo prebuild --platform ios --clean
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install --repo-update
+
+      - name: Decode and install signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          PROFILE="${{ needs.check-fingerprint.outputs.environment }}"
-          echo "Triggering EAS Build for profile: $PROFILE"
-          eas build \
-            --platform ios \
-            --profile "$PROFILE" \
-            --non-interactive \
-            --json > eas-build.json
-          BUILD_ID=$(node -p "JSON.parse(require('fs').readFileSync('eas-build.json','utf8'))[0].id")
-          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
-          echo "EAS build id: $BUILD_ID"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 -d > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Make new keychain the default
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | xargs)
+
+          rm -f "$CERT_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> $GITHUB_ENV
+
+          echo "--- Available signing identities ---"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Decode and install provisioning profile
+        env:
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+
+          PROFILE_TMP="$RUNNER_TEMP/profile.mobileprovision"
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 -d > "$PROFILE_TMP"
+
+          # Extract metadata from the profile
+          PROFILE_PLIST=$(security cms -D -i "$PROFILE_TMP")
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<< "$PROFILE_PLIST")
+
+          cp "$PROFILE_TMP" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+          rm -f "$PROFILE_TMP"
+
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+          echo "PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
+          echo "Installed provisioning profile: $PROFILE_NAME ($PROFILE_UUID)"
+
+      - name: Stub sentry-cli if missing
+        run: |
+          if ! command -v sentry-cli &> /dev/null && [ ! -f node_modules/@sentry/cli/sentry-cli ]; then
+            echo "sentry-cli not available — creating no-op stub"
+            mkdir -p apps/mobile/ios/Pods/Sentry/scripts
+            cat > apps/mobile/ios/sentry-cli-stub.sh <<'EOF'
+          #!/bin/bash
+          echo "[sentry-cli stub] skipping: $@"
+          exit 0
+          EOF
+            chmod +x apps/mobile/ios/sentry-cli-stub.sh
+          fi
+
+      - name: Build archive
+        working-directory: apps/mobile/ios
+        env:
+          BUNDLE_ID: ai.shogo.mobile
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace Shogo.xcworkspace \
+            -scheme Shogo \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Shogo.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            | xcbeautify || exit ${PIPESTATUS[0]}
+
+      - name: Create exportOptions.plist
+        run: |
+          cat > "$RUNNER_TEMP/exportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>teamID</key>
+            <string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>ai.shogo.mobile</key>
+              <string>$PROFILE_NAME</string>
+            </dict>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>uploadBitcode</key>
+            <false/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>destination</key>
+            <string>export</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+          cat "$RUNNER_TEMP/exportOptions.plist"
+
+      - name: Export IPA
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Shogo.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
+            -allowProvisioningUpdates \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            | xcbeautify || exit ${PIPESTATUS[0]}
+
+          ls -la "$RUNNER_TEMP/export/"
+          IPA_PATH=$(ls "$RUNNER_TEMP/export/"*.ipa | head -1)
+          echo "IPA_PATH=$IPA_PATH" >> $GITHUB_ENV
+          echo "Built IPA: $IPA_PATH"
 
       - name: Save fingerprint to cache
         run: |
           RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
           if [ -z "$RUNTIME_VERSION" ] || [ "$RUNTIME_VERSION" = "unknown" ]; then
             RAW=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null || echo "manual-build")
-            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
+            RUNTIME_VERSION=$(echo "$RAW" | shasum -a 256 | cut -d' ' -f1)
           fi
           echo "$RUNTIME_VERSION" > .fingerprint-ios
 
@@ -335,6 +454,14 @@ jobs:
           path: .fingerprint-ios
           key: ios-fingerprint-${{ needs.check-fingerprint.outputs.environment }}-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
 
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Resolve submit decision
         id: submit-decision
         run: |
@@ -342,42 +469,41 @@ jobs:
           SUBMIT_INPUT="${{ github.event.inputs.submit }}"
           if [ "$ENV" = "production" ]; then
             echo "should_submit=true" >> $GITHUB_OUTPUT
-            echo "Production build → always submitting to App Store Connect"
           elif [ "$SUBMIT_INPUT" != "false" ]; then
             echo "should_submit=true" >> $GITHUB_OUTPUT
-            echo "Staging build → submitting to TestFlight"
           else
             echo "should_submit=false" >> $GITHUB_OUTPUT
-            echo "Submit skipped by user"
           fi
 
-      - name: Submit to App Store Connect
+      - name: Upload to App Store Connect (TestFlight)
         if: steps.submit-decision.outputs.should_submit == 'true'
-        working-directory: apps/mobile
-        env:
-          EXPO_APPLE_ID_USERNAME: ${{ secrets.APPLE_ID }}
-          EXPO_APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
         run: |
-          PROFILE="${{ needs.check-fingerprint.outputs.environment }}"
-          echo "Submitting build ${{ steps.eas-build.outputs.build_id }} via profile $PROFILE"
-          eas submit \
-            --platform ios \
-            --profile "$PROFILE" \
-            --id "${{ steps.eas-build.outputs.build_id }}" \
-            --non-interactive
+          xcrun altool --upload-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            -u "$APPLE_ID" \
+            -p "$APPLE_ID_PASSWORD" \
+            --verbose
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
 
       - name: Summary
         run: |
           echo "## iOS Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **EAS Build ID:** \`${{ steps.eas-build.outputs.build_id }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **buildNumber:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **buildNumber:** $((${{ github.run_number }} + 100))" >> $GITHUB_STEP_SUMMARY
+          echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'App Store Connect / TestFlight' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'TestFlight (App Store Connect)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
 
 
-# Manual triggers (after this lands on a branch GitHub knows about):
+# Manual triggers:
 #
 # Staging OTA
 # gh workflow run ios.yml --ref main -f mode=ota -f environment=staging
@@ -388,5 +514,5 @@ jobs:
 # Production full build + submit (App Store Connect)
 # gh workflow run ios.yml --ref main -f mode=full -f environment=production
 #
-# Full build, skip TestFlight submit
-# gh workflow run ios.yml --ref main -f mode=full -f environment=staging -f submit=false
+# Or via tag (auto-triggers production build + submit):
+# git tag ios-v0.1.1 && git push origin ios-v0.1.1
