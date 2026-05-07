@@ -29,7 +29,7 @@ function gtag(...args: unknown[]) {
   window.gtag?.(...args)
 }
 
-export function trackSignUp(method: 'email' | 'google') {
+export function trackSignUp(method: 'email' | 'google' | 'apple') {
   const eventId = generateEventId('signup')
 
   fbq('track', 'CompleteRegistration', {
@@ -40,7 +40,7 @@ export function trackSignUp(method: 'email' | 'google') {
   gtag('event', 'sign_up', { method })
 }
 
-export function trackLogin(method: 'email' | 'google') {
+export function trackLogin(method: 'email' | 'google' | 'apple') {
   fbq('track', 'Lead', {
     content_name: method,
   })

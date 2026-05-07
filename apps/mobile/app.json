@@ -2,7 +2,7 @@
   "expo": {
     "name": "Shogo",
     "slug": "shogo",
-    "version": "0.1.0",
+    "version": "1.0.4",
     "orientation": "default",
     "icon": "./assets/ic_shogo_legacy.png",
     "scheme": "shogo",
@@ -14,7 +14,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "ai.shogo.mobile"
+      "bundleIdentifier": "com.odin.ai",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -31,6 +34,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-apple-authentication",
       [
         "expo-image-picker",
         {
