@@ -135,6 +135,80 @@ function GoogleContinueButton({
   )
 }
 
+// ─── Sign in with Apple button ────────────────────────────────────────────────
+// Per Apple HIG (https://developer.apple.com/design/human-interface-guidelines/sign-in-with-apple):
+// - Black fill in light mode, white fill in dark mode (we mirror per `colorScheme`).
+// - Corner radius matches surrounding controls.
+// - Logo + "Continue with Apple" label, vertically centered.
+// - Logo height = ~43% of button height; label uses SF Pro / system font.
+function AppleLogoMark({ size = 18, color = '#FFFFFF' }: { size?: number; color?: string }) {
+  // Apple-glyph SVG path (public-domain rendition of the Apple Inc. logo).
+  // Sourced from Apple's Sign in with Apple resources package, simplified.
+  return (
+    <Svg width={size} height={size * (24 / 20)} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M16.365 1.43c0 1.14-.41 2.18-1.23 3.13-.99 1.13-2.18 1.79-3.47 1.69-.02-.13-.04-.27-.04-.43 0-1.09.47-2.26 1.3-3.18C13.74.7 14.83.04 16.32 0c.02.04.04.13.04.43.01.34.01.67.01 1zM21.6 17.55c-.5 1.16-.74 1.68-1.39 2.71-.91 1.43-2.19 3.21-3.78 3.22-1.42.02-1.78-.92-3.7-.91-1.92.01-2.32.93-3.74.92-1.59-.02-2.81-1.62-3.71-3.05C2.84 16.89 2.6 11.96 4.18 9.36c1.13-1.85 2.91-2.93 4.59-2.93 1.7 0 2.78.93 4.19.93 1.37 0 2.21-.93 4.19-.93 1.49 0 3.07.81 4.19 2.21-3.69 2.02-3.09 7.29.26 8.91z"
+        fill={color}
+      />
+    </Svg>
+  )
+}
+
+function AppleContinueButton({
+  onPress,
+  colorScheme,
+  disabled,
+}: {
+  onPress: () => void
+  colorScheme?: 'light' | 'dark'
+  disabled?: boolean
+}) {
+  const systemScheme = useColorScheme()
+  const resolved = colorScheme ?? (systemScheme === 'dark' ? 'dark' : 'light')
+  const isDark = resolved === 'dark'
+  const fill = isDark ? '#FFFFFF' : '#000000'
+  const fg = isDark ? '#000000' : '#FFFFFF'
+  return (
+    <Pressable
+      role="button"
+      accessibilityLabel="Continue with Apple"
+      accessibilityState={{ disabled }}
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => ({
+        width: '100%',
+        minHeight: 48,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 12,
+        paddingHorizontal: 24,
+        borderRadius: 16,
+        backgroundColor: fill,
+        borderWidth: isDark ? 1 : 0,
+        borderColor: isDark ? '#E5E5E5' : 'transparent',
+        opacity: disabled ? 0.5 : pressed ? 0.85 : 1,
+      })}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ marginRight: 10, marginTop: -2 }} accessible={false}>
+          <AppleLogoMark color={fg} />
+        </View>
+        <Text
+          style={{
+            fontSize: 14,
+            lineHeight: 20,
+            fontWeight: '500',
+            color: fg,
+          }}
+        >
+          Continue with Apple
+        </Text>
+      </View>
+    </Pressable>
+  )
+}
+
 const LOGIN_HERO_BREAKPOINT = 768
 
 /** Light veil only — form panel uses frosted bg; stack screen is transparent so photo must read clearly. */
@@ -147,6 +221,16 @@ export interface LoginScreenProps {
   onSignIn: (email: string, password: string) => Promise<void>
   onSignUp: (name: string, email: string, password: string) => Promise<void>
   onGoogleSignIn?: () => void
+  /**
+   * Optional Apple "Continue with Apple" handler. When provided, the screen
+   * renders a Sign in with Apple button alongside (or instead of) the Google
+   * one. Mobile (`apps/mobile`) gates this on `Platform.OS === 'ios'` to
+   * comply with App Store Guideline 4.8 — Apple requires Sign in with Apple
+   * as an equivalent option whenever the app offers third-party login on iOS.
+   * Android, web, and desktop intentionally don't pass this prop and continue
+   * showing only Google.
+   */
+  onAppleSignIn?: () => void
   /** Called when the user taps "Forgot password?" with the current email field value (may be empty). */
   onForgotPassword?: (email: string) => void | Promise<void>
   isLoading?: boolean
@@ -445,6 +529,7 @@ function MobileLoginPanel({
   onSignIn,
   onSignUp,
   onGoogleSignIn,
+  onAppleSignIn,
   onForgotPassword,
   isLoading,
   error,
@@ -579,14 +664,21 @@ function MobileLoginPanel({
                 : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
               }
 
-              {onGoogleSignIn ? (
+              {(onGoogleSignIn || onAppleSignIn) ? (
                 <>
                   <View className="flex-row items-center my-5">
                     <View className="flex-1"><Separator /></View>
                     <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
                     <View className="flex-1"><Separator /></View>
                   </View>
-                  <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+                  {onAppleSignIn ? (
+                    <View style={{ marginBottom: onGoogleSignIn ? 12 : 0 }}>
+                      <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
+                    </View>
+                  ) : null}
+                  {onGoogleSignIn ? (
+                    <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+                  ) : null}
                 </>
               ) : null}
             </CardContent>
@@ -609,7 +701,7 @@ const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
 
-function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
+function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
@@ -693,14 +785,21 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword
             : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
           }
 
-          {onGoogleSignIn ? (
+          {(onGoogleSignIn || onAppleSignIn) ? (
             <>
               <View className="flex-row items-center my-5">
                 <View className="flex-1"><Separator /></View>
                 <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
                 <View className="flex-1"><Separator /></View>
               </View>
-              <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+              {onAppleSignIn ? (
+                <View style={{ marginBottom: onGoogleSignIn ? 12 : 0 }}>
+                  <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
+                </View>
+              ) : null}
+              {onGoogleSignIn ? (
+                <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+              ) : null}
             </>
           ) : null}
         </View>

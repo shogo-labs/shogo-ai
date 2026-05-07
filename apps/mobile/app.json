@@ -14,7 +14,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "ai.shogo.mobile"
+      "bundleIdentifier": "ai.shogo.mobile",
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
@@ -31,6 +32,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-apple-authentication",
       [
         "expo-image-picker",
         {

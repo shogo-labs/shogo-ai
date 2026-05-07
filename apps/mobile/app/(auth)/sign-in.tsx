@@ -12,6 +12,8 @@ import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribut
 import { api, createHttpClient } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
+import * as AppleAuthentication from 'expo-apple-authentication'
+import * as Crypto from 'expo-crypto'
 
 /** App-root `require` so Metro web emits valid image URLs (shared-ui `require` can fail on web). */
 const LOGIN_HERO_LIGHT = require('../../assets/login/shogo-login3.jpg')
@@ -19,7 +21,7 @@ const LOGIN_HERO_DARK = require('../../assets/login/shogo-login3.jpg')
 
 export default function SignInScreen() {
   const router = useRouter()
-  const { signIn, signUp, signInWithGoogle, isLoading, error, clearError } = useAuth()
+  const { signIn, signUp, signInWithGoogle, signInWithApple, isLoading, error, clearError } = useAuth()
   const { features } = usePlatformConfig()
   const { theme } = useTheme()
   const systemColorScheme = useColorScheme()
@@ -50,7 +52,7 @@ export default function SignInScreen() {
     }
   }
 
-  const sendAttribution = async (method: 'email' | 'google') => {
+  const sendAttribution = async (method: 'email' | 'google' | 'apple') => {
     try {
       const attribution = getStoredAttribution()
       const http = createHttpClient()
@@ -75,6 +77,43 @@ export default function SignInScreen() {
   const handleGoogleSignIn = () => {
     try { sessionStorage.setItem('oauth_pending', 'google') } catch {}
     signInWithGoogle()
+  }
+
+  // App Store Guideline 4.8 — Login Services. Apple requires that any iOS
+  // app offering a third-party login (Google, etc.) also offers Sign in
+  // with Apple as an equivalent option. This handler runs the native
+  // Apple flow via expo-apple-authentication, then hands the resulting
+  // identity token to better-auth (server validates issuer/audience/sig
+  // against Apple JWKS, plus the SHA-256 nonce we generate here).
+  // Only wired on iOS — Android/web/desktop only show Google.
+  const handleAppleSignIn = async () => {
+    try {
+      const rawNonce = Array.from(Crypto.getRandomBytes(32))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('')
+      const hashedNonce = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        rawNonce,
+      )
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashedNonce,
+      })
+      if (!credential.identityToken) {
+        throw new Error('Apple did not return an identity token')
+      }
+      await signInWithApple({ idToken: credential.identityToken, nonce: rawNonce })
+      trackLogin('apple')
+      sendAttribution('apple')
+      try { router.replace(resolveNext() as any) } catch {}
+    } catch (e: any) {
+      if (e?.code === 'ERR_REQUEST_CANCELED') return
+      clearError()
+      Alert.alert('Apple sign-in failed', e?.message || 'Please try again.')
+    }
   }
 
   const handleForgotPassword = async (email: string) => {
@@ -105,6 +144,7 @@ export default function SignInScreen() {
         onSignUp={handleSignUp}
         onForgotPassword={handleForgotPassword}
         onGoogleSignIn={features.oauth ? handleGoogleSignIn : undefined}
+        onAppleSignIn={features.oauth && Platform.OS === 'ios' ? handleAppleSignIn : undefined}
         isLoading={isLoading}
         error={error}
         onClearError={clearError}
