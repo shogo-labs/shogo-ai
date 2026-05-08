@@ -655,16 +655,13 @@ async function runImport(
     )
   }
 
-  // ─── Auto-bootstrap (local mode only for now) ─────────────────────
-  // Run the steps a freshly-cloned project needs before its preview can boot:
-  // dependency install, route generation, schema push, health probe. K8s mode
-  // defers to the agent pod, which has its own lifecycle — we skip there.
-  if (options.runBootstrap !== false && !isKubernetes()) {
-    await runImportBootstrap(projectDir, emit)
-  } else if (options.runBootstrap !== false) {
-    await emit({ phase: 'bootstrap', step: 'install', status: 'skipped', message: 'k8s mode — pod handles bootstrap' })
-  }
-
+  // ─── Done before bootstrap ─────────────────────────────────────────
+  // Emit `done` *before* kicking off the auto-bootstrap so the importer can
+  // navigate to the new project immediately. Bootstrap (`bun install`,
+  // `bun run generate`, etc.) takes 1-3 minutes on a fresh project —
+  // gating "Open project" on it is the worst version of this flow. Project
+  // files and chats are on disk and the project row exists in Postgres;
+  // the project is openable.
   await emit({
     phase: 'done',
     project: projectSummary,
@@ -673,6 +670,55 @@ async function runImport(
     warnings: importWarnings,
     secretsAutoFilled,
   })
+
+  // ─── Auto-bootstrap (post-done, still SSE-streamed) ────────────────
+  // Bootstrap runs *after* `done` so the importer can navigate any time,
+  // but it's still awaited inside the SSE handler. That means:
+  //
+  //   - The SSE connection stays open as long as bootstrap is running, so
+  //     the import modal's "Setting up project" checklist (install →
+  //     generate → preview → health) keeps painting in real time.
+  //   - Per-step `emit` calls are wrapped in try/catch so a client that
+  //     navigates away (closing the modal → ending the SSE socket) doesn't
+  //     crash bootstrap — emits become no-ops and the spawned children
+  //     keep running until completion.
+  //   - K8s mode still skips local bootstrap entirely; the agent pod owns
+  //     its own dep install lifecycle (see `PreviewManager.installDepsIfNeeded`).
+  //
+  // Race note: if the user opens the project before bootstrap finishes
+  // installing, `PreviewManager` will start its own install on first
+  // preview boot. The two `bun install`s racing on the same
+  // `node_modules/` is the existing failure mode; this design doesn't
+  // introduce a new race. Proper fix is for bootstrap to write
+  // `.shogo/install-marker` (sha256 of package.json) after a successful
+  // install so PreviewManager skips its redundant pass — follow-up.
+  if (options.runBootstrap !== false && !isKubernetes()) {
+    try {
+      await runImportBootstrap(projectDir, async (ev) => {
+        try {
+          await emit(ev)
+        } catch {
+          // SSE stream closed — caller navigated away. Bootstrap continues.
+        }
+      })
+    } catch (err: any) {
+      console.error(
+        `[project-import] bootstrap for ${projectSummary.id} threw:`,
+        err?.message || err,
+      )
+    }
+  } else if (options.runBootstrap !== false) {
+    try {
+      await emit({
+        phase: 'bootstrap',
+        step: 'install',
+        status: 'skipped',
+        message: 'k8s mode — pod handles bootstrap',
+      })
+    } catch {
+      // SSE already closed; nothing to surface.
+    }
+  }
 
   return {
     ok: true,
@@ -691,6 +737,9 @@ async function runImport(
 //   - emits a `running` event
 //   - runs with a hard timeout
 //   - emits `ok` / `failed` (with stderr message)
+//   - logs the outcome so server logs are the source of truth — `emit`
+//     events typically reach a closed SSE stream now that the import
+//     response races ahead of bootstrap
 //   - failures are non-fatal — we keep going so the user at least gets a
 //     project they can fix manually
 //
@@ -700,6 +749,9 @@ async function runImportBootstrap(
   projectDir: string,
   emit: (ev: ImportEvent) => void | Promise<void>,
 ): Promise<void> {
+  const logPrefix = `[project-import:bootstrap ${projectDir.split('/').pop()}]`
+  console.log(`${logPrefix} starting background bootstrap`)
+  const bootstrapStart = Date.now()
   const exec = (
     cmd: string,
     args: string[],
@@ -737,7 +789,14 @@ async function runImportBootstrap(
   // Step: install
   if (hasPackageJson) {
     await emit({ phase: 'bootstrap', step: 'install', status: 'running' })
+    const t0 = Date.now()
     const r = await exec('bun', ['install', '--ignore-scripts'], 120_000)
+    const ms = Date.now() - t0
+    if (r.ok) {
+      console.log(`${logPrefix} install ok (${ms}ms)`)
+    } else {
+      console.error(`${logPrefix} install failed after ${ms}ms: ${r.message}`)
+    }
     await emit({
       phase: 'bootstrap',
       step: 'install',
@@ -745,13 +804,21 @@ async function runImportBootstrap(
       message: r.message,
     })
   } else {
+    console.log(`${logPrefix} install skipped (no package.json)`)
     await emit({ phase: 'bootstrap', step: 'install', status: 'skipped', message: 'no package.json' })
   }
 
   // Step: generate (routes, prisma client, etc.)
   if (hasPackageJson) {
     await emit({ phase: 'bootstrap', step: 'generate', status: 'running' })
+    const t0 = Date.now()
     const r = await exec('bun', ['run', 'generate'], 60_000)
+    const ms = Date.now() - t0
+    if (r.ok) {
+      console.log(`${logPrefix} generate ok (${ms}ms)`)
+    } else {
+      console.error(`${logPrefix} generate failed after ${ms}ms: ${r.message}`)
+    }
     await emit({
       phase: 'bootstrap',
       step: 'generate',
@@ -770,6 +837,7 @@ async function runImportBootstrap(
     writeFileSync(join(projectDir, '.install-ok'), new Date().toISOString())
     await emit({ phase: 'bootstrap', step: 'preview', status: 'ok' })
   } catch (err: any) {
+    console.error(`${logPrefix} preview marker write failed: ${err?.message}`)
     await emit({ phase: 'bootstrap', step: 'preview', status: 'failed', message: err?.message })
   }
 
@@ -790,12 +858,17 @@ async function runImportBootstrap(
       issues.push('schema.prisma missing generator block')
     }
   }
+  if (issues.length > 0) {
+    console.warn(`${logPrefix} health issues: ${issues.join('; ')}`)
+  }
   await emit({
     phase: 'bootstrap',
     step: 'health',
     status: issues.length === 0 ? 'ok' : 'failed',
     message: issues.length === 0 ? undefined : issues.join('; '),
   })
+
+  console.log(`${logPrefix} bootstrap finished in ${Date.now() - bootstrapStart}ms`)
 }
 
 export function projectExportImportRoutes() {
