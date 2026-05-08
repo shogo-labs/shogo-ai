@@ -695,7 +695,8 @@ function getPeriodStart(periodType: string): Date {
 // ============================================================================
 
 interface DailyAgg {
-  day: Date
+  /** Postgres returns a Date; SQLite's strftime() returns an ISO yyyy-mm-dd string. */
+  day: Date | string
   totalCost: number
   totalRuns: bigint
   model: string
@@ -710,9 +711,16 @@ export async function getCostTrends(
   const projectFilter = projectId ? Prisma.sql`AND "projectId" = ${projectId}` : Prisma.empty
 
   // Per-(day,model) aggregation — much smaller result set than `findMany`.
+  // SQLite (local mode) doesn't have DATE_TRUNC, so use strftime() there.
+  // Postgres uses DATE_TRUNC('day', …) which is timezone-stable.
+  const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
+  const dayExpr = isSqlite
+    ? Prisma.sql`strftime('%Y-%m-%d', "createdAt")`
+    : Prisma.sql`DATE_TRUNC('day', "createdAt")`
+
   const rows = await prisma.$queryRaw<DailyAgg[]>(Prisma.sql`
     SELECT
-      DATE_TRUNC('day', "createdAt") AS "day",
+      ${dayExpr} AS "day",
       SUM("creditCost")              AS "totalCost",
       COUNT(*)                        AS "totalRuns",
       "model"
@@ -726,7 +734,7 @@ export async function getCostTrends(
 
   const dayMap = new Map<string, { totalCost: number; totalRuns: number; byModel: Record<string, number> }>()
   for (const r of rows) {
-    const date = r.day.toISOString().split('T')[0]
+    const date = r.day instanceof Date ? r.day.toISOString().split('T')[0] : String(r.day)
     const existing = dayMap.get(date)
     const cost = Number(r.totalCost)
     const runs = Number(r.totalRuns)

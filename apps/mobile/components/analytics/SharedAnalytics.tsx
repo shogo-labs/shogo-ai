@@ -42,13 +42,16 @@ import {
 // Types
 // =============================================================================
 
-export type AnalyticsPeriod = '7d' | '30d' | '90d' | '1y'
+export type AnalyticsPeriod = '1d' | '7d' | '30d' | '90d' | '1y' | 'mtd' | 'last_month'
 
 export const PERIOD_LABELS: Record<AnalyticsPeriod, string> = {
+  '1d': '1 day',
   '7d': '7 days',
   '30d': '30 days',
   '90d': '90 days',
   '1y': '1 year',
+  'mtd': 'MTD',
+  'last_month': 'Last month',
 }
 
 export interface UsageSummaryEntry {
@@ -190,9 +193,12 @@ export function PeriodSelector({
   value: AnalyticsPeriod
   onChange: (p: AnalyticsPeriod) => void
 }) {
+  // Legacy selector — keep the four rolling-window pills only. The new
+  // dashboard uses `DateRangePills` which adds 1d / MTD / Last month.
+  const legacyPeriods: AnalyticsPeriod[] = ['7d', '30d', '90d', '1y']
   return (
     <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-      {(Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]).map((period) => {
+      {legacyPeriods.map((period) => {
         const isActive = value === period
         return (
           <Pressable

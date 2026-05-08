@@ -244,6 +244,24 @@ export const api = {
     return (res.data as any).data ?? res.data
   },
 
+  /**
+   * Build the absolute CSV download URL for a workspace's usage event log.
+   * Filters mirror `analytics/usage-log` (period, userId, model). The route
+   * sets `content-disposition: attachment` so the browser downloads it.
+   */
+  getUsageLogCsvUrl(
+    workspaceId: string,
+    params: { period?: string; userId?: string; model?: string; limit?: number } = {},
+  ): string {
+    const qs = new URLSearchParams()
+    if (params.period) qs.set('period', params.period)
+    if (params.userId) qs.set('userId', params.userId)
+    if (params.model) qs.set('model', params.model)
+    if (params.limit) qs.set('limit', String(params.limit))
+    const suffix = qs.toString()
+    return `${API_URL}/api/workspaces/${workspaceId}/analytics/usage-log.csv${suffix ? `?${suffix}` : ''}`
+  },
+
   async getMyAnalytics<T>(
     http: HttpClient,
     endpoint: string,
@@ -612,11 +630,41 @@ export const api = {
     return Array.isArray(items) ? items : []
   },
 
-  async getMemberUsageStats(http: HttpClient, workspaceId: string): Promise<{ monthly: Record<string, number>; total: Record<string, number> }> {
-    const res = await http.get<{ ok: boolean; data?: { monthly: Record<string, number>; total: Record<string, number> } }>(
-      `/api/workspaces/${workspaceId}/analytics/member-usage`,
-    )
-    return res.data?.data ?? { monthly: {}, total: {} }
+  /**
+   * Per-member USD usage for the People settings table.
+   *
+   * Returns the current-month spend split into the three buckets the new
+   * Members UI shows (Included / Free / On-Demand) plus the legacy
+   * `monthly` (sum of all three) and `total` (all-time) figures.
+   */
+  async getMemberUsageStats(
+    http: HttpClient,
+    workspaceId: string,
+  ): Promise<{
+    monthly: Record<string, number>
+    total: Record<string, number>
+    included: Record<string, number>
+    free: Record<string, number>
+    onDemand: Record<string, number>
+  }> {
+    const res = await http.get<{
+      ok: boolean
+      data?: {
+        monthly: Record<string, number>
+        total: Record<string, number>
+        included?: Record<string, number>
+        free?: Record<string, number>
+        onDemand?: Record<string, number>
+      }
+    }>(`/api/workspaces/${workspaceId}/analytics/member-usage`)
+    const data = res.data?.data
+    return {
+      monthly: data?.monthly ?? {},
+      total: data?.total ?? {},
+      included: data?.included ?? {},
+      free: data?.free ?? {},
+      onDemand: data?.onDemand ?? {},
+    }
   },
 
   // ─── Invitations ──────────────────────────────────────
