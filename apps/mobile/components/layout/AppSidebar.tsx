@@ -506,7 +506,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
             accessibilityLabel={`${user?.name || 'User'} — open user menu`}
             accessibilityHint="Opens menu with profile, appearance, and sign out options"
             accessibilityState={{ expanded: isOpen }}
-            className="flex-row items-center gap-2 active:opacity-80"
+            className="flex-row items-center gap-2 active:opacity-80 min-w-0 flex-1"
           >
             <Avatar
               fallback={getInitials(user?.name)}
@@ -514,7 +514,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
               size="sm"
             />
             {!collapsed && (
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+              <Text className="text-sm text-foreground flex-1 min-w-0" numberOfLines={1}>
                 {user?.name || 'User'}
               </Text>
             )}
@@ -545,7 +545,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         accessibilityLabel={`${user?.name || 'User'} — open user menu`}
         accessibilityHint="Opens menu with profile, appearance, and sign out options"
         accessibilityState={{ expanded: isOpen }}
-        className="flex-row items-center gap-2 active:opacity-80"
+        className="flex-row items-center gap-2 active:opacity-80 min-w-0 flex-1"
       >
         <Avatar
           fallback={getInitials(user?.name)}
@@ -553,7 +553,7 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
           size="sm"
         />
         {!collapsed && (
-          <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+          <Text className="text-sm text-foreground flex-1 min-w-0" numberOfLines={1}>
             {user?.name || 'User'}
           </Text>
         )}
@@ -1456,20 +1456,22 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             collapsed ? 'justify-center' : 'px-3'
           )}
         >
-          <UserMenu
-            user={user}
-            onSignOut={handleSignOut}
-            onNavigate={(href) => { router.push(href as any); onNavPress() }}
-            isSuperAdmin={isSuperAdmin}
-            isWide={isWide}
-            bottomInset={insets.bottom}
-            collapsed={collapsed}
-          />
+          <View className={cn(!collapsed && 'flex-1 min-w-0')}>
+            <UserMenu
+              user={user}
+              onSignOut={handleSignOut}
+              onNavigate={(href) => { router.push(href as any); onNavPress() }}
+              isSuperAdmin={isSuperAdmin}
+              isWide={isWide}
+              bottomInset={insets.bottom}
+              collapsed={collapsed}
+            />
+          </View>
 
           {!collapsed && (
             <Pressable
               onPress={() => setInboxOpen(true)}
-              className="relative p-1.5 rounded-md active:bg-muted"
+              className="relative p-1.5 rounded-md active:bg-muted shrink-0"
             >
               <Inbox size={18} className="text-muted-foreground" />
               {pendingInvites.length > 0 && (
