@@ -12,9 +12,16 @@ import {
   statSync,
 } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
+import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
+import {
+  encryptSecrets,
+  decryptSecrets,
+  parseEnvFile,
+  type EncryptedSecretsBlob,
+} from '../lib/bundle-crypto'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
@@ -32,12 +39,99 @@ const EXCLUDED_DIRS = new Set([
   '.expo',
 ])
 
+// Volatile, per-machine, or generated files we never want in a portable bundle:
+//   *-wal / *-shm  — SQLite write-ahead log + shared memory; volatile and may be
+//                    inconsistent if the writer hadn't checkpointed (`PRAGMA
+//                    wal_checkpoint`). The main `.db` is shipped on its own.
+//   .install-ok*   — per-machine install-state markers.
+//   .shogo-cwd-*   — transient shell-cwd markers leaked from preview tooling.
+const EXCLUDED_FILE_PATTERNS: RegExp[] = [
+  /-wal$/i,
+  /-shm$/i,
+  /^\.install-ok/,
+  /^\.shogo-cwd-/,
+]
+
+const isExcludedFile = (name: string): boolean =>
+  EXCLUDED_FILE_PATTERNS.some((re) => re.test(name))
+
+// Bundle format. Bumped to 1.1 with: manifest.json, requiredCredentials,
+// sanitized (secret-stripped) channels, defensive path normalisation, and
+// volatile-file exclusion. Importer accepts both 1.0 and 1.1.
+const BUNDLE_FORMAT_VERSION = '1.1'
+const SUPPORTED_BUNDLE_VERSIONS = new Set(['1.0', '1.1'])
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file
 const MAX_TOTAL_SIZE = 200 * 1024 * 1024 // 200 MB total bundle
+
+// Heuristic: any object key matching this pattern in `agentConfig.channels`
+// or any `.env*` file is treated as a secret — redacted from the export and
+// surfaced through `requiredCredentials` so the importer can fill it in
+// post-import. The pattern covers:
+//   - explicit secret words: token / secret / apikey / api_key / password / passwd
+//   - personal access tokens: PAT, GITHUB_PAT, ACCOUNT_PAT (anchored on word boundary)
+//   - OAuth flow tokens: bearer / client_secret / refresh_token / access_token
+//   - connection strings that typically embed credentials:
+//       DATABASE_URL, REDIS_URL, MONGO_URL, *_CONNECTION_STRING
+//   - private keys & SSH:  private_key / ssh_key / pem
+//   - signing & encryption: signing_secret / encryption_key
+const SECRET_KEY_PATTERN =
+  /token|secret|apikey|api_key|password|passwd|(^|_)pat$|webhook.*url|bearer|client[_-]?secret|refresh[_-]?token|access[_-]?token|database[_-]?url|redis[_-]?url|mongo[_-]?url|connection[_-]?string|private[_-]?key|ssh[_-]?key|signing[_-]?secret|encryption[_-]?key|\.pem$/i
+
+const isSecretKey = (key: string): boolean => SECRET_KEY_PATTERN.test(key)
+
+interface RequiredCredential {
+  channel: string
+  field: string
+  label: string
+}
+
+/**
+ * Returns a copy of `rawChannels` with all secret-looking string values
+ * replaced with `null`, plus a flat list of credentials the importer must
+ * provide post-import. Accepts the channels JSON in either parsed (array)
+ * or stringified form (Prisma SQLite returns Json columns as strings).
+ */
+function sanitizeChannelsForExport(rawChannels: unknown): {
+  sanitized: any[]
+  required: RequiredCredential[]
+} {
+  let parsed: any = rawChannels
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      parsed = []
+    }
+  }
+  if (!Array.isArray(parsed)) return { sanitized: [], required: [] }
+
+  const required: RequiredCredential[] = []
+  const sanitized = parsed.map((entry, idx) => {
+    if (!entry || typeof entry !== 'object') return entry
+    const channelType = entry.type || entry.channel || `channel-${idx}`
+    const out: Record<string, any> = {}
+    for (const [k, v] of Object.entries(entry)) {
+      if (typeof v === 'string' && v.length > 0 && isSecretKey(k)) {
+        out[k] = null
+        required.push({
+          channel: String(channelType),
+          field: k,
+          label: `${channelType}.${k}`,
+        })
+      } else {
+        out[k] = v
+      }
+    }
+    return out
+  })
+  return { sanitized, required }
+}
 
 function collectWorkspaceFiles(
   dir: string,
   baseDir: string,
+  skipped: Array<{ path: string; reason: string }> = [],
 ): Record<string, Uint8Array> {
   const files: Record<string, Uint8Array> = {}
   if (!existsSync(dir)) return files
@@ -45,20 +139,29 @@ function collectWorkspaceFiles(
   const entries = readdirSync(dir, { withFileTypes: true })
   for (const entry of entries) {
     if (EXCLUDED_DIRS.has(entry.name)) continue
-    if (entry.name.startsWith('.install-ok')) continue
 
     const fullPath = join(dir, entry.name)
     const relPath = relative(baseDir, fullPath).replace(/\\/g, '/')
 
     if (entry.isDirectory()) {
-      Object.assign(files, collectWorkspaceFiles(fullPath, baseDir))
+      Object.assign(files, collectWorkspaceFiles(fullPath, baseDir, skipped))
     } else if (entry.isFile()) {
+      if (isExcludedFile(entry.name)) {
+        skipped.push({ path: relPath, reason: 'excluded-pattern' })
+        continue
+      }
       try {
         const stat = statSync(fullPath)
-        if (stat.size > MAX_FILE_SIZE) continue
+        if (stat.size > MAX_FILE_SIZE) {
+          skipped.push({ path: relPath, reason: `size>${MAX_FILE_SIZE}` })
+          continue
+        }
         files[relPath] = new Uint8Array(readFileSync(fullPath))
-      } catch {
-        // skip unreadable files
+      } catch (err: any) {
+        skipped.push({
+          path: relPath,
+          reason: `read-error:${err?.message || 'unknown'}`,
+        })
       }
     }
   }
@@ -73,6 +176,15 @@ type ImportEvent =
   | { phase: 'createProject' }
   | { phase: 'writeFiles'; done: number; total: number }
   | { phase: 'importChats'; done: number; total: number }
+  // Auto-bootstrap phase: install deps / generate routes / health-check the
+  // imported workspace so the user lands on a project that *runs*. Each
+  // sub-step emits its own event with status: pending | running | ok | failed.
+  | {
+      phase: 'bootstrap'
+      step: 'install' | 'generate' | 'preview' | 'health'
+      status: 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
+      message?: string
+    }
   | {
       phase: 'done'
       project: { id: string; name: string; description: string | null }
@@ -82,6 +194,15 @@ type ImportEvent =
         chatsImported: number
         chatsSkipped: number
       }
+      // Populated when the bundle ships a `manifest.json` (v1.1+) or has
+      // requiredCredentials in `project.json`. Lets the import modal render
+      // a Setup Checklist instead of dumping the user into a broken agent.
+      requiredCredentials?: RequiredCredential[]
+      warnings?: string[]
+      // True when the bundle had `encryptedSecrets` AND we successfully
+      // decrypted with the supplied passphrase — the importer's UI uses this
+      // to skip the manual "fill in tokens" step.
+      secretsAutoFilled?: boolean
     }
   | { phase: 'error'; message: string; fatal: boolean }
 
@@ -109,6 +230,22 @@ interface ProjectBundle {
     quietHoursEnd?: string | null
     quietHoursTimezone?: string | null
   } | null
+  requiredCredentials?: RequiredCredential[]
+  encryptedSecrets?: EncryptedSecretsBlob
+}
+
+interface BundleManifest {
+  bundleVersion?: string
+  generatedAt?: string
+  sourceMode?: string
+  warnings?: string[]
+  files?: {
+    count?: number
+    totalBytes?: number
+    byCategory?: Record<string, number>
+    skipped?: Array<{ path: string; reason: string }>
+  }
+  requiredCredentialsCount?: number
 }
 
 type ImportResult =
@@ -121,6 +258,9 @@ type ImportResult =
         chatsImported: number
         chatsSkipped: number
       }
+      requiredCredentials: RequiredCredential[]
+      warnings: string[]
+      secretsAutoFilled: boolean
     }
   | { ok: false; status: 400 | 401 | 403 | 413; error: string }
 
@@ -128,7 +268,7 @@ async function runImport(
   zipBuffer: Uint8Array,
   workspaceId: string,
   userId: string,
-  options: { includeChats: boolean },
+  options: { includeChats: boolean; passphrase?: string; runBootstrap?: boolean },
   emit: (ev: ImportEvent) => void | Promise<void>,
 ): Promise<ImportResult> {
   // Verify user has access to the target workspace
@@ -164,6 +304,37 @@ async function runImport(
     return { ok: false, status: 400, error: 'Invalid project.json in bundle' }
   }
 
+  // Read manifest.json (v1.1+). Surface its warnings to the importer so they
+  // see, in real time, *why* a file was missing or skipped — instead of
+  // discovering the breakage at first run.
+  const importWarnings: string[] = []
+  let manifest: BundleManifest | null = null
+  if (unzipped['manifest.json']) {
+    try {
+      manifest = JSON.parse(strFromU8(unzipped['manifest.json'])) as BundleManifest
+      if (Array.isArray(manifest.warnings)) {
+        for (const w of manifest.warnings) {
+          importWarnings.push(w)
+          await emit({
+            phase: 'error',
+            message: `[bundle warning] ${w}`,
+            fatal: false,
+          })
+        }
+      }
+    } catch {
+      importWarnings.push('manifest.json present but unparseable')
+    }
+  }
+
+  // Bundle-version negotiation: warn (don't fail) on unknown formats so older
+  // clients can still try to import bundles produced by future API builds.
+  if (bundle.version && !SUPPORTED_BUNDLE_VERSIONS.has(bundle.version)) {
+    const msg = `Bundle format ${bundle.version} is not officially supported (this server understands ${[...SUPPORTED_BUNDLE_VERSIONS].join(', ')}); attempting import anyway.`
+    importWarnings.push(msg)
+    await emit({ phase: 'error', message: msg, fatal: false })
+  }
+
   await emit({ phase: 'parse' })
 
   const bp = bundle.project
@@ -192,15 +363,75 @@ async function runImport(
     },
   })
 
+  // ─── Decrypt opt-in secrets ──────────────────────────────────────
+  // If the bundle ships an `encryptedSecrets` blob and the importer supplied
+  // a passphrase, unlock it and use it to: (a) re-merge channel tokens, and
+  // (b) restore secret values inside `.env*` files after they're written.
+  // Both are best-effort — wrong passphrase becomes a non-fatal warning, and
+  // the importer can still complete via the manual Setup Checklist.
+  let decryptedSecrets:
+    | {
+        version: number
+        channels: Array<{ channel: string; field: string; value: string }>
+        env: Record<string, Record<string, string>>
+      }
+    | null = null
+  let secretsAutoFilled = false
+  if (bundle.encryptedSecrets && options.passphrase) {
+    try {
+      decryptedSecrets = await decryptSecrets(bundle.encryptedSecrets, options.passphrase)
+      secretsAutoFilled = true
+    } catch (err: any) {
+      await emit({
+        phase: 'error',
+        message: err?.message || 'Could not decrypt encryptedSecrets — passphrase may be wrong.',
+        fatal: false,
+      })
+      importWarnings.push(
+        'encryptedSecrets present but passphrase did not unlock — you will need to fill in credentials manually.',
+      )
+    }
+  } else if (bundle.encryptedSecrets && !options.passphrase) {
+    importWarnings.push(
+      'Bundle ships encryptedSecrets but no passphrase was provided — credentials will need to be configured manually.',
+    )
+  }
+
   {
     const ac = bundle.agentConfig
+    // v1.0 bundles double-encoded `channels` as a JSON string ("[]"); v1.1
+    // emits a real array. Parse strings here so the DB column stores an
+    // array, not a stringified array.
+    let channelsValue: any = ac?.channels ?? []
+    if (typeof channelsValue === 'string') {
+      try {
+        channelsValue = JSON.parse(channelsValue)
+      } catch {
+        channelsValue = []
+      }
+    }
+    if (!Array.isArray(channelsValue)) channelsValue = []
+
+    // Splice decrypted channel secrets back in by matching channel.type+field.
+    if (decryptedSecrets?.channels?.length) {
+      for (const secret of decryptedSecrets.channels) {
+        const target = channelsValue.find((ch: any) => {
+          const t = ch?.type || ch?.channel
+          return t === secret.channel
+        })
+        if (target && target[secret.field] === null) {
+          target[secret.field] = secret.value
+        }
+      }
+    }
+
     const agentData: Record<string, any> = {
       projectId: project.id,
       heartbeatInterval: ac?.heartbeatInterval ?? 1800,
       heartbeatEnabled: ac?.heartbeatEnabled ?? false,
       modelProvider: ac?.modelProvider ?? 'anthropic',
       modelName: ac?.modelName ?? 'claude-haiku-4-5',
-      channels: ac?.channels ?? [],
+      channels: channelsValue,
     }
     // PG-only fields — include only when present in the bundle
     if (ac) {
@@ -228,14 +459,29 @@ async function runImport(
 
   for (let i = 0; i < workspaceEntries.length; i++) {
     const [path, data] = workspaceEntries[i]
+    // Normalise backslashes — v1.0 bundles produced by old runtime pods used
+    // Windows-style separators that, written verbatim, became literal-
+    // backslash filenames on disk and broke memory/, .shogo/, src/ etc.
     const relPath = path.slice('workspace/'.length).replace(/\\/g, '/')
-    if (!relPath || relPath.includes('..') || relPath.startsWith('/')) {
+    if (
+      !relPath ||
+      relPath.includes('..') ||
+      relPath.startsWith('/') ||
+      /^[a-zA-Z]:\//.test(relPath) // reject Windows drive-absolute paths
+    ) {
       filesSkipped++
       await emit({
         phase: 'error',
         message: `Skipped unsafe path: ${path}`,
         fatal: false,
       })
+      continue
+    }
+    // Drop volatile / per-machine files that should never have shipped (in
+    // case an old or third-party bundle includes them).
+    const baseName = relPath.split('/').pop() || ''
+    if (isExcludedFile(baseName)) {
+      filesSkipped++
       continue
     }
 
@@ -258,6 +504,35 @@ async function runImport(
     // client gets a smooth progress bar without flooding the SSE stream.
     if ((i + 1) % 25 === 0 || i === workspaceEntries.length - 1) {
       await emit({ phase: 'writeFiles', done: i + 1, total: totalFiles })
+    }
+  }
+
+  // ─── Restore decrypted .env values ────────────────────────────────
+  // The bundle's `.env*` files were sanitised at export time (secret values
+  // blanked). When we successfully decrypted the secrets blob, splice the
+  // original values back into the on-disk `.env*` files now that they exist.
+  if (decryptedSecrets?.env) {
+    for (const [zipPath, kv] of Object.entries(decryptedSecrets.env)) {
+      // zipPath is like `workspace/.env` — convert to a real on-disk path.
+      const rel = zipPath.replace(/^workspace\//, '').replace(/\\/g, '/')
+      const fullPath = join(projectDir, rel)
+      if (!existsSync(fullPath)) continue
+      try {
+        const text = readFileSync(fullPath, 'utf8')
+        const lines = parseEnvFile(text)
+        const restored = lines.map((line) => {
+          if (line.isComment || !line.key) return line.raw
+          if (kv[line.key] !== undefined) return `${line.key}=${kv[line.key]}`
+          return line.raw
+        })
+        writeFileSync(fullPath, restored.join('\n'))
+      } catch (err: any) {
+        await emit({
+          phase: 'error',
+          message: `Could not restore secrets into ${rel}: ${err?.message || 'unknown'}`,
+          fatal: false,
+        })
+      }
     }
   }
 
@@ -348,9 +623,179 @@ async function runImport(
     description: project.description,
   }
 
-  await emit({ phase: 'done', project: projectSummary, stats })
+  // Surface the requiredCredentials carried in project.json (v1.1+) so the
+  // import modal can render a Setup Checklist instead of leaving the user
+  // with an agent that can't talk to Telegram / OpenAI / etc.
+  const requiredCredentials = Array.isArray(bundle.requiredCredentials)
+    ? bundle.requiredCredentials
+    : []
 
-  return { ok: true, project: projectSummary, stats }
+  // Post-import sanity checks → warnings. These are the things the user is
+  // most likely to discover at first run: no memory, no skills, no .env.
+  const projectDirAbs = resolve(projectDir)
+  if (!existsSync(join(projectDirAbs, 'memory', 'MEMORY.md')) && !existsSync(join(projectDirAbs, 'MEMORY.md'))) {
+    importWarnings.push(
+      'No MEMORY.md found in workspace — agent will start with empty memory.',
+    )
+  }
+  // If we successfully auto-filled secrets, the items they covered no longer
+  // need to appear on the Setup Checklist.
+  let pendingCredentials = requiredCredentials
+  if (decryptedSecrets) {
+    const filled = new Set<string>()
+    for (const s of decryptedSecrets.channels || []) filled.add(`${s.channel}.${s.field}`)
+    for (const [zipPath, kv] of Object.entries(decryptedSecrets.env || {})) {
+      for (const k of Object.keys(kv)) filled.add(`${zipPath.replace(/^workspace\//, '')}.${k}`)
+    }
+    pendingCredentials = requiredCredentials.filter((c) => !filled.has(c.label))
+  }
+  if (pendingCredentials.length > 0) {
+    importWarnings.push(
+      `${pendingCredentials.length} credential(s) need to be configured: ${pendingCredentials.map((c) => c.label).join(', ')}.`,
+    )
+  }
+
+  // ─── Auto-bootstrap (local mode only for now) ─────────────────────
+  // Run the steps a freshly-cloned project needs before its preview can boot:
+  // dependency install, route generation, schema push, health probe. K8s mode
+  // defers to the agent pod, which has its own lifecycle — we skip there.
+  if (options.runBootstrap !== false && !isKubernetes()) {
+    await runImportBootstrap(projectDir, emit)
+  } else if (options.runBootstrap !== false) {
+    await emit({ phase: 'bootstrap', step: 'install', status: 'skipped', message: 'k8s mode — pod handles bootstrap' })
+  }
+
+  await emit({
+    phase: 'done',
+    project: projectSummary,
+    stats,
+    requiredCredentials: pendingCredentials,
+    warnings: importWarnings,
+    secretsAutoFilled,
+  })
+
+  return {
+    ok: true,
+    project: projectSummary,
+    stats,
+    requiredCredentials: pendingCredentials,
+    warnings: importWarnings,
+    secretsAutoFilled,
+  }
+}
+
+// ─── runImportBootstrap ─────────────────────────────────────────────
+//
+// Spawns the post-import setup steps so the user lands on a project that
+// actually runs. Each step:
+//   - emits a `running` event
+//   - runs with a hard timeout
+//   - emits `ok` / `failed` (with stderr message)
+//   - failures are non-fatal — we keep going so the user at least gets a
+//     project they can fix manually
+//
+// When `package.json` doesn't exist in the bundle, install/generate are
+// skipped silently. Same for schema.prisma → prisma push.
+async function runImportBootstrap(
+  projectDir: string,
+  emit: (ev: ImportEvent) => void | Promise<void>,
+): Promise<void> {
+  const exec = (
+    cmd: string,
+    args: string[],
+    timeoutMs: number,
+  ): Promise<{ ok: boolean; message?: string }> =>
+    new Promise((resolveExec) => {
+      try {
+        const proc = spawn(cmd, args, { cwd: projectDir, stdio: ['ignore', 'pipe', 'pipe'] })
+        let stderr = ''
+        proc.stderr?.on('data', (chunk) => {
+          stderr += chunk.toString()
+          if (stderr.length > 4000) stderr = stderr.slice(-4000)
+        })
+        const t = setTimeout(() => {
+          proc.kill('SIGKILL')
+          resolveExec({ ok: false, message: `${cmd} timed out after ${timeoutMs / 1000}s` })
+        }, timeoutMs)
+        proc.on('close', (code) => {
+          clearTimeout(t)
+          if (code === 0) resolveExec({ ok: true })
+          else resolveExec({ ok: false, message: stderr.trim().split('\n').slice(-3).join(' | ') || `exit ${code}` })
+        })
+        proc.on('error', (err) => {
+          clearTimeout(t)
+          resolveExec({ ok: false, message: err.message })
+        })
+      } catch (err: any) {
+        resolveExec({ ok: false, message: err?.message || 'spawn failed' })
+      }
+    })
+
+  const hasPackageJson = existsSync(join(projectDir, 'package.json'))
+  const hasPrisma = existsSync(join(projectDir, 'prisma', 'schema.prisma'))
+
+  // Step: install
+  if (hasPackageJson) {
+    await emit({ phase: 'bootstrap', step: 'install', status: 'running' })
+    const r = await exec('bun', ['install', '--ignore-scripts'], 120_000)
+    await emit({
+      phase: 'bootstrap',
+      step: 'install',
+      status: r.ok ? 'ok' : 'failed',
+      message: r.message,
+    })
+  } else {
+    await emit({ phase: 'bootstrap', step: 'install', status: 'skipped', message: 'no package.json' })
+  }
+
+  // Step: generate (routes, prisma client, etc.)
+  if (hasPackageJson) {
+    await emit({ phase: 'bootstrap', step: 'generate', status: 'running' })
+    const r = await exec('bun', ['run', 'generate'], 60_000)
+    await emit({
+      phase: 'bootstrap',
+      step: 'generate',
+      status: r.ok ? 'ok' : 'failed',
+      message: r.ok ? undefined : r.message,
+    })
+  } else {
+    await emit({ phase: 'bootstrap', step: 'generate', status: 'skipped' })
+  }
+
+  // Step: preview (just touch the `.install-ok` marker so preview manager
+  // picks the project up immediately on next request — actual `bun run dev`
+  // is owned by the preview manager, not us).
+  await emit({ phase: 'bootstrap', step: 'preview', status: 'running' })
+  try {
+    writeFileSync(join(projectDir, '.install-ok'), new Date().toISOString())
+    await emit({ phase: 'bootstrap', step: 'preview', status: 'ok' })
+  } catch (err: any) {
+    await emit({ phase: 'bootstrap', step: 'preview', status: 'failed', message: err?.message })
+  }
+
+  // Step: health (cheap structural sanity check — does package.json parse,
+  // does schema.prisma parse, does memory/ exist?). No HTTP calls; just disk.
+  await emit({ phase: 'bootstrap', step: 'health', status: 'running' })
+  const issues: string[] = []
+  if (hasPackageJson) {
+    try {
+      JSON.parse(readFileSync(join(projectDir, 'package.json'), 'utf8'))
+    } catch {
+      issues.push('package.json failed to parse')
+    }
+  }
+  if (hasPrisma) {
+    const schemaText = readFileSync(join(projectDir, 'prisma', 'schema.prisma'), 'utf8')
+    if (!/^\s*generator\s+client\s*\{/m.test(schemaText)) {
+      issues.push('schema.prisma missing generator block')
+    }
+  }
+  await emit({
+    phase: 'bootstrap',
+    step: 'health',
+    status: issues.length === 0 ? 'ok' : 'failed',
+    message: issues.length === 0 ? undefined : issues.join('; '),
+  })
 }
 
 export function projectExportImportRoutes() {
@@ -362,6 +807,16 @@ export function projectExportImportRoutes() {
     const projectId = c.req.param('projectId')
     // Default to including chats; only "false" disables.
     const includeChats = c.req.query('includeChats') !== 'false'
+    // Encrypted-secrets opt-in. When `passphrase` is supplied, channel tokens
+    // and `.env` secret values are bundled inside an `encryptedSecrets` blob
+    // (AES-256-GCM, PBKDF2-derived key) instead of being dropped entirely.
+    const passphrase = c.req.query('passphrase') || ''
+    const includeSecrets = !!passphrase
+    // `.env` policy. Default = smart-split (redact secrets, ship `.env.example`
+    // showing keys only). `?includeEnv=true` falls back to passthrough — the
+    // raw .env files travel verbatim. Only respected when paired with a
+    // passphrase OR when the operator explicitly opts in.
+    const includeEnvRaw = c.req.query('includeEnv') === 'true'
 
     const project = await prisma.project.findUnique({
       where: { id: projectId },
@@ -395,13 +850,19 @@ export function projectExportImportRoutes() {
       }
     }
 
+    // Parse channels: Prisma SQLite returns Json columns as strings, while
+    // Postgres returns parsed values. Strip secrets and capture them as
+    // requiredCredentials so the importer is told what to fill in.
+    const { sanitized: sanitizedChannels, required: requiredCredentials } =
+      sanitizeChannelsForExport(project.agentConfig?.channels)
+
     const agentConfigExport: Record<string, any> | null = project.agentConfig
       ? {
           heartbeatInterval: project.agentConfig.heartbeatInterval,
           heartbeatEnabled: project.agentConfig.heartbeatEnabled,
           modelProvider: project.agentConfig.modelProvider,
           modelName: project.agentConfig.modelName,
-          channels: project.agentConfig.channels,
+          channels: sanitizedChannels,
         }
       : null
 
@@ -414,7 +875,7 @@ export function projectExportImportRoutes() {
     }
 
     const projectJson = {
-      version: '1.0',
+      version: BUNDLE_FORMAT_VERSION,
       exportedAt: new Date().toISOString(),
       includedChats: includeChats,
       project: {
@@ -430,31 +891,179 @@ export function projectExportImportRoutes() {
         siteDescription: project.siteDescription,
       },
       agentConfig: agentConfigExport,
+      requiredCredentials,
     }
 
     const zipContents: Record<string, Uint8Array> = {}
 
     zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
 
+    // Track export hygiene for the manifest (and so `done`/import can surface
+    // it). `sourceMode` records whether files came from the live agent pod
+    // (k8s) or directly from disk (local), and `fileSkipped` lists what we
+    // intentionally dropped.
+    const fileSkipped: Array<{ path: string; reason: string }> = []
+    const exportWarnings: string[] = []
+    let sourceMode: 'k8s' | 'k8s-fallback-empty' | 'local' = 'local'
+
     if (isKubernetes()) {
+      sourceMode = 'k8s'
       try {
         const { getProjectPodUrl } = await import('../lib/knative-project-manager')
         const podUrl = await getProjectPodUrl(projectId)
         const agent = new AgentClient({ baseUrl: podUrl })
         const bundle: WorkspaceBundle = await agent.getWorkspaceBundle()
-        for (const [relPath, base64Data] of Object.entries(bundle.files)) {
+        const bundleFiles =
+          bundle && typeof bundle === 'object' && bundle.files && typeof bundle.files === 'object'
+            ? bundle.files
+            : {}
+        if (Object.keys(bundleFiles).length === 0) {
+          exportWarnings.push(
+            'Runtime pod returned an empty workspace bundle; the agent may be cold-starting or have no files yet.',
+          )
+        }
+
+        // Defensive normalisation: older runtime pods returned Windows-style
+        // backslash paths (e.g. `memory\2026-04-09.md`) which, when zipped
+        // verbatim, became literal-backslash filenames after extraction —
+        // breaking memory/, .shogo/, src/ etc. on the importer's machine.
+        // The runtime is fixed (server.ts collectBundleFiles), but old pods
+        // may still be live: normalise here so the bundle is always sane.
+        let backslashCount = 0
+        for (const [rawRelPath, base64Data] of Object.entries(bundleFiles)) {
+          const relPath = rawRelPath.replace(/\\/g, '/')
+          if (relPath !== rawRelPath) backslashCount++
+
+          const baseName = relPath.split('/').pop() || ''
+          if (isExcludedFile(baseName)) {
+            fileSkipped.push({ path: relPath, reason: 'excluded-pattern' })
+            continue
+          }
           zipContents[`workspace/${relPath}`] = new Uint8Array(
             Buffer.from(base64Data, 'base64'),
           )
         }
+        if (backslashCount > 0) {
+          exportWarnings.push(
+            `Runtime pod returned ${backslashCount} workspace path(s) with backslash separators; normalised on the API side. The pod build may be outdated.`,
+          )
+        }
       } catch (err: any) {
-        console.warn(`[Export] Could not reach agent pod for workspace files: ${err.message}`)
+        sourceMode = 'k8s-fallback-empty'
+        exportWarnings.push(
+          `Could not reach agent pod for workspace files: ${err?.message || 'unknown error'}`,
+        )
+        console.warn(
+          `[Export] Could not reach agent pod for workspace files: ${err.message}`,
+        )
       }
     } else {
       const workspaceDir = join(WORKSPACES_DIR, projectId)
-      const workspaceFiles = collectWorkspaceFiles(workspaceDir, workspaceDir)
+      const workspaceFiles = collectWorkspaceFiles(
+        workspaceDir,
+        workspaceDir,
+        fileSkipped,
+      )
       for (const [relPath, data] of Object.entries(workspaceFiles)) {
         zipContents[`workspace/${relPath}`] = data
+      }
+    }
+
+    // ─── .env smart-split ──────────────────────────────────────────────
+    // Walk every workspace/.env* file we just bundled. For each one:
+    //   - If the user opted into raw .env passthrough, leave it untouched.
+    //   - Otherwise redact every secret-looking key, ship a sanitised copy
+    //     under the same path, and add the redacted keys to requiredCredentials
+    //     so the importer is told what's missing. The original *values* are
+    //     captured into `envSecretsByFile` so they can travel inside the
+    //     optional encryptedSecrets blob (when a passphrase is supplied).
+    const envSecretsByFile: Record<string, Record<string, string>> = {}
+    if (!includeEnvRaw) {
+      const envPaths = Object.keys(zipContents).filter((k) => {
+        if (!k.startsWith('workspace/')) return false
+        const base = k.split('/').pop() || ''
+        return base === '.env' || base.startsWith('.env.')
+      })
+      for (const zipPath of envPaths) {
+        const text = strFromU8(zipContents[zipPath])
+        const lines = parseEnvFile(text)
+        const fileSecrets: Record<string, string> = {}
+        const sanitised: string[] = []
+        for (const line of lines) {
+          if (line.isComment || !line.key) {
+            sanitised.push(line.raw)
+            continue
+          }
+          if (isSecretKey(line.key) && line.value.length > 0) {
+            fileSecrets[line.key] = line.value
+            sanitised.push(`${line.key}=`)
+            requiredCredentials.push({
+              channel: zipPath.replace(/^workspace\//, ''),
+              field: line.key,
+              label: `env.${line.key}`,
+            })
+          } else {
+            sanitised.push(line.raw)
+          }
+        }
+        zipContents[zipPath] = strToU8(sanitised.join('\n'))
+        if (Object.keys(fileSecrets).length > 0) {
+          envSecretsByFile[zipPath] = fileSecrets
+          // Also ship a `.env.example` next to the original — values blanked,
+          // keys preserved — so the importer has a one-glance reference.
+          const exampleLines = lines.map((l) =>
+            l.isComment || !l.key ? l.raw : `${l.key}=`,
+          )
+          const examplePath = `${zipPath}.example`
+          if (!zipContents[examplePath]) {
+            zipContents[examplePath] = strToU8(exampleLines.join('\n'))
+          }
+        }
+      }
+    }
+
+    // ─── Encrypted secrets blob (opt-in) ───────────────────────────────
+    // When a passphrase is supplied, restore the *original* channel tokens and
+    // the redacted .env values (which we kept in memory only) inside an
+    // AES-GCM-encrypted blob attached to project.json. The importer can unlock
+    // it with the same passphrase to auto-fill credentials.
+    if (includeSecrets) {
+      // Re-derive the original channel secrets — we need them BEFORE
+      // sanitizeChannelsForExport stripped them. Parse the raw JSON again.
+      let rawChannels: any = project.agentConfig?.channels
+      if (typeof rawChannels === 'string') {
+        try { rawChannels = JSON.parse(rawChannels) } catch { rawChannels = [] }
+      }
+      const channelSecrets: Array<{ channel: string; field: string; value: string }> = []
+      if (Array.isArray(rawChannels)) {
+        rawChannels.forEach((entry: any, idx: number) => {
+          if (!entry || typeof entry !== 'object') return
+          const channelType = entry.type || entry.channel || `channel-${idx}`
+          for (const [k, v] of Object.entries(entry)) {
+            if (typeof v === 'string' && v.length > 0 && isSecretKey(k)) {
+              channelSecrets.push({ channel: String(channelType), field: k, value: v })
+            }
+          }
+        })
+      }
+
+      const secretsPayload = {
+        version: 1,
+        channels: channelSecrets,
+        env: envSecretsByFile,
+      }
+      try {
+        const blob: EncryptedSecretsBlob = await encryptSecrets(
+          secretsPayload,
+          passphrase,
+        )
+        ;(projectJson as any).encryptedSecrets = blob
+        // Re-emit project.json with the new field.
+        zipContents['project.json'] = strToU8(JSON.stringify(projectJson, null, 2))
+      } catch (err: any) {
+        exportWarnings.push(
+          `Encrypted-secrets opt-in failed (${err?.message || 'unknown'}); bundle shipped without secrets.`,
+        )
       }
     }
 
@@ -480,6 +1089,44 @@ export function projectExportImportRoutes() {
         JSON.stringify(sessionData, null, 2),
       )
     }
+
+    // ─── Bundle manifest ────────────────────────────────────────────
+    // Self-describing inventory + warnings + provenance. Lives at the bundle
+    // root so the importer can show a setup summary and so future bug reports
+    // ("file X went missing") are diagnosable from the bundle alone.
+    const inventory: Record<string, number> = {}
+    let totalBytes = 0
+    for (const [path, data] of Object.entries(zipContents)) {
+      totalBytes += data.byteLength
+      const top = path.startsWith('workspace/')
+        ? 'workspace'
+        : path.startsWith('chat-history/')
+          ? 'chat-history'
+          : path === 'project.json'
+            ? 'project-meta'
+            : 'other'
+      inventory[top] = (inventory[top] || 0) + 1
+    }
+
+    const manifest = {
+      bundleVersion: BUNDLE_FORMAT_VERSION,
+      generatedAt: new Date().toISOString(),
+      sourceMode,
+      files: {
+        count: Object.keys(zipContents).length + 1, // +1 for manifest itself
+        totalBytes,
+        byCategory: inventory,
+        skipped: fileSkipped,
+      },
+      chats: {
+        included: chatSessions.length,
+      },
+      requiredCredentialsCount: requiredCredentials.length,
+      hasEncryptedSecrets: includeSecrets && !!(projectJson as any).encryptedSecrets,
+      envPolicy: includeEnvRaw ? 'passthrough' : 'smart-split',
+      warnings: exportWarnings,
+    }
+    zipContents['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2))
 
     const zipped = zipSync(zipContents, { level: 6 })
 
@@ -522,6 +1169,8 @@ export function projectExportImportRoutes() {
     let zipBuffer: Uint8Array
     let workspaceId: string
     let includeChats: boolean
+    let passphrase: string
+    let runBootstrap: boolean
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await c.req.formData()
@@ -529,6 +1178,10 @@ export function projectExportImportRoutes() {
       workspaceId = (formData.get('workspaceId') as string) || ''
       const includeChatsRaw = (formData.get('includeChats') as string | null) ?? 'true'
       includeChats = includeChatsRaw !== 'false'
+      passphrase = (formData.get('passphrase') as string | null) || ''
+      // Bootstrap defaults ON; client can opt out with `runBootstrap=false`.
+      const bootstrapRaw = (formData.get('runBootstrap') as string | null) ?? 'true'
+      runBootstrap = bootstrapRaw !== 'false'
 
       if (!file) {
         return c.json({ error: 'Missing file in form data' }, 400)
@@ -556,7 +1209,7 @@ export function projectExportImportRoutes() {
             zipBuffer,
             workspaceId,
             userId,
-            { includeChats },
+            { includeChats, passphrase, runBootstrap },
             async (ev) => {
               if (ev.phase === 'error') {
                 await stream.writeSSE({
@@ -566,7 +1219,13 @@ export function projectExportImportRoutes() {
               } else if (ev.phase === 'done') {
                 await stream.writeSSE({
                   event: 'done',
-                  data: JSON.stringify({ project: ev.project, stats: ev.stats }),
+                  data: JSON.stringify({
+                    project: ev.project,
+                    stats: ev.stats,
+                    requiredCredentials: ev.requiredCredentials ?? [],
+                    warnings: ev.warnings ?? [],
+                    secretsAutoFilled: ev.secretsAutoFilled ?? false,
+                  }),
                 })
               } else {
                 await stream.writeSSE({
@@ -600,7 +1259,7 @@ export function projectExportImportRoutes() {
         zipBuffer,
         workspaceId,
         userId,
-        { includeChats },
+        { includeChats, passphrase, runBootstrap },
         () => {
           /* drop events */
         },
@@ -616,7 +1275,13 @@ export function projectExportImportRoutes() {
         return c.json({ error: result.error }, result.status)
       }
 
-      return c.json({ project: result.project })
+      return c.json({
+        project: result.project,
+        stats: result.stats,
+        requiredCredentials: result.requiredCredentials,
+        warnings: result.warnings,
+        secretsAutoFilled: result.secretsAutoFilled,
+      })
     } catch (err: any) {
       return c.json({ error: err?.message || 'Import failed' }, 500)
     }
