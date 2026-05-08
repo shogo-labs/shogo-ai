@@ -195,7 +195,16 @@ describe('Project Export/Import E2E', () => {
     // project.json exists and has correct data
     expect(unzipped['project.json']).toBeDefined()
     const projectJson = JSON.parse(strFromU8(unzipped['project.json']))
-    expect(projectJson.version).toBe('1.0')
+    // Bundle format bumped to 1.1 (adds manifest.json, requiredCredentials,
+    // sanitized channels, defensive path normalisation, WAL/junk exclusion).
+    expect(projectJson.version).toBe('1.1')
+    expect(Array.isArray(projectJson.requiredCredentials)).toBe(true)
+    // manifest.json is now part of every bundle
+    expect(unzipped['manifest.json']).toBeDefined()
+    const manifest = JSON.parse(strFromU8(unzipped['manifest.json']))
+    expect(manifest.bundleVersion).toBe('1.1')
+    expect(['k8s', 'local', 'k8s-fallback-empty']).toContain(manifest.sourceMode)
+    expect(manifest.files.byCategory).toBeDefined()
     expect(projectJson.project.name).toBe('E2E Export Test Project')
     expect(projectJson.project.description).toBe('Created by e2e test')
     expect(projectJson.project.tier).toBe('starter')

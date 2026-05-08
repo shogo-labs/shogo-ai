@@ -1002,12 +1002,18 @@ function ProjectMenuView({
   const showBilling = features.billing
   const usdPercent = usdTotal > 0 ? (usdRemaining / usdTotal) * 100 : 0
 
-  const runExport = useCallback(async (options: { includeChats: boolean }) => {
+  const runExport = useCallback(async (options: {
+    includeChats: boolean
+    passphrase?: string
+    includeEnv?: boolean
+  }) => {
     if (isExporting) return
     setIsExporting(true)
     try {
       const { blob, filename } = await api.exportProjectBlob(projectId, {
         includeChats: options.includeChats,
+        passphrase: options.passphrase,
+        includeEnv: options.includeEnv,
       })
 
       if (Platform.OS === 'web' && typeof document !== 'undefined') {

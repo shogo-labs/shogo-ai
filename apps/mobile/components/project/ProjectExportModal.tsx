@@ -8,7 +8,7 @@
  * toggle for the built-app `dist/` is intentionally not offered — the server
  * always ships `dist/` when present so imports start up fast.
  */
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { View } from 'react-native'
 import {
   Modal,
@@ -23,13 +23,30 @@ import { Heading } from '@/components/ui/heading'
 import { Text } from '@/components/ui/text'
 import { Button, ButtonText, ButtonSpinner, ButtonIcon } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { Download, X, MessageSquare, Rocket } from 'lucide-react-native'
+import { Input, InputField } from '@/components/ui/input'
+import {
+  Download,
+  X,
+  MessageSquare,
+  Rocket,
+  Lock,
+  FileKey,
+  AlertTriangle,
+} from 'lucide-react-native'
+
+export interface ExportOptions {
+  includeChats: boolean
+  /** Non-empty passphrase ⇒ ship encrypted credentials in the bundle. */
+  passphrase?: string
+  /** True ships `.env` files verbatim; false (default) redacts secrets. */
+  includeEnv?: boolean
+}
 
 interface ProjectExportModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   isExporting: boolean
-  onExport: (options: { includeChats: boolean }) => void
+  onExport: (options: ExportOptions) => void
 }
 
 export function ProjectExportModal({
@@ -39,6 +56,33 @@ export function ProjectExportModal({
   onExport,
 }: ProjectExportModalProps) {
   const [includeChats, setIncludeChats] = useState(true)
+  const [includeSecrets, setIncludeSecrets] = useState(false)
+  const [passphrase, setPassphrase] = useState('')
+  const [confirmPassphrase, setConfirmPassphrase] = useState('')
+  const [includeEnv, setIncludeEnv] = useState(false)
+
+  const passphraseError = useMemo(() => {
+    if (!includeSecrets) return null
+    if (passphrase.length === 0) return null
+    if (passphrase.length < 8) return 'Use at least 8 characters.'
+    if (confirmPassphrase.length > 0 && confirmPassphrase !== passphrase) {
+      return 'Passphrases do not match.'
+    }
+    return null
+  }, [includeSecrets, passphrase, confirmPassphrase])
+
+  const canExport =
+    !isExporting &&
+    (!includeSecrets ||
+      (passphrase.length >= 8 && passphrase === confirmPassphrase))
+
+  const handleExport = () => {
+    onExport({
+      includeChats,
+      passphrase: includeSecrets ? passphrase : undefined,
+      includeEnv,
+    })
+  }
 
   return (
     <Modal isOpen={open} onClose={() => onOpenChange(false)} size="md">
@@ -59,6 +103,7 @@ export function ProjectExportModal({
             You can re-import it into any workspace.
           </Text>
 
+          {/* Chat history toggle */}
           <View className="flex-row items-start gap-3 rounded-lg border border-outline-100 bg-background-50 px-4 py-3">
             <View className="mt-0.5">
               <MessageSquare size={18} className="text-typography-500" />
@@ -74,6 +119,85 @@ export function ProjectExportModal({
             <Switch
               value={includeChats}
               onValueChange={setIncludeChats}
+              disabled={isExporting}
+            />
+          </View>
+
+          {/* Encrypted-secrets opt-in */}
+          <View className="rounded-lg border border-outline-100 bg-background-50 px-4 py-3 gap-3">
+            <View className="flex-row items-start gap-3">
+              <View className="mt-0.5">
+                <Lock size={18} className="text-typography-500" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-typography-900">
+                  Include encrypted credentials
+                </Text>
+                <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
+                  Bot tokens, API keys, and secret env values travel inside the bundle, encrypted with your passphrase. Recipients enter the same passphrase to auto-fill them.
+                </Text>
+              </View>
+              <Switch
+                value={includeSecrets}
+                onValueChange={setIncludeSecrets}
+                disabled={isExporting}
+              />
+            </View>
+            {includeSecrets && (
+              <View className="gap-2 pl-7">
+                <Input>
+                  <InputField
+                    placeholder="Passphrase (≥ 8 chars)"
+                    value={passphrase}
+                    onChangeText={setPassphrase}
+                    secureTextEntry
+                    autoComplete="off"
+                    autoCorrect={false}
+                    editable={!isExporting}
+                  />
+                </Input>
+                <Input>
+                  <InputField
+                    placeholder="Confirm passphrase"
+                    value={confirmPassphrase}
+                    onChangeText={setConfirmPassphrase}
+                    secureTextEntry
+                    autoComplete="off"
+                    autoCorrect={false}
+                    editable={!isExporting}
+                  />
+                </Input>
+                {passphraseError && (
+                  <View className="flex-row items-center gap-1.5">
+                    <AlertTriangle size={12} className="text-amber-500" />
+                    <Text className="text-[11px] text-amber-600">
+                      {passphraseError}
+                    </Text>
+                  </View>
+                )}
+                <Text className="text-[11px] text-typography-500 leading-relaxed">
+                  Share this passphrase with the recipient through a separate channel — never paste it inside the bundle file.
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* .env policy */}
+          <View className="flex-row items-start gap-3 rounded-lg border border-outline-100 bg-background-50 px-4 py-3">
+            <View className="mt-0.5">
+              <FileKey size={18} className="text-typography-500" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-typography-900">
+                Ship raw <Text className="font-mono text-xs">.env</Text> values
+              </Text>
+              <Text className="text-xs text-typography-500 mt-0.5 leading-relaxed">
+                Off (recommended): secret-looking env vars are redacted; non-secrets and a <Text className="font-mono text-xs">.env.example</Text> are shipped. On: ships <Text className="font-mono text-xs">.env</Text> files verbatim — only do this for trusted recipients.
+              </Text>
+            </View>
+            <Switch
+              value={includeEnv}
+              onValueChange={setIncludeEnv}
               disabled={isExporting}
             />
           </View>
@@ -101,10 +225,7 @@ export function ProjectExportModal({
           >
             <ButtonText>Cancel</ButtonText>
           </Button>
-          <Button
-            onPress={() => onExport({ includeChats })}
-            disabled={isExporting}
-          >
+          <Button onPress={handleExport} disabled={!canExport}>
             {isExporting ? (
               <ButtonSpinner className="text-typography-0" />
             ) : (
