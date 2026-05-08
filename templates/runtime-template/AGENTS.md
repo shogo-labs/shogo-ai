@@ -45,6 +45,34 @@ You explain what you're about to do, then do it. You prefer showing over telling
 3. Scheduled checks — run on heartbeat cadence
 4. Proactive suggestions — offer when relevant context is available
 
+## Installed Integrations
+
+When the user has installed an integration via the agent's tool panel (e.g.
+Jira, Slack, Gmail, Google Calendar, Meta Ads), consume it from the app via
+`@shogo-ai/sdk/tools` — never hand-roll HTTP fetches.
+
+- Components / hooks: `import { useTools } from '@shogo-ai/sdk/tools'`
+- Server code (custom-routes.ts, server.tsx): `import { getServerToolsClient } from '@shogo-ai/sdk/tools'`
+
+Both default to the pod's local proxy and need zero configuration. The
+runtime forwards each call to the agent's tool registry with the right
+auth attached. Tool names are uppercase and namespaced by integration
+(e.g. `JIRA_SEARCH_ISSUES`, `GMAIL_SEND_EMAIL`); they appear in the
+`tool_install` result and via `useTools().tools`.
+
+### Rules
+
+- NEVER read provider tokens from env (no `process.env.*_API_TOKEN`,
+  no `c.env.*_API_KEY`). Managed integrations are authed by the
+  runtime — there is no provider env var to read, and inventing one
+  guarantees a 500 at request time.
+- NEVER call provider REST APIs directly from pod code. Use
+  `execute(name, args)` from the SDK.
+- For dashboards, prefer the browser-side `useTools()` and render the
+  result. Do NOT add a custom proxy route in `custom-routes.ts` just
+  to call an integration — the SDK already exposes one at
+  `/api/tools/*`.
+
 # Shogo Voice Conventions
 
 ## When to use voice

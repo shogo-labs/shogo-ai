@@ -260,6 +260,12 @@ export function resolveApiServerEnv(input: {
   for (const [k, v] of Object.entries(parentEnv)) {
     if (typeof v === 'string') out[k] = v
   }
+  // Capture the agent runtime's own listening port BEFORE we overwrite
+  // PORT below — the sidecar's @shogo-ai/sdk/tools/server proxy needs
+  // RUNTIME_PORT to forward `/api/tools/*` calls back to the runtime
+  // over `127.0.0.1`. parentEnv.PORT is the runtime's port; portStr is
+  // the sidecar's own bind port.
+  out.RUNTIME_PORT = parentEnv.PORT ?? '8080'
   out.PORT = portStr
   out.API_SERVER_PORT = portStr
   out.SKILL_SERVER_PORT = portStr

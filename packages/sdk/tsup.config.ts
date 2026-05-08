@@ -12,6 +12,7 @@ export default defineConfig({
     'src/email/index.ts',
     'src/email/server.ts',
     'src/tools/index.ts',
+    'src/tools/server.ts',
     'src/memory/index.ts',
     'src/memory/server.ts',
     'src/voice/index.ts',

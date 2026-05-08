@@ -19,7 +19,8 @@
         "staticDir": "./dist",
         "customRoutesPath": "./custom-routes",
         "dynamicCrudImport": true,
-        "bunServe": true
+        "bunServe": true,
+        "tools": true
       }
     }
   ]
