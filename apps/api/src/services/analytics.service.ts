@@ -1173,6 +1173,31 @@ export async function getBillingAnalytics(scope: AnalyticsScope = {}) {
 const EXCLUDED_EMAIL_PATTERNS = ['%@test.shogo.ai', '%@shogo.ai', '%@getodin.ai']
 const isSqlite = process.env.SHOGO_LOCAL_MODE === 'true'
 
+/**
+ * Coerce a value that may be a `bigint` (returned by Prisma `$queryRaw*` for
+ * SQLite/Postgres `COUNT(*)` and similar aggregates) into a plain `number`.
+ *
+ * Hono's `c.json()` calls `JSON.stringify`, which throws on `BigInt`. Raw SQL
+ * `CAST(... AS INTEGER)` doesn't help on SQLite — Prisma still returns 64-bit
+ * integers as `bigint`. Always run aggregate columns through this before
+ * returning them from a service function.
+ */
+function toNum(v: unknown): number {
+  if (v === null || v === undefined) return 0
+  if (typeof v === 'bigint') return Number(v)
+  if (typeof v === 'number') return v
+  return Number(v)
+}
+
+/** Like `toNum` but preserves null/undefined (for nullable averages). */
+function toNumOrNull(v: unknown): number | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'bigint') return Number(v)
+  if (typeof v === 'number') return v
+  const n = Number(v)
+  return Number.isNaN(n) ? null : n
+}
+
 export function realUserWhere(): Prisma.UserWhereInput {
   return {
     AND: [
@@ -1218,7 +1243,7 @@ export async function getUserFunnel(
   const since = periodToDate(period)
   const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
 
-  const result = await prisma.$queryRawUnsafe<FunnelResult[]>(
+  const result = await prisma.$queryRawUnsafe<Record<keyof FunnelResult, unknown>[]>(
     isSqlite
       ? `
     WITH real_users AS (
@@ -1301,9 +1326,21 @@ export async function getUserFunnel(
     since
   )
 
-  return result[0] ?? {
-    signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0,
-    avgMinToFirstProject: null, avgMinToFirstMessage: null,
+  const row = result[0]
+  if (!row) {
+    return {
+      signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0,
+      avgMinToFirstProject: null, avgMinToFirstMessage: null,
+    }
+  }
+  return {
+    signups: toNum(row.signups),
+    onboarded: toNum(row.onboarded),
+    createdProject: toNum(row.createdProject),
+    sentMessage: toNum(row.sentMessage),
+    engaged: toNum(row.engaged),
+    avgMinToFirstProject: toNumOrNull(row.avgMinToFirstProject),
+    avgMinToFirstMessage: toNumOrNull(row.avgMinToFirstMessage),
   }
 }
 
@@ -1431,11 +1468,11 @@ export async function getUserActivityTable(
       }),
     ])
 
-  const projectMap = new Map(projectCounts.map(r => [r.createdBy!, r._count]))
-  const messageMap = new Map(messageCounts.map(r => [r.userId, r.count]))
-  const sessionMap = new Map(sessionCounts.map(r => [r.userId, r.count]))
-  const toolCallMap = new Map(toolCallCounts.map(r => [r.userId, r.count]))
-  const usdMap = new Map(usdSums.map(r => [r.memberId, r._sum.billedUsd ?? 0]))
+  const projectMap = new Map(projectCounts.map(r => [r.createdBy!, toNum(r._count)]))
+  const messageMap = new Map(messageCounts.map(r => [r.userId, toNum(r.count)]))
+  const sessionMap = new Map(sessionCounts.map(r => [r.userId, toNum(r.count)]))
+  const toolCallMap = new Map(toolCallCounts.map(r => [r.userId, toNum(r.count)]))
+  const usdMap = new Map(usdSums.map(r => [r.memberId, Number(r._sum.billedUsd ?? 0)]))
 
   const result: UserActivity[] = users.map(u => ({
     id: u.id,
@@ -1551,15 +1588,19 @@ export async function getTemplateEngagement(
   )
 
   return {
-    templates: rows.map(r => ({
-      templateId: r.templateId,
-      projects: r.projects,
-      avgMessages: r.avgMessages,
-      totalToolCalls: r.totalToolCalls,
-      engagementRate: r.totalUsers > 0
-        ? Math.round((r.engagedUsers / r.totalUsers) * 100)
-        : 0,
-    })),
+    templates: rows.map(r => {
+      const totalUsers = toNum(r.totalUsers)
+      const engagedUsers = toNum(r.engagedUsers)
+      return {
+        templateId: r.templateId,
+        projects: toNum(r.projects),
+        avgMessages: toNum(r.avgMessages),
+        totalToolCalls: toNum(r.totalToolCalls),
+        engagementRate: totalUsers > 0
+          ? Math.round((engagedUsers / totalUsers) * 100)
+          : 0,
+      }
+    }),
   }
 }
 
@@ -1714,12 +1755,17 @@ export async function getSourceBreakdown(
   )
 
   return {
-    sources: rows.map(r => ({
-      tag: r.tag,
-      count: r.count,
-      projectRate: r.count > 0 ? Math.round((r.withProject / r.count) * 100) : 0,
-      messageRate: r.count > 0 ? Math.round((r.withMessage / r.count) * 100) : 0,
-    })),
+    sources: rows.map(r => {
+      const count = toNum(r.count)
+      const withProject = toNum(r.withProject)
+      const withMessage = toNum(r.withMessage)
+      return {
+        tag: r.tag,
+        count,
+        projectRate: count > 0 ? Math.round((withProject / count) * 100) : 0,
+        messageRate: count > 0 ? Math.round((withMessage / count) * 100) : 0,
+      }
+    }),
   }
 }
 
