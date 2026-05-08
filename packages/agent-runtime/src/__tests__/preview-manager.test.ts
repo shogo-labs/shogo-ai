@@ -13,7 +13,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { PreviewManager, emitBuildLine } from '../preview-manager'
+import { PreviewManager, emitBuildLine, resolveApiServerEnv } from '../preview-manager'
 import {
   __resetRuntimeLogDispatcherForTest,
   getRuntimeLogsSnapshot,
@@ -495,6 +495,117 @@ describe('PreviewManager', () => {
       emitBuildLine(buildLogPath, '[stdout]', 'ERROR: missing module', 'stdout')
       const entries = getRuntimeLogsSnapshot()
       expect(entries[0]!.level).toBe('error')
+    })
+  })
+
+  // --- resolveApiServerEnv: env handed to the spawned `server.tsx` ----------
+  // The API sidecar inherits `process.env` plus a few overrides + a
+  // local-mode default for SHOGO_API_URL. Each invariant gets pinned
+  // here so a future "fix" of one branch doesn't accidentally regress
+  // another (e.g. accidentally forcing localhost in cloud or stomping
+  // a desktop user's explicit SHOGO_API_URL override).
+
+  describe('resolveApiServerEnv', () => {
+    const FIXED_CWD = '/tmp/test-preview-manager'
+    const PORT = '3091'
+
+    test('always pins PORT/API_SERVER_PORT/SKILL_SERVER_PORT to the resolved port', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { PORT: '9999', API_SERVER_PORT: '8888', SKILL_SERVER_PORT: '7777' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.PORT).toBe(PORT)
+      expect(env.API_SERVER_PORT).toBe(PORT)
+      expect(env.SKILL_SERVER_PORT).toBe(PORT)
+    })
+
+    test('pins DATABASE_URL to the workspace sqlite file regardless of parent', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { DATABASE_URL: 'postgres://elsewhere/db' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.DATABASE_URL).toBe(`file:${FIXED_CWD}/prisma/dev.db`)
+    })
+
+    test('local mode + no SHOGO_API_URL parent override → injects http://localhost:8002', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: 'true' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBe('http://localhost:8002')
+    })
+
+    test('local mode + explicit SHOGO_API_URL parent override → parent wins', () => {
+      // A power user (or the e2e harness) pinned a different API URL on
+      // the parent; the sidecar must inherit that, not the localhost
+      // default. Otherwise integration tests pointing at a staging API
+      // would silently get redirected to localhost.
+      const env = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: 'true', SHOGO_API_URL: 'https://api.staging.shogo.ai' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBe('https://api.staging.shogo.ai')
+    })
+
+    test('cloud mode (SHOGO_LOCAL_MODE unset) → does NOT inject localhost', () => {
+      // Cloud pods get SHOGO_API_URL pinned to the in-cluster API service
+      // by the warm-pool launcher; if we accidentally injected
+      // localhost here that would break every voice/chat call from
+      // every cloud-pod sidecar.
+      const env = resolveApiServerEnv({
+        parentEnv: { /* no SHOGO_LOCAL_MODE */ },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBeUndefined()
+    })
+
+    test('cloud mode with parent SHOGO_API_URL → still propagates parent value', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: { SHOGO_API_URL: 'http://api.shogo-system.svc.cluster.local' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.SHOGO_API_URL).toBe('http://api.shogo-system.svc.cluster.local')
+    })
+
+    test('SHOGO_LOCAL_MODE values other than the literal "true" do NOT trigger injection', () => {
+      // The repo convention is `SHOGO_LOCAL_MODE === 'true'` (string compare),
+      // not "is truthy". `'1'` / `'yes'` / boolean `true` would be a typo.
+      // Pinning the strict-equals contract here avoids accidental regression
+      // to a Boolean(...) check that would surprise cloud callers.
+      const env1 = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: '1' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env1.SHOGO_API_URL).toBeUndefined()
+
+      const env2 = resolveApiServerEnv({
+        parentEnv: { SHOGO_LOCAL_MODE: 'TRUE' },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env2.SHOGO_API_URL).toBeUndefined()
+    })
+
+    test('preserves unrelated parent env (e.g. PATH, HOME, PROJECT_ID)', () => {
+      const env = resolveApiServerEnv({
+        parentEnv: {
+          PATH: '/usr/local/bin:/usr/bin',
+          HOME: '/home/test',
+          PROJECT_ID: 'proj_abc',
+        },
+        portStr: PORT,
+        cwd: FIXED_CWD,
+      })
+      expect(env.PATH).toBe('/usr/local/bin:/usr/bin')
+      expect(env.HOME).toBe('/home/test')
+      expect(env.PROJECT_ID).toBe('proj_abc')
     })
   })
 })

@@ -237,6 +237,13 @@ describe('Metro stacks: Hono backend scaffolding', () => {
       expect(existsSync(join(workspaceDir, 'prisma.config.ts'))).toBe(true)
       expect(existsSync(join(workspaceDir, 'custom-routes.ts'))).toBe(true)
       expect(existsSync(join(workspaceDir, 'scripts', 'generate.ts'))).toBe(true)
+      // `src/lib/db.ts` is the Prisma-client singleton that
+      // `shogo.config.json#dbPath` points at; the SDK-generated
+      // `server.tsx` does `import { prisma } from './src/lib/db'`,
+      // so without this file `bun run server.tsx` fails with
+      // "Cannot find module './src/lib/db'" before the API server
+      // ever binds a port.
+      expect(existsSync(join(workspaceDir, 'src', 'lib', 'db.ts'))).toBe(true)
     })
 
     test(`${stackId}: shogo.config.json declares server output on port 3001`, () => {
@@ -266,6 +273,12 @@ describe('Metro stacks: Hono backend scaffolding', () => {
       expect(pkg.dependencies?.['@shogo-ai/sdk']).toBeDefined()
       expect(pkg.dependencies?.['@prisma/client']).toBeDefined()
       expect(pkg.dependencies?.['@prisma/adapter-libsql']).toBeDefined()
+      // The SDK's `generateDomainStore` emits a `mobx`-based store; the
+      // generated `src/generated/domain.ts` does `import { makeAutoObservable }
+      // from 'mobx'`. Ship it in the starter so first-boot generation
+      // doesn't crash the API on a missing peer dep.
+      expect(pkg.dependencies?.['mobx']).toBeDefined()
+      expect(pkg.dependencies?.['mobx-react-lite']).toBeDefined()
       expect(pkg.devDependencies?.['prisma']).toBeDefined()
       // Backend scripts are how the runtime invokes generation/server-spawn.
       expect(pkg.scripts?.['generate']).toBeDefined()
