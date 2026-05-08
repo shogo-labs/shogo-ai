@@ -783,11 +783,18 @@ export class PreviewManager {
       // "device preview not yet available in cloud" indicator via
       // /preview/metro.
       await this.runSetupTasksMetro(timings, bundlerCwd)
+      // Mode label encodes whether the bundler-tunnel and the colocated
+      // API server actually came up — useful when debugging "did the
+      // pod's Hono server start?" without scraping logs. `+api` means
+      // `startApiServer()` spawned `server.tsx`; absence means the
+      // workspace is bundler-only (no `prisma/schema.prisma` yet, or
+      // the API crashed and is in recovery).
+      const apiSuffix = this.apiServerProcess ? '+api' : ''
       const mode = this.metroProcess
-        ? 'metro-web+tunnel'
+        ? `metro-web${apiSuffix}+tunnel`
         : this.localMode
-          ? 'metro-web (tunnel-failed)'
-          : 'metro-web (cloud-todo)'
+          ? `metro-web${apiSuffix} (tunnel-failed)`
+          : `metro-web${apiSuffix} (cloud-todo)`
       return { mode, port: this.runtimePort, timings }
     }
 
@@ -865,6 +872,11 @@ export class PreviewManager {
    */
   private async runSetupTasksMetro(timings: Record<string, number>, bundlerCwd: string): Promise<void> {
     await this.installDepsIfNeeded(timings, bundlerCwd)
+    // Mobile (Metro/Expo) workspaces ship the same Hono + Prisma backend
+    // at their root as Vite stacks. Generate the Prisma client up-front
+    // so `startApiServer()` can spawn `server.tsx` cleanly below; this
+    // is a no-op when there's no `prisma/schema.prisma` on disk.
+    await this.runPrismaIfNeeded(timings)
 
     this._phase = 'building'
     await this.runExpoExportWeb(timings, bundlerCwd)
@@ -875,6 +887,14 @@ export class PreviewManager {
     } else {
       console.log(`[${LOG_PREFIX}] Cloud mode — skipping Metro tunnel (DEVICE_PREVIEW_CLOUD_TODO)`)
     }
+
+    // Bring up the colocated Hono API server. `startApiServer()`
+    // self-heals: when `prisma/schema.prisma` and `package.json` are
+    // both present it generates `server.tsx` (if missing) and spawns
+    // `bun run server.tsx`; otherwise it stays in `idle` and the
+    // mobile client just runs without a backend, like before.
+    this._phase = 'starting-api'
+    await this.startApiServer()
 
     this._phase = 'ready'
     this.started = true

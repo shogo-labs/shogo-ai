@@ -1,0 +1,32 @@
+{
+  "id": "react-native",
+  "name": "React Native (bare)",
+  "description": "Build cross-platform mobile apps with bare React Native + TypeScript (no Expo). Metro bundler is supervised by the runtime. The workspace ships with a Hono + Prisma backend at the root for CRUD APIs that the mobile client can call. Web preview is not produced by bare RN; cloud preview is device-only.",
+  "tags": ["react-native", "mobile", "ios", "android", "metro", "typescript", "bare"],
+  "target": "mobile",
+  "seedsOwnTemplate": true,
+  "runtime": {
+    "devServer": "metro",
+    "buildCommand": "",
+    "templateApiPort": 3001
+  },
+  "capabilities": {
+    "webEnabled": false,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": false
+  },
+  "quickCommands": [
+    {
+      "id": "rn-clear-cache",
+      "label": "Clear Metro Cache",
+      "description": "Restart Metro with --reset-cache to flush the Metro cache",
+      "command": "bun x react-native start --reset-cache",
+      "category": "server",
+      "timeout": 600000
+    }
+  ]
+}

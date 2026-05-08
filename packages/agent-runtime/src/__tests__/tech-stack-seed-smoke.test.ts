@@ -53,7 +53,9 @@ const STACK_MARKERS: Record<string, string | null> = {
   'phaser-game': 'vite.config.ts',
   'expo-app': 'app.json',
   'expo-three': 'app.json',
-  'react-native': null, // Registered but no starter dir on disk yet.
+  // Bare RN starter ships its own RN entrypoint plus the colocated
+  // Hono/Prisma backend; `app.json` is the unambiguous client marker.
+  'react-native': 'app.json',
   'python-data': 'requirements.txt',
   'unity-game': null, // Empty starter (Unity assets are managed by Unity).
   none: null, // Bare workspace by definition.
@@ -67,14 +69,6 @@ describe('per-stack workspace seed smoke', () => {
 
     test(`seedTechStack(${stackId}): writes .tech-stack marker matching id`, () => {
       const ok = seedTechStack(workspaceDir, stackId)
-      // `react-native` has a registry entry but no on-disk stack.json, so
-      // seedTechStack returns false. That's the contract — assert it
-      // explicitly so a future stack.json drop doesn't silently pass.
-      if (entry.id === 'react-native') {
-        expect(ok).toBe(false)
-        expect(existsSync(join(workspaceDir, '.tech-stack'))).toBe(false)
-        return
-      }
       expect(ok).toBe(true)
       const techStackFile = join(workspaceDir, '.tech-stack')
       expect(existsSync(techStackFile)).toBe(true)
@@ -82,7 +76,6 @@ describe('per-stack workspace seed smoke', () => {
     })
 
     test(`seedTechStack(${stackId}): copies .shogo/STACK.md`, () => {
-      if (entry.id === 'react-native') return // covered above
       seedTechStack(workspaceDir, stackId)
       const stackMd = join(workspaceDir, '.shogo', 'STACK.md')
       expect(existsSync(stackMd)).toBe(true)
@@ -205,7 +198,10 @@ const HEAVY = process.env.RUN_HEAVY === '1'
 describe.skipIf(!HEAVY)('per-stack install + build smoke (RUN_HEAVY=1)', () => {
   for (const [stackId, entry] of Object.entries(TECH_STACK_REGISTRY)) {
     if (entry.target === 'none' || entry.target === 'native') continue
-    if (entry.id === 'react-native') continue // no stack.json yet
+    // Bare RN's `bun run build` doesn't produce a web `dist/index.html` —
+    // it builds native iOS/Android via Xcode/Gradle. Heavy build smoke
+    // only covers stacks that emit a web bundle.
+    if (entry.id === 'react-native') continue
     const hasStarter = !!STACK_MARKERS[stackId]
     if (!hasStarter) continue
 
@@ -220,4 +216,100 @@ describe.skipIf(!HEAVY)('per-stack install + build smoke (RUN_HEAVY=1)', () => {
       expect(existsSync(join(workspaceDir, 'dist', 'index.html'))).toBe(true)
     }, 600_000)
   }
+})
+
+// Metro/Expo workspaces ship the same Hono+Prisma backend at their root
+// as Vite stacks (merged-root layout). The PreviewManager.runSetupTasksMetro
+// path now calls `startApiServer()`, which generates `server.tsx` from
+// `prisma/schema.prisma` + `shogo.config.json` and spawns `bun run server.tsx`.
+// These tests assert the on-disk scaffolding is in place so that path
+// has the inputs it needs — without them, `startApiServer()` silently
+// stays in `idle` and the mobile workspace becomes API-less again.
+describe('Metro stacks: Hono backend scaffolding', () => {
+  const METRO_STACKS = ['expo-app', 'expo-three', 'react-native'] as const
+
+  for (const stackId of METRO_STACKS) {
+    test(`${stackId}: ships prisma/schema.prisma + shogo.config.json`, () => {
+      const ok = seedTechStack(workspaceDir, stackId)
+      expect(ok).toBe(true)
+      expect(existsSync(join(workspaceDir, 'prisma', 'schema.prisma'))).toBe(true)
+      expect(existsSync(join(workspaceDir, 'shogo.config.json'))).toBe(true)
+      expect(existsSync(join(workspaceDir, 'prisma.config.ts'))).toBe(true)
+      expect(existsSync(join(workspaceDir, 'custom-routes.ts'))).toBe(true)
+      expect(existsSync(join(workspaceDir, 'scripts', 'generate.ts'))).toBe(true)
+    })
+
+    test(`${stackId}: shogo.config.json declares server output on port 3001`, () => {
+      seedTechStack(workspaceDir, stackId)
+      const cfg = JSON.parse(
+        readFileSync(join(workspaceDir, 'shogo.config.json'), 'utf-8'),
+      ) as {
+        outputs?: Array<{ generate?: string[]; serverConfig?: { port?: number } }>
+      }
+      const serverOut = cfg.outputs?.find((o) =>
+        Array.isArray(o.generate) && o.generate.includes('server'),
+      )
+      expect(serverOut).toBeTruthy()
+      expect(serverOut?.serverConfig?.port).toBe(3001)
+    })
+
+    test(`${stackId}: package.json bundles hono + @shogo-ai/sdk + @prisma/client`, () => {
+      seedTechStack(workspaceDir, stackId)
+      const pkg = JSON.parse(
+        readFileSync(join(workspaceDir, 'package.json'), 'utf-8'),
+      ) as {
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+        scripts?: Record<string, string>
+      }
+      expect(pkg.dependencies?.['hono']).toBeDefined()
+      expect(pkg.dependencies?.['@shogo-ai/sdk']).toBeDefined()
+      expect(pkg.dependencies?.['@prisma/client']).toBeDefined()
+      expect(pkg.dependencies?.['@prisma/adapter-libsql']).toBeDefined()
+      expect(pkg.devDependencies?.['prisma']).toBeDefined()
+      // Backend scripts are how the runtime invokes generation/server-spawn.
+      expect(pkg.scripts?.['generate']).toBeDefined()
+      expect(pkg.scripts?.['start']).toMatch(/server\.tsx/)
+      expect(pkg.scripts?.['db:push']).toBeDefined()
+    })
+  }
+})
+
+// Round-trip a Metro workspace: seed the stack, then read the metadata
+// the PreviewManager actually consumes at start() time. The Metro path
+// branches on `runtime.devServer === 'metro'`, and `startApiServer()`
+// branches on prisma/schema.prisma presence — both must agree for the
+// Hono server to come up alongside Metro.
+describe('Metro stacks: PreviewManager preconditions', () => {
+  test('expo-app: runtime.devServer="metro" and templateApiPort=3001', async () => {
+    const { loadTechStackMeta } = await import('../workspace-defaults')
+    const meta = loadTechStackMeta('expo-app')
+    expect(meta?.runtime?.devServer).toBe('metro')
+    expect(meta?.runtime?.templateApiPort).toBe(3001)
+    expect(meta?.target).toBe('mobile')
+    expect(meta?.seedsOwnTemplate).toBe(true)
+  })
+
+  test('expo-three: runtime.devServer="metro" and templateApiPort=3001', async () => {
+    const { loadTechStackMeta } = await import('../workspace-defaults')
+    const meta = loadTechStackMeta('expo-three')
+    expect(meta?.runtime?.devServer).toBe('metro')
+    expect(meta?.runtime?.templateApiPort).toBe(3001)
+    expect(meta?.target).toBe('mobile')
+  })
+
+  test('react-native: stack.json now exists on disk and declares Metro', async () => {
+    const { loadTechStackMeta } = await import('../workspace-defaults')
+    const meta = loadTechStackMeta('react-native')
+    expect(meta).not.toBeNull()
+    expect(meta?.runtime?.devServer).toBe('metro')
+    expect(meta?.target).toBe('mobile')
+    expect(meta?.seedsOwnTemplate).toBe(true)
+  })
+
+  test('TECH_STACK_REGISTRY matches on-disk stack.json (no drift)', async () => {
+    const { validateTechStackRegistry } = await import('../workspace-defaults')
+    const mismatches = validateTechStackRegistry(TECH_STACK_REGISTRY)
+    expect(mismatches).toEqual([])
+  })
 })
