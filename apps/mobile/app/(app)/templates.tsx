@@ -277,7 +277,7 @@ export default observer(function TemplatesPage() {
           >
             <Search size={16} className="text-muted-foreground" />
             <TextInput
-              className="flex-1 ml-2 py-0 text-sm text-foreground web:outline-none"
+              className="flex-1 ml-2 py-0 text-sm text-foreground web:outline-none no-focus-ring"
               placeholder="Search templates by name, category, or tag..."
               placeholderTextColor="#71717a"
               value={searchQuery}
